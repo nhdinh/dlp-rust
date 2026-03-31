@@ -25,12 +25,13 @@ Data exfiltration paths blocked include USB mass storage, SMB/FTP uploads, and c
 
 ## Components
 
-| Crate               | Role                                                   |
-| ------------------- | ------------------------------------------------------ |
-| `policy-engine/`    | ABAC policy evaluator, gRPC server                     |
-| `dlp-server/`       | Audit ingestion, SIEM relay, admin auth, policy sync   |
-| `dlp-agent/`        | Windows Service: file interception, policy enforcement |
-| `dlp-admin-portal/` | Admin UI: policy management, audit viewer              |
+| Crate               | Role                                                   | Phase |
+| ------------------- | ------------------------------------------------------ | ------|
+| `policy-engine/`    | ABAC policy evaluator, gRPC server                     | 1     |
+| `dlp-agent/`        | Windows Service: file interception, policy enforcement | 1     |
+| `dlp-endpoint-ui/`  | Tauri subprocess: notifications, dialogs, clipboard, tray | 1     |
+| `dlp-admin-portal/` | Admin UI: policy management, audit viewer, TOTP auth  | **Deferred** |
+| `dlp-server/`       | Audit ingestion, SIEM relay, admin auth, policy sync   | 5     |
 
 The agent runs as a Windows Service under SYSTEM. User-facing interactions (notifications, clipboard, dialogs) are handled by a subprocess spawned on the interactive desktop. Stopping the service requires dlp-admin credentials.
 
@@ -61,6 +62,15 @@ docs/
 
 ## Status
 
-Currently in the documentation and design phase. Implementation follows a 4-phase plan: Foundation (workspace, types, engine), Core Enforcement (agent, IPC, policy integration), UI & Integration (endpoint UI, admin portal, SIEM), Production Hardening (security audit, load testing, deployment). Phase 5 (dlp-server) follows.
+Currently in the documentation and design phase. Implementation follows a phased plan:
+
+| Phase | Focus | Crates |
+|-------|-------|--------|
+| 1 | Foundation — workspace, shared types, Policy Engine, dlp-agent, dlp-endpoint-ui | `common-types`, `policy-engine`, `dlp-agent`, `dlp-endpoint-ui` |
+| 2 | Process protection + IPC hardening | `dlp-agent`, `dlp-endpoint-ui` |
+| 3 | ETW bypass detection + integration tests | `dlp-agent` |
+| 4 | Production hardening — security audit, MSI deployment, OPERATIONAL.md | All |
+| 5 | dlp-server — central management, SIEM relay, admin auth | `dlp-server` |
+| — | **dlp-admin-portal** deferred to a later phase | |
 
 No code committed yet.

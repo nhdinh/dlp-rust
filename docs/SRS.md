@@ -7,7 +7,7 @@
 **Status:** Draft
 **Author:** Principal Security Architect
 **Changelog (v1.1):** Added Agent-as-Service architecture (§3.2, §3.3), IPC protocol (§3.4), updated crate structure (§5.2), new NFRs (§4.7), updated ACs (§9.6); fixed story point totals; added F-ADM-12; fixed ISO27001 x-ref; fixed DPAPI spec; fixed pipe name; added terminology note
-**Changelog (v1.2):** Phase 1 scope revised: no minifilter driver; Windows API hooks for file interception (F-AGT-17, F-AGT-18); ETW bypass detection; clipboard hooks; dlp-agent runs standalone (local JSON audit, Phase 5 adds dlp-server); dlp-admin-portal moved to Phase 1; dlp-server deferred to Phase 5; updated §1.2 scope, §3.2 F-AGT-05/F-AGT-17/F-AGT-18, §5.2 crate structure, §8 Phase 1–5 task tables
+**Changelog (v1.2):** Phase 1 scope revised: no minifilter driver; Windows API hooks for file interception (F-AGT-17, F-AGT-18); ETW bypass detection; clipboard hooks; dlp-agent runs standalone (local JSON audit, Phase 5 adds dlp-server); dlp-endpoint-ui moved from Phase 2 to Phase 1; dlp-admin-portal deferred to later phase; dlp-server deferred to Phase 5; updated §1.2 scope, §3.2 F-AGT-05/F-AGT-17/F-AGT-18, §5.2 crate structure, §8 Phase 1–2 task tables, §9 acceptance criteria
 
 ---
 
@@ -43,9 +43,9 @@ The system shall:
 - Use NTFS ACLs as the baseline (coarse-grained) access control layer
 - Apply ABAC decisions as the fine-grained dynamic enforcement layer
 - Emit structured JSON audit logs (Phase 1: local append-only JSON file; Phase 5: dlp-server relay to SIEM)
-- Provide a Tauri-based endpoint UI (spawned by the Agent) for all user-facing interactions
-- Provide a separate Administrative UI (dlp-admin-portal) for the DLP Admin
+- Provide a Tauri-based endpoint UI (dlp-endpoint-ui, spawned by the Agent) for all user-facing interactions — implemented in Phase 1
 - dlp-agent operates standalone in Phase 1 without dlp-server; dlp-server is introduced in Phase 5
+- dlp-admin-portal is deferred to a later phase (audit logs are read directly from the local JSON file during Phase 1)
 
 **Out of Scope:**
 
@@ -730,14 +730,16 @@ S8. dlp-server marks agent as uninstalled in registry
 
 ## 8. Implementation Plan
 
-### Phase 1 — Foundation (Weeks 1–6)
+### Phase 1 — Foundation + dlp-endpoint-ui (Weeks 1–6)
 
-**Goal:** Workspace, shared types, Policy Engine, dlp-agent (standalone, API hooks, clipboard, local audit), dlp-admin-portal (policy CRUD + clipboard testing). dlp-agent operates without dlp-server in this phase.
+**Goal:** Workspace, shared types, Policy Engine, dlp-agent (standalone, API hooks, clipboard, local audit, IPC, UI spawner), dlp-endpoint-ui (Tauri, IPC client, dialogs). dlp-admin-portal deferred to a later phase. dlp-agent operates without dlp-server in this phase.
+
+> **Note:** Audit logs are read directly from the local append-only JSON file during Phase 1. dlp-admin-portal (policy CRUD UI, exception workflow) will be implemented in a later phase.
 
 | ID     | Task | Deliverable | Priority |
 | ------ | ---- | ----------- | -------- |
-| P1-T01 | Initialize Cargo workspace: `common-types/`, `policy-engine/`, `dlp-agent/`, `dlp-admin-portal/` | `Cargo.toml` workspace | Must |
-| P1-T02 | Implement `common-types/`: Subject, Resource, Environment, Action, Classification (T1–T4), AuditEvent, EventType enums | `common-types/src/` | Must |
+| P1-T01 | Initialize Cargo workspace: `common-types/`, `policy-engine/`, `dlp-agent/`, `dlp-endpoint-ui/` | `Cargo.toml` workspace (4 crates) | Must |
+| P1-T02 | Implement `common-types/`: Subject, Resource, Environment, Action, Classification (T1–T4), AuditEvent, EventType, IpcMessage enums | `common-types/src/` | Must |
 | P1-T03 | Define gRPC `.proto` for Policy Engine: `Evaluate` (EvaluateRequest → EvaluateResponse), `Heartbeat` | `policy-engine/proto/` | Must |
 | P1-T04 | Implement Policy Engine: policy store (JSON), hot-reload, rule evaluation (first-match wins), mapped actions | `policy-engine/src/` | Must |
 | P1-T05 | Implement Policy Engine: gRPC server with `Evaluate` endpoint (tonic, TLS 1.3, mTLS) | `policy-engine/src/grpc_server.rs` | Must |
@@ -751,49 +753,55 @@ S8. dlp-server marks agent as uninstalled in registry
 | P1-T13 | Implement dlp-agent: gRPC client to Policy Engine, local decision cache (TTL-based) | `dlp-agent/src/engine_client.rs`, `cache.rs` | Must |
 | P1-T14 | Implement dlp-agent: local append-only JSON audit log | `dlp-agent/src/audit_emitter.rs` | Must |
 | P1-T15 | Implement dlp-agent: offline mode (fail-closed for T3/T4 on cache miss) | `dlp-agent/src/cache.rs` | Must |
-| P1-T16 | Implement dlp-admin-portal: policy CRUD panel, classification assignment, incident log viewer (reads local audit JSON) | `dlp-admin-portal/src/` | Must |
 | P1-T17 | Write integration tests: dlp-agent → Policy Engine → local audit file | `dlp-agent/tests/` | Must |
+| P1-T18 | Implement dlp-agent: 3 named pipe IPC servers — `DLPCommand`, `DLPEventAgent2UI`, `DLPEventUI2Agent` — accept connections, JSON dispatch | `dlp-agent/src/ipc/server.rs` | Must |
+| P1-T29 | Implement dlp-agent: UI spawner — `WTSGetActiveConsoleSessionId` + `CreateProcessAsUser` to launch Tauri UI in interactive session | `dlp-agent/src/ui_spawner.rs` | Must |
+| P1-T19 | Implement dlp-endpoint-ui: Tauri project scaffold — `src-tauri/Cargo.toml`, `tauri.conf.json`, devtools enabled | `dlp-endpoint-ui/src-tauri/` | Must |
+| P1-T20 | Implement dlp-endpoint-ui: IPC client — connect to all 3 named pipes, JSON serde, async dispatch | `dlp-endpoint-ui/src-tauri/src/ipc/` | Must |
+| P1-T21 | Implement dlp-endpoint-ui: Pipe 1 request/response — handle BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ; send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA | `dlp-endpoint-ui/src-tauri/src/ipc/pipe1.rs` | Must |
+| P1-T22 | Implement dlp-endpoint-ui: Pipe 2 listener — display toasts, handle STATUS_UPDATE, HEALTH_PING, UI_RESPAWN | `dlp-endpoint-ui/src-tauri/src/ipc/pipe2.rs` | Must |
+| P1-T23 | Implement dlp-endpoint-ui: Pipe 3 sender — send HEALTH_PONG, UI_READY, UI_CLOSING to Agent | `dlp-endpoint-ui/src-tauri/src/ipc/pipe3.rs` | Must |
+| P1-T24 | Implement dlp-endpoint-ui: Clipboard dialog — read clipboard content, return CLIPBOARD_DATA over Pipe 1 | `dlp-endpoint-ui/src-tauri/src/dialogs/clipboard.rs` | Must |
+| P1-T25 | Implement dlp-endpoint-ui: BlockNotify UI — toast + blocking dialog with policy info and classification | `dlp-endpoint-ui/src-tauri/src/dialogs/block.rs` | Must |
+| P1-T26 | Implement dlp-endpoint-ui: OverrideRequest dialog — justification text input, submit/cancel | `dlp-endpoint-ui/src-tauri/src/dialogs/override.rs` | Must |
+| P1-T27 | Implement dlp-endpoint-ui: Service stop password dialog — send PASSWORD_SUBMIT / PASSWORD_CANCEL | `dlp-endpoint-ui/src-tauri/src/dialogs/stop_password.rs` | Must |
+| P1-T28 | Implement dlp-endpoint-ui: System tray — icon with agent status, context menu (Show Portal, Agent Status, Exit) | `dlp-endpoint-ui/src-tauri/src/tray.rs` | Should |
 
-### Phase 2 — Endpoint UI + Process Protection (Weeks 7–12)
+### Phase 2 — Process Protection + IPC Hardening (Weeks 7–12)
 
-**Goal:** dlp-agent endpoint UI subprocess (IPC, notifications, dialogs), UI spawner, process protection.
+**Goal:** dlp-endpoint-ui is built in Phase 1. Phase 2 focuses on process hardening and remaining integration work. dlp-admin-portal is deferred to a later phase.
 
 | ID     | Task | Deliverable | Priority |
 | ------ | ---- | ----------- | -------- |
-| P2-T01 | Implement IPC module: 3 named pipe servers in `dlp-agent/src/ipc/` | `dlp-agent/src/ipc/` | Must |
-| P2-T02 | Implement UI spawner: `WTSGetActiveConsoleSessionId` + `CreateProcessAsUser` | `dlp-agent/src/ui_spawner.rs` | Must |
-| P2-T03 | Implement process protection: DACL hardening on Agent and UI processes | `dlp-agent/src/protection.rs` | Must |
-| P2-T04 | Implement mutual health monitoring: Agent pings UI (Pipe 2), UI pings Agent (Pipe 3) | `dlp-agent/src/`, `src-tauri/` | Must |
-| P2-T05 | Implement dlp-endpoint-ui: IPC client connecting to all 3 pipes | `dlp-agent/src-tauri/src/ui_main.rs` | Must |
-| P2-T06 | Implement dlp-endpoint-ui: BLOCK_NOTIFY toast + dialog | `dlp-agent/src-tauri/src/dialogs/block_notify.rs` | Must |
-| P2-T07 | Implement dlp-endpoint-ui: Override request dialog with justification | `dlp-agent/src-tauri/src/dialogs/override_request.rs` | Must |
-| P2-T08 | Implement dlp-endpoint-ui: sc stop password dialog + AD credential verification | `dlp-agent/src-tauri/src/dialogs/password_dialog.rs` | Must |
-| P2-T09 | Implement dlp-endpoint-ui: system tray widget with agent status | `dlp-agent/src-tauri/src/tray.rs` | Should |
-| P2-T10 | Implement dlp-endpoint-ui: double-click tray → open dlp-admin-portal | `dlp-agent/src-tauri/src/tray.rs` | Should |
-| P2-T11 | Implement dlp-endpoint-ui: service stop shutdown sequence | `dlp-agent/src-tauri/`, `dlp-agent/src/service.rs` | Must |
-| P2-T12 | Policy Engine: REST API for policy CRUD | `policy-engine/` | Must |
+| P2-T03 | Implement process protection: DACL hardening on Agent and UI processes — deny PROCESS_TERMINATE to non-dlp-admin principals | `dlp-agent/src/protection.rs` | Must |
+| P2-T04 | Implement mutual health monitoring: Agent pings UI (Pipe 2 every 5s, respawn if no pong in 15s); UI pings Agent (Pipe 3 every 5s, exit if no message in 15s) | `dlp-agent/src/`, `dlp-endpoint-ui/src-tauri/src/` | Must |
+| P2-T10 | dlp-endpoint-ui: double-click tray icon → open dlp-admin-portal (dlp-admin-portal deferred; stub shows "Coming Soon" for now) | `dlp-endpoint-ui/src-tauri/src/tray.rs` | Should |
+| P2-T11 | dlp-agent: service stop shutdown sequence — STOP_PENDING → signal UI → password dialog → clean shutdown | `dlp-agent/src/service.rs` | Must |
+| P2-T12 | Policy Engine: REST API for policy CRUD (GET /policies, POST /policies, PUT /policies/{id}, DELETE /policies/{id}) | `policy-engine/src/rest_api.rs` | Must |
 | P2-T13 | Write integration tests: Agent ↔ Policy Engine end-to-end | `dlp-agent/tests/` | Must |
 | P2-T14 | Write integration tests: all ABAC policies from ABAC_POLICIES.md | `policy-engine/tests/` | Must |
 
-### Phase 3 — UI & Integration (Weeks 13–18)
+> **Note:** P2-T01 (IPC module) and P2-T02 (UI spawner) are done in Phase 1 (P1-T18, P1-T29). P2-T05–T09 (endpoint UI components) are done in Phase 1 (P1-T19–T28). dlp-admin-portal (policy CRUD, exception workflow) is deferred to a later phase.
 
-**Goal:** dlp-admin-portal (Phase 1 portion completed), dlp-server preparation.
+### Phase 3 — ETW + Admin Portal Preparation (Weeks 13–18)
+
+**Goal:** ETW bypass detection, admin-portal TOTP preparation. dlp-endpoint-ui is fully built in Phase 1.
 
 | ID     | Task | Deliverable | Priority |
 | ------ | ---- | ----------- | -------- |
-| P3-T01 | Implement dlp-admin-portal: exception approval workflow | `dlp-admin-portal/src/exceptions.rs` | Should |
-| P3-T02 | Implement dlp-admin-portal: TOTP enrollment + login (basic auth only, JWT issuance deferred to Phase 4) | `dlp-admin-portal/src/` | Must |
-| P3-T03 | Implement ETW bypass detection: `detection/etw_bypass.rs` — log EVASION_SUSPECTED when ETW fires unseen operation | `dlp-agent/src/detection/etw_bypass.rs` | Must |
+| P3-T03 | Implement ETW bypass detection: `detection/etw_bypass.rs` — subscribe to Microsoft-Windows-FileSystem-ETW; log EVASION_SUSPECTED when ETW fires a file operation not seen by API hooks | `dlp-agent/src/detection/etw_bypass.rs` | Must |
 | P3-T04 | Write end-to-end tests: clipboard detection → policy decision → local audit log | `dlp-agent/tests/` | Must |
 | P3-T05 | Write end-to-end tests: file interception → policy decision → local audit log | `dlp-agent/tests/` | Must |
 
+> **Note:** P3-T01 (exception approval workflow) and P3-T02 (TOTP enrollment + login) are part of dlp-admin-portal, which is deferred to a later phase.
+
 ### Phase 4 — Production Hardening (Weeks 19–24)
 
-**Goal:** Security hardening (admin portal MFA, mTLS, DPAPI), performance validation, MSI deployment, OPERATIONAL.md.
+**Goal:** Security hardening (mTLS, DPAPI, DACL), performance validation, MSI deployment, OPERATIONAL.md. dlp-admin-portal (MFA, exception workflow) is deferred to a later phase.
 
 | ID     | Task                                                               | Deliverable                | Priority |
 | ------ | ------------------------------------------------------------------ | -------------------------- | -------- |
-| P4-T01 | Security audit: mTLS, MFA, DPAPI, process DACL, credential storage | Security audit report      | Must     |
+| P4-T01 | Security audit: mTLS, DPAPI, process DACL, credential storage (MFA/TOTP deferred with dlp-admin-portal) | Security audit report      | Must     |
 | P4-T02 | Performance testing: 10k req/s, P95 latency ≤ 50ms                 | Performance test report    | Must     |
 | P4-T03 | Load testing: 50k concurrent agents                                | Load test report           | Must     |
 | P4-T04 | Policy Engine: horizontal scaling / load balancer integration      | `policy-engine/`           | Must     |
@@ -869,7 +877,9 @@ S8. dlp-server marks agent as uninstalled in registry
 - [ ] On 3 consecutive incorrect password attempts → event is logged, service cancels stop, returns to RUNNING
 - [ ] UI terminates cleanly within 5 seconds after stop confirmation
 
-### 9.5 dlp-admin-portal
+### 9.5 dlp-admin-portal (Deferred to Later Phase)
+
+> dlp-admin-portal (policy CRUD, audit viewer, exception workflow, TOTP auth) is **deferred** to a later phase. During Phase 1, audit logs are read directly from the local append-only JSON file. The ACs below represent the target state.
 
 - [ ] DLP Admin can create, edit, delete, and view ABAC policies
 - [ ] DLP Admin can assign T1–T4 classification to a file/folder
@@ -883,12 +893,12 @@ S8. dlp-server marks agent as uninstalled in registry
 
 - [ ] All network traffic is TLS 1.3 (no downgrade)
 - [ ] gRPC uses mutual TLS (mTLS)
-- [ ] DLP Admin MFA is enforced (TOTP validated by dlp-server)
+- [ ] DLP Admin MFA is enforced (TOTP validated by dlp-server) — **deferred with dlp-admin-portal**
 - [ ] Audit logs are immutable (append-only, in dlp-server)
 - [ ] Named pipe password traffic is protected by DPAPI (CryptProtectData)
 - [ ] No credentials stored in plaintext
 - [ ] Process DACL denies PROCESS_TERMINATE to non-dlp-admin principals on both Agent and UI processes
-- [ ] dlp-server uses PBKDF2 + salt for admin credential storage
+- [ ] dlp-server uses PBKDF2 + salt for admin credential storage — **deferred with dlp-admin-portal**
 - [ ] dlp-server audit store has no update or delete API exposed
 
 ### 9.8 Compliance

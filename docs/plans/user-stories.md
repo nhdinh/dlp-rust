@@ -886,37 +886,40 @@
 
 ## Summary
 
-| Epic | Story Points | MoSCoW |
-|------|-------------|--------|
-| EP-01: Policy Management | 23 | Must |
-| EP-02: Endpoint Enforcement | 34 | Must |
-| EP-03: Policy Engine Operations | 26 | Must |
-| EP-04: Audit & Compliance | 21 | Must |
-| EP-05: Administrative UI | 24 | Must |
-| EP-06: Deployment & Operations | 21 | Should |
-| EP-07: Agent-as-Service Operations | 44 | Must |
-| EP-08: dlp-server Central Management | 42 | Must |
-| **Total** | **235** | |
+> **Note:** EP-05 (Administrative UI) is **deferred** to a later phase. Phase 1–4 scope is shaded.
+
+| Epic | Story Points | MoSCoW | Phase |
+|------|-------------|--------|-------|
+| EP-01: Policy Management | 23 | Must | Phase 1–4 |
+| EP-02: Endpoint Enforcement | 34 | Must | Phase 1–4 |
+| EP-03: Policy Engine Operations | 26 | Must | Phase 1–4 |
+| EP-04: Audit & Compliance | 21 | Must | Phase 1–4 |
+| EP-05: Administrative UI | 24 | Must | **Deferred** |
+| EP-06: Deployment & Operations | 21 | Should | Phase 4 |
+| EP-07: Agent-as-Service Operations | 44 | Must | Phase 1–4 |
+| EP-08: dlp-server Central Management | 42 | Must | Phase 5 |
+| **Total** | **235** | | |
 
 ### Sprint Planning Guide (18-Sprint Increment)
 
+> **Note:** dlp-admin-portal (EP-05: US-05, US-21–27, US-X Agent Config) is **deferred** to a later phase. Sprint planning below reflects Phase 1–4 scope only. Audit logs are read directly from the local JSON file during Phase 1.
+
 | Sprint | Stories | Focus |
 |--------|---------|-------|
-| Sprint 1 | US-01, US-02, US-03, US-04 | Policy CRUD (admin-facing) |
+| Sprint 1 | US-01, US-02, US-03, US-04 | Policy CRUD (policy-engine, local JSON store) |
 | Sprint 2 | US-06, US-X (On-Demand Scan) | Exclusions + scan trigger |
 | Sprint 3 | US-05, US-14, US-16, US-17 | Classification + Policy Engine core (gRPC + AD) |
-| Sprint 4 | US-A1, US-A2 | Agent Windows Service + UI spawner |
-| Sprint 5 | US-A3, US-A4 | IPC via 3 named pipes + mutual health monitoring |
-| Sprint 6 | US-A5, US-A8 | Process protection + user logoff handling |
-| Sprint 7 | US-A6 | Password-protected service stop |
-| Sprint 8 | US-A7, US-12 | Clipboard via UI + toast notifications |
-| Sprint 9 | US-07, US-08, US-13 | Agent core (interception + enforcement + heartbeat) |
-| Sprint 10 | US-09, US-10, US-11 | Advanced enforcement (USB, network, offline) |
-| Sprint 11 | US-18, US-19, US-20 | Audit event emission + SIEM |
-| Sprint 12 | US-21, US-22 | Audit log viewer + real-time alerts |
-| Sprint 13 | US-23, US-24, US-25 | dlp-admin-portal UI panels |
-| Sprint 14 | US-26, US-27, US-X (Agent Config) | Auth + exception workflow + agent config push |
-| Sprint 15 | US-28, US-30, US-29, US-31, US-32 | Deployment, scaling, failover, runbook, backup |
-| Sprint 16 | US-S1, US-S4 | dlp-server: agent registry + admin auth (JWT/TOTP) |
-| Sprint 17 | US-S2, US-S3 | dlp-server: audit store + SIEM relay |
-| Sprint 18 | US-S5, US-S6, US-S7, US-S8 | dlp-server: alert router + policy sync + exceptions + config push |
+| Sprint 4 | US-A1, US-A2, US-A3 | Agent Windows Service + UI spawner + IPC pipe servers |
+| Sprint 5 | US-A3, US-A4, US-A5 | IPC via 3 named pipes + mutual health monitoring + process protection |
+| Sprint 6 | US-A6, US-A8 | Password-protected service stop + user logoff handling |
+| Sprint 7 | US-A7, US-12 | Clipboard via UI + toast notifications |
+| Sprint 8 | US-07, US-08, US-13 | Agent core (interception + enforcement + heartbeat) |
+| Sprint 9 | US-09, US-10, US-11 | Advanced enforcement (USB, network, offline) |
+| Sprint 10 | US-18, US-19, US-20 | Audit event emission + SIEM relay (local JSON, Phase 5 → dlp-server) |
+| Sprint 11 | US-21 (deferred w/ portal), US-22 (deferred w/ portal) | Audit log viewer + real-time alerts — deferred with dlp-admin-portal |
+| Sprint 12 | US-23, US-24, US-25 (deferred) | dlp-admin-portal UI panels — deferred |
+| Sprint 13 | US-26, US-27, US-X (Agent Config) (deferred) | Auth + exception workflow + agent config push — deferred |
+| Sprint 14 | US-28, US-30, US-29, US-31, US-32 | Deployment, scaling, failover, runbook, backup |
+| Sprint 15 | US-S1, US-S4 | dlp-server: agent registry + admin auth (JWT/TOTP) |
+| Sprint 16 | US-S2, US-S3 | dlp-server: audit store + SIEM relay |
+| Sprint 17 | US-S5, US-S6, US-S7, US-S8 | dlp-server: alert router + policy sync + exceptions + config push |
