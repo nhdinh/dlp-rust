@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["dlp-common", "policy-engine", "dlp-agent"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["DLP Team <dlp@example.com>"]
+license = "Proprietary"
+description = "Enterprise DLP System — NTFS + Active Directory + ABAC"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"
+anyhow = "1"
