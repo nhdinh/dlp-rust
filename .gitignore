@@ -1,0 +1,28 @@
+# Cargo
+target/
+
+# Rust build artifacts
+*.exe
+*.pdb
+Cargo.lock
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Local config overrides
+config.local.*
