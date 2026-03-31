@@ -31,8 +31,8 @@ Enterprise DLP system integrating:
 
 - AD Domain Controller
 - File Servers (NTFS)
-- Policy Engine (Rust, gRPC)
-- **dlp-agent** (`dlp-agent/` crate) — Windows Service, SYSTEM account, file interception, Policy Engine gRPC, audit emission, IPC pipe servers, UI spawner
+- Policy Engine (Rust, HTTPS/REST)
+- **dlp-agent** (`dlp-agent/` crate) — Windows Service, SYSTEM account, file interception, Policy Engine HTTPS client, audit emission, IPC pipe servers, UI spawner
 - **dlp-user-ui** (embedded in `dlp-agent/src-tauri/`) — Tauri subprocess spawned by the Agent in each active user session; one UI instance per session; handles toast notifications, override dialogs, clipboard, system tray, and sc stop password dialog for that session's user
 - **dlp-admin-portal** (`dlp-admin-portal/` crate) — Tauri-based administrative UI for `dlp-admin`; policy CRUD, dashboard, audit viewer — **deferred to a later phase** (audit logs read directly from local JSON during Phase 1)
 - **dlp-server** (`dlp-server/` crate) — Central HTTP server: audit store, SIEM relay, admin auth, policy sync — **deferred to Phase 5**

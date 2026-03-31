@@ -25,20 +25,20 @@
 
 **Epic ID:** EP-01 | **Story Points:** 26 | **MoSCoW:** Must
 
-*As a DLP Admin, I need to define and manage ABAC policies so that the organization has precise, dynamic control over who can access what data under which conditions.*
+_As a DLP Admin, I need to define and manage ABAC policies so that the organization has precise, dynamic control over who can access what data under which conditions._
 
 ### Phase 1 Tasks
 
-| ID | Task | Deliverable |
-|----|------|-------------|
-| T-01 | Initialize `policy-engine/` workspace crate: `Cargo.toml`, `tonic`, TLS config, `tower` middleware scaffold | `policy-engine/src/` |
-| T-02 | Implement policy store: JSON file persistence, hot-reload via `notify` crate, version tracking | `policy-engine/src/policy_store.rs` |
-| T-03 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching | `policy-engine/src/evaluator.rs` |
-| T-04 | Implement gRPC `Evaluate` endpoint: tonic server, TLS 1.3, mTLS auth, request/response types from `common-types/` | `policy-engine/src/grpc_server.rs` |
-| T-05 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup | `policy-engine/src/ad_client.rs` |
-| T-06 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec | `policy-engine/src/rest_api.rs` |
-| T-07 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md` | `policy-engine/tests/` |
-| T-08 | Implement AD mock server for integration tests | `policy-engine/tests/mock_ad/` |
+| ID   | Task                                                                                                             | Deliverable                         |
+| ---- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| T-01 | Initialize `policy-engine/` workspace crate: `Cargo.toml`, `tonic`, TLS config, `tower` middleware scaffold      | `policy-engine/src/`                |
+| T-02 | Implement policy store: JSON file persistence, hot-reload via `notify` crate, version tracking                   | `policy-engine/src/policy_store.rs` |
+| T-03 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching | `policy-engine/src/evaluator.rs`    |
+| T-04 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/`  | `policy-engine/src/http_server.rs`  |
+| T-05 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup              | `policy-engine/src/ad_client.rs`    |
+| T-06 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                   | `policy-engine/src/rest_api.rs`     |
+| T-07 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                       | `policy-engine/tests/`              |
+| T-08 | Implement AD mock server for integration tests                                                                   | `policy-engine/tests/mock_ad/`      |
 
 ---
 
@@ -168,25 +168,25 @@
 
 **Epic ID:** EP-02 | **Story Points:** 34 | **MoSCoW:** Must
 
-*As a dlp-agent, I need to intercept file operations and enforce ABAC decisions on endpoints so that data is protected wherever it is stored or moved.*
+_As a dlp-agent, I need to intercept file operations and enforce ABAC decisions on endpoints so that data is protected wherever it is stored or moved._
 
 ### Phase 1 Tasks
 
-| ID | Task | Deliverable |
-|----|------|-------------|
-| T-09 | Implement `dlp-agent/` workspace crate: `Cargo.toml`, `windows-rs`, tokio, `common-types` | `dlp-agent/src/` |
-| T-10 | Implement Windows Service skeleton: `main.rs`, SCM registration, single-instance mutex, `windows-service` crate | `dlp-agent/src/service.rs` |
-| T-11 | Implement `InterceptionEngine` trait + `file_monitor.rs`: detours/DllMain hooks for CreateFileW, WriteFile, NtWriteFile, DeleteFile, MoveFileEx, CopyFileEx | `dlp-agent/src/interception/file_monitor.rs` |
-| T-12 | Implement `identity.rs`: SMB impersonation resolution — `ImpersonateSelf`, `QuerySecurityContextToken`, `GetTokenInformation(TokenUser)`, `RevertToSelf`; process token fallback | `dlp-agent/src/identity.rs` |
-| T-13 | Implement `detection/usb.rs`: WMI `Win32_VolumeChangeEvent` / `Win32_DiskDrive`, classify drive type (USB mass storage vs. internal) | `dlp-agent/src/detection/usb.rs` |
-| T-14 | Implement `detection/network_share.rs`: ETW `Microsoft-Windows-SMBClient` trace for outbound SMB tree connect events; match against admin-configured whitelist | `dlp-agent/src/detection/network_share.rs` |
-| T-15 | Implement `detection/etw_bypass.rs`: ETW `Microsoft-Windows-FileSystem-ETW` subscriber; detect file ops seen in ETW but not caught by hooks → emit `EVASION_SUSPECTED` audit event | `dlp-agent/src/detection/etw_bypass.rs` |
-| T-16 | Implement gRPC client to Policy Engine: tonic client, TLS, `EvaluateRequest` / `EvaluateResponse`, retry on failure | `dlp-agent/src/engine_client.rs` |
-| T-17 | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss | `dlp-agent/src/cache.rs` |
-| T-18 | Implement offline mode: detect Policy Engine unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat | `dlp-agent/src/offline.rs` |
-| T-19 | Implement local append-only JSON audit log: `serde_json`, write-only file handle, `FsOptions::FILE_FLAG_BACKUP_SEMANTICS` for SERVICE account access | `dlp-agent/src/audit_emitter.rs` |
-| T-20 | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE` / clipboard reads; `detection/clipboard/classifier.rs`: classify text content | `dlp-agent/src/clipboard/` |
-| T-21 | Write integration tests: file interception → gRPC call → local audit log (end-to-end, mock Policy Engine) | `dlp-agent/tests/` |
+| ID   | Task                                                                                                                                                                                   | Deliverable                                  |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| T-09 | Implement `dlp-agent/` workspace crate: `Cargo.toml`, `windows-rs`, tokio, `dlp-common`                                                                                                | `dlp-agent/src/`                             |
+| T-10 | Implement Windows Service skeleton: `main.rs`, SCM registration, single-instance mutex, `windows-service` crate                                                                        | `dlp-agent/src/service.rs`                   |
+| T-11 | Implement `InterceptionEngine` trait + `file_monitor.rs`: detours/DllMain hooks for CreateFileW, WriteFile, NtWriteFile, DeleteFile, MoveFileEx, CopyFileEx                            | `dlp-agent/src/interception/file_monitor.rs` |
+| T-12 | Implement `identity.rs`: SMB impersonation resolution — `ImpersonateSelf`, `QuerySecurityContextToken`, `GetTokenInformation(TokenUser)`, `RevertToSelf`; process token fallback       | `dlp-agent/src/identity.rs`                  |
+| T-13 | Implement `detection/usb.rs`: WMI `Win32_VolumeChangeEvent` / `Win32_DiskDrive`, classify drive type (USB mass storage vs. internal)                                                   | `dlp-agent/src/detection/usb.rs`             |
+| T-14 | Implement `detection/network_share.rs`: ETW `Microsoft-Windows-SMBClient` trace for outbound SMB tree connect events; match against admin-configured whitelist                         | `dlp-agent/src/detection/network_share.rs`   |
+| T-15 | Implement `detection/etw_bypass.rs`: ETW `Microsoft-Windows-FileSystem-ETW` subscriber; detect file ops seen in ETW but not caught by hooks → emit `EVASION_SUSPECTED` audit event     | `dlp-agent/src/detection/etw_bypass.rs`      |
+| T-16 | Implement HTTPS client to Policy Engine: reqwest client, TLS, `POST /evaluate` request/response, retry on failure                                                                     | `dlp-agent/src/engine_client.rs`             |
+| T-17 | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss                                                     | `dlp-agent/src/cache.rs`                     |
+| T-18 | Implement offline mode: detect Policy Engine unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat                                                        | `dlp-agent/src/offline.rs`                   |
+| T-19 | Implement local append-only JSON audit log: `serde_json`, write-only file handle, `FsOptions::FILE_FLAG_BACKUP_SEMANTICS` for SERVICE account access                                   | `dlp-agent/src/audit_emitter.rs`             |
+| T-20 | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE` / clipboard reads; `detection/clipboard/classifier.rs`: classify text content | `dlp-agent/src/clipboard/`                   |
+| T-21 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock Policy Engine)                                                                              | `dlp-agent/tests/`                           |
 
 ---
 
@@ -317,7 +317,7 @@
 
 **Acceptance Criteria:**
 
-- [ ] Agent sends gRPC heartbeat with: agent_id, hostname, OS version, agent version, timestamp
+- [ ] Agent sends HTTPS heartbeat with: agent_id, hostname, OS version, agent version, timestamp
 - [ ] Policy Engine marks agent as offline if heartbeat is missed for 3 consecutive intervals (90 seconds)
 - [ ] Agent can be configured with primary and secondary Policy Engine endpoints
 - [ ] Agent reconnects automatically when a previously unavailable engine becomes reachable
@@ -328,17 +328,17 @@
 
 **Epic ID:** EP-03 | **Story Points:** 26 | **MoSCoW:** Must
 
-*As a Policy Engine, I need to evaluate ABAC policies accurately and at low latency so that every enforcement decision is correct and fast enough for production use.*
+_As a Policy Engine, I need to evaluate ABAC policies accurately and at low latency so that every enforcement decision is correct and fast enough for production use._
 
 ### Phase 1 Tasks
 
 > EP-03 tasks overlap significantly with EP-01 tasks above. Only EP-03-specific tasks are listed here.
 
-| ID | Task | Deliverable |
-|----|------|-------------|
-| T-22 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `policy-engine/src/ad_client.rs` |
-| T-23 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s | `policy-engine/src/policy_store.rs` |
-| T-24 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput | `policy-engine/tests/benchmark.rs` |
+| ID   | Task                                                                                                              | Deliverable                         |
+| ---- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| T-22 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `policy-engine/src/ad_client.rs`    |
+| T-23 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `policy-engine/src/policy_store.rs` |
+| T-24 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `policy-engine/tests/benchmark.rs`  |
 
 ---
 
@@ -352,7 +352,7 @@
 
 **Acceptance Criteria:**
 
-- [ ] Engine accepts gRPC EvaluateRequest with: subject (user_sid, groups, device_trust), resource (path, classification), environment (time, network_location), action (READ / WRITE / COPY / DELETE)
+- [ ] Engine accepts HTTPS POST /evaluate request with: subject (user_sid, groups, device_trust), resource (path, classification), environment (time, network_location), action (READ / WRITE / COPY / DELETE)
 - [ ] Engine evaluates all applicable policies in priority order (first-match wins)
 - [ ] Engine returns EvaluateResponse with: decision (ALLOW / DENY / ALLOW_WITH_LOG / DENY_WITH_ALERT), matched_policy_id, reason string
 - [ ] Engine returns within 50ms at P95 for a single request
@@ -395,12 +395,12 @@
 
 ---
 
-### US-17: gRPC API for Policy CRUD
+### US-17: REST API for Policy CRUD
 
 **Story Points:** 8 | **MoSCoW:** Must
 
 **As a** DLP Admin (via UI) or automated system
-**I want** to manage policies through a REST/gRPC API
+**I want** to manage policies through a REST API
 **So that** I can integrate policy management into existing workflows and automation pipelines
 
 **Acceptance Criteria:**
@@ -417,16 +417,16 @@
 
 **Epic ID:** EP-04 | **Story Points:** 21 | **MoSCoW:** Must
 
-*As a DLP Admin or Auditor, I need a complete, tamper-evident audit trail of all enforcement events so that I can investigate incidents, demonstrate compliance, and meet regulatory requirements.*
+_As a DLP Admin or Auditor, I need a complete, tamper-evident audit trail of all enforcement events so that I can investigate incidents, demonstrate compliance, and meet regulatory requirements._
 
 ### Phase 1 Tasks
 
-| ID | Task | Deliverable |
-|----|------|-------------|
-| T-19 | Implement local append-only JSON audit log: `serde_json`, write-only file handle, `FsOptions::FILE_FLAG_BACKUP_SEMANTICS` for SERVICE account access | `dlp-agent/src/audit_emitter.rs` |
-| T-25 | Define `AuditEvent` Rust types: serde serialization, all fields per F-AUD-02 schema (including `access_context: local\|SMB`) | `common-types/src/audit.rs` |
-| T-26 | Implement audit event emission: emit every intercepted file operation as JSON, no file content, real-time | `dlp-agent/src/audit_emitter.rs` |
-| T-27 | Implement append-only local audit log: write-only file handle, service account access via `FILE_FLAG_BACKUP_SEMANTICS`, log rotation (size-based) | `dlp-agent/src/audit_emitter.rs` |
+| ID   | Task                                                                                                                                                                   | Deliverable                      |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| T-19 | Implement local append-only JSON audit log: `serde_json`, write-only file handle, `FsOptions::FILE_FLAG_BACKUP_SEMANTICS` for SERVICE account access                   | `dlp-agent/src/audit_emitter.rs` |
+| T-25 | Define `AuditEvent` Rust types: serde serialization, all fields per F-AUD-02 schema (including `access_context: local\|SMB`)                                           | `dlp-common/src/audit.rs`        |
+| T-26 | Implement audit event emission: emit every intercepted file operation as JSON, no file content, real-time                                                              | `dlp-agent/src/audit_emitter.rs` |
+| T-27 | Implement append-only local audit log: write-only file handle, service account access via `FILE_FLAG_BACKUP_SEMANTICS`, log rotation (size-based)                      | `dlp-agent/src/audit_emitter.rs` |
 | T-28 | Phase 1: agent writes to local JSON log only. SIEM relay (Splunk HEC + ELK) deferred to Phase 5 (dlp-server). Audit log queryable via direct file read during Phase 1. | `dlp-agent/src/audit_emitter.rs` |
 
 ---
@@ -523,7 +523,7 @@
 
 **Epic ID:** EP-05 | **Story Points:** 27 | **MoSCoW:** Must
 
-*As a DLP Admin, I need a dedicated administrative interface so that I can manage the entire DLP system from a single, role-appropriate UI without requiring command-line access.*
+_As a DLP Admin, I need a dedicated administrative interface so that I can manage the entire DLP system from a single, role-appropriate UI without requiring command-line access._
 
 ---
 
@@ -640,7 +640,7 @@
 
 **Epic ID:** EP-06 | **Story Points:** 21 | **MoSCoW:** Must
 
-*As an IT Operations team, I need reliable, automatable deployment and operational runbooks so that the DLP system can be installed, configured, monitored, and recovered without specialized knowledge.*
+_As an IT Operations team, I need reliable, automatable deployment and operational runbooks so that the DLP system can be installed, configured, monitored, and recovered without specialized knowledge._
 
 ---
 
@@ -737,30 +737,30 @@
 
 **Epic ID:** EP-07 | **Story Points:** 44 | **MoSCoW:** Must
 
-*As a DLP system, the Agent must run as a Windows Service under the SYSTEM account and delegate all user-facing work to a separate UI process, while both processes remain protected from unauthorized termination.*
+_As a DLP system, the Agent must run as a Windows Service under the SYSTEM account and delegate all user-facing work to a separate UI process, while both processes remain protected from unauthorized termination._
 
 ### Phase 1 Tasks
 
-| ID | Task | Deliverable |
-|----|------|-------------|
-| T-29 | Implement Windows Service: `windows-service` crate, SCM lifecycle (Start, Stop, Pause, Resume), `sc create dlp-agent type= own start= auto`, single-instance mutex | `dlp-agent/src/service.rs` |
-| T-30 | Implement `ui_spawner.rs`: `WTSEnumerateSessionsW` on startup → `CreateProcessAsUser` per session; `WTSRegisterSessionNotification` for connect/disconnect; `HashMap<u32, HANDLE>` session-ID-to-UI-handle map | `dlp-agent/src/ui_spawner.rs` |
-| T-31 | Implement 3 named pipe IPC servers: `\\.\pipe\DLPCommand` (Pipe 1, 2-way, duplex), `\\.\pipe\DLPEventAgent2UI` (Pipe 2, 1-way A→U), `\\.\pipe\DLPEventUI2Agent` (Pipe 3, 1-way U→A); message mode; JSON serde | `dlp-agent/src/ipc/server.rs` |
-| T-32 | Implement Pipe 1 handler: BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG; send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL | `dlp-agent/src/ipc/pipe1.rs` |
-| T-33 | Implement Pipe 2 sender: TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE (fire-and-forget, per session) | `dlp-agent/src/ipc/pipe2.rs` |
-| T-34 | Implement Pipe 3 receiver: HEALTH_PONG, UI_READY, UI_CLOSING (per session pipe) | `dlp-agent/src/ipc/pipe3.rs` |
-| T-35 | Implement mutual health monitor: Agent pings all session UIs via Pipe 2 every 5s; if no HEALTH_PONG per session within 15s → kill + respawn UI in that session; UI pings Agent via Pipe 3 every 5s; Agent pings back on Pipe 2; if UI sees no message in 15s → UI exits | `dlp-agent/src/health_monitor.rs` |
-| T-36 | Implement session change handler: `WTSRegisterSessionNotification` per active session; on Session_Logoff → send UI_CLOSING_SEQUENCE, wait 5s, force-kill, remove from map; on Session_Connect → spawn new UI in new session | `dlp-agent/src/session_monitor.rs` |
-| T-37 | Implement process protection DACL: `SetSecurityInfo` on Agent and UI process handles; deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to Authenticated Users and non-dlp-admin Admins; allow dlp-admin SID | `dlp-agent/src/protection.rs` |
-| T-38 | Implement password-protected service stop: `sc stop` → STOP_PENDING → send PASSWORD_DIALOG over Pipe 1 → collect PASSWORD_SUBMIT → DPAPI `CryptProtectData` → AD LDAP bind as dlp-admin DN → verify → clean shutdown; 3 wrong attempts → log EVENT_DLP_ADMIN_STOP_FAILED | `dlp-agent/src/service.rs` |
-| T-39 | Implement Tauri UI scaffold: `dlp-agent/src-tauri/` — `Cargo.toml`, `tauri.conf.json`, devtools enabled, system tray, multi-session IPC client | `dlp-agent/src-tauri/` |
-| T-40 | Implement UI Pipe 1 client: connect to `\\.\pipe\DLPCommand` per session, send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL; handle BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG | `dlp-agent/src-tauri/src/ipc/pipe1.rs` |
-| T-41 | Implement UI Pipe 2 listener: receive TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE; display toast notifications | `dlp-agent/src-tauri/src/ipc/pipe2.rs` |
-| T-42 | Implement UI Pipe 3 sender: send HEALTH_PONG, UI_READY, UI_CLOSING | `dlp-agent/src-tauri/src/ipc/pipe3.rs` |
-| T-43 | Implement block dialog: Windows toast + modal dialog showing policy info and classification; "Request Override" button opens justification dialog | `dlp-agent/src-tauri/src/dialogs/block.rs` |
-| T-44 | Implement clipboard dialog: read clipboard via Windows API, return CLIPBOARD_DATA over Pipe 1 | `dlp-agent/src-tauri/src/dialogs/clipboard.rs` |
-| T-45 | Implement service stop password dialog: PASSWORD_SUBMIT / PASSWORD_CANCEL with DPAPI `CryptProtectData` before send | `dlp-agent/src-tauri/src/dialogs/stop_password.rs` |
-| T-46 | Implement system tray: icon with agent status (Running / Stopped / Offline), context menu (Show Portal, Agent Status, Exit) | `dlp-agent/src-tauri/src/tray.rs` |
+| ID   | Task                                                                                                                                                                                                                                                                        | Deliverable                                        |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| T-29 | Implement Windows Service: `windows-service` crate, SCM lifecycle (Start, Stop, Pause, Resume), `sc create dlp-agent type= own start= auto`, single-instance mutex                                                                                                          | `dlp-agent/src/service.rs`                         |
+| T-30 | Implement `ui_spawner.rs`: `WTSEnumerateSessionsW` on startup → `CreateProcessAsUser` per session; `WTSRegisterSessionNotification` for connect/disconnect; `HashMap<u32, HANDLE>` session-ID-to-UI-handle map                                                              | `dlp-agent/src/ui_spawner.rs`                      |
+| T-31 | Implement 3 named pipe IPC servers: `\\.\pipe\DLPCommand` (Pipe 1, 2-way, duplex), `\\.\pipe\DLPEventAgent2UI` (Pipe 2, 1-way A→U), `\\.\pipe\DLPEventUI2Agent` (Pipe 3, 1-way U→A); message mode; JSON serde                                                               | `dlp-agent/src/ipc/server.rs`                      |
+| T-32 | Implement Pipe 1 handler: BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG; send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL                                                                                            | `dlp-agent/src/ipc/pipe1.rs`                       |
+| T-33 | Implement Pipe 2 sender: TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE (fire-and-forget, per session)                                                                                                                                                  | `dlp-agent/src/ipc/pipe2.rs`                       |
+| T-34 | Implement Pipe 3 receiver: HEALTH_PONG, UI_READY, UI_CLOSING (per session pipe)                                                                                                                                                                                             | `dlp-agent/src/ipc/pipe3.rs`                       |
+| T-35 | Implement mutual health monitor: Agent pings all session UIs via Pipe 2 every 5s; if no HEALTH_PONG per session within 15s → kill + respawn UI in that session; UI pings Agent via Pipe 3 every 5s; Agent pings back on Pipe 2; if UI sees no message in 15s → UI exits     | `dlp-agent/src/health_monitor.rs`                  |
+| T-36 | Implement session change handler: `WTSRegisterSessionNotification` per active session; on Session_Logoff → send UI_CLOSING_SEQUENCE, wait 5s, force-kill, remove from map; on Session_Connect → spawn new UI in new session                                                 | `dlp-agent/src/session_monitor.rs`                 |
+| T-37 | Implement process protection DACL: `SetSecurityInfo` on Agent and UI process handles; deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to Authenticated Users and non-dlp-admin Admins; allow dlp-admin SID | `dlp-agent/src/protection.rs`                      |
+| T-38 | Implement password-protected service stop: `sc stop` → STOP_PENDING → send PASSWORD_DIALOG over Pipe 1 → collect PASSWORD_SUBMIT → DPAPI `CryptProtectData` → AD LDAP bind as dlp-admin DN → verify → clean shutdown; 3 wrong attempts → log EVENT_DLP_ADMIN_STOP_FAILED    | `dlp-agent/src/service.rs`                         |
+| T-39 | Implement Tauri UI scaffold: `dlp-agent/src-tauri/` — `Cargo.toml`, `tauri.conf.json`, devtools enabled, system tray, multi-session IPC client                                                                                                                              | `dlp-agent/src-tauri/`                             |
+| T-40 | Implement UI Pipe 1 client: connect to `\\.\pipe\DLPCommand` per session, send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL; handle BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG                                     | `dlp-agent/src-tauri/src/ipc/pipe1.rs`             |
+| T-41 | Implement UI Pipe 2 listener: receive TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE; display toast notifications                                                                                                                                       | `dlp-agent/src-tauri/src/ipc/pipe2.rs`             |
+| T-42 | Implement UI Pipe 3 sender: send HEALTH_PONG, UI_READY, UI_CLOSING                                                                                                                                                                                                          | `dlp-agent/src-tauri/src/ipc/pipe3.rs`             |
+| T-43 | Implement block dialog: Windows toast + modal dialog showing policy info and classification; "Request Override" button opens justification dialog                                                                                                                           | `dlp-agent/src-tauri/src/dialogs/block.rs`         |
+| T-44 | Implement clipboard dialog: read clipboard via Windows API, return CLIPBOARD_DATA over Pipe 1                                                                                                                                                                               | `dlp-agent/src-tauri/src/dialogs/clipboard.rs`     |
+| T-45 | Implement service stop password dialog: PASSWORD_SUBMIT / PASSWORD_CANCEL with DPAPI `CryptProtectData` before send                                                                                                                                                         | `dlp-agent/src-tauri/src/dialogs/stop_password.rs` |
+| T-46 | Implement system tray: icon with agent status (Running / Stopped / Offline), context menu (Show Portal, Agent Status, Exit)                                                                                                                                                 | `dlp-agent/src-tauri/src/tray.rs`                  |
 
 ---
 
@@ -925,7 +925,7 @@
 
 **Epic ID:** EP-08 | **Story Points:** 42 | **MoSCoW:** Must
 
-*As the DLP system, we need a central management server (dlp-server) that owns all administrative concerns — agent registry, audit storage, SIEM relay, admin auth, and policy sync — so that agents don't carry operational complexity and the admin portal has a single authoritative API to call.*
+_As the DLP system, we need a central management server (dlp-server) that owns all administrative concerns — agent registry, audit storage, SIEM relay, admin auth, and policy sync — so that agents don't carry operational complexity and the admin portal has a single authoritative API to call._
 
 ---
 
@@ -1079,77 +1079,77 @@ This table maps all Phase 1 implementation tasks to their stories, deliverable p
 
 ### EP-01 & EP-03: Policy Engine
 
-| ID | Story | Task | Deliverable |
-|----|-------|------|-------------|
-| T-01 | US-01 | Initialize `policy-engine/` workspace crate: `Cargo.toml`, `tonic`, TLS config, `tower` middleware scaffold | `policy-engine/src/` |
-| T-02 | US-01 | Implement policy store: JSON file persistence, hot-reload via `notify`, version tracking | `policy-engine/src/policy_store.rs` |
-| T-03 | US-01 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching | `policy-engine/src/evaluator.rs` |
-| T-04 | US-17 | Implement gRPC `Evaluate` endpoint: tonic server, TLS 1.3, mTLS auth, request/response types from `common-types/` | `policy-engine/src/grpc_server.rs` |
-| T-05 | US-16 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup | `policy-engine/src/ad_client.rs` |
-| T-06 | US-17 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec | `policy-engine/src/rest_api.rs` |
-| T-07 | US-01 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md` | `policy-engine/tests/` |
-| T-08 | US-16 | Implement AD mock server for integration tests | `policy-engine/tests/mock_ad/` |
-| T-22 | US-16 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `policy-engine/src/ad_client.rs` |
-| T-23 | US-15 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s | `policy-engine/src/policy_store.rs` |
-| T-24 | US-14 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput | `policy-engine/tests/benchmark.rs` |
+| ID   | Story | Task                                                                                                              | Deliverable                         |
+| ---- | ----- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| T-01 | US-01 | Initialize `policy-engine/` workspace crate: `Cargo.toml`, `tonic`, TLS config, `tower` middleware scaffold       | `policy-engine/src/`                |
+| T-02 | US-01 | Implement policy store: JSON file persistence, hot-reload via `notify`, version tracking                          | `policy-engine/src/policy_store.rs` |
+| T-03 | US-01 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching  | `policy-engine/src/evaluator.rs`    |
+| T-04 | US-17 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/`   | `policy-engine/src/http_server.rs`  |
+| T-05 | US-16 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup               | `policy-engine/src/ad_client.rs`    |
+| T-06 | US-17 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                    | `policy-engine/src/rest_api.rs`     |
+| T-07 | US-01 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                        | `policy-engine/tests/`              |
+| T-08 | US-16 | Implement AD mock server for integration tests                                                                    | `policy-engine/tests/mock_ad/`      |
+| T-22 | US-16 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `policy-engine/src/ad_client.rs`    |
+| T-23 | US-15 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `policy-engine/src/policy_store.rs` |
+| T-24 | US-14 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `policy-engine/tests/benchmark.rs`  |
 
 ### EP-02: Endpoint Enforcement
 
-| ID | Story | Task | Deliverable |
-|----|-------|------|-------------|
-| T-11 | US-07 | Implement `InterceptionEngine` trait + `file_monitor.rs`: detours/DllMain hooks for CreateFileW, WriteFile, NtWriteFile, DeleteFile, MoveFileEx, CopyFileEx | `dlp-agent/src/interception/file_monitor.rs` |
-| T-12 | US-10 | Implement `identity.rs`: SMB impersonation resolution — `ImpersonateSelf`, `QuerySecurityContextToken`, `GetTokenInformation(TokenUser)`, `RevertToSelf`; process token fallback | `dlp-agent/src/identity.rs` |
-| T-13 | US-09 | Implement `detection/usb.rs`: WMI `Win32_VolumeChangeEvent`, classify drive type (USB mass storage vs. internal), block T3/T4 writes | `dlp-agent/src/detection/usb.rs` |
-| T-14 | US-10 | Implement `detection/network_share.rs`: ETW `Microsoft-Windows-SMBClient` trace for outbound SMB tree connect events; match against admin-configured whitelist | `dlp-agent/src/detection/network_share.rs` |
-| T-15 | US-10 | Implement `detection/etw_bypass.rs`: ETW `Microsoft-Windows-FileSystem-ETW` subscriber; detect ops seen in ETW but not caught by hooks → emit `EVASION_SUSPECTED` | `dlp-agent/src/detection/etw_bypass.rs` |
-| T-16 | US-08 | Implement gRPC client to Policy Engine: tonic client, TLS, `EvaluateRequest` / `EvaluateResponse`, retry on failure | `dlp-agent/src/engine_client.rs` |
-| T-17 | US-08 | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss | `dlp-agent/src/cache.rs` |
-| T-18 | US-11 | Implement offline mode: detect Policy Engine unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat | `dlp-agent/src/offline.rs` |
-| T-20 | US-07 | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE`; `detection/clipboard/classifier.rs`: classify text content → T1–T4 | `dlp-agent/src/clipboard/` |
-| T-21 | US-07, US-13 | Write integration tests: file interception → gRPC call → local audit log (end-to-end, mock Policy Engine) | `dlp-agent/tests/` |
+| ID   | Story        | Task                                                                                                                                                                             | Deliverable                                  |
+| ---- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| T-11 | US-07        | Implement `InterceptionEngine` trait + `file_monitor.rs`: detours/DllMain hooks for CreateFileW, WriteFile, NtWriteFile, DeleteFile, MoveFileEx, CopyFileEx                      | `dlp-agent/src/interception/file_monitor.rs` |
+| T-12 | US-10        | Implement `identity.rs`: SMB impersonation resolution — `ImpersonateSelf`, `QuerySecurityContextToken`, `GetTokenInformation(TokenUser)`, `RevertToSelf`; process token fallback | `dlp-agent/src/identity.rs`                  |
+| T-13 | US-09        | Implement `detection/usb.rs`: WMI `Win32_VolumeChangeEvent`, classify drive type (USB mass storage vs. internal), block T3/T4 writes                                             | `dlp-agent/src/detection/usb.rs`             |
+| T-14 | US-10        | Implement `detection/network_share.rs`: ETW `Microsoft-Windows-SMBClient` trace for outbound SMB tree connect events; match against admin-configured whitelist                   | `dlp-agent/src/detection/network_share.rs`   |
+| T-15 | US-10        | Implement `detection/etw_bypass.rs`: ETW `Microsoft-Windows-FileSystem-ETW` subscriber; detect ops seen in ETW but not caught by hooks → emit `EVASION_SUSPECTED`                | `dlp-agent/src/detection/etw_bypass.rs`      |
+| T-16 | US-08        | Implement HTTPS client to Policy Engine: reqwest client, TLS, `POST /evaluate` request/response, retry on failure                                                               | `dlp-agent/src/engine_client.rs`             |
+| T-17 | US-08        | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss                                               | `dlp-agent/src/cache.rs`                     |
+| T-18 | US-11        | Implement offline mode: detect Policy Engine unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat                                                  | `dlp-agent/src/offline.rs`                   |
+| T-20 | US-07        | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE`; `detection/clipboard/classifier.rs`: classify text content → T1–T4     | `dlp-agent/src/clipboard/`                   |
+| T-21 | US-07, US-13 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock Policy Engine)                                                                        | `dlp-agent/tests/`                           |
 
 ### EP-04: Audit & Compliance
 
-| ID | Story | Task | Deliverable |
-|----|-------|------|-------------|
-| T-25 | US-18 | Define `AuditEvent` Rust types: serde serialization, all fields per F-AUD-02 schema (`access_context: local\|SMB`) | `common-types/src/audit.rs` |
-| T-26 | US-18 | Implement audit event emission: emit every intercepted file operation as JSON, no file content, real-time | `dlp-agent/src/audit_emitter.rs` |
+| ID   | Story | Task                                                                                                                                              | Deliverable                      |
+| ---- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| T-25 | US-18 | Define `AuditEvent` Rust types: serde serialization, all fields per F-AUD-02 schema (`access_context: local\|SMB`)                                | `dlp-common/src/audit.rs`        |
+| T-26 | US-18 | Implement audit event emission: emit every intercepted file operation as JSON, no file content, real-time                                         | `dlp-agent/src/audit_emitter.rs` |
 | T-27 | US-18 | Implement append-only local audit log: write-only file handle, service account access via `FILE_FLAG_BACKUP_SEMANTICS`, log rotation (size-based) | `dlp-agent/src/audit_emitter.rs` |
-| T-28 | US-19 | Phase 1: agent writes to local JSON log only. SIEM relay deferred to Phase 5 (dlp-server). Audit log queryable via direct file read. | `dlp-agent/src/audit_emitter.rs` |
+| T-28 | US-19 | Phase 1: agent writes to local JSON log only. SIEM relay deferred to Phase 5 (dlp-server). Audit log queryable via direct file read.              | `dlp-agent/src/audit_emitter.rs` |
 
 ### EP-07: Agent-as-Service Operations
 
-| ID | Story | Task | Deliverable |
-|----|-------|------|-------------|
-| T-09 | US-A1 | Initialize `dlp-agent/` workspace crate: `Cargo.toml`, `windows-rs`, tokio, `common-types` | `dlp-agent/src/` |
-| T-10 | US-A1 | Implement Windows Service skeleton: `windows-service` crate, SCM lifecycle, `sc create dlp-agent type= own start= auto`, single-instance mutex | `dlp-agent/src/service.rs` |
-| T-30 | US-A2 | Implement `ui_spawner.rs`: `WTSEnumerateSessionsW` on startup → `CreateProcessAsUser` per session; `WTSRegisterSessionNotification` for connect/disconnect; `HashMap<u32, HANDLE>` session-ID-to-UI-handle map | `dlp-agent/src/ui_spawner.rs` |
-| T-31 | US-A3 | Implement 3 named pipe IPC servers: `\\.\pipe\DLPCommand` (Pipe 1, 2-way duplex), `\\.\pipe\DLPEventAgent2UI` (Pipe 2, 1-way A→U), `\\.\pipe\DLPEventUI2Agent` (Pipe 3, 1-way U→A); `PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE`; JSON serde | `dlp-agent/src/ipc/server.rs` |
-| T-32 | US-A3 | Implement Pipe 1 handler: BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG, PASSWORD_CANCEL; send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT | `dlp-agent/src/ipc/pipe1.rs` |
-| T-33 | US-A3 | Implement Pipe 2 sender: TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE — fire-and-forget, per session | `dlp-agent/src/ipc/pipe2.rs` |
-| T-34 | US-A3 | Implement Pipe 3 receiver: HEALTH_PONG, UI_READY, UI_CLOSING — per session pipe | `dlp-agent/src/ipc/pipe3.rs` |
-| T-35 | US-A4 | Implement mutual health monitor: Agent pings all session UIs via Pipe 2 every 5s; per-session 15s timeout → kill + respawn; UI pings Agent via Pipe 3 every 5s; Agent pings back on Pipe 2; 15s timeout → UI exits | `dlp-agent/src/health_monitor.rs` |
-| T-36 | US-A8 | Implement session change handler: `WTSRegisterSessionNotification` per active session; on Session_Logoff → send UI_CLOSING_SEQUENCE, wait 5s, force-kill, remove from map; on Session_Connect → spawn new UI in new session | `dlp-agent/src/session_monitor.rs` |
-| T-37 | US-A5 | Implement process protection DACL: `SetSecurityInfo` on Agent and UI process handles; deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to Authenticated Users and non-dlp-admin Admins; explicit allow for dlp-admin SID | `dlp-agent/src/protection.rs` |
-| T-38 | US-A6 | Implement password-protected service stop: `sc stop` → STOP_PENDING → send PASSWORD_DIALOG over Pipe 1 → collect PASSWORD_SUBMIT → DPAPI `CryptProtectData` → AD LDAP bind as dlp-admin DN → verify → clean shutdown; 3 wrong attempts → log EVENT_DLP_ADMIN_STOP_FAILED | `dlp-agent/src/service.rs` |
-| T-39 | US-A7 | Implement Tauri UI scaffold: `dlp-agent/src-tauri/` — `Cargo.toml`, `tauri.conf.json`, devtools enabled, system tray, multi-session IPC client per session | `dlp-agent/src-tauri/` |
-| T-40 | US-A7 | Implement UI Pipe 1 client: per-session pipe connection, send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL; handle BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG | `dlp-agent/src-tauri/src/ipc/pipe1.rs` |
-| T-41 | US-A7 | Implement UI Pipe 2 listener: receive TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE per session; display Windows toast notifications | `dlp-agent/src-tauri/src/ipc/pipe2.rs` |
-| T-42 | US-A7 | Implement UI Pipe 3 sender: send HEALTH_PONG, UI_READY, UI_CLOSING | `dlp-agent/src-tauri/src/ipc/pipe3.rs` |
-| T-43 | US-A7, US-12 | Implement block dialog: Windows toast + modal dialog showing policy info and classification; "Request Override" button opens justification dialog | `dlp-agent/src-tauri/src/dialogs/block.rs` |
-| T-44 | US-A7 | Implement clipboard dialog: read clipboard via Windows API, return CLIPBOARD_DATA over Pipe 1 | `dlp-agent/src-tauri/src/dialogs/clipboard.rs` |
-| T-45 | US-A6 | Implement service stop password dialog: PASSWORD_SUBMIT / PASSWORD_CANCEL; DPAPI `CryptProtectData` before send | `dlp-agent/src-tauri/src/dialogs/stop_password.rs` |
-| T-46 | US-A7 | Implement system tray: icon with agent status (Running / Stopped / Offline), context menu (Show Portal, Agent Status, Exit) | `dlp-agent/src-tauri/src/tray.rs` |
+| ID   | Story        | Task                                                                                                                                                                                                                                                                                     | Deliverable                                        |
+| ---- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- | ----------------------------- |
+| T-09 | US-A1        | Initialize `dlp-agent/` workspace crate: `Cargo.toml`, `windows-rs`, tokio, `dlp-common`                                                                                                                                                                                                 | `dlp-agent/src/`                                   |
+| T-10 | US-A1        | Implement Windows Service skeleton: `windows-service` crate, SCM lifecycle, `sc create dlp-agent type= own start= auto`, single-instance mutex                                                                                                                                           | `dlp-agent/src/service.rs`                         |
+| T-30 | US-A2        | Implement `ui_spawner.rs`: `WTSEnumerateSessionsW` on startup → `CreateProcessAsUser` per session; `WTSRegisterSessionNotification` for connect/disconnect; `HashMap<u32, HANDLE>` session-ID-to-UI-handle map                                                                           | `dlp-agent/src/ui_spawner.rs`                      |
+| T-31 | US-A3        | Implement 3 named pipe IPC servers: `\\.\pipe\DLPCommand` (Pipe 1, 2-way duplex), `\\.\pipe\DLPEventAgent2UI` (Pipe 2, 1-way A→U), `\\.\pipe\DLPEventUI2Agent` (Pipe 3, 1-way U→A); `PIPE_TYPE_MESSAGE                                                                                   | PIPE_READMODE_MESSAGE`; JSON serde                 | `dlp-agent/src/ipc/server.rs` |
+| T-32 | US-A3        | Implement Pipe 1 handler: BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG, PASSWORD_CANCEL; send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT                                                                                                         | `dlp-agent/src/ipc/pipe1.rs`                       |
+| T-33 | US-A3        | Implement Pipe 2 sender: TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE — fire-and-forget, per session                                                                                                                                                               | `dlp-agent/src/ipc/pipe2.rs`                       |
+| T-34 | US-A3        | Implement Pipe 3 receiver: HEALTH_PONG, UI_READY, UI_CLOSING — per session pipe                                                                                                                                                                                                          | `dlp-agent/src/ipc/pipe3.rs`                       |
+| T-35 | US-A4        | Implement mutual health monitor: Agent pings all session UIs via Pipe 2 every 5s; per-session 15s timeout → kill + respawn; UI pings Agent via Pipe 3 every 5s; Agent pings back on Pipe 2; 15s timeout → UI exits                                                                       | `dlp-agent/src/health_monitor.rs`                  |
+| T-36 | US-A8        | Implement session change handler: `WTSRegisterSessionNotification` per active session; on Session_Logoff → send UI_CLOSING_SEQUENCE, wait 5s, force-kill, remove from map; on Session_Connect → spawn new UI in new session                                                              | `dlp-agent/src/session_monitor.rs`                 |
+| T-37 | US-A5        | Implement process protection DACL: `SetSecurityInfo` on Agent and UI process handles; deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to Authenticated Users and non-dlp-admin Admins; explicit allow for dlp-admin SID | `dlp-agent/src/protection.rs`                      |
+| T-38 | US-A6        | Implement password-protected service stop: `sc stop` → STOP_PENDING → send PASSWORD_DIALOG over Pipe 1 → collect PASSWORD_SUBMIT → DPAPI `CryptProtectData` → AD LDAP bind as dlp-admin DN → verify → clean shutdown; 3 wrong attempts → log EVENT_DLP_ADMIN_STOP_FAILED                 | `dlp-agent/src/service.rs`                         |
+| T-39 | US-A7        | Implement Tauri UI scaffold: `dlp-agent/src-tauri/` — `Cargo.toml`, `tauri.conf.json`, devtools enabled, system tray, multi-session IPC client per session                                                                                                                               | `dlp-agent/src-tauri/`                             |
+| T-40 | US-A7        | Implement UI Pipe 1 client: per-session pipe connection, send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL; handle BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG                                                                   | `dlp-agent/src-tauri/src/ipc/pipe1.rs`             |
+| T-41 | US-A7        | Implement UI Pipe 2 listener: receive TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE per session; display Windows toast notifications                                                                                                                                | `dlp-agent/src-tauri/src/ipc/pipe2.rs`             |
+| T-42 | US-A7        | Implement UI Pipe 3 sender: send HEALTH_PONG, UI_READY, UI_CLOSING                                                                                                                                                                                                                       | `dlp-agent/src-tauri/src/ipc/pipe3.rs`             |
+| T-43 | US-A7, US-12 | Implement block dialog: Windows toast + modal dialog showing policy info and classification; "Request Override" button opens justification dialog                                                                                                                                        | `dlp-agent/src-tauri/src/dialogs/block.rs`         |
+| T-44 | US-A7        | Implement clipboard dialog: read clipboard via Windows API, return CLIPBOARD_DATA over Pipe 1                                                                                                                                                                                            | `dlp-agent/src-tauri/src/dialogs/clipboard.rs`     |
+| T-45 | US-A6        | Implement service stop password dialog: PASSWORD_SUBMIT / PASSWORD_CANCEL; DPAPI `CryptProtectData` before send                                                                                                                                                                          | `dlp-agent/src-tauri/src/dialogs/stop_password.rs` |
+| T-46 | US-A7        | Implement system tray: icon with agent status (Running / Stopped / Offline), context menu (Show Portal, Agent Status, Exit)                                                                                                                                                              | `dlp-agent/src-tauri/src/tray.rs`                  |
 
 ### Phase 1 Task Summary
 
-| Crate | Tasks | Count |
-|-------|-------|-------|
-| `common-types/` | T-25 | 1 |
-| `policy-engine/` | T-01–T-08, T-22–T-24 | 11 |
-| `dlp-agent/` | T-09–T-18, T-20–T-21, T-30–T-38 | 19 |
-| `dlp-agent/src-tauri/` | T-39–T-46 | 8 |
-| **Total** | | **39** |
+| Crate                  | Tasks                           | Count  |
+| ---------------------- | ------------------------------- | ------ |
+| `dlp-common/`          | T-25                            | 1      |
+| `policy-engine/`       | T-01–T-08, T-22–T-24            | 11     |
+| `dlp-agent/`           | T-09–T-18, T-20–T-21, T-30–T-38 | 19     |
+| `dlp-agent/src-tauri/` | T-39–T-46                       | 8      |
+| **Total**              |                                 | **39** |
 
 > **Note:** Tasks T-22–T-23 share deliverables with T-05 and T-02 respectively. Tasks T-16–T-17 are shared between EP-02 and EP-07 (agent-core + IPC). T-28 is a note clarifying Phase 1 audit scope (SIEM relay deferred to Phase 5).
 
@@ -1159,41 +1159,41 @@ This table maps all Phase 1 implementation tasks to their stories, deliverable p
 
 > **Note:** EP-05 (Administrative UI) is **deferred** to a later phase. Phase 1–4 scope is shaded.
 
-| Epic | Story Points | MoSCoW | Phase |
-|------|-------------|--------|-------|
-| EP-01: Policy Management | 23 | Must | Phase 1–4 |
-| EP-02: Endpoint Enforcement | 40 | Must | Phase 1–4 |
-| EP-03: Policy Engine Operations | 26 | Must | Phase 1–4 |
-| EP-04: Audit & Compliance | 21 | Must | Phase 1–4 |
-| EP-05: Administrative UI | 24 | Must | **Deferred** |
-| EP-06: Deployment & Operations | 21 | Should | Phase 4 |
-| EP-07: Agent-as-Service Operations | 44 | Must | Phase 1–4 |
-| EP-08: dlp-server Central Management | 42 | Must | Phase 5 |
-| **Total** | **235** | | |
+| Epic                                 | Story Points | MoSCoW | Phase        |
+| ------------------------------------ | ------------ | ------ | ------------ |
+| EP-01: Policy Management             | 23           | Must   | Phase 1–4    |
+| EP-02: Endpoint Enforcement          | 40           | Must   | Phase 1–4    |
+| EP-03: Policy Engine Operations      | 26           | Must   | Phase 1–4    |
+| EP-04: Audit & Compliance            | 21           | Must   | Phase 1–4    |
+| EP-05: Administrative UI             | 24           | Must   | **Deferred** |
+| EP-06: Deployment & Operations       | 21           | Should | Phase 4      |
+| EP-07: Agent-as-Service Operations   | 44           | Must   | Phase 1–4    |
+| EP-08: dlp-server Central Management | 42           | Must   | Phase 5      |
+| **Total**                            | **235**      |        |              |
 
 ### Sprint Planning Guide (18-Sprint Increment)
 
 > **Note:** dlp-admin-portal (EP-05: US-05, US-21–27, US-X Agent Config) is **deferred** to a later phase. Sprint planning below reflects Phase 1–4 scope only. Audit logs are read directly from the local JSON file during Phase 1.
 
-| Sprint | Stories | Tasks | Focus |
-|--------|---------|-------|-------|
-| Sprint 1 | US-01, US-02, US-03 | T-01, T-02, T-03, T-07 | Policy engine scaffold + policy store + ABAC evaluator + unit tests |
-| Sprint 2 | US-04, US-06 | T-04, T-05, T-06, T-08 | gRPC server + AD client + REST CRUD API + AD mock |
-| Sprint 3 | US-14, US-16, US-17 | T-22, T-23, T-24 | AD group lookup + hot-reload + performance benchmark |
-| Sprint 4 | US-A1 | T-09, T-10 | dlp-agent workspace crate + Windows Service skeleton + single-instance mutex |
-| Sprint 5 | US-A2 | T-30 | UI spawner: WTSEnumerateSessionsW + CreateProcessAsUser per session + WTSRegisterSessionNotification + session map |
-| Sprint 6 | US-A3 | T-31, T-32, T-33, T-34 | 3 named pipe IPC servers + Pipe 1/2/3 handlers |
-| Sprint 7 | US-A4, US-A8 | T-35, T-36 | Mutual health monitor (per-session) + session change handler |
-| Sprint 8 | US-A5 | T-37 | Process DACL protection: deny PROCESS_TERMINATE to non-dlp-admin |
-| Sprint 9 | US-A6 | T-38 | Password-protected service stop: DPAPI + AD LDAP bind + STOP_PENDING flow |
-| Sprint 10 | US-A7 | T-38, T-39, T-40, T-42 | UI scaffold (Tauri + multi-session IPC) + Pipe 1 client + stop password dialog |
-| Sprint 11 | US-A7 | T-41, T-43 | UI: Pipe 2 listener + block dialog + toast notifications |
-| Sprint 12 | US-A7 | T-44, T-45, T-46 | UI: clipboard dialog + stop password dialog + system tray icon |
-| Sprint 13 | US-07, US-08 | T-11, T-12, T-16, T-17 | Interception engine + SMB identity resolution + gRPC client + decision cache |
-| Sprint 14 | US-09, US-10 | T-13, T-14, T-15 | USB detection + SMB network detection + ETW bypass detection |
-| Sprint 15 | US-11, US-18 | T-18, T-19, T-25, T-26, T-27 | Offline mode + local audit log + AuditEvent schema |
-| Sprint 16 | US-12 | T-20 | Clipboard hooks: SetWindowsHookExW + content classifier |
-| Sprint 17 | US-13, US-19 | T-21, T-28 | Heartbeat + integration tests (end-to-end) |
-| Sprint 18 | All Phase 1 | T-24 | Performance validation: P95 ≤ 50ms, ≥ 10k req/s + final integration review |
+| Sprint    | Stories             | Tasks                        | Focus                                                                                                              |
+| --------- | ------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Sprint 1  | US-01, US-02, US-03 | T-01, T-02, T-03, T-07       | Policy engine scaffold + policy store + ABAC evaluator + unit tests                                                |
+| Sprint 2  | US-04, US-06        | T-04, T-05, T-06, T-08       | HTTPS server + AD client + REST CRUD API + AD mock                                                                 |
+| Sprint 3  | US-14, US-16, US-17 | T-22, T-23, T-24             | AD group lookup + hot-reload + performance benchmark                                                               |
+| Sprint 4  | US-A1               | T-09, T-10                   | dlp-agent workspace crate + Windows Service skeleton + single-instance mutex                                       |
+| Sprint 5  | US-A2               | T-30                         | UI spawner: WTSEnumerateSessionsW + CreateProcessAsUser per session + WTSRegisterSessionNotification + session map |
+| Sprint 6  | US-A3               | T-31, T-32, T-33, T-34       | 3 named pipe IPC servers + Pipe 1/2/3 handlers                                                                     |
+| Sprint 7  | US-A4, US-A8        | T-35, T-36                   | Mutual health monitor (per-session) + session change handler                                                       |
+| Sprint 8  | US-A5               | T-37                         | Process DACL protection: deny PROCESS_TERMINATE to non-dlp-admin                                                   |
+| Sprint 9  | US-A6               | T-38                         | Password-protected service stop: DPAPI + AD LDAP bind + STOP_PENDING flow                                          |
+| Sprint 10 | US-A7               | T-38, T-39, T-40, T-42       | UI scaffold (Tauri + multi-session IPC) + Pipe 1 client + stop password dialog                                     |
+| Sprint 11 | US-A7               | T-41, T-43                   | UI: Pipe 2 listener + block dialog + toast notifications                                                           |
+| Sprint 12 | US-A7               | T-44, T-45, T-46             | UI: clipboard dialog + stop password dialog + system tray icon                                                     |
+| Sprint 13 | US-07, US-08        | T-11, T-12, T-16, T-17       | Interception engine + SMB identity resolution + HTTPS client + decision cache                                      |
+| Sprint 14 | US-09, US-10        | T-13, T-14, T-15             | USB detection + SMB network detection + ETW bypass detection                                                       |
+| Sprint 15 | US-11, US-18        | T-18, T-19, T-25, T-26, T-27 | Offline mode + local audit log + AuditEvent schema                                                                 |
+| Sprint 16 | US-12               | T-20                         | Clipboard hooks: SetWindowsHookExW + content classifier                                                            |
+| Sprint 17 | US-13, US-19        | T-21, T-28                   | Heartbeat + integration tests (end-to-end)                                                                         |
+| Sprint 18 | All Phase 1         | T-24                         | Performance validation: P95 ≤ 50ms, ≥ 10k req/s + final integration review                                         |
 
 ---
