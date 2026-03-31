@@ -7,6 +7,7 @@
 **Status:** Draft
 **Author:** Principal Security Architect
 **Changelog (v1.1):** Added Agent-as-Service architecture (§3.2, §3.3), IPC protocol (§3.4), updated crate structure (§5.2), new NFRs (§4.7), updated ACs (§9.6); fixed story point totals; added F-ADM-12; fixed ISO27001 x-ref; fixed DPAPI spec; fixed pipe name; added terminology note
+**Changelog (v1.2):** Phase 1 scope revised: no minifilter driver; Windows API hooks for file interception (F-AGT-17, F-AGT-18); ETW bypass detection; clipboard hooks; dlp-agent runs standalone (local JSON audit, Phase 5 adds dlp-server); dlp-admin-portal moved to Phase 1; dlp-server deferred to Phase 5; updated §1.2 scope, §3.2 F-AGT-05/F-AGT-17/F-AGT-18, §5.2 crate structure, §8 Phase 1–5 task tables
 
 ---
 
@@ -35,21 +36,23 @@ This Software Requirements Specification (SRS) defines the complete requirements
 
 The system shall:
 
-- Enforce DLP policies on Windows endpoints using a Rust-based agent running as a Windows Service
+- Enforce DLP policies on Windows endpoints using a Rust-based agent running as a Windows Service. File interception uses Windows API hooks (CreateFileW, WriteFile, NtWriteFile, DeleteFile, MoveFileEx, GetClipboardData, SetClipboardData, etc.). No minifilter or kernel driver. ETW (Microsoft-Windows-FileSystem-ETW) is used as a bypass-detection layer: if ETW reports a file operation that the hooks did not see, it is logged as EVASION_SUSPECTED.
 - Provide a centralized ABAC Policy Engine with a gRPC interface
 - Classify data using a four-tier model (T1–T4)
 - Integrate with Active Directory for identity and group membership
 - Use NTFS ACLs as the baseline (coarse-grained) access control layer
 - Apply ABAC decisions as the fine-grained dynamic enforcement layer
-- Emit structured JSON audit logs to SIEM platforms (Splunk / ELK)
+- Emit structured JSON audit logs (Phase 1: local append-only JSON file; Phase 5: dlp-server relay to SIEM)
 - Provide a Tauri-based endpoint UI (spawned by the Agent) for all user-facing interactions
-- Provide a separate Administrative UI (dlp-ui) for the DLP Admin
+- Provide a separate Administrative UI (dlp-admin-portal) for the DLP Admin
+- dlp-agent operates standalone in Phase 1 without dlp-server; dlp-server is introduced in Phase 5
 
 **Out of Scope:**
 
 - Native macOS/Linux endpoint agents (future consideration)
 - Email gateway integration (Phase 2)
 - Cloud DLP integration for SaaS (Phase 2)
+- Minifilter or kernel-mode filter drivers
 
 ### 1.3 Definitions
 
@@ -204,7 +207,7 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 | F-AGT-02 | Agent shall start automatically at Windows boot via Service Control Manager                        | Must     |
 | F-AGT-03 | Agent shall be a single-instance service; a second start attempt shall be rejected                 | Must     |
 | F-AGT-04 | Agent shall register with Policy Engine on startup and maintain heartbeat                          | Must     |
-| F-AGT-05 | Agent shall intercept file open/save/copy operations on monitored paths                            | Must     |
+| F-AGT-05 | Agent shall intercept file open/write/delete/rename/move operations via Windows API hooks (CreateFileW, WriteFile, NtWriteFile, DeleteFile, MoveFileEx, CopyFileEx) on monitored paths | Must     |
 | F-AGT-06 | Agent shall request ABAC decision from Policy Engine before allowing sensitive file operations     | Must     |
 | F-AGT-07 | Agent shall enforce ABAC DENY decisions by blocking the operation and logging the event            | Must     |
 | F-AGT-08 | Agent shall enforce ABAC ALLOW decisions by permitting the operation (subject to NTFS)             | Must     |
@@ -216,6 +219,8 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 | F-AGT-14 | Agent shall detect and block SMB/FTP upload of classified files to unauthorized destinations       | Must     |
 | F-AGT-15 | Agent shall self-update from a configured update server endpoint                                   | May      |
 | F-AGT-16 | Agent shall support supervised (managed) and unsupervised (unmanaged) device detection             | Must     |
+| F-AGT-17 | Agent shall intercept clipboard read/write via GetClipboardData/SetClipboardData and classify clipboard content | Must |
+| F-AGT-18 | Agent shall subscribe to ETW (Microsoft-Windows-FileSystem-ETW) as a bypass-detection layer; any file operation seen in ETW but not caught by API hooks shall be logged as EVASION_SUSPECTED | Must |
 
 ### 3.3 Agent ↔ UI Co-Process Architecture
 
@@ -550,11 +555,23 @@ dlp-rust/                           # Cargo workspace
 │   │   │   ├── command_pipe.rs     # Pipe 1: \\.\pipe\DLPCommand (2-way)
 │   │   │   ├── event_a2u.rs        # Pipe 2: \\.\pipe\DLPEventAgent2UI
 │   │   │   └── event_u2a.rs        # Pipe 3: \\.\pipe\DLPEventUI2Agent
-│   │   ├── interceptor.rs          # File operation interception (WinAPI)
+│   │   ├── interception/
+│   │   │   ├── mod.rs             # InterceptionEngine trait
+│   │   │   ├── file_monitor.rs     # Windows API hooks: CreateFileW, WriteFile, NtWriteFile, DeleteFile, MoveFileEx, CopyFileEx
+│   │   │   └── policy_mapper.rs    # Maps hooked calls → ABAC Action enum
+│   │   ├── clipboard/
+│   │   │   ├── mod.rs
+│   │   │   ├── listener.rs         # Hooks: GetClipboardData, SetClipboardData
+│   │   │   └── classifier.rs       # Classify clipboard text → T1–T4
+│   │   ├── detection/
+│   │   │   ├── mod.rs
+│   │   │   ├── usb.rs             # WMI DriveLetterChangeEvent
+│   │   │   ├── network_share.rs    # SMB write detection
+│   │   │   └── etw_bypass.rs      # ETW bypass detection (logs EVASION_SUSPECTED)
 │   │   ├── engine_client.rs        # gRPC client to Policy Engine
-│   │   ├── server_client.rs        # HTTPS client to dlp-server (audit, heartbeat, config)
+│   │   ├── server_client.rs        # HTTPS client to dlp-server (Phase 5+)
 │   │   ├── cache.rs               # Local policy decision cache
-│   │   ├── audit_emitter.rs       # JSON audit → dlp-server (not direct SIEM)
+│   │   ├── audit_emitter.rs       # Local append-only JSON (Phase 1); → dlp-server in Phase 5
 │   │   └── protection.rs          # Process DACL hardening
 │   │
 │   └── src-tauri/                  # Embedded Tauri endpoint UI
@@ -715,68 +732,64 @@ S8. dlp-server marks agent as uninstalled in registry
 
 ### Phase 1 — Foundation (Weeks 1–6)
 
-**Goal:** Establish the core workspace, shared types, and Policy Engine skeleton.
+**Goal:** Workspace, shared types, Policy Engine, dlp-agent (standalone, API hooks, clipboard, local audit), dlp-admin-portal (policy CRUD + clipboard testing). dlp-agent operates without dlp-server in this phase.
 
-| ID     | Task                                                                                   | Deliverable                    | Priority |
-| ------ | -------------------------------------------------------------------------------------- | ------------------------------ | -------- |
-| P1-T01 | Initialize Cargo workspace with all 4 crates                                           | `Cargo.toml` workspace         | Must     |
-| P1-T02 | Implement `common-types`: Subject, Resource, Environment, Action, Classification enums | `common-types/`                | Must     |
-| P1-T03 | Implement `common-types`: AuditEvent schema and EventType enums                        | `common-types/`                | Must     |
-| P1-T04 | Define gRPC `.proto` files for Policy Engine API                                       | `policy-engine/proto/`         | Must     |
-| P1-T05 | Implement Policy Engine: policy store (JSON), rule evaluation engine                   | `policy-engine/`               | Must     |
-| P1-T06 | Implement Policy Engine: gRPC server with `Evaluate` endpoint                          | `policy-engine/`               | Must     |
-| P1-T07 | Implement Policy Engine: AD LDAP client for group membership                           | `policy-engine/`               | Must     |
-| P1-T08 | Write unit tests for Policy Engine core evaluation logic                               | `policy-engine/tests/`         | Must     |
-| P1-T09 | Implement AD mock server for integration testing                                       | `policy-engine/tests/mock_ad/` | Must     |
-| P1-T10 | Write API documentation for Policy Engine gRPC interface                               | `docs/API.md`                  | Should   |
+| ID     | Task | Deliverable | Priority |
+| ------ | ---- | ----------- | -------- |
+| P1-T01 | Initialize Cargo workspace: `common-types/`, `policy-engine/`, `dlp-agent/`, `dlp-admin-portal/` | `Cargo.toml` workspace | Must |
+| P1-T02 | Implement `common-types/`: Subject, Resource, Environment, Action, Classification (T1–T4), AuditEvent, EventType enums | `common-types/src/` | Must |
+| P1-T03 | Define gRPC `.proto` for Policy Engine: `Evaluate` (EvaluateRequest → EvaluateResponse), `Heartbeat` | `policy-engine/proto/` | Must |
+| P1-T04 | Implement Policy Engine: policy store (JSON), hot-reload, rule evaluation (first-match wins), mapped actions | `policy-engine/src/` | Must |
+| P1-T05 | Implement Policy Engine: gRPC server with `Evaluate` endpoint (tonic, TLS 1.3, mTLS) | `policy-engine/src/grpc_server.rs` | Must |
+| P1-T06 | Implement Policy Engine: AD LDAP client (ldap3) for group membership and device trust | `policy-engine/src/ad_client.rs` | Must |
+| P1-T07 | Write unit tests: all ABAC evaluation rules from ABAC_POLICIES.md | `policy-engine/tests/` | Must |
+| P1-T08 | Implement AD mock server for integration testing | `policy-engine/tests/mock_ad/` | Must |
+| P1-T09 | Implement dlp-agent Windows Service skeleton: `main.rs`, `service.rs`, single-instance mutex, SCM | `dlp-agent/src/main.rs`, `service.rs` | Must |
+| P1-T10 | Implement dlp-agent: `InterceptionEngine` trait + `file_monitor.rs` — hooks for CreateFileW, WriteFile, NtWriteFile, DeleteFile, MoveFileEx, CopyFileEx | `dlp-agent/src/interception/` | Must |
+| P1-T11 | Implement dlp-agent: `clipboard/listener.rs` — hooks GetClipboardData/SetClipboardData; `clipboard/classifier.rs` — classify clipboard text | `dlp-agent/src/clipboard/` | Must |
+| P1-T12 | Implement dlp-agent: `detection/usb.rs` — WMI DriveLetterChangeEvent; `detection/network_share.rs` — SMB write detection | `dlp-agent/src/detection/` | Must |
+| P1-T13 | Implement dlp-agent: gRPC client to Policy Engine, local decision cache (TTL-based) | `dlp-agent/src/engine_client.rs`, `cache.rs` | Must |
+| P1-T14 | Implement dlp-agent: local append-only JSON audit log | `dlp-agent/src/audit_emitter.rs` | Must |
+| P1-T15 | Implement dlp-agent: offline mode (fail-closed for T3/T4 on cache miss) | `dlp-agent/src/cache.rs` | Must |
+| P1-T16 | Implement dlp-admin-portal: policy CRUD panel, classification assignment, incident log viewer (reads local audit JSON) | `dlp-admin-portal/src/` | Must |
+| P1-T17 | Write integration tests: dlp-agent → Policy Engine → local audit file | `dlp-agent/tests/` | Must |
 
-### Phase 2 — Core Enforcement (Weeks 7–12)
+### Phase 2 — Endpoint UI + Process Protection (Weeks 7–12)
 
-**Goal:** DLP Agent as Windows Service with IPC module and Policy Engine integration.
+**Goal:** dlp-agent endpoint UI subprocess (IPC, notifications, dialogs), UI spawner, process protection.
 
-| ID     | Task                                                                                 | Deliverable                                           | Priority |
-| ------ | ------------------------------------------------------------------------------------ | ----------------------------------------------------- | -------- |
-| P2-T01 | Implement dlp-agent service skeleton: `main.rs`, `service.rs`, single-instance mutex | `dlp-agent/src/main.rs`, `service.rs`                 | Must     |
-| P2-T02 | Implement IPC module: 3 named pipe servers in `dlp-agent/src/ipc/`                   | `dlp-agent/src/ipc/`                                  | Must     |
-| P2-T03 | Implement UI spawner: `WTSGetActiveConsoleSessionId` + `CreateProcessAsUser`         | `dlp-agent/src/ui_spawner.rs`                         | Must     |
-| P2-T04 | Implement process protection: DACL hardening on Agent and UI processes               | `dlp-agent/src/protection.rs`                         | Must     |
-| P2-T05 | Implement mutual health monitoring: Agent pings UI (Pipe 2), UI pings Agent (Pipe 3) | `dlp-agent/src/`, `src-tauri/`                        | Must     |
-| P2-T06 | Implement DLP Agent: Windows API hooks for file operations                           | `dlp-agent/src/interceptor.rs`                        | Must     |
-| P2-T07 | Implement DLP Agent: gRPC client to Policy Engine                                    | `dlp-agent/src/engine_client.rs`                      | Must     |
-| P2-T08 | Implement DLP Agent: local policy decision cache                                     | `dlp-agent/src/cache.rs`                              | Must     |
-| P2-T09 | Implement DLP Agent: offline mode with cached decisions (fail-closed for T3/T4)      | `dlp-agent/src/`                                      | Must     |
-| P2-T10 | Implement DLP Agent: USB mass storage and SMB upload detection                       | `dlp-agent/src/interceptor.rs`                        | Must     |
-| P2-T11 | Implement DLP Agent: JSON audit event emission                                       | `dlp-agent/src/audit_emitter.rs`                      | Must     |
-| P2-T12 | Implement Tauri UI: IPC client connecting to all 3 pipes                             | `dlp-agent/src-tauri/src/ui_main.rs`                  | Must     |
-| P2-T13 | Implement Tauri UI: BLOCK_NOTIFY toast + dialog                                      | `dlp-agent/src-tauri/src/dialogs/`                    | Must     |
-| P2-T14 | Implement Tauri UI: Override request dialog with justification                       | `dlp-agent/src-tauri/src/dialogs/override_request.rs` | Must     |
-| P2-T15 | Implement Tauri UI: Clipboard read/write handler                                     | `dlp-agent/src-tauri/src/clipboard.rs`                | Must     |
-| P2-T16 | Policy Engine: REST API for policy CRUD                                              | `policy-engine/`                                      | Must     |
-| P2-T17 | Write integration tests: Agent ↔ Policy Engine end-to-end                            | `dlp-agent/tests/`                                    | Must     |
-| P2-T18 | Write integration tests: all ABAC policies from ABAC_POLICIES.md                     | `policy-engine/tests/`                                | Must     |
+| ID     | Task | Deliverable | Priority |
+| ------ | ---- | ----------- | -------- |
+| P2-T01 | Implement IPC module: 3 named pipe servers in `dlp-agent/src/ipc/` | `dlp-agent/src/ipc/` | Must |
+| P2-T02 | Implement UI spawner: `WTSGetActiveConsoleSessionId` + `CreateProcessAsUser` | `dlp-agent/src/ui_spawner.rs` | Must |
+| P2-T03 | Implement process protection: DACL hardening on Agent and UI processes | `dlp-agent/src/protection.rs` | Must |
+| P2-T04 | Implement mutual health monitoring: Agent pings UI (Pipe 2), UI pings Agent (Pipe 3) | `dlp-agent/src/`, `src-tauri/` | Must |
+| P2-T05 | Implement dlp-endpoint-ui: IPC client connecting to all 3 pipes | `dlp-agent/src-tauri/src/ui_main.rs` | Must |
+| P2-T06 | Implement dlp-endpoint-ui: BLOCK_NOTIFY toast + dialog | `dlp-agent/src-tauri/src/dialogs/block_notify.rs` | Must |
+| P2-T07 | Implement dlp-endpoint-ui: Override request dialog with justification | `dlp-agent/src-tauri/src/dialogs/override_request.rs` | Must |
+| P2-T08 | Implement dlp-endpoint-ui: sc stop password dialog + AD credential verification | `dlp-agent/src-tauri/src/dialogs/password_dialog.rs` | Must |
+| P2-T09 | Implement dlp-endpoint-ui: system tray widget with agent status | `dlp-agent/src-tauri/src/tray.rs` | Should |
+| P2-T10 | Implement dlp-endpoint-ui: double-click tray → open dlp-admin-portal | `dlp-agent/src-tauri/src/tray.rs` | Should |
+| P2-T11 | Implement dlp-endpoint-ui: service stop shutdown sequence | `dlp-agent/src-tauri/`, `dlp-agent/src/service.rs` | Must |
+| P2-T12 | Policy Engine: REST API for policy CRUD | `policy-engine/` | Must |
+| P2-T13 | Write integration tests: Agent ↔ Policy Engine end-to-end | `dlp-agent/tests/` | Must |
+| P2-T14 | Write integration tests: all ABAC policies from ABAC_POLICIES.md | `policy-engine/tests/` | Must |
 
 ### Phase 3 — UI & Integration (Weeks 13–18)
 
-**Goal:** Complete DLP UI, Administrative UI, and SIEM integration.
+**Goal:** dlp-admin-portal (Phase 1 portion completed), dlp-server preparation.
 
-| ID     | Task                                                                           | Deliverable                                          | Priority |
-| ------ | ------------------------------------------------------------------------------ | ---------------------------------------------------- | -------- |
-| P3-T01 | Implement Tauri UI: sc stop password dialog + AD credential verification       | `dlp-agent/src-tauri/src/dialogs/password_dialog.rs` | Must     |
-| P3-T02 | Implement Tauri UI: service stop shutdown sequence (Agent → UI → clean exit)   | `dlp-agent/src-tauri/`, `dlp-agent/src/`             | Must     |
-| P3-T03 | Implement Tauri UI: system tray widget with status indicator                   | `dlp-agent/src-tauri/src/tray.rs`                    | Must     |
-| P3-T04 | Implement Tauri UI: double-click tray → open Admin portal                      | `dlp-agent/src-tauri/src/tray.rs`                    | Must     |
-| P3-T05 | Implement Tauri UI: Admin portal (policy management + audit viewer)            | `dlp-agent/src-tauri/src/`                           | Must     |
-| P3-T06 | Implement SIEM integration: Splunk HEC emitter                                 | `common-types/` or `dlp-agent/`                      | Must     |
-| P3-T07 | Implement SIEM integration: ELK HTTP Ingest emitter                            | `common-types/` or `dlp-agent/`                      | Must     |
-| P3-T08 | Implement audit log buffering: local encrypted buffer when SIEM is unreachable | `dlp-agent/src/audit_emitter.rs`                     | Should   |
-| P3-T09 | Implement dlp-ui: system health dashboard                                      | `dlp-ui/src/dashboard.rs`                            | Must     |
-| P3-T10 | Implement dlp-ui: authentication (dlp-admin MFA TOTP)                          | `dlp-ui/`                                            | Must     |
-| P3-T11 | Implement alert routing: email/webhook for DENY_WITH_ALERT                     | `policy-engine/`                                     | Should   |
-| P3-T12 | Write end-to-end tests: full data flow (UI → Agent → Engine → SIEM)            | `integration-tests/`                                 | Must     |
+| ID     | Task | Deliverable | Priority |
+| ------ | ---- | ----------- | -------- |
+| P3-T01 | Implement dlp-admin-portal: exception approval workflow | `dlp-admin-portal/src/exceptions.rs` | Should |
+| P3-T02 | Implement dlp-admin-portal: TOTP enrollment + login (basic auth only, JWT issuance deferred to Phase 4) | `dlp-admin-portal/src/` | Must |
+| P3-T03 | Implement ETW bypass detection: `detection/etw_bypass.rs` — log EVASION_SUSPECTED when ETW fires unseen operation | `dlp-agent/src/detection/etw_bypass.rs` | Must |
+| P3-T04 | Write end-to-end tests: clipboard detection → policy decision → local audit log | `dlp-agent/tests/` | Must |
+| P3-T05 | Write end-to-end tests: file interception → policy decision → local audit log | `dlp-agent/tests/` | Must |
 
 ### Phase 4 — Production Hardening (Weeks 19–24)
 
-**Goal:** Security hardening, performance validation, deployment readiness.
+**Goal:** Security hardening (admin portal MFA, mTLS, DPAPI), performance validation, MSI deployment, OPERATIONAL.md.
 
 | ID     | Task                                                               | Deliverable                | Priority |
 | ------ | ------------------------------------------------------------------ | -------------------------- | -------- |
@@ -793,7 +806,7 @@ S8. dlp-server marks agent as uninstalled in registry
 
 ### Phase 5 — dlp-server (Weeks 25–30)
 
-**Goal:** Introduce dlp-server as the central management hub; update all other components to use it. After Phase 5, agents send audit to dlp-server (not direct to SIEM); dlp-admin-portal calls dlp-server REST API (not direct to policy-engine).
+**Goal:** Introduce dlp-server as the central management hub; replace local JSON audit in dlp-agent with dlp-server ingestion; dlp-admin-portal calls dlp-server REST API; replace policy-engine local policy store with dlp-server sync.
 
 | ID     | Task                                                                       | Deliverable                          | Priority |
 | ------ | -------------------------------------------------------------------------- | ------------------------------------ | -------- |
