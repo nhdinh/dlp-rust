@@ -95,7 +95,7 @@ Design, document, and evolve a **production-ready DLP system** that:
 - Identity Layer (Active Directory)
 - Access Layer (NTFS ACLs)
 - Policy Layer (ABAC Engine)
-- Enforcement Layer (DLP Agents)
+- Enforcement Layer (dlp-agents)
 
 ---
 
@@ -145,7 +145,8 @@ All code you write MUST be fully optimized.
   - Use layered extractors and shared state structs instead of global mutable data.
   - Add `tower` middleware (timeouts, tracing, compression) for observability and resilience.
   - Offload CPU-bound work to `tokio::task::spawn_blocking` or background services to avoid blocking the reactor.
-- When reporting errors to the console, use `tracing::error!` or `log::error!` instead of `println!`.
+- When reporting errors to the console, use `tracing::error!` instead of `println!`.
+- Use `tracing` + `tracing-subscriber` for structured logging with spans. Use `log` crate as a compat shim (e.g., `log::info!`) when integrating with libraries that expect the `log` facade. Initialize the subscriber via `tracing-subscriber::fmt::init()` or `tracing-subscriber::util::SubscriberInitExt` for more control.
 - For data processing:
   - **ALWAYS** use `polars` instead of other data frame libraries for tabular data manipulation.
   - If a `polars` dataframe will be printed, **NEVER** simultaneously print the number of entries in the dataframe nor the schema as it is redundant.
@@ -211,9 +212,9 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 
 - **NEVER** use `.unwrap()` in production code paths
 - **MUST** use `Result<T, E>` for fallible operations
-- **MUST** use `thiserror` for defining error types and `anyhow` for application-level errors
+- **MUST** use `thiserror` for defining all error types
 - **MUST** propagate errors with `?` operator where appropriate
-- Provide meaningful error messages with context using `.context()` from `anyhow`
+- Provide meaningful error messages with `.context()` from `anyhow` when wrapping errors at application boundaries (e.g., at the `main.rs` entry point or top-level async task boundary)
 
 ### 9.6 Function Design
 
@@ -305,6 +306,7 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 - [ ] No compiler warnings (`cargo build`)
 - [ ] Clippy passes (`cargo clippy -- -D warnings`)
 - [ ] Code is formatted (`cargo fmt --check`)
+- [ ] All docs are up-to-date and accurate
 - [ ] All public items have doc comments
 - [ ] No commented-out code or debug statements
 - [ ] No hardcoded credentials

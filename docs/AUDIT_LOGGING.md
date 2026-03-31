@@ -1,8 +1,12 @@
 # Audit & Logging
 
+**Document Version:** 1.0
+**Date:** 2026-03-31
+**Status:** Draft
+
 ## Overview
 
-All DLP agents emit structured JSON audit events for every intercepted file operation. Events flow through **dlp-server** — which provides central ingestion, append-only storage, SIEM relay, and an admin query API. No agent sends directly to SIEM.
+All dlp-agents emit structured JSON audit events for every intercepted file operation. Events flow through **dlp-server** — which provides central ingestion, append-only storage, SIEM relay, and an admin query API. No agent sends directly to SIEM.
 
 ## Audit Event Flow
 

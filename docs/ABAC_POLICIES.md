@@ -1,5 +1,9 @@
 # ABAC Policy Set
 
+**Document Version:** 1.0
+**Date:** 2026-03-31
+**Status:** Draft
+
 ## ⚠️ Note on Action Names
 
 The `THEN` clause in these sample rules uses **descriptive policy-level action names** (e.g., `deny_all_except_owner`, `allow_with_logging`, `deny_upload`). These are **human-readable labels** for policy authoring convenience.

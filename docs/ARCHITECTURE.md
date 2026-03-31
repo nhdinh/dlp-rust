@@ -1,5 +1,19 @@
 # System Architecture (Audit-Ready)
 
+**Document Version:** 1.0
+**Date:** 2026-03-31
+**Status:** Draft
+
+> **Terminology Note:** Several names in this project are easily confused. Read this before making changes:
+>
+> - **`dlp-admin`** — the AD user account (superuser). NOT a crate name.
+> - **`dlp-admin-portal/`** — the Tauri administrative UI crate (deferred to a later phase).
+> - **`dlp-agent/`** — the Windows Service crate. Runs as SYSTEM account.
+> - **`dlp-user-ui/`** — the Tauri endpoint UI subprocess, embedded inside `dlp-agent/src-tauri/`. One instance per active user session; dlp-agent spawns a new instance for each session that connects. NOT a separate crate.
+> - **`dlp-server/`** — the central HTTP server crate (deferred to Phase 5).
+>
+> Do **not** use `dlp-ui` alone — it is ambiguous.
+
 ## Overview
 
 Enterprise DLP system integrating:
@@ -7,25 +21,26 @@ Enterprise DLP system integrating:
 - Active Directory (Identity)
 - NTFS (Access Control)
 - ABAC Engine (Policy Decision)
-- Rust-based DLP Agents (Enforcement)
+- Rust-based dlp-agents (Enforcement)
 
 ## High-Level Architecture
 
-[User] → [AD] → [NTFS Check] → [ABAC Engine] → [DLP Agent Enforcement]
+[User] → [AD] → [NTFS Check] → [ABAC Engine] → [dlp-agent Enforcement]
 
 ## Components
 
 - AD Domain Controller
 - File Servers (NTFS)
 - Policy Engine (Rust, gRPC)
-- **DLP Agent** (`dlp-agent/` crate) — Windows Service, SYSTEM account, file interception, Policy Engine gRPC, audit emission, IPC pipe servers, UI spawner
-- **dlp-endpoint-ui** (`dlp-endpoint-ui/` crate) — Tauri subprocess spawned by the Agent on the interactive user desktop; handles toast notifications, override dialogs, clipboard, system tray, and sc stop password dialog
-- **dlp-admin-portal** (`dlp-admin-portal/` crate) — Tauri-based administrative UI for `dlp-admin`; policy CRUD, dashboard, audit viewer — **deferred to a later phase** (audit logs read directly from JSON during Phase 1)
+- **dlp-agent** (`dlp-agent/` crate) — Windows Service, SYSTEM account, file interception, Policy Engine gRPC, audit emission, IPC pipe servers, UI spawner
+- **dlp-user-ui** (embedded in `dlp-agent/src-tauri/`) — Tauri subprocess spawned by the Agent in each active user session; one UI instance per session; handles toast notifications, override dialogs, clipboard, system tray, and sc stop password dialog for that session's user
+- **dlp-admin-portal** (`dlp-admin-portal/` crate) — Tauri-based administrative UI for `dlp-admin`; policy CRUD, dashboard, audit viewer — **deferred to a later phase** (audit logs read directly from local JSON during Phase 1)
+- **dlp-server** (`dlp-server/` crate) — Central HTTP server: audit store, SIEM relay, admin auth, policy sync — **deferred to Phase 5**
 - Logging + SIEM
-
-> **⚠️ Terminology:** Do not use `dlp-ui` or `DLP UI` alone. Always use `dlp-admin-portal` (admin) or `dlp-endpoint-ui` (endpoint). `dlp-admin` is the AD user account.
 
 ## Trust Boundaries
 
 - Endpoint vs Server
 - Internal vs External Network
+
+> For full component detail, data flows, IPC protocol, and acceptance criteria, see `docs/SRS.md`.
