@@ -208,8 +208,8 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use dlp_common::abac::{
-        Action, AccessContext, Decision, DeviceTrust, Environment, NetworkLocation,
-        Resource, Subject,
+        AccessContext, Action, Decision, DeviceTrust, Environment, NetworkLocation, Resource,
+        Subject,
     };
     use dlp_common::Classification;
 

@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use dlp_common::abac::Policy;
+use dlp_common::abac::{EvaluateRequest, EvaluateResponse, Policy};
 use tracing::{info, warn};
 
 use crate::engine::AbacEngine;
@@ -28,7 +28,7 @@ pub struct PolicyStore {
     /// Path to the policy JSON file on disk.
     path: PathBuf,
     /// The ABAC engine to keep synchronized.
-    engine: Arc<AbacEngine>,
+    pub(crate) engine: Arc<AbacEngine>,
     /// Guards access to `next_version`.
     version_lock: parking_lot::Mutex<u64>,
     /// The next version number to assign (monotonically increasing).
@@ -197,6 +197,18 @@ impl PolicyStore {
     /// Returns a snapshot of all currently loaded policies.
     pub fn list_policies(&self) -> Vec<Policy> {
         self.engine.get_policies()
+    }
+
+    /// Evaluates an ABAC access request against the loaded policy set.
+    ///
+    /// This is the async wrapper around the engine's synchronous `evaluate()`.
+    /// The engine call runs on a blocking thread to avoid stalling the async runtime.
+    pub async fn evaluate(&self, request: &EvaluateRequest) -> EvaluateResponse {
+        let engine = self.engine.clone();
+        let request = request.clone();
+        tokio::task::spawn_blocking(move || engine.evaluate(&request))
+            .await
+            .unwrap_or_else(|_| EvaluateResponse::default_deny())
     }
 }
 

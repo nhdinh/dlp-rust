@@ -50,6 +50,47 @@ pub enum PolicyEngineError {
     Internal(String),
 }
 
+/// Errors specific to the AD LDAP client.
+#[derive(Debug, Error)]
+pub enum AdClientError {
+    /// The AD server could not be reached.
+    #[error("AD connection failed to {0}: {1}")]
+    ConnectionFailed(String, String),
+
+    /// DNS resolution for the AD server hostname failed.
+    #[error("DNS resolution failed for {0}: {1}")]
+    DnsResolutionError(String, String),
+
+    /// The LDAP bind (authentication) failed.
+    #[error("LDAP bind failed: {0}")]
+    BindFailed(String),
+
+    /// A LDAP search or attribute query failed.
+    #[error("AD query failed: {0}")]
+    AdQueryError(String),
+
+    /// The LDAP connection could not be initialised.
+    #[error("LDAP init error: {0}")]
+    LdapInitError(String),
+
+    /// The async task for a blocking LDAP operation panicked.
+    #[error("task join error: {0}")]
+    TaskJoinError(String),
+}
+
+impl From<AdClientError> for PolicyEngineError {
+    fn from(e: AdClientError) -> Self {
+        match e {
+            AdClientError::ConnectionFailed(_, _)
+            | AdClientError::BindFailed(_)
+            | AdClientError::AdQueryError(_)
+            | AdClientError::LdapInitError(_)
+            | AdClientError::DnsResolutionError(_, _)
+            | AdClientError::TaskJoinError(_) => Self::AdError(e.to_string()),
+        }
+    }
+}
+
 impl PolicyEngineError {
     /// Returns `true` if this error represents a client-facing HTTP 4xx condition.
     #[must_use]
@@ -93,6 +134,12 @@ impl From<PolicyEngineError> for AppError {
 }
 
 impl AppError {
+    /// Constructs an `AppError` from a `PolicyEngineError`.
+    #[allow(non_snake_case)]
+    pub fn PolicyEngine(err: PolicyEngineError) -> Self {
+        From::from(err)
+    }
+
     /// Constructs an `AppError` with an explicit status code.
     pub fn with_status(err: PolicyEngineError, status: StatusCode) -> Self {
         Self { inner: err, status }
