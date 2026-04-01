@@ -23,3 +23,9 @@ pub mod prelude {
 
 #[cfg(windows)]
 pub mod service;
+
+#[cfg(windows)]
+pub mod ui_spawner;
+
+#[cfg(windows)]
+pub mod ipc;
