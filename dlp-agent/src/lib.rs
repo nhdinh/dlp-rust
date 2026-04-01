@@ -64,3 +64,6 @@ pub mod detection;
 pub mod offline;
 
 pub mod audit_emitter;
+
+#[cfg(windows)]
+pub mod clipboard;

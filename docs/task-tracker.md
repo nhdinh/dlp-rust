@@ -162,7 +162,7 @@
 
 | ID   | Status | Story | Task                                                                                                                                                                         | Deliverable                |
 | ---- | ------ | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| T-20 | [ ]    | US-07 | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE`; `detection/clipboard/classifier.rs`: classify text content → T1–T4 | `dlp-agent/src/clipboard/` |
+| T-20 | [x]    | US-07 | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE`; `detection/clipboard/classifier.rs`: classify text content → T1–T4 | `dlp-agent/src/clipboard/` |
 
 ---
 
@@ -188,9 +188,9 @@
 | Metric      | Count |
 | ----------- | ----- |
 | Total tasks | 46    |
-| Done        | 41    |
+| Done        | 42    |
 | In progress | 0     |
-| Todo        | 5     |
+| Todo        | 4     |
 
 ### Per-Sprint Summary
 
@@ -211,6 +211,6 @@
 | Sprint 13 | T-11, T-12, T-16, T-17       | 4/4  |
 | Sprint 14 | T-13, T-14, T-15             | 3/3  |
 | Sprint 15 | T-18, T-19, T-25, T-26, T-27 | 5/5  |
-| Sprint 16 | T-20                         | 0/1  |
+| Sprint 16 | T-20                         | 1/1  |
 | Sprint 17 | T-21, T-28                   | 0/2  |
 | Sprint 18 | T-24                         | 1/1  |
