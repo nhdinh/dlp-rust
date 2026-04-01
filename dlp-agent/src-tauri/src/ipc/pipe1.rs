@@ -128,9 +128,29 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
                 resource_path = %resource_path,
                 "Pipe 1: BlockNotify received"
             );
-            // Show the block notification dialog.
-            crate::dialogs::show_block_dialog(&classification, &resource_path, &policy_id, &reason);
-            None
+            // Show the block notification dialog and relay the user's choice back.
+            let request_id = format!("block-{}", session_id);
+            let dialog_result = crate::dialogs::show_block_dialog_with_result(
+                &classification,
+                &resource_path,
+                &policy_id,
+                &reason,
+            );
+            let msg = match dialog_result {
+                crate::dialogs::BlockDialogResult::Confirmed => {
+                    Pipe1UiMsg::UserConfirmed { request_id }
+                }
+                crate::dialogs::BlockDialogResult::Close => {
+                    Pipe1UiMsg::UserCancelled { request_id }
+                }
+            };
+            match serde_json::to_vec(&msg) {
+                Ok(json) => Some(json),
+                Err(e) => {
+                    error!(session_id, "serialise BlockNotify response failed: {e}");
+                    None
+                }
+            }
         }
         Pipe1AgentMsg::OverrideRequest {
             request_id,

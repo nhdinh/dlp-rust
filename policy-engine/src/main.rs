@@ -55,6 +55,10 @@ async fn main() -> anyhow::Result<()> {
         PolicyStore::open(policy_path, engine).context("failed to open policy store")?,
     );
 
+    // Start the filesystem watcher so policy file changes are hot-reloaded
+    // without restarting the server (F-SVC-04).
+    store.start_hot_reload();
+
     let app = http_server::build_full_router(store);
     let listener = tokio::net::TcpListener::bind(addr)
         .await

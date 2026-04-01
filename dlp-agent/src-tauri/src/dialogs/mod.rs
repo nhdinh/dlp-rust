@@ -33,10 +33,11 @@ pub fn show_toast(title: &str, body: &str) {
     }
 }
 
-/// Shows the block notification modal dialog (T-43).
+/// Shows the block notification modal dialog and returns the user's choice.
 ///
-/// Displays policy info, classification level, and resource path.
-pub fn show_block_dialog(classification: &str, resource_path: &str, policy_id: &str, reason: &str) {
+/// - `Confirmed` — user pressed OK (IDOK = 1)
+/// - `Close` — user dismissed the dialog without confirming
+pub fn show_block_dialog_with_result(classification: &str, resource_path: &str, policy_id: &str, reason: &str) -> BlockDialogResult {
     info!(classification, resource_path, "showing block dialog");
 
     let body = format!(
@@ -51,8 +52,9 @@ pub fn show_block_dialog(classification: &str, resource_path: &str, policy_id: &
     let body_wide: Vec<u16> = body.encode_utf16().chain([0]).collect();
     let title_wide: Vec<u16> = "DLP: Access Blocked".encode_utf16().chain([0]).collect();
 
-    // SAFETY: both pointers are valid for the duration of the call.
-    let _: MESSAGEBOX_RESULT = unsafe {
+    // SAFETY: both pointers are valid for the duration of the call and reference
+    // owned Vec data that lives until MessageBoxW returns.
+    let result: MESSAGEBOX_RESULT = unsafe {
         MessageBoxW(
             None,
             PCWSTR::from_raw(body_wide.as_ptr()),
@@ -60,12 +62,21 @@ pub fn show_block_dialog(classification: &str, resource_path: &str, policy_id: &
             MB_ICONWARNING,
         )
     };
+
+    // IDOK = 1; treat everything else (Cancel, close button, timeout) as Close.
+    if result.0 as u32 == 1 {
+        BlockDialogResult::Confirmed
+    } else {
+        BlockDialogResult::Close
+    }
 }
 
 /// Result of the block dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum BlockDialogResult {
+    /// User confirmed / accepted the block notification.
+    Confirmed,
+    /// User dismissed / closed the dialog without confirming.
     Close,
 }
 

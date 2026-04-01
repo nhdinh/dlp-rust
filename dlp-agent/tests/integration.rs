@@ -356,7 +356,7 @@ async fn test_e2e_audit_event_round_trip() {
 // Helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn abab_action_to_dlp(action: Action) -> Action {
+fn abac_action_to_dlp(action: Action) -> Action {
     action
 }
 

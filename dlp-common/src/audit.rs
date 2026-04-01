@@ -11,7 +11,7 @@
 //!   -> HTTPS POST /audit/events ---> dlp-server
 //!                                         |- Append-only audit store
 //!                                         +- SIEM relay (batched)
-//!                                               +- Splunk HEC / ELK HTTP Ingest
+//!                                               |- Splunk HEC / ELK HTTP Ingest
 //! ```
 
 use chrono::{DateTime, Utc};
@@ -144,6 +144,18 @@ pub struct AuditEvent {
     /// Optional session/connection ID for correlation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
+    /// The full path to the process that initiated the file operation.
+    /// Populated via `GetModuleFileNameExW` on the process handle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application_path: Option<String>,
+    /// SHA-256 hex digest of the process executable.
+    /// Populated via `CryptHashData` / `CryptGetHashParam` over the process image.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application_hash: Option<String>,
+    /// The owner SID of the file resource.
+    /// Populated via `GetNamedSecurityInfoW` + `ConvertSidToStringSidW`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_owner: Option<String>,
 }
 
 impl AuditEvent {
@@ -191,6 +203,9 @@ impl AuditEvent {
             override_granted: false,
             access_context: AuditAccessContext::Local,
             correlation_id: Some(Uuid::new_v4().to_string()),
+            application_path: None,
+            application_hash: None,
+            resource_owner: None,
         }
     }
 
@@ -227,6 +242,23 @@ impl AuditEvent {
     /// Marks the event as an override-granted event.
     pub fn with_override_granted(mut self) -> Self {
         self.override_granted = true;
+        self
+    }
+
+    /// Sets the application metadata (process path and hash).
+    pub fn with_application(
+        mut self,
+        application_path: Option<String>,
+        application_hash: Option<String>,
+    ) -> Self {
+        self.application_path = application_path;
+        self.application_hash = application_hash;
+        self
+    }
+
+    /// Sets the resource owner SID.
+    pub fn with_resource_owner(mut self, resource_owner: Option<String>) -> Self {
+        self.resource_owner = resource_owner;
         self
     }
 }
@@ -328,5 +360,36 @@ mod tests {
         // Optional fields should not appear when None
         assert!(!json.contains("\"policy_id\":null"));
         assert!(!json.contains("\"justification\":null"));
+        // New optional fields should also be skipped
+        assert!(!json.contains("\"application_path\":null"));
+        assert!(!json.contains("\"application_hash\":null"));
+        assert!(!json.contains("\"resource_owner\":null"));
+    }
+
+    #[test]
+    fn test_with_application() {
+        let event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\File.txt".to_string(),
+            Classification::T2,
+            Action::COPY,
+            Decision::DENY,
+            "AGENT-WS02-001".to_string(),
+            1,
+        )
+        .with_application(
+            Some(r"C:\Program Files\Notepadpp\notepad++.exe".to_string()),
+            Some("a1b2c3d4e5f6".to_string()),
+        )
+        .with_resource_owner(Some("S-1-5-21-456".to_string()));
+
+        assert_eq!(
+            event.application_path,
+            Some(r"C:\Program Files\Notepadpp\notepad++.exe".to_string())
+        );
+        assert_eq!(event.application_hash, Some("a1b2c3d4e5f6".to_string()));
+        assert_eq!(event.resource_owner, Some("S-1-5-21-456".to_string()));
     }
 }
