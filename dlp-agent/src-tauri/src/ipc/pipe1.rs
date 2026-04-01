@@ -117,10 +117,10 @@ fn client_loop(pipe: HANDLE, session_id: u32) -> Result<()> {
 fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
     match msg {
         Pipe1AgentMsg::BlockNotify {
-            reason: _,
+            reason,
             classification,
             resource_path,
-            policy_id: _,
+            policy_id,
         } => {
             info!(
                 session_id,
@@ -128,7 +128,8 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
                 resource_path = %resource_path,
                 "Pipe 1: BlockNotify received"
             );
-            // TODO (Sprint 11): show block notification UI.
+            // Show the block notification dialog.
+            crate::dialogs::show_block_dialog(&classification, &resource_path, &policy_id, &reason);
             None
         }
         Pipe1AgentMsg::OverrideRequest {

@@ -2,6 +2,7 @@
 //!
 //! Exposes `run()` which builds and runs the Tauri application.
 
+mod dialogs;
 mod ipc;
 pub mod ui_main;
 

@@ -11,6 +11,7 @@ use tauri::{AppHandle, Manager, State};
 use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::fmt::format::FmtSpan;
 
+use crate::dialogs;
 use crate::ipc;
 
 /// Application shared state — holds the session ID.
@@ -50,6 +51,9 @@ fn is_pipe1_connected(state: State<'_, UiState>) -> bool {
 
 /// Initialises logging and spawns all named-pipe tasks.
 fn spawn_ipc_tasks(app: &AppHandle, session_id: u32) {
+    // Store the app handle so dialogs can access it.
+    dialogs::init(app.clone());
+
     let pipe1_connected = {
         let state = app.state::<UiState>();
         state.pipe1_connected.clone()
@@ -68,6 +72,18 @@ fn spawn_ipc_tasks(app: &AppHandle, session_id: u32) {
             }
         }
         *connected.write() = false;
+    });
+
+    // Pipe 2 — listen for agent-to-UI events (toast, status, health, close).
+    tokio::spawn(async move {
+        match ipc::pipe2::run_listener().await {
+            Ok(()) => {
+                debug!("Pipe 2: connection closed normally");
+            }
+            Err(e) => {
+                error!(error = %e, "Pipe 2: connection error");
+            }
+        }
     });
 
     // Pipe 3 — send UiReady to agent as first message (fire-and-forget).
@@ -121,6 +137,7 @@ pub fn run() {
     let ui_state = UiState::new(session_id);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .manage(ui_state)
         .invoke_handler(tauri::generate_handler![get_session_id, is_pipe1_connected,])
         .setup(move |app| {

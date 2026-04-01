@@ -2,5 +2,7 @@
   "identifier": "default",
   "description": "Default capabilities for DLP Agent UI",
   "windows": [],
-  "permissions": []
+  "permissions": [
+    "notification:default"
+  ]
 }
