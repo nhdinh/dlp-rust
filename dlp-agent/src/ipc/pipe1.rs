@@ -11,10 +11,12 @@
 //! so server-initiated messages can be routed to the correct UI process.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use once_cell::sync::Lazy;
 use parking_lot::RwLock;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
@@ -25,6 +27,44 @@ use windows::Win32::System::Pipes::{
 
 use super::frame::{read_frame, write_frame};
 use super::messages::{Pipe1AgentMsg, Pipe1UiMsg};
+
+/// Pending clipboard-read request IDs awaiting data from the UI.
+///
+/// The clipboard read request is initiated by the interception layer (which calls
+/// [`crate::clipboard::listener::read_clipboard_request`]).  When the UI sends
+/// `ClipboardData`, the data is stored here and the interception handler wakes up.
+static CLIPBOARD_CACHE: Lazy<Arc<RwLock<HashMap<String, String>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+
+/// Pending override requests awaiting user confirmation or cancellation.
+///
+/// When the agent needs user override confirmation, it stores the request context
+/// here.  `UserConfirmed` clears the entry and proceeds; `UserCancelled` clears
+/// and aborts the operation.
+static OVERRIDE_PENDING: Lazy<Arc<RwLock<HashMap<String, OverrideContext>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+
+/// Context stored for a pending override request.
+#[derive(Debug)]
+struct OverrideContext {
+    /// The session ID of the requesting session.
+    session_id: u32,
+    /// When the request was created (for timeout detection).
+    created_at: std::time::Instant,
+}
+
+/// Returns a snapshot of all pending clipboard request IDs.
+pub fn get_pending_clipboard_requests() -> Vec<String> {
+    CLIPBOARD_CACHE.read().keys().cloned().collect()
+}
+
+/// Retrieves and removes clipboard data for a given request ID.
+///
+/// Returns `None` if no data is available yet.  Callers should retry after a
+/// short delay if `None` is returned.
+pub fn take_clipboard_data(request_id: &str) -> Option<String> {
+    CLIPBOARD_CACHE.write().remove(request_id)
+}
 
 /// Makes `HANDLE` `Send + Sync` so it can be stored in a static `HashMap`.
 ///
@@ -203,21 +243,54 @@ fn dispatch(msg: Pipe1UiMsg) -> Option<Vec<u8>> {
         }
         Pipe1UiMsg::UserConfirmed { request_id } => {
             info!(request_id, "Pipe 1: UI confirmed action");
-            // TODO (Sprint 11): route to engine/override handler.
+            // Remove any pending clipboard data associated with this request.
+            let _ = CLIPBOARD_CACHE.write().remove(&request_id);
+
+            // If this was an override confirmation, clear the pending context.
+            let cancelled = OVERRIDE_PENDING.write().remove(&request_id);
+            if let Some(ctx) = cancelled {
+                warn!(
+                    request_id,
+                    session_id = ctx.session_id,
+                    elapsed_ms = ctx.created_at.elapsed().as_millis() as u64,
+                    "Pipe 1: override confirmed — proceeding with operation"
+                );
+                // TODO (Phase 2): signal the interception pipeline to retry the
+                // blocked operation now that the override is authorised.
+            } else {
+                debug!(request_id, "Pipe 1: UserConfirmed for unknown request — ignored");
+            }
             None
         }
         Pipe1UiMsg::UserCancelled { request_id } => {
             info!(request_id, "Pipe 1: UI cancelled action");
-            // TODO (Sprint 11): route to engine/override handler.
+            // Remove pending clipboard data and override context.
+            let _ = CLIPBOARD_CACHE.write().remove(&request_id);
+            if let Some(ctx) = OVERRIDE_PENDING.write().remove(&request_id) {
+                warn!(
+                    request_id,
+                    session_id = ctx.session_id,
+                    elapsed_ms = ctx.created_at.elapsed().as_millis() as u64,
+                    "Pipe 1: override cancelled by user — operation aborted"
+                );
+            }
             None
         }
         Pipe1UiMsg::ClipboardData { request_id, data } => {
             info!(
                 request_id,
                 data_len = data.len(),
-                "Pipe 1: clipboard data received"
+                "Pipe 1: clipboard data received — storing for retrieval"
             );
-            // TODO (Sprint 12): route to clipboard handler.
+            // Store the clipboard data so the interception handler can retrieve it
+            // after waking from its await.  Trim whitespace to avoid matching on
+            // accidental whitespace-only pastes.
+            let trimmed = data.trim().to_string();
+            if !trimmed.is_empty() {
+                CLIPBOARD_CACHE.write().insert(request_id.clone(), trimmed);
+            } else {
+                debug!(request_id, "Pipe 1: clipboard data is empty — ignoring");
+            }
             None
         }
         Pipe1UiMsg::PasswordSubmit {

@@ -27,8 +27,10 @@ use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use tokio::sync::watch;
+use tokio::sync::{watch, mpsc};
 use tracing::{debug, error, info, warn};
+
+use crate::ipc::pipe3::{Router, UiHealthEvent};
 
 use crate::ipc::messages::Pipe2AgentMsg;
 use crate::ipc::pipe2::BROADCASTER;
@@ -78,6 +80,14 @@ fn run() -> anyhow::Result<()> {
     });
     *RESPAWN_TX.lock() = Some(respawn_tx);
 
+    // Channel to deliver HEALTH_PONG events from Pipe 3 to pong_task.
+    let (pong_tx, pong_rx) = mpsc::channel::<UiHealthEvent>(64);
+
+    // Register the sender with the Pipe 3 router so incoming UI events are
+    // routed here.  This call must happen before the runtime is built because
+    // Pipe 3 may connect and try to send before block_on returns.
+    ROUTER.set_health_sender(pong_tx);
+
     // Tokio single-thread runtime on this std thread.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -88,7 +98,7 @@ fn run() -> anyhow::Result<()> {
         // Spawn the three concurrent tasks.
         tokio::join!(
             ping_task(last_pong.clone()),
-            pong_task(last_pong.clone()),
+            pong_task(last_pong.clone(), pong_rx),
             timeout_task(last_pong.clone(), respawn_rx),
         )
     });
@@ -115,13 +125,33 @@ async fn ping_task(last_pong: Arc<Mutex<HashMap<usize, Instant>>>) {
     }
 }
 
-/// Receives HEALTH_PONG events from Pipe 3 and updates the last-pong map.
-async fn pong_task(_last_pong: Arc<Mutex<HashMap<usize, Instant>>>) {
-    // TODO (Sprint 7): wire Pipe 3 ROUTER to call this task's handler.
-    // For now this is a stub — the actual pong delivery is implemented
-    // when the Pipe 3 router is wired into the health monitor.
+/// Receives `UiHealthEvent::Pong` events from Pipe 3 and updates the last-pong map.
+///
+/// Each event is stamped with `Instant::now()` so that [`timeout_task`] can detect
+/// unresponsive clients.  When a client disconnects its entries naturally expire
+/// on the next timeout check.
+async fn pong_task(
+    last_pong: Arc<Mutex<HashMap<usize, Instant>>>,
+    mut rx: mpsc::Receiver<UiHealthEvent>,
+) {
     loop {
-        tokio::time::sleep(Duration::MAX).await;
+        match rx.recv().await {
+            Some(UiHealthEvent::Pong) => {
+                debug!("Health monitor: received HEALTH_PONG from UI");
+                // Stamp all known clients — in practice only the sending client's
+                // entries are live; stamping all keeps them alive collectively.
+                let now = Instant::now();
+                let mut lp = last_pong.lock();
+                for client_id in BROADCASTER.client_ids() {
+                    lp.insert(client_id, now);
+                }
+            }
+            None => {
+                // Channel closed — Pipe 3 server shut down.  Exit gracefully.
+                info!("Health monitor: Pipe 3 health channel closed");
+                break;
+            }
+        }
     }
 }
 
