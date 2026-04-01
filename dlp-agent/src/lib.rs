@@ -35,3 +35,6 @@ pub mod health_monitor;
 
 #[cfg(windows)]
 pub mod session_monitor;
+
+#[cfg(windows)]
+pub mod password_stop;

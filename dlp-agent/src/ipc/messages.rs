@@ -38,6 +38,9 @@ pub enum Pipe1AgentMsg {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
 pub enum Pipe1UiMsg {
+    /// The UI registered itself with its session ID (sent as the first message
+    /// after connecting to Pipe 1).
+    RegisterSession { session_id: u32 },
     /// The user confirmed the block (override granted).
     UserConfirmed { request_id: String },
     /// The user cancelled the override request.

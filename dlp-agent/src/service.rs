@@ -1,4 +1,4 @@
-//! Windows Service lifecycle management (T-10).
+//! Windows Service lifecycle management (T-10, T-38).
 //!
 //! This module implements the `windows-service` crate entry point and manages
 //! the DLP Agent's service states: Start, Stop, Pause, Resume.
@@ -17,8 +17,10 @@
 //!
 //! ## Password-Protected Stop (T-38)
 //!
-//! A `sc stop` command triggers a password dialog over Pipe 1 before the
-//! service actually terminates.
+//! A `sc stop` command triggers a password challenge over Pipe 1 before the
+//! service actually terminates.  The dlp-admin must enter their AD password;
+//! 3 failures or cancellation aborts the stop.  On success the service
+//! transitions to `StopPending` and exits cleanly.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -83,20 +85,9 @@ pub fn run_service() -> Result<()> {
         None,
     )?;
 
-    // Block on Ctrl+C or SCM stop.
+    // Enter the main run loop.
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        info!(service_name = SERVICE_NAME, "service running");
-        tokio::signal::ctrl_c().await.ok();
-        info!(service_name = SERVICE_NAME, "service stopping");
-        set_status(
-            &status_handle,
-            ServiceState::StopPending,
-            ServiceControlAccept::empty(),
-            None,
-        )?;
-        Ok::<_, anyhow::Error>(())
-    })?;
+    rt.block_on(run_loop(&status_handle))?;
 
     // Report STOPPED.
     set_status(
@@ -107,6 +98,51 @@ pub fn run_service() -> Result<()> {
     )?;
 
     info!(service_name = SERVICE_NAME, "service stopped");
+    Ok(())
+}
+
+/// The main service run loop.
+///
+/// Waits for either `ctrl_c` or a password-confirmed stop signal.
+/// When the SCM issues `sc stop`, [`password_stop::initiate_stop`] is called
+/// on the SCM callback thread, which starts the password challenge.  This loop
+/// polls the confirmation flag every 500 ms — on confirmation it proceeds to
+/// shutdown; on `PASSWORD_CANCEL` or max attempts, [`password_stop::revert_stop`]
+/// reverts the state to Running.
+async fn run_loop(
+    status_handle: &Arc<Mutex<windows_service::service_control_handler::ServiceStatusHandle>>,
+) -> Result<()> {
+    info!(service_name = SERVICE_NAME, "service running");
+
+    let poll_interval = Duration::from_millis(500);
+    let mut ticker = tokio::time::interval(poll_interval);
+
+    loop {
+        tokio::select! {
+            biased;
+
+            // Ctrl+C from console session.
+            _ = tokio::signal::ctrl_c() => {
+                info!(service_name = SERVICE_NAME, "service stopping (Ctrl+C)");
+                break;
+            }
+
+            // Poll every 500 ms for stop confirmation or revert.
+            _ = ticker.tick() => {
+                if crate::password_stop::is_stop_confirmed() {
+                    info!(service_name = SERVICE_NAME, "password verified — initiating shutdown");
+                    set_status(
+                        status_handle,
+                        ServiceState::StopPending,
+                        ServiceControlAccept::empty(),
+                        None,
+                    )?;
+                    break;
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -156,6 +192,10 @@ fn service_control_handler(control: ServiceControl) -> ServiceControlHandlerResu
         ServiceControl::Stop => {
             info!(service_name = SERVICE_NAME, "SCM: STOP");
             *SERVICE_STATE.lock() = ServiceState::StopPending;
+            // Initiate the password challenge — the actual stop proceeds only
+            // after successful verification (detected in the run loop via
+            // password_stop::is_stop_confirmed).
+            crate::password_stop::initiate_stop();
         }
         ServiceControl::Pause => {
             info!(service_name = SERVICE_NAME, "SCM: PAUSE");
@@ -171,6 +211,22 @@ fn service_control_handler(control: ServiceControl) -> ServiceControlHandlerResu
         _ => {}
     }
     ServiceControlHandlerResult::NoError
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Revert to Running (called from password_stop on cancel/failure)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Reverts the service state from StopPending back to Running.
+///
+/// Called by [`crate::password_stop`] when the dlp-admin cancels the stop
+/// dialog or fails the password challenge 3 times.
+pub fn revert_stop() {
+    *SERVICE_STATE.lock() = ServiceState::Running;
+    info!(
+        service_name = SERVICE_NAME,
+        "service stop reverted to Running"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
