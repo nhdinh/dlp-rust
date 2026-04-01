@@ -8,6 +8,15 @@
 //! [`ClipboardClassifier`](super::classifier::ClipboardClassifier), and emits
 //! the result to the interception pipeline.
 //!
+//! ## Thread model
+//!
+//! The hook listener runs on a dedicated std thread created by `start()`.
+//! A hidden message-only window is created on that thread so that the Windows
+//! message loop (`GetMessage` / `DispatchMessageW`) is present — this is
+//! required for `WH_GETMESSAGE` hooks to fire.  The hook is installed on that
+//! same thread via `SetWindowsHookExW`, so the hook procedure runs inside the
+//! thread's message loop and can safely call `OpenClipboard` / `GetClipboardData`.
+//!
 //! ## Thread safety
 //!
 //! `SetWindowsHookExW` hooks are per-thread.  The hook procedure runs on the
@@ -20,8 +29,9 @@
 //!
 //! - Only intercepts `CF_UNICODETEXT` clipboard data.  Binary/image clipboard
 //!   content is not classified in Phase 1.
-//! - The hook is installed per-session by the UI subprocess (`dlp-user-ui`),
-//!   not by the agent service directly.
+//! - When running as a Windows Service (SYSTEM), the hook must be spawned in the
+//!   interactive user session via `CreateProcessAsUserW` (see `ui_spawner.rs`).
+//!   A service-level hook will not see the interactive user's clipboard.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -31,13 +41,32 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+#[cfg(windows)]
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+#[cfg(windows)]
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GetMessageW, PostThreadMessageW, RegisterClassW, SetWindowsHookExW, TranslateMessage,
+    UnhookWindowsHookEx, HHOOK, LRESULT, MSG, WH_GETMESSAGE, WPARAM, WNDCLASSW, WS_EX_NOACTIVATE,
+    WM_QUIT,
+};
+#[allow(unused_imports)]
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetWindowLongPtrW, PostQuitMessage, WM_DESTROY,
+};
+
 use super::classifier::ClipboardClassifier;
 
 /// Windows message constants used by the hook procedure at runtime.
-#[allow(dead_code)]
 const WM_PASTE: u32 = 0x0302;
-#[allow(dead_code)]
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
+
+/// Module-level reference to the running listener so the C-callable hook procedure
+/// can dispatch into it.  Only one ClipboardListener runs at a time.
+static HOOK_LISTENER: std::sync::OnceLock<Arc<ClipboardListener>> = std::sync::OnceLock::new();
 
 /// A clipboard event detected by the listener.
 #[derive(Debug, Clone)]
@@ -63,15 +92,27 @@ pub struct ClipboardListener {
     sender: Arc<Mutex<Option<mpsc::Sender<ClipboardEvent>>>>,
     /// The session ID this listener is operating in.
     session_id: u32,
+    /// The `HHOOK` handle returned by `SetWindowsHookExW`, if installed.
+    #[cfg(windows)]
+    hhook: Arc<Mutex<Option<HHOOK>>>,
+    /// Handle to the std thread running the message loop.
+    #[cfg(windows)]
+    thread_handle: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
 
 impl ClipboardListener {
     /// Constructs a new listener for the given session.
+    ///
+    /// The listener is inactive until [`start`](Self::start) is called.
     pub fn new(session_id: u32) -> Self {
         Self {
             stop_flag: Arc::new(AtomicBool::new(false)),
             sender: Arc::new(Mutex::new(None)),
             session_id,
+            #[cfg(windows)]
+            hhook: Arc::new(Mutex::new(None)),
+            #[cfg(windows)]
+            thread_handle: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -81,6 +122,183 @@ impl ClipboardListener {
     /// when clipboard paste operations are detected and classified.
     pub fn set_sender(&self, tx: mpsc::Sender<ClipboardEvent>) {
         *self.sender.lock() = Some(tx);
+    }
+
+    /// Starts the clipboard listener by installing a `WH_GETMESSAGE` hook.
+    ///
+    /// Creates a dedicated std thread with a hidden message-only window and a
+    /// Windows message loop (`GetMessage` / `TranslateMessage` / `DispatchMessageW`).
+    /// `SetWindowsHookExW(WH_GETMESSAGE, ...)` is called on that thread so the
+    /// hook procedure fires for every message processed by the thread's queue.
+    ///
+    /// When the hook fires for `WM_PASTE` or `WM_CLIPBOARDUPDATE`, the clipboard
+    /// text is read, classified, and sent over the channel.
+    ///
+    /// # Limitations
+    ///
+    /// When the agent runs as a Windows Service (SYSTEM), this method must be
+    /// called from a process running in the interactive user session (e.g. via
+    /// `CreateProcessAsUserW` — see `ui_spawner.rs`) for the hook to see the
+    /// user's clipboard.
+    #[cfg(windows)]
+    pub fn start(&self) -> windows::core::Result<()> {
+        use windows::core::PCWSTR;
+
+        // Register the global hook listener so the C-callable procedure can find it.
+        let me = Arc::new(self.clone_inner());
+        let _ = HOOK_LISTENER.set(me.clone());
+
+        let hhook_arc = Arc::clone(&self.hhook);
+        let thread_handle_arc = Arc::clone(&self.thread_handle);
+        let session_id = self.session_id;
+
+        let thread = std::thread::Builder::new()
+            .name("clipboard-listener".into())
+            .spawn(move || {
+                // Step 1: register a minimal WNDCLASS for the message-only window.
+                let class_name: Vec<u16> = "DlpClipboardListenerWindow\0".encode_utf16().collect();
+
+                let wc = WNDCLASSW {
+                    lpfnWndProc: Some(wndproc_callback),
+                    lpszClassName: PCWSTR(class_name.as_ptr()),
+                    ..Default::default()
+                };
+
+                // SAFETY: class_name is a valid null-terminated wide string.
+                let atom = unsafe { RegisterClassW(&wc) };
+                if atom == 0 {
+                    warn!("RegisterClassW failed in clipboard listener");
+                    return;
+                }
+
+                // Step 2: create a hidden message-only window.
+                // SAFETY: atom is a valid class atom returned by RegisterClassW above.
+                let hwnd = unsafe {
+                    CreateWindowExW(
+                        WS_EX_NOACTIVATE,
+                        PCWSTR::from_raw(atom as *const u16),
+                        PCWSTR::null(),
+                        0, // dwStyle
+                        0, 0, 0, 0, // position/size (irrelevant for message-only)
+                        None,
+                        None,
+                        None,
+                    )
+                };
+
+                let hwnd = match hwnd {
+                    Ok(h) => h,
+                    Err(e) => {
+                        warn!(error = %e, "CreateWindowExW failed in clipboard listener");
+                        return;
+                    }
+                };
+
+                // Step 3: install the WH_GETMESSAGE hook on this thread.
+                // SAFETY: GetModuleHandleW(None) returns the current process handle,
+                // which is always valid.  Thread ID 0 means "current thread".
+                let hook = unsafe {
+                    SetWindowsHookExW(
+                        WH_GETMESSAGE,
+                        Some(hook_procedure),
+                        GetModuleHandleW(None)?,
+                        0,
+                    )
+                };
+
+                let hhook = match hook {
+                    Ok(h) => h,
+                    Err(e) => {
+                        warn!(error = %e, "SetWindowsHookExW failed in clipboard listener");
+                        let _ = DestroyWindow(hwnd);
+                        return;
+                    }
+                };
+
+                // Store the hook handle so stop() can uninstall it.
+                {
+                    let mut guard = hhook_arc.lock().expect("hhook mutex poisoned");
+                    *guard = Some(hhook);
+                }
+
+                info!(session_id, "clipboard listener started — hook installed");
+
+                // Step 4: run the message loop.
+                let mut msg = MSG::default();
+                loop {
+                    // SAFETY: msg is a valid pointer to an MSG struct.
+                    let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
+                    if ret == windows::Win32::Foundation::FALSE || ret == 0 {
+                        break;
+                    }
+                    let _ = unsafe { TranslateMessage(&msg) };
+                    let _ = unsafe { DispatchMessageW(&msg) };
+                }
+
+                // Cleanup: uninstall hook and destroy window on thread exit.
+                let _ = unsafe { UnhookWindowsHookEx(hhook) };
+                let _ = DestroyWindow(hwnd);
+                debug!("clipboard listener thread exiting");
+            })
+            .expect("clipboard listener thread must spawn");
+
+        // Store the join handle so stop() can wait.
+        {
+            let mut guard = thread_handle_arc.lock().expect("thread_handle mutex poisoned");
+            *guard = Some(thread);
+        }
+
+        Ok(())
+    }
+
+    /// Stops the listener.
+    ///
+    /// Posts `WM_QUIT` to the message loop, waits for the thread to finish,
+    /// and uninstalls the hook.  Idempotent — safe to call multiple times.
+    #[cfg(windows)]
+    pub fn stop(&self) {
+        if self.stop_flag.swap(true, Ordering::SeqCst) {
+            return; // already stopped
+        }
+
+        // Signal the message loop to exit via PostThreadMessageW.
+        // SAFETY: PostThreadMessageW with WM_QUIT is safe — it posts a quit
+        // message that causes GetMessageW to return 0, cleanly exiting the loop.
+        let thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+        let _ = unsafe {
+            PostThreadMessageW(thread_id, WM_QUIT, WPARAM::default(), LPARAM::default())
+        };
+
+        // Wait for the thread to finish.
+        if let Some(handle) = self.thread_handle.lock().expect("thread_handle mutex poisoned").take() {
+            let _ = handle.join();
+        }
+
+        // Unhook explicitly if the thread didn't do it.
+        if let Some(hhook) = self.hhook.lock().expect("hhook mutex poisoned").take() {
+            let _ = unsafe { UnhookWindowsHookEx(hhook) };
+        }
+
+        info!(session_id = self.session_id, "clipboard listener stopped");
+    }
+
+    /// Returns `true` if the stop flag has been set.
+    #[must_use]
+    pub fn is_stopped(&self) -> bool {
+        self.stop_flag.load(Ordering::Acquire)
+    }
+
+    /// Non-async clone for use in the thread closure.
+    fn clone_inner(&self) -> ClipboardListener {
+        ClipboardListener {
+            stop_flag: Arc::clone(&self.stop_flag),
+            sender: Arc::clone(&self.sender),
+            session_id: self.session_id,
+            #[cfg(windows)]
+            hhook: Arc::clone(&self.hhook),
+            #[cfg(windows)]
+            thread_handle: Arc::clone(&self.thread_handle),
+        }
     }
 
     /// Processes a clipboard text and emits an event if classification
@@ -165,23 +383,70 @@ impl ClipboardListener {
         result
     }
 
-    /// Stops the listener.
-    pub fn stop(&self) {
-        self.stop_flag.store(true, Ordering::SeqCst);
-        info!(session_id = self.session_id, "clipboard listener stopped");
-    }
-
-    /// Returns `true` if the stop flag has been set.
-    #[must_use]
-    pub fn is_stopped(&self) -> bool {
-        self.stop_flag.load(Ordering::Acquire)
-    }
 }
 
 impl Drop for ClipboardListener {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Windows message callbacks (must be `extern "system"` for C calling convention)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Window procedure for the hidden clipboard listener window.
+///
+/// Handles `WM_DESTROY` (triggers `PostQuitMessage`) and forwards everything
+/// else to `DefWindowProcW`.
+#[cfg(windows)]
+extern "system" fn wndproc_callback(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LPARAM {
+    // SAFETY: DefWindowProcW is always safe to call with valid parameters.
+    match msg as u32 {
+        windows::Win32::UI::WindowsAndMessaging::WM_DESTROY => {
+            unsafe { PostQuitMessage(0) };
+            LPARAM(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// `WH_GETMESSAGE` hook procedure.
+///
+/// Fires for every `GetMessage` / `PeekMessage` call on the thread that installed
+/// the hook.  For `WH_GETMESSAGE`, the wparam is the actual message ID and lparam
+/// is a pointer to the `MSG` struct.
+///
+/// On `WM_PASTE` (0x0302) it reads the clipboard, classifies the text,
+/// and emits a `ClipboardEvent` through the running listener.
+///
+/// This function runs on the clipboard-listener thread — it is safe to call
+/// `OpenClipboard` / `GetClipboardData` here because there is no concurrent
+/// clipboard access from this thread.
+#[cfg(windows)]
+unsafe extern "system" fn hook_procedure(
+    _code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    // For WH_GETMESSAGE: wparam is the message ID (cast to raw value).
+    let msg = wparam.0 as u32;
+
+    if msg == WM_PASTE {
+        if let Some(listener) = HOOK_LISTENER.get() {
+            if let Some(text) = ClipboardListener::read_clipboard_text() {
+                listener.process_clipboard_text(&text);
+            }
+        }
+    }
+    // Always call the next hook in the chain (there is none at the end, so pass None).
+    // SAFETY: wparam and lparam are passed through unchanged — we only observe the message.
+    CallNextHookEx(None, _code, wparam, lparam)
 }
 
 /// Reads a null-terminated UTF-16 string from a pointer.
