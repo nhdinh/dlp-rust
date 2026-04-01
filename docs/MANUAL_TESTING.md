@@ -280,7 +280,328 @@ Get-Content C:\ProgramData\DLP\logs\audit.jsonl | ForEach-Object { $_ | ConvertF
 
 ---
 
-## 10. Windows Service Installation (Optional)
+## 10. Trigger DLP Events
+
+This section walks through triggering real events that the DLP Agent
+detects. Ensure both the Policy Engine (section 3) and the Agent in
+console mode (section 7) are running before you begin.
+
+Open a **third terminal** for the commands below.
+
+### 10.1 Setup: Create Test Directories
+
+The agent classifies files by path prefix. Create the test directory
+structure that matches the default sensitive-path table:
+
+```cmd
+mkdir C:\Restricted
+mkdir C:\Confidential
+mkdir C:\Data
+mkdir C:\Public
+```
+
+| Directory | Classification | Sensitivity |
+|-----------|---------------|-------------|
+| `C:\Restricted\` | T4 Restricted | Highest -- fail-closed DENY |
+| `C:\Confidential\` | T3 Confidential | High |
+| `C:\Data\` | T2 Internal | Moderate |
+| `C:\Public\` | T1 Public | Low |
+
+### 10.2 File Operations (F-AGT-05)
+
+The agent monitors file system events via ETW. Perform these operations
+and check the agent log after each one.
+
+#### Create a file
+
+```cmd
+echo "Q4 Financial Results" > C:\Restricted\financials.txt
+echo "Internal Memo" > C:\Data\memo.txt
+echo "Public README" > C:\Public\readme.txt
+```
+
+Expected agent log: `FileAction::Created` for each file, with
+classification T4, T2, and T1 respectively.
+
+#### Write / modify a file
+
+```cmd
+echo "Updated figures" >> C:\Restricted\financials.txt
+```
+
+Expected: `FileAction::Written` with path `C:\Restricted\financials.txt`,
+classification T4.
+
+#### Copy a file
+
+```cmd
+copy C:\Restricted\financials.txt C:\Restricted\financials_backup.txt
+```
+
+Expected: `FileAction::Created` for the new file (copy triggers a create +
+write sequence in ETW).
+
+#### Rename / move a file
+
+```cmd
+ren C:\Data\memo.txt memo_archived.txt
+move C:\Data\memo_archived.txt C:\Public\memo_archived.txt
+```
+
+Expected: `FileAction::Moved` for each operation. The rename stays in T2;
+the move changes the path to T1 (`C:\Public\`).
+
+#### Delete a file
+
+```cmd
+del C:\Public\readme.txt
+```
+
+Expected: `FileAction::Deleted` with classification T1.
+
+#### Verify in audit log
+
+```powershell
+Get-Content C:\ProgramData\DLP\logs\audit.jsonl |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Select-Object timestamp, event_type, resource_path, classification, decision |
+  Format-Table
+```
+
+### 10.3 USB Mass Storage Detection (F-AGT-13)
+
+#### Step 1: Insert a USB flash drive
+
+Plug in a USB thumb drive. The agent scans drive types on arrival.
+
+Expected agent log:
+
+```
+INFO  USB mass storage arrived -- blocking writes  drive=E
+```
+
+(The drive letter depends on your system.)
+
+#### Step 2: Copy a sensitive file to USB
+
+```cmd
+copy C:\Restricted\financials.txt E:\
+```
+
+Expected: Agent detects T4 write to a removable drive and **blocks** the
+operation (or logs DENY if in audit-only mode).
+
+#### Step 3: Copy a public file to USB
+
+```cmd
+copy C:\Public\readme.txt E:\
+```
+
+Expected: T1 write to USB is **allowed** (non-sensitive data).
+
+#### Step 4: Remove the USB drive
+
+Safely eject or pull the drive.
+
+Expected agent log:
+
+```
+INFO  USB mass storage removed  drive=E
+```
+
+#### Step 5: Verify audit events
+
+```powershell
+Get-Content C:\ProgramData\DLP\logs\audit.jsonl |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Where-Object { $_.resource_path -like "E:\*" } |
+  Format-Table timestamp, resource_path, classification, decision
+```
+
+### 10.4 Network Share / SMB Detection (F-AGT-14)
+
+The agent monitors outbound SMB connections against a server whitelist.
+By default, no servers are whitelisted -- all T3/T4 SMB writes are blocked.
+
+#### Test 1: Copy to a non-whitelisted share
+
+```cmd
+copy C:\Confidential\report.docx \\some-server\share\
+```
+
+Expected: T3 write to non-whitelisted server is **blocked**.
+
+#### Test 2: Copy non-sensitive data to any share
+
+```cmd
+copy C:\Public\readme.txt \\some-server\share\
+```
+
+Expected: T1 data is **allowed** regardless of whitelist.
+
+#### Test 3: Whitelisted server (if configured)
+
+If the agent is configured with a whitelist entry for `fileserver01.corp.local`:
+
+```cmd
+copy C:\Restricted\financials.txt \\fileserver01.corp.local\approved-share\
+```
+
+Expected: T4 write to a whitelisted server is **allowed**.
+
+> **Note:** In Phase 1, the whitelist is configured programmatically via
+> `NetworkShareDetector::with_whitelist()`. Runtime configuration via
+> config file is planned for Phase 2.
+
+### 10.5 Clipboard Monitoring (F-AGT-17)
+
+The agent classifies clipboard text when paste events are detected.
+Use PowerShell to set clipboard content for repeatable testing.
+
+#### Test 1: SSN pattern (T4)
+
+```powershell
+Set-Clipboard -Value "Employee SSN: 123-45-6789"
+```
+
+Then paste into any application (Notepad, Word, etc.).
+
+Expected: Agent detects T4 content (SSN pattern `XXX-XX-XXXX`), emits
+`ClipboardEvent` with `classification: T4`.
+
+#### Test 2: Credit card number (T4)
+
+```powershell
+Set-Clipboard -Value "Card: 4111-1111-1111-1111"
+```
+
+Paste into any application.
+
+Expected: T4 classification (credit card pattern detected).
+
+#### Test 3: Confidential keyword (T3)
+
+```powershell
+Set-Clipboard -Value "This document is CONFIDENTIAL and must not be shared"
+```
+
+Paste into any application.
+
+Expected: T3 classification (keyword "confidential" matched).
+
+#### Test 4: Internal keyword (T2)
+
+```powershell
+Set-Clipboard -Value "FOR INTERNAL ONLY - do not distribute"
+```
+
+Expected: T2 classification.
+
+#### Test 5: Benign text (T1 -- no event)
+
+```powershell
+Set-Clipboard -Value "Hello, world!"
+```
+
+Expected: T1 classification. **No clipboard event emitted** (T1 is
+filtered out to reduce noise).
+
+#### Verify clipboard events
+
+```powershell
+Get-Content C:\ProgramData\DLP\logs\audit.jsonl |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Where-Object { $_.resource_path -eq "clipboard" } |
+  Format-Table timestamp, classification, decision
+```
+
+### 10.6 ETW Bypass Detection (F-AGT-18)
+
+The ETW bypass detector compares hook-intercepted operations against ETW
+file-system events. If ETW reports an operation that the hooks did **not**
+intercept, the agent logs `EVASION_SUSPECTED`.
+
+#### How it works in Phase 1
+
+In Phase 1, file interception uses ETW only (no API hooks yet). The
+bypass detector's hook log is empty, so **every ETW event triggers an
+evasion signal**. This is expected behavior -- it confirms the ETW
+subscriber is receiving events and the correlation logic works.
+
+In Phase 2, when API hooks are added, the bypass detector will only
+fire for operations that bypass the hooks -- the intended production
+behavior.
+
+#### Trigger an evasion event
+
+Any file operation in a monitored directory triggers an ETW event:
+
+```cmd
+echo "test" > C:\Data\etw_test.txt
+```
+
+Expected agent log:
+
+```
+WARN  EVASION_SUSPECTED: ETW event with no matching hook intercept
+      path=C:\Data\etw_test.txt  process_id=<PID>  etw_operation=CreateFile
+```
+
+#### Verify in audit log
+
+```powershell
+Get-Content C:\ProgramData\DLP\logs\audit.jsonl |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Where-Object { $_.event_type -eq "EVASION_SUSPECTED" } |
+  Format-Table timestamp, resource_path, action_attempted
+```
+
+### 10.7 Verify Complete Audit Trail
+
+After running all the tests above, the audit log should contain events
+for every operation. Run this summary to confirm coverage:
+
+```powershell
+$events = Get-Content C:\ProgramData\DLP\logs\audit.jsonl |
+  ForEach-Object { $_ | ConvertFrom-Json }
+
+# Event count by type
+$events | Group-Object event_type | Format-Table Count, Name
+
+# Event count by classification
+$events | Group-Object classification | Format-Table Count, Name
+
+# Event count by decision
+$events | Group-Object decision | Format-Table Count, Name
+```
+
+Expected output should show:
+
+| Event Type | Expected |
+|------------|----------|
+| `ACCESS` | File read/write operations |
+| `BLOCK` | T3/T4 to USB or non-whitelisted SMB |
+| `EVASION_SUSPECTED` | ETW events without hook match (Phase 1) |
+
+| Classification | Expected |
+|---------------|----------|
+| T4 | Restricted directory + SSN/CC clipboard |
+| T3 | Confidential directory + keyword clipboard |
+| T2 | Data directory + internal keyword clipboard |
+| T1 | Public directory (if logged) |
+
+### 10.8 Cleanup Test Files
+
+```cmd
+rd /s /q C:\Restricted
+rd /s /q C:\Confidential
+rd /s /q C:\Data
+rd /s /q C:\Public
+```
+
+---
+
+## 11. Windows Service Installation (Optional)
 
 These steps require an **elevated (Administrator) terminal**.
 
@@ -315,7 +636,7 @@ sc delete dlp-agent
 
 ---
 
-## 11. Run the Automated Test Suite
+## 12. Run the Automated Test Suite
 
 ### Full workspace (177 tests)
 
@@ -361,7 +682,7 @@ cargo clippy --workspace -- -D warnings
 
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 ### Port already in use
 
@@ -414,7 +735,7 @@ set RUST_LOG=policy_engine=debug,dlp_agent=trace
 
 ---
 
-## 13. Component Summary
+## 14. Component Summary
 
 | Component | Binary | Default Address | Config |
 |-----------|--------|-----------------|--------|
@@ -424,7 +745,7 @@ set RUST_LOG=policy_engine=debug,dlp_agent=trace
 
 ---
 
-## 14. Phase 1 Endpoint Reference
+## 15. Phase 1 Endpoint Reference
 
 ### Policy Engine
 
