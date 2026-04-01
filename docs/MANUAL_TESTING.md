@@ -105,7 +105,7 @@ three standard ABAC rules from `docs/ABAC_POLICIES.md`.
 ```cmd
 curl -X POST http://127.0.0.1:8443/policies ^
   -H "Content-Type: application/json" ^
-  -d "{\"id\":\"pol-001\",\"name\":\"T4 Deny All\",\"description\":\"Block all access to T4 Restricted resources\",\"priority\":1,\"conditions\":[{\"Classification\":{\"op\":\"eq\",\"value\":\"T4\"}}],\"action\":\"DENY\",\"enabled\":true,\"version\":1}"
+  -d "{\"id\":\"pol-001\",\"name\":\"T4 Deny All\",\"description\":\"Block all access to T4 Restricted resources\",\"priority\":1,\"conditions\":[{\"attribute\":\"classification\",\"op\":\"eq\",\"value\":\"T4\"}],\"action\":\"DENY\",\"enabled\":true,\"version\":1}"
 ```
 
 ### Rule 2: T3 Unmanaged Device Deny
@@ -113,7 +113,7 @@ curl -X POST http://127.0.0.1:8443/policies ^
 ```cmd
 curl -X POST http://127.0.0.1:8443/policies ^
   -H "Content-Type: application/json" ^
-  -d "{\"id\":\"pol-002\",\"name\":\"T3 Unmanaged Block\",\"description\":\"Block T3 from unmanaged devices\",\"priority\":2,\"conditions\":[{\"Classification\":{\"op\":\"eq\",\"value\":\"T3\"}},{\"DeviceTrust\":{\"op\":\"eq\",\"value\":\"Unmanaged\"}}],\"action\":\"DENY\",\"enabled\":true,\"version\":1}"
+  -d "{\"id\":\"pol-002\",\"name\":\"T3 Unmanaged Block\",\"description\":\"Block T3 from unmanaged devices\",\"priority\":2,\"conditions\":[{\"attribute\":\"classification\",\"op\":\"eq\",\"value\":\"T3\"},{\"attribute\":\"device_trust\",\"op\":\"eq\",\"value\":\"Unmanaged\"}],\"action\":\"DENY\",\"enabled\":true,\"version\":1}"
 ```
 
 ### Rule 3: T2 Allow with Logging
@@ -121,7 +121,7 @@ curl -X POST http://127.0.0.1:8443/policies ^
 ```cmd
 curl -X POST http://127.0.0.1:8443/policies ^
   -H "Content-Type: application/json" ^
-  -d "{\"id\":\"pol-003\",\"name\":\"T2 Allow with Log\",\"description\":\"Permit T2 access with audit logging\",\"priority\":3,\"conditions\":[{\"Classification\":{\"op\":\"eq\",\"value\":\"T2\"}}],\"action\":\"ALLOW_WITH_LOG\",\"enabled\":true,\"version\":1}"
+  -d "{\"id\":\"pol-003\",\"name\":\"T2 Allow with Log\",\"description\":\"Permit T2 access with audit logging\",\"priority\":3,\"conditions\":[{\"attribute\":\"classification\",\"op\":\"eq\",\"value\":\"T2\"}],\"action\":\"ALLOW_WITH_LOG\",\"enabled\":true,\"version\":1}"
 ```
 
 ### Verify policies loaded
@@ -141,7 +141,7 @@ Expected: JSON array with three policy objects.
 ```cmd
 curl -X POST http://127.0.0.1:8443/evaluate ^
   -H "Content-Type: application/json" ^
-  -d "{\"subject\":{\"user_sid\":\"S-1-5-21-123\",\"user_name\":\"jsmith\",\"groups\":[],\"device_trust\":\"Managed\",\"network_location\":\"Corporate\"},\"resource\":{\"path\":\"C:\\\\Restricted\\\\secrets.xlsx\",\"classification\":\"T4\"},\"environment\":{\"timestamp\":\"2026-04-01T12:00:00Z\",\"session_id\":1,\"access_context\":\"Local\"},\"action\":\"COPY\"}"
+  -d "{\"subject\":{\"user_sid\":\"S-1-5-21-123\",\"user_name\":\"jsmith\",\"groups\":[],\"device_trust\":\"Managed\",\"network_location\":\"Corporate\"},\"resource\":{\"path\":\"C:\\\\Restricted\\\\secrets.xlsx\",\"classification\":\"T4\"},\"environment\":{\"timestamp\":\"2026-04-01T12:00:00Z\",\"session_id\":1,\"access_context\":\"local\"},\"action\":\"COPY\"}"
 ```
 
 Expected response:
@@ -159,7 +159,7 @@ Expected response:
 ```cmd
 curl -X POST http://127.0.0.1:8443/evaluate ^
   -H "Content-Type: application/json" ^
-  -d "{\"subject\":{\"user_sid\":\"S-1-5-21-123\",\"user_name\":\"jsmith\",\"groups\":[],\"device_trust\":\"Managed\",\"network_location\":\"Corporate\"},\"resource\":{\"path\":\"C:\\\\Data\\\\report.xlsx\",\"classification\":\"T2\"},\"environment\":{\"timestamp\":\"2026-04-01T12:00:00Z\",\"session_id\":1,\"access_context\":\"Local\"},\"action\":\"WRITE\"}"
+  -d "{\"subject\":{\"user_sid\":\"S-1-5-21-123\",\"user_name\":\"jsmith\",\"groups\":[],\"device_trust\":\"Managed\",\"network_location\":\"Corporate\"},\"resource\":{\"path\":\"C:\\\\Data\\\\report.xlsx\",\"classification\":\"T2\"},\"environment\":{\"timestamp\":\"2026-04-01T12:00:00Z\",\"session_id\":1,\"access_context\":\"local\"},\"action\":\"WRITE\"}"
 ```
 
 Expected: `"decision": "ALLOW_WITH_LOG"`, `"matched_policy_id": "pol-003"`.
@@ -169,7 +169,7 @@ Expected: `"decision": "ALLOW_WITH_LOG"`, `"matched_policy_id": "pol-003"`.
 ```cmd
 curl -X POST http://127.0.0.1:8443/evaluate ^
   -H "Content-Type: application/json" ^
-  -d "{\"subject\":{\"user_sid\":\"S-1-5-21-123\",\"user_name\":\"jsmith\",\"groups\":[],\"device_trust\":\"Managed\",\"network_location\":\"Corporate\"},\"resource\":{\"path\":\"C:\\\\Public\\\\readme.txt\",\"classification\":\"T1\"},\"environment\":{\"timestamp\":\"2026-04-01T12:00:00Z\",\"session_id\":1,\"access_context\":\"Local\"},\"action\":\"READ\"}"
+  -d "{\"subject\":{\"user_sid\":\"S-1-5-21-123\",\"user_name\":\"jsmith\",\"groups\":[],\"device_trust\":\"Managed\",\"network_location\":\"Corporate\"},\"resource\":{\"path\":\"C:\\\\Public\\\\readme.txt\",\"classification\":\"T1\"},\"environment\":{\"timestamp\":\"2026-04-01T12:00:00Z\",\"session_id\":1,\"access_context\":\"local\"},\"action\":\"READ\"}"
 ```
 
 Expected: `"decision": "DENY"`, `"matched_policy_id": null` (no T1 rule loaded -- default-deny).
@@ -183,7 +183,7 @@ Expected: `"decision": "DENY"`, `"matched_policy_id": null` (no T1 rule loaded -
 ```cmd
 curl -X PUT http://127.0.0.1:8443/policies/pol-003 ^
   -H "Content-Type: application/json" ^
-  -d "{\"id\":\"pol-003\",\"name\":\"T2 Allow with Log (Updated)\",\"description\":\"Updated description\",\"priority\":3,\"conditions\":[{\"Classification\":{\"op\":\"eq\",\"value\":\"T2\"}}],\"action\":\"ALLOW_WITH_LOG\",\"enabled\":true,\"version\":1}"
+  -d "{\"id\":\"pol-003\",\"name\":\"T2 Allow with Log (Updated)\",\"description\":\"Updated description\",\"priority\":3,\"conditions\":[{\"attribute\":\"classification\",\"op\":\"eq\",\"value\":\"T2\"}],\"action\":\"ALLOW_WITH_LOG\",\"enabled\":true,\"version\":1}"
 ```
 
 Expected: HTTP 200 with the updated policy (version incremented by the store).

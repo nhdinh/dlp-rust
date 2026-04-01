@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 
 /// The action the user is attempting to perform on a resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Action {
     /// Read a file.
     #[default]
@@ -38,7 +37,6 @@ pub enum AccessContext {
 
 /// The system action the ABAC engine returns after evaluation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Decision {
     /// Permit the operation without additional logging.
     #[default]
