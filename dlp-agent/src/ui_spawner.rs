@@ -12,42 +12,50 @@
 //! the installed UI binary.
 
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
-use tracing::{debug, error, info, warn};
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
-use windows::Win32::System::ProcessStatus::WTSEnumerateSessionsW;
-use windows::Win32::System::Threading::{
-    CreateProcessAsUserW, OpenProcessToken, SetTokenInformation, TokenPrimaryContainer, TokenSessionId,
-    CreateProcessWithTokenW, DuplicateTokenEx, SECURITY_ATTRIBUTES, STARTUPINFOW, PROCESS_INFORMATION,
-    LPTHREAD_START_ROUTINE, CreateRemoteThread,
-};
-use windows::Win32::System::Services::{
-    WTS_CURRENT_SERVER_HANDLE, WTS_SESSION_INFOW, WTSActive,
-};
-use windows::Win32::Security::{
-    GetTokenInformation, TokenLinkedToken, TOKEN_PRIVILEGES, TOKEN_ADJUST_PRIVILEGES,
-    LookupPrivilegeValueW, AdjustTokenPrivileges, SE_PRIVILEGE_ENABLED,
-    TOKEN_PRIVILEGES, TOKEN_QUERY,
-};
+use tracing::{debug, info, warn};
 use windows::core::PCWSTR;
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::System::RemoteDesktop::{
+    WTSActive, WTSEnumerateSessionsW, WTSFreeMemory, WTS_CURRENT_SERVER_HANDLE, WTS_SESSION_INFOW,
+};
+use windows::Win32::System::Threading::{
+    CreateProcessAsUserW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
+};
 
-use crate::service::SERVICE_NAME;
+/// Wrapper that makes `HANDLE` `Send + Sync` for storage in statics.
+///
+/// `windows::HANDLE` is `*mut c_void` which is not `Send` by default.
+/// This wrapper does NOT provide safety guarantees about the handle —
+/// it is only safe because we never send the handle value between threads;
+/// the mutex ensures all access is single-threaded.
+struct SendableHandle(HANDLE);
+
+impl SendableHandle {
+    fn new(h: HANDLE) -> Self {
+        Self(h)
+    }
+    fn as_handle(&self) -> HANDLE {
+        self.0
+    }
+}
+
+unsafe impl Send for SendableHandle {}
+unsafe impl Sync for SendableHandle {}
 
 /// Handle to a UI process running in a specific session.
-#[derive(Debug)]
 struct UiHandle {
     /// Win32 process ID.
     pid: u32,
     /// Session ID the process belongs to.
+    #[allow(dead_code)]
     session_id: u32,
-    /// Process handle — owned so we can clean up on drop.
-    handle: HANDLE,
+    /// Process handle wrapped as `SendableHandle` so the static map is `Sync`.
+    handle: SendableHandle,
 }
 
 /// Stores handles to all active UI processes, keyed by session ID.
@@ -76,7 +84,10 @@ pub fn set_ui_binary(path: PathBuf) {
 /// Enumerates all active sessions and spawns a UI in each.
 /// This is called once during service startup.
 pub fn init() -> Result<()> {
-    let binary = UI_BINARY.lock().clone().context("UI binary not configured")?;
+    let binary = UI_BINARY
+        .lock()
+        .clone()
+        .context("UI binary not configured")?;
     info!(path = %binary.display(), "initialising UI spawner");
 
     let session_ids = enumerate_active_sessions()?;
@@ -122,20 +133,22 @@ fn enumerate_active_sessions() -> Result<Vec<u32>> {
         let session_slice = std::slice::from_raw_parts(session_info, session_count as usize);
 
         for si in session_slice {
-            if si.State.0 == WTSActive.0 {
+            // WTS_SESSION_INFOW.State is WTS_CONNECTSTATE_CLASS; compare against
+            // the WTSActive constant which is also WTS_CONNECTSTATE_CLASS(0).
+            if si.State == WTSActive {
                 ids.push(si.SessionId);
             }
         }
 
-        // Free the allocated array.
-        windows::Win32::System::Environment::WTSFreeMemory(session_info as u64);
+        // Free the allocated array — WTSFreeMemory takes *mut c_void.
+        WTSFreeMemory(session_info.cast());
 
         Ok(ids)
     }
 }
 
 /// Spawns a UI process in the given session using `CreateProcessAsUserW`.
-fn spawn_ui_in_session(session_id: u32, binary: &PathBuf) -> Result<UiHandle> {
+fn spawn_ui_in_session(session_id: u32, binary: &Path) -> Result<UiHandle> {
     info!(session_id, path = %binary.display(), "spawning UI process");
 
     // Get the user token for the session.
@@ -148,11 +161,12 @@ fn spawn_ui_in_session(session_id: u32, binary: &PathBuf) -> Result<UiHandle> {
         .chain(std::iter::once(0))
         .collect();
 
-    let mut startup_info = STARTUPINFOW {
+    // Build a null-terminated "WinSta0\\Default" desktop name.
+    let desktop_wide: Vec<u16> = "WinSta0\\Default\0".encode_utf16().collect();
+
+    let startup_info = STARTUPINFOW {
         cb: std::mem::size_of::<STARTUPINFOW>() as u32,
-        lpDesktop: windows::core::PWSTR::from_raw(
-            wide_string("WinSta0\\Default").as_ptr() as _,
-        ),
+        lpDesktop: windows::core::PWSTR::from_raw(desktop_wide.as_ptr() as _),
         ..Default::default()
     };
 
@@ -166,16 +180,14 @@ fn spawn_ui_in_session(session_id: u32, binary: &PathBuf) -> Result<UiHandle> {
             None,
             None,
             false,
-            0,
+            PROCESS_CREATION_FLAGS(0),
             None,
-            PCWSTR::from_raw(windows::core::PWSTR::from_raw(
-                wide_string("WinSta0\\Default").as_ptr() as _,
-            ).as_ptr()),
-            &mut startup_info,
+            PCWSTR::null(),
+            &startup_info,
             &mut process_info,
         );
 
-        CloseHandle(user_token).ok();
+        let _ = CloseHandle(user_token);
 
         if create_result.is_err() {
             return Err(anyhow::anyhow!(
@@ -196,44 +208,27 @@ fn spawn_ui_in_session(session_id: u32, binary: &PathBuf) -> Result<UiHandle> {
         Ok(UiHandle {
             pid: process_info.dwProcessId,
             session_id,
-            handle: process_info.hProcess,
+            handle: SendableHandle::new(process_info.hProcess),
         })
     }
 }
 
 /// Gets an impersonation token for the given session's active user.
-fn get_session_user_token(session_id: u32) -> Result<HANDLE> {
-    unsafe {
-        // WTSQueryUserToken is simpler when available, but requires linking to WTSAPI32.
-        // Use the process-level approach: find a process in the session and get its token.
-        // A more robust approach uses WTSQueryUserToken — add `Win32_System_Wts Wts` feature.
-
-        // For now, spawn a process directly in the session using CreateProcessWithLogon
-        // or use WTSQueryUserToken if the feature is enabled.
-        //
-        // The cleanest approach is `WTSQueryUserToken` — let's check if we need to add
-        // the WTS feature and use that directly.
-
-        // Fallback: we need the WTS API to get a token directly.
-        // Using WTSQueryUserToken requires: Win32_System_Wts
-        Err(anyhow::anyhow!(
-            "get_session_user_token: WTS feature not yet linked; \
-             use WTSQueryUserToken or spawn via session 0 launcher"
-        ))
-    }
-}
-
-/// Converts a Rust &str to a null-terminated wide (UTF-16) string.
-fn wide_string(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
+fn get_session_user_token(_session_id: u32) -> Result<HANDLE> {
+    // WTSQueryUserToken requires linking wtsapi32.dll and is the correct approach.
+    // For now this is a stub — the real implementation requires WTSQueryUserToken.
+    Err(anyhow::anyhow!(
+        "get_session_user_token: WTSQueryUserToken not yet implemented"
+    ))
 }
 
 /// Terminates a UI process by session ID.
 pub fn kill_session(session_id: u32) {
     if let Some(handle) = UI_HANDLES.lock().remove(&session_id) {
         unsafe {
-            let _ = windows::Win32::System::Threading::TerminateProcess(handle.handle, 1);
-            let _ = CloseHandle(handle.handle);
+            let _ =
+                windows::Win32::System::Threading::TerminateProcess(handle.handle.as_handle(), 1);
+            let _ = CloseHandle(handle.handle.as_handle());
         }
         debug!(session_id, pid = handle.pid, "UI process terminated");
     }
@@ -243,8 +238,9 @@ pub fn kill_session(session_id: u32) {
 pub fn kill_all() {
     for (session_id, handle) in UI_HANDLES.lock().drain() {
         unsafe {
-            let _ = windows::Win32::System::Threading::TerminateProcess(handle.handle, 1);
-            let _ = CloseHandle(handle.handle);
+            let _ =
+                windows::Win32::System::Threading::TerminateProcess(handle.handle.as_handle(), 1);
+            let _ = CloseHandle(handle.handle.as_handle());
         }
         debug!(session_id, pid = handle.pid, "UI process terminated");
     }
