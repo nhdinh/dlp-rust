@@ -13,6 +13,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 
 use crate::dialogs;
 use crate::ipc;
+use crate::tray;
 
 /// Application shared state — holds the session ID.
 pub struct UiState {
@@ -142,6 +143,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![get_session_id, is_pipe1_connected,])
         .setup(move |app| {
             info!(session_id, "Tauri app setup starting");
+            if let Err(e) = tray::init(app) {
+                error!(error = %e, "failed to init system tray");
+            }
             spawn_ipc_tasks(app.handle(), session_id);
             info!(session_id, "Tauri app setup complete");
             Ok(())

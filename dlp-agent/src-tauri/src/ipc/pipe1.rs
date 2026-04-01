@@ -139,18 +139,48 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
             resource_path: _,
         } => {
             info!(session_id, request_id, "Pipe 1: OverrideRequest received");
-            // TODO (Sprint 11): show override justification dialog.
+            // TODO (Phase 2): show override justification dialog.
             None
         }
         Pipe1AgentMsg::ClipboardRead { request_id } => {
             info!(session_id, request_id, "Pipe 1: ClipboardRead received");
-            // TODO (Sprint 12): read clipboard and return ClipboardData.
-            None
+            match crate::dialogs::clipboard::read_clipboard() {
+                Ok(Some(data)) => {
+                    let msg = Pipe1UiMsg::ClipboardData { request_id, data };
+                    match serde_json::to_vec(&msg) {
+                        Ok(json) => Some(json),
+                        Err(e) => {
+                            error!(session_id, "serialise ClipboardData failed: {e}");
+                            None
+                        }
+                    }
+                }
+                Ok(None) => {
+                    info!(session_id, request_id, "clipboard empty or not text");
+                    None
+                }
+                Err(e) => {
+                    error!(session_id, request_id, error = %e, "failed to read clipboard");
+                    None
+                }
+            }
         }
         Pipe1AgentMsg::PasswordDialog { request_id } => {
             info!(session_id, request_id, "Pipe 1: PasswordDialog received");
-            // TODO (Sprint 12): show password prompt and return PasswordSubmit/PasswordCancel.
-            None
+            let msg = match crate::dialogs::stop_password::show_password_dialog(&request_id) {
+                Ok(m) => m,
+                Err(e) => {
+                    error!(session_id, request_id, error = %e, "password dialog failed");
+                    Pipe1UiMsg::PasswordCancel { request_id }
+                }
+            };
+            match serde_json::to_vec(&msg) {
+                Ok(json) => Some(json),
+                Err(e) => {
+                    error!(session_id, "serialise password message failed: {e}");
+                    None
+                }
+            }
         }
     }
 }

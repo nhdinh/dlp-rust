@@ -4,6 +4,7 @@
 
 mod dialogs;
 mod ipc;
+pub mod tray;
 pub mod ui_main;
 
 pub use ui_main::run;

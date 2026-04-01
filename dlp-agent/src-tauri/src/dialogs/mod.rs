@@ -1,8 +1,10 @@
-//! DLP Agent UI dialogs (T-43).
+//! DLP Agent UI dialogs (T-43, T-44, T-45).
 //!
-//! Shows block notifications, override justification, and closing-sequence
-//! dialogs to the user.  Uses Windows toast notifications via the Tauri
-//! notification plugin, and blocking modal dialogs via `MessageBoxW`.
+//! Shows block notifications, clipboard dialog, stop-password dialog, and
+//! closing-sequence dialogs to the user.
+
+pub mod clipboard;
+pub mod stop_password;
 
 use tauri_plugin_notification::NotificationExt;
 use tracing::info;
@@ -16,11 +18,6 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Retrieves the Tauri app handle from thread-local state.
-fn get_tauri_app() -> Option<tauri::AppHandle> {
-    TAURI_APP.with(|cell| cell.borrow().clone())
-}
-
 /// Stores the Tauri app handle so dialogs can use the notification plugin.
 /// Must be called once during app setup.
 pub fn init(app_handle: tauri::AppHandle) {
@@ -29,39 +26,33 @@ pub fn init(app_handle: tauri::AppHandle) {
 
 /// Shows a Windows toast notification with the given title and body.
 pub fn show_toast(title: &str, body: &str) {
-    if let Some(app) = get_tauri_app() {
+    if let Some(app) = TAURI_APP.with(|cell| cell.borrow().clone()) {
         if let Err(e) = app.notification().builder().title(title).body(body).show() {
             tracing::error!(error = %e, "failed to send toast notification");
         }
     }
 }
 
-/// Shows the block notification modal dialog.
+/// Shows the block notification modal dialog (T-43).
 ///
-/// Displays policy info, classification level, and resource path.  Provides
-/// "OK" button to acknowledge.
-pub fn show_block_dialog(
-    classification: &str,
-    resource_path: &str,
-    policy_name: &str,
-    reason: &str,
-) -> BlockDialogResult {
+/// Displays policy info, classification level, and resource path.
+pub fn show_block_dialog(classification: &str, resource_path: &str, policy_id: &str, reason: &str) {
     info!(classification, resource_path, "showing block dialog");
 
     let body = format!(
         "A DLP policy blocked access to this resource.\n\n\
          Classification: {}\n\
          Resource: {}\n\
-         Policy: {}\n\n\
+         Policy ID: {}\n\n\
          Reason: {}",
-        classification, resource_path, policy_name, reason
+        classification, resource_path, policy_id, reason
     );
-    let title = "DLP: Access Blocked";
 
-    let body_wide: Vec<u16> = body.encode_utf16().chain(std::iter::once(0)).collect();
-    let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    let body_wide: Vec<u16> = body.encode_utf16().chain([0]).collect();
+    let title_wide: Vec<u16> = "DLP: Access Blocked".encode_utf16().chain([0]).collect();
 
-    let result: MESSAGEBOX_RESULT = unsafe {
+    // SAFETY: both pointers are valid for the duration of the call.
+    let _: MESSAGEBOX_RESULT = unsafe {
         MessageBoxW(
             None,
             PCWSTR::from_raw(body_wide.as_ptr()),
@@ -69,10 +60,6 @@ pub fn show_block_dialog(
             MB_ICONWARNING,
         )
     };
-
-    // Only IDOK (1) and IDCANCEL (2) are returned; both dismiss the dialog.
-    let _ = result;
-    BlockDialogResult::Close
 }
 
 /// Result of the block dialog.
@@ -87,8 +74,8 @@ pub fn show_closing_sequence() {
     let body = "The DLP Agent is shutting down. You may close this window.";
     let title = "DLP Agent";
 
-    let body_wide: Vec<u16> = body.encode_utf16().chain(std::iter::once(0)).collect();
-    let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    let body_wide: Vec<u16> = body.encode_utf16().chain([0]).collect();
+    let title_wide: Vec<u16> = title.encode_utf16().chain([0]).collect();
 
     unsafe {
         let _ = MessageBoxW(
