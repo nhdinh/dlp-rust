@@ -12,6 +12,9 @@
 //! - [`session_monitor`] — Session logon/logoff handler (Sprint 7, T-36).
 //! - [`protection`] — Process DACL hardening (Sprint 8, T-37).
 //! - [`interception`] — File interception engine (Sprint 13, T-11).
+//! - [`identity`] — SMB impersonation resolution (Sprint 13, T-12).
+//! - [`engine_client`] — HTTPS client to Policy Engine (Sprint 13, T-16).
+//! - [`cache`] — Policy decision cache with TTL (Sprint 13, T-17).
 //! - [`detection`] — USB, SMB share, ETW bypass detection (Sprint 14, T-13–T-15).
 //! - [`offline`] — Offline mode with cached decisions (Sprint 15, T-18).
 //! - [`audit_emitter`] — Append-only audit log (Sprint 15, T-19, T-26, T-27).
@@ -38,3 +41,15 @@ pub mod session_monitor;
 
 #[cfg(windows)]
 pub mod password_stop;
+
+#[cfg(windows)]
+pub mod interception;
+
+#[cfg(windows)]
+pub mod identity;
+
+#[cfg(windows)]
+pub mod engine_client;
+
+#[cfg(windows)]
+pub mod cache;
