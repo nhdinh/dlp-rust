@@ -170,8 +170,8 @@
 
 | ID   | Status | Story        | Task                                                                                                                                 | Deliverable                      |
 | ---- | ------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- |
-| T-21 | [ ]    | US-07, US-13 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock Policy Engine)                             | `dlp-agent/tests/`               |
-| T-28 | [ ]    | US-19        | Phase 1: agent writes to local JSON log only. SIEM relay deferred to Phase 5 (dlp-server). Audit log queryable via direct file read. | `dlp-agent/src/audit_emitter.rs` |
+| T-21 | [x]    | US-07, US-13 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock Policy Engine)                             | `dlp-agent/tests/`               |
+| T-28 | [x]    | US-19        | Phase 1: agent writes to local JSON log only. SIEM relay deferred to Phase 5 (dlp-server). Audit log queryable via direct file read. | `dlp-agent/src/audit_emitter.rs` |
 
 ---
 
@@ -188,9 +188,9 @@
 | Metric      | Count |
 | ----------- | ----- |
 | Total tasks | 46    |
-| Done        | 42    |
+| Done        | 44    |
 | In progress | 0     |
-| Todo        | 4     |
+| Todo        | 2     |
 
 ### Per-Sprint Summary
 
@@ -212,5 +212,5 @@
 | Sprint 14 | T-13, T-14, T-15             | 3/3  |
 | Sprint 15 | T-18, T-19, T-25, T-26, T-27 | 5/5  |
 | Sprint 16 | T-20                         | 1/1  |
-| Sprint 17 | T-21, T-28                   | 0/2  |
+| Sprint 17 | T-21, T-28                   | 2/2  |
 | Sprint 18 | T-24                         | 1/1  |
