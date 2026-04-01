@@ -104,6 +104,24 @@ impl Broadcaster {
     pub fn client_count(&self) -> usize {
         self.clients.read().len()
     }
+
+    /// Returns an iterator over all client IDs and their senders.
+    ///
+    /// Returns owned copies so the caller can use them after releasing the lock.
+    pub fn clients(&self) -> HashMap<usize, mpsc::Sender<Vec<u8>>> {
+        self.clients.read().clone()
+    }
+
+    /// Returns an iterator over all client IDs.
+    #[allow(dead_code)]
+    pub fn client_ids(&self) -> impl Iterator<Item = usize> + '_ {
+        self.clients
+            .read()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
 }
 
 /// Global broadcaster instance shared across the crate.

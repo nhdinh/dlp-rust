@@ -48,9 +48,9 @@ unsafe impl Send for SendableHandle {}
 unsafe impl Sync for SendableHandle {}
 
 /// Handle to a UI process running in a specific session.
-struct UiHandle {
+pub(crate) struct UiHandle {
     /// Win32 process ID.
-    pid: u32,
+    pub(crate) pid: u32,
     /// Session ID the process belongs to.
     #[allow(dead_code)]
     session_id: u32,
@@ -148,7 +148,7 @@ fn enumerate_active_sessions() -> Result<Vec<u32>> {
 }
 
 /// Spawns a UI process in the given session using `CreateProcessAsUserW`.
-fn spawn_ui_in_session(session_id: u32, binary: &Path) -> Result<UiHandle> {
+pub(crate) fn spawn_ui_in_session(session_id: u32, binary: &Path) -> Result<UiHandle> {
     info!(session_id, path = %binary.display(), "spawning UI process");
 
     // Get the user token for the session.

@@ -29,3 +29,9 @@ pub mod ui_spawner;
 
 #[cfg(windows)]
 pub mod ipc;
+
+#[cfg(windows)]
+pub mod health_monitor;
+
+#[cfg(windows)]
+pub mod session_monitor;
