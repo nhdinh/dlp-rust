@@ -20,16 +20,13 @@ use parking_lot::Mutex;
 use tracing::{debug, info, warn};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
-use windows::Win32::Security {
-    DuplicateTokenEx, SecurityImpersonation, SECURITY_IMPERSONATION_LEVEL, TOKEN_ALL_ACCESS,
-    TOKEN_DUPLICATE, TOKEN_QUERY,
-};
 use windows::Win32::System::RemoteDesktop::{
     WTSActive, WTSEnumerateSessionsW, WTSFreeMemory, WTSQueryUserToken, WTS_CURRENT_SERVER_HANDLE,
     WTS_SESSION_INFOW,
 };
 use windows::Win32::System::Threading::{
-    CreateProcessAsUserW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
+    CreateProcessAsUserW, DuplicateTokenEx, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
+    SecurityImpersonation, STARTUPINFOW, TOKEN_ALL_ACCESS, TokenPrimary,
 };
 
 /// Wrapper that makes `HANDLE` `Send + Sync` for storage in statics.
@@ -253,10 +250,10 @@ fn get_session_user_token(session_id: u32) -> Result<HANDLE> {
     let dup_ok = unsafe {
         DuplicateTokenEx(
             raw_token,
-            TOKEN_ALL_ACCESS.0,
+            TOKEN_ALL_ACCESS,
             None,
             SecurityImpersonation,
-            windows::Win32::System::Threading::TokenPrimary,
+            TokenPrimary,
             &mut impersonation_token,
         )
         .ok()
