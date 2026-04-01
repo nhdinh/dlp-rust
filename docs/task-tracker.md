@@ -140,9 +140,9 @@
 
 | ID   | Status | Story | Task                                                                                                                                                              | Deliverable                                |
 | ---- | ------ | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| T-13 | [ ]    | US-09 | Implement `detection/usb.rs`: WMI `Win32_VolumeChangeEvent`, classify drive type (USB mass storage vs. internal), block T3/T4 writes                              | `dlp-agent/src/detection/usb.rs`           |
-| T-14 | [ ]    | US-10 | Implement `detection/network_share.rs`: ETW `Microsoft-Windows-SMBClient` trace for outbound SMB tree connect events; match against admin-configured whitelist    | `dlp-agent/src/detection/network_share.rs` |
-| T-15 | [ ]    | US-10 | Implement `detection/etw_bypass.rs`: ETW `Microsoft-Windows-FileSystem-ETW` subscriber; detect ops seen in ETW but not caught by hooks → emit `EVASION_SUSPECTED` | `dlp-agent/src/detection/etw_bypass.rs`    |
+| T-13 | [x]    | US-09 | Implement `detection/usb.rs`: WMI `Win32_VolumeChangeEvent`, classify drive type (USB mass storage vs. internal), block T3/T4 writes                              | `dlp-agent/src/detection/usb.rs`           |
+| T-14 | [x]    | US-10 | Implement `detection/network_share.rs`: ETW `Microsoft-Windows-SMBClient` trace for outbound SMB tree connect events; match against admin-configured whitelist    | `dlp-agent/src/detection/network_share.rs` |
+| T-15 | [x]    | US-10 | Implement `detection/etw_bypass.rs`: ETW `Microsoft-Windows-FileSystem-ETW` subscriber; detect ops seen in ETW but not caught by hooks → emit `EVASION_SUSPECTED` | `dlp-agent/src/detection/etw_bypass.rs`    |
 
 ---
 
@@ -188,9 +188,9 @@
 | Metric      | Count |
 | ----------- | ----- |
 | Total tasks | 46    |
-| Done        | 33    |
+| Done        | 36    |
 | In progress | 0     |
-| Todo        | 13    |
+| Todo        | 10    |
 
 ### Per-Sprint Summary
 
@@ -209,7 +209,7 @@
 | Sprint 11 | T-41, T-43                   | 2/2  |
 | Sprint 12 | T-44, T-45, T-46             | 3/3  |
 | Sprint 13 | T-11, T-12, T-16, T-17       | 4/4  |
-| Sprint 14 | T-13, T-14, T-15             | 0/3  |
+| Sprint 14 | T-13, T-14, T-15             | 3/3  |
 | Sprint 15 | T-18, T-19, T-25, T-26, T-27 | 0/5  |
 | Sprint 16 | T-20                         | 0/1  |
 | Sprint 17 | T-21, T-28                   | 0/2  |

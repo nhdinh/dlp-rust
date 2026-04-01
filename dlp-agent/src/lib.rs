@@ -15,7 +15,10 @@
 //! - [`identity`] — SMB impersonation resolution (Sprint 13, T-12).
 //! - [`engine_client`] — HTTPS client to Policy Engine (Sprint 13, T-16).
 //! - [`cache`] — Policy decision cache with TTL (Sprint 13, T-17).
-//! - [`detection`] — USB, SMB share, ETW bypass detection (Sprint 14, T-13–T-15).
+//! - [`detection`] — USB, SMB share, ETW bypass detection (Sprint 14, T-13–T-15):
+//!   - `detection::usb` — USB mass storage detection via `GetDriveTypeW`.
+//!   - `detection::network_share` — SMB destination whitelisting.
+//!   - `detection::etw_bypass` — Hook/ETW correlation for evasion detection.
 //! - [`offline`] — Offline mode with cached decisions (Sprint 15, T-18).
 //! - [`audit_emitter`] — Append-only audit log (Sprint 15, T-19, T-26, T-27).
 //! - [`clipboard`] — Clipboard hooks and content classifier (Sprint 16, T-20).
@@ -53,3 +56,6 @@ pub mod engine_client;
 
 #[cfg(windows)]
 pub mod cache;
+
+#[cfg(windows)]
+pub mod detection;
