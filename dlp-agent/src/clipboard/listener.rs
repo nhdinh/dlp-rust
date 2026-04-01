@@ -42,15 +42,14 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 #[cfg(windows)]
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 #[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetMessageW, PostThreadMessageW, RegisterClassW, SetWindowsHookExW, TranslateMessage,
-    UnhookWindowsHookEx, HHOOK, LRESULT, MSG, WH_GETMESSAGE, WPARAM, WNDCLASSW, WS_EX_NOACTIVATE,
-    WM_QUIT,
+    UnhookWindowsHookEx, HHOOK, MSG, WH_GETMESSAGE, WNDCLASSW, WS_EX_NOACTIVATE, WM_QUIT,
 };
 #[allow(unused_imports)]
 #[cfg(windows)]

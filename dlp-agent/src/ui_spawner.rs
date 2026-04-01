@@ -25,8 +25,7 @@ use windows::Win32::System::RemoteDesktop::{
     WTS_SESSION_INFOW,
 };
 use windows::Win32::System::Threading::{
-    CreateProcessAsUserW, DuplicateTokenEx, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
-    SecurityImpersonation, STARTUPINFOW, TOKEN_ALL_ACCESS, TokenPrimary,
+    CreateProcessAsUserW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
 };
 
 /// Wrapper that makes `HANDLE` `Send + Sync` for storage in statics.
@@ -215,22 +214,19 @@ pub(crate) fn spawn_ui_in_session(session_id: u32, binary: &Path) -> Result<UiHa
     }
 }
 
-/// Gets a primary impersonation token for the given session's active user.
+/// Gets a primary user token for the given session.
 ///
-/// Calls `WTSQueryUserToken` to obtain the user's logon token for the session,
-/// then `DuplicateTokenEx` with `SecurityImpersonation` level so that
-/// `CreateProcessAsUserW` can use it.
+/// Calls `WTSQueryUserToken` to obtain the user's logon token for the session.
+/// The returned token is a **primary token** that can be used directly with
+/// `CreateProcessAsUserW` — no `DuplicateTokenEx` call is required since
+/// `WTSQueryUserToken` already returns a primary token.
 fn get_session_user_token(session_id: u32) -> Result<HANDLE> {
-    // Step 1: query the user token for this session.
-    // WTSQueryUserToken returns the primary token of the logged-on user.
-    let mut raw_token = HANDLE::default();
+    let mut token = HANDLE::default();
 
-    // SAFETY: WTSQueryUserToken writes exactly one HANDLE to raw_token and
-    // returns NTSTATUS-style success/failure.  session_id is a valid u32
-    // previously obtained from WTSEnumerateSessionsW.
-    let ok = unsafe {
-        WTSQueryUserToken(session_id, &mut raw_token).ok()
-    };
+    // SAFETY: WTSQueryUserToken writes exactly one HANDLE to token and returns an
+    // NTSTATUS-style success/failure indicator.  session_id is a valid u32 obtained
+    // from WTSEnumerateSessionsW.
+    let ok = unsafe { WTSQueryUserToken(session_id, &mut token).ok() };
 
     if !ok {
         return Err(anyhow::anyhow!(
@@ -239,39 +235,8 @@ fn get_session_user_token(session_id: u32) -> Result<HANDLE> {
         ));
     }
 
-    // Step 2: duplicate the token with impersonation level so CreateProcessAsUserW
-    // can use it.  We request the default set of access rights; DuplicateTokenEx
-    // applies sensible filtering.
-    let mut impersonation_token = HANDLE::default();
-
-    // SAFETY: raw_token is a valid open handle obtained just above.
-    // SecurityImpersonation is a valid SECURITY_IMPERSONATION_LEVEL value.
-    // The resulting impersonation_token is a new handle we own and must close.
-    let dup_ok = unsafe {
-        DuplicateTokenEx(
-            raw_token,
-            TOKEN_ALL_ACCESS,
-            None,
-            SecurityImpersonation,
-            TokenPrimary,
-            &mut impersonation_token,
-        )
-        .ok()
-    };
-
-    // Always close the original token obtained from WTSQueryUserToken.
-    // SAFETY: raw_token is a valid handle we received from WTSQueryUserToken.
-    let _ = unsafe { CloseHandle(raw_token) };
-
-    if !dup_ok {
-        return Err(anyhow::anyhow!(
-            "DuplicateTokenEx failed for session {}",
-            session_id
-        ));
-    }
-
-    debug!(session_id, "user token obtained and duplicated");
-    Ok(impersonation_token)
+    debug!(session_id, "user token obtained via WTSQueryUserToken");
+    Ok(token)
 }
 
 /// Terminates a UI process by session ID.

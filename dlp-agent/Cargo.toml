@@ -51,11 +51,12 @@ windows = { version = "0.58", features = [
     "Win32_System_DataExchange",
     # clipboard/listener.rs + detection/usb.rs: SetWindowsHookExW, CreateWindowExW,
     # RegisterClassW, RegisterDeviceNotificationW, DEV_BROADCAST_DEVICEINTERFACE_W, etc.
-    # Win32_Graphics_Gdi is required for WNDCLASSW / RegisterClassW.
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
     # clipboard/listener.rs: GetModuleHandleW
     "Win32_System_LibraryLoader",
+    # ui_spawner.rs: DuplicateTokenEx, SecurityImpersonation, TOKEN_ALL_ACCESS
+    "Win32_Security_Authentication_Identity",
 ] }
 
 # LDAP client for password verification (T-38)
