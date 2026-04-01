@@ -188,9 +188,9 @@
 | Metric      | Count |
 | ----------- | ----- |
 | Total tasks | 46    |
-| Done        | 44    |
+| Done        | 46    |
 | In progress | 0     |
-| Todo        | 2     |
+| Todo        | 0     |
 
 ### Per-Sprint Summary
 
