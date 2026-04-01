@@ -6,8 +6,9 @@
 //! 1. A `PASSWORD_DIALOG` is sent to the UI.
 //! 2. The UI displays a password prompt to the dlp-admin.
 //! 3. The UI returns `PASSWORD_SUBMIT` or `PASSWORD_CANCEL`.
-//! 4. On `PASSWORD_SUBMIT`: bind to AD as dlp-admin DN, verify credentials
-//!    via LDAP simple bind.
+//! 4. On `PASSWORD_SUBMIT`: the DPAPI-wrapped blob from the UI is
+//!    unwrapped via `CryptUnprotectData`, and the plaintext password is used
+//!    to bind to AD as the dlp-admin DN via LDAP simple bind.
 //! 5. On 3 failed attempts or `PASSWORD_CANCEL`: log and abort stop.
 //! 6. On success: proceed with clean shutdown.
 //!
@@ -20,7 +21,10 @@ use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
 use tracing::{error, info, warn};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, WIN32_ERROR};
+use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, HLOCAL, LocalFree, WIN32_ERROR};
+use windows::Win32::Security::Cryptography::{
+    CryptUnprotectData, CRYPT_INTEGER_BLOB,
+};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_SZ,
     REG_VALUE_TYPE,
@@ -251,19 +255,131 @@ pub fn get_admin_dn() -> Result<String> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DPAPI unprotect
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Decrypts a DPAPI-protected blob (`CryptUnprotectData`).
+///
+/// The UI side wrapped the password with `CryptProtectData`; the agent must
+/// unwrap it before passing the plaintext to LDAP.  This closes the security
+/// gap where the DPAPI protection was bypassed by sending the raw blob to LDAP.
+///
+/// Returns the plaintext password as a UTF-16 `Vec<u16>` (matching the format
+/// used by the UI dialog's `GetWindowTextW`).
+fn dpapi_unprotect(protected: &[u8]) -> anyhow::Result<Vec<u16>> {
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: protected.len() as u32,
+        pbData: protected.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+
+    // SAFETY: CryptUnprotectData reads the input blob and writes the output blob.
+    // The output buffer is allocated by the function and must be freed via LocalFree.
+    unsafe {
+        CryptUnprotectData(
+            &input,
+            None,
+            None,
+            None,
+            None,
+            0,
+            &mut output,
+        )
+        .ok()
+        .map_err(|e| anyhow::anyhow!("CryptUnprotectData failed: {}", e))?;
+
+        let plaintext = std::slice::from_raw_parts(output.pbData, output.cbData as usize)
+            .to_vec();
+        let _ = LocalFree(HLOCAL(output.pbData as *mut _));
+        Ok(plaintext)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Base64 decode (no external dep)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Decodes a base64 string into bytes.  Used to decode the DPAPI blob received
+/// from the UI before passing it to `dpapi_unprotect`.
+fn base64_decode(input: &str) -> anyhow::Result<Vec<u8>> {
+    const DECODE_TABLE: [i8; 256] = {
+        let mut table = [-1i8; 256];
+        let b64 = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut i = 0u8;
+        while i < 64 {
+            table[b64[i] as usize] = i as i8;
+            i += 1;
+        }
+        table
+    };
+
+    // Remove whitespace.
+    let filtered: Vec<u8> = input
+        .bytes()
+        .filter(|&b| b != b' ' && b != b'\n' && b != b'\r' && b != b'\t')
+        .collect();
+
+    let mut out = Vec::with_capacity(filtered.len() / 4 * 3);
+    let chunks: Vec<&[u8]> = filtered.chunks(4).collect();
+
+    for chunk in chunks {
+        let mut buf = [0u8; 4];
+        for (i, &b) in chunk.iter().enumerate() {
+            if b == b'=' {
+                buf[i] = 0;
+            } else {
+                let v = DECODE_TABLE[b as usize];
+                if v < 0 {
+                    return Err(anyhow::anyhow!("invalid base64 character: {:?}", b as char));
+                }
+                buf[i] = v as u8;
+            }
+        }
+
+        out.push((buf[0] << 2) | (buf[1] >> 4));
+        if chunk.len() > 2 && chunk[2] != b'=' {
+            out.push((buf[1] << 4) | (buf[2] >> 2));
+        }
+        if chunk.len() > 3 && chunk[3] != b'=' {
+            out.push((buf[2] << 6) | buf[3]);
+        }
+    }
+
+    Ok(out)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // LDAP verification
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Verifies the dlp-admin password by performing an LDAP simple bind.
+/// Verifies the dlp-admin password received from the UI.
 ///
-/// `LdapConn::new()` creates its own internal tokio runtime and manages
-/// the connection synchronously — no explicit thread spawning needed.
+/// The UI sends a DPAPI-protected, base64-encoded blob.  This function:
+/// 1. Base64-decodes the blob.
+/// 2. Calls `CryptUnprotectData` to recover the plaintext password.
+/// 3. Converts the plaintext UTF-16 bytes to a UTF-8 string.
+/// 4. Performs an LDAP simple bind to verify the credentials.
 ///
 /// Returns `Ok(true)` on successful bind, `Ok(false)` on invalid credentials,
-/// and `Err(...)` on a connection or protocol error.
-fn verify_credentials(password: &str) -> Result<bool> {
+/// and `Err(...)` on a connection, decoding, or DPAPI error.
+fn verify_credentials(password_b64: &str) -> Result<bool> {
     use ldap3::LdapConn;
 
+    // Step 1: Base64-decode the DPAPI blob.
+    let protected_bytes = base64_decode(password_b64)
+        .context("base64 decode of DPAPI blob from UI")?;
+
+    // Step 2: DPAPI-unprotect to recover UTF-16 password bytes.
+    let password_utf16 = dpapi_unprotect(&protected_bytes)
+        .context("CryptUnprotectData failed")?;
+
+    // Step 3: Convert UTF-16 LE to UTF-8 string (passwords are ASCII/Latin-1 compatible).
+    let password = String::from_utf16_lossy(&password_utf16);
+
+    // Step 4: LDAP simple bind.
     let admin_dn = get_admin_dn().context("get dlp-admin DN")?;
     let ldap_url =
         std::env::var("DLP_LDAP_URL").unwrap_or_else(|_| "ldaps://localhost:636".to_string());
@@ -271,7 +387,7 @@ fn verify_credentials(password: &str) -> Result<bool> {
     let mut ldap =
         LdapConn::new(&ldap_url).with_context(|| format!("invalid LDAP URL: {}", ldap_url))?;
 
-    let result = ldap.simple_bind(&admin_dn, password);
+    let result = ldap.simple_bind(&admin_dn, &password);
 
     match result {
         Ok(res) if res.rc == 0 => Ok(true),
