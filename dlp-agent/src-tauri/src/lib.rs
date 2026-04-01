@@ -1,0 +1,8 @@
+//! DLP Agent Tauri UI — library root (T-39).
+//!
+//! Exposes `run()` which builds and runs the Tauri application.
+
+mod ipc;
+pub mod ui_main;
+
+pub use ui_main::run;

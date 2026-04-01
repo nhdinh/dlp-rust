@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for DLP Agent UI",
+  "windows": [],
+  "permissions": []
+}
