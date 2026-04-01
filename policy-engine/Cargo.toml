@@ -60,7 +60,12 @@ async-trait = "0.1"
 dashmap = "6"
 parking_lot = "0.12"
 
+[[bin]]
+name = "policy-engine"
+path = "src/main.rs"
+
 [dev-dependencies]
+reqwest = { version = "0.12", features = ["json"], default-features = false }
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full", "tokio", "server-auto"] }

@@ -73,7 +73,7 @@ impl Server {
     }
 }
 
-/// Builds the axum router with all routes and middleware.
+/// Builds the axum router with evaluate + health + ready routes.
 fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/evaluate", post(evaluate_handler))
@@ -82,6 +82,28 @@ fn build_app(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+/// Builds the full router combining evaluation endpoints and CRUD REST API.
+///
+/// Use this when running the policy engine as a standalone server.
+/// Merges the evaluate/health/ready routes with the policy management
+/// CRUD routes from [`crate::rest_api`].
+///
+/// Layers (tracing, CORS) are applied to the merged router so that all
+/// routes — both evaluation and CRUD — are covered.
+pub fn build_full_router(store: Arc<PolicyStore>) -> Router {
+    let state = AppState { store: store.clone() };
+    let eval_routes = Router::new()
+        .route("/evaluate", post(evaluate_handler))
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
+        .with_state(state);
+    let crud_routes = crate::rest_api::router(store);
+    eval_routes
+        .merge(crud_routes)
+        .layer(TraceLayer::new_for_http())
+        .layer(CorsLayer::permissive())
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────

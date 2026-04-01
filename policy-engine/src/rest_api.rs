@@ -42,7 +42,7 @@ pub fn router(store: Arc<PolicyStore>) -> Router {
     Router::new()
         .route("/policies", get(list_policies).post(create_policy))
         .route(
-            "/policies/{id}",
+            "/policies/:id",
             get(get_policy).put(update_policy).delete(delete_policy),
         )
         .route("/policies/{id}/versions", get(get_policy_versions))
