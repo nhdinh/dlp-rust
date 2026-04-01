@@ -19,8 +19,8 @@
 //!   - `detection::usb` — USB mass storage detection via `GetDriveTypeW`.
 //!   - `detection::network_share` — SMB destination whitelisting.
 //!   - `detection::etw_bypass` — Hook/ETW correlation for evasion detection.
-//! - [`offline`] — Offline mode with cached decisions (Sprint 15, T-18).
-//! - [`audit_emitter`] — Append-only audit log (Sprint 15, T-19, T-26, T-27).
+//! - [`offline`] — Offline mode with fail-closed fallback (Sprint 15, T-18).
+//! - [`audit_emitter`] — Append-only JSONL audit log with rotation (Sprint 15, T-19/T-26/T-27).
 //! - [`clipboard`] — Clipboard hooks and content classifier (Sprint 16, T-20).
 
 pub mod prelude {
@@ -59,3 +59,8 @@ pub mod cache;
 
 #[cfg(windows)]
 pub mod detection;
+
+#[cfg(windows)]
+pub mod offline;
+
+pub mod audit_emitter;

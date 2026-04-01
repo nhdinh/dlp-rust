@@ -150,11 +150,11 @@
 
 | ID   | Status | Story | Task                                                                                                                                                 | Deliverable                      |
 | ---- | ------ | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| T-18 | [ ]    | US-11 | Implement offline mode: detect Policy Engine unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat                      | `dlp-agent/src/offline.rs`       |
-| T-19 | [ ]    | US-18 | Implement local append-only JSON audit log: `serde_json`, write-only file handle, `FsOptions::FILE_FLAG_BACKUP_SEMANTICS` for SERVICE account access | `dlp-agent/src/audit_emitter.rs` |
-| T-25 | [ ]    | US-18 | Define `AuditEvent` Rust types: serde serialization, all fields per F-AUD-02 schema (`access_context: local\|SMB`)                                   | `dlp-common/src/audit.rs`        |
-| T-26 | [ ]    | US-18 | Implement audit event emission: emit every intercepted file operation as JSON, no file content, real-time                                            | `dlp-agent/src/audit_emitter.rs` |
-| T-27 | [ ]    | US-18 | Implement append-only local audit log: write-only file handle, service account access via `FILE_FLAG_BACKUP_SEMANTICS`, log rotation (size-based)    | `dlp-agent/src/audit_emitter.rs` |
+| T-18 | [x]    | US-11 | Implement offline mode: detect Policy Engine unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat                      | `dlp-agent/src/offline.rs`       |
+| T-19 | [x]    | US-18 | Implement local append-only JSON audit log: `serde_json`, write-only file handle, `FsOptions::FILE_FLAG_BACKUP_SEMANTICS` for SERVICE account access | `dlp-agent/src/audit_emitter.rs` |
+| T-25 | [x]    | US-18 | Define `AuditEvent` Rust types: serde serialization, all fields per F-AUD-02 schema (`access_context: local\|SMB`)                                   | `dlp-common/src/audit.rs`        |
+| T-26 | [x]    | US-18 | Implement audit event emission: emit every intercepted file operation as JSON, no file content, real-time                                            | `dlp-agent/src/audit_emitter.rs` |
+| T-27 | [x]    | US-18 | Implement append-only local audit log: write-only file handle, service account access via `FILE_FLAG_BACKUP_SEMANTICS`, log rotation (size-based)    | `dlp-agent/src/audit_emitter.rs` |
 
 ---
 
@@ -188,9 +188,9 @@
 | Metric      | Count |
 | ----------- | ----- |
 | Total tasks | 46    |
-| Done        | 36    |
+| Done        | 41    |
 | In progress | 0     |
-| Todo        | 10    |
+| Todo        | 5     |
 
 ### Per-Sprint Summary
 
@@ -210,7 +210,7 @@
 | Sprint 12 | T-44, T-45, T-46             | 3/3  |
 | Sprint 13 | T-11, T-12, T-16, T-17       | 4/4  |
 | Sprint 14 | T-13, T-14, T-15             | 3/3  |
-| Sprint 15 | T-18, T-19, T-25, T-26, T-27 | 0/5  |
+| Sprint 15 | T-18, T-19, T-25, T-26, T-27 | 5/5  |
 | Sprint 16 | T-20                         | 0/1  |
 | Sprint 17 | T-21, T-28                   | 0/2  |
 | Sprint 18 | T-24                         | 1/1  |
