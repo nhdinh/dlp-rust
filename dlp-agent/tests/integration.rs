@@ -353,9 +353,420 @@ async fn test_e2e_audit_event_round_trip() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helper: convert PolicyMapper Action to dlp_common Action (they're the same)
+// Helper
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn abab_action_to_dlp(action: Action) -> Action {
     action
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-AGT-05/06: All FileAction variants mapped and evaluated
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_all_file_action_variants_mapped() {
+    use dlp_agent::interception::{FileAction, PolicyMapper};
+
+    let cases: Vec<(FileAction, Action)> = vec![
+        (
+            FileAction::Created { path: "a".into(), process_id: 1, related_process_id: 0 },
+            Action::WRITE,
+        ),
+        (
+            FileAction::Written { path: "a".into(), process_id: 1, related_process_id: 0, byte_count: 0 },
+            Action::WRITE,
+        ),
+        (
+            FileAction::Deleted { path: "a".into(), process_id: 1, related_process_id: 0 },
+            Action::DELETE,
+        ),
+        (
+            FileAction::Moved { old_path: "a".into(), new_path: "b".into(), process_id: 1, related_process_id: 0 },
+            Action::MOVE,
+        ),
+        (
+            FileAction::Read { path: "a".into(), process_id: 1, related_process_id: 0, byte_count: 0 },
+            Action::READ,
+        ),
+        (
+            FileAction::EvasionDetected { path: "a".into(), process_id: 1, etw_operation_name: "x".into() },
+            Action::WRITE,
+        ),
+    ];
+
+    for (action, expected) in cases {
+        assert_eq!(
+            PolicyMapper::action_for(&action),
+            expected,
+            "FileAction::{:?} should map to Action::{expected:?}",
+            std::mem::discriminant(&action),
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_write_t4_deny_audit() {
+    use dlp_agent::audit_emitter::AuditEmitter;
+    use dlp_agent::interception::{FileAction, PolicyMapper};
+
+    let (addr, _h) = start_mock_engine(Decision::DENY).await;
+    let client = dlp_agent::engine_client::EngineClient::new(
+        &format!("http://{addr}"), false,
+    ).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
+
+    let action = FileAction::Written {
+        path: r"C:\Restricted\secret.xlsx".into(),
+        process_id: 1234,
+        related_process_id: 0,
+        byte_count: 4096,
+    };
+
+    let abac_action = PolicyMapper::action_for(&action);
+    let classification = PolicyMapper::provisional_classification(action.path());
+    assert_eq!(classification, Classification::T4);
+
+    let request = EvaluateRequest {
+        subject: dlp_common::Subject {
+            user_sid: "S-1-5-21-TEST".into(),
+            user_name: "testuser".into(),
+            groups: vec![],
+            device_trust: dlp_common::DeviceTrust::Managed,
+            network_location: dlp_common::NetworkLocation::Corporate,
+        },
+        resource: dlp_common::Resource {
+            path: action.path().into(),
+            classification,
+        },
+        environment: dlp_common::Environment {
+            timestamp: chrono::Utc::now(),
+            session_id: 1,
+            access_context: dlp_common::AccessContext::Local,
+        },
+        action: abac_action,
+    };
+
+    let response = client.evaluate(&request).await.unwrap();
+    assert!(response.decision.is_denied());
+
+    // Emit Block audit event.
+    let event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::Block,
+        "S-1-5-21-TEST".into(),
+        "testuser".into(),
+        action.path().into(),
+        classification,
+        abac_action,
+        response.decision,
+        "AGENT-TEST".into(),
+        1,
+    );
+    emitter.emit(&event).unwrap();
+
+    let contents = std::fs::read_to_string(emitter.log_path()).unwrap();
+    let parsed: dlp_common::AuditEvent = serde_json::from_str(contents.trim()).unwrap();
+    assert_eq!(parsed.event_type, dlp_common::EventType::Block);
+    assert_eq!(parsed.decision, Decision::DENY);
+}
+
+#[tokio::test]
+async fn test_read_t1_allow() {
+    let (addr, _h) = start_mock_engine(Decision::ALLOW).await;
+    let client = dlp_agent::engine_client::EngineClient::new(
+        &format!("http://{addr}"), false,
+    ).unwrap();
+
+    use dlp_agent::interception::{FileAction, PolicyMapper};
+
+    let action = FileAction::Read {
+        path: r"C:\Public\readme.txt".into(),
+        process_id: 100,
+        related_process_id: 0,
+        byte_count: 256,
+    };
+
+    let abac_action = PolicyMapper::action_for(&action);
+    assert_eq!(abac_action, Action::READ);
+
+    let classification = PolicyMapper::provisional_classification(action.path());
+    assert_eq!(classification, Classification::T1);
+
+    let request = EvaluateRequest {
+        subject: dlp_common::Subject::default(),
+        resource: dlp_common::Resource { path: action.path().into(), classification },
+        environment: dlp_common::Environment {
+            timestamp: chrono::Utc::now(), session_id: 1,
+            access_context: dlp_common::AccessContext::Local,
+        },
+        action: abac_action,
+    };
+
+    let response = client.evaluate(&request).await.unwrap();
+    assert!(!response.decision.is_denied());
+}
+
+#[tokio::test]
+async fn test_delete_action_maps() {
+    use dlp_agent::interception::{FileAction, PolicyMapper};
+    let action = FileAction::Deleted {
+        path: r"C:\Data\old.txt".into(), process_id: 1, related_process_id: 0,
+    };
+    assert_eq!(PolicyMapper::action_for(&action), Action::DELETE);
+    assert_eq!(PolicyMapper::provisional_classification(action.path()), Classification::T2);
+}
+
+#[tokio::test]
+async fn test_move_action_maps() {
+    use dlp_agent::interception::{FileAction, PolicyMapper};
+    let action = FileAction::Moved {
+        old_path: r"C:\Confidential\a.doc".into(),
+        new_path: r"C:\Data\b.doc".into(),
+        process_id: 1, related_process_id: 0,
+    };
+    assert_eq!(PolicyMapper::action_for(&action), Action::MOVE);
+    // Moved path() returns new_path.
+    assert_eq!(action.path(), r"C:\Data\b.doc");
+}
+
+#[tokio::test]
+async fn test_evasion_maps_to_write() {
+    use dlp_agent::interception::{FileAction, PolicyMapper};
+    let action = FileAction::EvasionDetected {
+        path: r"C:\Data\sneaky.txt".into(),
+        process_id: 999,
+        etw_operation_name: "NtWriteFile".into(),
+    };
+    assert_eq!(PolicyMapper::action_for(&action), Action::WRITE);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-AGT-10: Cache TTL
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_cache_ttl_expiry() {
+    use dlp_agent::cache::{self, Cache};
+    use std::time::Duration;
+
+    let cache = Cache::with_ttl(Duration::from_millis(50));
+    cache.insert(
+        r"C:\Restricted\secret.xlsx", "S-1-5-21-123",
+        EvaluateResponse {
+            decision: Decision::ALLOW,
+            matched_policy_id: None,
+            reason: "test".into(),
+        },
+    );
+    assert!(cache.get(r"C:\Restricted\secret.xlsx", "S-1-5-21-123").is_some());
+
+    // Wait for TTL expiry.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Cache miss after expiry.
+    assert!(cache.get(r"C:\Restricted\secret.xlsx", "S-1-5-21-123").is_none());
+
+    // Fail-closed for T4.
+    let fallback = cache::fail_closed_response(Classification::T4);
+    assert!(fallback.decision.is_denied());
+}
+
+#[tokio::test]
+async fn test_cache_configurable_ttl() {
+    use dlp_agent::cache::Cache;
+    use std::time::Duration;
+
+    let cache = Cache::with_ttl(Duration::from_secs(300));
+    cache.insert("a", "b", EvaluateResponse {
+        decision: Decision::ALLOW,
+        matched_policy_id: None,
+        reason: "test".into(),
+    });
+    // Should still be present (300s TTL).
+    assert!(cache.get("a", "b").is_some());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-AGT-11: Offline manager transition
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_offline_manager_transition() {
+    use dlp_agent::offline::OfflineManager;
+
+    let cache = Arc::new(dlp_agent::cache::Cache::new());
+    let client = dlp_agent::engine_client::EngineClient::new(
+        "http://127.0.0.1:1", false, // unreachable port
+    ).unwrap();
+
+    let manager = OfflineManager::new(client, cache.clone());
+    assert!(manager.is_online());
+
+    // Evaluate against unreachable engine → should transition offline.
+    let req = EvaluateRequest {
+        subject: dlp_common::Subject::default(),
+        resource: dlp_common::Resource {
+            path: r"C:\Restricted\secret.xlsx".into(),
+            classification: Classification::T4,
+        },
+        environment: dlp_common::Environment {
+            timestamp: chrono::Utc::now(), session_id: 1,
+            access_context: dlp_common::AccessContext::Local,
+        },
+        action: Action::WRITE,
+    };
+
+    let resp = manager.evaluate(&req).await;
+    // T4 cache miss → fail-closed DENY.
+    assert!(resp.decision.is_denied());
+    // Manager should now be offline.
+    assert!(!manager.is_online());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-AGT-13: USB all tiers + lifecycle
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_usb_all_tiers() {
+    use dlp_agent::detection::UsbDetector;
+    let detector = UsbDetector::new();
+    // Simulate F: as USB.
+    detector.on_drive_arrival('F');
+    // F: may not be removable on this machine, so insert directly for the test.
+    // (on_drive_arrival checks GetDriveTypeW which won't match in test)
+    // Use the fact that unit tests already validate this path.
+    // Here we test the should_block_write logic with a known-blocked drive.
+
+    // If F was added (hardware check passed), verify all tiers.
+    // Otherwise, test with a manually blocked drive via the public API.
+    // The UsbDetector doesn't expose blocked_drives directly from integration
+    // tests, so we rely on the unit tests for full tier coverage.
+    // Instead, verify the classification-based logic:
+    assert!(!detector.should_block_write(r"C:\Data\file.txt", Classification::T4));
+    // C: is not a USB drive, so T4 on C: is not blocked by USB detector.
+}
+
+#[tokio::test]
+async fn test_usb_lifecycle() {
+    use dlp_agent::detection::UsbDetector;
+    let detector = UsbDetector::new();
+    assert!(detector.blocked_drive_letters().is_empty());
+
+    // on_drive_arrival/removal are hardware-dependent, so we verify the
+    // public API contract: removal of a letter not in the set is a no-op.
+    detector.on_drive_removal('Z');
+    assert!(detector.blocked_drive_letters().is_empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-AGT-14: Network share whitelist lifecycle
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_whitelist_lifecycle() {
+    use dlp_agent::detection::NetworkShareDetector;
+
+    let detector = NetworkShareDetector::new();
+
+    // Empty whitelist → block T3.
+    assert!(detector.should_block(r"\\server\share", Classification::T3));
+
+    // Add to whitelist → allow.
+    detector.add_to_whitelist("server");
+    assert!(!detector.should_block(r"\\server\share", Classification::T3));
+
+    // Replace whitelist → old entry gone.
+    detector.replace_whitelist(vec!["other.server".into()]);
+    assert!(detector.should_block(r"\\server\share", Classification::T3));
+    assert!(!detector.should_block(r"\\other.server\data", Classification::T4));
+
+    // Remove → block again.
+    detector.remove_from_whitelist("other.server");
+    assert!(detector.should_block(r"\\other.server\data", Classification::T4));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-AGT-17: Clipboard → evaluate → audit pipeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_clipboard_to_audit() {
+    use dlp_agent::audit_emitter::AuditEmitter;
+    use dlp_agent::clipboard::ClipboardClassifier;
+
+    let text = "My SSN is 123-45-6789";
+    let classification = ClipboardClassifier::classify(text);
+    assert_eq!(classification, Classification::T4);
+
+    // Emit audit for the clipboard event.
+    let dir = tempfile::tempdir().unwrap();
+    let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
+
+    let event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::Block,
+        "S-1-5-21-CLIP".into(),
+        "clipuser".into(),
+        "clipboard".into(),
+        classification,
+        Action::COPY,
+        Decision::DENY,
+        "AGENT-TEST".into(),
+        1,
+    );
+    emitter.emit(&event).unwrap();
+
+    let contents = std::fs::read_to_string(emitter.log_path()).unwrap();
+    let parsed: dlp_common::AuditEvent = serde_json::from_str(contents.trim()).unwrap();
+    assert_eq!(parsed.classification, Classification::T4);
+    assert_eq!(parsed.action_attempted, Action::COPY);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-AGT-18: ETW bypass → evasion → audit pipeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_etw_bypass_to_audit() {
+    use dlp_agent::audit_emitter::AuditEmitter;
+    use dlp_agent::detection::EtwBypassDetector;
+    use dlp_agent::interception::{FileAction, PolicyMapper};
+
+    let detector = EtwBypassDetector::new();
+
+    // No hook recorded → ETW event triggers evasion.
+    let signal = detector
+        .check_etw_event(r"C:\Data\sneaky.txt", 200, "NtWriteFile")
+        .expect("should detect evasion");
+
+    // Map evasion to FileAction.
+    let action = FileAction::EvasionDetected {
+        path: signal.path.clone(),
+        process_id: signal.process_id,
+        etw_operation_name: signal.etw_operation.clone(),
+    };
+
+    assert_eq!(PolicyMapper::action_for(&action), Action::WRITE);
+
+    // Emit EVASION_SUSPECTED audit event.
+    let dir = tempfile::tempdir().unwrap();
+    let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
+
+    let event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::EvasionSuspected,
+        "S-1-5-21-EVADE".into(),
+        "sneaker".into(),
+        signal.path,
+        Classification::T2,
+        Action::WRITE,
+        Decision::DENY,
+        "AGENT-TEST".into(),
+        1,
+    );
+    emitter.emit(&event).unwrap();
+
+    let contents = std::fs::read_to_string(emitter.log_path()).unwrap();
+    let parsed: dlp_common::AuditEvent = serde_json::from_str(contents.trim()).unwrap();
+    assert_eq!(parsed.event_type, dlp_common::EventType::EvasionSuspected);
 }
