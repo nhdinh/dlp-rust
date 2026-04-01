@@ -4,13 +4,20 @@
 //! - Device trust level (managed / compliant / unmanaged)
 //! - User group membership (list of group SIDs)
 //!
+//! ## Caching
+//!
+//! All lookups are cached with a configurable TTL (default 5 minutes) using an
+//! in-memory `DashMap`. Cache hits avoid all network I/O.
+//!
 //! ## Mock AD Server
 //!
 //! For development and CI, a mock AD server is provided in `tests/mock_ad/`
-//! as a standalone binary. Run it with: `cargo run --package mock_ad --tests`
-//! It listens on `localhost:3389` and can be used by setting the
-//! `DLP_AD_LDAP_URL=ldap://localhost:3389` environment variable.
+//! as a standalone binary. Run it with: `cargo run -p mock_ad` from the policy-engine
+//! directory. It listens on `localhost:3389`.
 
+use std::time::{Duration, Instant};
+
+use dashmap::DashMap;
 use dlp_common::abac::{DeviceTrust, NetworkLocation};
 use ldap3::{LdapConn, Scope, SearchEntry};
 use tracing::{debug, warn};
@@ -25,11 +32,34 @@ const ATTR_NETWORK_LOCATION: &str = "dlpNetworkLocation";
 /// Maximum results to accept from a group membership search.
 const MAX_GROUP_SEARCH_RESULTS: usize = 1_000;
 
-/// An Active Directory client backed by LDAP.
+/// Default TTL for cached AD lookups (5 minutes).
+const DEFAULT_CACHE_TTL_SECS: u64 = 300;
+
+/// A cached AD lookup entry: value plus expiry instant.
+#[derive(Clone)]
+struct CacheEntry<V: Clone> {
+    value: V,
+    expires_at: Instant,
+}
+
+impl<V: Clone> CacheEntry<V> {
+    fn new(value: V, ttl: Duration) -> Self {
+        Self {
+            value,
+            expires_at: Instant::now() + ttl,
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        Instant::now() >= self.expires_at
+    }
+}
+
+/// An Active Directory client backed by LDAP with an in-memory TTL cache.
 ///
 /// All network I/O is performed on a blocking thread via `tokio::task::spawn_blocking`
 /// so the async runtime is never blocked.
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct AdClient {
     /// LDAP URL (e.g. "ldaps://dc01.contoso.com:636" or "ldap://dc01:389").
     ldap_url: String,
@@ -39,10 +69,29 @@ pub struct AdClient {
     bind_dn: String,
     /// Bind password.
     bind_password: String,
+    /// Cache TTL.
+    cache_ttl: Duration,
+    /// Cache: user_sid -> group SIDs.
+    group_cache: DashMap<String, CacheEntry<Vec<String>>>,
+    /// Cache: machine_dn -> device trust.
+    device_trust_cache: DashMap<String, CacheEntry<DeviceTrust>>,
+    /// Cache: machine_dn -> network location.
+    network_location_cache: DashMap<String, CacheEntry<NetworkLocation>>,
+}
+
+impl std::fmt::Debug for AdClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdClient")
+            .field("ldap_url", &self.ldap_url)
+            .field("base_dn", &self.base_dn)
+            .field("bind_dn", &self.bind_dn)
+            .field("cache_ttl", &self.cache_ttl)
+            .finish()
+    }
 }
 
 impl AdClient {
-    /// Creates a new AD client from the given configuration.
+    /// Creates a new AD client with the default cache TTL (5 minutes).
     ///
     /// # Example
     ///
@@ -57,23 +106,56 @@ impl AdClient {
     /// );
     /// ```
     pub fn new(ldap_url: String, base_dn: String, bind_dn: String, bind_password: String) -> Self {
+        Self::new_with_ttl(
+            ldap_url,
+            base_dn,
+            bind_dn,
+            bind_password,
+            DEFAULT_CACHE_TTL_SECS,
+        )
+    }
+
+    /// Creates a new AD client with a custom cache TTL.
+    ///
+    /// # Arguments
+    ///
+    /// * `ttl_secs` - Cache time-to-live in seconds.
+    pub fn new_with_ttl(
+        ldap_url: String,
+        base_dn: String,
+        bind_dn: String,
+        bind_password: String,
+        ttl_secs: u64,
+    ) -> Self {
         Self {
             ldap_url,
             base_dn,
             bind_dn,
             bind_password,
+            cache_ttl: Duration::from_secs(ttl_secs),
+            group_cache: DashMap::new(),
+            device_trust_cache: DashMap::new(),
+            network_location_cache: DashMap::new(),
         }
     }
 
     /// Looks up all group SIDs for the given user SID.
     ///
-    /// Queries `memberOf` on the user object identified by `user_sid`.
-    /// Returns the flat list of group SIDs (as strings).
+    /// Results are cached for [`cache_ttl`][AdClient::cache_ttl].
+    /// A cache hit returns immediately without any network I/O.
     ///
     /// # Errors
     ///
     /// Returns `AdClientError::AdQueryError` if the LDAP search fails.
     pub async fn get_group_sids(&self, user_sid: &str) -> Result<Vec<String>> {
+        // Check cache first.
+        if let Some(entry) = self.group_cache.get(user_sid) {
+            if !entry.is_expired() {
+                debug!(user_sid, "group membership cache hit");
+                return Ok(entry.value.clone());
+            }
+        }
+
         let filter = format!(
             "(&(objectClass=user)(objectSid={}))",
             escape_filter(user_sid)
@@ -97,17 +179,31 @@ impl AdClient {
             count = group_sids.len(),
             "group membership resolved"
         );
+
+        // Store in cache.
+        self.group_cache.insert(
+            user_sid.to_string(),
+            CacheEntry::new(group_sids.clone(), self.cache_ttl),
+        );
         Ok(group_sids)
     }
 
     /// Looks up the device trust level for the machine identified by its distinguished name.
     ///
-    /// Queries the `dlpDeviceTrust` attribute on the computer object.
+    /// Results are cached for [`cache_ttl`][AdClient::cache_ttl].
     ///
     /// # Errors
     ///
     /// Returns `AdClientError::AdQueryError` if the LDAP search fails.
     pub async fn get_device_trust(&self, machine_dn: &str) -> Result<DeviceTrust> {
+        // Check cache first.
+        if let Some(entry) = self.device_trust_cache.get(machine_dn) {
+            if !entry.is_expired() {
+                debug!(machine_dn, "device trust cache hit");
+                return Ok(entry.value.clone());
+            }
+        }
+
         let filter = format!(
             "(&(objectClass=computer)(distinguishedName={}))",
             escape_filter(machine_dn)
@@ -115,29 +211,46 @@ impl AdClient {
 
         let results = self.ldap_search(&filter, &[ATTR_DEVICE_TRUST]).await?;
 
-        let Some(entry) = results.into_iter().next() else {
-            return Ok(DeviceTrust::Unknown);
+        let trust = {
+            let mut trust_str = String::new();
+            for entry in results {
+                if let Some(v) = entry.attrs.get(ATTR_DEVICE_TRUST) {
+                    if let Some(s) = v.first() {
+                        trust_str = s.to_string();
+                        break;
+                    }
+                }
+            }
+            trust_str
         };
 
-        let value = entry
-            .attrs
-            .get(ATTR_DEVICE_TRUST)
-            .and_then(|v| v.first())
-            .map(String::as_str)
-            .unwrap_or_default();
+        debug!(machine_dn, trust, "device trust resolved");
+        let parsed = parse_device_trust(&trust)?;
 
-        debug!(machine_dn, trust = value, "device trust resolved");
-        parse_device_trust(value)
+        // Store in cache.
+        self.device_trust_cache.insert(
+            machine_dn.to_string(),
+            CacheEntry::new(parsed.clone(), self.cache_ttl),
+        );
+        Ok(parsed)
     }
 
     /// Looks up the network location tag for the machine.
     ///
-    /// Queries the `dlpNetworkLocation` attribute on the computer object.
+    /// Results are cached for [`cache_ttl`][AdClient::cache_ttl].
     ///
     /// # Errors
     ///
     /// Returns `AdClientError::AdQueryError` if the LDAP search fails.
     pub async fn get_network_location(&self, machine_dn: &str) -> Result<NetworkLocation> {
+        // Check cache first.
+        if let Some(entry) = self.network_location_cache.get(machine_dn) {
+            if !entry.is_expired() {
+                debug!(machine_dn, "network location cache hit");
+                return Ok(entry.value.clone());
+            }
+        }
+
         let filter = format!(
             "(&(objectClass=computer)(distinguishedName={}))",
             escape_filter(machine_dn)
@@ -145,19 +258,38 @@ impl AdClient {
 
         let results = self.ldap_search(&filter, &[ATTR_NETWORK_LOCATION]).await?;
 
-        let Some(entry) = results.into_iter().next() else {
-            return Ok(NetworkLocation::Unknown);
+        let location = {
+            let mut location_str = String::new();
+            for entry in results {
+                if let Some(v) = entry.attrs.get(ATTR_NETWORK_LOCATION) {
+                    if let Some(s) = v.first() {
+                        location_str = s.to_string();
+                        break;
+                    }
+                }
+            }
+            location_str
         };
 
-        let value = entry
-            .attrs
-            .get(ATTR_NETWORK_LOCATION)
-            .and_then(|v| v.first())
-            .map(String::as_str)
-            .unwrap_or_default();
+        debug!(machine_dn, location, "network location resolved");
+        let parsed = parse_network_location(&location)?;
 
-        debug!(machine_dn, location = value, "network location resolved");
-        parse_network_location(value)
+        // Store in cache.
+        self.network_location_cache.insert(
+            machine_dn.to_string(),
+            CacheEntry::new(parsed.clone(), self.cache_ttl),
+        );
+        Ok(parsed)
+    }
+
+    /// Clears all cached AD lookups.
+    ///
+    /// Forces the next lookup for any key to hit AD directly.
+    pub fn clear_cache(&self) {
+        self.group_cache.clear();
+        self.device_trust_cache.clear();
+        self.network_location_cache.clear();
+        debug!("AD cache cleared");
     }
 
     /// Performs an LDAP search and returns parsed search entries.

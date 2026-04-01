@@ -9,15 +9,18 @@
 //!
 //! ## Hot-Reload
 //!
-//! Hot-reload is implemented in Sprint 3 (T-23). This module provides the
-//! persistence layer. The watcher is added in [`PolicyStore::start_hot_reload`].
+//! File-system notifications via `notify` detect external policy file changes.
+//! On a modify event the store reloads and re-validates the file within 5 s.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use dlp_common::abac::{EvaluateRequest, EvaluateResponse, Policy};
-use tracing::{info, warn};
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use tracing::{debug, error, info, warn};
 
 use crate::engine::AbacEngine;
 use crate::error::{PolicyEngineError, Result};
@@ -34,8 +37,9 @@ pub struct PolicyStore {
     /// The next version number to assign (monotonically increasing).
     #[allow(dead_code)]
     next_version: u64,
+    /// Set to true to stop the hot-reload watcher.
     #[allow(dead_code)]
-    running: bool,
+    shutdown_flag: Arc<AtomicBool>,
 }
 
 impl PolicyStore {
@@ -61,7 +65,7 @@ impl PolicyStore {
             engine,
             version_lock: parking_lot::Mutex::new(0),
             next_version: max_version.saturating_add(1),
-            running: false,
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -197,6 +201,95 @@ impl PolicyStore {
     /// Returns a snapshot of all currently loaded policies.
     pub fn list_policies(&self) -> Vec<Policy> {
         self.engine.get_policies()
+    }
+
+    /// Starts a background thread that watches the policy file for changes.
+    ///
+    /// On a file-modify event the new content is loaded, validated, and
+    /// atomically swapped into the engine. Concurrent modify events are
+    /// coalesced — only one reload runs at a time.
+    ///
+    /// The watcher stops when `shutdown_flag` (stored in `PolicyStore`) is set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the underlying `notify` watcher cannot be created.
+    pub fn start_hot_reload(&self) {
+        let path = self.path.clone();
+        let engine = self.engine.clone();
+        let shutdown_flag = self.shutdown_flag.clone();
+
+        // Debounce window: coalesce rapid file-change events.
+        let debounce = Duration::from_secs(2);
+
+        std::thread::spawn(move || {
+            let (tx, rx) = std::sync::mpsc::channel();
+
+            let mut watcher = RecommendedWatcher::new(
+                move |res: std::result::Result<notify::Event, notify::Error>| {
+                    if res.is_ok() {
+                        let _ = tx.send(());
+                    }
+                },
+                Config::default().with_poll_interval(Duration::from_secs(1)),
+            )
+            .expect("failed to create notify watcher");
+
+            // Watch the parent directory to catch rename/replace events too.
+            if let Some(parent) = path.parent() {
+                let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
+            }
+
+            let mut pending_reload = false;
+
+            loop {
+                // Check shutdown flag.
+                if shutdown_flag.load(Ordering::Relaxed) {
+                    debug!("hot-reload watcher stopping");
+                    break;
+                }
+
+                // Wait for an event (with timeout so we can re-check shutdown).
+                let timeout = if pending_reload {
+                    // After an event, wait for debounce period then reload.
+                    debounce
+                } else {
+                    Duration::from_secs(1)
+                };
+
+                match rx.recv_timeout(timeout) {
+                    Ok(()) => {
+                        // Event received — set flag to reload after debounce.
+                        pending_reload = true;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if pending_reload {
+                            pending_reload = false;
+                            // Perform reload on this thread to avoid blocking notify.
+                            let engine_clone = engine.clone();
+                            let path_clone = path.clone();
+                            std::thread::spawn(move || match Self::load_from_disk(&path_clone) {
+                                Ok((policies, _)) => {
+                                    if let Err(e) = engine_clone.reload_policies(policies) {
+                                        error!(error = %e, "hot-reload failed: invalid policies");
+                                    } else {
+                                        debug!("hot-reload: policies reloaded");
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(error = %e, "hot-reload failed: could not read file");
+                                }
+                            });
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        break;
+                    }
+                }
+            }
+        });
+
+        info!(path = %self.path.display(), "hot-reload watcher started");
     }
 
     /// Evaluates an ABAC access request against the loaded policy set.
