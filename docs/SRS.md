@@ -307,7 +307,7 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 | F-ENG-01 | Engine shall evaluate ABAC policy rules in the format `IF <conditions> THEN <action>`                                                                 | Must     |
 | F-ENG-02 | Engine shall support conditions based on: user identity, group membership, device trust level, resource classification, time of day, network location | Must     |
 | F-ENG-03 | Engine shall support actions: ALLOW, DENY, ALLOW_WITH_LOG, DENY_WITH_ALERT                                                                            | Must     |
-| F-ENG-04 | Engine shall provide an HTTPS/REST interface for policy evaluation requests                                                                          | Must     |
+| F-ENG-04 | Engine shall provide an HTTPS/REST interface for policy evaluation requests                                                                           | Must     |
 | F-ENG-05 | Engine shall support REST API for policy CRUD operations (admin-facing)                                                                               | Must     |
 | F-ENG-06 | Engine shall load and hot-reload policies from a JSON/YAML policy store without restart                                                               | Should   |
 | F-ENG-07 | Engine shall return decisions within 50ms at P95 under normal load                                                                                    | Must     |
@@ -319,17 +319,17 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 
 ### 3.7 Audit & Logging Features
 
-| ID       | Requirement                                                                                                                                                                                 | Priority |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ---- |
-| F-AUD-01 | All audit events shall be emitted in structured JSON format                                                                                                                                 | Must     |
-| F-AUD-02 | Audit event schema shall include: timestamp, event_type, user_sid, user_name, resource_path, classification, action_taken, decision, policy_id, agent_id, session_id, access_context (local | SMB)     | Must |
-| F-AUD-03 | Audit events shall be sent to dlp-server over HTTPS (dlp-server relays to SIEM)                                                                                                             | Must     |
-| F-AUD-04 | dlp-server shall buffer audit events locally when SIEM is unreachable and drain when connectivity is restored                                                                               | Must     |
-| F-AUD-05 | Logs shall not contain file content (payload) — only metadata                                                                                                                               | Must     |
-| F-AUD-06 | Audit log integrity shall be protected by append-only file storage or equivalent                                                                                                            | Must     |
-| F-AUD-07 | DLP Admin shall be able to query and export audit events from the administrative UI                                                                                                         | Must     |
-| F-AUD-08 | Policy violation events (DENY_WITH_ALERT) shall trigger immediate alert to configured recipients via dlp-server                                                                             | Must     |
-| F-AUD-09 | dlp-server shall emit an audit event for every administrative action performed via dlp-admin-portal (identity, action, timestamp, resource)                                                 | Must     |
+| ID       | Requirement                                                                                                                                                                                         | Priority |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| F-AUD-01 | All audit events shall be emitted in structured JSON format                                                                                                                                         | Must     |
+| F-AUD-02 | Audit event schema shall include: timestamp, event_type, user_sid, user_name, resource_path, classification, action_taken, decision, policy_id, agent_id, session_id, access_context (local \| SMB) | Must     |
+| F-AUD-03 | Audit events shall be sent to dlp-server over HTTPS (dlp-server relays to SIEM)                                                                                                                     | Must     |
+| F-AUD-04 | dlp-server shall buffer audit events locally when SIEM is unreachable and drain when connectivity is restored                                                                                       | Must     |
+| F-AUD-05 | Logs shall not contain file content (payload) — only metadata                                                                                                                                       | Must     |
+| F-AUD-06 | Audit log integrity shall be protected by append-only file storage or equivalent                                                                                                                    | Must     |
+| F-AUD-07 | DLP Admin shall be able to query and export audit events from the administrative UI                                                                                                                 | Must     |
+| F-AUD-08 | Policy violation events (DENY_WITH_ALERT) shall trigger immediate alert to configured recipients via dlp-server                                                                                     | Must     |
+| F-AUD-09 | dlp-server shall emit an audit event for every administrative action performed via dlp-admin-portal (identity, action, timestamp, resource)                                                         | Must     |
 
 ### 3.8 dlp-server Features
 
@@ -359,7 +359,7 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 | N-SEC-02 | Credentials shall never be stored in plaintext; use Windows Credential Manager or HSM                                                                                                                                  | Must   |
 | N-SEC-03 | Agent shall run as a Windows Service under the SYSTEM account; UI runs in the interactive user session as the logged-in user                                                                                           | Must   |
 | N-SEC-04 | Policy Engine shall be deployed on an isolated, hardened host                                                                                                                                                          | Must   |
-| N-SEC-05 | HTTPS API shall authenticate agents via mutual TLS (mTLS)                                                                                                                                                               | Must   |
+| N-SEC-05 | HTTPS API shall authenticate agents via mutual TLS (mTLS)                                                                                                                                                              | Must   |
 | N-SEC-06 | DLP Admin shall use MFA for all administrative sessions                                                                                                                                                                | Must   |
 | N-SEC-07 | Audit logs shall be immutable once written                                                                                                                                                                             | Must   |
 | N-SEC-08 | Agent shall verify Policy Engine certificate before establishing connection                                                                                                                                            | Must   |
@@ -424,15 +424,15 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 
 ### 4.7 Agent-as-Service Operational
 
-| ID       | Requirement                                                                                                                                                                  | Target                                               |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ---- |
-| N-SVC-01 | Agent shall register as a Windows Service via `sc create dlp-agent type= own start= auto`                                                                                    | Must                                                 |
-| N-SVC-02 | Agent shall be a single-instance service; subsequent start attempts shall be rejected with error                                                                             | Must                                                 |
-| N-SVC-03 | Agent shall survive logoff of the interactive user session without stopping                                                                                                  | Must                                                 |
-| N-SVC-04 | Agent shall launch one UI subprocess per active user session; sessions created after startup are detected via `WTSRegisterSessionNotification` and receive a new UI instance | Must                                                 |
-| N-SVC-05 | Named pipes shall use `PIPE_TYPE_MESSAGE                                                                                                                                     | PIPE_READMODE_MESSAGE` (message-mode, not byte-mode) | Must |
-| N-SVC-06 | Service shutdown shall complete within 30 seconds after correct password verification                                                                                        | Must                                                 |
-| N-SVC-07 | UI shall terminate cleanly within 5 seconds of receiving the stop confirmation from Agent                                                                                    | Must                                                 |
+| ID       | Requirement                                                                                                                                                                                                                          | Target |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
+| N-SVC-01 | Agent shall register as a Windows Service via `sc create dlp-agent type= own start= auto`                                                                                                                                            | Must   |
+| N-SVC-02 | Agent shall be a single-instance service; subsequent start attempts shall be rejected with error                                                                                                                                     | Must   |
+| N-SVC-03 | Agent shall survive logoff of the interactive user session without stopping                                                                                                                                                          | Must   |
+| N-SVC-04 | Agent shall launch one UI subprocess per active user session; sessions created after startup are detected via `WTSRegisterSessionNotification` and receive a new UI instance                                                         | Must   |
+| N-SVC-05 | Named pipes shall use `PIPE_TYPE_MESSAGE                                                                                                                                     \| PIPE_READMODE_MESSAGE` (message-mode, not byte-mode) | Must   |
+| N-SVC-06 | Service shutdown shall complete within 30 seconds after correct password verification                                                                                                                                                | Must   |
+| N-SVC-07 | UI shall terminate cleanly within 5 seconds of receiving the stop confirmation from Agent                                                                                                                                            | Must   |
 
 ### 4.8 dlp-server Operational
 
