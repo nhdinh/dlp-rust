@@ -282,17 +282,29 @@ impl InterceptionEngine {
 
         // ── Open the trace for real-time delivery ───────────────────────────
 
-        // Create the shared processor state.
-        let _state = Arc::new(SharedProcessor {
+        // Build the shared state and register it in the global OnceLock.
+        // SAFETY: CALLBACK_STATE.set() is called once per run() call, and the
+        // callback accesses it read-only.  The OnceLock is cleared by take() below.
+        let state = Arc::new(CallbackState {
             stop_flag: self.stop_flag.clone(),
-            sender: Mutex::new(Some(tx)),
+            sender: Arc::new(Mutex::new(Some(tx))),
         });
+        {
+            let mut guard = CALLBACK_STATE.lock();
+            *guard = Some(state.clone());
+        }
 
-        // SAFETY: we pass valid pointers for all required callback fields.
+        // SAFETY: the callback is a valid function pointer.
         let trace = unsafe { OpenTraceW(&mut build_logfile()) };
 
-        // SAFETY: the trace handle is valid; OpenTraceW returned a non-ERROR
-        // value; the callbacks are valid function pointers.
+        // OpenTraceW returns 0 on failure.
+        if trace.Value == 0 {
+            let mut guard = CALLBACK_STATE.lock();
+            *guard = None;
+            return Err(anyhow::anyhow!("OpenTraceW failed"));
+        }
+
+        // SAFETY: trace handle is valid; OpenTraceW succeeded.
         let result = unsafe {
             ProcessTrace(
                 &[PROCESSTRACE_HANDLE {
@@ -303,6 +315,9 @@ impl InterceptionEngine {
             )
         };
 
+        // Clean up the callback state.
+        let mut guard = CALLBACK_STATE.lock();
+        *guard = None;
         let _ = unsafe { CloseTrace(trace) };
 
         // Stop the trace.
@@ -314,7 +329,7 @@ impl InterceptionEngine {
                 windows::core::PCWSTR(session_name_for_stop.as_ptr()),
                 props,
             );
-        }
+        };
 
         if result.is_err() {
             return Err(anyhow::anyhow!("ProcessTrace failed: {result:?}"));
@@ -350,15 +365,36 @@ impl Drop for InterceptionEngine {
 // Shared processor state between the callback thread and the engine owner
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// State shared between the ETW callback thread and the engine owner.
-/// The `sender` is stored in a `Mutex` because the callback runs on the
-/// Windows system thread pool while `run()` might clean it up on drop.
-#[allow(dead_code)]
-struct SharedProcessor {
+/// Global shared state for the ETW event callback.
+///
+/// Set once per trace session by `run()` before `OpenTraceW` is called.
+/// The callback reads it to dispatch events.  It is cleared by `run()` after
+/// `ProcessTrace` exits.
+static CALLBACK_STATE: Mutex<Option<Arc<CallbackState>>> = Mutex::new(None);
+
+/// The state the ETW callback needs access to.
+#[derive(Debug)]
+struct CallbackState {
+    /// Set to `true` by `InterceptionEngine::stop()`.  The callback checks this
+    /// to avoid sending events during shutdown.
     stop_flag: Arc<AtomicBool>,
-    /// Wrapped in a Mutex so the `EtwEventCallback` can take ownership of it
-    /// (via `take()`) while the `run()` future holds the outer `Arc`.
-    sender: Mutex<Option<mpsc::Sender<FileAction>>>,
+    /// Channel sender for `FileAction` events.  `try_send` is used
+    /// (fire-and-forget) — ETW must never block or panic.
+    sender: Arc<Mutex<Option<mpsc::Sender<FileAction>>>>,
+}
+
+impl CallbackState {
+    /// Sends `action` through the channel, silently dropping if the channel
+    /// is full or closed.
+    fn send(&self, action: FileAction) {
+        if self.stop_flag.load(Ordering::Acquire) {
+            return;
+        }
+        let guard = self.sender.lock();
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.try_send(action);
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -370,7 +406,6 @@ struct SharedProcessor {
 /// The file path is read from the event's `UserData` field as a
 /// null-terminated UTF-16 string.  Extended data fields (`RelatedProcessId`)
 /// are read from the record header when available.
-#[allow(dead_code)]
 fn parse_event_record(
     record: &windows::Win32::System::Diagnostics::Etw::EVENT_RECORD,
 ) -> Option<FileAction> {
@@ -419,21 +454,54 @@ fn parse_event_record(
 // ETW callback wiring (FFI)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// ETW event callback — invoked by `ProcessTrace` for every file-system event.
+///
+/// `PEVENT_RECORD_CALLBACK` takes a single `EVENT_RECORD*` argument.
+/// Shared state is retrieved from the global `CALLBACK_STATE` OnceLock.
+///
+/// # Safety
+///
+/// - `eventrecord` is a valid pointer from ETW.
+unsafe extern "system" fn etw_event_callback(
+    eventrecord: *mut windows::Win32::System::Diagnostics::Etw::EVENT_RECORD,
+) {
+    if eventrecord.is_null() {
+        return;
+    }
+
+    let guard = match CALLBACK_STATE.lock().as_ref() {
+        Some(s) => s.clone(),
+        None => return,
+    };
+
+    let record = unsafe { &*eventrecord };
+
+    // Only process events from the FileSystem ETW provider GUID.
+    if record.EventHeader.ProviderId != FS_ETW_GUID {
+        return;
+    }
+
+    if let Some(action) = parse_event_record(record) {
+        guard.send(action);
+    }
+}
+
 /// Builds the `EVENT_TRACE_LOGFILEW` struct for `OpenTraceW`.
 ///
-/// `EVENT_TRACE_LOGFILEW` requires `Win32_System_Time` feature.  We set
-/// `LogFileMode` via the `Anonymous1` union and leave `LoggerName` null so
-/// `OpenTraceW` reads it from the active trace session.
+/// Sets `Anonymous2.EventRecordCallback` so ETW invokes `etw_event_callback`
+/// on every file-system event.  The callback retrieves shared state from
+/// the global `CALLBACK_STATE` OnceLock.
 fn build_logfile() -> windows::Win32::System::Diagnostics::Etw::EVENT_TRACE_LOGFILEW {
     use windows::Win32::System::Diagnostics::Etw::EVENT_TRACE_LOGFILEW;
 
     let mut logfile: EVENT_TRACE_LOGFILEW = unsafe { std::mem::zeroed() };
 
-    // SAFETY: zeroed struct is valid; we only write the fields we care about.
-    // LogFileMode is in Anonymous1 union (either LogFileMode or ProcessTraceMode).
+    // SAFETY: zeroed struct is valid; we only write the fields we set.
     logfile.Anonymous1.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
-    // LoggerName = null tells OpenTraceW to use the existing session.
+    // LoggerName = null tells OpenTraceW to use the session started by StartTraceW.
     logfile.LoggerName = windows::core::PWSTR::null();
+    // EventRecordCallback is invoked for every FS event.
+    logfile.Anonymous2.EventRecordCallback = Some(etw_event_callback);
 
     logfile
 }
