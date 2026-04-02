@@ -1,6 +1,6 @@
 # Manual Testing Guide -- Phase 1
 
-**Date:** 2026-04-01
+**Date:** 2026-04-02
 **Status:** Phase 1 complete (46/46 tasks, 177 tests)
 
 This guide walks through building, running, and manually testing every
@@ -16,7 +16,13 @@ Phase 1 component on a Windows development machine.
 | Rust toolchain | stable 1.75+ | `rustup show` |
 | Git | any | `git --version` |
 | curl (or Invoke-WebRequest) | any | Ships with Windows 10+ |
-| Admin terminal | -- | Required only for Windows Service operations |
+| **Administrator rights** | -- | **Required** — ETW tracing requires `SeSystemProfilePrivilege` |
+
+> **Important:** `StartTraceW` (the Windows ETW API used for real-time file-system
+> monitoring) requires Administrator privileges. All ETW-based interception
+> (`--console` mode and the Windows Service) must be run from an **elevated
+> terminal (Run as Administrator)**. Without elevation, the interception pipeline
+> logs `StartTraceW failed (error=5)` and the audit log will remain empty.
 
 Clone the repository if you haven't already:
 
@@ -208,15 +214,28 @@ Expected: JSON object for `pol-001`.
 
 ## 7. Start the DLP Agent (Console Mode)
 
-Open **Terminal 2** and run:
+> **Requires Administrator rights.** Run the terminal as Administrator
+> (right-click Command Prompt or PowerShell → "Run as Administrator").
+> Without admin, `StartTraceW` fails with `error=5` and no file-system events
+> will be captured.
+
+Open **an elevated Terminal 2** and run:
 
 ```cmd
-set RUST_LOG=info
-cargo run -p dlp-agent -- --console
+# Using cargo (from the repo root):
+cargo run -p dlp-agent --release -- --console
+```
+
+Or run the built binary directly:
+
+```cmd
+# Run from an ADMINISTRATOR terminal:
+target\release\dlp-agent.exe --console
 ```
 
 Console mode runs the agent in the foreground without registering as a
-Windows Service. Press `Ctrl+C` to stop.
+Windows Service. The full interception pipeline starts: ETW file-system
+monitoring, Policy Engine client, and audit log writer. Press `Ctrl+C` to stop.
 
 > **Note:** The agent requires the Policy Engine to be running for online
 > evaluation. If the engine is not reachable, the agent operates in offline
@@ -601,27 +620,99 @@ rd /s /q C:\Public
 
 ---
 
-## 11. Windows Service Installation (Optional)
+## 11. Windows Service (Full Deployment Mode)
 
-These steps require an **elevated (Administrator) terminal**.
+> **No manual elevation needed** — the service runs as `LocalSystem` (SYSTEM),
+> which has full administrator privileges including `SeSystemProfilePrivilege`.
+> ETW file-system interception works automatically in service mode.
 
-### Install
+The service is managed with the provided PowerShell script:
 
-```cmd
-sc create dlp-agent type= own start= auto binpath= "C:\path\to\dlp-agent.exe"
+```powershell
+# Full path to the management script (repo root):
+.\scripts\Manage-DlpAgentService.ps1 -Action <action>
 ```
 
-### Start
+### Service Status
 
-```cmd
-sc start dlp-agent
+```powershell
+.\scripts\Manage-DlpAgentService.ps1 -Action Status
 ```
 
-### Stop
+Expected output:
 
-```cmd
+```
+Status : Running
+```
+
+### Install and Start
+
+```powershell
+# Run from an elevated terminal (Administrator):
+.\scripts\Manage-DlpAgentService.ps1 -Action Install
+```
+
+This registers the service with SCM (as `LocalSystem`, auto-start) and starts it immediately.
+
+### Force-Stop (when password dialog is stuck)
+
+If `sc stop` hangs waiting for the password dialog (no UI is connected), force-kill:
+
+```powershell
 sc stop dlp-agent
+# Wait 30s — if still running:
+Stop-Process -Name dlp-agent -Force
+sc query dlp-agent  # Should show STOPPED
 ```
+
+Then re-register and restart:
+
+```powershell
+.\scripts\Manage-DlpAgentService.ps1 -Action Register
+.\scripts\Manage-DlpAgentService.ps1 -Action Start
+```
+
+### Uninstall
+
+```powershell
+.\scripts\Manage-DlpAgentService.ps1 -Action Uninstall
+```
+
+### Verify Audit Log from Service
+
+The service writes to the same log file as console mode:
+
+```powershell
+Get-Content C:\ProgramData\DLP\logs\audit.jsonl -Tail 10 -Encoding UTF8 |
+    ForEach-Object { $_ | ConvertFrom-Json } |
+    Select-Object timestamp, event_type, resource_path, classification, decision |
+    Format-Table
+```
+
+Service trace output goes to the **Windows Event Log** (not a text file).
+View with Event Viewer or:
+
+```powershell
+# Requires admin to read Event Log:
+Get-WinEvent -FilterHashtable @{LogName='Application';StartTime=(Get-Date).AddHours(-1)} |
+    Where-Object { $_.Message -match 'dlp|DLP' } |
+    Select-Object TimeCreated, Message | Format-List
+```
+
+### Service Crash Recovery
+
+The service is configured with SCM crash-recovery actions (restart after 60 s for
+the first three crashes). If the service keeps crashing, check:
+
+1. Windows Event Viewer → Windows Logs → Application for `Error` level events
+2. SCM events: `sc query dlp-agent` → last exit code
+3. Audit log: `C:\ProgramData\DLP\logs\audit.jsonl` for partial entries
+
+> **Password-protected stop:** The agent prompts for the `dlp-admin` AD
+> password before allowing a stop. Three failed attempts abort the stop
+> and log `EVENT_DLP_ADMIN_STOP_FAILED`. To stop without the dialog,
+> use `sc stop dlp-agent` from an elevated terminal — the dialog will
+> appear on the interactive desktop if a UI is connected.
 
 > **Password-protected stop:** The agent prompts for the `dlp-admin` AD
 > password before allowing a stop. Three failed attempts abort the stop
@@ -684,7 +775,21 @@ cargo clippy --workspace -- -D warnings
 
 ## 13. Troubleshooting
 
-### Port already in use
+### ETW audit log is empty (StartTraceW error=5)
+
+```
+[ERROR] StartTraceW failed (error=5) — ETW interception unavailable
+[ERROR] ETW interception failed: StartTraceW failed
+```
+
+`error=5` = `ERROR_ACCESS_DENIED`. The agent is not running with Administrator
+rights. The ETW `StartTraceW` API requires the `SeSystemProfilePrivilege`
+privilege which is only granted in an elevated session.
+
+**Fix:** Run the terminal as Administrator (right-click → "Run as Administrator")
+before starting the agent. This applies to both `--console` mode and the Windows Service.
+
+### Audit log directory permission denied
 
 ```
 Error: failed to bind
@@ -698,10 +803,11 @@ set BIND_ADDR=127.0.0.1:9443
 
 ### Audit log directory permission denied
 
-The agent writes to `C:\ProgramData\DLP\logs\`. If running in console mode
-as a non-admin user, this directory may not be writable. Create it manually:
+The agent writes to `C:\ProgramData\DLP\logs\`. Create the directory
+manually if it doesn't exist:
 
 ```cmd
+# Run as Administrator:
 mkdir C:\ProgramData\DLP\logs
 ```
 

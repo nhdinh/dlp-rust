@@ -201,6 +201,7 @@ impl InterceptionEngine {
     /// This is a blocking call — intended to run inside `tokio::spawn_blocking`.
     /// Returns `Ok(())` when the trace is stopped.
     pub fn run(&self, tx: mpsc::Sender<FileAction>) -> Result<()> {
+        use windows::Win32::Foundation::WIN32_ERROR;
         use windows::Win32::System::Diagnostics::Etw::{
             CloseTrace, EnableTraceEx2, OpenTraceW, ProcessTrace, StartTraceW, StopTraceW,
             CONTROLTRACE_HANDLE, EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_TRACE_PROPERTIES,
@@ -246,13 +247,25 @@ impl InterceptionEngine {
         let mut trace_handle = CONTROLTRACE_HANDLE::default();
         // SAFETY: props_buf is valid for the call; session name is null-terminated.
         unsafe {
-            StartTraceW(
+            let err_code: WIN32_ERROR = StartTraceW(
                 &mut trace_handle,
                 windows::core::PCWSTR(props_buf[name_offset..].as_ptr() as *const _),
                 props,
-            )
-            .ok()
-            .map_err(|e| anyhow::anyhow!("StartTraceW failed: {e}"))?;
+            );
+            if err_code.is_err() {
+                // Use eprintln! AND tracing::error! so the failure is visible
+                // regardless of logging configuration.
+                eprintln!(
+                    "[ERROR] StartTraceW failed (error={}) — ETW interception unavailable",
+                    err_code.0
+                );
+                tracing::error!(
+                    error_code = err_code.0,
+                    session = SESSION_NAME,
+                    "StartTraceW failed — ETW interception unavailable"
+                );
+                return Err(anyhow::anyhow!("StartTraceW failed: error={}", err_code.0));
+            }
         }
 
         debug!(
@@ -264,7 +277,7 @@ impl InterceptionEngine {
         // Enable the FileSystem provider on this trace.
         // SAFETY: trace_handle is valid from StartTraceW.
         unsafe {
-            EnableTraceEx2(
+            let err_code: WIN32_ERROR = EnableTraceEx2(
                 trace_handle,
                 &FS_ETW_GUID,
                 EVENT_CONTROL_CODE_ENABLE_PROVIDER.0,
@@ -273,9 +286,18 @@ impl InterceptionEngine {
                 0,    // match all keyword
                 0,    // timeout (0 = infinite)
                 None, // enableparameters
-            )
-            .ok()
-            .map_err(|e| anyhow::anyhow!("EnableTraceEx2 failed: {e}"))?;
+            );
+            if err_code.is_err() {
+                eprintln!(
+                    "[ERROR] EnableTraceEx2 failed (error={}) — ETW interception unavailable",
+                    err_code.0
+                );
+                tracing::error!(
+                    error_code = err_code.0,
+                    "EnableTraceEx2 failed — ETW interception unavailable"
+                );
+                return Err(anyhow::anyhow!("EnableTraceEx2 failed: error={}", err_code.0));
+            }
         }
 
         // ── Open the trace for real-time delivery ───────────────────────────

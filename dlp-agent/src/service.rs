@@ -422,23 +422,128 @@ fn init_logging() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// CLI fallback (no SCM)
+// Console / CLI mode
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Runs the DLP Agent as a regular console application.
+/// Runs the DLP Agent as a regular console application for testing and
+/// development.
+///
+/// Sets up the full interception pipeline (ETW + Policy Engine + audit log)
+/// without requiring Windows Service registration.  Press Ctrl+C to stop.
+///
+/// The UI spawner, IPC servers, health monitor, and ETW interception pipeline
+/// all run identically to the service mode.  The only differences are:
+///   - No SCM integration (no password-protected stop, no service status)
+///   - No UI is spawned (console sessions don't have an interactive desktop)
+///   - EtwEngine runs with the console user's identity context
 pub fn run_console() -> Result<()> {
     init_logging();
     info!(
         service_name = SERVICE_NAME,
-        "DLP Agent running in console mode"
+        "DLP Agent running in console mode (full pipeline)"
     );
 
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        tokio::signal::ctrl_c().await?;
-        info!(service_name = SERVICE_NAME, "DLP Agent stopped by Ctrl+C");
-        Ok::<_, anyhow::Error>(())
-    })?;
+    // ── Health monitor first (sets ROUTER state before Pipe 3 clients connect) ──
+    let _health_handle = crate::health_monitor::start();
+    info!(thread_id = ?_health_handle.thread().id(), "health monitor started");
 
+    // ── IPC pipe servers (blocking threads) ───────────────────────────────────
+    crate::ipc::start_all()?;
+    info!("IPC pipe servers started");
+
+    // ── ETW interception + event loop on a Tokio runtime ─────────────────────
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async_run_console())?;
+
+    info!(service_name = SERVICE_NAME, "DLP Agent stopped by Ctrl+C");
+    Ok(())
+}
+
+/// The async body of [`run_console`] — sets up and runs the interception pipeline.
+async fn async_run_console() -> Result<()> {
+    // ── Audit log ───────────────────────────────────────────────────────────
+    let _log_path = crate::audit_emitter::log_path();
+    info!(audit_log = %_log_path.display(), "audit subsystem initialised");
+
+    // ── Policy Engine client ─────────────────────────────────────────────────
+    let engine_client = crate::engine_client::EngineClient::default_client()
+        .inspect_err(|e| warn!(error = %e, "Policy Engine client init failed — running offline"))
+        .unwrap_or_else(|_| {
+            crate::engine_client::EngineClient::new(
+                crate::engine_client::DEFAULT_ENGINE_URL,
+                false, // skip TLS verification in dev mode
+            )
+            .expect("engine client must be constructable")
+        });
+
+    let cache = Arc::new(crate::cache::Cache::new());
+    let offline = Arc::new(crate::offline::OfflineManager::new(engine_client, cache));
+
+    // ── Heartbeat ───────────────────────────────────────────────────────────
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let offline_hb = offline.clone();
+    let _heartbeat_handle = tokio::spawn(async move {
+        offline_hb.heartbeat_loop(shutdown_rx).await;
+    });
+
+    // ── ETW interception pipeline ───────────────────────────────────────────
+    let etw_engine = crate::interception::InterceptionEngine::new()
+        .expect("ETW interception engine must be constructable");
+    let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
+
+    // EmitContext for console mode — stubbed with the current user.
+    let user_name = std::env::var("USERNAME")
+        .unwrap_or_else(|_| std::env::var("USER")
+            .unwrap_or_else(|_| "console-user".to_string()));
+    let audit_ctx = crate::audit_emitter::EmitContext {
+        agent_id: std::env::var("DLP_AGENT_ID")
+            .unwrap_or_else(|_| "AGENT-CONSOLE".to_string()),
+        session_id: 1,
+        user_sid: "S-1-5-21-0-0-0-0".to_string(), // stub SID for console mode
+        user_name,
+    };
+    crate::clipboard::listener::init_emit_context(audit_ctx.clone());
+
+    let offline_ev = offline.clone();
+    let ctx_ev = audit_ctx.clone();
+    let event_loop_handle = tokio::spawn(async move {
+        crate::interception::run_event_loop(action_rx, offline_ev, ctx_ev).await;
+    });
+
+    // ETW runs on a blocking thread so it doesn't starve the Tokio executor.
+    let etw_engine_clone = etw_engine.clone();
+    let etw_handle = tokio::task::spawn_blocking(move || {
+        if let Err(e) = etw_engine_clone.run(action_tx) {
+            // Always log this error — it means the ETW session failed to start or crashed.
+            // This is important enough to print to stderr directly as a fallback
+            // in case tracing is misconfigured.
+            eprintln!("[ERROR] ETW interception failed: {e}");
+            tracing::error!(error = %e, "ETW interception failed");
+        }
+    });
+
+    info!(
+        service_name = SERVICE_NAME,
+        "enforcement subsystems started"
+    );
+
+    // ── Wait for Ctrl+C then shutdown ──────────────────────────────────────
+    tokio::signal::ctrl_c().await?;
+
+    info!(
+        service_name = SERVICE_NAME,
+        "shutting down enforcement subsystems"
+    );
+
+    etw_engine.stop();
+    let _ = etw_handle.await;
+    drop(event_loop_handle);
+    let _ = shutdown_tx.send(true);
+    let _ = _heartbeat_handle.await;
+
+    info!(
+        service_name = SERVICE_NAME,
+        "enforcement subsystems stopped"
+    );
     Ok(())
 }
