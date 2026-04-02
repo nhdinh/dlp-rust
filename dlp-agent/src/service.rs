@@ -78,6 +78,37 @@ pub fn run_service() -> Result<()> {
     // Acquire single-instance mutex.
     acquire_instance_mutex();
 
+    // ── Configure the UI binary path ─────────────────────────────────
+    // In production: installed alongside the service binary.
+    // Override with DLP_UI_BINARY env var for development.
+    let ui_binary = resolve_ui_binary();
+    if let Some(ref path) = ui_binary {
+        info!(path = %path.display(), "UI binary path resolved");
+        crate::ui_spawner::set_ui_binary(path.clone());
+    }
+
+    // ── Start the health monitor first ───────────────────────────────
+    // health_monitor::run() calls ROUTER.set_health_sender() — this MUST
+    // happen before Pipe 3's handle_client runs, so Pipe 3 can read the
+    // session sender from the same ROUTER.
+    let health_handle = crate::health_monitor::start();
+    info!(thread_id = ?health_handle.thread().id(), "health monitor started");
+
+    // ── Start IPC pipe servers ────────────────────────────────────
+    // Each serve() call blocks on a dedicated thread.  Pipe 1, 2, and 3
+    // are independent; they communicate via the shared BROADCASTER and ROUTER
+    // statics.  Pipe 3's handle_client sets ROUTER.session_sender on each
+    // new connection.
+    crate::ipc::start_all()?;
+    info!("IPC pipe servers started");
+
+    // ── Start the session monitor ──────────────────────────────────
+    // session_monitor::run() calls ui_spawner::init() which enumerates
+    // active sessions and spawns a UI in each.  New sessions are detected
+    // via polling (WTSEnumerateSessionsW every 2 s).
+    let session_handle = crate::session_monitor::start();
+    info!(thread_id = ?session_handle.thread().id(), "session monitor started");
+
     // Report RUNNING.
     set_status(
         &status_handle,
@@ -89,6 +120,15 @@ pub fn run_service() -> Result<()> {
     // Enter the main run loop.
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_loop(&status_handle))?;
+
+    // ── Graceful shutdown of blocking threads ────────────────────────
+    info!(service_name = SERVICE_NAME, "shutting down subsystems");
+
+    // Signal the event loop to drain and exit.
+    // Drop the health monitor and session monitor handles — their threads
+    // drain and exit when the session monitor's internal shutdown is triggered.
+    // IPC servers are harder to stop (named pipes don't support clean shutdown);
+    // they will be terminated when the process exits.
 
     // Report STOPPED.
     set_status(
@@ -104,16 +144,9 @@ pub fn run_service() -> Result<()> {
 
 /// The main service run loop.
 ///
-/// Sets up all agent subsystems, then waits for either `ctrl_c` or a
-/// password-confirmed stop signal.
-///
-/// Subsystems initialised:
-///  - [`AuditEmitter`](crate::audit_emitter) — opened via the global `EMITTER` singleton
-///  - [`EngineClient`](crate::engine_client) — HTTPS client to the Policy Engine
-///  - [`Cache`](crate::cache) — local policy decision cache
-///  - [`OfflineManager`](crate::offline) — online/offline state + heartbeat
-///  - [`InterceptionEngine`](crate::interception) — ETW file monitor
-///  - Clipboard listener — system-wide clipboard hook
+/// Runs the ETW interception event loop and the service control loop.
+/// All other subsystems (IPC servers, health monitor, session monitor, UI
+/// spawner) run on blocking std threads started in [`run_service`].
 ///
 /// When the SCM issues `sc stop`, [`password_stop::initiate_stop`] starts the
 /// password challenge.  This loop polls the confirmation flag every 500 ms — on
@@ -182,7 +215,10 @@ async fn run_loop(
         let _ = etw_engine_clone.run(action_tx);
     });
 
-    info!(service_name = SERVICE_NAME, "all subsystems started");
+    info!(
+        service_name = SERVICE_NAME,
+        "enforcement subsystems started"
+    );
 
     // ── Service control loop ─────────────────────────────────────────────
     let poll_interval = Duration::from_millis(500);
@@ -215,7 +251,10 @@ async fn run_loop(
     }
 
     // ── Graceful shutdown ──────────────────────────────────────────────────
-    info!(service_name = SERVICE_NAME, "shutting down subsystems");
+    info!(
+        service_name = SERVICE_NAME,
+        "shutting down enforcement subsystems"
+    );
 
     // Stop ETW first so no new events arrive.
     etw_engine_for_shutdown.stop();
@@ -228,9 +267,37 @@ async fn run_loop(
     let _ = shutdown_tx.send(true);
     let _ = _heartbeat_handle.await;
 
-    info!(service_name = SERVICE_NAME, "all subsystems stopped");
+    info!(
+        service_name = SERVICE_NAME,
+        "enforcement subsystems stopped"
+    );
     Ok(())
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// UI binary resolution
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Resolves the dlp-user-ui binary path.
+///
+/// Checks `DLP_UI_BINARY` env var first, then falls back to the directory
+/// containing the running service executable, looking for `dlp-agent-ui.exe`.
+fn resolve_ui_binary() -> Option<std::path::PathBuf> {
+    // Env var takes priority (useful for development).
+    if let Ok(path) = std::env::var("DLP_UI_BINARY") {
+        return Some(std::path::PathBuf::from(path));
+    }
+
+    // Fallback: same directory as the running service binary.
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let ui = dir.join("dlp-agent-ui.exe");
+    Some(ui)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Service status helpers
+// ──────────────────────────────────────────────────────────────────────────────
 
 /// Convenience to build and set a [`ServiceStatus`].
 //
