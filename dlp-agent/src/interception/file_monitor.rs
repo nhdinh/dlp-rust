@@ -186,11 +186,6 @@ fn pwstr_to_string(ptr: *const u16) -> Option<String> {
 pub struct InterceptionEngine {
     /// Set to `true` by `stop()` to unblock `ProcessTrace`.
     stop_flag: Arc<AtomicBool>,
-    /// Actions received from the ETW callback thread, sent to the Tokio task.
-    /// Currently stored for future callback wiring; reading happens via
-    /// `SharedProcessor` inside `run()`.
-    #[allow(dead_code)]
-    sender: Arc<Mutex<Option<mpsc::Sender<FileAction>>>>,
 }
 
 impl InterceptionEngine {
@@ -198,7 +193,6 @@ impl InterceptionEngine {
     pub fn new() -> Result<Self> {
         Ok(Self {
             stop_flag: Arc::new(AtomicBool::new(false)),
-            sender: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -291,7 +285,7 @@ impl InterceptionEngine {
         // callback accesses it read-only.  The OnceLock is cleared by take() below.
         let state = Arc::new(CallbackState {
             stop_flag: self.stop_flag.clone(),
-            sender: Arc::new(Mutex::new(Some(tx))),
+            sender: Arc::new(tx),
         });
         {
             let mut guard = CALLBACK_STATE.lock();
@@ -384,20 +378,24 @@ struct CallbackState {
     stop_flag: Arc<AtomicBool>,
     /// Channel sender for `FileAction` events.  `try_send` is used
     /// (fire-and-forget) — ETW must never block or panic.
-    sender: Arc<Mutex<Option<mpsc::Sender<FileAction>>>>,
+    /// Always `Some` once `CALLBACK_STATE` is set (set before `OpenTraceW`).
+    sender: Arc<mpsc::Sender<FileAction>>,
 }
 
 impl CallbackState {
     /// Sends `action` through the channel, silently dropping if the channel
     /// is full or closed.
+    ///
+    /// `try_send` is used (non-blocking) so the ETW callback never blocks —
+    /// this is critical because blocking the callback can stall the trace.
     fn send(&self, action: FileAction) {
         if self.stop_flag.load(Ordering::Acquire) {
             return;
         }
-        let guard = self.sender.lock();
-        if let Some(tx) = guard.as_ref() {
-            let _ = tx.try_send(action);
-        }
+        // try_send requires owned Sender — clone the Arc handle.
+        // The original stays in CALLBACK_STATE; the clone is consumed here.
+        // This is safe: mpsc::Sender is cheap to clone (just an Arc under the hood).
+        let _ = self.sender.clone().try_send(action);
     }
 }
 

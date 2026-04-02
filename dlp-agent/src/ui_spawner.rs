@@ -150,6 +150,14 @@ fn enumerate_active_sessions() -> Result<Vec<u32>> {
 
 /// Spawns a UI process in the given session using `CreateProcessAsUserW`.
 pub(crate) fn spawn_ui_in_session(session_id: u32, binary: &Path) -> Result<UiHandle> {
+    // Session 0 is the SYSTEM session — it has no interactive desktop.
+    // Spawning a GUI process there causes an immediate crash and a crash-dialog
+    // popup on the user's desktop.  Skip it gracefully.
+    if session_id == 0 {
+        warn!(session_id, "Session 0 has no interactive desktop — skipping UI spawn");
+        anyhow::bail!("session 0 is not interactive — UI spawn skipped");
+    }
+
     info!(session_id, path = %binary.display(), "spawning UI process");
 
     // Get the user token for the session.
