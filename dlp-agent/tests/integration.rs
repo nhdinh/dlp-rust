@@ -102,7 +102,7 @@ async fn test_e2e_file_action_to_audit_log() {
             session_id: 1,
             access_context: dlp_common::AccessContext::Local,
         },
-        action: abab_action_to_dlp(abac_action),
+        action: abac_action_to_dlp(abac_action),
     };
 
     // 6. Evaluate against mock engine.
@@ -122,7 +122,7 @@ async fn test_e2e_file_action_to_audit_log() {
         "testuser".to_string(),
         action.path().to_string(),
         classification,
-        abab_action_to_dlp(abac_action),
+        abac_action_to_dlp(abac_action),
         response.decision,
         "AGENT-TEST-001".to_string(),
         1,

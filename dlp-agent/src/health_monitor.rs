@@ -30,7 +30,7 @@ use parking_lot::Mutex;
 use tokio::sync::{watch, mpsc};
 use tracing::{debug, error, info, warn};
 
-use crate::ipc::pipe3::{Router, UiHealthEvent};
+use crate::ipc::pipe3::{UiHealthEvent, ROUTER};
 
 use crate::ipc::messages::Pipe2AgentMsg;
 use crate::ipc::pipe2::BROADCASTER;

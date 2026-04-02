@@ -49,8 +49,21 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetMessageW, PostThreadMessageW, RegisterClassW, SetWindowsHookExW, TranslateMessage,
-    UnhookWindowsHookEx, HHOOK, MSG, WH_GETMESSAGE, WNDCLASSW, WS_EX_NOACTIVATE, WM_QUIT,
+    UnhookWindowsHookEx, HHOOK, HOOKPROC, MSG, WINDOW_STYLE, WH_GETMESSAGE, WNDCLASSW,
+    WS_EX_NOACTIVATE, WM_QUIT,
 };
+
+/// Wrapper around `HHOOK` that is `Send + Sync`.
+///
+/// `HHOOK` is `*mut c_void` which is not `Send + Sync` by default, but Win32 hook
+/// handles are safe to share between threads for the purpose of uninstalling them.
+#[cfg(windows)]
+struct SendableHhook(HHOOK);
+
+#[cfg(windows)]
+unsafe impl Send for SendableHhook {}
+#[cfg(windows)]
+unsafe impl Sync for SendableHhook {}
 #[allow(unused_imports)]
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -93,7 +106,7 @@ pub struct ClipboardListener {
     session_id: u32,
     /// The `HHOOK` handle returned by `SetWindowsHookExW`, if installed.
     #[cfg(windows)]
-    hhook: Arc<Mutex<Option<HHOOK>>>,
+    hhook: Arc<Mutex<Option<SendableHhook>>>,
     /// Handle to the std thread running the message loop.
     #[cfg(windows)]
     thread_handle: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
@@ -110,7 +123,6 @@ impl ClipboardListener {
             session_id,
             #[cfg(windows)]
             hhook: Arc::new(Mutex::new(None)),
-            #[cfg(windows)]
             thread_handle: Arc::new(Mutex::new(None)),
         }
     }
@@ -177,8 +189,9 @@ impl ClipboardListener {
                         WS_EX_NOACTIVATE,
                         PCWSTR::from_raw(atom as *const u16),
                         PCWSTR::null(),
-                        0, // dwStyle
+                        WINDOW_STYLE(0), // dwStyle
                         0, 0, 0, 0, // position/size (irrelevant for message-only)
+                        None,
                         None,
                         None,
                         None,
@@ -196,38 +209,45 @@ impl ClipboardListener {
                 // Step 3: install the WH_GETMESSAGE hook on this thread.
                 // SAFETY: GetModuleHandleW(None) returns the current process handle,
                 // which is always valid.  Thread ID 0 means "current thread".
+                let module = match unsafe { GetModuleHandleW(None) }.ok() {
+                    Some(m) => m,
+                    None => {
+                        warn!("GetModuleHandleW failed in clipboard listener");
+                        return;
+                    }
+                };
                 let hook = unsafe {
-                    SetWindowsHookExW(
-                        WH_GETMESSAGE,
-                        Some(hook_procedure),
-                        GetModuleHandleW(None)?,
-                        0,
-                    )
+                    // SAFETY: hook_procedure is a valid extern "system" fn matching HOOKPROC signature.
+                    // HOOKPROC = Option<unsafe extern "system" fn(i32, WPARAM, LPARAM) -> LRESULT>.
+                    SetWindowsHookExW(WH_GETMESSAGE, Some(hook_procedure), module, 0)
                 };
 
                 let hhook = match hook {
                     Ok(h) => h,
                     Err(e) => {
                         warn!(error = %e, "SetWindowsHookExW failed in clipboard listener");
-                        let _ = DestroyWindow(hwnd);
+                        // SAFETY: hwnd is a valid window handle we just created.
+                        let _ = unsafe { DestroyWindow(hwnd) };
                         return;
                     }
                 };
 
                 // Store the hook handle so stop() can uninstall it.
                 {
-                    let mut guard = hhook_arc.lock().expect("hhook mutex poisoned");
-                    *guard = Some(hhook);
+                    let mut guard = hhook_arc.lock();
+                    *guard = Some(SendableHhook(hhook));
                 }
 
                 info!(session_id, "clipboard listener started — hook installed");
 
                 // Step 4: run the message loop.
+                // GetMessageW returns non-zero (TRUE) on success, 0 on WM_QUIT or error.
+                // SAFETY: msg is a valid pointer to an MSG struct.
                 let mut msg = MSG::default();
                 loop {
-                    // SAFETY: msg is a valid pointer to an MSG struct.
                     let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
-                    if ret == windows::Win32::Foundation::FALSE || ret == 0 {
+                    // BOOL wraps i32; 0 means WM_QUIT or error.
+                    if ret.0 == 0 {
                         break;
                     }
                     let _ = unsafe { TranslateMessage(&msg) };
@@ -236,14 +256,15 @@ impl ClipboardListener {
 
                 // Cleanup: uninstall hook and destroy window on thread exit.
                 let _ = unsafe { UnhookWindowsHookEx(hhook) };
-                let _ = DestroyWindow(hwnd);
+                // SAFETY: hwnd is a valid window handle we own.
+                let _ = unsafe { DestroyWindow(hwnd) };
                 debug!("clipboard listener thread exiting");
             })
             .expect("clipboard listener thread must spawn");
 
         // Store the join handle so stop() can wait.
         {
-            let mut guard = thread_handle_arc.lock().expect("thread_handle mutex poisoned");
+            let mut guard = thread_handle_arc.lock();
             *guard = Some(thread);
         }
 
@@ -269,12 +290,18 @@ impl ClipboardListener {
         };
 
         // Wait for the thread to finish.
-        if let Some(handle) = self.thread_handle.lock().expect("thread_handle mutex poisoned").take() {
+        let mut handle_guard = self.thread_handle.lock();
+        let handle = handle_guard.take();
+        drop(handle_guard);
+        if let Some(handle) = handle {
             let _ = handle.join();
         }
 
         // Unhook explicitly if the thread didn't do it.
-        if let Some(hhook) = self.hhook.lock().expect("hhook mutex poisoned").take() {
+        let mut hhook_guard = self.hhook.lock();
+        let hhook = hhook_guard.take();
+        drop(hhook_guard);
+        if let Some(SendableHhook(hhook)) = hhook {
             let _ = unsafe { UnhookWindowsHookEx(hhook) };
         }
 
@@ -381,8 +408,15 @@ impl ClipboardListener {
 
         result
     }
-
 }
+
+// SAFETY: ClipboardListener now uses SendableHhook (which is Send + Sync) instead of raw HHOOK.
+// All contained types are Send + Sync, so ClipboardListener is automatically Send + Sync.
+// We keep the explicit impl as documentation of the thread-safety invariant.
+#[cfg(windows)]
+unsafe impl Send for ClipboardListener {}
+#[cfg(windows)]
+unsafe impl Sync for ClipboardListener {}
 
 impl Drop for ClipboardListener {
     fn drop(&mut self) {
@@ -404,12 +438,12 @@ extern "system" fn wndproc_callback(
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
-) -> LPARAM {
+) -> windows::Win32::Foundation::LRESULT {
     // SAFETY: DefWindowProcW is always safe to call with valid parameters.
     match msg as u32 {
         windows::Win32::UI::WindowsAndMessaging::WM_DESTROY => {
             unsafe { PostQuitMessage(0) };
-            LPARAM(0)
+            windows::Win32::Foundation::LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }

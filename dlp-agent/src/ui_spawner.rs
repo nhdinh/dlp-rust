@@ -228,7 +228,7 @@ fn get_session_user_token(session_id: u32) -> Result<HANDLE> {
     // from WTSEnumerateSessionsW.
     let ok = unsafe { WTSQueryUserToken(session_id, &mut token).ok() };
 
-    if !ok {
+    if ok.is_none() {
         return Err(anyhow::anyhow!(
             "WTSQueryUserToken failed for session {}",
             session_id

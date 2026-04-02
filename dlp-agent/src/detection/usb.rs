@@ -1,6 +1,6 @@
 //! USB mass storage detection (T-13, F-AGT-13).
 //!
-//! Detects USB volume arrivals via the Windows `SetupAPI` / device notification
+//! Detects USB volume arrivals via the Windows `RegisterDeviceNotificationW`
 //! mechanism and blocks T3/T4 file writes to removable drives.
 //!
 //! ## Detection model
@@ -31,19 +31,15 @@ use std::os::windows::ffi::OsStrExt;
 
 use dlp_common::Classification;
 use parking_lot::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 #[cfg(windows)]
-use windows::core::PCWSTR;
-#[cfg(windows)]
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-#[cfg(windows)]
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::Foundation::{BOOL, HWND};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     PostQuitMessage, RegisterClassW, TranslateMessage, DEVICE_NOTIFY_WINDOW_HANDLE, MSG,
-    WNDCLASSW, WS_EX_NOACTIVATE, WM_DESTROY, WM_DEVICECHANGE,
+    WNDCLASSW, WINDOW_STYLE, WS_EX_NOACTIVATE, WM_DESTROY, WM_QUIT,
 };
 
 /// Drive letters currently identified as USB mass storage (e.g., `E`, `F`).
@@ -65,8 +61,7 @@ impl UsbDetector {
     /// Called once at startup to catch USB drives that were inserted before the
     /// agent started.
     pub fn scan_existing_drives(&self) {
-        for letter in b'A'..=b'Z' {
-            let letter = letter as char;
+        for letter in 'A'..='Z' {
             if self.is_removable_drive(letter) {
                 info!(drive = %letter, "existing USB removable drive detected");
                 self.blocked_drives.write().insert(letter);
@@ -111,7 +106,6 @@ impl UsbDetector {
     /// Returns `true` if the path's drive letter is in the blocked set.
     #[must_use]
     pub fn is_path_on_blocked_drive(&self, path: &str) -> bool {
-        // Extract drive letter from paths like "E:\folder\file.txt"
         if let Some(letter) = extract_drive_letter(path) {
             self.blocked_drives.read().contains(&letter)
         } else {
@@ -130,7 +124,7 @@ impl UsbDetector {
     fn is_removable_drive(&self, letter: char) -> bool {
         use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 
-        // DRIVE_REMOVABLE = 2 (Win32 constant from WindowsProgramming).
+        // DRIVE_REMOVABLE = 2 (Win32 constant).
         const DRIVE_REMOVABLE: u32 = 2;
 
         let root: Vec<u16> = OsStr::new(&format!("{}:\\", letter))
@@ -144,18 +138,25 @@ impl UsbDetector {
     }
 }
 
+// SAFETY: UsbDetector contains only RwLock<HashSet<char>>, which is Send + Sync.
+// It is safe to share &UsbDetector across threads because all mutable access
+// (drive arrival/removal) is gated behind the RwLock.
+unsafe impl Send for UsbDetector {}
+unsafe impl Sync for UsbDetector {}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // USB device notification via RegisterDeviceNotification
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// GUID for storage volume device interface (GUID_DEVINTERFACE_VOLUME).
-/// This matches the device interface registered by the Windows volume driver.
+/// GUID for storage volume device interface.
+/// Matches the device interface registered by the Windows volume driver.
+/// Windows SDK value: {0x53F5630D,0xB6BF,0x11D0,{0x94,0xF2,0x00,0xA0,0xC9,0x1E,0xFB,0x8B}}
 #[cfg(windows)]
 const GUID_DEVINTERFACE_VOLUME: windows::core::GUID = windows::core::GUID::from_values(
-    0x53F5630Du16,
-    0xB6BFu16,
-    0x11D0u16,
-    [0x94u8, 0xF2u8, 0x00u8, 0xA0u8, 0xC9u8, 0x1Eu8, 0xFBu8, 0x8Bu8],
+    u32::from_be_bytes([0x53, 0xF5, 0x63, 0x0D]),
+    u16::from_be_bytes([0xB6, 0xBF]),
+    u16::from_be_bytes([0x11, 0xD0]),
+    [0x94, 0xF2, 0x00, 0xA0, 0xC9, 0x1E, 0xFB, 0x8B],
 );
 
 /// DBT_DEVICEARRIVAL: a device has been added.
@@ -181,40 +182,24 @@ struct DEV_BROADCAST_VOLUME {
     dbcv_unitmask: u32,
 }
 
+/// Global reference to the `UsbDetector` shared with the device notification handlers.
+/// Protected by a `Mutex` so it can be cleared on unregister.
+#[cfg(windows)]
+static DRIVE_DETECTOR: parking_lot::Mutex<Option<&'static UsbDetector>> =
+    parking_lot::Mutex::new(None);
+
 /// Window procedure for the USB notification window.
 #[cfg(windows)]
 unsafe extern "system" fn usb_wndproc(
-    hwnd: HWND,
+    hwnd: windows::Win32::Foundation::HWND,
     msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LPARAM {
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
     match msg {
-        WM_DEVICECHANGE => {
-            let event = lparam.0 as *const DEV_BROADCAST_VOLUME;
-            if event.is_null() {
-                return DefWindowProcW(hwnd, msg, wparam, lparam);
-            }
-            // SAFETY: event is only dereferenced when WM_DEVICECHANGE is received
-            // and lparam points to a valid DEV_BROADCAST_HDR with devicetype DBT_DEVTYP_VOLUME.
-            let broadcast = unsafe { &*event };
-            if broadcast.dbcv_devicetype != DBT_DEVTYP_VOLUME {
-                return DefWindowProcW(hwnd, msg, wparam, lparam);
-            }
-            match wparam.0 as u32 {
-                DBT_DEVICEARRIVAL => {
-                    handle_drive_arrival(broadcast.dbcv_unitmask);
-                }
-                DBT_DEVICEREMOVECOMPLETE => {
-                    handle_drive_removal(broadcast.dbcv_unitmask);
-                }
-                _ => {}
-            }
-            LPARAM(1) // Return value expected by DefWindowProc for WM_DEVICECHANGE.
-        }
         WM_DESTROY => {
             unsafe { PostQuitMessage(0) };
-            LPARAM(0)
+            windows::Win32::Foundation::LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
@@ -227,12 +212,10 @@ fn handle_drive_arrival(unitmask: u32) {
     if unitmask == 0 {
         return;
     }
-    for i in 0..26u32 {
-        if (unitmask >> i) & 1 == 1 {
-            let letter = (b'A' as u32 + i) as char;
-            // SAFETY: DRIVE_DETECTOR is set once during register_usb_notifications
-            // before the message loop starts, and cleared only during shutdown.
-            if let Some(detector) = DRIVE_DETECTOR.get() {
+    let guard = DRIVE_DETECTOR.lock();
+    if let Some(detector) = *guard {
+        for (i, letter) in ('A'..='Z').enumerate() {
+            if (unitmask >> i) & 1 == 1 {
                 detector.on_drive_arrival(letter);
             }
         }
@@ -245,26 +228,22 @@ fn handle_drive_removal(unitmask: u32) {
     if unitmask == 0 {
         return;
     }
-    for i in 0..26u32 {
-        if (unitmask >> i) & 1 == 1 {
-            let letter = (b'A' as u32 + i) as char;
-            // SAFETY: same as handle_drive_arrival.
-            if let Some(detector) = DRIVE_DETECTOR.get() {
+    let guard = DRIVE_DETECTOR.lock();
+    if let Some(detector) = *guard {
+        for (i, letter) in ('A'..='Z').enumerate() {
+            if (unitmask >> i) & 1 == 1 {
                 detector.on_drive_removal(letter);
             }
         }
     }
 }
 
-/// Global reference to the `UsbDetector` shared with the window procedure.
-static DRIVE_DETECTOR: std::sync::OnceLock<UsbDetector> = std::sync::OnceLock::new();
-
 /// Registers for USB volume device notifications and starts a message loop on
 /// a dedicated thread.
 ///
 /// Creates a hidden message-only window and calls `RegisterDeviceNotificationW`
-/// with the `GUID_DEVINTERFACE_VOLUME` interface class so that `WM_DEVICECHANGE`
-/// messages are delivered for volume arrival/removal events.
+/// with the volume interface GUID so that `WM_DEVICECHANGE` messages are
+/// delivered for volume arrival/removal events.
 ///
 /// # Arguments
 ///
@@ -280,13 +259,13 @@ static DRIVE_DETECTOR: std::sync::OnceLock<UsbDetector> = std::sync::OnceLock::n
 pub fn register_usb_notifications(
     detector: &'static UsbDetector,
 ) -> windows::core::Result<(HWND, std::thread::JoinHandle<()>)> {
-    let _ = DRIVE_DETECTOR.set(detector);
+    *DRIVE_DETECTOR.lock() = Some(detector);
 
     // Step 1: register window class.
     let class_name: Vec<u16> = "DlpUsbNotificationWindow\0".encode_utf16().collect();
     let wc = WNDCLASSW {
         lpfnWndProc: Some(usb_wndproc),
-        lpszClassName: PCWSTR(class_name.as_ptr()),
+        lpszClassName: windows::core::PCWSTR(class_name.as_ptr()),
         ..Default::default()
     };
 
@@ -297,39 +276,45 @@ pub fn register_usb_notifications(
     }
 
     // Step 2: create message-only window.
-    // SAFETY: atom is a valid class atom.
+    // SAFETY: atom is a valid class atom returned by RegisterClassW.
     let hwnd = unsafe {
         CreateWindowExW(
             WS_EX_NOACTIVATE,
-            PCWSTR::from_raw(atom as *const u16),
-            PCWSTR::null(),
+            windows::core::PCWSTR::from_raw(atom as *const u16),
+            windows::core::PCWSTR::null(),
+            WINDOW_STYLE(0),
             0,
-            0, 0, 0, 0,
+            0,
+            0,
+            0,
+            None,
             None,
             None,
             None,
         )
     }?;
 
-    // Step 3: fill in DEV_BROADCAST_DEVICEINTERFACE for volume interface.
-    let volume_guid = GUID_DEVINTERFACE_VOLUME;
-    let dev_interface = windows::Win32::UI::WindowsAndMessaging::DEV_BROADCAST_DEVICEINTERFACE_W {
-        dbcc_size: std::mem::size_of::<
-            windows::Win32::UI::WindowsAndMessaging::DEV_BROADCAST_DEVICEINTERFACE_W,
-        >() as u32,
-        dbcc_devicetype:
-            windows::Win32::UI::WindowsAndMessaging::DBT_DEVTYP_DEVICEINTERFACE as u32,
-        dbcc_reserved: 0,
-        dbcc_classguid: volume_guid,
-        dbcc_name: [0u16; 1],
-    };
+    // Step 3: register for device notifications.
+    // DEV_BROADCAST_DEVICEINTERFACE_W is variable-size; we construct it as bytes.
+    let db_size = std::mem::size_of::<windows::Win32::UI::WindowsAndMessaging::DEV_BROADCAST_DEVICEINTERFACE_W>();
+    let mut dev_interface_buf: Vec<u8> = vec![0u8; db_size];
+    let dbc = dev_interface_buf.as_mut_ptr() as *mut windows::Win32::UI::WindowsAndMessaging::DEV_BROADCAST_DEVICEINTERFACE_W;
 
-    // Step 4: register for device notifications.
-    // SAFETY: hwnd is a valid window created above.
+    // SAFETY: dbc points to db_size bytes that we own and are properly aligned.
+    unsafe {
+        (*dbc).dbcc_size = db_size as u32;
+        (*dbc).dbcc_devicetype =
+            windows::Win32::UI::WindowsAndMessaging::DBT_DEVTYP_DEVICEINTERFACE.0;
+        (*dbc).dbcc_reserved = 0;
+        (*dbc).dbcc_classguid = GUID_DEVINTERFACE_VOLUME;
+    }
+
+    // SAFETY: hwnd is a valid window; dbc points to a properly initialized
+    // DEV_BROADCAST_DEVICEINTERFACE_W struct.
     let notification_handle = unsafe {
         windows::Win32::UI::WindowsAndMessaging::RegisterDeviceNotificationW(
             hwnd,
-            &dev_interface as *const _ as *const std::ffi::c_void,
+            dbc as *const _,
             DEVICE_NOTIFY_WINDOW_HANDLE,
         )
     };
@@ -339,16 +324,16 @@ pub fn register_usb_notifications(
         return Err(notification_handle.unwrap_err());
     }
 
-    // Step 5: run message loop on a thread.
+    // Step 4: run message loop on a thread.
     let thread = std::thread::Builder::new()
         .name("usb-notification".into())
         .spawn(move || {
             let mut msg = MSG::default();
             loop {
-                // SAFETY: msg is a valid pointer.
+                // SAFETY: msg is a valid pointer to an MSG struct.
                 let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
-                if ret.is_err() || ret == 0 {
-                    break;
+                if ret.0 == 0 {
+                    break; // WM_QUIT received
                 }
                 let _ = unsafe { TranslateMessage(&msg) };
                 let _ = unsafe { DispatchMessageW(&msg) };
@@ -369,7 +354,7 @@ pub fn register_usb_notifications(
 pub fn unregister_usb_notifications(hwnd: HWND, thread: std::thread::JoinHandle<()>) {
     let _ = unsafe { DestroyWindow(hwnd) };
     let _ = thread.join();
-    let _ = DRIVE_DETECTOR.take();
+    *DRIVE_DETECTOR.lock() = None;
     debug!("USB device notifications unregistered");
 }
 
@@ -378,7 +363,6 @@ pub fn unregister_usb_notifications(hwnd: HWND, thread: std::thread::JoinHandle<
 /// Returns `Some('E')` for `"E:\\folder\\file.txt"`, `None` for UNC or relative paths.
 fn extract_drive_letter(path: &str) -> Option<char> {
     let bytes = path.as_bytes();
-    // Pattern: single ASCII letter followed by ':' (and optionally '\')
     if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
         Some((bytes[0] as char).to_ascii_uppercase())
     } else {
@@ -408,7 +392,6 @@ mod tests {
     #[test]
     fn test_on_drive_arrival_removal() {
         let detector = UsbDetector::new();
-        // Simulate a removable drive by directly manipulating the set.
         detector.blocked_drives.write().insert('E');
         assert!(detector.is_path_on_blocked_drive(r"E:\secret.docx"));
         assert!(!detector.is_path_on_blocked_drive(r"C:\secret.docx"));
@@ -443,11 +426,8 @@ mod tests {
     #[test]
     fn test_drive_letter_case_insensitive() {
         let detector = UsbDetector::new();
-        // Simulate arrival by directly inserting lowercase — on_drive_arrival
-        // normalizes to uppercase before checking the drive type.
         detector.blocked_drives.write().insert('E');
         assert!(detector.blocked_drives.read().contains(&'E'));
-        // on_drive_removal normalizes case.
         detector.on_drive_removal('e');
         assert!(detector.blocked_drive_letters().is_empty());
     }

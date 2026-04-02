@@ -264,9 +264,8 @@ pub fn get_admin_dn() -> Result<String> {
 /// unwrap it before passing the plaintext to LDAP.  This closes the security
 /// gap where the DPAPI protection was bypassed by sending the raw blob to LDAP.
 ///
-/// Returns the plaintext password as a UTF-16 `Vec<u16>` (matching the format
-/// used by the UI dialog's `GetWindowTextW`).
-fn dpapi_unprotect(protected: &[u8]) -> anyhow::Result<Vec<u16>> {
+/// Returns the plaintext password as a `Vec<u8>` (UTF-8 bytes).
+fn dpapi_unprotect(protected: &[u8]) -> anyhow::Result<Vec<u8>> {
     let input = CRYPT_INTEGER_BLOB {
         cbData: protected.len() as u32,
         pbData: protected.as_ptr() as *mut u8,
@@ -289,7 +288,7 @@ fn dpapi_unprotect(protected: &[u8]) -> anyhow::Result<Vec<u16>> {
             &mut output,
         )
         .ok()
-        .map_err(|e| anyhow::anyhow!("CryptUnprotectData failed: {}", e))?;
+        .context("CryptUnprotectData failed")?;
 
         let plaintext = std::slice::from_raw_parts(output.pbData, output.cbData as usize)
             .to_vec();
@@ -307,10 +306,10 @@ fn dpapi_unprotect(protected: &[u8]) -> anyhow::Result<Vec<u16>> {
 fn base64_decode(input: &str) -> anyhow::Result<Vec<u8>> {
     const DECODE_TABLE: [i8; 256] = {
         let mut table = [-1i8; 256];
-        let b64 = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let b64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut i = 0u8;
         while i < 64 {
-            table[b64[i] as usize] = i as i8;
+            table[b64[i as usize] as usize] = i as i8;
             i += 1;
         }
         table
@@ -372,12 +371,13 @@ fn verify_credentials(password_b64: &str) -> Result<bool> {
     let protected_bytes = base64_decode(password_b64)
         .context("base64 decode of DPAPI blob from UI")?;
 
-    // Step 2: DPAPI-unprotect to recover UTF-16 password bytes.
-    let password_utf16 = dpapi_unprotect(&protected_bytes)
+    // Step 2: DPAPI-unprotect to recover the raw password bytes.
+    let password_bytes = dpapi_unprotect(&protected_bytes)
         .context("CryptUnprotectData failed")?;
 
-    // Step 3: Convert UTF-16 LE to UTF-8 string (passwords are ASCII/Latin-1 compatible).
-    let password = String::from_utf16_lossy(&password_utf16);
+    // Step 3: Convert bytes to String (ASCII/Latin-1 passwords; lossy conversion
+    // handles any encoding edge cases by replacing invalid sequences).
+    let password = String::from_utf8_lossy(&password_bytes).into_owned();
 
     // Step 4: LDAP simple bind.
     let admin_dn = get_admin_dn().context("get dlp-admin DN")?;
