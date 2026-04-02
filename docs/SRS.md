@@ -11,6 +11,8 @@
 
 **Changelog (v1.3):** Added F-AGT-19: SMB impersonation identity resolution — Agent resolves remote user's SID from SMB impersonation context using `QuerySecurityContextToken` / `ImpersonateSelf` + `GetTokenInformation`; audit events include `access_context` field; added `identity.rs` to crate structure; updated F-AUD-02 schema; added SMB Impersonation glossary entry; restructured Phase 1 task table with T-01–T-46 IDs matching `docs/plans/user-stories.md`; Phase 1 expanded to 18 sprints; added Phase 1 task breakdowns to each Epic in user-stories.md
 
+**Changelog (v1.4):** Implemented T-26 and T-27: audit pipeline is fully wired. `AuditEmitter` is a global singleton writing append-only JSONL to `C:\ProgramData\DLP\logs\audit.jsonl` with 50 MB size-based rotation (9 generations). `EmitContext` carries agent/session/user identity into every `emit_audit` call. File interception events flow: ETW → `InterceptionEngine` → `run_event_loop` → `OfflineManager::evaluate` → audit + Pipe 1 UI notification. Clipboard T2+ events are audited via `ClipboardListener::process_clipboard_text`. `Action::PASTE` added to ABAC types. `InterceptionEngine` made `Clone` for safe shutdown across Tokio tasks.
+
 ---
 
 ## Table of Contents

@@ -11,6 +11,14 @@
 //! - **Size-based rotation**: configurable max bytes, 9 generations.
 //! - **No file content**: metadata only — never the actual file payload.
 //!
+//! ## Global Emitter
+//!
+//! The emitter is exposed as a lazily-initialised global singleton via
+//! [`EMITTER`].  All call sites share this instance so there is exactly one
+//! writer open at a time.  Errors during emission are logged but never block
+//! the calling thread — audit failures are never allowed to interfere with
+//! DLP enforcement.
+//!
 //! ## Audit Enrichment
 //!
 //! [`get_application_metadata`] and [`get_resource_owner`] are stubbed in this build
@@ -37,13 +45,46 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use dlp_common::AuditEvent;
+use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use tracing::{debug, error, info};
+use std::sync::Arc;
+use tracing::{debug, error, info, warn};
 
 const DEFAULT_LOG_DIR: &str = r"C:\ProgramData\DLP\logs";
 const DEFAULT_LOG_NAME: &str = "audit.jsonl";
 const DEFAULT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_ROTATED_FILES: u32 = 9;
+
+/// The process-wide global audit emitter.
+///
+/// Lazily opened on first use.  Errors during emission are logged and
+/// silently swallowed so audit failures never interfere with DLP enforcement.
+pub static EMITTER: Lazy<Arc<AuditEmitter>> = Lazy::new(|| {
+    Arc::new(AuditEmitter::open_default().unwrap_or_else(|e| {
+        // Log the error but create a no-op emitter so the rest of the
+        // service continues — audit failures must never crash the agent.
+        warn!(error = %e, "failed to open audit log — audit events will not be persisted");
+        // Open in the current directory so we at least attempt to write.
+        AuditEmitter::open(Path::new("."), DEFAULT_LOG_NAME, DEFAULT_MAX_BYTES)
+            .expect("audit emitter must be constructable even in fallback mode")
+    }))
+});
+
+/// Shared context required to build an [`AuditEvent`].
+///
+/// Passed to every [`emit_audit`] call so call sites don't need to repeat
+/// agent-wide fields (agent_id, session_id).
+#[derive(Debug, Clone)]
+pub struct EmitContext {
+    /// The unique ID of this agent (e.g. "AGENT-WS02-001").
+    pub agent_id: String,
+    /// The interactive session in which the event occurred.
+    pub session_id: u32,
+    /// The user's Windows Security Identifier.
+    pub user_sid: String,
+    /// The user's display name.
+    pub user_name: String,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuditError {
@@ -55,6 +96,53 @@ pub enum AuditError {
     DirectoryCreateFailed(String),
 }
 
+/// Low-level audit emission.
+///
+/// Called by [`emit_audit`].  Returns `Ok(())` on success; callers must handle
+/// errors themselves.  This is the right choice for callers that want to
+/// propagate failures (e.g. during startup validation).
+pub fn emit(event: &AuditEvent) -> Result<(), AuditError> {
+    EMITTER.emit(event)
+}
+
+/// High-level audit emission helper.
+///
+/// Enriches `event` with the shared fields in `ctx` (agent_id, session_id,
+/// user_sid, user_name) then writes it to the global audit log.
+///
+/// Errors are logged and silently dropped — audit emission failures must
+/// never interfere with DLP enforcement.
+pub fn emit_audit(ctx: &EmitContext, event: &mut AuditEvent) {
+    event.agent_id.clone_from(&ctx.agent_id);
+    event.session_id = ctx.session_id;
+    event.user_sid.clone_from(&ctx.user_sid);
+    event.user_name.clone_from(&ctx.user_name);
+
+    if let Err(e) = EMITTER.emit(event) {
+        // Log but do not propagate — audit failures must never block DLP enforcement.
+        error!(
+            error = %e,
+            event_type = ?event.event_type,
+            path = %event.resource_path,
+            "audit emission failed — event dropped"
+        );
+    }
+}
+
+/// Returns the path of the active audit log file.
+#[must_use]
+pub fn log_path() -> std::path::PathBuf {
+    EMITTER.log_path().to_path_buf()
+}
+
+/// Returns `true` if the global emitter is healthy (i.e., the file is open).
+///
+/// Used by the health monitor to report audit subsystem status.
+#[must_use]
+pub fn is_healthy() -> bool {
+    !EMITTER.log_path().is_relative()
+}
+
 pub struct AuditEmitter {
     writer: Mutex<BufWriter<File>>,
     log_path: PathBuf,
@@ -64,7 +152,11 @@ pub struct AuditEmitter {
 
 impl AuditEmitter {
     pub fn open_default() -> Result<Self, AuditError> {
-        Self::open(Path::new(DEFAULT_LOG_DIR), DEFAULT_LOG_NAME, DEFAULT_MAX_BYTES)
+        Self::open(
+            Path::new(DEFAULT_LOG_DIR),
+            DEFAULT_LOG_NAME,
+            DEFAULT_MAX_BYTES,
+        )
     }
 
     pub fn open(dir: &Path, name: &str, max_bytes: u64) -> Result<Self, AuditError> {
@@ -120,8 +212,16 @@ impl AuditEmitter {
         let mut writer = self.writer.lock();
         writer.flush()?;
         let dir = self.log_path.parent().unwrap_or(Path::new("."));
-        let stem = self.log_path.file_stem().and_then(|s| s.to_str()).unwrap_or("audit");
-        let ext = self.log_path.extension().and_then(|s| s.to_str()).unwrap_or("jsonl");
+        let stem = self
+            .log_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("audit");
+        let ext = self
+            .log_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("jsonl");
         for i in (1..=MAX_ROTATED_FILES).rev() {
             let src = dir.join(format!("{stem}.{i}.{ext}"));
             if src.exists() {
@@ -186,7 +286,9 @@ mod tests {
     fn test_multiple_events() {
         let dir = tempfile::tempdir().unwrap();
         let emitter = AuditEmitter::open(dir.path(), "test.jsonl", DEFAULT_MAX_BYTES).unwrap();
-        for _ in 0..5 { emitter.emit(&make_event()).unwrap(); }
+        for _ in 0..5 {
+            emitter.emit(&make_event()).unwrap();
+        }
         let contents = fs::read_to_string(emitter.log_path()).unwrap();
         assert_eq!(contents.lines().count(), 5);
     }
@@ -195,7 +297,9 @@ mod tests {
     fn test_rotation() {
         let dir = tempfile::tempdir().unwrap();
         let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 100).unwrap();
-        for _ in 0..5 { emitter.emit(&make_event()).unwrap(); }
+        for _ in 0..5 {
+            emitter.emit(&make_event()).unwrap();
+        }
         emitter.rotate().unwrap();
         let rotated = dir.path().join("audit.1.jsonl");
         assert!(rotated.exists());

@@ -99,11 +99,7 @@ impl NetworkShareDetector {
     ///
     /// Only T3/T4 operations to non-whitelisted destinations are blocked.
     #[must_use]
-    pub fn should_block(
-        &self,
-        destination: &str,
-        classification: Classification,
-    ) -> bool {
+    pub fn should_block(&self, destination: &str, classification: Classification) -> bool {
         if !classification.is_sensitive() {
             return false;
         }
@@ -196,9 +192,8 @@ mod tests {
 
     #[test]
     fn test_whitelisted_server_allowed() {
-        let detector = NetworkShareDetector::with_whitelist(
-            vec!["fileserver01.corp.local".to_string()],
-        );
+        let detector =
+            NetworkShareDetector::with_whitelist(vec!["fileserver01.corp.local".to_string()]);
         assert!(!detector.should_block(
             r"\\fileserver01.corp.local\share\report.xlsx",
             Classification::T4,
@@ -207,20 +202,14 @@ mod tests {
 
     #[test]
     fn test_non_whitelisted_server_blocked() {
-        let detector = NetworkShareDetector::with_whitelist(
-            vec!["safe.corp.local".to_string()],
-        );
-        assert!(detector.should_block(
-            r"\\evil.external\exfil",
-            Classification::T3,
-        ));
+        let detector = NetworkShareDetector::with_whitelist(vec!["safe.corp.local".to_string()]);
+        assert!(detector.should_block(r"\\evil.external\exfil", Classification::T3,));
     }
 
     #[test]
     fn test_case_insensitive_matching() {
-        let detector = NetworkShareDetector::with_whitelist(
-            vec!["FileServer01.Corp.Local".to_string()],
-        );
+        let detector =
+            NetworkShareDetector::with_whitelist(vec!["FileServer01.Corp.Local".to_string()]);
         assert!(detector.is_whitelisted(r"\\FILESERVER01.CORP.LOCAL\share"));
         assert!(detector.is_whitelisted(r"\\fileserver01.corp.local\data"));
     }
@@ -237,9 +226,7 @@ mod tests {
 
     #[test]
     fn test_replace_whitelist() {
-        let detector = NetworkShareDetector::with_whitelist(
-            vec!["old.server".to_string()],
-        );
+        let detector = NetworkShareDetector::with_whitelist(vec!["old.server".to_string()]);
         detector.replace_whitelist(vec!["new.server".to_string()]);
         assert!(!detector.is_whitelisted(r"\\old.server\share"));
         assert!(detector.is_whitelisted(r"\\new.server\share"));
@@ -247,9 +234,8 @@ mod tests {
 
     #[test]
     fn test_prefix_matching() {
-        let detector = NetworkShareDetector::with_whitelist(
-            vec![r"\\nas01\approved-share".to_string()],
-        );
+        let detector =
+            NetworkShareDetector::with_whitelist(vec![r"\\nas01\approved-share".to_string()]);
         // Path under the approved share should match.
         assert!(detector.is_whitelisted(r"\\nas01\approved-share\file.xlsx"));
         // Different share on the same server should NOT match.

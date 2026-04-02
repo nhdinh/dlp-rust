@@ -105,14 +105,22 @@ fn make_eval_request(classification: Classification, action: Action) -> Evaluate
 #[tokio::test]
 async fn test_health_200() {
     let (base, _tmp, _h) = spawn_server().await;
-    let resp = Client::new().get(format!("{base}/health")).send().await.unwrap();
+    let resp = Client::new()
+        .get(format!("{base}/health"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 }
 
 #[tokio::test]
 async fn test_ready_200() {
     let (base, _tmp, _h) = spawn_server().await;
-    let resp = Client::new().get(format!("{base}/ready")).send().await.unwrap();
+    let resp = Client::new()
+        .get(format!("{base}/ready"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 }
 

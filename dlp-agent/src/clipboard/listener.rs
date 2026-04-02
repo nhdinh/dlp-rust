@@ -25,6 +25,12 @@
 //! the Windows API calls.  The classification result is sent to the
 //! interception pipeline via an `mpsc` channel.
 //!
+//! ## Audit events
+//!
+//! Clipboard events with T2+ classification are emitted to the audit log as
+//! `EventType::Access` with `Action::PASTE`.  Sensitive content (T3/T4) that
+//! is copied to the clipboard is flagged as a potential exfiltration risk.
+//!
 //! ## Limitations
 //!
 //! - Only intercepts `CF_UNICODETEXT` clipboard data.  Binary/image clipboard
@@ -41,16 +47,18 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::audit_emitter::emit_audit;
+use dlp_common::AuditAccessContext;
+
 #[cfg(windows)]
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 #[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetMessageW, PostThreadMessageW, RegisterClassW, SetWindowsHookExW, TranslateMessage,
-    UnhookWindowsHookEx, HHOOK, HOOKPROC, MSG, WINDOW_STYLE, WH_GETMESSAGE, WNDCLASSW,
-    WS_EX_NOACTIVATE, WM_QUIT,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+    PostThreadMessageW, RegisterClassW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+    HHOOK, MSG, WH_GETMESSAGE, WINDOW_STYLE, WM_QUIT, WNDCLASSW, WS_EX_NOACTIVATE,
 };
 
 /// Wrapper around `HHOOK` that is `Send + Sync`.
@@ -66,14 +74,13 @@ unsafe impl Send for SendableHhook {}
 unsafe impl Sync for SendableHhook {}
 #[allow(unused_imports)]
 #[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongPtrW, PostQuitMessage, WM_DESTROY,
-};
+use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, PostQuitMessage, WM_DESTROY};
 
 use super::classifier::ClipboardClassifier;
 
 /// Windows message constants used by the hook procedure at runtime.
 const WM_PASTE: u32 = 0x0302;
+#[allow(dead_code)]
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 
 /// Module-level reference to the running listener so the C-callable hook procedure
@@ -91,6 +98,29 @@ pub struct ClipboardEvent {
     pub text_length: usize,
     /// The session ID in which the event occurred.
     pub session_id: u32,
+}
+
+/// Global emit context for the clipboard listener.
+///
+/// Set once at startup via [`init_emit_context`].  Stored as `OnceLock` so the
+/// clipbaord hook (which has no access to async context) can still emit audit
+/// events without requiring an explicit context parameter.
+static CLIPBOARD_EMIT_CONTEXT: std::sync::OnceLock<crate::audit_emitter::EmitContext> =
+    std::sync::OnceLock::new();
+
+/// Sets the global emit context for clipboard audit events.
+///
+/// Must be called once before the clipboard listener starts.
+/// Called from `service.rs` during service startup.
+pub fn init_emit_context(ctx: crate::audit_emitter::EmitContext) {
+    let prev = CLIPBOARD_EMIT_CONTEXT.set(ctx.clone());
+    if prev.is_err() {
+        tracing::warn!("clipboard emit context already set — ignoring duplicate init");
+    }
+    tracing::info!(
+        session_id = ctx.session_id,
+        "clipboard audit context initialised"
+    );
 }
 
 /// The clipboard message hook listener.
@@ -190,7 +220,10 @@ impl ClipboardListener {
                         PCWSTR::from_raw(atom as *const u16),
                         PCWSTR::null(),
                         WINDOW_STYLE(0), // dwStyle
-                        0, 0, 0, 0, // position/size (irrelevant for message-only)
+                        0,
+                        0,
+                        0,
+                        0, // position/size (irrelevant for message-only)
                         None,
                         None,
                         None,
@@ -285,9 +318,8 @@ impl ClipboardListener {
         // SAFETY: PostThreadMessageW with WM_QUIT is safe — it posts a quit
         // message that causes GetMessageW to return 0, cleanly exiting the loop.
         let thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
-        let _ = unsafe {
-            PostThreadMessageW(thread_id, WM_QUIT, WPARAM::default(), LPARAM::default())
-        };
+        let _ =
+            unsafe { PostThreadMessageW(thread_id, WM_QUIT, WPARAM::default(), LPARAM::default()) };
 
         // Wait for the thread to finish.
         let mut handle_guard = self.thread_handle.lock();
@@ -331,8 +363,10 @@ impl ClipboardListener {
     /// warrants it (T2 or higher).
     ///
     /// This method is called by the hook procedure when a paste operation
-    /// is detected.  It reads the clipboard text, classifies it, and sends
-    /// the result over the channel.
+    /// is detected.  It reads the clipboard text, classifies it, sends the
+    /// result over the channel, and emits an audit event to the local JSONL log.
+    ///
+    /// The [`EmitContext`] is read from the global `CLIPBOARD_EMIT_CONTEXT`.
     pub fn process_clipboard_text(&self, text: &str) {
         if text.is_empty() {
             return;
@@ -361,6 +395,24 @@ impl ClipboardListener {
             if tx.try_send(event).is_err() {
                 warn!("clipboard event channel full or closed");
             }
+        }
+
+        // ── Emit audit event ─────────────────────────────────────────────
+        if let Some(ctx) = CLIPBOARD_EMIT_CONTEXT.get() {
+            let audit_event = dlp_common::AuditEvent::new(
+                dlp_common::EventType::Access,
+                ctx.user_sid.clone(),
+                ctx.user_name.clone(),
+                format!("clipboard://session{}", ctx.session_id),
+                classification,
+                dlp_common::Action::PASTE,
+                dlp_common::Decision::ALLOW,
+                ctx.agent_id.clone(),
+                ctx.session_id,
+            )
+            .with_access_context(AuditAccessContext::Local);
+            let mut audit_event = audit_event;
+            emit_audit(ctx, &mut audit_event);
         }
     }
 
@@ -440,7 +492,7 @@ extern "system" fn wndproc_callback(
     lparam: LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
     // SAFETY: DefWindowProcW is always safe to call with valid parameters.
-    match msg as u32 {
+    match msg {
         windows::Win32::UI::WindowsAndMessaging::WM_DESTROY => {
             unsafe { PostQuitMessage(0) };
             windows::Win32::Foundation::LRESULT(0)
@@ -462,11 +514,7 @@ extern "system" fn wndproc_callback(
 /// `OpenClipboard` / `GetClipboardData` here because there is no concurrent
 /// clipboard access from this thread.
 #[cfg(windows)]
-unsafe extern "system" fn hook_procedure(
-    _code: i32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+unsafe extern "system" fn hook_procedure(_code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // For WH_GETMESSAGE: wparam is the message ID (cast to raw value).
     let msg = wparam.0 as u32;
 

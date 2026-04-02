@@ -1,14 +1,35 @@
 # Audit & Logging
 
-**Document Version:** 1.0
-**Date:** 2026-03-31
+**Document Version:** 1.1
+**Date:** 2026-04-02
 **Status:** Draft
+
+**Changelog (v1.1):** Added Phase 1 implementation details — `dlp-agent` now writes directly to a local append-only JSONL file (`C:\ProgramData\DLP\logs\audit.jsonl`) with 50 MB size-based rotation and 9-generation retention. Audit pipeline fully wired: ETW → `run_event_loop` → `OfflineManager` → audit + Pipe 1. Clipboard T2+ events audited via `ClipboardListener`. `Action::PASTE` added.
 
 ## Overview
 
-All dlp-agents emit structured JSON audit events for every intercepted file operation. Events flow through **dlp-server** — which provides central ingestion, append-only storage, SIEM relay, and an admin query API. No agent sends directly to SIEM.
+All dlp-agents emit structured JSON audit events for every intercepted file operation. Events flow through **dlp-server** (Phase 5) — which provides central ingestion, append-only storage, SIEM relay, and an admin query API. In Phase 1 (pre-dlp-server), agents write directly to a local append-only JSONL file.
 
-## Audit Event Flow
+## Phase 1 Audit Event Flow (Implemented)
+
+```
+ETW / Clipboard Hook
+        │
+        ▼
+InterceptionEngine / ClipboardListener
+        │
+        ▼
+run_event_loop / process_clipboard_text
+        │
+        ├──► OfflineManager::evaluate (Policy Engine or cache)
+        │
+        ├──► AuditEmitter::emit  ──► C:\ProgramData\DLP\logs\audit.jsonl
+        │                                  (50 MB per file, 9 generations)
+        │
+        └──► Pipe1AgentMsg::BlockNotify  ──► UI (blocked decisions only)
+```
+
+## Phase 5 Audit Event Flow (Future)
 
 ```
 dlp-agent (per endpoint)
@@ -20,19 +41,20 @@ dlp-agent (per endpoint)
                                           └── Splunk HEC / ELK HTTP Ingest
 ```
 
-**Note:** Before Phase 5 (dlp-server deployment), agents buffer events locally in an encrypted append-only file (`F-AUD-04`). After Phase 5, all events flow through dlp-server.
-
 ## Events
 
 | Event Type | Trigger | Routed to SIEM | Alert |
 |-----------|---------|----------------|-------|
-| `ACCESS` | File opened, read, written | Yes | No |
-| `BLOCK` | Operation blocked by ABAC DENY | Yes | T3/T4 only |
-| `ALERT` | DENY_WITH_ALERT triggered | Yes | Yes (email + webhook) |
-| `CONFIG_CHANGE` | Policy or config changed | Yes | No |
-| `SESSION_LOGOFF` | User logoff detected | Yes | No |
-| `ADMIN_ACTION` | dlp-admin-portal API call | Yes | No |
-| `SERVICE_STOP_FAILED` | Failed sc stop attempt | Yes | Yes |
+| `ACCESS` | File opened, read, written | Yes (Phase 5) | No |
+| `BLOCK` | Operation blocked by ABAC DENY | Yes (Phase 5) | T3/T4 only |
+| `ALERT` | DENY_WITH_ALERT triggered | Yes (Phase 5) | Yes (email + webhook) |
+| `CONFIG_CHANGE` | Policy or config changed | Yes (Phase 5) | No |
+| `SESSION_LOGOFF` | User logoff detected | Yes (Phase 5) | No |
+| `ADMIN_ACTION` | dlp-admin-portal API call | Yes (Phase 5) | No |
+| `SERVICE_STOP_FAILED` | Failed sc stop attempt | Yes (Phase 5) | Yes |
+| `EVASION_SUSPECTED` | ETW event not seen by hooks | Yes (Phase 5) | Yes |
+
+> **Phase 1 note:** Events are written to `C:\ProgramData\DLP\logs\audit.jsonl` locally. SIEM routing activates when dlp-server is deployed (Phase 5).
 
 ## Log Format
 
@@ -65,9 +87,21 @@ All events are UTF-8 JSON matching the `AuditEvent` schema in `common-types/src/
 
 | Destination | Protocol | Authentication | Owner |
 |-------------|----------|---------------|-------|
-| dlp-server (`/audit/events`) | HTTPS / TLS 1.3 | mTLS or signed JWT per agent | dlp-agent → dlp-server |
+| **Phase 1:** `C:\ProgramData\DLP\logs\audit.jsonl` | Local filesystem | Service account (LocalSystem) | dlp-agent → local file |
+| **Phase 5:** dlp-server (`/audit/events`) | HTTPS / TLS 1.3 | mTLS or signed JWT per agent | dlp-agent → dlp-server |
 | SIEM — Splunk HEC | HTTPS / TLS 1.3 | HEC token | dlp-server → Splunk |
 | SIEM — ELK HTTP Ingest | HTTPS / TLS 1.3 | API key | dlp-server → ELK |
+
+### Phase 1 Local Log
+
+| Property | Value |
+|----------|-------|
+| Path | `C:\ProgramData\DLP\logs\audit.jsonl` |
+| Format | JSONL (one JSON object per line, UTF-8) |
+| Max file size | 50 MB |
+| Rotation | 9 generations (`audit.jsonl.1.jsonl` … `audit.jsonl.9.jsonl`) |
+| Append semantics | `FILE_APPEND_DATA` only — no read or write-after-append |
+| Access | LocalSystem account (created automatically on first write) |
 
 ## SIEM Relay (dlp-server)
 

@@ -161,9 +161,9 @@ impl EtwBypassDetector {
         }
 
         // Search for a matching hook record.
-        let found = log.iter().any(|r| {
-            r.path == lower_path && r.process_id == process_id
-        });
+        let found = log
+            .iter()
+            .any(|r| r.path == lower_path && r.process_id == process_id);
 
         if found {
             debug!(path, process_id, "ETW event matched hook record");
@@ -226,11 +226,7 @@ mod tests {
         let detector = EtwBypassDetector::new();
         detector.record_hook_intercept(r"C:\Data\report.xlsx", 1234);
 
-        let result = detector.check_etw_event(
-            r"C:\Data\report.xlsx",
-            1234,
-            "WriteFile",
-        );
+        let result = detector.check_etw_event(r"C:\Data\report.xlsx", 1234, "WriteFile");
         assert!(result.is_none(), "should not flag when hook was recorded");
     }
 
@@ -238,11 +234,7 @@ mod tests {
     fn test_no_hook_triggers_evasion() {
         let detector = EtwBypassDetector::new();
         // No hook recorded — ETW event should trigger evasion.
-        let result = detector.check_etw_event(
-            r"C:\Data\secret.docx",
-            5678,
-            "NtWriteFile",
-        );
+        let result = detector.check_etw_event(r"C:\Data\secret.docx", 5678, "NtWriteFile");
         assert!(result.is_some());
         let signal = result.unwrap();
         assert_eq!(signal.path, r"C:\Data\secret.docx");
@@ -256,11 +248,7 @@ mod tests {
         detector.record_hook_intercept(r"C:\DATA\Report.XLSX", 100);
 
         // ETW delivers the path in different case — should still match.
-        let result = detector.check_etw_event(
-            r"c:\data\report.xlsx",
-            100,
-            "WriteFile",
-        );
+        let result = detector.check_etw_event(r"c:\data\report.xlsx", 100, "WriteFile");
         assert!(result.is_none());
     }
 
@@ -270,11 +258,7 @@ mod tests {
         detector.record_hook_intercept(r"C:\Data\file.txt", 100);
 
         // Same path but different PID — potential injection.
-        let result = detector.check_etw_event(
-            r"C:\Data\file.txt",
-            999,
-            "WriteFile",
-        );
+        let result = detector.check_etw_event(r"C:\Data\file.txt", 999, "WriteFile");
         assert!(result.is_some());
     }
 
@@ -282,11 +266,7 @@ mod tests {
     fn test_ignored_path_not_flagged() {
         let detector = EtwBypassDetector::new();
         // System temp path is in the default ignore list.
-        let result = detector.check_etw_event(
-            r"C:\Windows\Temp\cache.tmp",
-            100,
-            "CreateFile",
-        );
+        let result = detector.check_etw_event(r"C:\Windows\Temp\cache.tmp", 100, "CreateFile");
         assert!(result.is_none());
     }
 
@@ -300,11 +280,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(10));
 
         // The record should have expired — ETW event triggers evasion.
-        let result = detector.check_etw_event(
-            r"C:\Data\old.txt",
-            100,
-            "WriteFile",
-        );
+        let result = detector.check_etw_event(r"C:\Data\old.txt", 100, "WriteFile");
         assert!(result.is_some());
     }
 
@@ -323,11 +299,7 @@ mod tests {
         let mut detector = EtwBypassDetector::new();
         detector.add_ignore_prefix(r"D:\Logs\");
 
-        let result = detector.check_etw_event(
-            r"D:\Logs\app.log",
-            100,
-            "WriteFile",
-        );
+        let result = detector.check_etw_event(r"D:\Logs\app.log", 100, "WriteFile");
         assert!(result.is_none());
     }
 
@@ -336,10 +308,7 @@ mod tests {
         let detector = EtwBypassDetector::with_window(Duration::from_secs(60));
         // Fill beyond capacity.
         for i in 0..MAX_HOOK_RECORDS + 100 {
-            detector.record_hook_intercept(
-                &format!(r"C:\Data\file{i}.txt"),
-                i as u32,
-            );
+            detector.record_hook_intercept(&format!(r"C:\Data\file{i}.txt"), i as u32);
         }
         // The log should not exceed MAX_HOOK_RECORDS.
         assert!(detector.hook_log.lock().len() <= MAX_HOOK_RECORDS);

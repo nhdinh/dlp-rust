@@ -34,7 +34,8 @@ param(
     [string]$Action,
 
     [Parameter()]
-    [string]$BinaryPath = "$env:ProgramFiles\DLP\dlp-agent.exe",
+    # [string]$BinaryPath = "$env:ProgramFiles\DLP\dlp-agent.exe",
+    [string]$BinaryPath = "$PSScriptRoot\..\target\release\dlp-agent.exe",
 
     [Parameter()]
     [string]$ServiceName = 'dlp-agent',
@@ -58,16 +59,16 @@ Set-StrictMode -Version Latest
 function Write-Status {
     param([string]$Message, [string]$Level = 'OK')
     switch ($Level) {
-        'OK'    { Write-Host "[OK]   $Message" -ForegroundColor Green  }
-        'INFO'  { Write-Host "[INFO] $Message" -ForegroundColor Cyan   }
-        'WARN'  { Write-Host "[WARN] $Message" -ForegroundColor Yellow }
-        'FAIL'  { Write-Host "[FAIL] $Message" -ForegroundColor Red    }
+        'OK' { Write-Host "[OK]   $Message" -ForegroundColor Green }
+        'INFO' { Write-Host "[INFO] $Message" -ForegroundColor Cyan }
+        'WARN' { Write-Host "[WARN] $Message" -ForegroundColor Yellow }
+        'FAIL' { Write-Host "[FAIL] $Message" -ForegroundColor Red }
     }
 }
 
 function Get-CurrentService {
     <# Returns a ServiceController or $null if not installed. #>
-    Get-CmaService -Name $ServiceName -ErrorAction SilentlyContinue
+    Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 }
 
 function Test-BinaryExists {
@@ -92,7 +93,8 @@ function Wait-ForServiceState {
                 Write-Status "Service removed" -Level INFO
                 return $true
             }
-        } elseif ($svc.Status -eq $DesiredState) {
+        }
+        elseif ($svc.Status -eq $DesiredState) {
             Write-Status "Service is $DesiredState" -Level INFO
             return $true
         }
@@ -141,7 +143,8 @@ function New-DlpAgentService {
 
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "sc.exe failure configuration failed (exit $LASTEXITCODE) — non-fatal"
-    } else {
+    }
+    else {
         Write-Status "Crash-recovery actions configured." -Level INFO
     }
 }
@@ -205,7 +208,8 @@ function Remove-DlpAgentService {
 
     if ($LASTEXITCODE -ne 0) {
         Write-Status "sc.exe delete failed (exit $LASTEXITCODE)" -Level FAIL
-    } else {
+    }
+    else {
         Write-Status "Service unregistered and deleted." -Level INFO
     }
 }

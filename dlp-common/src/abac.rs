@@ -19,6 +19,8 @@ pub enum Action {
     DELETE,
     /// Move a file (rename or relocate).
     MOVE,
+    /// Paste from clipboard (copying text/data into an application).
+    PASTE,
 }
 
 /// The access context describes how the file operation originated.

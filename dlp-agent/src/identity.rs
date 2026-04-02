@@ -115,9 +115,7 @@ impl IdentityResolver {
 
     /// Attempts impersonation via `ImpersonateSelf`, queries the token, then reverts.
     fn resolve_from_thread_token(&mut self) -> Option<WindowsIdentity> {
-        use windows::Win32::Security::{
-            ImpersonateSelf, RevertToSelf, SecurityImpersonation,
-        };
+        use windows::Win32::Security::{ImpersonateSelf, RevertToSelf, SecurityImpersonation};
 
         // Begin impersonation.
         // SAFETY: ImpersonateSelf with SecurityImpersonation level is safe on any thread.

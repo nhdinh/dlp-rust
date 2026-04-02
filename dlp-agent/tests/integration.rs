@@ -13,9 +13,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use dlp_common::{
-    Action, Classification, Decision, EvaluateRequest, EvaluateResponse,
-};
+use dlp_common::{Action, Classification, Decision, EvaluateRequest, EvaluateResponse};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock Policy Engine
@@ -55,8 +53,8 @@ async fn test_e2e_file_action_to_audit_log() {
     use dlp_agent::audit_emitter::AuditEmitter;
     use dlp_agent::cache::Cache;
     use dlp_agent::engine_client::EngineClient;
-    use dlp_agent::interception::PolicyMapper;
     use dlp_agent::interception::FileAction;
+    use dlp_agent::interception::PolicyMapper;
 
     // 1. Start mock engine returning DENY for everything.
     let (addr, _handle) = start_mock_engine(Decision::DENY).await;
@@ -66,8 +64,7 @@ async fn test_e2e_file_action_to_audit_log() {
     let client = EngineClient::new(&base_url, false).unwrap();
     let cache = Arc::new(Cache::new());
     let dir = tempfile::tempdir().unwrap();
-    let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024)
-        .unwrap();
+    let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
 
     // 3. Simulate a file action.
     let action = FileAction::Written {
@@ -133,8 +130,7 @@ async fn test_e2e_file_action_to_audit_log() {
 
     // 9. Verify audit log contains the event.
     let log_contents = std::fs::read_to_string(emitter.log_path()).unwrap();
-    let parsed: dlp_common::AuditEvent =
-        serde_json::from_str(log_contents.trim()).unwrap();
+    let parsed: dlp_common::AuditEvent = serde_json::from_str(log_contents.trim()).unwrap();
     assert_eq!(parsed.event_type, dlp_common::EventType::Block);
     assert_eq!(parsed.decision, Decision::DENY);
     assert_eq!(parsed.resource_path, r"C:\Restricted\secrets.xlsx");
@@ -144,8 +140,8 @@ async fn test_e2e_file_action_to_audit_log() {
 #[tokio::test]
 async fn test_e2e_cache_hit_skips_engine() {
     use dlp_agent::cache::Cache;
-    use dlp_agent::interception::PolicyMapper;
     use dlp_agent::interception::FileAction;
+    use dlp_agent::interception::PolicyMapper;
 
     let cache = Arc::new(Cache::new());
 
@@ -181,8 +177,8 @@ async fn test_e2e_cache_hit_skips_engine() {
 #[tokio::test]
 async fn test_e2e_offline_fallback_deny_t4() {
     use dlp_agent::cache::{self, Cache};
-    use dlp_agent::interception::PolicyMapper;
     use dlp_agent::interception::FileAction;
+    use dlp_agent::interception::PolicyMapper;
 
     let cache = Arc::new(Cache::new());
 
@@ -207,8 +203,8 @@ async fn test_e2e_offline_fallback_deny_t4() {
 #[tokio::test]
 async fn test_e2e_offline_fallback_allow_t1() {
     use dlp_agent::cache::{self, Cache};
-    use dlp_agent::interception::PolicyMapper;
     use dlp_agent::interception::FileAction;
+    use dlp_agent::interception::PolicyMapper;
 
     let cache = Arc::new(Cache::new());
 
@@ -240,37 +236,23 @@ async fn test_e2e_usb_block_t3() {
     // The unit tests in usb.rs already validate the blocked-drive set directly.
 
     // With no blocked drives, T3 on any path is not blocked.
-    assert!(!detector.should_block_write(
-        r"F:\confidential_report.pdf",
-        Classification::T3,
-    ));
+    assert!(!detector.should_block_write(r"F:\confidential_report.pdf", Classification::T3,));
 
     // T1 is never blocked regardless.
-    assert!(!detector.should_block_write(
-        r"F:\public_doc.txt",
-        Classification::T1,
-    ));
+    assert!(!detector.should_block_write(r"F:\public_doc.txt", Classification::T1,));
 }
 
 #[tokio::test]
 async fn test_e2e_network_share_block() {
     use dlp_agent::detection::NetworkShareDetector;
 
-    let detector = NetworkShareDetector::with_whitelist(
-        vec!["safe.corp.local".to_string()],
-    );
+    let detector = NetworkShareDetector::with_whitelist(vec!["safe.corp.local".to_string()]);
 
     // Whitelisted server — allowed.
-    assert!(!detector.should_block(
-        r"\\safe.corp.local\data\report.xlsx",
-        Classification::T4,
-    ));
+    assert!(!detector.should_block(r"\\safe.corp.local\data\report.xlsx", Classification::T4,));
 
     // Non-whitelisted — blocked.
-    assert!(detector.should_block(
-        r"\\evil.external\exfil\data.zip",
-        Classification::T3,
-    ));
+    assert!(detector.should_block(r"\\evil.external\exfil\data.zip", Classification::T3,));
 }
 
 #[tokio::test]
@@ -322,8 +304,7 @@ async fn test_e2e_audit_event_round_trip() {
     use dlp_agent::audit_emitter::AuditEmitter;
 
     let dir = tempfile::tempdir().unwrap();
-    let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024)
-        .unwrap();
+    let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
 
     // Emit multiple events.
     for i in 0..3 {
@@ -370,27 +351,54 @@ async fn test_all_file_action_variants_mapped() {
 
     let cases: Vec<(FileAction, Action)> = vec![
         (
-            FileAction::Created { path: "a".into(), process_id: 1, related_process_id: 0 },
+            FileAction::Created {
+                path: "a".into(),
+                process_id: 1,
+                related_process_id: 0,
+            },
             Action::WRITE,
         ),
         (
-            FileAction::Written { path: "a".into(), process_id: 1, related_process_id: 0, byte_count: 0 },
+            FileAction::Written {
+                path: "a".into(),
+                process_id: 1,
+                related_process_id: 0,
+                byte_count: 0,
+            },
             Action::WRITE,
         ),
         (
-            FileAction::Deleted { path: "a".into(), process_id: 1, related_process_id: 0 },
+            FileAction::Deleted {
+                path: "a".into(),
+                process_id: 1,
+                related_process_id: 0,
+            },
             Action::DELETE,
         ),
         (
-            FileAction::Moved { old_path: "a".into(), new_path: "b".into(), process_id: 1, related_process_id: 0 },
+            FileAction::Moved {
+                old_path: "a".into(),
+                new_path: "b".into(),
+                process_id: 1,
+                related_process_id: 0,
+            },
             Action::MOVE,
         ),
         (
-            FileAction::Read { path: "a".into(), process_id: 1, related_process_id: 0, byte_count: 0 },
+            FileAction::Read {
+                path: "a".into(),
+                process_id: 1,
+                related_process_id: 0,
+                byte_count: 0,
+            },
             Action::READ,
         ),
         (
-            FileAction::EvasionDetected { path: "a".into(), process_id: 1, etw_operation_name: "x".into() },
+            FileAction::EvasionDetected {
+                path: "a".into(),
+                process_id: 1,
+                etw_operation_name: "x".into(),
+            },
             Action::WRITE,
         ),
     ];
@@ -411,9 +419,8 @@ async fn test_write_t4_deny_audit() {
     use dlp_agent::interception::{FileAction, PolicyMapper};
 
     let (addr, _h) = start_mock_engine(Decision::DENY).await;
-    let client = dlp_agent::engine_client::EngineClient::new(
-        &format!("http://{addr}"), false,
-    ).unwrap();
+    let client =
+        dlp_agent::engine_client::EngineClient::new(&format!("http://{addr}"), false).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
 
@@ -474,9 +481,8 @@ async fn test_write_t4_deny_audit() {
 #[tokio::test]
 async fn test_read_t1_allow() {
     let (addr, _h) = start_mock_engine(Decision::ALLOW).await;
-    let client = dlp_agent::engine_client::EngineClient::new(
-        &format!("http://{addr}"), false,
-    ).unwrap();
+    let client =
+        dlp_agent::engine_client::EngineClient::new(&format!("http://{addr}"), false).unwrap();
 
     use dlp_agent::interception::{FileAction, PolicyMapper};
 
@@ -495,9 +501,13 @@ async fn test_read_t1_allow() {
 
     let request = EvaluateRequest {
         subject: dlp_common::Subject::default(),
-        resource: dlp_common::Resource { path: action.path().into(), classification },
+        resource: dlp_common::Resource {
+            path: action.path().into(),
+            classification,
+        },
         environment: dlp_common::Environment {
-            timestamp: chrono::Utc::now(), session_id: 1,
+            timestamp: chrono::Utc::now(),
+            session_id: 1,
             access_context: dlp_common::AccessContext::Local,
         },
         action: abac_action,
@@ -511,10 +521,15 @@ async fn test_read_t1_allow() {
 async fn test_delete_action_maps() {
     use dlp_agent::interception::{FileAction, PolicyMapper};
     let action = FileAction::Deleted {
-        path: r"C:\Data\old.txt".into(), process_id: 1, related_process_id: 0,
+        path: r"C:\Data\old.txt".into(),
+        process_id: 1,
+        related_process_id: 0,
     };
     assert_eq!(PolicyMapper::action_for(&action), Action::DELETE);
-    assert_eq!(PolicyMapper::provisional_classification(action.path()), Classification::T2);
+    assert_eq!(
+        PolicyMapper::provisional_classification(action.path()),
+        Classification::T2
+    );
 }
 
 #[tokio::test]
@@ -523,7 +538,8 @@ async fn test_move_action_maps() {
     let action = FileAction::Moved {
         old_path: r"C:\Confidential\a.doc".into(),
         new_path: r"C:\Data\b.doc".into(),
-        process_id: 1, related_process_id: 0,
+        process_id: 1,
+        related_process_id: 0,
     };
     assert_eq!(PolicyMapper::action_for(&action), Action::MOVE);
     // Moved path() returns new_path.
@@ -552,20 +568,25 @@ async fn test_cache_ttl_expiry() {
 
     let cache = Cache::with_ttl(Duration::from_millis(50));
     cache.insert(
-        r"C:\Restricted\secret.xlsx", "S-1-5-21-123",
+        r"C:\Restricted\secret.xlsx",
+        "S-1-5-21-123",
         EvaluateResponse {
             decision: Decision::ALLOW,
             matched_policy_id: None,
             reason: "test".into(),
         },
     );
-    assert!(cache.get(r"C:\Restricted\secret.xlsx", "S-1-5-21-123").is_some());
+    assert!(cache
+        .get(r"C:\Restricted\secret.xlsx", "S-1-5-21-123")
+        .is_some());
 
     // Wait for TTL expiry.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Cache miss after expiry.
-    assert!(cache.get(r"C:\Restricted\secret.xlsx", "S-1-5-21-123").is_none());
+    assert!(cache
+        .get(r"C:\Restricted\secret.xlsx", "S-1-5-21-123")
+        .is_none());
 
     // Fail-closed for T4.
     let fallback = cache::fail_closed_response(Classification::T4);
@@ -578,11 +599,15 @@ async fn test_cache_configurable_ttl() {
     use std::time::Duration;
 
     let cache = Cache::with_ttl(Duration::from_secs(300));
-    cache.insert("a", "b", EvaluateResponse {
-        decision: Decision::ALLOW,
-        matched_policy_id: None,
-        reason: "test".into(),
-    });
+    cache.insert(
+        "a",
+        "b",
+        EvaluateResponse {
+            decision: Decision::ALLOW,
+            matched_policy_id: None,
+            reason: "test".into(),
+        },
+    );
     // Should still be present (300s TTL).
     assert!(cache.get("a", "b").is_some());
 }
@@ -597,8 +622,10 @@ async fn test_offline_manager_transition() {
 
     let cache = Arc::new(dlp_agent::cache::Cache::new());
     let client = dlp_agent::engine_client::EngineClient::new(
-        "http://127.0.0.1:1", false, // unreachable port
-    ).unwrap();
+        "http://127.0.0.1:1",
+        false, // unreachable port
+    )
+    .unwrap();
 
     let manager = OfflineManager::new(client, cache.clone());
     assert!(manager.is_online());
@@ -611,7 +638,8 @@ async fn test_offline_manager_transition() {
             classification: Classification::T4,
         },
         environment: dlp_common::Environment {
-            timestamp: chrono::Utc::now(), session_id: 1,
+            timestamp: chrono::Utc::now(),
+            session_id: 1,
             access_context: dlp_common::AccessContext::Local,
         },
         action: Action::WRITE,

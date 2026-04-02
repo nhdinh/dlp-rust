@@ -27,7 +27,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use parking_lot::Mutex;
-use tracing::{error, info, Level};
+use tokio::sync::mpsc;
+use tracing::{error, info, warn, Level};
 use tracing_subscriber::fmt::format::FmtSpan;
 use windows_service::service::{
     ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
@@ -103,17 +104,87 @@ pub fn run_service() -> Result<()> {
 
 /// The main service run loop.
 ///
-/// Waits for either `ctrl_c` or a password-confirmed stop signal.
-/// When the SCM issues `sc stop`, [`password_stop::initiate_stop`] is called
-/// on the SCM callback thread, which starts the password challenge.  This loop
-/// polls the confirmation flag every 500 ms — on confirmation it proceeds to
-/// shutdown; on `PASSWORD_CANCEL` or max attempts, [`password_stop::revert_stop`]
-/// reverts the state to Running.
+/// Sets up all agent subsystems, then waits for either `ctrl_c` or a
+/// password-confirmed stop signal.
+///
+/// Subsystems initialised:
+///  - [`AuditEmitter`](crate::audit_emitter) — opened via the global `EMITTER` singleton
+///  - [`EngineClient`](crate::engine_client) — HTTPS client to the Policy Engine
+///  - [`Cache`](crate::cache) — local policy decision cache
+///  - [`OfflineManager`](crate::offline) — online/offline state + heartbeat
+///  - [`InterceptionEngine`](crate::interception) — ETW file monitor
+///  - Clipboard listener — system-wide clipboard hook
+///
+/// When the SCM issues `sc stop`, [`password_stop::initiate_stop`] starts the
+/// password challenge.  This loop polls the confirmation flag every 500 ms — on
+/// confirmation it proceeds to shutdown; on `PASSWORD_CANCEL` or max attempts,
+/// [`password_stop::revert_stop`] reverts the state to Running.
 async fn run_loop(
     status_handle: &Arc<Mutex<windows_service::service_control_handler::ServiceStatusHandle>>,
 ) -> Result<()> {
-    info!(service_name = SERVICE_NAME, "service running");
+    // ── Open the audit log ────────────────────────────────────────────────
+    let _log_path = crate::audit_emitter::log_path();
+    info!(audit_log = %_log_path.display(), "audit subsystem initialised");
 
+    // ── Initialise the Policy Engine client and offline cache ──────────────
+    let engine_client = crate::engine_client::EngineClient::default_client()
+        .inspect_err(|e| warn!(error = %e, "Policy Engine client init failed — will run offline"))
+        .unwrap_or_else(|_| {
+            // Best-effort fallback — OfflineManager will handle unreachable engine.
+            crate::engine_client::EngineClient::new(
+                crate::engine_client::DEFAULT_ENGINE_URL,
+                false, // skip TLS verification if env is misconfigured
+            )
+            .expect("engine client must be constructable")
+        });
+
+    let cache = Arc::new(crate::cache::Cache::new());
+    let offline = Arc::new(crate::offline::OfflineManager::new(engine_client, cache));
+
+    // ── Start the Policy Engine heartbeat ─────────────────────────────────
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let offline_hb = offline.clone();
+    let _heartbeat_handle = tokio::spawn(async move {
+        offline_hb.heartbeat_loop(shutdown_rx).await;
+    });
+
+    // ── Start the ETW interception pipeline ───────────────────────────────
+    let etw_engine = crate::interception::InterceptionEngine::new()
+        .expect("ETW interception engine initialisation always succeeds");
+    let etw_engine_for_shutdown = etw_engine.clone();
+
+    let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
+
+    // Shared EmitContext — in a real deployment this is resolved per-session
+    // via WTSQueryUserToken.  Stubbed here with session 1 / SYSTEM SID.
+    let audit_ctx = crate::audit_emitter::EmitContext {
+        agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
+        session_id: 1,
+        user_sid: "S-1-5-18".to_string(), // SYSTEM
+        user_name: "SYSTEM".to_string(),
+    };
+
+    // Initialise the clipboard listener's audit emit context.
+    crate::clipboard::listener::init_emit_context(audit_ctx.clone());
+
+    let offline_ev = offline.clone();
+    let ctx_ev = audit_ctx.clone();
+    let event_loop_handle = tokio::spawn(async move {
+        crate::interception::run_event_loop(action_rx, offline_ev, ctx_ev).await;
+    });
+
+    // Spawn the ETW monitor — run() is blocking and must run on a dedicated thread
+    // because it calls ProcessTrace which blocks indefinitely.  Wrap it in
+    // spawn_blocking so it doesn't monopolise a Tokio thread.
+    let etw_engine_clone = etw_engine.clone();
+    let etw_handle = tokio::task::spawn_blocking(move || {
+        // etw_engine.run() is synchronous; it blocks until the trace is stopped.
+        let _ = etw_engine_clone.run(action_tx);
+    });
+
+    info!(service_name = SERVICE_NAME, "all subsystems started");
+
+    // ── Service control loop ─────────────────────────────────────────────
     let poll_interval = Duration::from_millis(500);
     let mut ticker = tokio::time::interval(poll_interval);
 
@@ -143,6 +214,21 @@ async fn run_loop(
         }
     }
 
+    // ── Graceful shutdown ──────────────────────────────────────────────────
+    info!(service_name = SERVICE_NAME, "shutting down subsystems");
+
+    // Stop ETW first so no new events arrive.
+    etw_engine_for_shutdown.stop();
+    let _ = etw_handle.await;
+
+    // Signal the event loop to drain and exit.
+    drop(event_loop_handle);
+
+    // Stop the heartbeat loop.
+    let _ = shutdown_tx.send(true);
+    let _ = _heartbeat_handle.await;
+
+    info!(service_name = SERVICE_NAME, "all subsystems stopped");
     Ok(())
 }
 

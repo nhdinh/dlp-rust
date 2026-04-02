@@ -178,6 +178,7 @@ fn pwstr_to_string(ptr: *const u16) -> Option<String> {
 /// Maintains a real-time ETW trace session subscribed to the
 /// `Microsoft-Windows-FileSystem-ETW` provider.  Events are forwarded from
 /// the ETW callback thread to a Tokio `mpsc` channel consumed by the caller.
+#[derive(Clone)]
 pub struct InterceptionEngine {
     /// Set to `true` by `stop()` to unblock `ProcessTrace`.
     stop_flag: Arc<AtomicBool>,
@@ -204,8 +205,8 @@ impl InterceptionEngine {
     pub fn run(&self, tx: mpsc::Sender<FileAction>) -> Result<()> {
         use windows::Win32::System::Diagnostics::Etw::{
             CloseTrace, EnableTraceEx2, OpenTraceW, ProcessTrace, StartTraceW, StopTraceW,
-            CONTROLTRACE_HANDLE, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
-            EVENT_TRACE_PROPERTIES, PROCESSTRACE_HANDLE,
+            CONTROLTRACE_HANDLE, EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_TRACE_PROPERTIES,
+            PROCESSTRACE_HANDLE,
         };
 
         // ── Build the trace properties ──────────────────────────────────────

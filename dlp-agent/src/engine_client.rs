@@ -13,7 +13,7 @@ use reqwest::Client;
 use tracing::{debug, error, warn};
 
 /// Default base URL for the Policy Engine HTTPS endpoint.
-const DEFAULT_ENGINE_URL: &str = "https://localhost:8443";
+pub const DEFAULT_ENGINE_URL: &str = "https://localhost:8443";
 
 /// Maximum number of retry attempts before giving up.
 const MAX_RETRIES: u32 = 3;

@@ -270,10 +270,7 @@ mod tests {
 
     #[test]
     fn test_classify_empty() {
-        assert_eq!(
-            ClipboardClassifier::classify(""),
-            Classification::T1,
-        );
+        assert_eq!(ClipboardClassifier::classify(""), Classification::T1,);
     }
 
     #[test]

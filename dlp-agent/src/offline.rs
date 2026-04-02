@@ -115,10 +115,10 @@ impl OfflineManager {
     /// Returns a decision from the local cache, or a fail-closed default.
     #[must_use]
     pub fn offline_decision(&self, request: &EvaluateRequest) -> EvaluateResponse {
-        if let Some(cached) = self.cache.get(
-            &request.resource.path,
-            &request.subject.user_sid,
-        ) {
+        if let Some(cached) = self
+            .cache
+            .get(&request.resource.path, &request.subject.user_sid)
+        {
             debug!(
                 path = %request.resource.path,
                 decision = ?cached.decision,

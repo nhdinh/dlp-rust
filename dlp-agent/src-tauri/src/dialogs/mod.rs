@@ -37,7 +37,12 @@ pub fn show_toast(title: &str, body: &str) {
 ///
 /// - `Confirmed` — user pressed OK (IDOK = 1)
 /// - `Close` — user dismissed the dialog without confirming
-pub fn show_block_dialog_with_result(classification: &str, resource_path: &str, policy_id: &str, reason: &str) -> BlockDialogResult {
+pub fn show_block_dialog_with_result(
+    classification: &str,
+    resource_path: &str,
+    policy_id: &str,
+    reason: &str,
+) -> BlockDialogResult {
     info!(classification, resource_path, "showing block dialog");
 
     let body = format!(

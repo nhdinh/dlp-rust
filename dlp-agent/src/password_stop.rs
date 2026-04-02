@@ -21,10 +21,8 @@ use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
 use tracing::{error, info, warn};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, HLOCAL, LocalFree, WIN32_ERROR};
-use windows::Win32::Security::Cryptography::{
-    CryptUnprotectData, CRYPT_INTEGER_BLOB,
-};
+use windows::Win32::Foundation::{LocalFree, ERROR_FILE_NOT_FOUND, HLOCAL, WIN32_ERROR};
+use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_SZ,
     REG_VALUE_TYPE,
@@ -278,20 +276,11 @@ fn dpapi_unprotect(protected: &[u8]) -> anyhow::Result<Vec<u8>> {
     // SAFETY: CryptUnprotectData reads the input blob and writes the output blob.
     // The output buffer is allocated by the function and must be freed via LocalFree.
     unsafe {
-        CryptUnprotectData(
-            &input,
-            None,
-            None,
-            None,
-            None,
-            0,
-            &mut output,
-        )
-        .ok()
-        .context("CryptUnprotectData failed")?;
+        CryptUnprotectData(&input, None, None, None, None, 0, &mut output)
+            .ok()
+            .context("CryptUnprotectData failed")?;
 
-        let plaintext = std::slice::from_raw_parts(output.pbData, output.cbData as usize)
-            .to_vec();
+        let plaintext = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         let _ = LocalFree(HLOCAL(output.pbData as *mut _));
         Ok(plaintext)
     }
@@ -368,12 +357,11 @@ fn verify_credentials(password_b64: &str) -> Result<bool> {
     use ldap3::LdapConn;
 
     // Step 1: Base64-decode the DPAPI blob.
-    let protected_bytes = base64_decode(password_b64)
-        .context("base64 decode of DPAPI blob from UI")?;
+    let protected_bytes =
+        base64_decode(password_b64).context("base64 decode of DPAPI blob from UI")?;
 
     // Step 2: DPAPI-unprotect to recover the raw password bytes.
-    let password_bytes = dpapi_unprotect(&protected_bytes)
-        .context("CryptUnprotectData failed")?;
+    let password_bytes = dpapi_unprotect(&protected_bytes).context("CryptUnprotectData failed")?;
 
     // Step 3: Convert bytes to String (ASCII/Latin-1 passwords; lossy conversion
     // handles any encoding edge cases by replacing invalid sequences).

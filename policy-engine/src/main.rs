@@ -46,14 +46,12 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .context("invalid BIND_ADDR")?;
 
-    let policy_path = PathBuf::from(
-        std::env::var("POLICY_FILE").unwrap_or_else(|_| "./policies.json".into()),
-    );
+    let policy_path =
+        PathBuf::from(std::env::var("POLICY_FILE").unwrap_or_else(|_| "./policies.json".into()));
 
     let engine = Arc::new(AbacEngine::new());
-    let store = Arc::new(
-        PolicyStore::open(policy_path, engine).context("failed to open policy store")?,
-    );
+    let store =
+        Arc::new(PolicyStore::open(policy_path, engine).context("failed to open policy store")?);
 
     // Start the filesystem watcher so policy file changes are hot-reloaded
     // without restarting the server (F-SVC-04).
@@ -65,9 +63,7 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to bind")?;
 
     info!(%addr, "policy engine listening");
-    axum::serve(listener, app)
-        .await
-        .context("server error")?;
+    axum::serve(listener, app).await.context("server error")?;
 
     Ok(())
 }

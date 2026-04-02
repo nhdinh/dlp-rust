@@ -34,12 +34,12 @@ use parking_lot::RwLock;
 use tracing::{debug, info};
 
 #[cfg(windows)]
-use windows::Win32::Foundation::{BOOL, HWND};
+use windows::Win32::Foundation::HWND;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    PostQuitMessage, RegisterClassW, TranslateMessage, DEVICE_NOTIFY_WINDOW_HANDLE, MSG,
-    WNDCLASSW, WINDOW_STYLE, WS_EX_NOACTIVATE, WM_DESTROY, WM_QUIT,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, PostQuitMessage,
+    RegisterClassW, TranslateMessage, DEVICE_NOTIFY_WINDOW_HANDLE, MSG, WINDOW_STYLE, WM_DESTROY,
+    WNDCLASSW, WS_EX_NOACTIVATE,
 };
 
 /// Drive letters currently identified as USB mass storage (e.g., `E`, `F`).
@@ -161,19 +161,23 @@ const GUID_DEVINTERFACE_VOLUME: windows::core::GUID = windows::core::GUID::from_
 
 /// DBT_DEVICEARRIVAL: a device has been added.
 #[cfg(windows)]
+#[allow(dead_code)]
 const DBT_DEVICEARRIVAL: u32 = 0x8000;
 
 /// DBT_DEVICEREMOVECOMPLETE: a device has been removed.
 #[cfg(windows)]
+#[allow(dead_code)]
 const DBT_DEVICEREMOVECOMPLETE: u32 = 0x8004;
 
 /// DEV_BROADCAST_HDR.dbch_devicetype values.
 #[cfg(windows)]
+#[allow(dead_code)]
 const DBT_DEVTYP_VOLUME: u32 = 0x0002;
 
 /// DEV_BROADCAST_VOLUME structure (variable-size — we only need the unitmask).
 #[repr(C)]
 #[cfg(windows)]
+#[allow(dead_code)]
 struct DEV_BROADCAST_VOLUME {
     dbcv_size: u32,
     dbcv_devicetype: u32,
@@ -208,6 +212,7 @@ unsafe extern "system" fn usb_wndproc(
 /// Processes a `DBT_DEVICEARRIVAL` event by checking each bit in the unit mask
 /// and notifying the detector for removable drives.
 #[cfg(windows)]
+#[allow(dead_code)]
 fn handle_drive_arrival(unitmask: u32) {
     if unitmask == 0 {
         return;
@@ -224,6 +229,7 @@ fn handle_drive_arrival(unitmask: u32) {
 
 /// Processes a `DBT_DEVICEREMOVECOMPLETE` event.
 #[cfg(windows)]
+#[allow(dead_code)]
 fn handle_drive_removal(unitmask: u32) {
     if unitmask == 0 {
         return;
@@ -296,9 +302,12 @@ pub fn register_usb_notifications(
 
     // Step 3: register for device notifications.
     // DEV_BROADCAST_DEVICEINTERFACE_W is variable-size; we construct it as bytes.
-    let db_size = std::mem::size_of::<windows::Win32::UI::WindowsAndMessaging::DEV_BROADCAST_DEVICEINTERFACE_W>();
+    let db_size = std::mem::size_of::<
+        windows::Win32::UI::WindowsAndMessaging::DEV_BROADCAST_DEVICEINTERFACE_W,
+    >();
     let mut dev_interface_buf: Vec<u8> = vec![0u8; db_size];
-    let dbc = dev_interface_buf.as_mut_ptr() as *mut windows::Win32::UI::WindowsAndMessaging::DEV_BROADCAST_DEVICEINTERFACE_W;
+    let dbc = dev_interface_buf.as_mut_ptr()
+        as *mut windows::Win32::UI::WindowsAndMessaging::DEV_BROADCAST_DEVICEINTERFACE_W;
 
     // SAFETY: dbc points to db_size bytes that we own and are properly aligned.
     unsafe {
@@ -319,9 +328,9 @@ pub fn register_usb_notifications(
         )
     };
 
-    if notification_handle.is_err() {
+    if let Err(e) = notification_handle {
         let _ = unsafe { DestroyWindow(hwnd) };
-        return Err(notification_handle.unwrap_err());
+        return Err(e);
     }
 
     // Step 4: run message loop on a thread.

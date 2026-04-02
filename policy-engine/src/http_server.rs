@@ -93,7 +93,9 @@ fn build_app(state: AppState) -> Router {
 /// Layers (tracing, CORS) are applied to the merged router so that all
 /// routes — both evaluation and CRUD — are covered.
 pub fn build_full_router(store: Arc<PolicyStore>) -> Router {
-    let state = AppState { store: store.clone() };
+    let state = AppState {
+        store: store.clone(),
+    };
     let eval_routes = Router::new()
         .route("/evaluate", post(evaluate_handler))
         .route("/health", get(health_handler))

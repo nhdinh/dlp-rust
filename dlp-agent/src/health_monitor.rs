@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use tokio::sync::{watch, mpsc};
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
 use crate::ipc::pipe3::{UiHealthEvent, ROUTER};

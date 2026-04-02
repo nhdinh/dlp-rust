@@ -258,7 +258,10 @@ fn dispatch(msg: Pipe1UiMsg) -> Option<Vec<u8>> {
                 // TODO (Phase 2): signal the interception pipeline to retry the
                 // blocked operation now that the override is authorised.
             } else {
-                debug!(request_id, "Pipe 1: UserConfirmed for unknown request — ignored");
+                debug!(
+                    request_id,
+                    "Pipe 1: UserConfirmed for unknown request — ignored"
+                );
             }
             None
         }
