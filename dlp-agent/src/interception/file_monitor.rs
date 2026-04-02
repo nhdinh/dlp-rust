@@ -205,7 +205,6 @@ impl InterceptionEngine {
         use windows::Win32::System::Diagnostics::Etw::{
             CloseTrace, EnableTraceEx2, OpenTraceW, ProcessTrace, StartTraceW, StopTraceW,
             CONTROLTRACE_HANDLE, EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_TRACE_PROPERTIES,
-            PROCESSTRACE_HANDLE,
         };
 
         // ── Build the trace properties ──────────────────────────────────────
@@ -324,15 +323,10 @@ impl InterceptionEngine {
             return Err(anyhow::anyhow!("OpenTraceW failed"));
         }
 
-        // SAFETY: trace handle is valid; OpenTraceW succeeded.
+        // SAFETY: `trace` is the PROCESSTRACE_HANDLE returned by OpenTraceW.
+        // ProcessTrace consumes it and delivers events via the callback.
         let result = unsafe {
-            ProcessTrace(
-                &[PROCESSTRACE_HANDLE {
-                    Value: trace_handle.Value,
-                }],
-                None,
-                None,
-            )
+            ProcessTrace(&[trace], None, None)
         };
 
         // Clean up the callback state.
