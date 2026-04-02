@@ -116,11 +116,15 @@ impl FileAction {
 
 /// Well-known GUID for the Microsoft-Windows-FileSystem-ETW provider.
 /// Stable across Windows versions.
+///
+/// Correct value confirmed against:
+/// - Microsoft Learn: "FileSystem-ETW provider" (`logman -p {c65430ae-74d3-4806-b6d0-79a7bb8b9308}`)
+/// - Microsoft Hardware Dev: "Configuring FileSystem-ETW Tracing"
 const FS_ETW_GUID: windows::core::GUID = windows::core::GUID::from_values(
-    0x70cdc8d8,
-    0xaa44,
-    0x5bdb,
-    [0x8d, 0xb6, 0x4d, 0x1d, 0x84, 0xfe, 0x12, 0x33],
+    0xc65430ae,
+    0x74d3,
+    0x4806,
+    [0xb6, 0xd0, 0x79, 0xa7, 0xbb, 0x8b, 0x93, 0x08],
 );
 
 // ETW event type codes from FileSystem-ETW manifest (stable).
