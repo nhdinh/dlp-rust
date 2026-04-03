@@ -1,6 +1,6 @@
-//! Clipboard text content classifier (T-20).
+//! Text content classifier (T-20).
 //!
-//! Assigns a provisional [`Classification`] tier to clipboard text based on
+//! Assigns a provisional [`Classification`] tier to text content based on
 //! pattern matching.  Patterns detect common sensitive data formats:
 //!
 //! - **T4 (Restricted)**: Social Security numbers, credit card numbers
@@ -82,9 +82,9 @@ const DEFAULT_RULES: &[PatternRule] = &[
 
 /// Classifies clipboard text content into a sensitivity tier.
 #[derive(Debug)]
-pub struct ClipboardClassifier;
+pub struct ContentClassifier;
 
-impl ClipboardClassifier {
+impl ContentClassifier {
     /// Classifies the given text and returns the highest matching tier.
     ///
     /// Returns `Classification::T1` (Public) if no sensitive patterns match.
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn test_classify_ssn() {
         assert_eq!(
-            ClipboardClassifier::classify("My SSN is 123-45-6789"),
+            ContentClassifier::classify("My SSN is 123-45-6789"),
             Classification::T4,
         );
     }
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn test_classify_ssn_spaces() {
         assert_eq!(
-            ClipboardClassifier::classify("SSN: 123 45 6789"),
+            ContentClassifier::classify("SSN: 123 45 6789"),
             Classification::T4,
         );
     }
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn test_classify_credit_card_dashes() {
         assert_eq!(
-            ClipboardClassifier::classify("Card: 4111-1111-1111-1111"),
+            ContentClassifier::classify("Card: 4111-1111-1111-1111"),
             Classification::T4,
         );
     }
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn test_classify_credit_card_spaces() {
         assert_eq!(
-            ClipboardClassifier::classify("Card: 4111 1111 1111 1111"),
+            ContentClassifier::classify("Card: 4111 1111 1111 1111"),
             Classification::T4,
         );
     }
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn test_classify_credit_card_raw() {
         assert_eq!(
-            ClipboardClassifier::classify("4111111111111111"),
+            ContentClassifier::classify("4111111111111111"),
             Classification::T4,
         );
     }
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn test_classify_confidential_keyword() {
         assert_eq!(
-            ClipboardClassifier::classify("This document is CONFIDENTIAL"),
+            ContentClassifier::classify("This document is CONFIDENTIAL"),
             Classification::T3,
         );
     }
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn test_classify_secret_keyword() {
         assert_eq!(
-            ClipboardClassifier::classify("Project secret plans"),
+            ContentClassifier::classify("Project secret plans"),
             Classification::T3,
         );
     }
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn test_classify_internal_only() {
         assert_eq!(
-            ClipboardClassifier::classify("For internal only distribution"),
+            ContentClassifier::classify("For internal only distribution"),
             Classification::T2,
         );
     }
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn test_classify_do_not_distribute() {
         assert_eq!(
-            ClipboardClassifier::classify("DO NOT DISTRIBUTE this memo"),
+            ContentClassifier::classify("DO NOT DISTRIBUTE this memo"),
             Classification::T2,
         );
     }
@@ -263,21 +263,21 @@ mod tests {
     #[test]
     fn test_classify_public() {
         assert_eq!(
-            ClipboardClassifier::classify("Hello, world!"),
+            ContentClassifier::classify("Hello, world!"),
             Classification::T1,
         );
     }
 
     #[test]
     fn test_classify_empty() {
-        assert_eq!(ClipboardClassifier::classify(""), Classification::T1,);
+        assert_eq!(ContentClassifier::classify(""), Classification::T1,);
     }
 
     #[test]
     fn test_highest_tier_wins() {
         // Contains both SSN (T4) and "confidential" (T3) — T4 should win.
         assert_eq!(
-            ClipboardClassifier::classify("Confidential SSN: 123-45-6789"),
+            ContentClassifier::classify("Confidential SSN: 123-45-6789"),
             Classification::T4,
         );
     }
