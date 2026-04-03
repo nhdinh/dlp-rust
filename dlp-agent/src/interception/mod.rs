@@ -35,6 +35,7 @@ use crate::audit_emitter::{self, emit_audit, EmitContext};
 use crate::ipc::messages::Pipe1AgentMsg;
 use crate::ipc::pipe1;
 use crate::offline::OfflineManager;
+use crate::session_identity::SessionIdentityMap;
 
 /// Runs the file interception event loop.
 ///
@@ -49,11 +50,13 @@ use crate::offline::OfflineManager;
 ///
 /// * `rx` — channel receiving [`FileAction`] events from the file monitor
 /// * `offline` — the shared offline manager (engine client + cache)
-/// * `ctx` — shared audit context (agent_id, session, user)
+/// * `ctx` — shared audit context (agent_id, session)
+/// * `session_map` — per-session identity map for resolving file owners
 pub async fn run_event_loop(
     mut rx: mpsc::Receiver<FileAction>,
     offline: Arc<OfflineManager>,
     ctx: EmitContext,
+    session_map: Arc<SessionIdentityMap>,
 ) {
     info!("interception event loop started");
 
@@ -66,8 +69,10 @@ pub async fn run_event_loop(
         let (user_sid, user_name) = {
             let (app_path, _app_hash) = audit_emitter::get_application_metadata(pid);
             debug!(pid, path = %path, ?app_path, "file action received");
-            // Identity resolution is stubbed; falls back to the session context.
-            (ctx.user_sid.clone(), ctx.user_name.clone())
+            // Resolve the actual user from the file path using the
+            // per-session identity map (path heuristic + single-user
+            // fallback).
+            session_map.resolve_for_path(&path)
         };
 
         let abac_action = PolicyMapper::action_for(&action);
@@ -79,8 +84,8 @@ pub async fn run_event_loop(
         // ── Build evaluation request ──────────────────────────────────────
         let request = EvaluateRequest {
             subject: Subject {
-                user_sid,
-                user_name,
+                user_sid: user_sid.clone(),
+                user_name: user_name.clone(),
                 groups: Vec::new(),
                 device_trust: dlp_common::DeviceTrust::Unknown,
                 network_location: dlp_common::NetworkLocation::Unknown,
@@ -117,8 +122,8 @@ pub async fn run_event_loop(
         let policy_id_str = response_policy_id.unwrap_or_default();
         let audit_event = AuditEvent::new(
             event_type,
-            ctx.user_sid.clone(),
-            ctx.user_name.clone(),
+            user_sid.clone(),
+            user_name.clone(),
             path.clone(),
             classification,
             abac_action,

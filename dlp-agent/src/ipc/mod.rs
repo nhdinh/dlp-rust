@@ -18,6 +18,7 @@ pub mod messages;
 pub mod pipe1;
 pub mod pipe2;
 pub mod pipe3;
+pub mod pipe_security;
 pub mod server;
 
 pub use server::start_all;

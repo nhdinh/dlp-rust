@@ -16,6 +16,34 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::mpsc;
 
+/// Path prefixes to exclude from monitoring (case-insensitive).
+///
+/// These directories generate high-volume, low-value events that clutter
+/// the audit log.  System directories, temp folders, and application
+/// caches are excluded since they are not relevant to DLP enforcement.
+const EXCLUDED_PREFIXES: &[&str] = &[
+    r"c:\windows\",
+    r"c:\programdata\",
+    r"c:\program files\",
+    r"c:\program files (x86)\",
+    r"c:\$recycle.bin\",
+    r"c:\system volume information\",
+    // Per-user application caches and temp directories.
+    r"\appdata\local\temp\",
+    r"\appdata\local\microsoft\",
+    r"\appdata\local\packages\",
+    r"\appdata\roaming\code\",
+    r"\appdata\roaming\microsoft\",
+];
+
+/// Returns `true` if the path should be excluded from monitoring.
+///
+/// Performs case-insensitive prefix matching against [`EXCLUDED_PREFIXES`].
+fn is_excluded(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    EXCLUDED_PREFIXES.iter().any(|prefix| lower.contains(prefix))
+}
+
 /// The file action intercepted from the file system.
 #[derive(Debug, Clone)]
 pub enum FileAction {
@@ -187,8 +215,14 @@ impl InterceptionEngine {
 
                         if let Some(action) = action {
                             if self.stop_flag.load(Ordering::SeqCst) {
-                                tracing::info!("stop flag set — exiting file monitor");
+                                tracing::info!(
+                                    "stop flag set — exiting file monitor"
+                                );
                                 return Ok(());
+                            }
+                            // Skip excluded paths (system dirs, temp, caches).
+                            if is_excluded(action.path()) {
+                                continue;
                             }
                             // try_send is non-blocking — the watcher must not stall.
                             let _ = tx.clone().try_send(action);
@@ -262,5 +296,58 @@ mod tests {
     fn test_interception_engine_default() {
         let engine = InterceptionEngine::default();
         assert!(!engine.stop_flag.load(Ordering::SeqCst));
+    }
+
+    // -- Path exclusion filter tests ----------------------------------------
+
+    #[test]
+    fn test_excluded_windows_dir() {
+        assert!(is_excluded(r"C:\Windows\System32\config\SYSTEM.LOG2"));
+        assert!(is_excluded(r"c:\windows\temp\somefile.tmp"));
+    }
+
+    #[test]
+    fn test_excluded_program_files() {
+        assert!(is_excluded(r"C:\Program Files\SomeApp\data.bin"));
+        assert!(is_excluded(r"C:\Program Files (x86)\App\file.dll"));
+    }
+
+    #[test]
+    fn test_excluded_programdata() {
+        assert!(is_excluded(r"C:\ProgramData\DLP\logs\audit.jsonl"));
+    }
+
+    #[test]
+    fn test_excluded_appdata_temp() {
+        assert!(is_excluded(
+            r"C:\Users\jsmith\AppData\Local\Temp\tmp1234.dat"
+        ));
+    }
+
+    #[test]
+    fn test_excluded_appdata_vscode() {
+        assert!(is_excluded(
+            r"C:\Users\jsmith\AppData\Roaming\Code\User\state.vscdb"
+        ));
+    }
+
+    #[test]
+    fn test_not_excluded_user_documents() {
+        assert!(!is_excluded(r"C:\Users\jsmith\Documents\report.xlsx"));
+    }
+
+    #[test]
+    fn test_not_excluded_data_dir() {
+        assert!(!is_excluded(r"C:\Data\financials.xlsx"));
+    }
+
+    #[test]
+    fn test_not_excluded_restricted_dir() {
+        assert!(!is_excluded(r"C:\Restricted\secrets.docx"));
+    }
+
+    #[test]
+    fn test_excluded_recycle_bin() {
+        assert!(is_excluded(r"C:\$Recycle.Bin\S-1-5-21\$RXXXX.txt"));
     }
 }

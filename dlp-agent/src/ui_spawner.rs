@@ -108,6 +108,16 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
+/// Public wrapper around [`enumerate_active_sessions`] for use by other
+/// modules (e.g., `session_identity`).
+///
+/// # Returns
+///
+/// A list of active session IDs, or an error if the Win32 call fails.
+pub fn enumerate_active_sessions_pub() -> Result<Vec<u32>> {
+    enumerate_active_sessions()
+}
+
 /// Enumerates all active Windows sessions via `WTSEnumerateSessionsW`.
 fn enumerate_active_sessions() -> Result<Vec<u32>> {
     unsafe {

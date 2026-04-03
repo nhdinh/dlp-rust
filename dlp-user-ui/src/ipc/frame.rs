@@ -25,8 +25,12 @@ fn read_exact(pipe: HANDLE, buf: &mut [u8]) -> Result<()> {
             )
         };
 
-        if result.is_err() {
-            return Err(anyhow::anyhow!("ReadFile failed"));
+        if let Err(e) = result {
+            let hresult = e.code().0 as u32;
+            let win32 = hresult & 0xFFFF;
+            return Err(anyhow::anyhow!(
+                "ReadFile failed: win32={win32} ({e})"
+            ));
         }
 
         if bytes_read == 0 {

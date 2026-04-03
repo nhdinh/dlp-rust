@@ -7,7 +7,13 @@ license.workspace = true
 description = "DLP Agent iced UI — endpoint notifications, dialogs, clipboard, tray"
 
 [dependencies]
-iced = { version = "0.13", features = ["tokio"] }
+# Use tiny-skia (software renderer) instead of wgpu to avoid GPU
+# initialization failures when spawned by a SYSTEM service into a
+# user session via CreateProcessAsUserW.
+iced = { version = "0.13", default-features = false, features = [
+    "tiny-skia",
+    "tokio",
+] }
 tray-icon = "0.19"
 muda = "0.15"
 winrt-notification = "0.5"
@@ -15,6 +21,7 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+chrono = { version = "0.4", features = ["clock"] }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

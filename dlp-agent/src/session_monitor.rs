@@ -126,15 +126,24 @@ async fn session_loop(active_sessions: Arc<Mutex<HashSet<u32>>>) {
     }
 }
 
-/// Handles a new session by spawning a UI process.
+/// Handles a new session by spawning a UI process and registering
+/// the session's user identity in the global map.
 fn handle_session_start(session_id: u32) -> anyhow::Result<()> {
+    // Register the session's user identity for audit attribution.
+    if let Some(map) = crate::session_identity::global_map() {
+        if let Err(e) = map.add_session(session_id) {
+            debug!(
+                session_id,
+                error = %e,
+                "Session monitor: identity resolution failed"
+            );
+        }
+    }
+
     let binary = ui_binary().context("UI binary not configured")?;
 
     match ui_spawner::spawn_ui_in_session(session_id, &binary) {
         Ok(handle) => {
-            // Store the handle in UI_HANDLES (already done by ui_spawner::init;
-            // for ad-hoc spawns we need to insert manually).
-            // The ui_spawner module manages UI_HANDLES internally.
             info!(session_id, pid = handle.pid, "Session monitor: UI spawned");
             Ok(())
         }
@@ -145,7 +154,8 @@ fn handle_session_start(session_id: u32) -> anyhow::Result<()> {
     }
 }
 
-/// Handles a session ending by sending UI_CLOSING_SEQUENCE and force-killing.
+/// Handles a session ending by sending UI_CLOSING_SEQUENCE, force-killing,
+/// and removing the session's identity from the global map.
 fn handle_session_end(session_id: u32) -> anyhow::Result<()> {
     // Step 1: broadcast UI_CLOSING_SEQUENCE to the session's UI.
     let msg = Pipe2AgentMsg::UiClosingSequence { session_id };
@@ -162,6 +172,11 @@ fn handle_session_end(session_id: u32) -> anyhow::Result<()> {
     // Step 3: force-kill any remaining UI process in this session.
     kill_session(session_id);
     info!(session_id, "Session monitor: UI process terminated");
+
+    // Step 4: remove the session's identity from the global map.
+    if let Some(map) = crate::session_identity::global_map() {
+        map.remove_session(session_id);
+    }
 
     Ok(())
 }

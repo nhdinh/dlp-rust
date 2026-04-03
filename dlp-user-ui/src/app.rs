@@ -56,8 +56,10 @@ fn spawn_ipc_tasks(
     pipe1_connected: Arc<RwLock<bool>>,
 ) {
     // Pipe 1 -- bidirectional command pipe.
-    let connected = pipe1_connected.clone();
+    let connected = pipe1_connected;
     tokio::spawn(async move {
+        // Mark connected BEFORE entering the blocking read loop.
+        *connected.write() = true;
         match ipc::pipe1::connect_and_run(session_id).await {
             Ok(()) => {
                 debug!(session_id, "Pipe 1: connection closed normally")
@@ -90,8 +92,36 @@ fn spawn_ipc_tasks(
             debug!(error = %e, "Pipe 3: UiReady failed");
         }
     });
+}
 
-    *pipe1_connected.write() = true;
+/// Log file path for UI crash diagnostics.
+///
+/// Written to by the panic hook when the process crashes.  Located next
+/// to the audit log so it is easy to find.
+const CRASH_LOG: &str = r"C:\ProgramData\DLP\logs\dlp-user-ui-crash.log";
+
+/// Installs a panic hook that appends the panic message to a log file.
+///
+/// Because `windows_subsystem = "windows"` suppresses stderr in release
+/// builds, panics would otherwise be completely invisible.
+fn install_crash_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!(
+            "[{}] dlp-user-ui PANIC: {}\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            info
+        );
+        // Best-effort write; ignore errors (the directory may not exist).
+        let _ = std::fs::create_dir_all(r"C:\ProgramData\DLP\logs");
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(CRASH_LOG)
+            .and_then(|mut f| {
+                use std::io::Write;
+                f.write_all(msg.as_bytes())
+            });
+    }));
 }
 
 /// Initialises logging and runs the iced application.
@@ -100,9 +130,11 @@ fn spawn_ipc_tasks(
 ///
 /// Returns an error if the iced runtime fails to start.
 pub fn run() -> iced::Result {
-    // Initialise structured logging.
+    install_crash_hook();
+
+    // Always log to stderr so debug builds show output in the console.
     let filter = tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(Level::INFO.into())
+        .with_default_directive(Level::DEBUG.into())
         .from_env_lossy();
 
     tracing_subscriber::fmt()
@@ -115,25 +147,38 @@ pub fn run() -> iced::Result {
     info!(session_id, "DLP Agent UI starting");
 
     // Initialise the system tray before entering iced's event loop.
-    if let Err(e) = tray::init() {
-        error!(error = %e, "failed to init system tray");
+    match tray::init() {
+        Ok(()) => info!("system tray initialised"),
+        Err(e) => error!(error = %e, "failed to init system tray"),
     }
+
+    info!("starting iced application");
 
     let pipe1_connected = Arc::new(RwLock::new(false));
 
-    // Spawn IPC tasks.  iced with the `tokio` feature shares the same
-    // tokio runtime, so these tasks run on iced's async executor.
-    spawn_ipc_tasks(session_id, pipe1_connected.clone());
+    let result = iced::application(
+        "DLP Agent UI",
+        DlpApp::update,
+        DlpApp::view,
+    )
+    .subscription(DlpApp::subscription)
+    .window_size(iced::Size::new(480.0, 200.0))
+    .run_with(move || {
+        // Spawn IPC tasks here — inside `run_with` — because the iced
+        // tokio runtime is only available after the application starts.
+        // Calling `tokio::spawn` before this point panics with
+        // "there is no reactor running".
+        spawn_ipc_tasks(session_id, pipe1_connected.clone());
 
-    let state = UiState {
-        session_id,
-        pipe1_connected,
-    };
+        let state = UiState {
+            session_id,
+            pipe1_connected,
+        };
+        (DlpApp { state }, iced::Task::none())
+    });
 
-    iced::application("DLP Agent UI", DlpApp::update, DlpApp::view)
-        .subscription(DlpApp::subscription)
-        .window_size(iced::Size::new(480.0, 200.0))
-        .run_with(move || (DlpApp { state }, iced::Task::none()))
+    info!(?result, "iced application exited");
+    result
 }
 
 /// The iced application struct.
