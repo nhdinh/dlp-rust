@@ -1,32 +1,23 @@
 [package]
-name = "dlp-agent-ui"
+name = "dlp-user-ui"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "DLP Agent Tauri UI"
+description = "DLP Agent iced UI — endpoint notifications, dialogs, clipboard, tray"
 
 [dependencies]
-# Tauri 2.x
-tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-notification = "2"
-
-# Async runtime
+iced = { version = "0.13", features = ["tokio"] }
+tray-icon = "0.19"
+muda = "0.15"
+winrt-notification = "0.5"
 tokio = { workspace = true }
-
-# Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
-
-# Error handling
 anyhow = { workspace = true }
 parking_lot = { workspace = true }
-
-# Logging
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-
-# Windows named pipes
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -45,4 +36,4 @@ windows = { version = "0.58", features = [
 ] }
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+winres = "0.1"

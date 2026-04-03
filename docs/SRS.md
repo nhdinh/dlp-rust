@@ -7,7 +7,7 @@
 **Status:** Draft
 **Author:** Principal Security Architect
 **Changelog (v1.1):** Added Agent-as-Service architecture (§3.2, §3.3), IPC protocol (§3.4), updated crate structure (§5.2), new NFRs (§4.7), updated ACs (§9.6); fixed story point totals; added F-ADM-12; fixed ISO27001 x-ref; fixed DPAPI spec; fixed pipe name; added terminology note
-**Changelog (v1.2):** Phase 1 scope revised: no minifilter driver; Windows API hooks for file interception (F-AGT-17, F-AGT-18); ETW bypass detection; clipboard hooks; dlp-agent runs standalone (local JSON audit, Phase 5 adds dlp-server); dlp-user-ui moved from Phase 2 to Phase 1; dlp-admin-portal deferred to later phase; dlp-server deferred to Phase 5; updated §1.2 scope, §3.2 F-AGT-05/F-AGT-17/F-AGT-18, §5.2 crate structure, §8 Phase 1–2 task tables, §9 acceptance criteria
+**Changelog (v1.2):** Phase 1 scope revised: no minifilter driver; `notify`-based file interception (F-AGT-05); clipboard hooks (F-AGT-17); `dlp-agent` runs standalone (local JSON audit, Phase 5 adds dlp-server); `dlp-user-ui` moved from Phase 2 to Phase 1; `dlp-admin-portal` deferred to later phase; `dlp-server` deferred to Phase 5; ETW bypass detection was removed; updated §1.2 scope, §3.2 F-AGT-05/F-AGT-17, §5.2 crate structure, §8 Phase 1–2 task tables, §9 acceptance criteria
 
 **Changelog (v1.3):** Added F-AGT-19: SMB impersonation identity resolution — Agent resolves remote user's SID from SMB impersonation context using `QuerySecurityContextToken` / `ImpersonateSelf` + `GetTokenInformation`; audit events include `access_context` field; added `identity.rs` to crate structure; updated F-AUD-02 schema; added SMB Impersonation glossary entry; restructured Phase 1 task table with T-01–T-46 IDs matching `docs/plans/user-stories.md`; Phase 1 expanded to 18 sprints; added Phase 1 task breakdowns to each Epic in user-stories.md
 
@@ -47,7 +47,7 @@ The system shall:
 - Use NTFS ACLs as the baseline (coarse-grained) access control layer
 - Apply ABAC decisions as the fine-grained dynamic enforcement layer
 - Emit structured JSON audit logs (Phase 1: local append-only JSON file; Phase 5: dlp-server relay to SIEM)
-- Provide a Tauri-based endpoint UI (dlp-user-ui, spawned by the Agent) for all user-facing interactions — implemented in Phase 1
+- Provide an iced-based endpoint UI (dlp-user-ui, spawned by the Agent) for all user-facing interactions — implemented in Phase 1
 - dlp-agent operates standalone in Phase 1 without dlp-server; dlp-server is introduced in Phase 5
 - dlp-admin-portal is deferred to a later phase (audit logs are read directly from the local JSON file during Phase 1)
 
@@ -74,7 +74,7 @@ The system shall:
 | **T1 Public**       | Low sensitivity — no harm if disclosed                                                                                                                                                                                                    |
 | **Policy Engine**   | ABAC decision service, evaluates access requests                                                                                                                                                                                          |
 | **dlp-agent**       | Endpoint enforcement component, runs as Windows Service under SYSTEM account, does not interact with OS users directly                                                                                                                    |
-| **dlp-user-ui**     | Endpoint interaction component, Tauri subprocess spawned by the Agent in **each active user session**; one UI instance per active session; handles all user-facing work (notifications, dialogs, clipboard, tray) for that session's user |
+| **dlp-user-ui**     | Endpoint interaction component, iced subprocess spawned by the Agent in **each active user session**; one UI instance per active session; handles all user-facing work (notifications, dialogs, clipboard, tray) for that session's user |
 | **IPC**             | Inter-Process Communication — Agent ↔ UI communication via Windows named pipes                                                                                                                                                            |
 | **Named Pipe**      | Windows kernel object for bidirectional message-mode IPC between processes                                                                                                                                                                |
 | **SCM**             | Service Control Manager — Windows component that manages Windows Services                                                                                                                                                                 |
@@ -100,7 +100,7 @@ The system shall:
 
 ### 2.1 System Overview
 
-The Enterprise DLP System is a four-layer defense-in-depth architecture. The Enforcement Layer splits into two co-operating processes: the **dlp-agent** (Windows Service, SYSTEM account) and the **DLP UI** (Tauri subprocess, interactive user desktop).
+The Enterprise DLP System is a four-layer defense-in-depth architecture. The Enforcement Layer splits into two co-operating processes: the **dlp-agent** (Windows Service, SYSTEM account) and the **DLP UI** (iced subprocess, interactive user desktop).
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -108,7 +108,7 @@ The Enterprise DLP System is a four-layer defense-in-depth architecture. The Enf
 │         Rust, SYSTEM account, Windows API            │
 │         Handles: interception, REST API, audit, IPC   │
 ├─────────────────────────────────────────────────────┤
-│         Enforcement Layer — DLP UI (Tauri)           │
+│         Enforcement Layer — DLP UI (iced)            │
 │         User desktop, spawned by Agent               │
 │         Handles: notifications, dialogs, clipboard   │
 ├─────────────────────────────────────────────────────┤
@@ -129,7 +129,7 @@ The Enterprise DLP System is a four-layer defense-in-depth architecture. The Enf
 
 ### 2.2 Agent ↔ UI Co-Process Model
 
-The dlp-agent runs as a Windows Service under the SYSTEM account. Because a SERVICE process cannot interact with the desktop of a user session, all user-facing work is delegated to **DLP UI** instances (Tauri subprocesses) — one spawned by the Agent in each active user session:
+The dlp-agent runs as a Windows Service under the SYSTEM account. Because a SERVICE process cannot interact with the desktop of a user session, all user-facing work is delegated to **DLP UI** instances (iced subprocesses) — one spawned by the Agent in each active user session:
 
 | Concern                                 | Owner      |
 | --------------------------------------- | ---------- |
@@ -217,14 +217,14 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 | F-AGT-15 | Agent shall self-update from a configured update server endpoint                                                                                                                                                                                                                                                  | May      |
 | F-AGT-16 | Agent shall support supervised (managed) and unsupervised (unmanaged) device detection                                                                                                                                                                                                                            | Must     |
 | F-AGT-17 | Agent shall intercept clipboard read/write via GetClipboardData/SetClipboardData and classify clipboard content                                                                                                                                                                                                   | Must     |
-| F-AGT-18 | Agent shall subscribe to ETW (Microsoft-Windows-FileSystem-ETW) as a bypass-detection layer; any file operation seen in ETW but not caught by API hooks shall be logged as EVASION_SUSPECTED                                                                                                                      | Must     |
+| F-AGT-18 | *(superseded)* Replaced by `notify`-based file interception; ETW bypass detection was removed. Direct syscall bypass remains a limitation addressed by a future minifilter driver.                                                                                                                                          | —        |
 | F-AGT-19 | When intercepting a file operation on a file server, Agent shall resolve the caller's identity from the active SMB impersonation context using `QuerySecurityContextToken` / `ImpersonateSelf` + `GetTokenInformation`; if no impersonation context is present (local process), Agent shall use the process token | Must     |
 
 ### 3.3 Agent ↔ UI Co-Process Architecture
 
 | ID       | Requirement                                                                                                                                                                                                                                                                                     | Priority |
 | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| F-SVC-01 | Agent shall enumerate all active user sessions and spawn one Tauri DLP UI as a child subprocess in each session's desktop when the service starts                                                                                                                                               | Must     |
+| F-SVC-01 | Agent shall enumerate all active user sessions and spawn one iced DLP UI as a child subprocess in each session's desktop when the service starts                                                                                                                                                | Must     |
 | F-SVC-02 | Agent shall own the lifecycle of the UI subprocess (start, monitor, respawn on failure)                                                                                                                                                                                                         | Must     |
 | F-SVC-03 | Agent shall communicate with the UI via exactly 3 Windows named pipes (see §3.4 for protocol)                                                                                                                                                                                                   | Must     |
 | F-SVC-04 | Agent shall check UI health every 5 seconds; if the UI is unresponsive or absent for 15 seconds, Agent shall terminate and respawn it                                                                                                                                                           | Must     |
@@ -239,7 +239,7 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 | F-SVC-13 | Agent shall enumerate all active user sessions via `WTSEnumerateSessionsW` and spawn one UI subprocess in each session's desktop via `CreateProcessAsUser`; on session connect, Agent shall spawn a new UI in that session; on session disconnect, Agent shall terminate the UI in that session | Must     |
 | F-SVC-14 | Password verification for service stop shall be performed by binding to AD as the dlp-admin user DN (LDAPS)                                                                                                                                                                                     | Must     |
 
-### 3.4 DLP UI (Tauri Endpoint Interface)
+### 3.4 DLP UI (iced Endpoint Interface)
 
 | ID       | Requirement                                                                                                                 | Priority |
 | -------- | --------------------------------------------------------------------------------------------------------------------------- | -------- |
@@ -459,7 +459,7 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 ```
                                     ┌──────────────────────────────┐
                                     │     dlp-admin-portal         │
-                                    │     (Rust / Tauri)           │
+                                    │     (Rust / iced)            │
                                     │     dlp-admin only           │
                                     └──────────────┬───────────────┘
                                                    │ REST / HTTPS / JWT
@@ -492,7 +492,7 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
   DLPCommand DLPEventAgent2UI  DLPEventUI2Agent
         │
         └─────────────▼─────────────────────────────┐
-                        │  DLP endpoint UI (Tauri subprocess)  │
+                        │  DLP endpoint UI (iced subprocess)   │
                         │  Interactive user desktop              │
                         │  Toast · Dialogs · Clipboard · Tray      │
                         └─────────────────────────────────────────┘
@@ -565,7 +565,7 @@ dlp-rust/                           # Cargo workspace
 │   │   │   ├── mod.rs
 │   │   │   ├── usb.rs             # WMI DriveLetterChangeEvent
 │   │   │   ├── network_share.rs    # SMB write detection
-│   │   │   └── etw_bypass.rs      # ETW bypass detection (logs EVASION_SUSPECTED)
+│   │   │   └── etw_bypass.rs      # (removed — replaced by notify-based file monitor)
 │   │   ├── identity.rs             # SMB impersonation identity resolution: ImpersonateSelf, QuerySecurityContextToken, GetTokenInformation, RevertToSelf
 │   │   ├── engine_client.rs        # HTTPS/REST client to Policy Engine
 │   │   ├── server_client.rs        # HTTPS client to dlp-server (Phase 5+)
@@ -573,12 +573,11 @@ dlp-rust/                           # Cargo workspace
 │   │   ├── audit_emitter.rs       # Local append-only JSON (Phase 1); → dlp-server in Phase 5
 │   │   └── protection.rs          # Process DACL hardening
 │   │
-│   └── src-tauri/                  # Embedded Tauri endpoint UI
+│   └── dlp-user-ui/                # iced endpoint UI (pure Rust native GUI)
 │       ├── Cargo.toml
-│       ├── tauri.conf.json
 │       └── src/
 │           ├── main.rs
-│           ├── ui_main.rs          # Tauri command handlers (IPC client)
+│           ├── ui_main.rs          # iced command handlers (IPC client)
 │           ├── dialogs/
 │           │   ├── block_notify.rs       # Blocking notification
 │           │   ├── override_request.rs   # Override + justification
@@ -596,7 +595,6 @@ dlp-rust/                           # Cargo workspace
     │   ├── incidents.rs          # Incident log viewer (GET /audit-events from dlp-server)
     │   ├── exceptions.rs        # Exception approval workflow
     │   └── api.rs               # dlp-server REST client (bearer JWT)
-    └── tauri.conf.json
 ```
 
 ### 5.3 Data Flow
@@ -607,7 +605,7 @@ dlp-rust/                           # Cargo workspace
    — dlp-server adds agent to registry, returns agent config
 3. Agent registers with Policy Engine via HTTPS, starts listening on 3 named pipes
 4. Agent enumerates all active user sessions via WTSEnumerateSessionsW
-5. For each active session, Agent calls CreateProcessAsUser → one Tauri UI launches in each session's desktop
+5. For each active session, Agent calls CreateProcessAsUser → one iced UI launches in each session's desktop
 5b. Agent registers WTSRegisterSessionNotification to detect future session connect/disconnect events
 6. UI connects to all 3 pipes, sends UI_READY over Pipe 3
 7. Agent sends heartbeat to dlp-server every 30 seconds (dlp-server marks offline after 90s miss)
@@ -734,7 +732,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 ### Phase 1 — Foundation + dlp-user-ui (Weeks 1–18)
 
-**Goal:** Workspace, shared types, Policy Engine, dlp-agent (standalone, API hooks, clipboard, local audit, IPC, UI spawner), dlp-user-ui (Tauri, IPC client, dialogs). dlp-admin-portal deferred to a later phase. dlp-agent operates without dlp-server in this phase.
+**Goal:** Workspace, shared types, Policy Engine, dlp-agent (standalone, API hooks, clipboard, local audit, IPC, UI spawner), dlp-user-ui (iced, IPC client, dialogs). dlp-admin-portal deferred to a later phase. dlp-agent operates without dlp-server in this phase.
 
 > **Note:** Task IDs (T-01 through T-46) match `docs/plans/user-stories.md` which is the authoritative Phase 1 task reference. Audit logs are read directly from the local append-only JSON file during Phase 1. SIEM relay (Splunk HEC / ELK) deferred to Phase 5 (dlp-server).
 
@@ -764,7 +762,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | T-12 | Implement `identity.rs`: SMB impersonation resolution — `ImpersonateSelf`, `QuerySecurityContextToken`, `GetTokenInformation(TokenUser)`, `RevertToSelf`; process token fallback | `dlp-agent/src/identity.rs` | Must |
 | T-13 | Implement `detection/usb.rs`: WMI `Win32_VolumeChangeEvent`, classify drive type (USB mass storage vs. internal), block T3/T4 writes | `dlp-agent/src/detection/usb.rs` | Must |
 | T-14 | Implement `detection/network_share.rs`: ETW `Microsoft-Windows-SMBClient` trace for outbound SMB tree connect events; match against admin-configured whitelist | `dlp-agent/src/detection/network_share.rs` | Must |
-| T-15 | Implement `detection/etw_bypass.rs`: ETW `Microsoft-Windows-FileSystem-ETW` subscriber; detect ops seen in ETW but not caught by hooks → emit `EVASION_SUSPECTED` | `dlp-agent/src/detection/etw_bypass.rs` | Must |
+| T-15 | *(superseded)* File interception now uses the `notify` crate — ETW bypass detection was removed | — | — |
 | T-16 | Implement HTTPS client to Policy Engine: reqwest client, TLS, `POST /evaluate` request/response, retry on failure | `dlp-agent/src/engine_client.rs` | Must |
 | T-17 | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss | `dlp-agent/src/cache.rs` | Must |
 | T-18 | Implement offline mode: detect Policy Engine unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat | `dlp-agent/src/offline.rs` | Must |
@@ -792,14 +790,14 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | T-36 | Implement session change handler: `WTSRegisterSessionNotification` per active session; on Session_Logoff → send UI_CLOSING_SEQUENCE, wait 5s, force-kill, remove from map; on Session_Connect → spawn new UI in new session | `dlp-agent/src/session_monitor.rs` | Must |
 | T-37 | Implement process protection DACL: `SetSecurityInfo` on Agent and UI process handles; deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to Authenticated Users and non-dlp-admin Admins; explicit allow for dlp-admin SID | `dlp-agent/src/protection.rs` | Must |
 | T-38 | Implement password-protected service stop: `sc stop` → STOP_PENDING → send PASSWORD_DIALOG over Pipe 1 → collect PASSWORD_SUBMIT → DPAPI `CryptProtectData` → AD LDAP bind as dlp-admin DN → verify → clean shutdown; 3 wrong attempts → log EVENT_DLP_ADMIN_STOP_FAILED | `dlp-agent/src/service.rs` | Must |
-| T-39 | Implement Tauri UI scaffold: `dlp-agent/src-tauri/` — `Cargo.toml`, `tauri.conf.json`, devtools enabled, system tray, multi-session IPC client per session | `dlp-agent/src-tauri/` | Must |
-| T-40 | Implement UI Pipe 1 client: per-session pipe connection, send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL; handle BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG | `dlp-agent/src-tauri/src/ipc/pipe1.rs` | Must |
-| T-41 | Implement UI Pipe 2 listener: receive TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE per session; display Windows toast notifications | `dlp-agent/src-tauri/src/ipc/pipe2.rs` | Must |
-| T-42 | Implement UI Pipe 3 sender: send HEALTH_PONG, UI_READY, UI_CLOSING | `dlp-agent/src-tauri/src/ipc/pipe3.rs` | Must |
-| T-43 | Implement block dialog: Windows toast + modal dialog showing policy info and classification; "Request Override" button opens justification dialog | `dlp-agent/src-tauri/src/dialogs/block.rs` | Must |
-| T-44 | Implement clipboard dialog: read clipboard via Windows API, return CLIPBOARD_DATA over Pipe 1 | `dlp-agent/src-tauri/src/dialogs/clipboard.rs` | Must |
-| T-45 | Implement service stop password dialog: PASSWORD_SUBMIT / PASSWORD_CANCEL; DPAPI `CryptProtectData` before send | `dlp-agent/src-tauri/src/dialogs/stop_password.rs` | Must |
-| T-46 | Implement system tray: icon with agent status (Running / Stopped / Offline), context menu (Show Portal, Agent Status, Exit) | `dlp-agent/src-tauri/src/tray.rs` | Should |
+| T-39 | Implement iced UI scaffold: `dlp-user-ui/` — `Cargo.toml`, devtools enabled, system tray, multi-session IPC client per session | `dlp-user-ui/` | Must |
+| T-40 | Implement UI Pipe 1 client: per-session pipe connection, send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL; handle BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG | `dlp-user-ui/src/ipc/pipe1.rs` | Must |
+| T-41 | Implement UI Pipe 2 listener: receive TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE per session; display Windows toast notifications | `dlp-user-ui/src/ipc/pipe2.rs` | Must |
+| T-42 | Implement UI Pipe 3 sender: send HEALTH_PONG, UI_READY, UI_CLOSING | `dlp-user-ui/src/ipc/pipe3.rs` | Must |
+| T-43 | Implement block dialog: Windows toast + modal dialog showing policy info and classification; "Request Override" button opens justification dialog | `dlp-user-ui/src/dialogs/block.rs` | Must |
+| T-44 | Implement clipboard dialog: read clipboard via Windows API, return CLIPBOARD_DATA over Pipe 1 | `dlp-user-ui/src/dialogs/clipboard.rs` | Must |
+| T-45 | Implement service stop password dialog: PASSWORD_SUBMIT / PASSWORD_CANCEL; DPAPI `CryptProtectData` before send | `dlp-user-ui/src/dialogs/stop_password.rs` | Must |
+| T-46 | Implement system tray: icon with agent status (Running / Stopped / Offline), context menu (Show Portal, Agent Status, Exit) | `dlp-user-ui/src/tray.rs` | Should |
 
 **Phase 1 task total: 39 tasks (T-01 through T-46, skipping T-19 which is shared with Phase 2, T-28 which is a scope note)**
 
@@ -810,22 +808,22 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | ID     | Task | Deliverable | Priority |
 | ------ | ---- | ----------- | -------- |
 | P2-T03 | Implement process protection: DACL hardening on Agent and UI processes — deny PROCESS_TERMINATE to non-dlp-admin principals | `dlp-agent/src/protection.rs` | Must |
-| P2-T04 | Implement mutual health monitoring: Agent pings UI (Pipe 2 every 5s, respawn if no pong in 15s); UI pings Agent (Pipe 3 every 5s, exit if no message in 15s) | `dlp-agent/src/`, `dlp-user-ui/src-tauri/src/` | Must |
-| P2-T10 | dlp-user-ui: double-click tray icon → open dlp-admin-portal (dlp-admin-portal deferred; stub shows "Coming Soon" for now) | `dlp-user-ui/src-tauri/src/tray.rs` | Should |
+| P2-T04 | Implement mutual health monitoring: Agent pings UI (Pipe 2 every 5s, respawn if no pong in 15s); UI pings Agent (Pipe 3 every 5s, exit if no message in 15s) | `dlp-agent/src/`, `dlp-user-ui/src/` | Must |
+| P2-T10 | dlp-user-ui: double-click tray icon → open dlp-admin-portal (dlp-admin-portal deferred; stub shows "Coming Soon" for now) | `dlp-user-ui/src/tray.rs` | Should |
 | P2-T11 | dlp-agent: service stop shutdown sequence — STOP_PENDING → signal UI → password dialog → clean shutdown | `dlp-agent/src/service.rs` | Must |
 | P2-T12 | Policy Engine: REST API for policy CRUD (GET /policies, POST /policies, PUT /policies/{id}, DELETE /policies/{id}) | `policy-engine/src/rest_api.rs` | Must |
 | P2-T13 | Write integration tests: Agent ↔ Policy Engine end-to-end | `dlp-agent/tests/` | Must |
 | P2-T14 | Write integration tests: all ABAC policies from ABAC_POLICIES.md | `policy-engine/tests/` | Must |
 
-> **Note:** The IPC servers (T-31) and UI spawner (T-30) were originally Phase 2 tasks but are implemented in Phase 1 alongside the Tauri UI (T-39–T-46). dlp-admin-portal (policy CRUD, exception workflow) is deferred to a later phase.
+> **Note:** The IPC servers (T-31) and UI spawner (T-30) were originally Phase 2 tasks but are implemented in Phase 1 alongside the iced UI (T-39–T-46). dlp-admin-portal (policy CRUD, exception workflow) is deferred to a later phase.
 
-### Phase 3 — ETW + Admin Portal Preparation (Weeks 13–18)
+### Phase 3 — API Hooks + Admin Portal Preparation (Weeks 13–18)
 
-**Goal:** ETW bypass detection, dlp-admin-portal TOTP preparation. dlp-user-ui is fully built in Phase 1.
+**Goal:** API hooks for file interception, dlp-admin-portal TOTP preparation. dlp-user-ui is fully built in Phase 1.
 
 | ID     | Task | Deliverable | Priority |
 | ------ | ---- | ----------- | -------- |
-| P3-T03 | Implement ETW bypass detection: `detection/etw_bypass.rs` — subscribe to Microsoft-Windows-FileSystem-ETW; log EVASION_SUSPECTED when ETW fires a file operation not seen by API hooks | `dlp-agent/src/detection/etw_bypass.rs` | Must |
+| P3-T03 | *(superseded)* File interception uses `notify` crate instead of ETW; ETW bypass detection was removed | — | — |
 | P3-T04 | Write end-to-end tests: clipboard detection → policy decision → local audit log | `dlp-agent/tests/` | Must |
 | P3-T05 | Write end-to-end tests: file interception → policy decision → local audit log | `dlp-agent/tests/` | Must |
 
@@ -887,7 +885,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 - [ ] Agent installs and registers as a Windows Service via `sc create`; survives reboot
 - [ ] Agent is single-instance; second start attempt is rejected
-- [ ] Agent spawns one Tauri UI subprocess per active user session on service startup; future sessions receive a new UI when they connect
+- [ ] Agent spawns one iced UI subprocess per active user session on service startup; future sessions receive a new UI when they connect
 - [ ] Agent registers with Policy Engine and maintains heartbeat
 - [ ] Agent blocks file copy to USB when resource classification = T3 or T4
 - [ ] Agent blocks file upload to unauthorized SMB share when classification = T3 or T4
@@ -993,7 +991,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | **SRS**                          | Software Requirements Specification                                                                                          |
 | **STRIDE**                       | Spoofing, Tampering, Repudiation, Information Disclosure, DoS, Privilege Escalation — threat modeling methodology            |
 | **SYSTEM account**               | Windows local system account with highest privilege on a single machine                                                      |
-| **Tauri**                        | Rust-based desktop app framework using WebView; here used for the endpoint interaction UI                                    |
+| **iced**                         | Pure Rust native GUI framework; here used for the endpoint interaction UI                                                    |
 | **TLS 1.3**                      | Transport Layer Security version 1.3 — current best-practice encryption in transit                                           |
 | **TOTP**                         | Time-based One-Time Password — MFA method (RFC 6238)                                                                         |
 | **TTL**                          | Time-To-Live — duration a cached entry remains valid                                                                         |

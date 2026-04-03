@@ -1,16 +1,16 @@
 //! File interception engine (T-11).
 //!
-//! Monitors file system operations on the endpoint by subscribing to the
-//! `Microsoft-Windows-FileSystem-ETW` trace session.  Captures CreateFile,
-//! WriteFile, DeleteFile, and Rename/Move operations in real time and
-//! forwards them as [`FileAction`] events to the registered callback.
+//! Monitors file system operations on the endpoint using the `notify` crate
+//! (see [`file_monitor`](file_monitor::file_monitor)).  Captures CreateFile,
+//! WriteFile, DeleteFile, and Rename/Move operations and forwards them
+//! as [`FileAction`] events through a Tokio channel to the event loop.
 //!
 //! ## Audit event pipeline
 //!
-//! The [`run_event_loop`] function is the integration point between the ETW
+//! The [`run_event_loop`] function is the integration point between the file
 //! monitor and the rest of the agent.  It:
 //!
-//!  1. Receives [`FileAction`] events from the ETW monitor.
+//!  1. Receives [`FileAction`] events from the file monitor.
 //!  2. Resolves the user identity from the process PID.
 //!  3. Evaluates the action against the Policy Engine (via [`OfflineManager`]).
 //!  4. Emits an audit event to the local JSONL log.
@@ -39,15 +39,15 @@ use crate::offline::OfflineManager;
 /// Runs the file interception event loop.
 ///
 /// This is the core audit pipeline integration point.  It receives [`FileAction`]
-/// events from the ETW monitor via `rx`, evaluates each one, emits an audit
+/// events from the file monitor via `rx`, evaluates each one, emits an audit
 /// event, and — for blocking decisions — notifies the UI via Pipe 1.
 ///
-/// Intended to run inside `tokio::spawn` or `block_on`.  Exits when `rx`
-/// is closed or an unrecoverable error occurs.
+/// Intended to run inside `tokio::spawn`.  Exits when `rx` is closed or an
+/// unrecoverable error occurs.
 ///
 /// # Arguments
 ///
-/// * `rx` — channel receiving [`FileAction`] events from the ETW monitor
+/// * `rx` — channel receiving [`FileAction`] events from the file monitor
 /// * `offline` — the shared offline manager (engine client + cache)
 /// * `ctx` — shared audit context (agent_id, session, user)
 pub async fn run_event_loop(
@@ -130,22 +130,6 @@ pub async fn run_event_loop(
         .with_policy(policy_id_str.clone(), response_reason.clone());
 
         emit_audit(&ctx, &mut audit_event.clone());
-
-        // ── Evasion: emit second audit event ──────────────────────────────
-        if matches!(action, FileAction::EvasionDetected { .. }) {
-            let evasion_event = AuditEvent::new(
-                EventType::EvasionSuspected,
-                ctx.user_sid.clone(),
-                ctx.user_name.clone(),
-                path.clone(),
-                classification,
-                abac_action,
-                Decision::DENY,
-                ctx.agent_id.clone(),
-                ctx.session_id,
-            );
-            emit_audit(&ctx, &mut evasion_event.clone());
-        }
 
         // ── UI notification for blocking decisions ──────────────────────────
         if is_denied {

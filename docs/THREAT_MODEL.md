@@ -46,7 +46,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 
 ### 1.2 In Scope
 
-- **Components:** dlp-agent (Windows Service), dlp-user-ui (Tauri subprocess), policy-engine (HTTPS REST API), Active Directory / LDAPS, Named pipes (Pipe 1/2/3), audit log (local JSONL), ETW file system interception
+- **Components:** dlp-agent (Windows Service), dlp-user-ui (iced subprocess), policy-engine (HTTPS REST API), Active Directory / LDAPS, Named pipes (Pipe 1/2/3), audit log (local JSONL), ETW file system interception
 - **Phases:** Phase 1 (current implementation); Phase 5 (dlp-server, SIEM relay) noted where relevant
 - **Environments:** Enterprise Windows endpoints (domain-joined), corporate network
 
@@ -67,7 +67,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 ```
 [Endpoint: Windows OS]
   ├── dlp-agent (Windows Service, SYSTEM account)
-  │     ├── interception/file_monitor.rs  — ETW file system subscription
+  │     ├── interception/file_monitor.rs  — File system monitor (notify crate)
   │     ├── detection/usb.rs           — USB device notification listener
   │     ├── detection/network_share.rs  — SMB share access detector
   │     ├── clipboard/listener.rs       — WH_GETMESSAGE clipboard hook
@@ -83,7 +83,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   │     ├── session_monitor.rs         — Session connect/disconnect
   │     └── ui_spawner.rs             — Spawns UI in user sessions
   │
-  └── dlp-user-ui (Tauri subprocess, interactive user session)
+  └── dlp-user-ui (iced subprocess, interactive user session)
         ├── pipe1 client               — Receives BlockNotify, OverrideRequest; sends UserConfirmed/Cancelled
         ├── pipe2 listener             — Receives HEALTH_PING, toast, StatusUpdate
         ├── pipe3 client               — Sends HEALTH_PONG, UiReady, UiClosing
@@ -189,15 +189,15 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   - Hot-reload happens on file change; tampering is detected only by monitoring the file externally
   - **Status:** Partially Mitigated — file ACLs and validation are in place; no integrity check (hash/checksum) on the policy file yet
 
-#### THREAT-007: NTFS ACL Bypass via Hook Disabling
-- **Asset:** File interception hooks
-- **Threat:** Attacker disables or unloads the DLP file system hooks to bypass interception entirely
-- **Attack Vector:** Attacker with admin privileges removes or patches the hook driver/filters
+#### THREAT-007: File Monitor Disabling
+- **Asset:** File system monitor (`notify` crate watcher)
+- **Threat:** Attacker disables or bypasses the `notify` watcher to render file interception blind
+- **Attack Vector:** Admin privileges or direct syscall hooking that evades `notify`'s `ReadDirectoryChangesW` coverage
 - **Impact:** All file operations are invisible to the DLP agent; no blocking or auditing
 - **Mitigation:**
-  - ETW bypass detection (`etw_bypass.rs`) detects when ETW shows file operations not seen by hooks
-  - `EvasionSuspected` audit event is emitted on detection
-  - **Status:** Partially Mitigated — detection only; no prevention; alert is emitted to SIEM
+  - The `notify` crate is cross-session and requires no elevation — harder to disable than session-local APIs
+  - Audit events are emitted for all intercepted operations; gaps in coverage are detectable in SIEM
+  - **Status:** Not Mitigated — relies on Windows Defender/EDR to detect process-level interference
 
 #### THREAT-008: Audit Log Tampering
 - **Asset:** Local JSONL audit log (`C:\ProgramData\DLP\logs\audit.jsonl`)
@@ -212,15 +212,15 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   - SHA-256 hash chain for tamper-evident logs: **Planned Phase 5**
   - **Status:** Partially Mitigated — append-only handle in Phase 1; SIEM relay in Phase 5; hash chain future work
 
-#### THREAT-009: ETW Trace Disabling
-- **Asset:** ETW bypass detection
-- **Threat:** Attacker disables the ETW session that feeds the bypass detection
-- **Attack Vector:** Administrative privileges required to disable ETW sessions
-- **Impact:** ETW bypass detection is blind; files accessed via direct syscalls are not detected or logged
+#### THREAT-009: File Monitor Interference
+- **Asset:** File system monitor (`notify` crate watcher)
+- **Threat:** Attacker interferes with the `notify` watcher to cause missed file events
+- **Attack Vector:** Administrative privileges or process injection to block the watcher thread
+- **Impact:** File events are silently dropped; no audit event; no blocking decision
 - **Mitigation:**
-  - **Not Mitigated** — no technical control prevents an admin from disabling ETW
-  - Dependency on Windows Defender/EDR to detect ETW session tampering
-  - **Status:** Not Mitigated
+  - The `notify` watcher uses `try_send` (non-blocking) — missed events do not crash the pipeline
+  - The monitor checks the stop flag every 500 ms and can be restarted
+  - **Status:** Not Mitigated — no integrity verification of the monitor itself; rely on EDR
 
 #### THREAT-010: Registry Tampering (Credentials)
 - **Asset:** `HKLM\SOFTWARE\DLP\Agent\Credentials` — dlp-admin LDAP DN
@@ -354,15 +354,15 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   - Heartbeat loop probes engine every 30 seconds; transitions back to online automatically
   - **Status:** Designed behavior (T2/T1 allow during offline is a risk; documented in SRS N-AVA-02)
 
-#### THREAT-022: ETW Bypass (Denial of Detection)
-- **Asset:** ETW bypass detection capability
-- **Threat:** Attacker causes ETW to miss file operations so bypass detection cannot correlate
-- **Attack Vector:** ETW session disabled or throttled; direct NTFS syscalls
-- **Impact:** File operations are not detected; no audit event emitted; no alert triggered
+#### THREAT-022: File Monitor Evasion (Direct Syscall Bypass)
+- **Asset:** File system monitor (`notify` crate watcher)
+- **Threat:** Attacker uses direct NTFS syscalls (e.g., `NtWriteFile`) that bypass `notify`'s `ReadDirectoryChangesW` subscription
+- **Attack Vector:** Direct NTFS syscalls; kernel-level file access that does not go through the Windows object layer
+- **Impact:** File operations are invisible to `notify`; no audit event; no blocking decision
 - **Mitigation:**
-  - ETW bypass detection (`etw_bypass.rs`) only detects, does not prevent
-  - Audit log records the `EvasionSuspected` event when ETW shows operations not in the hook buffer
-  - **Status:** Partially Mitigated — detection only; ETW disable is Not Mitigated (THREAT-009)
+  - `notify` monitors the NTFS volume change journal — most file operations are visible
+  - Kernel-level minifilter driver (future phase) is the only complete mitigation
+  - **Status:** Not Mitigated — `notify`/`ReadDirectoryChangesW` cannot cover direct syscall paths; requires minifilter (future phase)
 
 #### THREAT-023: Disk Full (Audit Log Overflow)
 - **Asset:** Audit log disk space
@@ -459,7 +459,7 @@ The following risks are **Not Mitigated** or **Planned** in a future phase:
 
 | Risk | Threat Class | Impact | Status |
 |---|---|---|---|
-| ETW itself can be disabled by admin | Tampering / DoS | Evasion detection blind | **Not Mitigated** — requires kernel-level or EDR control |
+| File monitor can be interfered with by admin | Tampering / DoS | File interception blind | **Not Mitigated** — requires kernel-level or EDR control |
 | DLL injection into agent process | Elevation of Privilege | Full DLP bypass | **Planned Phase 2** — DLL load hardening |
 | Agent binary update mechanism is unauthenticated | Tampering / Spoofing | Binary replacement attack | **Planned Phase 4** — code signing |
 | ABAC policy store has no integrity check (hash/checksum) | Tampering | Policy file tampering goes undetected | **Planned Phase 5** — policy store integrity via hash |
@@ -493,11 +493,10 @@ The following risks are **Not Mitigated** or **Planned** in a future phase:
 | Hot-reload policy validation | Policy tampering | `policy_store.rs::validate_policy()` | Tampering |
 | Fail-closed for T3/T4 on cache miss | Engine offline bypass | `offline.rs::offline_decision()` | DoS |
 | Heartbeat loop (30s probe) | Permanent offline mode | `offline.rs::heartbeat_loop()` | DoS |
-| ETW bypass detection (evasion suspected) | Hook evasion detection | `etw_bypass.rs` | Tampering (detective) |
+| File monitor via `notify` crate | File access detection | `interception/file_monitor.rs` | Tampering (detective) |
 | Clipboard classification | PII clipboard exfiltration | `clipboard/listener.rs`, `clipboard/classifier.rs` | Information Disclosure |
 | Device trust + network location ABAC | Contextual access control | `abac.rs`, `engine.rs` | Elevation |
 | Identity resolution via SMB impersonation | SMB session hijacking | `identity.rs` | Spoofing |
-| ETW file interception (dead code in Phase 1) | File access detection | `interception/file_monitor.rs` | Tampering (detective) |
 | USB device notifications | Removable media exfiltration | `detection/usb.rs` | DoS |
 | SMB share ETW detection | Network share exfiltration | `detection/network_share.rs` | DoS |
 | WTSQueryUserToken UI spawning | Multi-session UI support | `ui_spawner.rs` | Elevation |

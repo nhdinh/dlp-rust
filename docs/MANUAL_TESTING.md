@@ -1,7 +1,7 @@
 # Manual Testing Guide -- Phase 1
 
 **Date:** 2026-04-02
-**Status:** Phase 1 complete (46/46 tasks, 177 tests)
+**Status:** Phase 1 complete (46/46 tasks, 118 tests)
 
 This guide walks through building, running, and manually testing every
 Phase 1 component on a Windows development machine.
@@ -16,13 +16,7 @@ Phase 1 component on a Windows development machine.
 | Rust toolchain | stable 1.75+ | `rustup show` |
 | Git | any | `git --version` |
 | curl (or Invoke-WebRequest) | any | Ships with Windows 10+ |
-| **Administrator rights** | -- | **Required** — ETW tracing requires `SeSystemProfilePrivilege` |
-
-> **Important:** `StartTraceW` (the Windows ETW API used for real-time file-system
-> monitoring) requires Administrator privileges. All ETW-based interception
-> (`--console` mode and the Windows Service) must be run from an **elevated
-> terminal (Run as Administrator)**. Without elevation, the interception pipeline
-> logs `StartTraceW failed (error=5)` and the audit log will remain empty.
+| **Administrator rights** | -- | Optional — the `notify` crate works without elevation; admin rights are only needed for Windows Service registration |
 
 Clone the repository if you haven't already:
 
@@ -214,12 +208,11 @@ Expected: JSON object for `pol-001`.
 
 ## 7. Start the DLP Agent (Console Mode)
 
-> **Requires Administrator rights.** Run the terminal as Administrator
-> (right-click Command Prompt or PowerShell → "Run as Administrator").
-> Without admin, `StartTraceW` fails with `error=5` and no file-system events
-> will be captured.
+> **Administrator rights are optional.** The file monitor (`notify` crate) works
+> in all sessions including non-elevated terminals. Admin rights are only
+> required for Windows Service registration.
 
-Open **an elevated Terminal 2** and run:
+Open **Terminal 2** and run:
 
 ```cmd
 # Using cargo (from the repo root):
@@ -229,17 +222,28 @@ cargo run -p dlp-agent --release -- --console
 Or run the built binary directly:
 
 ```cmd
-# Run from an ADMINISTRATOR terminal:
 target\release\dlp-agent.exe --console
 ```
 
 Console mode runs the agent in the foreground without registering as a
-Windows Service. The full interception pipeline starts: ETW file-system
-monitoring, Policy Engine client, and audit log writer. Press `Ctrl+C` to stop.
+Windows Service. The full interception pipeline starts: file-system
+monitoring (via the `notify` crate), Policy Engine client, and
+audit log writer. Press `Ctrl+C` to stop.
 
 > **Note:** The agent requires the Policy Engine to be running for online
 > evaluation. If the engine is not reachable, the agent operates in offline
 > mode with fail-closed semantics (DENY for T3/T4 on cache miss).
+
+> **Console mode does not auto-spawn the UI.** The `dlp-user-ui` subprocess
+> is only spawned automatically when the agent runs as a Windows Service
+> (SYSTEM account). In console mode, to test the UI alongside the agent,
+> start it manually in a separate terminal:
+>
+> ```cmd
+> cargo run -p dlp-user-ui --release
+> ```
+>
+> The UI will connect to the agent's named pipes and register its session.
 
 ---
 
@@ -328,8 +332,9 @@ mkdir C:\Public
 
 ### 10.2 File Operations (F-AGT-05)
 
-The agent monitors file system events via ETW. Perform these operations
-and check the agent log after each one.
+The agent monitors file system events via the `notify` crate.
+Perform these operations
+and check the audit log after each one.
 
 #### Create a file
 
@@ -339,7 +344,7 @@ echo "Internal Memo" > C:\Data\memo.txt
 echo "Public README" > C:\Public\readme.txt
 ```
 
-Expected agent log: `FileAction::Created` for each file, with
+Expected audit log: `ACCESS` events for each file, with
 classification T4, T2, and T1 respectively.
 
 #### Write / modify a file
@@ -348,7 +353,7 @@ classification T4, T2, and T1 respectively.
 echo "Updated figures" >> C:\Restricted\financials.txt
 ```
 
-Expected: `FileAction::Written` with path `C:\Restricted\financials.txt`,
+Expected: `ACCESS` event for `C:\Restricted\financials.txt`,
 classification T4.
 
 #### Copy a file
@@ -357,8 +362,8 @@ classification T4.
 copy C:\Restricted\financials.txt C:\Restricted\financials_backup.txt
 ```
 
-Expected: `FileAction::Created` for the new file (copy triggers a create +
-write sequence in ETW).
+Expected: `ACCESS` events for the new file (copy triggers a create +
+write sequence).
 
 #### Rename / move a file
 
@@ -367,7 +372,7 @@ ren C:\Data\memo.txt memo_archived.txt
 move C:\Data\memo_archived.txt C:\Public\memo_archived.txt
 ```
 
-Expected: `FileAction::Moved` for each operation. The rename stays in T2;
+Expected: `ACCESS` events for each operation. The rename stays in T2;
 the move changes the path to T1 (`C:\Public\`).
 
 #### Delete a file
@@ -376,7 +381,7 @@ the move changes the path to T1 (`C:\Public\`).
 del C:\Public\readme.txt
 ```
 
-Expected: `FileAction::Deleted` with classification T1.
+Expected: `ACCESS` event with classification T1.
 
 #### Verify in audit log
 
@@ -534,48 +539,7 @@ Get-Content C:\ProgramData\DLP\logs\audit.jsonl |
   Format-Table timestamp, classification, decision
 ```
 
-### 10.6 ETW Bypass Detection (F-AGT-18)
-
-The ETW bypass detector compares hook-intercepted operations against ETW
-file-system events. If ETW reports an operation that the hooks did **not**
-intercept, the agent logs `EVASION_SUSPECTED`.
-
-#### How it works in Phase 1
-
-In Phase 1, file interception uses ETW only (no API hooks yet). The
-bypass detector's hook log is empty, so **every ETW event triggers an
-evasion signal**. This is expected behavior -- it confirms the ETW
-subscriber is receiving events and the correlation logic works.
-
-In Phase 2, when API hooks are added, the bypass detector will only
-fire for operations that bypass the hooks -- the intended production
-behavior.
-
-#### Trigger an evasion event
-
-Any file operation in a monitored directory triggers an ETW event:
-
-```cmd
-echo "test" > C:\Data\etw_test.txt
-```
-
-Expected agent log:
-
-```
-WARN  EVASION_SUSPECTED: ETW event with no matching hook intercept
-      path=C:\Data\etw_test.txt  process_id=<PID>  etw_operation=CreateFile
-```
-
-#### Verify in audit log
-
-```powershell
-Get-Content C:\ProgramData\DLP\logs\audit.jsonl |
-  ForEach-Object { $_ | ConvertFrom-Json } |
-  Where-Object { $_.event_type -eq "EVASION_SUSPECTED" } |
-  Format-Table timestamp, resource_path, action_attempted
-```
-
-### 10.7 Verify Complete Audit Trail
+### 10.6 Verify Complete Audit Trail
 
 After running all the tests above, the audit log should contain events
 for every operation. Run this summary to confirm coverage:
@@ -600,7 +564,6 @@ Expected output should show:
 |------------|----------|
 | `ACCESS` | File read/write operations |
 | `BLOCK` | T3/T4 to USB or non-whitelisted SMB |
-| `EVASION_SUSPECTED` | ETW events without hook match (Phase 1) |
 
 | Classification | Expected |
 |---------------|----------|
@@ -623,8 +586,8 @@ rd /s /q C:\Public
 ## 11. Windows Service (Full Deployment Mode)
 
 > **No manual elevation needed** — the service runs as `LocalSystem` (SYSTEM),
-> which has full administrator privileges including `SeSystemProfilePrivilege`.
-> ETW file-system interception works automatically in service mode.
+> which has full administrator privileges. File-system interception works automatically
+> via the `notify` crate.
 
 The service is managed with the provided PowerShell script:
 
@@ -653,6 +616,64 @@ Status : Running
 ```
 
 This registers the service with SCM (as `LocalSystem`, auto-start) and starts it immediately.
+
+### Verify dlp-user-ui is Running
+
+When the agent runs as a Windows Service (SYSTEM account), it spawns one
+`dlp-user-ui.exe` process per active interactive session. Verify both
+processes are running:
+
+```powershell
+# Check that the agent service is running:
+Get-Process dlp-agent -ErrorAction SilentlyContinue |
+    Select-Object Id, ProcessName, SessionId | Format-Table
+
+# Check that the UI subprocess was spawned in your session:
+Get-Process dlp-user-ui -ErrorAction SilentlyContinue |
+    Select-Object Id, ProcessName, SessionId | Format-Table
+```
+
+Expected:
+
+| Process | Session | Account |
+|---------|---------|---------|
+| `dlp-agent` | 0 (SYSTEM) | `NT AUTHORITY\SYSTEM` |
+| `dlp-user-ui` | Your session (e.g. 1, 2) | Your AD user account |
+
+If `dlp-user-ui` is **not** running:
+
+1. Check the agent log for spawn errors:
+   ```powershell
+   Get-WinEvent -FilterHashtable @{
+       LogName='Application'; StartTime=(Get-Date).AddMinutes(-5)
+   } | Where-Object { $_.Message -match 'ui_spawner|spawn' } |
+       Select-Object TimeCreated, Message | Format-List
+   ```
+2. Verify the UI binary exists next to the agent binary:
+   ```powershell
+   $agentPath = (Get-Process dlp-agent).Path
+   $uiPath = Join-Path (Split-Path $agentPath) "dlp-user-ui.exe"
+   Test-Path $uiPath   # Should be True
+   ```
+3. Verify the `DLP_UI_BINARY` environment variable is set (optional
+   override for development):
+   ```powershell
+   [System.Environment]::GetEnvironmentVariable("DLP_UI_BINARY", "Machine")
+   ```
+
+> **Note:** The UI is only spawned in interactive sessions (session ID > 0).
+> Session 0 (SYSTEM services) never gets a UI instance. If you are
+> connected via Remote Desktop, the agent spawns a UI in your RDP session.
+
+### Verify System Tray Icon
+
+Once `dlp-user-ui.exe` is running in your session, look for the DLP tray
+icon (blue square) in the Windows notification area (system tray). Right-click
+it to see the context menu:
+
+- **Show Portal** -- opens the admin portal URL (Phase 5 target)
+- **Agent Status: Running** -- read-only status label
+- **Exit** -- closes the UI (agent will respawn it within 15 seconds)
 
 ### Force-Stop (when password dialog is stuck)
 
@@ -714,28 +735,17 @@ the first three crashes). If the service keeps crashing, check:
 > use `sc stop dlp-agent` from an elevated terminal — the dialog will
 > appear on the interactive desktop if a UI is connected.
 
-> **Password-protected stop:** The agent prompts for the `dlp-admin` AD
-> password before allowing a stop. Three failed attempts abort the stop
-> and log `EVENT_DLP_ADMIN_STOP_FAILED`.
-
-### Uninstall
-
-```cmd
-sc stop dlp-agent
-sc delete dlp-agent
-```
-
 ---
 
 ## 12. Run the Automated Test Suite
 
-### Full workspace (177 tests)
+### Full workspace (138 tests)
 
 ```cmd
 cargo test
 ```
 
-### Policy Engine only (36 tests)
+### Policy Engine only (33 tests: 20 unit + 13 integration)
 
 ```cmd
 cargo test -p policy-engine
@@ -747,19 +757,19 @@ cargo test -p policy-engine
 cargo test -p policy-engine --test integration
 ```
 
-### DLP Agent only (122 tests)
+### DLP Agent only (105 tests: 78 unit + 20 integration + 7 negative)
 
 ```cmd
 cargo test -p dlp-agent
 ```
 
-### DLP Agent integration tests only (23 tests)
+### DLP Agent integration tests only (20 tests)
 
 ```cmd
 cargo test -p dlp-agent --test integration
 ```
 
-### DLP Agent negative tests only (8 tests)
+### DLP Agent negative tests only (7 tests)
 
 ```cmd
 cargo test -p dlp-agent --test negative
@@ -775,21 +785,16 @@ cargo clippy --workspace -- -D warnings
 
 ## 13. Troubleshooting
 
-### ETW audit log is empty (StartTraceW error=5)
+### File monitor not receiving events
 
-```
-[ERROR] StartTraceW failed (error=5) — ETW interception unavailable
-[ERROR] ETW interception failed: StartTraceW failed
-```
+If file operations are not appearing in the audit log:
 
-`error=5` = `ERROR_ACCESS_DENIED`. The agent is not running with Administrator
-rights. The ETW `StartTraceW` API requires the `SeSystemProfilePrivilege`
-privilege which is only granted in an elevated session.
+- Verify the agent is running (`tasklist | findstr dlp-agent`)
+- Look for `watching drive` in the agent's stdout/stderr output confirming volumes are monitored
+- The `notify` crate polls every 500 ms — events may take up to 1 second to appear
+- The monitor only watches mounted volumes (A:\–Z:\); network shares require a UNC path watcher
 
-**Fix:** Run the terminal as Administrator (right-click → "Run as Administrator")
-before starting the agent. This applies to both `--console` mode and the Windows Service.
-
-### Audit log directory permission denied
+### Policy Engine port already in use
 
 ```
 Error: failed to bind
@@ -801,15 +806,16 @@ Another process is using port 8443. Either stop it or change the port:
 set BIND_ADDR=127.0.0.1:9443
 ```
 
-### Audit log directory permission denied
+### Audit log directory missing
 
-The agent writes to `C:\ProgramData\DLP\logs\`. Create the directory
-manually if it doesn't exist:
+The agent writes to `C:\ProgramData\DLP\logs\`. Create the directory manually:
 
 ```cmd
 # Run as Administrator:
 mkdir C:\ProgramData\DLP\logs
 ```
+
+If the directory does not exist when the agent starts, the first run will create it automatically.
 
 ### Policy file not found
 
@@ -834,10 +840,10 @@ set RUST_LOG=policy_engine=debug,dlp_agent=trace
 ### Agent cannot reach Policy Engine
 
 - Verify the engine is running: `curl http://127.0.0.1:8443/health`
-- Check the `DEFAULT_ENGINE_URL` in `engine_client.rs` matches the engine's
-  bind address (default: `https://localhost:8443`)
-- For development without TLS, the engine client is constructed with
-  `tls_verify=false`
+- Check that the engine URL in `engine_client.rs` matches the engine's bind address
+  (default: `https://localhost:8443`). The URL scheme (`http://` vs `https://`) does not
+  affect connectivity — the client always connects over plain TCP. Only the host and port
+  must match the engine's `BIND_ADDR`.
 
 ---
 
@@ -847,6 +853,7 @@ set RUST_LOG=policy_engine=debug,dlp_agent=trace
 |-----------|--------|-----------------|--------|
 | Policy Engine | `policy-engine.exe` | `127.0.0.1:8443` | `BIND_ADDR`, `POLICY_FILE`, `RUST_LOG` |
 | DLP Agent | `dlp-agent.exe --console` | N/A (local service) | `RUST_LOG` |
+| DLP User UI | `dlp-user-ui.exe` | N/A (spawned by agent) | `RUST_LOG`, `DLP_UI_BINARY` |
 | Audit Log | N/A (file output) | `C:\ProgramData\DLP\logs\audit.jsonl` | Hardcoded path (Phase 1) |
 
 ---

@@ -1,10 +1,13 @@
 fn main() {
-    // Write a minimal valid ICO using raw BMP DIB format that the
-    // installed RC.EXE (10.0.10011.16384) accepts.
     write_ico();
 
-    // Run tauri-build normally (compiles Rust code, doesn't compile resources here).
-    tauri_build::build();
+    let mut res = winres::WindowsResource::new();
+    res.set_icon("icons/icon.ico");
+    if let Err(e) = res.compile() {
+        // winres requires rc.exe from the Windows SDK.  If unavailable,
+        // skip resource embedding rather than failing the build.
+        eprintln!("cargo:warning=winres failed (icon not embedded): {e}");
+    }
 }
 
 /// Writes a 16x16 32-bit BGRA ICO to icons/icon.ico.
@@ -19,7 +22,6 @@ fn write_ico() {
 
     // 16x16 pixels — BGRA (bottom-up), no compression.
     let mut pixels: Vec<u8> = Vec::with_capacity(16 * 16 * 4);
-    // Row 0 = bottom scanline (DIB is bottom-up).
     for _y in 0..16u32 {
         for _x in 0..16u32 {
             // DLP brand blue: BGRA = (204, 102, 0, 255)
@@ -27,16 +29,8 @@ fn write_ico() {
         }
     }
 
-    // AND mask: 16 pixels = 2 bytes per row, rows must be DWORD-aligned.
-    // 16 pixels = 2 bytes; DWORD-aligned = 4 bytes per row.
+    // AND mask: 16 pixels = 2 bytes per row, DWORD-aligned = 4 bytes per row.
     let and_mask: Vec<u8> = vec![0x00; 16 * 4];
-
-    // ICO file:
-    // 6 bytes: ICONDIR (reserved=0, type=1, count=1)
-    // 16 bytes: ICONDIRENTRY (w=16, h=16, colors=0, planes=1, bpp=32, size, offset=22)
-    // 40 bytes: BITMAPINFOHEADER (biSize=40, biWidth=16, biHeight=32, biPlanes=1, biBitCount=32, ...)
-    // N bytes: XOR mask (16*16*4 = 1024 bytes)
-    // M bytes: AND mask (16*4 = 64 bytes)
 
     let xor_size = pixels.len(); // 1024
     let and_size = and_mask.len(); // 64
@@ -57,7 +51,7 @@ fn write_ico() {
     ico.push(0); // reserved
     ico.extend_from_slice(&1u16.to_le_bytes()); // planes
     ico.extend_from_slice(&32u16.to_le_bytes()); // bit count
-    ico.extend_from_slice(&(bmp_size as u32).to_le_bytes()); // size of image
+    ico.extend_from_slice(&(bmp_size as u32).to_le_bytes()); // size
     ico.extend_from_slice(&22u32.to_le_bytes()); // offset = 6 + 16
 
     // BITMAPINFOHEADER (biHeight = 2 * actual for XOR + AND masks)
@@ -67,7 +61,9 @@ fn write_ico() {
     ico.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
     ico.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
     ico.extend_from_slice(&0u32.to_le_bytes()); // biCompression = BI_RGB
-    ico.extend_from_slice(&((xor_size + and_size) as u32).to_le_bytes()); // biSizeImage
+    ico.extend_from_slice(
+        &((xor_size + and_size) as u32).to_le_bytes(),
+    ); // biSizeImage
     ico.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
     ico.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
     ico.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed

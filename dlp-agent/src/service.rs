@@ -109,6 +109,29 @@ pub fn run_service() -> Result<()> {
     let session_handle = crate::session_monitor::start();
     info!(thread_id = ?session_handle.thread().id(), "session monitor started");
 
+    // ── Start USB mass-storage detection ─────────────────────────
+    // UsbDetector is a &'static so it can be accessed from the message-only
+    // window thread without Arc/RwLock.
+    use std::sync::OnceLock;
+    static USB_DETECTOR: OnceLock<crate::detection::UsbDetector> = OnceLock::new();
+    let detector = USB_DETECTOR.get_or_init(crate::detection::UsbDetector::new);
+    detector.scan_existing_drives();
+    let usb_cleanup = match crate::detection::usb::register_usb_notifications(detector) {
+        Ok((hwnd, thread)) => {
+            info!(
+                thread_id = ?thread.thread().id(),
+                "USB notifications registered"
+            );
+            Some((hwnd, thread))
+        }
+        Err(e) => {
+            warn!(error = %e,
+                "USB detection unavailable — continuing without USB monitoring"
+            );
+            None
+        }
+    };
+
     // Report RUNNING.
     set_status(
         &status_handle,
@@ -123,6 +146,11 @@ pub fn run_service() -> Result<()> {
 
     // ── Graceful shutdown of blocking threads ────────────────────────
     info!(service_name = SERVICE_NAME, "shutting down subsystems");
+
+    // Unregister USB device notifications.
+    if let Some((hwnd, thread)) = usb_cleanup {
+        crate::detection::usb::unregister_usb_notifications(hwnd, thread);
+    }
 
     // Signal the event loop to drain and exit.
     // Drop the health monitor and session monitor handles — their threads
@@ -144,7 +172,7 @@ pub fn run_service() -> Result<()> {
 
 /// The main service run loop.
 ///
-/// Runs the ETW interception event loop and the service control loop.
+/// Runs the file system event loop and the service control loop.
 /// All other subsystems (IPC servers, health monitor, session monitor, UI
 /// spawner) run on blocking std threads started in [`run_service`].
 ///
@@ -181,10 +209,10 @@ async fn run_loop(
         offline_hb.heartbeat_loop(shutdown_rx).await;
     });
 
-    // ── Start the ETW interception pipeline ───────────────────────────────
-    let etw_engine = crate::interception::InterceptionEngine::new()
-        .expect("ETW interception engine initialisation always succeeds");
-    let etw_engine_for_shutdown = etw_engine.clone();
+    // ── Start the file system monitor pipeline ───────────────────────
+    let file_monitor = crate::interception::InterceptionEngine::new()
+        .expect("file monitor initialisation always succeeds");
+    let file_monitor_for_shutdown = file_monitor.clone();
 
     let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
 
@@ -206,13 +234,13 @@ async fn run_loop(
         crate::interception::run_event_loop(action_rx, offline_ev, ctx_ev).await;
     });
 
-    // Spawn the ETW monitor — run() is blocking and must run on a dedicated thread
-    // because it calls ProcessTrace which blocks indefinitely.  Wrap it in
+    // Spawn the file monitor — run() is blocking and must run on a dedicated thread
+    // because the notify watcher blocks on its internal channel.  Wrap it in
     // spawn_blocking so it doesn't monopolise a Tokio thread.
-    let etw_engine_clone = etw_engine.clone();
-    let etw_handle = tokio::task::spawn_blocking(move || {
-        // etw_engine.run() is synchronous; it blocks until the trace is stopped.
-        let _ = etw_engine_clone.run(action_tx);
+    let file_monitor_clone = file_monitor.clone();
+    let file_handle = tokio::task::spawn_blocking(move || {
+        // file_monitor.run() is synchronous; it blocks until stop() is called.
+        let _ = file_monitor_clone.run(action_tx);
     });
 
     info!(
@@ -256,9 +284,9 @@ async fn run_loop(
         "shutting down enforcement subsystems"
     );
 
-    // Stop ETW first so no new events arrive.
-    etw_engine_for_shutdown.stop();
-    let _ = etw_handle.await;
+    // Stop the file monitor first so no new events arrive.
+    file_monitor_for_shutdown.stop();
+    let _ = file_handle.await;
 
     // Signal the event loop to drain and exit.
     drop(event_loop_handle);
@@ -281,7 +309,7 @@ async fn run_loop(
 /// Resolves the dlp-user-ui binary path.
 ///
 /// Checks `DLP_UI_BINARY` env var first, then falls back to the directory
-/// containing the running service executable, looking for `dlp-agent-ui.exe`.
+/// containing the running service executable, looking for `dlp-user-ui.exe`.
 fn resolve_ui_binary() -> Option<std::path::PathBuf> {
     // Env var takes priority (useful for development).
     if let Ok(path) = std::env::var("DLP_UI_BINARY") {
@@ -291,7 +319,7 @@ fn resolve_ui_binary() -> Option<std::path::PathBuf> {
     // Fallback: same directory as the running service binary.
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    let ui = dir.join("dlp-agent-ui.exe");
+    let ui = dir.join("dlp-user-ui.exe");
     Some(ui)
 }
 
@@ -428,14 +456,14 @@ fn init_logging() {
 /// Runs the DLP Agent as a regular console application for testing and
 /// development.
 ///
-/// Sets up the full interception pipeline (ETW + Policy Engine + audit log)
+/// Sets up the full interception pipeline (file monitor + Policy Engine + audit log)
 /// without requiring Windows Service registration.  Press Ctrl+C to stop.
 ///
-/// The UI spawner, IPC servers, health monitor, and ETW interception pipeline
+/// The UI spawner, IPC servers, health monitor, and file monitor pipeline
 /// all run identically to the service mode.  The only differences are:
 ///   - No SCM integration (no password-protected stop, no service status)
 ///   - No UI is spawned (console sessions don't have an interactive desktop)
-///   - EtwEngine runs with the console user's identity context
+///   - File monitor runs with the console user's identity context
 pub fn run_console() -> Result<()> {
     init_logging();
     info!(
@@ -451,7 +479,7 @@ pub fn run_console() -> Result<()> {
     crate::ipc::start_all()?;
     info!("IPC pipe servers started");
 
-    // ── ETW interception + event loop on a Tokio runtime ─────────────────────
+    // ── File system monitor + event loop on a Tokio runtime ─────────────────
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async_run_console())?;
 
@@ -486,18 +514,16 @@ async fn async_run_console() -> Result<()> {
         offline_hb.heartbeat_loop(shutdown_rx).await;
     });
 
-    // ── ETW interception pipeline ───────────────────────────────────────────
-    let etw_engine = crate::interception::InterceptionEngine::new()
-        .expect("ETW interception engine must be constructable");
+    // ── File system monitor pipeline ──────────────────────────────
+    let file_monitor =
+        crate::interception::InterceptionEngine::new().expect("file monitor must be constructable");
     let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
 
     // EmitContext for console mode — stubbed with the current user.
     let user_name = std::env::var("USERNAME")
-        .unwrap_or_else(|_| std::env::var("USER")
-            .unwrap_or_else(|_| "console-user".to_string()));
+        .unwrap_or_else(|_| std::env::var("USER").unwrap_or_else(|_| "console-user".to_string()));
     let audit_ctx = crate::audit_emitter::EmitContext {
-        agent_id: std::env::var("DLP_AGENT_ID")
-            .unwrap_or_else(|_| "AGENT-CONSOLE".to_string()),
+        agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-CONSOLE".to_string()),
         session_id: 1,
         user_sid: "S-1-5-21-0-0-0-0".to_string(), // stub SID for console mode
         user_name,
@@ -510,15 +536,15 @@ async fn async_run_console() -> Result<()> {
         crate::interception::run_event_loop(action_rx, offline_ev, ctx_ev).await;
     });
 
-    // ETW runs on a blocking thread so it doesn't starve the Tokio executor.
-    let etw_engine_clone = etw_engine.clone();
-    let etw_handle = tokio::task::spawn_blocking(move || {
-        if let Err(e) = etw_engine_clone.run(action_tx) {
-            // Always log this error — it means the ETW session failed to start or crashed.
+    // File monitor runs on a blocking thread so it doesn't starve the Tokio executor.
+    let file_monitor_clone = file_monitor.clone();
+    let file_handle = tokio::task::spawn_blocking(move || {
+        if let Err(e) = file_monitor_clone.run(action_tx) {
+            // Always log this error — it means the file monitor failed to start or crashed.
             // This is important enough to print to stderr directly as a fallback
             // in case tracing is misconfigured.
-            eprintln!("[ERROR] ETW interception failed: {e}");
-            tracing::error!(error = %e, "ETW interception failed");
+            eprintln!("[ERROR] file monitor failed: {e}");
+            tracing::error!(error = %e, "file monitor failed");
         }
     });
 
@@ -535,8 +561,8 @@ async fn async_run_console() -> Result<()> {
         "shutting down enforcement subsystems"
     );
 
-    etw_engine.stop();
-    let _ = etw_handle.await;
+    file_monitor.stop();
+    let _ = file_handle.await;
     drop(event_loop_handle);
     let _ = shutdown_tx.send(true);
     let _ = _heartbeat_handle.await;

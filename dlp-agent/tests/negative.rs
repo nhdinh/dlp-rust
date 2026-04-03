@@ -68,7 +68,7 @@ async fn test_engine_500_retry_exhausted() {
     use dlp_agent::engine_client::{EngineClient, EngineClientError};
 
     let (addr, _h) = start_error_engine(500).await;
-    let client = EngineClient::new(&format!("http://{addr}"), false).unwrap();
+    let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
 
     let request = make_request(Classification::T3);
     let result = client.evaluate(&request).await;
@@ -85,7 +85,7 @@ async fn test_engine_400_no_retry() {
     use dlp_agent::engine_client::{EngineClient, EngineClientError};
 
     let (addr, _h) = start_error_engine(400).await;
-    let client = EngineClient::new(&format!("http://{addr}"), false).unwrap();
+    let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
 
     let request = make_request(Classification::T2);
     let result = client.evaluate(&request).await;
@@ -143,29 +143,8 @@ async fn test_audit_dir_creation() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ETW bypass capacity
+// file monitor capacity
 // ─────────────────────────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn test_etw_capacity_overflow() {
-    use dlp_agent::detection::EtwBypassDetector;
-
-    let detector = EtwBypassDetector::with_window(Duration::from_secs(60));
-    // Fill beyond the 10,000 capacity limit.
-    for i in 0..10_100 {
-        detector.record_hook_intercept(&format!(r"C:\Data\file{i}.txt"), i as u32);
-    }
-
-    // Recent records should still be present.
-    assert!(detector
-        .check_etw_event(r"C:\Data\file10099.txt", 10099, "WriteFile")
-        .is_none());
-
-    // Very old records should have been pruned.
-    assert!(detector
-        .check_etw_event(r"C:\Data\file0.txt", 0, "WriteFile")
-        .is_some());
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Clipboard edge cases

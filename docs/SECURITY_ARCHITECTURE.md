@@ -44,7 +44,7 @@ The DLP system enforces five foundational security principles across all layers.
 | Principal | Privilege Scope | Rationale |
 |---|---|---|
 | `dlp-agent` (Windows Service) | Runs as `SYSTEM` (LocalSystem); process DACL denies terminate/read/write to Authenticated Users; Administrators get explicit Allow | SYSTEM required for `SeSecurityPrivilege` to set process DACL; no broader privilege needed |
-| `dlp-user-ui` (Tauri subprocess) | Runs as the interactive logged-in user; no elevated privileges; SYSTEM-only named pipe ACLs prevent cross-session access | UI is a userland process; cannot perform privileged operations |
+| `dlp-user-ui` (iced subprocess) | Runs as the interactive logged-in user; no elevated privileges; SYSTEM-only named pipe ACLs prevent cross-session access | UI is a userland process; cannot perform privileged operations |
 | `policy-engine` | Runs as a dedicated service account (non-SYSTEM); LDAPS bind uses a dedicated AD service account | Principle of least privilege: the engine does not need SYSTEM |
 | `dlp-admin` (AD user) | Member of Domain Admins only for the DLP OU; no interactive logon rights on endpoints | Restricts blast radius of credential compromise |
 | AD service account (`CN=dlp-svc,...`) | Read-only LDAP queries to AD; no domain join or replication rights | Limits exposure if the service account is compromised |
@@ -160,7 +160,7 @@ Every ABAC decision, every block event, every admin action, and every failed aut
   ║  │  └─────────────┘  └─────────────┘  └──────────────────────┘  │    ║
   ║  │           ↓                ↓                                 │    ║
   ║  │  ┌─────────────────────────────────────────────────────────┐│    ║
-  ║  │  │     dlp-user-ui (Tauri subprocess, interactive user)    ││    ║
+  ║  │  │     dlp-user-ui (iced subprocess, interactive user)     ││    ║
   ║  │  │  Toast notifications · Override dialogs · Clipboard     ││    ║
   ║  │  │  System tray · sc stop password dialog                  ││    ║
   ║  │  └─────────────────────────────────────────────────────────┘│    ║
@@ -543,7 +543,7 @@ The DENY ACE is set with `INHERIT_ONLY_ACE` + `OBJECT_INHERIT_ACE`, meaning the 
 The Agent service:
 - Does **not** create or interact with any desktop window
 - Does **not** run a message pump for GUI events
-- Communicates with the user desktop **only** through the Tauri UI subprocess, which runs in the interactive user session via `CreateProcessAsUser`
+- Communicates with the user desktop **only** through the iced UI subprocess, which runs in the interactive user session via `CreateProcessAsUser`
 
 This separation prevents the service from being manipulated through UI automation tools running in the user's session.
 
@@ -571,7 +571,7 @@ This section summarizes the threat landscape. For the full STRIDE analysis with 
 | Surface | Description | Risk Level |
 |---|---|---|
 | **File interception hooks** | Windows API hooks in `file_monitor.rs` | High — if hooks are bypassed, ABAC is not consulted |
-| **ETW bypass detection** | `etw_bypass.rs` detects hook evasion via `Microsoft-Windows-FileSystem-ETW` | Medium — provides detection but not prevention |
+| **File monitor interference** | The `notify` watcher can be interfered with by admin-level processes | Medium — relies on EDR to detect process-level interference |
 | **Named pipes** | 3 pipes connecting Agent ↔ UI | Medium — mitigated by SYSTEM-only ACL and DPAPI |
 | **Policy Engine HTTPS API** | `engine_client.rs` → Policy Engine | High — protected by mTLS |
 | **AD LDAP interface** | `ad_client.rs` → Domain Controller | High — protected by LDAPS + service account |
@@ -579,20 +579,19 @@ This section summarizes the threat landscape. For the full STRIDE analysis with 
 | **Admin portal** (Phase 5) | dlp-admin → dlp-admin-portal | High — protected by TOTP + JWT |
 | **Service stop flow** | `sc stop` → password challenge | High — protected by LDAPS bind verification |
 
-### 9.2 ETW Bypass Detection
+### 9.2 File Monitor Limitations
 
-`dlp-agent/src/detection/etw_bypass.rs` subscribes to `Microsoft-Windows-FileSystem-ETW` as a **detection layer** (not prevention). When ETW reports a file operation that does not appear in the hook correlation buffer (within a 5-second window), an `EVASION_SUSPECTED` audit event is emitted.
+The file system monitor in `dlp-agent/src/interception/file_monitor.rs` uses the `notify` crate (backed by `ReadDirectoryChangesW` on Windows). It cannot intercept file operations performed via direct NTFS syscalls (`NtWriteFile`, `NtDeleteFile`, etc.) that bypass the Windows object layer.
 
-**What it detects:**
-- Direct NTFS syscalls that bypass the Win32 API hooks
-- Kernel-mode file system filter drivers that shadow the DLP hooks
-- Code injection into a hooked process that performs file I/O via direct syscall
+**What it can detect:**
+- File create, write, delete, rename, and read via the Win32 API
+- Works cross-session without elevation (unlike ETW)
 
 **What it cannot prevent:**
-- It cannot block the operation — it only detects and logs
-- If ETW itself is disabled or throttled, the detection window may miss events
+- Direct syscall operations that never touch `ReadDirectoryChangesW`
+- Kernel-level file access that bypasses the NTFS change journal
 
-**Status:** Implemented in Phase 3 (P3-T03). This is a **detective control**, not a preventive one. It does not replace the importance of keeping hooks robust.
+**Status:** Implemented. A minifilter driver (future phase) is the only complete mitigation for direct syscall bypass.
 
 ### 9.3 Residual Risks
 
@@ -600,7 +599,7 @@ Key residual risks (Not Mitigated or Planned for future phases) documented in [T
 
 | Risk | Impact | Mitigation Status |
 |---|---|---|
-| ETW itself can be disabled by admin | No evasion detection for sensitive files | **Not Mitigated** — requires kernel-level protection |
+| File monitor can be interfered with by admin | File interception blind | **Not Mitigated** — requires kernel-level or EDR control |
 | Admin audit log overrides may contain PII | Compliance risk | **Not Mitigated** — free-text field in override justification |
 | HSM not used for key storage | DPAPI subject to session-local code execution | **Planned Phase 5** |
 | dlp-agent update mechanism is unauthenticated (Phase 1) | Binary replacement attack | **Planned Phase 4** — code signing |
