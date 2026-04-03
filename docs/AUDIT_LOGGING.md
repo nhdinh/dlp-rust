@@ -4,7 +4,7 @@
 **Date:** 2026-04-02
 **Status:** Draft
 
-**Changelog (v1.1):** Added Phase 1 implementation details — `dlp-agent` now writes directly to a local append-only JSONL file (`C:\ProgramData\DLP\logs\audit.jsonl`) with 50 MB size-based rotation and 9-generation retention. Audit pipeline fully wired: ETW → `run_event_loop` → `OfflineManager` → audit + Pipe 1. Clipboard T2+ events audited via `ClipboardListener`. `Action::PASTE` added.
+**Changelog (v1.1):** Added Phase 1 implementation details — `dlp-agent` now writes directly to a local append-only JSONL file (`C:\ProgramData\DLP\logs\audit.jsonl`) with 50 MB size-based rotation and 9-generation retention. Audit pipeline fully wired: file monitor (`notify`) → `run_event_loop` → `OfflineManager` → audit + Pipe 1. Clipboard T2+ events audited via `ClipboardListener`. `Action::PASTE` added.
 
 ## Overview
 
@@ -13,7 +13,7 @@ All dlp-agents emit structured JSON audit events for every intercepted file oper
 ## Phase 1 Audit Event Flow (Implemented)
 
 ```
-ETW / Clipboard Hook
+File Monitor / Clipboard Hook
         │
         ▼
 InterceptionEngine / ClipboardListener
@@ -52,7 +52,7 @@ dlp-agent (per endpoint)
 | `SESSION_LOGOFF` | User logoff detected | Yes (Phase 5) | No |
 | `ADMIN_ACTION` | dlp-admin-portal API call | Yes (Phase 5) | No |
 | `SERVICE_STOP_FAILED` | Failed sc stop attempt | Yes (Phase 5) | Yes |
-| `EVASION_SUSPECTED` | ETW event not seen by hooks | Yes (Phase 5) | Yes |
+| `EVASION_SUSPECTED` | *(removed — ETW bypass detection not implemented)* | — | — |
 
 > **Phase 1 note:** Events are written to `C:\ProgramData\DLP\logs\audit.jsonl` locally. SIEM routing activates when dlp-server is deployed (Phase 5).
 

@@ -15,8 +15,3 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-
-[features]
-default = []
-# Enable std support (required for parking_lot, chrono, etc.)
-std = []

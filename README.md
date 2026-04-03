@@ -68,7 +68,7 @@ Currently in the documentation and design phase. Implementation follows a phased
 | ----- | --------------------------------------------------------------------------- | --------------------------------------------------------- |
 | 1     | Foundation — workspace, shared types, Policy Engine (HTTPS), dlp-agent, dlp-user-ui | `dlp-common`, `policy-engine`, `dlp-agent`, `dlp-user-ui` |
 | 2     | Process protection + IPC hardening                                          | `dlp-agent`, `dlp-user-ui`                                |
-| 3     | ETW bypass detection + integration tests                                    | `dlp-agent`                                               |
+| 3     | API hooks for file interception + integration tests                           | `dlp-agent`                                               |
 | 4     | Production hardening — security audit, MSI deployment, OPERATIONAL.md       | All                                                       |
 | 5     | dlp-server — central management, SIEM relay, admin auth                     | `dlp-server`                                              |
 | —     | **dlp-admin-portal** deferred to a later phase                              |                                                           |

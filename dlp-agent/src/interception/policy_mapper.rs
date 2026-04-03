@@ -27,9 +27,6 @@ pub struct PolicyMapper;
 
 impl PolicyMapper {
     /// Converts a [`FileAction`] variant to the corresponding ABAC [`Action`].
-    ///
-    /// `EvasionDetected` is mapped to `Action::WRITE` for evaluation purposes;
-    /// a separate `EVASION_SUSPECTED` audit event is emitted by the caller.
     #[must_use]
     pub fn action_for(action: &FileAction) -> Action {
         match action {
@@ -38,8 +35,6 @@ impl PolicyMapper {
             FileAction::Deleted { .. } => Action::DELETE,
             FileAction::Moved { .. } => Action::MOVE,
             FileAction::Read { .. } => Action::READ,
-            // Evasion is a write-equivalent for policy evaluation.
-            FileAction::EvasionDetected { .. } => Action::WRITE,
         }
     }
 

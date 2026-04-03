@@ -154,7 +154,10 @@ pub(crate) fn spawn_ui_in_session(session_id: u32, binary: &Path) -> Result<UiHa
     // Spawning a GUI process there causes an immediate crash and a crash-dialog
     // popup on the user's desktop.  Skip it gracefully.
     if session_id == 0 {
-        warn!(session_id, "Session 0 has no interactive desktop — skipping UI spawn");
+        warn!(
+            session_id = session_id,
+            "Session 0 has no interactive desktop — skipping UI spawn"
+        );
         anyhow::bail!("session 0 is not interactive — UI spawn skipped");
     }
 
@@ -207,6 +210,10 @@ pub(crate) fn spawn_ui_in_session(session_id: u32, binary: &Path) -> Result<UiHa
 
         // Close the main thread handle — we only care about the process.
         let _ = CloseHandle(process_info.hThread);
+
+        // Apply DACL hardening to the UI process so standard users cannot
+        // terminate or inject into it (T-37 / Sprint 8).
+        crate::protection::harden_ui_process(process_info.hProcess, session_id);
 
         info!(
             session_id,

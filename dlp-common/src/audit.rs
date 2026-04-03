@@ -40,8 +40,6 @@ pub enum EventType {
     AdminAction,
     /// A dlp-agent service stop was attempted and failed after 3 wrong passwords.
     ServiceStopFailed,
-    /// An ETW bypass was suspected — file op seen in ETW but not caught by hooks.
-    EvasionSuspected,
 }
 
 impl EventType {
@@ -57,7 +55,6 @@ impl EventType {
                 | Self::SessionLogoff
                 | Self::AdminAction
                 | Self::ServiceStopFailed
-                | Self::EvasionSuspected
         )
     }
 

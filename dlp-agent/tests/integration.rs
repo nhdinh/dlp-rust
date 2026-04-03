@@ -256,27 +256,6 @@ async fn test_e2e_network_share_block() {
 }
 
 #[tokio::test]
-async fn test_e2e_etw_bypass_detection() {
-    use dlp_agent::detection::EtwBypassDetector;
-
-    let detector = EtwBypassDetector::new();
-
-    // Record a hook intercept.
-    detector.record_hook_intercept(r"C:\Data\file.txt", 100);
-
-    // ETW event for the same op — no evasion.
-    assert!(detector
-        .check_etw_event(r"C:\Data\file.txt", 100, "WriteFile")
-        .is_none());
-
-    // ETW event for an unhooked op — evasion detected.
-    let signal = detector
-        .check_etw_event(r"C:\Data\sneaky.txt", 200, "NtWriteFile")
-        .unwrap();
-    assert_eq!(signal.process_id, 200);
-}
-
-#[tokio::test]
 async fn test_e2e_clipboard_classification() {
     use dlp_agent::clipboard::ClipboardClassifier;
 
@@ -393,14 +372,6 @@ async fn test_all_file_action_variants_mapped() {
             },
             Action::READ,
         ),
-        (
-            FileAction::EvasionDetected {
-                path: "a".into(),
-                process_id: 1,
-                etw_operation_name: "x".into(),
-            },
-            Action::WRITE,
-        ),
     ];
 
     for (action, expected) in cases {
@@ -420,7 +391,7 @@ async fn test_write_t4_deny_audit() {
 
     let (addr, _h) = start_mock_engine(Decision::DENY).await;
     let client =
-        dlp_agent::engine_client::EngineClient::new(&format!("http://{addr}"), false).unwrap();
+        dlp_agent::engine_client::EngineClient::new(format!("http://{addr}"), false).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
 
@@ -482,7 +453,7 @@ async fn test_write_t4_deny_audit() {
 async fn test_read_t1_allow() {
     let (addr, _h) = start_mock_engine(Decision::ALLOW).await;
     let client =
-        dlp_agent::engine_client::EngineClient::new(&format!("http://{addr}"), false).unwrap();
+        dlp_agent::engine_client::EngineClient::new(format!("http://{addr}"), false).unwrap();
 
     use dlp_agent::interception::{FileAction, PolicyMapper};
 
@@ -544,17 +515,6 @@ async fn test_move_action_maps() {
     assert_eq!(PolicyMapper::action_for(&action), Action::MOVE);
     // Moved path() returns new_path.
     assert_eq!(action.path(), r"C:\Data\b.doc");
-}
-
-#[tokio::test]
-async fn test_evasion_maps_to_write() {
-    use dlp_agent::interception::{FileAction, PolicyMapper};
-    let action = FileAction::EvasionDetected {
-        path: r"C:\Data\sneaky.txt".into(),
-        process_id: 999,
-        etw_operation_name: "NtWriteFile".into(),
-    };
-    assert_eq!(PolicyMapper::action_for(&action), Action::WRITE);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -749,52 +709,4 @@ async fn test_clipboard_to_audit() {
     let parsed: dlp_common::AuditEvent = serde_json::from_str(contents.trim()).unwrap();
     assert_eq!(parsed.classification, Classification::T4);
     assert_eq!(parsed.action_attempted, Action::COPY);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// F-AGT-18: ETW bypass → evasion → audit pipeline
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn test_etw_bypass_to_audit() {
-    use dlp_agent::audit_emitter::AuditEmitter;
-    use dlp_agent::detection::EtwBypassDetector;
-    use dlp_agent::interception::{FileAction, PolicyMapper};
-
-    let detector = EtwBypassDetector::new();
-
-    // No hook recorded → ETW event triggers evasion.
-    let signal = detector
-        .check_etw_event(r"C:\Data\sneaky.txt", 200, "NtWriteFile")
-        .expect("should detect evasion");
-
-    // Map evasion to FileAction.
-    let action = FileAction::EvasionDetected {
-        path: signal.path.clone(),
-        process_id: signal.process_id,
-        etw_operation_name: signal.etw_operation.clone(),
-    };
-
-    assert_eq!(PolicyMapper::action_for(&action), Action::WRITE);
-
-    // Emit EVASION_SUSPECTED audit event.
-    let dir = tempfile::tempdir().unwrap();
-    let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
-
-    let event = dlp_common::AuditEvent::new(
-        dlp_common::EventType::EvasionSuspected,
-        "S-1-5-21-EVADE".into(),
-        "sneaker".into(),
-        signal.path,
-        Classification::T2,
-        Action::WRITE,
-        Decision::DENY,
-        "AGENT-TEST".into(),
-        1,
-    );
-    emitter.emit(&event).unwrap();
-
-    let contents = std::fs::read_to_string(emitter.log_path()).unwrap();
-    let parsed: dlp_common::AuditEvent = serde_json::from_str(contents.trim()).unwrap();
-    assert_eq!(parsed.event_type, dlp_common::EventType::EvasionSuspected);
 }

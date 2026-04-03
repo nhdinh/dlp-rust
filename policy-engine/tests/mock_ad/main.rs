@@ -102,7 +102,7 @@ fn dispatch(buf: &[u8]) -> (Vec<u8>, usize, bool) {
     }
 
     // Read messageID (INTEGER at start of inner)
-    let (_, id_len) = match read_int(&inner) {
+    let (_, id_len) = match read_int(inner) {
         Some((_, l)) => ((), l),
         None => ((), 0),
     };
@@ -198,13 +198,13 @@ fn workstation1_entry() -> Vec<u8> {
     let dn = b"CN=WORKSTATION1,CN=Computers,DC=mock,DC=local";
 
     // dlpDeviceTrust attribute
-    let trust_val = ber_set(&ber_octet_string(b"Managed"));
+    let trust_val = ber_set(ber_octet_string(b"Managed"));
     let mut trust_attr_body = ber_octet_string(b"dlpDeviceTrust");
     trust_attr_body.extend_from_slice(&trust_val);
     let trust_attr = ber_sequence(&trust_attr_body);
 
     // dlpNetworkLocation attribute
-    let loc_val = ber_set(&ber_octet_string(b"Corporate"));
+    let loc_val = ber_set(ber_octet_string(b"Corporate"));
     let mut loc_attr_body = ber_octet_string(b"dlpNetworkLocation");
     loc_attr_body.extend_from_slice(&loc_val);
     let loc_attr = ber_sequence(&loc_attr_body);
@@ -226,13 +226,13 @@ fn laptop42_entry() -> Vec<u8> {
     let dn = b"CN=LAPTOP-42,CN=Computers,DC=mock,DC=local";
 
     // dlpDeviceTrust attribute
-    let trust_val = ber_set(&ber_octet_string(b"Compliant"));
+    let trust_val = ber_set(ber_octet_string(b"Compliant"));
     let mut trust_attr_body = ber_octet_string(b"dlpDeviceTrust");
     trust_attr_body.extend_from_slice(&trust_val);
     let trust_attr = ber_sequence(&trust_attr_body);
 
     // dlpNetworkLocation attribute
-    let loc_val = ber_set(&ber_octet_string(b"CorporateVpn"));
+    let loc_val = ber_set(ber_octet_string(b"CorporateVpn"));
     let mut loc_attr_body = ber_octet_string(b"dlpNetworkLocation");
     loc_attr_body.extend_from_slice(&loc_val);
     let loc_attr = ber_sequence(&loc_attr_body);
@@ -360,7 +360,7 @@ fn ber_len(len: usize) -> Vec<u8> {
         }
         octets.reverse();
         std::iter::once(octets.len() as u8 | 0x80)
-            .chain(octets.into_iter())
+            .chain(octets)
             .collect()
     }
 }
