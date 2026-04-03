@@ -152,8 +152,8 @@ async fn test_audit_dir_creation() {
 
 #[tokio::test]
 async fn test_empty_clipboard_t1() {
-    use dlp_agent::clipboard::ClipboardClassifier;
-    assert_eq!(ClipboardClassifier::classify(""), Classification::T1);
+    use dlp_agent::clipboard::ContentClassifier;
+    assert_eq!(ContentClassifier::classify(""), Classification::T1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

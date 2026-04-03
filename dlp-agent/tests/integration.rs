@@ -257,23 +257,23 @@ async fn test_e2e_network_share_block() {
 
 #[tokio::test]
 async fn test_e2e_clipboard_classification() {
-    use dlp_agent::clipboard::ClipboardClassifier;
+    use dlp_agent::clipboard::ContentClassifier;
 
     // SSN triggers T4.
     assert_eq!(
-        ClipboardClassifier::classify("SSN: 123-45-6789"),
+        ContentClassifier::classify("SSN: 123-45-6789"),
         Classification::T4,
     );
 
     // "CONFIDENTIAL" triggers T3.
     assert_eq!(
-        ClipboardClassifier::classify("CONFIDENTIAL memo"),
+        ContentClassifier::classify("CONFIDENTIAL memo"),
         Classification::T3,
     );
 
     // Benign text is T1.
     assert_eq!(
-        ClipboardClassifier::classify("Hello world"),
+        ContentClassifier::classify("Hello world"),
         Classification::T1,
     );
 }
@@ -682,10 +682,10 @@ async fn test_whitelist_lifecycle() {
 #[tokio::test]
 async fn test_clipboard_to_audit() {
     use dlp_agent::audit_emitter::AuditEmitter;
-    use dlp_agent::clipboard::ClipboardClassifier;
+    use dlp_agent::clipboard::ContentClassifier;
 
     let text = "My SSN is 123-45-6789";
-    let classification = ClipboardClassifier::classify(text);
+    let classification = ContentClassifier::classify(text);
     assert_eq!(classification, Classification::T4);
 
     // Emit audit for the clipboard event.

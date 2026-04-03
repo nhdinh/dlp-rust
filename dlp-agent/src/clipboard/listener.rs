@@ -5,7 +5,7 @@
 //!
 //! When a paste event is detected, the listener reads the clipboard text via
 //! `GetClipboardData(CF_UNICODETEXT)`, classifies it using
-//! [`ClipboardClassifier`](super::classifier::ClipboardClassifier), and emits
+//! [`ContentClassifier`](super::classifier::ContentClassifier), and emits
 //! the result to the interception pipeline.
 //!
 //! ## Thread model
@@ -76,7 +76,7 @@ unsafe impl Sync for SendableHhook {}
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, PostQuitMessage, WM_DESTROY};
 
-use super::classifier::ClipboardClassifier;
+use super::classifier::ContentClassifier;
 
 /// Windows message constants used by the hook procedure at runtime.
 const WM_PASTE: u32 = 0x0302;
@@ -372,7 +372,7 @@ impl ClipboardListener {
             return;
         }
 
-        let classification = ClipboardClassifier::classify(text);
+        let classification = ContentClassifier::classify(text);
         debug!(
             classification = ?classification,
             len = text.len(),

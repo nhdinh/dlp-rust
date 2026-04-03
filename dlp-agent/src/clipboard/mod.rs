@@ -11,5 +11,5 @@
 pub mod classifier;
 pub mod listener;
 
-pub use classifier::ClipboardClassifier;
+pub use classifier::ContentClassifier;
 pub use listener::ClipboardListener;
