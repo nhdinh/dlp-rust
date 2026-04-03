@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["dlp-common", "policy-engine", "dlp-agent", "dlp-agent/src-tauri"]
+members = ["dlp-common", "policy-engine", "dlp-agent", "dlp-user-ui"]
 
 [workspace.package]
 version = "0.1.0"

@@ -96,13 +96,13 @@
 
 ---
 
-## Sprint 10 — Tauri UI Scaffold + IPC Client
+## Sprint 10 — iced UI Scaffold + IPC Client
 
 | ID   | Status | Story | Task                                                                                                                                                                                                                   | Deliverable                            |
 | ---- | ------ | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| T-39 | [x]    | US-A7 | Implement Tauri UI scaffold: `dlp-agent/src-tauri/` — `Cargo.toml`, `tauri.conf.json`, devtools enabled, system tray, multi-session IPC client per session                                                             | `dlp-agent/src-tauri/`                 |
-| T-40 | [x]    | US-A7 | Implement UI Pipe 1 client: per-session pipe connection, send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL; handle BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG | `dlp-agent/src-tauri/src/ipc/pipe1.rs` |
-| T-42 | [x]    | US-A7 | Implement UI Pipe 3 sender: send HEALTH_PONG, UI_READY, UI_CLOSING                                                                                                                                                     | `dlp-agent/src-tauri/src/ipc/pipe3.rs` |
+| T-39 | [x]    | US-A7 | Implement iced UI scaffold: `dlp-user-ui/` — `Cargo.toml`, devtools enabled, system tray, multi-session IPC client per session                                                                                          | `dlp-user-ui/`                         |
+| T-40 | [x]    | US-A7 | Implement UI Pipe 1 client: per-session pipe connection, send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL; handle BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG | `dlp-user-ui/src/ipc/pipe1.rs`         |
+| T-42 | [x]    | US-A7 | Implement UI Pipe 3 sender: send HEALTH_PONG, UI_READY, UI_CLOSING                                                                                                                                                     | `dlp-user-ui/src/ipc/pipe3.rs`         |
 
 ---
 
@@ -110,8 +110,8 @@
 
 | ID   | Status | Story | Task                                                                                                                                                      | Deliverable                                |
 | ---- | ------ | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| T-41 | [x]    | US-A7 | Implement UI Pipe 2 listener: receive TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE per session; display Windows toast notifications | `dlp-agent/src-tauri/src/ipc/pipe2.rs`     |
-| T-43 | [x]    | US-A7 | Implement block dialog: Windows toast + modal dialog showing policy info and classification; "Request Override" button opens justification dialog         | `dlp-agent/src-tauri/src/dialogs/block.rs` |
+| T-41 | [x]    | US-A7 | Implement UI Pipe 2 listener: receive TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE per session; display Windows toast notifications | `dlp-user-ui/src/ipc/pipe2.rs`             |
+| T-43 | [x]    | US-A7 | Implement block dialog: Windows toast + modal dialog showing policy info and classification; "Request Override" button opens justification dialog         | `dlp-user-ui/src/dialogs/block.rs`         |
 
 ---
 
@@ -119,9 +119,9 @@
 
 | ID   | Status | Story | Task                                                                                                                        | Deliverable                                        |
 | ---- | ------ | ----- | --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| T-44 | [x]    | US-A7 | Implement clipboard dialog: read clipboard via Windows API, return CLIPBOARD_DATA over Pipe 1                               | `dlp-agent/src-tauri/src/dialogs/clipboard.rs`     |
-| T-45 | [x]    | US-A6 | Implement service stop password dialog: PASSWORD_SUBMIT / PASSWORD_CANCEL; DPAPI `CryptProtectData` before send             | `dlp-agent/src-tauri/src/dialogs/stop_password.rs` |
-| T-46 | [x]    | US-A7 | Implement system tray: icon with agent status (Running / Stopped / Offline), context menu (Show Portal, Agent Status, Exit) | `dlp-agent/src-tauri/src/tray.rs`                  |
+| T-44 | [x]    | US-A7 | Implement clipboard dialog: read clipboard via Windows API, return CLIPBOARD_DATA over Pipe 1                               | `dlp-user-ui/src/dialogs/clipboard.rs`             |
+| T-45 | [x]    | US-A6 | Implement service stop password dialog: PASSWORD_SUBMIT / PASSWORD_CANCEL; DPAPI `CryptProtectData` before send             | `dlp-user-ui/src/dialogs/stop_password.rs`         |
+| T-46 | [x]    | US-A7 | Implement system tray: icon with agent status (Running / Stopped / Offline), context menu (Show Portal, Agent Status, Exit) | `dlp-user-ui/src/tray.rs`                          |
 
 ---
 

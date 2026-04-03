@@ -46,7 +46,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 
 ### 1.2 In Scope
 
-- **Components:** dlp-agent (Windows Service), dlp-user-ui (Tauri subprocess), policy-engine (HTTPS REST API), Active Directory / LDAPS, Named pipes (Pipe 1/2/3), audit log (local JSONL), ETW file system interception
+- **Components:** dlp-agent (Windows Service), dlp-user-ui (iced subprocess), policy-engine (HTTPS REST API), Active Directory / LDAPS, Named pipes (Pipe 1/2/3), audit log (local JSONL), ETW file system interception
 - **Phases:** Phase 1 (current implementation); Phase 5 (dlp-server, SIEM relay) noted where relevant
 - **Environments:** Enterprise Windows endpoints (domain-joined), corporate network
 
@@ -83,7 +83,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   │     ├── session_monitor.rs         — Session connect/disconnect
   │     └── ui_spawner.rs             — Spawns UI in user sessions
   │
-  └── dlp-user-ui (Tauri subprocess, interactive user session)
+  └── dlp-user-ui (iced subprocess, interactive user session)
         ├── pipe1 client               — Receives BlockNotify, OverrideRequest; sends UserConfirmed/Cancelled
         ├── pipe2 listener             — Receives HEALTH_PING, toast, StatusUpdate
         ├── pipe3 client               — Sends HEALTH_PONG, UiReady, UiClosing

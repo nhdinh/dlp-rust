@@ -15,8 +15,8 @@ The project is a Cargo workspace with the following crates:
 | `dlp-common/`          | Shared types: Subject, Resource, ABAC enums, AuditEvent, Classification | 1            |
 | `policy-engine/`       | ABAC evaluator, HTTPS/REST server, AD LDAP client, policy cache         | 1            |
 | `dlp-agent/`           | Windows Service: file interception, policy enforcement                  | 1            |
-| `dlp-agent/src-tauri/` | Embedded Tauri endpoint UI: toasts, dialogs, clipboard, tray            | 1            |
-| `dlp-admin-portal/`    | Tauri admin UI: policy CRUD, dashboard, audit viewer, TOTP              | **Deferred** |
+| `dlp-user-ui/`         | iced endpoint UI: toasts, dialogs, clipboard, tray                      | 1            |
+| `dlp-admin-portal/`    | iced admin UI: policy CRUD, dashboard, audit viewer, TOTP               | **Deferred** |
 | `dlp-server/`          | Central HTTP server: audit store, SIEM relay, admin auth, policy sync   | **Phase 5**  |
 
 > **Note:** `dlp-admin-portal/` is deferred to a later phase. During Phase 1–4, audit logs are read directly from the local append-only JSON file.
@@ -35,7 +35,7 @@ Full toolchain per project coding standards (see `CLAUDE.md`):
 - **Error handling:** `thiserror` for all error types; `anyhow` only at application boundaries (e.g., `main.rs` entry point) for context-wrapping
 - **Data processing:** `polars`, `rayon`
 - **Secrets:** `secrecy`, `dotenvy`
-- **UI framework:** Tauri (Rust + WebView)
+- **UI framework:** iced (pure Rust native GUI)
 
 ## Deployment Phases
 
@@ -47,7 +47,7 @@ See SRS.md §8 (Implementation Plan) for the full 5-phase task breakdown.
 - `dlp-common/`: Subject, Resource, ABAC enums, AuditEvent, Classification
 - `policy-engine/`: HTTPS/REST server, ABAC evaluator, AD integration, hot-reload
 - `dlp-agent/`: Windows Service, file interception hooks, IPC pipe servers, UI spawner
-- `dlp-agent/src-tauri/`: Endpoint UI (toasts, override dialogs, clipboard, tray)
+- `dlp-user-ui/`: Endpoint UI (toasts, override dialogs, clipboard, tray)
 
 ### Phase 2 — Process Protection + IPC Hardening
 

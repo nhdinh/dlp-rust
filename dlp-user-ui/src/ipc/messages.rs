@@ -1,7 +1,7 @@
-//! IPC message types for the Tauri UI — mirrors dlp-agent/src/ipc/messages.rs.
+//! IPC message types for the iced UI — mirrors dlp-agent/src/ipc/messages.rs.
 //!
 //! The UI connects to the same pipes as the agent and exchanges the same
-//! message types.  Since dlp-agent and dlp-agent-ui are separate crates,
+//! message types.  Since dlp-agent and dlp-user-ui are separate crates,
 //! the message types are duplicated here.
 
 use serde::{Deserialize, Serialize};

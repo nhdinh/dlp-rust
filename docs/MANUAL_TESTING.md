@@ -234,6 +234,17 @@ audit log writer. Press `Ctrl+C` to stop.
 > evaluation. If the engine is not reachable, the agent operates in offline
 > mode with fail-closed semantics (DENY for T3/T4 on cache miss).
 
+> **Console mode does not auto-spawn the UI.** The `dlp-user-ui` subprocess
+> is only spawned automatically when the agent runs as a Windows Service
+> (SYSTEM account). In console mode, to test the UI alongside the agent,
+> start it manually in a separate terminal:
+>
+> ```cmd
+> cargo run -p dlp-user-ui --release
+> ```
+>
+> The UI will connect to the agent's named pipes and register its session.
+
 ---
 
 ## 8. View Audit Logs
@@ -606,6 +617,64 @@ Status : Running
 
 This registers the service with SCM (as `LocalSystem`, auto-start) and starts it immediately.
 
+### Verify dlp-user-ui is Running
+
+When the agent runs as a Windows Service (SYSTEM account), it spawns one
+`dlp-user-ui.exe` process per active interactive session. Verify both
+processes are running:
+
+```powershell
+# Check that the agent service is running:
+Get-Process dlp-agent -ErrorAction SilentlyContinue |
+    Select-Object Id, ProcessName, SessionId | Format-Table
+
+# Check that the UI subprocess was spawned in your session:
+Get-Process dlp-user-ui -ErrorAction SilentlyContinue |
+    Select-Object Id, ProcessName, SessionId | Format-Table
+```
+
+Expected:
+
+| Process | Session | Account |
+|---------|---------|---------|
+| `dlp-agent` | 0 (SYSTEM) | `NT AUTHORITY\SYSTEM` |
+| `dlp-user-ui` | Your session (e.g. 1, 2) | Your AD user account |
+
+If `dlp-user-ui` is **not** running:
+
+1. Check the agent log for spawn errors:
+   ```powershell
+   Get-WinEvent -FilterHashtable @{
+       LogName='Application'; StartTime=(Get-Date).AddMinutes(-5)
+   } | Where-Object { $_.Message -match 'ui_spawner|spawn' } |
+       Select-Object TimeCreated, Message | Format-List
+   ```
+2. Verify the UI binary exists next to the agent binary:
+   ```powershell
+   $agentPath = (Get-Process dlp-agent).Path
+   $uiPath = Join-Path (Split-Path $agentPath) "dlp-user-ui.exe"
+   Test-Path $uiPath   # Should be True
+   ```
+3. Verify the `DLP_UI_BINARY` environment variable is set (optional
+   override for development):
+   ```powershell
+   [System.Environment]::GetEnvironmentVariable("DLP_UI_BINARY", "Machine")
+   ```
+
+> **Note:** The UI is only spawned in interactive sessions (session ID > 0).
+> Session 0 (SYSTEM services) never gets a UI instance. If you are
+> connected via Remote Desktop, the agent spawns a UI in your RDP session.
+
+### Verify System Tray Icon
+
+Once `dlp-user-ui.exe` is running in your session, look for the DLP tray
+icon (blue square) in the Windows notification area (system tray). Right-click
+it to see the context menu:
+
+- **Show Portal** -- opens the admin portal URL (Phase 5 target)
+- **Agent Status: Running** -- read-only status label
+- **Exit** -- closes the UI (agent will respawn it within 15 seconds)
+
 ### Force-Stop (when password dialog is stuck)
 
 If `sc stop` hangs waiting for the password dialog (no UI is connected), force-kill:
@@ -784,6 +853,7 @@ set RUST_LOG=policy_engine=debug,dlp_agent=trace
 |-----------|--------|-----------------|--------|
 | Policy Engine | `policy-engine.exe` | `127.0.0.1:8443` | `BIND_ADDR`, `POLICY_FILE`, `RUST_LOG` |
 | DLP Agent | `dlp-agent.exe --console` | N/A (local service) | `RUST_LOG` |
+| DLP User UI | `dlp-user-ui.exe` | N/A (spawned by agent) | `RUST_LOG`, `DLP_UI_BINARY` |
 | Audit Log | N/A (file output) | `C:\ProgramData\DLP\logs\audit.jsonl` | Hardcoded path (Phase 1) |
 
 ---

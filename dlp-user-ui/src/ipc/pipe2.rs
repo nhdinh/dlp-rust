@@ -101,7 +101,7 @@ fn handle_agent_msg(msg: Pipe2AgentMsg) {
     match msg {
         Pipe2AgentMsg::Toast { title, body } => {
             info!(title, body, "Pipe 2: Toast received");
-            crate::dialogs::show_toast(&title, &body);
+            crate::notifications::show_toast(&title, &body);
         }
         Pipe2AgentMsg::StatusUpdate { status } => {
             info!(status, "Pipe 2: StatusUpdate received");

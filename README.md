@@ -29,7 +29,7 @@ Data exfiltration paths blocked include USB mass storage, SMB/FTP uploads, and c
 | ------------------- | --------------------------------------------------------- | ------------ |
 | `policy-engine/`    | ABAC policy evaluator, HTTPS/REST server                  | 1            |
 | `dlp-agent/`        | Windows Service: file interception, policy enforcement    | 1            |
-| `dlp-user-ui/`      | Tauri subprocess: notifications, dialogs, clipboard, tray | 1            |
+| `dlp-user-ui/`      | iced subprocess: notifications, dialogs, clipboard, tray  | 1            |
 | `dlp-admin-portal/` | Admin UI: policy management, audit viewer, TOTP auth      | **Deferred** |
 | `dlp-server/`       | Audit ingestion, SIEM relay, admin auth, policy sync      | 5            |
 

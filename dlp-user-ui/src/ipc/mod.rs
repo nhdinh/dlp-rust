@@ -1,4 +1,4 @@
-//! Named-pipe IPC client for the DLP Agent Tauri UI.
+//! Named-pipe IPC client for the DLP Agent iced UI.
 //!
 //! Connects to three pipes exposed by the dlp-agent service:
 //! - Pipe 1 (`\\.\pipe\DLPCommand`) — bidirectional command pipe (T-40).

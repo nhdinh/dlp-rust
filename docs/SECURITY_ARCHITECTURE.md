@@ -44,7 +44,7 @@ The DLP system enforces five foundational security principles across all layers.
 | Principal | Privilege Scope | Rationale |
 |---|---|---|
 | `dlp-agent` (Windows Service) | Runs as `SYSTEM` (LocalSystem); process DACL denies terminate/read/write to Authenticated Users; Administrators get explicit Allow | SYSTEM required for `SeSecurityPrivilege` to set process DACL; no broader privilege needed |
-| `dlp-user-ui` (Tauri subprocess) | Runs as the interactive logged-in user; no elevated privileges; SYSTEM-only named pipe ACLs prevent cross-session access | UI is a userland process; cannot perform privileged operations |
+| `dlp-user-ui` (iced subprocess) | Runs as the interactive logged-in user; no elevated privileges; SYSTEM-only named pipe ACLs prevent cross-session access | UI is a userland process; cannot perform privileged operations |
 | `policy-engine` | Runs as a dedicated service account (non-SYSTEM); LDAPS bind uses a dedicated AD service account | Principle of least privilege: the engine does not need SYSTEM |
 | `dlp-admin` (AD user) | Member of Domain Admins only for the DLP OU; no interactive logon rights on endpoints | Restricts blast radius of credential compromise |
 | AD service account (`CN=dlp-svc,...`) | Read-only LDAP queries to AD; no domain join or replication rights | Limits exposure if the service account is compromised |
@@ -160,7 +160,7 @@ Every ABAC decision, every block event, every admin action, and every failed aut
   ║  │  └─────────────┘  └─────────────┘  └──────────────────────┘  │    ║
   ║  │           ↓                ↓                                 │    ║
   ║  │  ┌─────────────────────────────────────────────────────────┐│    ║
-  ║  │  │     dlp-user-ui (Tauri subprocess, interactive user)    ││    ║
+  ║  │  │     dlp-user-ui (iced subprocess, interactive user)     ││    ║
   ║  │  │  Toast notifications · Override dialogs · Clipboard     ││    ║
   ║  │  │  System tray · sc stop password dialog                  ││    ║
   ║  │  └─────────────────────────────────────────────────────────┘│    ║
@@ -543,7 +543,7 @@ The DENY ACE is set with `INHERIT_ONLY_ACE` + `OBJECT_INHERIT_ACE`, meaning the 
 The Agent service:
 - Does **not** create or interact with any desktop window
 - Does **not** run a message pump for GUI events
-- Communicates with the user desktop **only** through the Tauri UI subprocess, which runs in the interactive user session via `CreateProcessAsUser`
+- Communicates with the user desktop **only** through the iced UI subprocess, which runs in the interactive user session via `CreateProcessAsUser`
 
 This separation prevents the service from being manipulated through UI automation tools running in the user's session.
 

@@ -67,7 +67,7 @@ pub async fn connect_and_run(session_id: u32) -> Result<()> {
         write_frame(handle, &json)?;
     }
 
-    // Read loop — run on a Tokio background task so it doesn't block Tauri.
+    // Read loop — run on a Tokio background task so it doesn't block iced.
     let handle = SendableHandle(handle);
     let result = tokio::task::spawn_blocking(move || client_loop(handle.into_inner(), session_id))
         .await

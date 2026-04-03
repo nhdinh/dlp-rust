@@ -309,7 +309,7 @@ async fn run_loop(
 /// Resolves the dlp-user-ui binary path.
 ///
 /// Checks `DLP_UI_BINARY` env var first, then falls back to the directory
-/// containing the running service executable, looking for `dlp-agent-ui.exe`.
+/// containing the running service executable, looking for `dlp-user-ui.exe`.
 fn resolve_ui_binary() -> Option<std::path::PathBuf> {
     // Env var takes priority (useful for development).
     if let Ok(path) = std::env::var("DLP_UI_BINARY") {
@@ -319,7 +319,7 @@ fn resolve_ui_binary() -> Option<std::path::PathBuf> {
     // Fallback: same directory as the running service binary.
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    let ui = dir.join("dlp-agent-ui.exe");
+    let ui = dir.join("dlp-user-ui.exe");
     Some(ui)
 }
 

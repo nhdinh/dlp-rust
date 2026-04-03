@@ -7,9 +7,9 @@
 //!
 //! ## UI Process
 //!
-//! The UI is launched from `dlp-agent/src-tauri/` (Tauri 2.x). In development
-//! builds the spawner launches the Tauri dev server; in production it launches
-//! the installed UI binary.
+//! The UI is launched from `dlp-user-ui/` (iced native GUI). In development
+//! builds the spawner launches the UI binary via `cargo run -p dlp-user-ui`;
+//! in production it launches the installed UI binary.
 
 use std::collections::HashMap;
 use std::os::windows::ffi::OsStrExt;
@@ -65,7 +65,7 @@ static UI_HANDLES: once_cell::sync::Lazy<Mutex<HashMap<u32, UiHandle>>> =
 
 /// Path to the UI binary.
 ///
-/// In development: `cargo run -p dlp-agent-ui` or the Tauri dev URL.
+/// In development: `cargo run -p dlp-user-ui`.
 /// In production: the installed UI binary path.
 static UI_BINARY: once_cell::sync::Lazy<Mutex<Option<PathBuf>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(None));
