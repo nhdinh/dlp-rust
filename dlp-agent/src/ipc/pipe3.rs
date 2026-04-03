@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Foundation::HANDLE;
@@ -81,12 +81,21 @@ pub fn serve() -> Result<()> {
     loop {
         let pipe = create_pipe()?;
 
-        // Wait for a client to connect.
-        if unsafe { ConnectNamedPipe(pipe, None) }.is_err() {
-            unsafe {
-                let _ = CloseHandle(pipe);
+        // Wait for a client to connect.  ERROR_PIPE_CONNECTED
+        // (Win32 535, HRESULT 0x80070217) means the client connected
+        // before this call — that is a success case.
+        if let Err(e) = unsafe { ConnectNamedPipe(pipe, None) } {
+            let win32_code = (e.code().0 as u32) & 0xFFFF;
+            if win32_code != 535 {
+                warn!(
+                    win32_code,
+                    "ConnectNamedPipe failed — recycling pipe"
+                );
+                unsafe {
+                    let _ = CloseHandle(pipe);
+                }
+                continue;
             }
-            continue;
         }
 
         info!(pipe = PIPE_NAME, "UI client connected to Pipe 3");
@@ -94,9 +103,14 @@ pub fn serve() -> Result<()> {
     }
 }
 
-/// Creates a new named pipe instance.
+/// Creates a new named pipe instance with a DACL that allows
+/// Authenticated Users (the interactive-user UI process) to connect.
 fn create_pipe() -> Result<HANDLE> {
-    let name_wide: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+    let name_wide: Vec<u16> =
+        PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+
+    let sec = super::pipe_security::PipeSecurity::new()
+        .map_err(|e| anyhow::anyhow!("pipe security: {e}"))?;
 
     let pipe = unsafe {
         CreateNamedPipeW(
@@ -107,7 +121,7 @@ fn create_pipe() -> Result<HANDLE> {
             65536, // output buffer
             65536, // input buffer
             5000,  // default timeout ms
-            None,  // default security
+            Some(sec.as_ptr()),
         )
     };
 

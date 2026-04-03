@@ -56,24 +56,22 @@ fn open_pipe() -> Result<HANDLE> {
 /// Connects to Pipe 1, sends `RegisterSession`, then processes incoming
 /// agent messages in a loop until the pipe is closed.
 pub async fn connect_and_run(session_id: u32) -> Result<()> {
+    debug!("Pipe 1: attempting to connect to {}", PIPE_NAME);
     let handle = open_pipe()?;
     info!(session_id, "Pipe 1: connected to agent");
 
     // Send RegisterSession immediately as the first frame.
-    {
-        let msg = Pipe1UiMsg::RegisterSession { session_id };
-        let json = serde_json::to_vec(&msg)
-            .map_err(|e| anyhow::anyhow!("serialise RegisterSession: {}", e))?;
-        write_frame(handle, &json)?;
-    }
+    let msg = Pipe1UiMsg::RegisterSession { session_id };
+    let json = serde_json::to_vec(&msg)
+        .map_err(|e| anyhow::anyhow!("serialise RegisterSession: {}", e))?;
+    write_frame(handle, &json)?;
+    debug!("Pipe 1: RegisterSession sent, entering read loop");
 
     // Read loop — run on a Tokio background task so it doesn't block iced.
     let handle = SendableHandle(handle);
-    let result = tokio::task::spawn_blocking(move || client_loop(handle.into_inner(), session_id))
+    tokio::task::spawn_blocking(move || client_loop(handle.into_inner(), session_id))
         .await
-        .map_err(|e| anyhow::anyhow!("join error: {}", e))?;
-
-    result
+        .map_err(|e| anyhow::anyhow!("join error: {}", e))?
 }
 
 /// The blocking read loop for a Pipe 1 client.

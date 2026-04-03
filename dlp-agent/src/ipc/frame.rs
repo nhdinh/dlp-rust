@@ -57,14 +57,15 @@ fn read_exact(pipe: HANDLE, buf: &mut [u8]) -> Result<()> {
     let mut remaining = buf.len();
 
     while remaining > 0 {
+        let slice_len = remaining.min(65536);
+        let offset = buf.len() - remaining;
         let mut bytes_read = 0u32;
-        let slice_len = buf.len() - remaining;
 
         // windows-rs 0.58 ReadFile: lpbuffer: Option<&mut [u8]>
         let result = unsafe {
             ReadFile(
                 pipe,
-                Some(&mut buf[..slice_len]),
+                Some(&mut buf[offset..offset + slice_len]),
                 Some(&mut bytes_read),
                 None,
             )

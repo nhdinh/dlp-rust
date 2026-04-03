@@ -69,3 +69,6 @@ pub mod audit_emitter;
 
 #[cfg(windows)]
 pub mod clipboard;
+
+#[cfg(windows)]
+pub mod session_identity;

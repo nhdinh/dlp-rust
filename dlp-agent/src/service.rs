@@ -28,7 +28,7 @@ use std::time::Duration;
 use anyhow::Result;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn, Level};
+use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::fmt::format::FmtSpan;
 use windows_service::service::{
     ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
@@ -216,12 +216,32 @@ async fn run_loop(
 
     let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
 
-    // Shared EmitContext — in a real deployment this is resolved per-session
-    // via WTSQueryUserToken.  Stubbed here with session 1 / SYSTEM SID.
+    // Per-session identity map — resolves actual interactive users for
+    // file events instead of attributing everything to SYSTEM.
+    let session_map = Arc::new(
+        crate::session_identity::SessionIdentityMap::new(),
+    );
+    crate::session_identity::init_global(session_map.clone());
+
+    // Populate with any sessions that are already active.
+    if let Ok(sessions) = crate::ui_spawner::enumerate_active_sessions_pub()
+    {
+        for sid in sessions {
+            if let Err(e) = session_map.add_session(sid) {
+                debug!(
+                    session_id = sid,
+                    error = %e,
+                    "failed to resolve identity for session"
+                );
+            }
+        }
+    }
+
     let audit_ctx = crate::audit_emitter::EmitContext {
-        agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
+        agent_id: std::env::var("DLP_AGENT_ID")
+            .unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
         session_id: 1,
-        user_sid: "S-1-5-18".to_string(), // SYSTEM
+        user_sid: "S-1-5-18".to_string(), // default; overridden per-event
         user_name: "SYSTEM".to_string(),
     };
 
@@ -230,8 +250,15 @@ async fn run_loop(
 
     let offline_ev = offline.clone();
     let ctx_ev = audit_ctx.clone();
+    let session_map_ev = session_map.clone();
     let event_loop_handle = tokio::spawn(async move {
-        crate::interception::run_event_loop(action_rx, offline_ev, ctx_ev).await;
+        crate::interception::run_event_loop(
+            action_rx,
+            offline_ev,
+            ctx_ev,
+            session_map_ev,
+        )
+        .await;
     });
 
     // Spawn the file monitor — run() is blocking and must run on a dedicated thread
@@ -519,21 +546,51 @@ async fn async_run_console() -> Result<()> {
         crate::interception::InterceptionEngine::new().expect("file monitor must be constructable");
     let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
 
-    // EmitContext for console mode — stubbed with the current user.
-    let user_name = std::env::var("USERNAME")
-        .unwrap_or_else(|_| std::env::var("USER").unwrap_or_else(|_| "console-user".to_string()));
+    // Resolve the actual console user via process token (not a stub).
+    let (console_sid, console_name) =
+        crate::session_identity::resolve_console_user();
+
     let audit_ctx = crate::audit_emitter::EmitContext {
-        agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-CONSOLE".to_string()),
+        agent_id: std::env::var("DLP_AGENT_ID")
+            .unwrap_or_else(|_| "AGENT-CONSOLE".to_string()),
         session_id: 1,
-        user_sid: "S-1-5-21-0-0-0-0".to_string(), // stub SID for console mode
-        user_name,
+        user_sid: console_sid.clone(),
+        user_name: console_name.clone(),
     };
     crate::clipboard::listener::init_emit_context(audit_ctx.clone());
 
+    // Console mode identity map — pre-populated with the current user.
+    let session_map = Arc::new(
+        crate::session_identity::SessionIdentityMap::new(),
+    );
+    crate::session_identity::init_global(session_map.clone());
+    // Insert the console user directly (no WTSQueryUserToken needed).
+    {
+        use crate::session_identity::UserIdentity;
+        session_map.sessions.write().insert(
+            1,
+            UserIdentity {
+                sid: console_sid,
+                name: console_name.clone(),
+            },
+        );
+        session_map
+            .username_to_session
+            .write()
+            .insert(console_name.to_lowercase(), 1);
+    }
+
     let offline_ev = offline.clone();
     let ctx_ev = audit_ctx.clone();
+    let session_map_ev = session_map.clone();
     let event_loop_handle = tokio::spawn(async move {
-        crate::interception::run_event_loop(action_rx, offline_ev, ctx_ev).await;
+        crate::interception::run_event_loop(
+            action_rx,
+            offline_ev,
+            ctx_ev,
+            session_map_ev,
+        )
+        .await;
     });
 
     // File monitor runs on a blocking thread so it doesn't starve the Tokio executor.

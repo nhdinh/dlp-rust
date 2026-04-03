@@ -107,16 +107,25 @@ pub fn emit(event: &AuditEvent) -> Result<(), AuditError> {
 
 /// High-level audit emission helper.
 ///
-/// Enriches `event` with the shared fields in `ctx` (agent_id, session_id,
-/// user_sid, user_name) then writes it to the global audit log.
+/// Enriches `event` with the shared fields in `ctx` (agent_id, session_id).
+/// User identity fields (`user_sid`, `user_name`) are only filled from `ctx`
+/// when the event does not already carry a resolved identity — this allows
+/// the interception pipeline to set the real interactive user via
+/// [`SessionIdentityMap`] before calling this function.
 ///
 /// Errors are logged and silently dropped — audit emission failures must
 /// never interfere with DLP enforcement.
 pub fn emit_audit(ctx: &EmitContext, event: &mut AuditEvent) {
     event.agent_id.clone_from(&ctx.agent_id);
     event.session_id = ctx.session_id;
-    event.user_sid.clone_from(&ctx.user_sid);
-    event.user_name.clone_from(&ctx.user_name);
+
+    // Only fill user identity from ctx if the event doesn't already have one.
+    if event.user_sid.is_empty() {
+        event.user_sid.clone_from(&ctx.user_sid);
+    }
+    if event.user_name.is_empty() {
+        event.user_name.clone_from(&ctx.user_name);
+    }
 
     if let Err(e) = EMITTER.emit(event) {
         // Log but do not propagate — audit failures must never block DLP enforcement.

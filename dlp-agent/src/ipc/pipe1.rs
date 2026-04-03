@@ -110,24 +110,43 @@ pub fn serve() -> Result<()> {
     loop {
         let pipe = create_pipe()?;
 
-        // Wait for a client to connect.
-        if unsafe { ConnectNamedPipe(pipe, None) }.is_err() {
-            let _ = unsafe { CloseHandle(pipe) };
-            continue;
+        // Wait for a client to connect.  ConnectNamedPipe returns
+        // ERROR_PIPE_CONNECTED if a client connected between
+        // CreateNamedPipeW and this call — that is a success case.
+        // The HRESULT encoding is 0x80070217 (Win32 error 535).
+        if let Err(e) = unsafe { ConnectNamedPipe(pipe, None) } {
+            // Extract the Win32 error code from the HRESULT:
+            // HRESULT 0x8007xxxx -> Win32 error xxxx.
+            let hresult = e.code().0 as u32;
+            let win32_code = hresult & 0xFFFF;
+            if win32_code != 535 {
+                warn!(
+                    win32_code,
+                    hresult,
+                    "ConnectNamedPipe failed — recycling pipe"
+                );
+                let _ = unsafe { CloseHandle(pipe) };
+                continue;
+            }
+            debug!("ConnectNamedPipe: client already connected (535)");
         }
 
         info!(pipe = PIPE_NAME, "client connected to Pipe 1");
         let _ = handle_client(pipe);
-        // Client disconnected — remove from client map.
     }
 }
 
-/// Creates a new named pipe instance.
+/// Creates a new named pipe instance with a DACL that allows
+/// Authenticated Users (the interactive-user UI process) to connect.
 fn create_pipe() -> Result<HANDLE> {
-    let name_wide: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+    let name_wide: Vec<u16> =
+        PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
 
-    // windows-rs 0.58 CreateNamedPipeW returns HANDLE directly (not Result).
-    // Check for INVALID_HANDLE_VALUE using .is_invalid().
+    // Build a security descriptor that grants Authenticated Users
+    // read/write access so the user-context UI can connect.
+    let sec = super::pipe_security::PipeSecurity::new()
+        .context("pipe security descriptor")?;
+
     let pipe = unsafe {
         CreateNamedPipeW(
             PCWSTR::from_raw(name_wide.as_ptr()),
@@ -137,7 +156,7 @@ fn create_pipe() -> Result<HANDLE> {
             65536, // output buffer
             65536, // input buffer
             5000,  // default timeout ms
-            None,  // default security
+            Some(sec.as_ptr()),
         )
     };
 
