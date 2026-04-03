@@ -103,29 +103,41 @@ fn pipe_mode() -> NAMED_PIPE_MODE {
     PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT
 }
 
-/// Serves Pipe 1, accepting multiple client connections sequentially.
+/// Serves Pipe 1 with a readiness callback.
+///
+/// `on_ready` is called after the first `CreateNamedPipeW` succeeds,
+/// signalling that the pipe exists and clients can connect.
+pub fn serve_with_ready(on_ready: impl FnOnce()) -> Result<()> {
+    info!(pipe = PIPE_NAME, "Pipe 1 server starting");
+    let first_pipe = create_pipe()?;
+    on_ready();
+    accept_loop(first_pipe)
+}
+
+/// Serves Pipe 1 without a readiness callback.
+#[allow(dead_code)]
 pub fn serve() -> Result<()> {
     info!(pipe = PIPE_NAME, "Pipe 1 server starting");
+    accept_loop(create_pipe()?)
+}
 
+/// Accept loop: waits for clients, handles them, then creates a new
+/// pipe instance for the next client.
+fn accept_loop(first_pipe: HANDLE) -> Result<()> {
+    let mut pipe = first_pipe;
     loop {
-        let pipe = create_pipe()?;
-
         // Wait for a client to connect.  ConnectNamedPipe returns
         // ERROR_PIPE_CONNECTED if a client connected between
         // CreateNamedPipeW and this call — that is a success case.
-        // The HRESULT encoding is 0x80070217 (Win32 error 535).
         if let Err(e) = unsafe { ConnectNamedPipe(pipe, None) } {
-            // Extract the Win32 error code from the HRESULT:
-            // HRESULT 0x8007xxxx -> Win32 error xxxx.
-            let hresult = e.code().0 as u32;
-            let win32_code = hresult & 0xFFFF;
+            let win32_code = (e.code().0 as u32) & 0xFFFF;
             if win32_code != 535 {
                 warn!(
                     win32_code,
-                    hresult,
                     "ConnectNamedPipe failed — recycling pipe"
                 );
                 let _ = unsafe { CloseHandle(pipe) };
+                pipe = create_pipe()?;
                 continue;
             }
             debug!("ConnectNamedPipe: client already connected (535)");
@@ -133,6 +145,9 @@ pub fn serve() -> Result<()> {
 
         info!(pipe = PIPE_NAME, "client connected to Pipe 1");
         let _ = handle_client(pipe);
+
+        // Create a new pipe instance for the next client.
+        pipe = create_pipe()?;
     }
 }
 

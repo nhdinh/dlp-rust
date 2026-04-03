@@ -128,16 +128,24 @@ impl Broadcaster {
 pub static BROADCASTER: std::sync::LazyLock<Broadcaster> =
     std::sync::LazyLock::new(Broadcaster::default);
 
-/// Serves Pipe 2, broadcasting agent messages to all connected UI clients.
+/// Serves Pipe 2 with a readiness callback.
+pub fn serve_with_ready(on_ready: impl FnOnce()) -> Result<()> {
+    info!(pipe = PIPE_NAME, "Pipe 2 server starting");
+    let first_pipe = create_pipe()?;
+    on_ready();
+    accept_loop(first_pipe)
+}
+
+/// Serves Pipe 2 without a readiness callback.
+#[allow(dead_code)]
 pub fn serve() -> Result<()> {
     info!(pipe = PIPE_NAME, "Pipe 2 server starting");
+    accept_loop(create_pipe()?)
+}
 
+fn accept_loop(first_pipe: HANDLE) -> Result<()> {
+    let mut pipe = first_pipe;
     loop {
-        let pipe = create_pipe()?;
-
-        // Wait for a client to connect.  ERROR_PIPE_CONNECTED
-        // (Win32 535, HRESULT 0x80070217) means the client connected
-        // before this call — that is a success case.
         if let Err(e) = unsafe { ConnectNamedPipe(pipe, None) } {
             let win32_code = (e.code().0 as u32) & 0xFFFF;
             if win32_code != 535 {
@@ -150,12 +158,14 @@ pub fn serve() -> Result<()> {
                         pipe,
                     );
                 }
+                pipe = create_pipe()?;
                 continue;
             }
         }
 
         info!(pipe = PIPE_NAME, "UI client connected to Pipe 2");
         let _ = handle_client(pipe);
+        pipe = create_pipe()?;
     }
 }
 

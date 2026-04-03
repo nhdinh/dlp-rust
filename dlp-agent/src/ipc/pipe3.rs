@@ -74,16 +74,24 @@ pub enum UiSessionEvent {
 /// Global router shared across the crate.
 pub static ROUTER: std::sync::LazyLock<Router> = std::sync::LazyLock::new(Router::default);
 
-/// Serves Pipe 3, receiving events from the UI and routing them.
+/// Serves Pipe 3 with a readiness callback.
+pub fn serve_with_ready(on_ready: impl FnOnce()) -> Result<()> {
+    info!(pipe = PIPE_NAME, "Pipe 3 server starting");
+    let first_pipe = create_pipe()?;
+    on_ready();
+    accept_loop(first_pipe)
+}
+
+/// Serves Pipe 3 without a readiness callback.
+#[allow(dead_code)]
 pub fn serve() -> Result<()> {
     info!(pipe = PIPE_NAME, "Pipe 3 server starting");
+    accept_loop(create_pipe()?)
+}
 
+fn accept_loop(first_pipe: HANDLE) -> Result<()> {
+    let mut pipe = first_pipe;
     loop {
-        let pipe = create_pipe()?;
-
-        // Wait for a client to connect.  ERROR_PIPE_CONNECTED
-        // (Win32 535, HRESULT 0x80070217) means the client connected
-        // before this call — that is a success case.
         if let Err(e) = unsafe { ConnectNamedPipe(pipe, None) } {
             let win32_code = (e.code().0 as u32) & 0xFFFF;
             if win32_code != 535 {
@@ -94,12 +102,14 @@ pub fn serve() -> Result<()> {
                 unsafe {
                     let _ = CloseHandle(pipe);
                 }
+                pipe = create_pipe()?;
                 continue;
             }
         }
 
         info!(pipe = PIPE_NAME, "UI client connected to Pipe 3");
         let _ = handle_client(pipe);
+        pipe = create_pipe()?;
     }
 }
 
