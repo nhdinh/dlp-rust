@@ -182,9 +182,21 @@ async fn timeout_task(
                     };
 
                     if timed_out {
-                        warn!(client_id, "Health monitor: UI timed out — requesting respawn");
+                        // Use the active console session for respawn.
+                        // The Pipe 2 broadcaster does not track per-client
+                        // session IDs, so we use the console session as
+                        // a best-effort target.
+                        let session_id = unsafe {
+                            windows::Win32::System::RemoteDesktop
+                                ::WTSGetActiveConsoleSessionId()
+                        };
+                        warn!(
+                            client_id,
+                            session_id,
+                            "Health monitor: UI timed out — requesting respawn"
+                        );
                         let req = RespawnRequest {
-                            session_id: 0, // Session mapping is not yet implemented.
+                            session_id,
                             pid: None,
                         };
                         if let Some(tx) = RESPAWN_TX.lock().as_ref() {

@@ -25,14 +25,138 @@
 //! pending resolution of the correct `windows` crate feature paths. They return `None`
 //! so audit emission is never blocked by enrichment failures.
 
-/// Stubbed audit enrichment — returns None until windows crate features are resolved.
+/// Audit enrichment — resolves process metadata and resource ownership.
+#[cfg(windows)]
 mod audit_enrichment {
-    /// Returns `(None, None)` — enrichment not yet wired.
+    use tracing::debug;
+
+    /// Returns `(application_path, application_hash)` for the given PID.
+    ///
+    /// `application_path` is resolved via `GetModuleFileNameExW`.
+    /// `application_hash` is not yet implemented (returns `None`).
+    ///
+    /// Returns `(None, None)` if the process cannot be opened (e.g., PID 0
+    /// from the `notify` crate which does not provide real PIDs).
+    pub fn get_application_metadata(pid: u32) -> (Option<String>, Option<String>) {
+        if pid == 0 {
+            return (None, None);
+        }
+
+        let path = get_process_image_path(pid);
+        // TODO (Phase 2): compute SHA-256 hash of the executable.
+        (path, None)
+    }
+
+    /// Returns the owner SID of the file at `path`.
+    ///
+    /// Uses `GetNamedSecurityInfoW` to read the file's owner from the
+    /// security descriptor, then `ConvertSidToStringSidW` to produce a
+    /// string SID (e.g., "S-1-5-21-...").
+    ///
+    /// Returns `None` if the file does not exist or the owner cannot be read.
+    pub fn get_resource_owner(path: &str) -> Option<String> {
+        get_file_owner_sid(path)
+    }
+
+    /// Resolves the executable image path for a process via
+    /// `OpenProcess` + `GetModuleFileNameExW`.
+    fn get_process_image_path(pid: u32) -> Option<String> {
+        use windows::Win32::Foundation::{CloseHandle, HMODULE};
+        use windows::Win32::System::ProcessStatus::GetModuleFileNameExW;
+        use windows::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let mut buf = [0u16; 520];
+            let len = GetModuleFileNameExW(handle, HMODULE::default(), &mut buf);
+            let _ = CloseHandle(handle);
+
+            if len == 0 {
+                debug!(pid, "GetModuleFileNameExW returned 0");
+                return None;
+            }
+            Some(String::from_utf16_lossy(&buf[..len as usize]))
+        }
+    }
+
+    /// Reads the owner SID string from a file's security descriptor.
+    fn get_file_owner_sid(path: &str) -> Option<String> {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::LocalFree;
+        use windows::Win32::Security::Authorization::{
+            GetNamedSecurityInfoW, SE_FILE_OBJECT,
+        };
+        use windows::Win32::Security::{
+            OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        };
+
+        let path_wide: Vec<u16> = OsStr::new(path)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        unsafe {
+            let mut owner_sid = PSID::default();
+            let mut sd = PSECURITY_DESCRIPTOR::default();
+
+            let err = GetNamedSecurityInfoW(
+                PCWSTR::from_raw(path_wide.as_ptr()),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                Some(&mut owner_sid),
+                None,
+                None,
+                None,
+                &mut sd,
+            );
+
+            if err.is_err() {
+                debug!(path, "GetNamedSecurityInfoW failed");
+                return None;
+            }
+
+            // ConvertSidToStringSidW is in Win32_Security_Authorization.
+            let mut sid_str = windows::core::PWSTR::null();
+            let ok = windows::Win32::Security::Authorization::ConvertSidToStringSidW(
+                owner_sid, &mut sid_str,
+            )
+            .ok();
+
+            // Free the security descriptor allocated by GetNamedSecurityInfoW.
+            if !sd.0.is_null() {
+                let _ = LocalFree(windows::Win32::Foundation::HLOCAL(sd.0));
+            }
+
+            if ok.is_none() {
+                debug!(path, "ConvertSidToStringSidW failed");
+                return None;
+            }
+
+            let result = sid_str.to_string().ok();
+
+            // Free the SID string allocated by ConvertSidToStringSidW.
+            if !sid_str.is_null() {
+                let _ = LocalFree(windows::Win32::Foundation::HLOCAL(
+                    sid_str.as_ptr() as *mut _,
+                ));
+            }
+
+            result
+        }
+    }
+}
+
+/// Fallback audit enrichment for non-Windows platforms (tests).
+#[cfg(not(windows))]
+mod audit_enrichment {
     pub fn get_application_metadata(_pid: u32) -> (Option<String>, Option<String>) {
         (None, None)
     }
 
-    /// Returns `None` — enrichment not yet wired.
     pub fn get_resource_owner(_path: &str) -> Option<String> {
         None
     }

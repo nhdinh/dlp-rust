@@ -4,6 +4,7 @@
 //! closing-sequence dialogs to the user.
 
 pub mod clipboard;
+pub mod override_request;
 pub mod stop_password;
 
 use tracing::info;
