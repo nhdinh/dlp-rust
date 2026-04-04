@@ -80,8 +80,6 @@ use super::classifier::ContentClassifier;
 
 /// Windows message constants used by the hook procedure at runtime.
 const WM_PASTE: u32 = 0x0302;
-#[allow(dead_code)]
-const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 
 /// Module-level reference to the running listener so the C-callable hook procedure
 /// can dispatch into it.  Only one ClipboardListener runs at a time.

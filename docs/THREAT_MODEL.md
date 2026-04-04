@@ -483,7 +483,7 @@ The following risks are **Not Mitigated** or **Planned** in a future phase:
 | CryptUnprotectData DPAPI unwrap | Password bypass | `password_stop.rs::dpapi_unprotect()` | Information Disclosure |
 | RegisterSession as first-pipe message | Pipe message injection | `pipe1.rs::handle_client()` | Spoofing |
 | Process DACL (DENY non-admin terminate/read/write) | Process kill/tamper | `protection.rs` | Spoofing, Tampering, Elevation |
-| Single-instance mutex | Duplicate agent instances | `service.rs::acquire_instance_mutex()` | Elevation |
+| Single-instance anonymous mutex | Duplicate agent instances | `service.rs::acquire_instance_mutex()` | Elevation |
 | Password challenge on sc stop | Unauthorised service stop | `password_stop.rs`, `pipe1.rs` | Elevation |
 | 3-attempt limit on password challenge | Brute-force password | `password_stop.rs::MAX_ATTEMPTS` | Elevation |
 | bcrypt hash comparison for credential verification | Local credential exposure | `password_stop.rs::verify_credentials()` | Spoofing |

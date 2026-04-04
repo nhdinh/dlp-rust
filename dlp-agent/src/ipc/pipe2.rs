@@ -99,28 +99,11 @@ impl Broadcaster {
         count
     }
 
-    /// Returns the number of currently registered clients.
-    #[allow(dead_code)]
-    pub fn client_count(&self) -> usize {
-        self.clients.read().len()
-    }
-
-    /// Returns an iterator over all client IDs and their senders.
+    /// Returns all registered clients and their senders.
     ///
     /// Returns owned copies so the caller can use them after releasing the lock.
     pub fn clients(&self) -> HashMap<usize, mpsc::Sender<Vec<u8>>> {
         self.clients.read().clone()
-    }
-
-    /// Returns an iterator over all client IDs.
-    #[allow(dead_code)]
-    pub fn client_ids(&self) -> impl Iterator<Item = usize> + '_ {
-        self.clients
-            .read()
-            .keys()
-            .copied()
-            .collect::<Vec<_>>()
-            .into_iter()
     }
 }
 
@@ -134,13 +117,6 @@ pub fn serve_with_ready(on_ready: impl FnOnce()) -> Result<()> {
     let first_pipe = create_pipe()?;
     on_ready();
     accept_loop(first_pipe)
-}
-
-/// Serves Pipe 2 without a readiness callback.
-#[allow(dead_code)]
-pub fn serve() -> Result<()> {
-    info!(pipe = PIPE_NAME, "Pipe 2 server starting");
-    accept_loop(create_pipe()?)
 }
 
 fn accept_loop(first_pipe: HANDLE) -> Result<()> {

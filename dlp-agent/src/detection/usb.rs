@@ -159,33 +159,6 @@ const GUID_DEVINTERFACE_VOLUME: windows::core::GUID = windows::core::GUID::from_
     [0x94, 0xF2, 0x00, 0xA0, 0xC9, 0x1E, 0xFB, 0x8B],
 );
 
-/// DBT_DEVICEARRIVAL: a device has been added.
-#[cfg(windows)]
-#[allow(dead_code)]
-const DBT_DEVICEARRIVAL: u32 = 0x8000;
-
-/// DBT_DEVICEREMOVECOMPLETE: a device has been removed.
-#[cfg(windows)]
-#[allow(dead_code)]
-const DBT_DEVICEREMOVECOMPLETE: u32 = 0x8004;
-
-/// DEV_BROADCAST_HDR.dbch_devicetype values.
-#[cfg(windows)]
-#[allow(dead_code)]
-const DBT_DEVTYP_VOLUME: u32 = 0x0002;
-
-/// DEV_BROADCAST_VOLUME structure (variable-size — we only need the unitmask).
-#[repr(C)]
-#[cfg(windows)]
-#[allow(dead_code)]
-struct DEV_BROADCAST_VOLUME {
-    dbcv_size: u32,
-    dbcv_devicetype: u32,
-    dbcv_reserved: u32,
-    /// Bitmask of drive letters: bit 0 = A, bit 1 = B, etc.
-    dbcv_unitmask: u32,
-}
-
 /// Global reference to the `UsbDetector` shared with the device notification handlers.
 /// Protected by a `Mutex` so it can be cleared on unregister.
 #[cfg(windows)]
@@ -206,41 +179,6 @@ unsafe extern "system" fn usb_wndproc(
             windows::Win32::Foundation::LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
-    }
-}
-
-/// Processes a `DBT_DEVICEARRIVAL` event by checking each bit in the unit mask
-/// and notifying the detector for removable drives.
-#[cfg(windows)]
-#[allow(dead_code)]
-fn handle_drive_arrival(unitmask: u32) {
-    if unitmask == 0 {
-        return;
-    }
-    let guard = DRIVE_DETECTOR.lock();
-    if let Some(detector) = *guard {
-        for (i, letter) in ('A'..='Z').enumerate() {
-            if (unitmask >> i) & 1 == 1 {
-                detector.on_drive_arrival(letter);
-            }
-        }
-    }
-}
-
-/// Processes a `DBT_DEVICEREMOVECOMPLETE` event.
-#[cfg(windows)]
-#[allow(dead_code)]
-fn handle_drive_removal(unitmask: u32) {
-    if unitmask == 0 {
-        return;
-    }
-    let guard = DRIVE_DETECTOR.lock();
-    if let Some(detector) = *guard {
-        for (i, letter) in ('A'..='Z').enumerate() {
-            if (unitmask >> i) & 1 == 1 {
-                detector.on_drive_removal(letter);
-            }
-        }
     }
 }
 

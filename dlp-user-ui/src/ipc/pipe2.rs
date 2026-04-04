@@ -109,9 +109,6 @@ fn handle_agent_msg(msg: Pipe2AgentMsg) {
         }
         Pipe2AgentMsg::HealthPing => {
             debug!("Pipe 2: HealthPing received");
-            // Respond via Pipe 3's send_health_pong — fire and forget.
-            // Drop the JoinHandle so the task runs detached in the background.
-            std::mem::drop(tokio::spawn(crate::ipc::pipe3::send_health_pong()));
         }
         Pipe2AgentMsg::UiRespawn { session_id } => {
             info!(session_id, "Pipe 2: UiRespawn — UI will exit for respawn");

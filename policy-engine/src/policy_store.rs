@@ -38,7 +38,6 @@ pub struct PolicyStore {
     #[allow(dead_code)]
     next_version: u64,
     /// Set to true to stop the hot-reload watcher.
-    #[allow(dead_code)]
     shutdown_flag: Arc<AtomicBool>,
 }
 

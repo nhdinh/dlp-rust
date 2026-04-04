@@ -514,7 +514,7 @@ sc create dlp-agent type= own start= auto
 
 ### 8.2 Single-Instance Enforcement
 
-`service.rs::acquire_instance_mutex()` (line 237) acquires a named mutex `Global\\dlp-agent-instance` before entering the run loop. If a second instance attempts to start, the mutex acquisition fails and the second instance exits cleanly. This prevents duplicate agents from creating conflicting policies or double-counting events.
+`service.rs::acquire_instance_mutex()` uses an anonymous process-scoped mutex. Before entering the run loop it attempts `try_lock()` — if a second instance is already running, lock acquisition fails and the second instance exits cleanly. This prevents duplicate agents from creating conflicting policies or double-counting events.
 
 ### 8.3 Process DACL — protection.rs
 

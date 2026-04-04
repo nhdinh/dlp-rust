@@ -119,7 +119,7 @@ async fn ping_task(last_pong: Arc<Mutex<HashMap<usize, Instant>>>) {
         // Reset last-pong entry for all clients so we don't spuriously
         // time them out between pings.
         let mut lp = last_pong.lock();
-        for id in BROADCASTER.client_ids() {
+        for id in BROADCASTER.clients().into_keys() {
             lp.entry(id).or_insert_with(Instant::now);
         }
     }
@@ -142,7 +142,7 @@ async fn pong_task(
                 // entries are live; stamping all keeps them alive collectively.
                 let now = Instant::now();
                 let mut lp = last_pong.lock();
-                for client_id in BROADCASTER.client_ids() {
+                for client_id in BROADCASTER.clients().into_keys() {
                     lp.insert(client_id, now);
                 }
             }

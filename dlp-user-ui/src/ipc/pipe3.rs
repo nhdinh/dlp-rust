@@ -1,10 +1,9 @@
-//! Pipe 3 client — connects to `\\.\pipe\DLPEventUI2Agent` (T-42).
+//! Pipe 3 client — connects to `\.\pipe\DLPEventUI2Agent` (T-42).
 //!
-//! Sends UI-to-agent events: `HealthPong`, `UiReady`, `UiClosing`.
+//! Sends UI-to-agent events: `UiReady`.
 
-#[allow(dead_code)]
 use anyhow::Result;
-use tracing::{debug, info};
+use tracing::info;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{
@@ -16,7 +15,7 @@ use super::frame::{flush, write_frame};
 use super::messages::Pipe3UiMsg;
 
 /// The Win32 pipe name.
-const PIPE_NAME: &str = r"\\.\pipe\DLPEventUI2Agent";
+const PIPE_NAME: &str = r"\.\pipe\DLPEventUI2Agent";
 
 /// Opens a handle to Pipe 3.
 fn open_pipe() -> Result<HANDLE> {
@@ -52,55 +51,4 @@ pub async fn send_ui_ready(session_id: u32) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Sends UiClosing over Pipe 3 (fire-and-forget).
-#[allow(dead_code)]
-pub async fn send_ui_closing(session_id: u32) {
-    let handle = match open_pipe() {
-        Ok(h) => h,
-        Err(e) => {
-            debug!(error = %e, "Pipe 3: failed to open for UiClosing");
-            return;
-        }
-    };
-
-    let msg = Pipe3UiMsg::UiClosing { session_id };
-    let json = match serde_json::to_vec(&msg) {
-        Ok(j) => j,
-        Err(e) => {
-            debug!(error = %e, "Pipe 3: failed to serialise UiClosing");
-            return;
-        }
-    };
-
-    if let Err(e) = write_frame(handle, &json) {
-        debug!(error = %e, "Pipe 3: failed to write UiClosing");
-    }
-
-    let _ = flush(handle);
-    unsafe {
-        let _ = CloseHandle(handle);
-    }
-}
-
-/// Sends HealthPong over Pipe 3 (fire-and-forget).
-#[allow(dead_code)]
-pub async fn send_health_pong() {
-    let handle = match open_pipe() {
-        Ok(h) => h,
-        Err(_) => return,
-    };
-
-    let msg = Pipe3UiMsg::HealthPong;
-    let json = match serde_json::to_vec(&msg) {
-        Ok(j) => j,
-        Err(_) => return,
-    };
-
-    let _ = write_frame(handle, &json);
-    let _ = flush(handle);
-    unsafe {
-        let _ = CloseHandle(handle);
-    }
 }

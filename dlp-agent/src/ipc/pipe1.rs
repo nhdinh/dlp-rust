@@ -115,7 +115,6 @@ pub fn serve_with_ready(on_ready: impl FnOnce()) -> Result<()> {
 }
 
 /// Serves Pipe 1 without a readiness callback.
-#[allow(dead_code)]
 pub fn serve() -> Result<()> {
     info!(pipe = PIPE_NAME, "Pipe 1 server starting");
     accept_loop(create_pipe()?)

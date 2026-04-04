@@ -18,7 +18,7 @@
 //! ## Password-Protected Stop (T-38)
 //!
 //! A `sc stop` command triggers a password challenge over Pipe 1 before the
-//! service actually terminates.  The dlp-admin must enter their AD password;
+//! service actually terminates.  The dlp-admin must enter their bcrypt hash;
 //! 3 failures or cancellation aborts the stop.  On success the service
 //! transitions to `StopPending` and exits cleanly.
 
@@ -526,10 +526,9 @@ fn report_scm_status(
 // Single-instance enforcement
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Acquires the global single-instance mutex.
+/// Acquires the global single-instance mutex — anonymous mutex prevents
+/// a second agent instance from starting on the same machine.
 fn acquire_instance_mutex() {
-    #[allow(dead_code)]
-    const MUTEX_NAME: &str = "Global\\dlp-agent-instance";
     match std::sync::Mutex::new(()).try_lock() {
         Ok(_guard) => info!(
             service_name = SERVICE_NAME,

@@ -52,9 +52,6 @@ unsafe impl Sync for SendableHandle {}
 pub(crate) struct UiHandle {
     /// Win32 process ID.
     pub(crate) pid: u32,
-    /// Session ID the process belongs to.
-    #[allow(dead_code)]
-    session_id: u32,
     /// Process handle wrapped as `SendableHandle` so the static map is `Sync`.
     handle: SendableHandle,
 }
@@ -233,7 +230,6 @@ pub(crate) fn spawn_ui_in_session(session_id: u32, binary: &Path) -> Result<UiHa
 
         Ok(UiHandle {
             pid: process_info.dwProcessId,
-            session_id,
             handle: SendableHandle::new(process_info.hProcess),
         })
     }
