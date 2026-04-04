@@ -64,6 +64,15 @@ pub fn is_stop_confirmed() -> bool {
     STOP_CONFIRMED.load(Ordering::Acquire)
 }
 
+/// Immediately confirms the stop without password verification.
+///
+/// Used in debug builds (`cfg(debug_assertions)`) to allow `sc stop`
+/// without an AD server.  Never compiled into release binaries.
+pub fn confirm_stop_immediate() {
+    info!("stop confirmed without password (debug mode)");
+    STOP_CONFIRMED.store(true, Ordering::Release);
+}
+
 /// Resets stop state between stop cycles.
 fn reset_stop_state() {
     STOP_CONFIRMED.store(false, Ordering::Release);

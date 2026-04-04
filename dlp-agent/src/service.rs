@@ -424,10 +424,14 @@ fn service_control_handler(control: ServiceControl) -> ServiceControlHandlerResu
                 Duration::from_secs(120),
             );
 
-            // Initiate the password challenge — the actual stop proceeds only
-            // after successful verification (detected in the run loop via
-            // password_stop::is_stop_confirmed).
-            crate::password_stop::initiate_stop();
+            // In debug builds, skip the password challenge so `sc stop` works
+            // without an AD server.  Release builds require the full flow.
+            if cfg!(debug_assertions) {
+                info!("DEBUG MODE: skipping password challenge — stopping immediately");
+                crate::password_stop::confirm_stop_immediate();
+            } else {
+                crate::password_stop::initiate_stop();
+            }
         }
         ServiceControl::Pause => {
             info!(service_name = SERVICE_NAME, "SCM: PAUSE");
