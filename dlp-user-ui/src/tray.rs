@@ -21,6 +21,22 @@ static PORTAL_URL: std::sync::LazyLock<Vec<u16>> =
 static OP_OPEN: std::sync::LazyLock<Vec<u16>> =
     std::sync::LazyLock::new(|| "open\0".encode_utf16().collect());
 
+/// Pending status update from the agent (set by Pipe 2, consumed by the
+/// main iced tick loop).  `MenuItem` is not `Send` so it cannot be stored
+/// in a cross-thread static.  Instead the Pipe 2 handler writes the new
+/// status string here, and the iced subscription tick applies it to the
+/// menu item on the main thread.
+static PENDING_STATUS: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+// Handle to the "Agent Status" menu item.  Only accessed from the main
+// thread (iced event loop).  Stored in a thread_local because MenuItem
+// is not Send.
+std::thread_local! {
+    static STATUS_ITEM: std::cell::RefCell<Option<MenuItem>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
 /// Builds and installs the system tray icon.
 ///
 /// # Errors
@@ -55,6 +71,11 @@ pub fn init() -> Result<()> {
     ])
     .map_err(|e| anyhow::anyhow!("failed to create tray menu: {e}"))?;
 
+    // Store the status item handle in the thread-local (main thread only).
+    STATUS_ITEM.with(|cell| {
+        *cell.borrow_mut() = Some(agent_status);
+    });
+
     let icon = load_default_icon();
 
     let tray = TrayIconBuilder::new()
@@ -72,6 +93,33 @@ pub fn init() -> Result<()> {
     std::mem::forget(tray);
 
     Ok(())
+}
+
+/// Queues a tray status update from any thread.
+///
+/// Called by the Pipe 2 listener when a `StatusUpdate` message arrives
+/// from the agent.  The actual menu item update is applied on the main
+/// thread by [`apply_pending_status`] (called from the iced tick loop).
+pub fn update_status(status: &str) {
+    *PENDING_STATUS.lock() = Some(status.to_string());
+    tracing::debug!(status, "tray status update queued");
+}
+
+/// Applies any pending status update to the tray menu item.
+///
+/// Must be called from the main (iced) thread because `MenuItem` is not
+/// `Send`.  Called from the iced subscription tick (every 100 ms).
+pub fn apply_pending_status() {
+    let pending = PENDING_STATUS.lock().take();
+    if let Some(status) = pending {
+        STATUS_ITEM.with(|cell| {
+            if let Some(item) = cell.borrow().as_ref() {
+                let label = format!("Agent Status: {status}");
+                item.set_text(label);
+                tracing::info!(status, "tray status applied");
+            }
+        });
+    }
 }
 
 /// Opens the DLP admin portal URL in the default browser.
