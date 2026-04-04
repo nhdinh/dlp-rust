@@ -498,7 +498,7 @@ The following risks are **Not Mitigated** or **Planned** in a future phase:
 | Device trust + network location ABAC | Contextual access control | `abac.rs`, `engine.rs` | Elevation |
 | Identity resolution via SMB impersonation | SMB session hijacking | `identity.rs` | Spoofing |
 | USB device notifications | Removable media exfiltration | `detection/usb.rs` | DoS |
-| SMB share MPR/mpr.dll hooks | Network share exfiltration | `detection/network_share.rs` | DoS |
+| SMB share MPR polling (`WNetOpenEnumW`) | Network share exfiltration | `detection/network_share.rs` | DoS |
 | WTSQueryUserToken UI spawning | Multi-session UI support | `ui_spawner.rs` | Elevation |
 | Mutual health monitor (Pipe 2/3) | Zombie UI / hung agent | `health_monitor.rs` | DoS |
 

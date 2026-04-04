@@ -129,7 +129,7 @@
 
 | ID   | Status | Story | Task                                                                                                                                                                             | Deliverable                                  |
 | ---- | ------ | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| T-11 | [x]    | US-07 | Implement `InterceptionEngine` trait + `file_monitor.rs`: detours/DllMain hooks for CreateFileW, WriteFile, NtWriteFile, DeleteFile, MoveFileEx, CopyFileEx                      | `dlp-agent/src/interception/file_monitor.rs` |
+| T-11 | [x]    | US-07 | Implement `InterceptionEngine` trait + `file_monitor.rs`: `notify` crate (`ReadDirectoryChangesW`) watching configured paths for file create/write/delete/move events | `dlp-agent/src/interception/file_monitor.rs` |
 | T-12 | [x]    | US-10 | Implement `identity.rs`: SMB impersonation resolution — `ImpersonateSelf`, `QuerySecurityContextToken`, `GetTokenInformation(TokenUser)`, `RevertToSelf`; process token fallback | `dlp-agent/src/identity.rs`                  |
 | T-16 | [x]    | US-08 | Implement HTTPS client to Policy Engine: reqwest client, TLS, `POST /evaluate` request/response, retry on failure                                                               | `dlp-agent/src/engine_client.rs`             |
 | T-17 | [x]    | US-08 | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss                                               | `dlp-agent/src/cache.rs`                     |
@@ -140,8 +140,8 @@
 
 | ID   | Status | Story | Task                                                                                                                                                              | Deliverable                                |
 | ---- | ------ | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| T-13 | [x]    | US-09 | Implement `detection/usb.rs`: WMI `Win32_VolumeChangeEvent`, classify drive type (USB mass storage vs. internal), block T3/T4 writes                              | `dlp-agent/src/detection/usb.rs`           |
-| T-14 | [x]    | US-10 | Implement `detection/network_share.rs`: hook `WNetAddConnection2W` (mpr.dll) to intercept SMB mount attempts; whitelist enforcement for T3/T4 destinations; polling fallback via `WNetOpenEnum` | `dlp-agent/src/detection/network_share.rs` |
+| T-13 | [x]    | US-09 | Implement `detection/usb.rs`: `RegisterDeviceNotificationW` for `DBT_DEVICEARRIVAL`/`DBT_DEVICEREMOVECOMPLETE`; `GetDriveTypeW` classifies removable drives; block T3/T4 writes to USB | `dlp-agent/src/detection/usb.rs`           |
+| T-14 | [x]    | US-10 | Implement `detection/network_share.rs`: poll `WNetOpenEnumW`/`WNetEnumResourceW` (MPR) every 30s; differential scan emits `Connected`/`Disconnected` events; whitelist enforcement for T3/T4 destinations | `dlp-agent/src/detection/network_share.rs` |
 | T-15 | [x]    | —     | *(superseded)* File interception uses `notify` crate; ETW bypass detection was removed              | —                                          |
 
 ---

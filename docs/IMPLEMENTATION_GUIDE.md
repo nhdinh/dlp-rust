@@ -56,7 +56,7 @@ See SRS.md §8 (Implementation Plan) for the full 5-phase task breakdown.
 
 ### Phase 3 — SMB Share Detection + Integration Tests
 
-- SMB share detection: poll `WNetOpenEnumW`/`WNetEnumResourceW` (mpr.dll/MPR) every 30s; differential scan emits `Connected`/`Disconnected` events; whitelist enforcement for T3/T4 destinations (F-AGT-14)
+- SMB share detection: poll `WNetOpenEnumW`/`WNetEnumResourceW` (MPR) every 30s; differential scan emits `Connected`/`Disconnected` events; whitelist enforcement for T3/T4 destinations (F-AGT-14)
 - Integration test suite
 
 ### Phase 4 — Production Hardening
