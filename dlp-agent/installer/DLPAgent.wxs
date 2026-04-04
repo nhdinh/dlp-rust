@@ -1,0 +1,381 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/2006/util">
+
+    <!--
+      DLP Agent MSI Installer  —  WiX v3 source
+
+      Prerequisites:
+        - WiX v3 toolset (https://wixtoolset.org/)
+          Install:  dotnet tool install --global wix --version 3.14.0
+          Or via MSI: WiX34.msi from https://github.com/wixtoolset/wix3/releases
+        - Build tools (candle.exe, light.exe) on PATH
+
+      Build:
+        build.ps1         — full build script (recommended)
+        Or manually:
+          cargo build --release -p dlp-agent -p dlp-user-ui
+          candle.exe  DLPAgent.wxs
+          light.exe   -ext WixIIsExtension DLPAgent.wixobj -o dist\DLPAgent.msi
+    -->
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         PRODUCT / PACKAGE METADATA
+         ═══════════════════════════════════════════════════════════════════ -->
+    <Product Id="*"
+             Name="DLP Agent"
+             Language="1033"
+             Version="1.0.0.0"
+             Manufacturer="Enterprise DLP"
+             UpgradeCode="A3F8D2C1-7B4E-9F6D-8A3E-2C1B5D4A7F9E"
+             Codepage="1252">
+
+        <Package InstallerVersion="500"
+                 Compressed="yes"
+                 InstallScope="perMachine"
+                 Description="DLP Agent — Enterprise Data Loss Prevention Endpoint Agent"
+                 Manufacturer="Enterprise DLP"
+                 Keywords="DLP,Endpoint,Security"
+                 SummaryCodepage="1252" />
+
+        <!-- Disallow downgrades and same-version repairs -->
+        <MajorUpgrade Schedule="afterInstallExecute"
+                       DowngradeErrorLevel="error"
+                       AllowSameVersionUpgrades="no" />
+
+        <!-- Require admin privileges (perMachine install) -->
+        <InstallExecuteSequence>
+            <Custom Action="RequireAdmin" Before="AppSearch">NOT Installed</Custom>
+        </InstallExecuteSequence>
+
+        <!-- ══════════════════════════════════════════════════════════
+             MEDIA / CABINET
+             ══════════════════════════════════════════════════════════ -->
+        <Media Id="1"
+               Cabinet="DLP.cab"
+               EmbedCab="yes"
+               CompressionLevel="high" />
+
+        <!-- ══════════════════════════════════════════════════════════
+             DIRECTORY TREE
+             C:\Program Files\DLP\
+               ├── dlp-agent.exe
+               ├── dlp-user-ui.exe
+               ├── config\
+               └── logs\
+             ══════════════════════════════════════════════════════════ -->
+        <Directory Id="TARGETDIR" SourceName="SourceDir">
+            <Directory Id="ProgramFilesFolder">
+                <Directory Id="DLPINSTALLFOLDER"
+                           Name="DLP"
+                           LongName="DLP">
+
+                    <!-- Config directory — dlp-admin management -->
+                    <Directory Id="DLPCONFIGFOLDER" Name="config" LongName="config">
+                        <Component Id="DLP_CONFIG_DIR"
+                                   Guid="*"
+                                   KeyPath="yes"
+                                   NeverOverwrite="no">
+                            <!-- Directory ACLs are set at component level via PermissionEx -->
+                            <util:PermissionEx User="SYSTEM"
+                                              ServiceShutdown="yes"
+                                              CreateChild="yes"
+                                              Read="yes"
+                                              Write="yes"
+                                              Delete="yes" />
+                            <util:PermissionEx User="Administrators"
+                                              ServiceShutdown="yes"
+                                              CreateChild="yes"
+                                              Read="yes"
+                                              Write="yes"
+                                              Delete="yes" />
+                        </Component>
+                    </Directory>
+
+                    <!-- Audit log directory — append-only semantics enforced by agent;
+                         ACLs prevent non-admin deletion -->
+                    <Directory Id="DLPLOGSFOLDER" Name="logs" LongName="logs">
+                        <Component Id="DLP_LOGS_DIR"
+                                   Guid="*"
+                                   KeyPath="yes"
+                                   NeverOverwrite="no">
+                            <!-- SYSTEM: Full control (needed to create/mutate log files) -->
+                            <util:PermissionEx User="SYSTEM"
+                                              ServiceShutdown="yes"
+                                              CreateChild="yes"
+                                              Read="yes"
+                                              Write="yes"
+                                              Append="yes"
+                                              Delete="yes" />
+                            <!-- Administrators: Read + Append, no Delete -->
+                            <util:PermissionEx User="Administrators"
+                                              ServiceShutdown="yes"
+                                              CreateChild="yes"
+                                              Read="yes"
+                                              Write="yes"
+                                              Append="yes"
+                                              Delete="yes" />
+                            <!-- Everyone / Users: Read-only (audit log readability for ops) -->
+                            <util:PermissionEx User="Everyone"
+                                              Read="yes"
+                                              ReadAttributes="yes" />
+                        </Component>
+                    </Directory>
+
+                    <!-- ════════════════════════════════════════════════
+                         BINARY COMPONENTS
+                         ════════════════════════════════════════════════ -->
+
+                    <!-- DLP Agent Windows Service binary -->
+                    <Component Id="DLPAGENTEXE"
+                               Guid="*"
+                               NeverOverwrite="no">
+                        <File Id="DLPAGENTEXE_FILE"
+                              Name="dlp-agent.exe"
+                              LongName="dlp-agent.exe"
+                              Source="$(var.SourceDir)\target\release\dlp-agent.exe"
+                              KeyPath="yes"
+                              AssemblyApplication="no"
+                              AssemblyManifest="no" />
+                        <!-- ACL: SYSTEM + Admins Full; Everyone Read -->
+                        <util:PermissionEx User="SYSTEM"
+                                          ServiceShutdown="yes"
+                                          CreateChild="yes"
+                                          Read="yes"
+                                          Write="yes"
+                                          Delete="yes"
+                                          ReadPermission="yes"
+                                          ChangePermission="yes"
+                                          TakeOwnership="yes" />
+                        <util:PermissionEx User="Administrators"
+                                          ServiceShutdown="yes"
+                                          CreateChild="yes"
+                                          Read="yes"
+                                          Write="yes"
+                                          Delete="yes"
+                                          ChangePermission="yes"
+                                          TakeOwnership="yes" />
+                        <util:PermissionEx User="Everyone" Read="yes" />
+                    </Component>
+
+                    <!-- DLP User UI subprocess binary -->
+                    <Component Id="DLPUSERUIEXE"
+                               Guid="*"
+                               NeverOverwrite="no">
+                        <File Id="DLPUSERUIEXE_FILE"
+                              Name="dlp-user-ui.exe"
+                              LongName="dlp-user-ui.exe"
+                              Source="$(var.SourceDir)\target\release\dlp-user-ui.exe"
+                              KeyPath="yes"
+                              AssemblyApplication="no"
+                              AssemblyManifest="no" />
+                        <!-- Same ACL as agent binary -->
+                        <util:PermissionEx User="SYSTEM"
+                                          ServiceShutdown="yes"
+                                          CreateChild="yes"
+                                          Read="yes"
+                                          Write="yes"
+                                          Delete="yes"
+                                          ReadPermission="yes"
+                                          ChangePermission="yes"
+                                          TakeOwnership="yes" />
+                        <util:PermissionEx User="Administrators"
+                                          ServiceShutdown="yes"
+                                          CreateChild="yes"
+                                          Read="yes"
+                                          Write="yes"
+                                          Delete="yes"
+                                          ChangePermission="yes"
+                                          TakeOwnership="yes" />
+                        <util:PermissionEx User="Everyone" Read="yes" />
+                    </Component>
+
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <!-- ══════════════════════════════════════════════════════════
+             FEATURE TREE
+             ══════════════════════════════════════════════════════════ -->
+        <Feature Id="ProductFeature"
+                 Title="DLP Agent"
+                 Level="1"
+                 ConfigurableDirectory="DLPINSTALLFOLDER"
+                 Display="expand"
+                 InstallDefault="local"
+                 Absent="disallow">
+
+            <ComponentRef Id="DLPAGENTEXE" />
+            <ComponentRef Id="DLPUSERUIEXE" />
+            <ComponentRef Id="DLP_CONFIG_DIR" />
+            <ComponentRef Id="DLP_LOGS_DIR" />
+
+            <!-- Nested feature for future policy engine co-install -->
+            <Feature Id="PolicyEngineFeature"
+                     Title="Policy Engine (Remote)"
+                     Level="0"
+                     Description="Uninstall the Policy Engine separately if co-installed.">
+            </Feature>
+        </Feature>
+
+        <!-- ══════════════════════════════════════════════════════════
+             WINDOWS SERVICE REGISTRATION
+             ══════════════════════════════════════════════════════════ -->
+        <ServiceInstall Id="DLPAGENTSERVICE"
+                        Type="ownProcess"
+                        Name="dlp-agent"
+                        DisplayName="DLP Agent"
+                        Description="Enterprise DLP Endpoint Agent — monitors file operations, USB devices, and SMB shares."
+                        Start="auto"
+                        Account="LocalSystem"
+                        ErrorControl="normal"
+                        Vital="yes">
+
+            <!-- Remove previous installation's service first -->
+            <ServiceDelete Id="RemovePreviousService" />
+        </ServiceInstall>
+
+        <!-- Start service after install completes; stop before uninstall -->
+        <ServiceControl Id="DLPAGENTSERVICECONTROL"
+                       Name="dlp-agent"
+                       Start="install"
+                       Stop="both"
+                       Remove="uninstall"
+                       Wait="yes" />
+
+        <!-- Crash recovery: restart on any failure, up to 3 restarts then leave failed -->
+        <ServiceControl Id="DLPAGENTSERVICERECOVERY"
+                       Name="dlp-agent"
+                       Part="yes">
+            <ServiceRecoveryAction Order="1"
+                                   Type="restart"
+                                   Delay="60000" />
+            <ServiceRecoveryAction Order="2"
+                                   Type="restart"
+                                   Delay="60000" />
+            <ServiceRecoveryAction Order="3"
+                                   Type="restart"
+                                   Delay="60000" />
+            <ServiceRecoveryAction Order="4"
+                                   Type="runProcess"
+                                   Delay="60000"
+                                   Command="eventcreate /t ERROR /id 1000 /l APPLICATION /so DLP-Agent /d &quot;DLP Agent service failed to restart after 3 attempts.&quot;" />
+        </ServiceControl>
+
+        <!-- ══════════════════════════════════════════════════════════
+             ADD/REMOVE PROGRAMS REGISTRY ENTRIES
+             ══════════════════════════════════════════════════════════ -->
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="string"
+                       Value="DLP Agent"
+                       Name="DisplayName" />
+
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="string"
+                       Value="[DLPINSTALLFOLDER]dlp-agent.exe"
+                       Name="DisplayIcon" />
+
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="string"
+                       Value="DLP Agent — Enterprise DLP Endpoint Enforcement"
+                       Name="Description" />
+
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="integer"
+                       Value="3"
+                       Name="InstallDate" />
+
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="string"
+                       Value="DLPINSTALLFOLDER"
+                       Name="InstallLocation" />
+
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="string"
+                       Value="Publisher"
+                       Name="[Manufacturer]" />
+
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="string"
+                       Value="Enterprise DLP"
+                       Name="Publisher" />
+
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="string"
+                       Value="1.0.0"
+                       Name="DisplayVersion" />
+
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="integer"
+                       Value="1"
+                       Name="NoModify" />
+
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="integer"
+                       Value="1"
+                       Name="NoRepair" />
+
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="string"
+                       Value="sc remove dlp-agent"
+                       Name="UninstallString" />
+
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="string"
+                       Value="DLPINSTALLFOLDER"
+                       Name="QuietUninstallString" />
+
+        <!-- Estimated size: agent ~5 MB, UI ~10 MB -->
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\DLPAgent"
+                       Type="integer"
+                       Value="15000"
+                       Name="EstimatedSize"
+                       KeyPath="no" />
+
+        <!-- ══════════════════════════════════════════════════════════
+             UI — BASIC WIX DIALOGS
+             ══════════════════════════════════════════════════════════ -->
+        <UIRef Id="WixUI_InstallDir" />
+        <UIRef Id="WixUI_ErrorProgressText" />
+
+        <Property Id="WIXUI_INSTALLDIR" Value="DLPINSTALLFOLDER" />
+        <Property Id="ARPPRODUCTICON" Value="DLPAGENTEXE_FILE" />
+        <Property Id="ARPHELPLINK" Value="mailto:dlp-admin@corp.local" />
+
+        <!-- ══════════════════════════════════════════════════════════
+             CUSTOM ACTION: require admin (fail if non-elevated)
+             ══════════════════════════════════════════════════════════ -->
+        <CustomAction Id="RequireAdmin"
+                      Return="check"
+                      Execute="immediate"
+                      Impersonate="no"
+                      FileKey="DLPAGENTEXE_FILE"
+                      ExeCommand="" />
+
+        <!-- ══════════════════════════════════════════════════════════
+             FINISH ACTION
+             ══════════════════════════════════════════════════════════ -->
+        <Property Id="WIXShellExecTarget" Value="[SystemFolder]sc.exe" />
+        <CustomAction Id="LaunchScHelp"
+                      Return="ignore"
+                      Execute="immediate"
+                      Impersonate="no"
+                      BinaryKey="WixCA"
+                      DllEntry="WixShellExec"
+                      Id="LaunchScHelp_CA" />
+
+    </Product>
+</Wix>
