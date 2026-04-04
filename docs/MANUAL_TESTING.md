@@ -760,7 +760,7 @@ the first three crashes). If the service keeps crashing, check:
 2. SCM events: `sc query dlp-agent` → last exit code
 3. Audit log: `C:\ProgramData\DLP\logs\audit.jsonl` for partial entries
 
-> **Password-protected stop:** The agent prompts for the `dlp-admin` AD
+> **Password-protected stop:** The agent prompts for the dlp-admin
 > password before allowing a stop. Three failed attempts abort the stop
 > and log `EVENT_DLP_ADMIN_STOP_FAILED`. To stop without the dialog,
 > use `sc stop dlp-agent` from an elevated terminal — the dialog will

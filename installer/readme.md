@@ -52,7 +52,7 @@ From the `installer/` directory:
 The MSI is written to:
 
 ```
-dlp-agent/installer/dist/DLPAgent.msi
+installer/dist/DLPAgent.msi
 ```
 
 ## What the MSI installs

@@ -100,6 +100,7 @@ async fn test_e2e_file_action_to_audit_log() {
             access_context: dlp_common::AccessContext::Local,
         },
         action: abac_action_to_dlp(abac_action),
+        ..Default::default()
     };
 
     // 6. Evaluate against mock engine.
@@ -401,7 +402,7 @@ async fn test_agent_to_real_engine_e2e() {
 
     let client = dlp_agent::engine_client::EngineClient::new(&base_url, false).unwrap();
     let cache = Arc::new(dlp_agent::cache::Cache::new());
-    let offline = Arc::new(dlp_agent::offline::OfflineManager::new(client, cache));
+    let offline = Arc::new(dlp_agent::offline::OfflineManager::new(client, cache, None));
 
     // T4 WRITE → DENY (Rule 1).
     let req = EvaluateRequest {
@@ -422,6 +423,7 @@ async fn test_agent_to_real_engine_e2e() {
             access_context: dlp_common::AccessContext::Local,
         },
         action: Action::WRITE,
+        ..Default::default()
     };
     let resp = offline.evaluate(&req).await;
     assert!(resp.decision.is_denied());
@@ -452,7 +454,7 @@ async fn test_agent_cache_hit_real_engine() {
 
     let client = dlp_agent::engine_client::EngineClient::new(&base_url, false).unwrap();
     let cache = Arc::new(dlp_agent::cache::Cache::new());
-    let offline = Arc::new(dlp_agent::offline::OfflineManager::new(client, cache.clone()));
+    let offline = Arc::new(dlp_agent::offline::OfflineManager::new(client, cache.clone(), None));
 
     let req = EvaluateRequest {
         subject: dlp_common::Subject::default(),
@@ -466,6 +468,7 @@ async fn test_agent_cache_hit_real_engine() {
             access_context: dlp_common::AccessContext::Local,
         },
         action: Action::READ,
+        ..Default::default()
     };
 
     // First call: hits the engine.
@@ -589,6 +592,7 @@ async fn test_write_t4_deny_audit() {
             access_context: dlp_common::AccessContext::Local,
         },
         action: abac_action,
+        ..Default::default()
     };
 
     let response = client.evaluate(&request).await.unwrap();
@@ -647,6 +651,7 @@ async fn test_read_t1_allow() {
             access_context: dlp_common::AccessContext::Local,
         },
         action: abac_action,
+        ..Default::default()
     };
 
     let response = client.evaluate(&request).await.unwrap();
@@ -752,7 +757,7 @@ async fn test_offline_manager_transition() {
     )
     .unwrap();
 
-    let manager = OfflineManager::new(client, cache.clone());
+    let manager = OfflineManager::new(client, cache.clone(), None);
     assert!(manager.is_online());
 
     // Evaluate against unreachable engine → should transition offline.
@@ -768,6 +773,7 @@ async fn test_offline_manager_transition() {
             access_context: dlp_common::AccessContext::Local,
         },
         action: Action::WRITE,
+        ..Default::default()
     };
 
     let resp = manager.evaluate(&req).await;

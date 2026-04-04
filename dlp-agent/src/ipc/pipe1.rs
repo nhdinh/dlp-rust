@@ -310,6 +310,7 @@ fn dispatch(msg: Pipe1UiMsg) -> Option<Vec<u8>> {
                     session_id: ctx.session_id,
                     user_sid: "OVERRIDE".to_string(),
                     user_name: "OVERRIDE".to_string(),
+                    machine_name: None,
                 };
                 crate::audit_emitter::emit_audit(&ctx, &mut event.clone());
             } else {

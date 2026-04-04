@@ -16,10 +16,10 @@
 | Component | Requirement |
 |-----------|-------------|
 | OS | Windows Server 2019 or later; Windows 10/11 Enterprise |
-| .NET | .NET Framework 4.8 (for DPAPI / LDAPS password verification) |
-| Network | LDAPS connectivity to at least one DC on port 636 |
+| .NET | .NET Framework 4.8 (for DPAPI password transport) |
+| Network | None beyond Policy Engine connectivity |
 | Policy Engine | `policy-engine` deployed and reachable at the configured URL |
-| Firewall | Outbound TCP 8443 to Policy Engine; outbound TCP 636 to AD (LDAPS) |
+| Firewall | Outbound TCP 8443 to Policy Engine |
 
 ### 1.2 MSI Installation
 
@@ -34,6 +34,8 @@ Or silently (for GPO/Intune deployment):
 ```cmd
 msiexec /i DLPAgent.msi /qn
 ```
+
+The MSI installer will prompt for the dlp-admin password during installation. If running silently, set the password manually after installation (see §3.2).
 
 The service starts automatically after installation. Verify:
 
@@ -141,27 +143,45 @@ Default: `https://localhost:8443`
 | Operation | Command |
 |-----------|---------|
 | Start | `sc start dlp-agent` |
-| Stop | `sc stop dlp-agent` *(requires dlp-admin AD password — see §3.2)* |
+| Stop | `sc stop dlp-agent` *(requires dlp-admin password — see §3.2)* |
 | Query state | `sc query dlp-agent` |
 | Pause | `sc pause dlp-agent` |
 | Resume | `sc continue dlp-agent` |
 | Uninstall | `sc delete dlp-agent` |
 
-> **Note:** `sc stop` triggers a password-protected stop sequence. The dlp-admin must enter their AD credentials in the UI dialog that appears in the active console session. See §3.2.
+> **Note:** `sc stop` triggers a password-protected stop sequence. The dlp-admin must enter their password in the UI dialog that appears in the active console session. See §3.2.
 
 ### 3.2 Password-Protected Stop
 
-To stop the service, a dlp-admin must authenticate via their Active Directory credentials:
+The dlp-admin password is a DLP-specific credential stored as a bcrypt hash in the Windows registry at `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`. It is NOT an Active Directory account.
+
+#### Setting or Changing the Password
+
+Use `dlp-admin.exe` to set or update the password. Run as Administrator (required to write to HKLM):
+
+```cmd
+C:\Program Files\DLP\dlp-admin.exe set-password
+```
+
+The tool prompts for the new password twice (with confirmation), hashes it with bcrypt (cost 12), and writes it to the registry. To verify the current password:
+
+```cmd
+C:\Program Files\DLP\dlp-admin.exe verify-password
+```
+
+> **Only administrators can run these commands** — they require write access to `HKLM\SOFTWARE\DLP`.
+
+#### Stopping the Service
+
+To stop the service, a dlp-admin must authenticate with their DLP password:
 
 1. An administrator runs `sc stop dlp-agent` from a session with a logged-in interactive user.
-2. The service reports `STOP_PENDING` to the SCM with a 120-second wait hint.
+2. The service enters `STOP_PENDING` state and signals the UI to display a password dialog.
 3. A stop-password dialog appears in the active user session.
-4. The admin enters their AD password and clicks **Confirm**.
-5. The service validates the password via LDAPS bind to a domain controller.
+4. The admin enters their dlp-admin password and clicks **Confirm**.
+5. The service validates the password via bcrypt comparison against `DLPAuthHash`.
 6. On success: clean shutdown within 30 seconds.
 7. On three consecutive failures: `EVENT_DLP_ADMIN_STOP_FAILED` is logged; the service reverts to `RUNNING`.
-
-In **debug builds only**, the password challenge is bypassed — the service stops immediately.
 
 ### 3.3 Pause / Continue
 
@@ -325,12 +345,14 @@ When the Policy Engine becomes reachable again:
 3. Live ABAC evaluation resumes immediately.
 4. Policy hot-reload: if `policies.json` changed on disk, engine picks it up within 5 seconds (no restart needed).
 
-### 6.5 AD / LDAP Outage
+### 6.5 Policy Engine Outage
 
-AD group membership is cached with a 5-minute TTL. If AD is unreachable during a cache miss:
-- Policy Engine denies requests that depend on AD group membership.
+The agent's own stop-password verification does NOT use AD or LDAPS — it relies solely on the bcrypt hash in the registry. Therefore, AD unavailability does not affect the agent's ability to stop.
+
+If the Policy Engine is unreachable:
+- Policy Engine denies requests that depend on AD group membership (the Policy Engine itself queries AD).
 - The agent continues to enforce cached decisions.
-- Once AD recovers, the AD client reconnects automatically.
+- Once the Policy Engine recovers, the agent reconnects automatically.
 
 ---
 
@@ -369,7 +391,7 @@ The in-memory policy decision cache is **not persisted**. On service restart, th
 
 ### 8.1 Manual Binary Update
 
-1. Stop the service (password-protected stop as dlp-admin — see §3.2).
+1. Stop the service (password-protected stop — see §3.2).
 2. Replace `C:\Program Files\DLP\dlp-agent.exe` and `C:\Program Files\DLP\dlp-user-ui.exe`.
 3. Start the service: `sc start dlp-agent`.
 
@@ -439,10 +461,10 @@ Common causes:
 
 ### Password stop always fails
 
-- Verify LDAPS (:636) is open from the endpoint to at least one DC.
-- Verify the dlp-admin account is valid and not locked out.
-- Check the Windows Event Log for `EVENT_DLP_ADMIN_STOP_FAILED` with the LDAPS error code.
-- In a test environment without AD: use a debug build (password challenge bypassed).
+- Verify `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash` is set (use `dlp-admin` tool to configure).
+- Verify the bcrypt hash was set with cost factor 12.
+- Remove any leading/trailing whitespace in the registry value.
+- Check the Windows Event Log for `EVENT_DLP_ADMIN_STOP_FAILED` with the bcrypt comparison error.
 
 ### UI not appearing in user session
 
@@ -461,7 +483,7 @@ Common causes:
 
 ### Process Hardening
 
-The agent and UI processes are protected by a DACL that denies `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, and `PROCESS_VM_WRITE` to `Authenticated Users`. Only `SYSTEM` and `Administrators` retain full access. This prevents standard users and non-dlp-admin administrators from killing the agent via Task Manager or `taskkill`.
+The agent and UI processes are protected by a DACL that denies `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, and `PROCESS_VM_WRITE` to `Everyone`. Only `SYSTEM` and `Administrators` retain full access. This prevents standard users and administrators from killing the agent via Task Manager or `taskkill`.
 
 To verify from a non-admin account:
 
@@ -489,7 +511,7 @@ When a user requests an override, they type a justification into the block dialo
 |----------|---------|-------------|
 | `DLP_AGENT_ID` | `AGENT-UNKNOWN` | Unique endpoint identifier in audit events |
 | `DLP_UI_BINARY` | `{exe_dir}\dlp-user-ui.exe` | UI binary path override (dev only) |
-| `DLP_LDAP_URL` | `ldaps://localhost:636` | AD/LDAPS server for password verification |
+| `DLP_AUTH_HASH_SET` | `false` | Set to `true` once `DLPAuthHash` is configured in registry |
 | `DLP_POLICY_ENGINE_URL` | `https://localhost:8443` | Policy Engine HTTPS endpoint (build-time default) |
 | `RUST_LOG` | `info` | Tracing log level (`error`, `warn`, `info`, `debug`, `trace`) |
 | `RUST_BACKTRACE` | `0` | Rust stack trace verbosity (`1` = full) |

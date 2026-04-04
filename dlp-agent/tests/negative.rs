@@ -173,5 +173,6 @@ fn make_request(classification: Classification) -> EvaluateRequest {
             access_context: dlp_common::AccessContext::Local,
         },
         action: Action::WRITE,
+        ..Default::default()
     }
 }

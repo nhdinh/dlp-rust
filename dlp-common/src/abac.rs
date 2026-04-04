@@ -141,13 +141,32 @@ pub struct Environment {
     pub access_context: AccessContext,
 }
 
+/// Identity information about the requesting agent endpoint.
+///
+/// This is logged by the Policy Engine on every evaluation request to
+/// identify which machine and user is making the request.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentInfo {
+    /// Machine hostname, e.g. "WORKSTATION-01".
+    pub machine_name: Option<String>,
+    /// The Windows username of the interactive session that triggered the request,
+    /// e.g. "jsmith".
+    pub current_user: Option<String>,
+}
+
 /// A complete ABAC evaluation request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EvaluateRequest {
     pub subject: Subject,
     pub resource: Resource,
     pub environment: Environment,
     pub action: Action,
+    /// Agent endpoint identity — machine name and interactive user.
+    /// Logged by the Policy Engine for request tracing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentInfo>,
 }
 
 /// A complete ABAC evaluation response.
@@ -288,6 +307,7 @@ mod tests {
                 access_context: AccessContext::Local,
             },
             action: Action::COPY,
+            agent: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let round_trip: EvaluateRequest = serde_json::from_str(&json).unwrap();

@@ -84,7 +84,7 @@
 
 | ID   | Status | Story | Task                                                                                                                                                                                                                                                                                     | Deliverable                   |
 | ---- | ------ | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| T-37 | [x]    | US-A5 | Implement process protection DACL: `SetSecurityInfo` on Agent and UI process handles; deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to Authenticated Users and non-dlp-admin Admins; explicit allow for dlp-admin SID | `dlp-agent/src/protection.rs` |
+| T-37 | [x]    | US-A5 | Implement process protection DACL: `SetKernelObjectSecurity` on Agent and UI process handles; deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to `Everyone` SID; SYSTEM retains full access through inherited ACEs | `dlp-agent/src/protection.rs` |
 
 ---
 
@@ -92,7 +92,7 @@
 
 | ID   | Status | Story | Task                                                                                                                                                                                                                                                                     | Deliverable                |
 | ---- | ------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
-| T-38 | [x]    | US-A6 | Implement password-protected service stop: `sc stop` → STOP_PENDING → send PASSWORD_DIALOG over Pipe 1 → collect PASSWORD_SUBMIT → DPAPI `CryptProtectData` → AD LDAP bind as dlp-admin DN → verify → clean shutdown; 3 wrong attempts → log EVENT_DLP_ADMIN_STOP_FAILED | `dlp-agent/src/service.rs` |
+| T-38 | [x]    | US-A6 | Implement password-protected service stop: `sc stop` → STOP_PENDING → send PASSWORD_DIALOG over Pipe 1 → collect PASSWORD_SUBMIT → DPAPI `CryptUnprotectData` → bcrypt verify against `DLPAuthHash` registry value → clean shutdown; 3 wrong attempts → log EVENT_DLP_ADMIN_STOP_FAILED | `dlp-agent/src/service.rs` |
 
 ---
 
@@ -219,7 +219,7 @@
 
 | Task   | Status | Story | Description                                                                                               | Deliverable                                |
 | ------ | ------ | ----- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| P2-T03 | [x]    | --    | Process DACL hardening: deny PROCESS_TERMINATE to non-dlp-admin (Everyone DENY ACE)                       | `dlp-agent/src/protection.rs`              |
+| P2-T03 | [x]    | --    | Process DACL hardening: deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to `Everyone` SID on Agent and UI processes | `dlp-agent/src/protection.rs`              |
 | P2-T04 | [x]    | --    | Mutual health monitoring: Agent pings UI (5s), respawn if no pong (15s); UI exits if Agent gone (15s)     | `dlp-agent/src/health_monitor.rs`          |
 | P2-T10 | [x]    | --    | Tray icon double-click opens portal URL (stub: "Coming Soon")                                             | `dlp-user-ui/src/tray.rs`                  |
 | P2-T11 | [x]    | --    | Service stop: STOP_PENDING + password dialog + file-based response + debug bypass                         | `dlp-agent/src/password_stop.rs`           |
@@ -231,6 +231,6 @@
 
 | Task   | Status | Description                                                                                               | Deliverable                               |
 | ------ | ------ | --------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| P4-T01 | [x]    | WiX v3 MSI installer: `DLPAgent.wxs`, `build.ps1`, `readme.md`; service install/uninstall, crash recovery | `dlp-agent/installer/`                    |
+| P4-T01 | [x]    | WiX v3 MSI installer: `DLPAgent.wxs`, `build.ps1`, `readme.md`; service install/uninstall, crash recovery | `installer/`                              |
 | P4-T02 | [x]    | OPERATIONAL.md runbook: 12-section deployment and operations guide                                           | `docs/OPERATIONAL.md`                     |
 | P4-T03 | [x]    | SECURITY_AUDIT.md: formal security review, STRIDE threat coverage, N-SEC gap analysis, ISO 27001 mapping  | `docs/SECURITY_AUDIT.md`                  |

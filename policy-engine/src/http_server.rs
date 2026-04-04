@@ -125,6 +125,20 @@ async fn evaluate_handler(
     State(state): State<AppState>,
     Json(request): Json<EvaluateRequest>,
 ) -> Result<Json<EvaluateResponse>, AppError> {
+    let agent_id = request
+        .agent
+        .as_ref()
+        .map(|a| {
+            format!(
+                "{}\\{}",
+                a.machine_name.as_deref().unwrap_or("unknown"),
+                a.current_user.as_deref().unwrap_or("unknown"),
+            )
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    info!(agent_id = %agent_id, "policy evaluation request from agent");
+
     let response = state.store.evaluate(&request).await;
     Ok(Json(response))
 }

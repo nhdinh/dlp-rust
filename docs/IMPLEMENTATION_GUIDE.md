@@ -62,7 +62,7 @@ See SRS.md §8 (Implementation Plan) for the full 5-phase task breakdown.
 ### Phase 4 — Production Hardening
 
 - Security audit (`docs/SECURITY_AUDIT.md`)
-- MSI installer packaging (`dlp-agent/installer/DLPAgent.wxs`)
+- MSI installer packaging (`installer/DLPAgent.wxs`)
 - `docs/OPERATIONAL.md` runbook
 
 ### Phase 5 — dlp-server

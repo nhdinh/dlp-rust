@@ -25,8 +25,8 @@ pub use file_monitor::{FileAction, InterceptionEngine};
 use std::sync::Arc;
 
 use dlp_common::{
-    AccessContext, AuditAccessContext, AuditEvent, Decision, Environment, EvaluateRequest,
-    EventType, Resource, Subject,
+    AccessContext, AgentInfo, AuditAccessContext, AuditEvent, Decision, Environment,
+    EvaluateRequest, EventType, Resource, Subject,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -100,6 +100,10 @@ pub async fn run_event_loop(
                 access_context: AccessContext::Local,
             },
             action: abac_action,
+            agent: ctx.machine_name.as_ref().map(|machine_name| AgentInfo {
+                machine_name: Some(machine_name.clone()),
+                current_user: Some(user_name.clone()),
+            }),
         };
 
         // ── Evaluate against Policy Engine ────────────────────────────────

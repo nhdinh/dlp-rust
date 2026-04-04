@@ -45,9 +45,9 @@ The DLP system enforces five foundational security principles across all layers.
 |---|---|---|
 | `dlp-agent` (Windows Service) | Runs as `SYSTEM` (LocalSystem); process DACL denies terminate/read/write to Authenticated Users; Administrators get explicit Allow | SYSTEM required for `SeSecurityPrivilege` to set process DACL; no broader privilege needed |
 | `dlp-user-ui` (iced subprocess) | Runs as the interactive logged-in user; no elevated privileges; SYSTEM-only named pipe ACLs prevent cross-session access | UI is a userland process; cannot perform privileged operations |
-| `policy-engine` | Runs as a dedicated service account (non-SYSTEM); LDAPS bind uses a dedicated AD service account | Principle of least privilege: the engine does not need SYSTEM |
-| `dlp-admin` (AD user) | Member of Domain Admins only for the DLP OU; no interactive logon rights on endpoints | Restricts blast radius of credential compromise |
-| AD service account (`CN=dlp-svc,...`) | Read-only LDAP queries to AD; no domain join or replication rights | Limits exposure if the service account is compromised |
+| `policy-engine` | Runs as a dedicated AD service account (non-SYSTEM); LDAPS bind uses the AD service account exclusively for ABAC attribute lookups | Principle of least privilege: the engine does not need SYSTEM |
+| AD service account (`CN=dlp-svc,...`) | Read-only LDAP queries to AD; used only by Policy Engine for ABAC attribute lookups; no domain join or replication rights | Limits exposure if the service account is compromised |
+| `dlp-admin` (DLP credential) | Credential stored as bcrypt hash at `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`; verified by bcrypt comparison at service stop; not an AD account | Not stored in AD; no LDAPS verification |
 
 **Audit evidence:** `F-ADM-06` (admin MFA), `N-SEC-03` (SYSTEM account), `N-SEC-11` (process DACL), `F-ADM-11` (secure service stop with password challenge).
 
@@ -74,7 +74,7 @@ The DLP system enforces five foundational security principles across all layers.
 | Device trust | AD `dlpDeviceTrust` attribute queried per request; cached with 5-minute TTL |
 | Network location | AD `dlpNetworkLocation` attribute used as ABAC environment attribute |
 | Agent authenticity | mTLS: Policy Engine verifies agent TLS certificate; agent verifies engine certificate (`N-SEC-08`) |
-| Admin identity | TOTP + JWT (Phase 5); LDAPS bind verification for service stop (Phase 1) |
+| Admin identity | TOTP + JWT (Phase 5); bcrypt hash verification for service stop (Phase 1) |
 | Named pipe client | UI must send `RegisterSession` message as first frame on Pipe 1; sessions are tracked by Windows session ID |
 
 **Verification chain:**
@@ -137,7 +137,7 @@ Every ABAC decision, every block event, every admin action, and every failed aut
   ║  │              IDENTITY TRUST ZONE — Active Directory           │    ║
   ║  │   Domain Controller (LDAPS :636)                              │    ║
   ║  │   Source of: user SIDs, group membership, device trust,       │    ║
-  ║  │             network location, dlp-admin credentials          │    ║
+  ║  │             network location                                  │    ║
   ║  └──────────────────────────┬──────────────────────────────────┘    ║
   ║                               │ LDAPS                                 ║
   ║                               │ TLS 1.3 + certificate verify           ║
@@ -317,7 +317,7 @@ The system is designed to fail safe. If the agent crashes, crashesafe, or is kil
 - The interception hooks (if still active) will fail to contact the agent and the default deny applies
 - The UI subprocess detects loss of the agent connection (15-second timeout on Pipe 3) and terminates
 - The agent service cannot be stopped without the dlp-admin password (F-SVC-10 through F-SVC-12)
-- The process DACL prevents non-dlp-admin principals from terminating or tampering with the agent or UI process
+- The process DACL prevents all non-Administrator principals from terminating or tampering with the agent or UI process
 
 ---
 
@@ -394,7 +394,7 @@ All secrets are stored outside source code, in environment variables or `.env` f
 |---|---|---|
 | Policy Engine TLS client certificate + key | `.env` (`DLP_ENGINE_CERT_PATH`, `DLP_ENGINE_KEY_PATH`) | Read by `dlp-agent` at startup via `dotenvy` |
 | AD service account password (LDAPS bind) | `.env` (`DLP_AD_BIND_PASSWORD`) | Read by `policy-engine` at startup via `dotenvy` |
-| dlp-admin password | Not stored; validated via AD LDAPS bind at service stop | Never persisted; verified in memory |
+| dlp-admin password | Not stored; verified via bcrypt hash comparison at service stop | Never persisted; verified in memory |
 | SIEM HEC token | `.env` (`DLP_SIEM_HEC_TOKEN`) — Phase 5 only | Stored in `dlp-server`; agents never see SIEM credentials |
 | dlp-server JWT signing key | Generated at startup; stored in memory only (Phase 5) | Not persisted; no secret file |
 | TOTP shared secret | `.env` (`DLP_TOTP_SECRET`) — Phase 5 only | Read by `dlp-server` at startup; stored encrypted in memory |
@@ -473,7 +473,7 @@ This prevents a malicious process from sending crafted pipe messages without fir
 
 The `PASSWORD_SUBMIT` message from the UI to the Agent contains the dlp-admin password. Per SRS §6.2 and this document §6.2, this payload is DPAPI-encrypted (`CRYPTUSERPROTECTIVE`) before transmission. The Agent calls `CryptUnprotectData` to decrypt.
 
-**Critical:** The password is never transmitted in plaintext over the pipe, never logged, and never stored. After AD LDAPS bind verification, the password bytes are zeroized in memory.
+**Critical:** The password is never transmitted in plaintext over the pipe, never logged, and never stored. After bcrypt hash comparison, the password bytes are zeroized in memory.
 
 ### 7.5 Pipe Health Monitoring
 
@@ -533,7 +533,7 @@ The DENY ACE is set with `INHERIT_ONLY_ACE` + `OBJECT_INHERIT_ACE`, meaning the 
 **Effect:**
 - Standard users cannot terminate the Agent via Task Manager, Process Explorer, or `taskkill`
 - Non-dlp-admin Administrators cannot terminate the Agent
-- Only `dlp-admin` (who is a member of Administrators and is authenticated to AD) can stop the service — and only via `sc stop` with correct password verification
+- Only `SYSTEM` or Administrators can terminate; dlp-admin password (bcrypt) required for service stop
 - The Agent and UI can still terminate their own child processes (e.g., when respawning the UI)
 
 **Privilege requirement:** Setting a DENY ACE on a process requires `SeSecurityPrivilege`. The service runs as LocalSystem, which holds this privilege automatically.
@@ -574,10 +574,10 @@ This section summarizes the threat landscape. For the full STRIDE analysis with 
 | **File monitor interference** | The `notify` watcher can be interfered with by admin-level processes | Medium — relies on EDR to detect process-level interference |
 | **Named pipes** | 3 pipes connecting Agent ↔ UI | Medium — mitigated by SYSTEM-only ACL and DPAPI |
 | **Policy Engine HTTPS API** | `engine_client.rs` → Policy Engine | High — protected by mTLS |
-| **AD LDAP interface** | `ad_client.rs` → Domain Controller | High — protected by LDAPS + service account |
+| **AD LDAP interface** | `ad_client.rs` (policy-engine only) → Domain Controller | High — protected by LDAPS + service account |
 | **dlp-server API** (Phase 5) | Agent → dlp-server audit relay | Medium — protected by TLS + mTLS |
 | **Admin portal** (Phase 5) | dlp-admin → dlp-admin-portal | High — protected by TOTP + JWT |
-| **Service stop flow** | `sc stop` → password challenge | High — protected by LDAPS bind verification |
+| **Service stop flow** | `sc stop` → password challenge | High — protected by bcrypt hash comparison |
 
 ### 9.2 File Monitor Limitations
 

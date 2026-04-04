@@ -54,6 +54,11 @@ pub struct AgentConfig {
     /// relevant to DLP enforcement (e.g., build output, IDE caches).
     #[serde(default)]
     pub excluded_paths: Vec<String>,
+
+    /// Machine hostname, resolved once at startup.
+    /// Not persisted to the config file.
+    #[serde(skip)]
+    pub machine_name: Option<String>,
 }
 
 impl AgentConfig {
@@ -187,6 +192,7 @@ mod tests {
         let config = AgentConfig {
             monitored_paths: vec![r"C:\Data\".to_string()],
             excluded_paths: Vec::new(),
+            machine_name: None,
         };
         let paths = config.resolve_watch_paths();
         assert_eq!(paths.len(), 1);

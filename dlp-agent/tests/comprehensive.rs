@@ -358,6 +358,7 @@ mod config_edge_cases {
                 r"D:\Shares\".to_string(),
             ],
             excluded_paths: Vec::new(),
+            machine_name: None,
         };
         let paths = config.resolve_watch_paths();
         assert_eq!(paths.len(), 2);
@@ -372,6 +373,7 @@ mod config_edge_cases {
         let a = AgentConfig {
             monitored_paths: vec![r"C:\Data\".to_string()],
             excluded_paths: vec![r"C:\Temp\".to_string()],
+            machine_name: None,
         };
         let b = a.clone();
         assert_eq!(a, b);
@@ -566,6 +568,7 @@ fn make_request(path: &str, classification: Classification) -> EvaluateRequest {
             access_context: dlp_common::AccessContext::Local,
         },
         action: Action::WRITE,
+        ..Default::default()
     }
 }
 
@@ -676,7 +679,7 @@ async fn test_offline_manager_cache_hit_second_request() {
     let (addr, _h) = start_engine_with_json_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
     let cache = Arc::new(dlp_agent::cache::Cache::new());
-    let manager = OfflineManager::new(client, cache.clone());
+    let manager = OfflineManager::new(client, cache.clone(), None);
 
     let req = make_request(r"C:\Data\report.xlsx", Classification::T2);
 
@@ -697,7 +700,7 @@ async fn test_offline_manager_transitions_offline_on_unreachable() {
     // Use unreachable port → Unreachable error.
     let client = EngineClient::new("http://127.0.0.1:1", false).unwrap();
     let cache = Arc::new(dlp_agent::cache::Cache::new());
-    let manager = OfflineManager::new(client, cache);
+    let manager = OfflineManager::new(client, cache, None);
 
     let req = make_request(r"C:\Restricted\secret.xlsx", Classification::T4);
 
@@ -713,7 +716,7 @@ async fn test_offline_manager_multiple_tiers_fail_closed() {
 
     let client = dlp_agent::engine_client::EngineClient::new("http://127.0.0.1:1", false).unwrap();
     let cache = Arc::new(dlp_agent::cache::Cache::new());
-    let manager = OfflineManager::new(client, cache);
+    let manager = OfflineManager::new(client, cache, None);
 
     // T3 offline → DENY.
     let t3_req = make_request(r"C:\Confidential\doc.docx", Classification::T3);

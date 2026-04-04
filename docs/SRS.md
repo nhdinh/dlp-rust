@@ -60,27 +60,27 @@ The system shall:
 
 ### 1.3 Definitions
 
-| Term                | Definition                                                                                                                                                                                                                                |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **DLP**             | Data Loss Prevention — controls to detect and prevent data exfiltration                                                                                                                                                                   |
-| **NTFS**            | New Technology File System — Windows file system with ACL support                                                                                                                                                                         |
-| **ABAC**            | Attribute-Based Access Control — policy model using subject/resource/environment attributes                                                                                                                                               |
-| **AD**              | Active Directory — Microsoft identity and access management service                                                                                                                                                                       |
-| **dlp-admin**       | Designated superuser with full policy and system control                                                                                                                                                                                  |
-| **Classification**  | Data sensitivity tier assignment (T1–T4)                                                                                                                                                                                                  |
-| **T4 Restricted**   | Highest sensitivity — catastrophic impact if disclosed                                                                                                                                                                                    |
-| **T3 Confidential** | High sensitivity — serious impact if disclosed                                                                                                                                                                                            |
-| **T2 Internal**     | Moderate sensitivity — internal use only                                                                                                                                                                                                  |
-| **T1 Public**       | Low sensitivity — no harm if disclosed                                                                                                                                                                                                    |
-| **Policy Engine**   | ABAC decision service, evaluates access requests                                                                                                                                                                                          |
-| **dlp-agent**       | Endpoint enforcement component, runs as Windows Service under SYSTEM account, does not interact with OS users directly                                                                                                                    |
+| Term                | Definition                                                                                                                                                                                                                               |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **DLP**             | Data Loss Prevention — controls to detect and prevent data exfiltration                                                                                                                                                                  |
+| **NTFS**            | New Technology File System — Windows file system with ACL support                                                                                                                                                                        |
+| **ABAC**            | Attribute-Based Access Control — policy model using subject/resource/environment attributes                                                                                                                                              |
+| **AD**              | Active Directory — Microsoft identity and access management service                                                                                                                                                                      |
+| **dlp-admin**       | Designated superuser with full policy and system control                                                                                                                                                                                 |
+| **Classification**  | Data sensitivity tier assignment (T1–T4)                                                                                                                                                                                                 |
+| **T4 Restricted**   | Highest sensitivity — catastrophic impact if disclosed                                                                                                                                                                                   |
+| **T3 Confidential** | High sensitivity — serious impact if disclosed                                                                                                                                                                                           |
+| **T2 Internal**     | Moderate sensitivity — internal use only                                                                                                                                                                                                 |
+| **T1 Public**       | Low sensitivity — no harm if disclosed                                                                                                                                                                                                   |
+| **Policy Engine**   | ABAC decision service, evaluates access requests                                                                                                                                                                                         |
+| **dlp-agent**       | Endpoint enforcement component, runs as Windows Service under SYSTEM account, does not interact with OS users directly                                                                                                                   |
 | **dlp-user-ui**     | Endpoint interaction component, iced subprocess spawned by the Agent in **each active user session**; one UI instance per active session; handles all user-facing work (notifications, dialogs, clipboard, tray) for that session's user |
-| **IPC**             | Inter-Process Communication — Agent ↔ UI communication via Windows named pipes                                                                                                                                                            |
-| **Named Pipe**      | Windows kernel object for bidirectional message-mode IPC between processes                                                                                                                                                                |
-| **SCM**             | Service Control Manager — Windows component that manages Windows Services                                                                                                                                                                 |
-| **SIEM**            | Security Information and Event Management                                                                                                                                                                                                 |
-| **REST API**        | Representational State Transfer — HTTP-based API used for Policy Engine communication                                                                                                                                                     |
-| **dlp-server**      | Central management HTTP server — owns agent registry, audit ingestion & SIEM relay, admin auth (TOTP + JWT), policy sync to engine replicas, alert routing, exception records                                                             |
+| **IPC**             | Inter-Process Communication — Agent ↔ UI communication via Windows named pipes                                                                                                                                                           |
+| **Named Pipe**      | Windows kernel object for bidirectional message-mode IPC between processes                                                                                                                                                               |
+| **SCM**             | Service Control Manager — Windows component that manages Windows Services                                                                                                                                                                |
+| **SIEM**            | Security Information and Event Management                                                                                                                                                                                                |
+| **REST API**        | Representational State Transfer — HTTP-based API used for Policy Engine communication                                                                                                                                                    |
+| **dlp-server**      | Central management HTTP server — owns agent registry, audit ingestion & SIEM relay, admin auth (TOTP + JWT), policy sync to engine replicas, alert routing, exception records                                                            |
 
 ### 1.4 References
 
@@ -103,24 +103,24 @@ The system shall:
 The Enterprise DLP System is a four-layer defense-in-depth architecture. The Enforcement Layer splits into two co-operating processes: the **dlp-agent** (Windows Service, SYSTEM account) and the **DLP UI** (iced subprocess, interactive user desktop).
 
 ```
-┌─────────────────────────────────────────────────────┐
-│         Enforcement Layer — dlp-agent (Service)     │
+┌──────────────────────────────────────────────────-───┐
+│         Enforcement Layer — dlp-agent (Service)      │
 │         Rust, SYSTEM account, Windows API            │
-│         Handles: interception, REST API, audit, IPC   │
-├─────────────────────────────────────────────────────┤
+│         Handles: interception, REST API, audit, IPC  │
+├────────────────────────────────────────────────────-─┤
 │         Enforcement Layer — DLP UI (iced)            │
 │         User desktop, spawned by Agent               │
 │         Handles: notifications, dialogs, clipboard   │
-├─────────────────────────────────────────────────────┤
+├─────────────────────────────────────────────────────-┤
 │              Policy Layer (ABAC Engine)              │
 │         Rust, HTTPS/REST, Policy Evaluation          │
-├─────────────────────────────────────────────────────┤
-│              Access Layer (NTFS ACLs)               │
-│         Coarse-grained baseline enforcement         │
-├─────────────────────────────────────────────────────┤
+├────────────────────────────────────────────────────-─┤
+│              Access Layer (NTFS ACLs)                │
+│         Coarse-grained baseline enforcement          │
+├────────────────────────────────────────────────────-─┤
 │              Identity Layer (Active Directory)       │
-│         Source of truth for users, groups, devices  │
-└─────────────────────────────────────────────────────┘
+│         Source of truth for users, groups, devices   │
+└────────────────────────────────────────────────────-─┘
 ```
 
 **Critical Enforcement Rule:**
@@ -182,19 +182,20 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 
 ### 3.1 DLP Admin Features
 
-| ID       | Requirement                                                                                                 | Priority |
-| -------- | ----------------------------------------------------------------------------------------------------------- | -------- |
-| F-ADM-01 | Admin shall create, read, update, and delete ABAC policies via the administrative UI                        | Must     |
-| F-ADM-02 | Admin shall assign data classification (T1–T4) to files and folders                                         | Must     |
-| F-ADM-03 | Admin shall view real-time system health (Policy Engine uptime, agent connectivity, policy hit rates)       | Must     |
-| F-ADM-04 | Admin shall configure alert thresholds and notification recipients                                          | Must     |
-| F-ADM-05 | Admin shall view and export audit logs filtered by date range, user, resource, and event type               | Must     |
-| F-ADM-06 | Admin shall define exclusion paths (e.g., IT scan folders) that bypass DLP enforcement                      | Should   |
-| F-ADM-07 | Admin shall manage endpoint agent configurations (push updates, version control)                            | Should   |
-| F-ADM-08 | Admin shall receive real-time alerts for T3/T4 policy violations                                            | Must     |
-| F-ADM-09 | Admin shall trigger on-demand file scans for classification review                                          | May      |
-| F-ADM-10 | Admin shall review and approve or deny exception requests submitted by end users                            | Should   |
-| F-ADM-11 | Admin shall stop the dlp-agent via `sc stop dlp-agent` after entering the dlp-admin password in a UI dialog | Must     |
+| ID       | Requirement                                                                                                                                                                                                 | Priority |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| F-ADM-01 | Admin shall create, read, update, and delete ABAC policies via the administrative UI                                                                                                                        | Must     |
+| F-ADM-02 | Admin shall assign data classification (T1–T4) to files and folders                                                                                                                                         | Must     |
+| F-ADM-03 | Admin shall view real-time system health (Policy Engine uptime, agent connectivity, policy hit rates)                                                                                                       | Must     |
+| F-ADM-04 | Admin shall configure alert thresholds and notification recipients                                                                                                                                          | Must     |
+| F-ADM-05 | Admin shall view and export audit logs filtered by date range, user, resource, and event type                                                                                                               | Must     |
+| F-ADM-06 | Admin shall define exclusion paths (e.g., IT scan folders) that bypass DLP enforcement                                                                                                                      | Should   |
+| F-ADM-07 | Admin shall manage endpoint agent configurations (push updates, version control)                                                                                                                            | Should   |
+| F-ADM-08 | Admin shall receive real-time alerts for T3/T4 policy violations                                                                                                                                            | Must     |
+| F-ADM-09 | Admin shall trigger on-demand file scans for classification review                                                                                                                                          | May      |
+| F-ADM-10 | Admin shall review and approve or deny exception requests submitted by end users                                                                                                                            | Should   |
+| F-ADM-11 | Admin shall stop the dlp-agent via `sc stop dlp-agent` after entering the dlp-admin password in a UI dialog                                                                                                 | Must     |
+| F-ADM-12 | Admin shall set or change the dlp-admin password via `dlp-admin.exe set-password`; the tool shall hash the password with bcrypt (cost 12) and store it in `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash` | Must     |
 
 ### 3.2 Endpoint Agent (Windows Service)
 
@@ -204,7 +205,7 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 | F-AGT-02 | Agent shall start automatically at Windows boot via Service Control Manager                                                                                                                                                                                                                                       | Must     |
 | F-AGT-03 | Agent shall be a single-instance service; a second start attempt shall be rejected                                                                                                                                                                                                                                | Must     |
 | F-AGT-04 | Agent shall register with Policy Engine on startup and maintain heartbeat                                                                                                                                                                                                                                         | Must     |
-| F-AGT-05 | Agent shall intercept file open/write/delete/rename/move operations via the `notify` crate (`ReadDirectoryChangesW`) on monitored paths                                                                                                                                                          | Must     |
+| F-AGT-05 | Agent shall intercept file open/write/delete/rename/move operations via the `notify` crate (`ReadDirectoryChangesW`) on monitored paths                                                                                                                                                                           | Must     |
 | F-AGT-06 | Agent shall request ABAC decision from Policy Engine before allowing sensitive file operations                                                                                                                                                                                                                    | Must     |
 | F-AGT-07 | Agent shall enforce ABAC DENY decisions by blocking the operation and logging the event                                                                                                                                                                                                                           | Must     |
 | F-AGT-08 | Agent shall enforce ABAC ALLOW decisions by permitting the operation (subject to NTFS)                                                                                                                                                                                                                            | Must     |
@@ -217,27 +218,27 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 | F-AGT-15 | Agent shall self-update from a configured update server endpoint                                                                                                                                                                                                                                                  | May      |
 | F-AGT-16 | Agent shall support supervised (managed) and unsupervised (unmanaged) device detection                                                                                                                                                                                                                            | Must     |
 | F-AGT-17 | Agent shall intercept clipboard read/write via GetClipboardData/SetClipboardData and classify clipboard content                                                                                                                                                                                                   | Must     |
-| F-AGT-18 | *(superseded)* ETW bypass detection was removed. Direct syscall bypass remains a limitation addressed by a future minifilter driver. SMB share detection is handled by F-AGT-14 (MPR polling).                                                                                                                                                  | —        |
+| F-AGT-18 | _(superseded)_ ETW bypass detection was removed. Direct syscall bypass remains a limitation addressed by a future minifilter driver. SMB share detection is handled by F-AGT-14 (MPR polling).                                                                                                                    | —        |
 | F-AGT-19 | When intercepting a file operation on a file server, Agent shall resolve the caller's identity from the active SMB impersonation context using `QuerySecurityContextToken` / `ImpersonateSelf` + `GetTokenInformation`; if no impersonation context is present (local process), Agent shall use the process token | Must     |
 
 ### 3.3 Agent ↔ UI Co-Process Architecture
 
-| ID       | Requirement                                                                                                                                                                                                                                                                                     | Priority |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| F-SVC-01 | Agent shall enumerate all active user sessions and spawn one iced DLP UI as a child subprocess in each session's desktop when the service starts                                                                                                                                                | Must     |
-| F-SVC-02 | Agent shall own the lifecycle of the UI subprocess (start, monitor, respawn on failure)                                                                                                                                                                                                         | Must     |
-| F-SVC-03 | Agent shall communicate with the UI via exactly 3 Windows named pipes (see §3.4 for protocol)                                                                                                                                                                                                   | Must     |
-| F-SVC-04 | Agent shall check UI health every 5 seconds; if the UI is unresponsive or absent for 15 seconds, Agent shall terminate and respawn it                                                                                                                                                           | Must     |
-| F-SVC-05 | Agent shall send blocking requests (BLOCK_NOTIFY, OVERRIDE_REQUEST) over the 2-way command pipe and wait for a response (timeout 60s, default DENY)                                                                                                                                             | Must     |
-| F-SVC-06 | Agent shall send fire-and-forget events (TOAST, STATUS_UPDATE, HEALTH_PING) to the UI over Pipe 2                                                                                                                                                                                               | Must     |
-| F-SVC-07 | UI shall send fire-and-forget acknowledgements (HEALTH_PONG, UI_READY, UI_CLOSING) to the Agent over Pipe 3                                                                                                                                                                                     | Must     |
-| F-SVC-08 | UI shall check Agent health every 5 seconds; if the Agent disappears or IPC connection is lost for 15 seconds, UI shall terminate itself within 5 seconds                                                                                                                                       | Must     |
-| F-SVC-09 | Both Agent and UI shall be protected from termination by non-dlp-admin users and administrators via Windows DACL                                                                                                                                                                                | Must     |
-| F-SVC-10 | When `sc stop dlp-agent` is issued, the service shall not stop immediately; it shall signal the UI to display a dlp-admin password dialog                                                                                                                                                       | Must     |
-| F-SVC-11 | On correct dlp-admin password verification, the service shall complete shutdown cleanly within 30 seconds                                                                                                                                                                                       | Must     |
-| F-SVC-12 | On 3 consecutive incorrect password attempts, the service shall cancel the stop, log the event, and return to RUNNING state                                                                                                                                                                     | Must     |
-| F-SVC-13 | Agent shall enumerate all active user sessions via `WTSEnumerateSessionsW` and spawn one UI subprocess in each session's desktop via `CreateProcessAsUser`; on session connect, Agent shall spawn a new UI in that session; on session disconnect, Agent shall terminate the UI in that session | Must     |
-| F-SVC-14 | Password verification for service stop shall be performed by binding to AD as the dlp-admin user DN (LDAPS)                                                                                                                                                                                     | Must     |
+| ID       | Requirement                                                                                                                                                                                                                                                                                                                | Priority |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| F-SVC-01 | Agent shall enumerate all active user sessions and spawn one iced DLP UI as a child subprocess in each session's desktop when the service starts                                                                                                                                                                           | Must     |
+| F-SVC-02 | Agent shall own the lifecycle of the UI subprocess (start, monitor, respawn on failure)                                                                                                                                                                                                                                    | Must     |
+| F-SVC-03 | Agent shall communicate with the UI via exactly 3 Windows named pipes (see §3.4 for protocol)                                                                                                                                                                                                                              | Must     |
+| F-SVC-04 | Agent shall check UI health every 5 seconds; if the UI is unresponsive or absent for 15 seconds, Agent shall terminate and respawn it                                                                                                                                                                                      | Must     |
+| F-SVC-05 | Agent shall send blocking requests (BLOCK_NOTIFY, OVERRIDE_REQUEST) over the 2-way command pipe and wait for a response (timeout 60s, default DENY)                                                                                                                                                                        | Must     |
+| F-SVC-06 | Agent shall send fire-and-forget events (TOAST, STATUS_UPDATE, HEALTH_PING) to the UI over Pipe 2                                                                                                                                                                                                                          | Must     |
+| F-SVC-07 | UI shall send fire-and-forget acknowledgements (HEALTH_PONG, UI_READY, UI_CLOSING) to the Agent over Pipe 3                                                                                                                                                                                                                | Must     |
+| F-SVC-08 | UI shall check Agent health every 5 seconds; if the Agent disappears or IPC connection is lost for 15 seconds, UI shall terminate itself within 5 seconds                                                                                                                                                                  | Must     |
+| F-SVC-09 | Both Agent and UI shall be protected from termination by non-Administrator users and administrators via Windows DACL — a DENY ACE for `Everyone` SID blocks `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE`; SYSTEM retains full access through inherited ACEs | Must     |
+| F-SVC-10 | When `sc stop dlp-agent` is issued, the service shall not stop immediately; it shall signal the UI to display a dlp-admin password dialog                                                                                                                                                                                  | Must     |
+| F-SVC-11 | On correct dlp-admin password verification, the service shall complete shutdown cleanly within 30 seconds                                                                                                                                                                                                                  | Must     |
+| F-SVC-12 | On 3 consecutive incorrect password attempts, the service shall cancel the stop, log the event, and return to RUNNING state                                                                                                                                                                                                | Must     |
+| F-SVC-13 | Agent shall enumerate all active user sessions via `WTSEnumerateSessionsW` and spawn one UI subprocess in each session's desktop via `CreateProcessAsUser`; on session connect, Agent shall spawn a new UI in that session; on session disconnect, Agent shall terminate the UI in that session                            | Must     |
+| F-SVC-14 | Password verification for service stop shall be performed by comparing the submitted password against the bcrypt hash stored in the Windows registry (`HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`), using DPAPI to protect the password in transit from the UI to the agent                                          | Must     |
 
 ### 3.4 DLP UI (iced Endpoint Interface)
 
@@ -355,20 +356,20 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 
 ### 4.1 Security
 
-| ID       | Requirement                                                                                                                                                                                                            | Target |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| N-SEC-01 | All network communication shall use TLS 1.3                                                                                                                                                                            | Must   |
-| N-SEC-02 | Credentials shall never be stored in plaintext; use Windows Credential Manager or HSM                                                                                                                                  | Must   |
-| N-SEC-03 | Agent shall run as a Windows Service under the SYSTEM account; UI runs in the interactive user session as the logged-in user                                                                                           | Must   |
-| N-SEC-04 | Policy Engine shall be deployed on an isolated, hardened host                                                                                                                                                          | Must   |
-| N-SEC-05 | HTTPS API shall authenticate agents via mutual TLS (mTLS)                                                                                                                                                              | Must   |
-| N-SEC-06 | DLP Admin shall use MFA for all administrative sessions                                                                                                                                                                | Must   |
-| N-SEC-07 | Audit logs shall be immutable once written                                                                                                                                                                             | Must   |
-| N-SEC-08 | Agent shall verify Policy Engine certificate before establishing connection                                                                                                                                            | Must   |
-| N-SEC-09 | Sensitive data in memory shall be zeroized after use                                                                                                                                                                   | Should |
-| N-SEC-10 | Agent shall detect and alert on tampering / injection attempts                                                                                                                                                         | Should |
-| N-SEC-11 | Process protection: Both Agent (service) and UI shall use Windows DACL to deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to non-dlp-admin principals | Must   |
-| N-SEC-12 | Named pipe connections shall be validated — UI must present a signed token on connect to prevent unauthorized pipe access                                                                                              | Should |
+| ID       | Requirement                                                                                                                                                                                                                                                                                      | Target |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
+| N-SEC-01 | All network communication shall use TLS 1.3                                                                                                                                                                                                                                                      | Must   |
+| N-SEC-02 | Credentials shall never be stored in plaintext; use Windows Credential Manager or HSM                                                                                                                                                                                                            | Must   |
+| N-SEC-03 | Agent shall run as a Windows Service under the SYSTEM account; UI runs in the interactive user session as the logged-in user                                                                                                                                                                     | Must   |
+| N-SEC-04 | Policy Engine shall be deployed on an isolated, hardened host                                                                                                                                                                                                                                    | Must   |
+| N-SEC-05 | HTTPS API shall authenticate agents via mutual TLS (mTLS)                                                                                                                                                                                                                                        | Must   |
+| N-SEC-06 | DLP Admin shall use MFA for all administrative sessions                                                                                                                                                                                                                                          | Must   |
+| N-SEC-07 | Audit logs shall be immutable once written                                                                                                                                                                                                                                                       | Must   |
+| N-SEC-08 | Agent shall verify Policy Engine certificate before establishing connection                                                                                                                                                                                                                      | Must   |
+| N-SEC-09 | Sensitive data in memory shall be zeroized after use                                                                                                                                                                                                                                             | Should |
+| N-SEC-10 | Agent shall detect and alert on tampering / injection attempts                                                                                                                                                                                                                                   | Should |
+| N-SEC-11 | Process protection: Both Agent (service) and UI shall use Windows DACL to deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to all users via a DENY ACE for the `Everyone` SID; SYSTEM retains full access through inherited ACEs | Must   |
+| N-SEC-12 | Named pipe connections shall be validated — UI must present a signed token on connect to prevent unauthorized pipe access                                                                                                                                                                        | Should |
 
 ### 4.2 Performance
 
@@ -641,7 +642,7 @@ S3. Agent sets state STOP_PENDING, sends PASSWORD_DIALOG over Pipe 1
 S4. DLP endpoint UI shows dlp-admin password dialog
 S5. Admin enters credentials, submits
 S6. DLP endpoint UI sends PASSWORD_SUBMIT over Pipe 1
-S7. Agent validates via AD LDAP bind; correct → clean shutdown
+S7. Agent validates password via bcrypt hash comparison against `DLPAuthHash` registry value; correct → clean shutdown
 S8. dlp-server marks agent as uninstalled in registry
 ```
 
@@ -667,7 +668,7 @@ Sc-3. Agent sets state STOP_PENDING, sends PASSWORD_DIALOG over Pipe 1
 Sc-4. DLP UI shows dlp-admin password dialog
 Sc-5. Admin enters dlp-admin credentials, submits
 Sc-6. DLP UI sends PASSWORD_SUBMIT over Pipe 1
-Sc-7. Agent validates credentials via AD LDAP bind
+Sc-7. Agent validates credentials via bcrypt hash comparison against `DLPAuthHash` registry value
 Sc-8. Password correct → Agent stops UI, stops service cleanly
 Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNNING
 
@@ -787,8 +788,8 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | T-34 | Implement Pipe 3 receiver: HEALTH_PONG, UI_READY, UI_CLOSING — per session pipe | `dlp-agent/src/ipc/pipe3.rs` | Must |
 | T-35 | Implement mutual health monitor: Agent pings all session UIs via Pipe 2 every 5s; per-session 15s timeout → kill + respawn; UI pings Agent via Pipe 3 every 5s; Agent pings back on Pipe 2; 15s timeout → UI exits | `dlp-agent/src/health_monitor.rs` | Must |
 | T-36 | Implement session change handler: `WTSRegisterSessionNotification` per active session; on Session_Logoff → send UI_CLOSING_SEQUENCE, wait 5s, force-kill, remove from map; on Session_Connect → spawn new UI in new session | `dlp-agent/src/session_monitor.rs` | Must |
-| T-37 | Implement process protection DACL: `SetSecurityInfo` on Agent and UI process handles; deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to Authenticated Users and non-dlp-admin Admins; explicit allow for dlp-admin SID | `dlp-agent/src/protection.rs` | Must |
-| T-38 | Implement password-protected service stop: `sc stop` → STOP_PENDING → send PASSWORD_DIALOG over Pipe 1 → collect PASSWORD_SUBMIT → DPAPI `CryptProtectData` → AD LDAP bind as dlp-admin DN → verify → clean shutdown; 3 wrong attempts → log EVENT_DLP_ADMIN_STOP_FAILED | `dlp-agent/src/service.rs` | Must |
+| T-37 | Implement process protection DACL: `SetKernelObjectSecurity` on Agent and UI process handles; deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to `Everyone` SID; SYSTEM retains full access through inherited ACEs | `dlp-agent/src/protection.rs` | Must |
+| T-38 | Implement password-protected service stop: `sc stop` → STOP_PENDING → send PASSWORD_DIALOG over Pipe 1 → collect PASSWORD_SUBMIT → DPAPI unprotect → bcrypt verify against `DLPAuthHash` registry value → clean shutdown; 3 wrong attempts → log EVENT_DLP_ADMIN_STOP_FAILED | `dlp-agent/src/service.rs` | Must |
 | T-39 | Implement iced UI scaffold: `dlp-user-ui/` — `Cargo.toml`, devtools enabled, system tray, multi-session IPC client per session | `dlp-user-ui/` | Must |
 | T-40 | Implement UI Pipe 1 client: per-session pipe connection, send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL; handle BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG | `dlp-user-ui/src/ipc/pipe1.rs` | Must |
 | T-41 | Implement UI Pipe 2 listener: receive TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE per session; display Windows toast notifications | `dlp-user-ui/src/ipc/pipe2.rs` | Must |
@@ -806,7 +807,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 | ID     | Task | Deliverable | Priority |
 | ------ | ---- | ----------- | -------- |
-| P2-T03 | Implement process protection: DACL hardening on Agent and UI processes — deny PROCESS_TERMINATE to non-dlp-admin principals | `dlp-agent/src/protection.rs` | Must |
+| P2-T03 | Process protection: DACL hardening — deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to `Everyone` SID on Agent and UI processes | `dlp-agent/src/protection.rs` | Must |
 | P2-T04 | Implement mutual health monitoring: Agent pings UI (Pipe 2 every 5s, respawn if no pong in 15s); UI pings Agent (Pipe 3 every 5s, exit if no message in 15s) | `dlp-agent/src/`, `dlp-user-ui/src/` | Must |
 | P2-T10 | dlp-user-ui: double-click tray icon → open dlp-admin-portal (dlp-admin-portal deferred; stub shows "Coming Soon" for now) | `dlp-user-ui/src/tray.rs` | Should |
 | P2-T11 | dlp-agent: service stop shutdown sequence — STOP_PENDING → signal UI → password dialog → clean shutdown | `dlp-agent/src/service.rs` | Must |
@@ -834,7 +835,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 | ID     | Task                                                               | Deliverable                | Priority |
 | ------ | ------------------------------------------------------------------ | -------------------------- | -------- |
-| P4-T01 | WiX v3 MSI installer: `DLPAgent.wxs`, service registration, crash recovery, ACL hardening, upgrade path | `dlp-agent/installer/`    | Must     |
+| P4-T01 | WiX v3 MSI installer: `DLPAgent.wxs`, service registration, crash recovery, ACL hardening, upgrade path | `installer/`               | Must     |
 | P4-T02 | OPERATIONAL.md: 12-section deployment and operations runbook        | `docs/OPERATIONAL.md`     | Must     |
 | P4-T03 | SECURITY_AUDIT.md: formal security review — all 30 STRIDE threats, N-SEC gap analysis, implemented controls, ISO 27001 mapping | `docs/SECURITY_AUDIT.md` | Must     |
 | P4-T04 | *(pending)* Performance testing: 10k req/s, P95 latency ≤ 50ms     | Performance test report    | Should   |
@@ -909,7 +910,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 ### 9.4 Service Stop (Kill) Flow
 
 - [ ] `sc stop dlp-agent` sets service to STOP_PENDING; Agent signals UI to show password dialog
-- [ ] UI shows dlp-admin password dialog; on correct AD password → service stops cleanly within 30 seconds
+- [ ] UI shows dlp-admin password dialog; on correct dlp-admin password → service stops cleanly within 30 seconds
 - [ ] On 3 consecutive incorrect password attempts → event is logged, service cancels stop, returns to RUNNING
 - [ ] UI terminates cleanly within 5 seconds after stop confirmation
 
@@ -933,7 +934,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 - [ ] Audit logs are immutable (append-only, in dlp-server)
 - [ ] Named pipe password traffic is protected by DPAPI (CryptProtectData)
 - [ ] No credentials stored in plaintext
-- [ ] Process DACL denies PROCESS_TERMINATE to non-dlp-admin principals on both Agent and UI processes
+- [ ] Process DACL denies PROCESS_TERMINATE, PROCESS_CREATE_THREAD, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE to `Everyone` SID on both Agent and UI processes; SYSTEM retains full access
 - [ ] dlp-server uses PBKDF2 + salt for admin credential storage — **deferred with dlp-admin-portal**
 - [ ] dlp-server audit store has no update or delete API exposed
 

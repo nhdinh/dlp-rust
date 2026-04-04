@@ -190,6 +190,38 @@
                         <util:PermissionEx User="Everyone" Read="yes" />
                     </Component>
 
+                    <!-- dlp-admin CLI tool — password management -->
+                    <Component Id="DLPADMINEXE"
+                               Guid="*"
+                               NeverOverwrite="no">
+                        <File Id="DLPADMINEXE_FILE"
+                              Name="dlp-admin.exe"
+                              LongName="dlp-admin.exe"
+                              Source="$(var.SourceDir)\target\release\dlp-admin.exe"
+                              KeyPath="yes"
+                              AssemblyApplication="no"
+                              AssemblyManifest="no" />
+                        <!-- ACL: SYSTEM + Admins Full; Everyone Read -->
+                        <util:PermissionEx User="SYSTEM"
+                                          ServiceShutdown="yes"
+                                          CreateChild="yes"
+                                          Read="yes"
+                                          Write="yes"
+                                          Delete="yes"
+                                          ReadPermission="yes"
+                                          ChangePermission="yes"
+                                          TakeOwnership="yes" />
+                        <util:PermissionEx User="Administrators"
+                                          ServiceShutdown="yes"
+                                          CreateChild="yes"
+                                          Read="yes"
+                                          Write="yes"
+                                          Delete="yes"
+                                          ChangePermission="yes"
+                                          TakeOwnership="yes" />
+                        <util:PermissionEx User="Everyone" Read="yes" />
+                    </Component>
+
                 </Directory>
             </Directory>
         </Directory>
@@ -207,6 +239,7 @@
 
             <ComponentRef Id="DLPAGENTEXE" />
             <ComponentRef Id="DLPUSERUIEXE" />
+            <ComponentRef Id="DLPADMINEXE" />
             <ComponentRef Id="DLP_CONFIG_DIR" />
             <ComponentRef Id="DLP_LOGS_DIR" />
 
@@ -366,6 +399,18 @@
                       ExeCommand="" />
 
         <!-- ══════════════════════════════════════════════════════════
+             CUSTOM ACTION: launch dlp-admin.exe set-password after install
+             Runs as LocalSystem (deferred, no impersonate) so it can
+             write to HKLM.  The installing admin is already elevated.
+             ══════════════════════════════════════════════════════════ -->
+        <CustomAction Id="LaunchSetPassword"
+                      FileKey="DLPADMINEXE_FILE"
+                      ExeCommand="set-password"
+                      Execute="deferred"
+                      Impersonate="no"
+                      Return="ignore" />
+
+        <!-- ══════════════════════════════════════════════════════════
              FINISH ACTION
              ══════════════════════════════════════════════════════════ -->
         <Property Id="WIXShellExecTarget" Value="[SystemFolder]sc.exe" />
@@ -376,6 +421,15 @@
                       BinaryKey="WixCA"
                       DllEntry="WixShellExec"
                       Id="LaunchScHelp_CA" />
+
+        <!-- ══════════════════════════════════════════════════════════
+             EXECUTE SEQUENCE: run set-password after files are installed
+             ══════════════════════════════════════════════════════════ -->
+        <InstallExecuteSequence>
+            <!-- After all files are installed, prompt the admin to set the password.
+                 Runs after InstallFinalize so the binary is guaranteed to exist. -->
+            <Custom Action="LaunchSetPassword" After="InstallFinalize">NOT Installed</Custom>
+        </InstallExecuteSequence>
 
     </Product>
 </Wix>

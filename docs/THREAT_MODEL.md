@@ -102,7 +102,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
         ├── User SIDs + group membership
         ├── dlpDeviceTrust attribute
         ├── dlpNetworkLocation attribute
-        └── dlp-admin credentials (for service stop verification)
+        └── *(no dlp-admin credentials — stored locally in registry)*
 ```
 
 ### 2.2 Trust Boundaries
@@ -110,9 +110,9 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 | Boundary | Description |
 |---|---|
 | **Endpoint ↔ Policy Engine** | HTTPS/TLS 1.3; mTLS client certificates; network segmentation |
-| **Agent ↔ AD** | LDAPS :636; TLS; AD service account (read-only) |
+| **Agent ↔ AD** | (Not used — Agent does not query AD directly) |
 | **Agent ↔ UI (Pipe 1/2/3)** | Named pipes; SYSTEM-only ACL; DPAPI encryption for password payload |
-| **Policy Engine ↔ AD** | LDAPS; service account credentials |
+| **Policy Engine ↔ AD** | LDAPS :636; TLS; AD service account (read-only); ABAC attribute lookups |
 | **Admin ↔ dlp-admin-portal** | HTTPS; TOTP + JWT (Phase 5) |
 
 ---
@@ -121,15 +121,15 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 
 ### 3.1 Spoofing
 
-#### THREAT-001: AD Credential Theft
-- **Asset:** dlp-admin credentials; AD service account credentials
-- **Threat:** Attacker steals AD service account credentials or dlp-admin credentials via credential dumping (Mimikatz, LSASS access, credential relay)
+#### THREAT-001: Local Credential Theft
+- **Asset:** dlp-admin bcrypt hash (`HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`); AD service account credentials
+- **Threat:** Attacker steals dlp-admin password or AD service account credentials via credential dumping (Mimikatz, LSASS access, credential relay)
 - **Attack Vector:** Malicious process running in user context or SYSTEM context dumps LSASS memory
-- **Impact:** Attacker can authenticate as dlp-admin to stop the service, or as the AD service account to query AD attributes
+- **Impact:** Attacker can present the dlp-admin password to stop the service, or use the AD service account to query AD attributes
 - **Mitigation:**
   - Service runs as SYSTEM; LSASS access requires SYSTEM or equivalent privilege (not standard user)
-  - dlp-admin password is never stored; verified via LDAPS bind; DPAPI-wrapped over pipe before transmission
-  - Process DACL (`protection.rs`): non-dlp-admin cannot terminate or inspect the agent process
+  - dlp-admin password is never stored; verified via bcrypt hash comparison against `DLPAuthHash` registry value; DPAPI-wrapped over pipe before transmission
+  - Process DACL (`protection.rs`): non-Administrators cannot terminate or inspect the agent process
   - **Status:** Partially Mitigated — LSASS dump from SYSTEM context is not blocked by the agent itself; relies on Windows Defender/EDR for prevention
 
 #### THREAT-002: Agent Impersonation
@@ -223,10 +223,10 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   - **Status:** Not Mitigated — no integrity verification of the monitor itself; rely on EDR
 
 #### THREAT-010: Registry Tampering (Credentials)
-- **Asset:** `HKLM\SOFTWARE\DLP\Agent\Credentials` — dlp-admin LDAP DN
-- **Threat:** Attacker modifies the registry to point to a malicious LDAP server or different DN
+- **Asset:** `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash` — dlp-admin bcrypt hash
+- **Threat:** Attacker modifies the registry to tamper with or replace the bcrypt hash, enabling offline password cracking or bypass of verification
 - **Attack Vector:** Administrative access to the registry
-- **Impact:** Credential verification binds to the wrong server, leaking the dlp-admin password
+- **Impact:** Attacker replaces the stored hash with a known value, bypassing bcrypt verification to stop the service
 - **Mitigation:**
   - Registry key ACLs restrict write access to Administrators
   - **Status:** Partially Mitigated — depends on OS ACL enforcement
@@ -284,9 +284,9 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 - **Attack Vector:** Malicious code in the user session reads the named pipe or memory
 - **Impact:** dlp-admin password is captured; service can be stopped; DLP enforcement is disabled
 - **Mitigation:**
-  - DPAPI encryption (`CryptProtectData`) applied by the UI before sending over Pipe 1
-  - Agent impersonates the user session to decrypt with `CryptUnprotectData`
-  - **Status:** Implemented — DPAPI unwrap wired in Batch 2 (`password_stop.rs::dpapi_unprotect()`)
+  - DPAPI encryption (`CryptProtectData`) applied by the UI before sending the password payload over Pipe 1
+  - Agent impersonates the user session to decrypt with `CryptUnprotectData`; bcrypt hash comparison against `DLPAuthHash` is performed server-side
+  - **Status:** Implemented — DPAPI unwrap wired in Batch 2 (`password_stop.rs::dpapi_unprotect()`); bcrypt verification performed after DPAPI unwrap
 
 #### THREAT-016: Clipboard Data Disclosure
 - **Asset:** Clipboard content being read and classified
@@ -337,7 +337,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 - **Attack Vector:** `sc stop` without password; or killing the agent process
 - **Impact:** No DLP enforcement until service is restarted; 5-minute SCM auto-restart applies
 - **Mitigation:**
-  - `sc stop` requires dlp-admin password (LDAPS bind verification) — 3 attempts max
+  - `sc stop` requires dlp-admin password (bcrypt hash verification) — 3 attempts max
   - Process DACL prevents non-Admin from killing the agent
   - SCM auto-restart on crash: `sc.exe failure` recovery actions (Phase 1 config in `Manage-DlpAgentService.ps1`)
   - **Status:** Implemented
@@ -447,7 +447,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 - **Attack Vector:** Precise timing to cause the service to stop without verified password
 - **Impact:** Service stops without dlp-admin password verification
 - **Mitigation:**
-  - The password confirmation flag is set by `password_stop.rs::confirm_stop()` which is called only after successful LDAPS bind
+  - The password confirmation flag is set by `password_stop.rs::confirm_stop()` which is called only after successful bcrypt hash verification
   - The 500ms poll checks an atomic flag (`STOP_CONFIRMED: AtomicBool`); there is no race condition in this design
   - **Status:** Not a threat (no exploitable race condition)
 
@@ -467,7 +467,7 @@ The following risks are **Not Mitigated** or **Planned** in a future phase:
 | Override justification free-text may contain PII | Information Disclosure | PII in audit log | **Not Mitigated** — admin process guidance required |
 | UI process DLL injection leads to fake UserConfirmed | Elevation of Privilege | Blocked operations confirmed without user consent | **Not Mitigated** — inherent to user-session UI |
 | Policy Engine certificate spoofing | Spoofing | Forged ABAC decisions | **Planned Phase 5** — certificate pinning |
-| AD credential theft from LSASS (SYSTEM context) | Spoofing | Service stop without authorisation | **Not Mitigated** — relies on Windows Defender/EDR |
+| AD service account credential theft from LSASS (SYSTEM context) | Spoofing | ABAC attribute queries via Policy Engine LDAPS channel | **Not Mitigated** — dlp-admin credential (bcrypt hash) is not in LSASS; AD service account still at risk |
 | Physical access: cold-boot attack on endpoint | Information Disclosure | Memory decryption key extracted | **Out of Scope** — physical security domain |
 
 ---
@@ -486,7 +486,7 @@ The following risks are **Not Mitigated** or **Planned** in a future phase:
 | Single-instance mutex | Duplicate agent instances | `service.rs::acquire_instance_mutex()` | Elevation |
 | Password challenge on sc stop | Unauthorised service stop | `password_stop.rs`, `pipe1.rs` | Elevation |
 | 3-attempt limit on password challenge | Brute-force password | `password_stop.rs::MAX_ATTEMPTS` | Elevation |
-| LDAPS bind for credential verification | AD credential exposure | `password_stop.rs::verify_credentials()` | Spoofing |
+| bcrypt hash comparison for credential verification | Local credential exposure | `password_stop.rs::verify_credentials()` | Spoofing |
 | Append-only audit log | Audit log tampering | `audit_emitter.rs` | Tampering |
 | JSONL log rotation | Disk exhaustion | `audit_emitter.rs::rotate()` | DoS |
 | Log rotation (9 generations, 50MB each) | Disk exhaustion | `audit_emitter.rs::MAX_ROTATED_FILES` | DoS |

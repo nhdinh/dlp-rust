@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use dlp_common::{Classification, EvaluateRequest, EvaluateResponse};
+use dlp_common::{AgentInfo, Classification, EvaluateRequest, EvaluateResponse};
 use tracing::{debug, info, warn};
 
 use crate::cache::{self, Cache};
@@ -39,6 +39,8 @@ pub struct OfflineManager {
     client: EngineClient,
     /// How often to probe the engine when offline.
     heartbeat_interval: Duration,
+    /// Machine hostname, included in heartbeat probe requests.
+    machine_name: Option<String>,
 }
 
 impl OfflineManager {
@@ -48,12 +50,13 @@ impl OfflineManager {
     ///
     /// * `client` — the HTTPS client to the Policy Engine
     /// * `cache` — the shared policy decision cache
-    pub fn new(client: EngineClient, cache: Arc<Cache>) -> Self {
+    pub fn new(client: EngineClient, cache: Arc<Cache>, machine_name: Option<String>) -> Self {
         Self {
             online: Arc::new(AtomicBool::new(true)),
             cache,
             client,
             heartbeat_interval: HEARTBEAT_INTERVAL,
+            machine_name,
         }
     }
 
@@ -63,12 +66,14 @@ impl OfflineManager {
         client: EngineClient,
         cache: Arc<Cache>,
         interval: Duration,
+        machine_name: Option<String>,
     ) -> Self {
         Self {
             online: Arc::new(AtomicBool::new(true)),
             cache,
             client,
             heartbeat_interval: interval,
+            machine_name,
         }
     }
 
@@ -152,7 +157,7 @@ impl OfflineManager {
 
             // Probe the engine with a minimal request.
             debug!("heartbeat: probing Policy Engine");
-            let probe = build_probe_request();
+            let probe = build_probe_request(self.machine_name.as_deref());
             match self.client.evaluate(&probe).await {
                 Ok(_) => {
                     self.transition_online();
@@ -180,7 +185,7 @@ impl OfflineManager {
 }
 
 /// Builds a minimal probe request for the heartbeat.
-fn build_probe_request() -> EvaluateRequest {
+fn build_probe_request(machine_name: Option<&str>) -> EvaluateRequest {
     EvaluateRequest {
         subject: dlp_common::Subject {
             user_sid: "S-1-0-0".to_string(),
@@ -199,6 +204,10 @@ fn build_probe_request() -> EvaluateRequest {
             access_context: dlp_common::AccessContext::Local,
         },
         action: dlp_common::Action::READ,
+        agent: machine_name.map(|name| AgentInfo {
+            machine_name: Some(name.to_string()),
+            current_user: None,
+        }),
     }
 }
 
@@ -226,6 +235,7 @@ mod tests {
                 access_context: AccessContext::Local,
             },
             action: Action::WRITE,
+            ..Default::default()
         }
     }
 
@@ -241,7 +251,7 @@ mod tests {
     fn test_offline_decision_cache_hit() {
         let cache = Arc::new(Cache::new());
         let client = EngineClient::default_client().unwrap();
-        let manager = OfflineManager::new(client, cache.clone());
+        let manager = OfflineManager::new(client, cache.clone(), None);
 
         // Pre-populate cache.
         cache.insert(
@@ -259,7 +269,7 @@ mod tests {
     fn test_offline_decision_cache_miss_t4_denied() {
         let cache = Arc::new(Cache::new());
         let client = EngineClient::default_client().unwrap();
-        let manager = OfflineManager::new(client, cache);
+        let manager = OfflineManager::new(client, cache, None);
 
         let req = make_request(
             r"C:\Restricted\secret.xlsx",
@@ -274,7 +284,7 @@ mod tests {
     fn test_offline_decision_cache_miss_t1_allowed() {
         let cache = Arc::new(Cache::new());
         let client = EngineClient::default_client().unwrap();
-        let manager = OfflineManager::new(client, cache);
+        let manager = OfflineManager::new(client, cache, None);
 
         let req = make_request(r"C:\Public\readme.txt", "S-1-5-21-999", Classification::T1);
         let resp = manager.offline_decision(&req);
@@ -285,7 +295,7 @@ mod tests {
     fn test_starts_online() {
         let cache = Arc::new(Cache::new());
         let client = EngineClient::default_client().unwrap();
-        let manager = OfflineManager::new(client, cache);
+        let manager = OfflineManager::new(client, cache, None);
         assert!(manager.is_online());
     }
 
@@ -293,7 +303,7 @@ mod tests {
     fn test_transition_offline_online() {
         let cache = Arc::new(Cache::new());
         let client = EngineClient::default_client().unwrap();
-        let manager = OfflineManager::new(client, cache);
+        let manager = OfflineManager::new(client, cache, None);
 
         manager.transition_offline();
         assert!(!manager.is_online());
@@ -304,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_build_probe_request() {
-        let probe = build_probe_request();
+        let probe = build_probe_request(None);
         assert_eq!(probe.subject.user_sid, "S-1-0-0");
         assert_eq!(probe.resource.classification, Classification::T1);
     }

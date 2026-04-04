@@ -69,6 +69,11 @@ pub fn run_service() -> Result<()> {
     init_logging();
     info!(service_name = SERVICE_NAME, "DLP Agent service starting");
 
+    // Resolve machine hostname once at startup for inclusion in evaluation requests.
+    let machine_name = hostname::get()
+        .map(|h| h.to_string_lossy().into_owned())
+        .ok();
+
     // Register the service control handler.
     let status_handle = service_control_handler::register(SERVICE_NAME, service_control_handler)?;
 
@@ -159,7 +164,7 @@ pub fn run_service() -> Result<()> {
 
     // Enter the main run loop.
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_loop(&status_handle))?;
+    rt.block_on(run_loop(&status_handle, machine_name))?;
 
     // ── Graceful shutdown of blocking threads ────────────────────────
     info!(service_name = SERVICE_NAME, "shutting down subsystems");
@@ -199,6 +204,7 @@ pub fn run_service() -> Result<()> {
 /// [`password_stop::revert_stop`] reverts the state to Running.
 async fn run_loop(
     status_handle: &Arc<Mutex<windows_service::service_control_handler::ServiceStatusHandle>>,
+    machine_name: Option<String>,
 ) -> Result<()> {
     // ── Open the audit log ────────────────────────────────────────────────
     let _log_path = crate::audit_emitter::log_path();
@@ -217,7 +223,7 @@ async fn run_loop(
         });
 
     let cache = Arc::new(crate::cache::Cache::new());
-    let offline = Arc::new(crate::offline::OfflineManager::new(engine_client, cache));
+    let offline = Arc::new(crate::offline::OfflineManager::new(engine_client, cache, machine_name.clone()));
 
     // ── Start the Policy Engine heartbeat ─────────────────────────────────
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -261,6 +267,7 @@ async fn run_loop(
         session_id: 1,
         user_sid: "S-1-5-18".to_string(), // default; overridden per-event
         user_name: "SYSTEM".to_string(),
+        machine_name: machine_name.clone(),
     };
 
     // Initialise the clipboard listener's audit emit context.
@@ -597,6 +604,11 @@ pub fn run_console() -> Result<()> {
 
 /// The async body of [`run_console`] — sets up and runs the interception pipeline.
 async fn async_run_console() -> Result<()> {
+    // ── Machine hostname (used in evaluation requests) ──────────────────────
+    let machine_name = hostname::get()
+        .map(|h| h.to_string_lossy().into_owned())
+        .ok();
+
     // ── Audit log ───────────────────────────────────────────────────────────
     let _log_path = crate::audit_emitter::log_path();
     info!(audit_log = %_log_path.display(), "audit subsystem initialised");
@@ -613,7 +625,7 @@ async fn async_run_console() -> Result<()> {
         });
 
     let cache = Arc::new(crate::cache::Cache::new());
-    let offline = Arc::new(crate::offline::OfflineManager::new(engine_client, cache));
+    let offline = Arc::new(crate::offline::OfflineManager::new(engine_client, cache, machine_name.clone()));
 
     // ── Heartbeat ───────────────────────────────────────────────────────────
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -638,6 +650,9 @@ async fn async_run_console() -> Result<()> {
         session_id: 1,
         user_sid: console_sid.clone(),
         user_name: console_name.clone(),
+        machine_name: hostname::get()
+            .map(|h| h.to_string_lossy().into_owned())
+            .ok(),
     };
     crate::clipboard::listener::init_emit_context(audit_ctx.clone());
 

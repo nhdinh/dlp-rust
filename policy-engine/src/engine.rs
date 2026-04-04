@@ -232,6 +232,7 @@ mod tests {
                 access_context: AccessContext::Local,
             },
             action,
+            agent: None,
         }
     }
 

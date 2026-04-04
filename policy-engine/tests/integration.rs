@@ -95,6 +95,7 @@ fn make_eval_request(classification: Classification, action: Action) -> Evaluate
             access_context: AccessContext::Local,
         },
         action,
+        ..Default::default()
     }
 }
 

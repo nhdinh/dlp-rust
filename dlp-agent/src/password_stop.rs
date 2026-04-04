@@ -7,13 +7,25 @@
 //! 2. The UI displays a password prompt to the dlp-admin.
 //! 3. The UI returns `PASSWORD_SUBMIT` or `PASSWORD_CANCEL`.
 //! 4. On `PASSWORD_SUBMIT`: the DPAPI-wrapped blob from the UI is
-//!    unwrapped via `CryptUnprotectData`, and the plaintext password is used
-//!    to bind to AD as the dlp-admin DN via LDAP simple bind.
+//!    unwrapped via `CryptUnprotectData`, and the plaintext password is
+//!    verified against the bcrypt hash stored in the registry.
 //! 5. On 3 failed attempts or `PASSWORD_CANCEL`: log and abort stop.
 //! 6. On success: proceed with clean shutdown.
 //!
-//! The dlp-admin DN is stored in the Windows registry at
-//! `HKLM\SOFTWARE\DLP\Agent\Credentials`.
+//! ## dlp-admin is not an Active Directory account
+//!
+//! `dlp-admin` is a DLP superuser credential that is independent of Windows
+//! and Active Directory.  It has no SID, no AD group membership, and cannot
+//! authenticate to AD.  All AD identity management remains the responsibility
+//! of Windows/AD for normal users.
+//!
+//! ## Credential storage
+//!
+//! The bcrypt hash of the dlp-admin password is stored in the registry at:
+//! `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`
+//!
+//! The plaintext password is never stored.  Setting or changing the password
+//! requires write access to that registry key (Administrators).
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -34,7 +46,7 @@ use windows::Win32::System::Registry::{
 // Configuration (stored in registry)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Registry path where dlp-admin DN is stored.
+/// Registry path where dlp-admin password hash is stored.
 const REG_KEY_PATH: &str = r"SOFTWARE\DLP\Agent\Credentials";
 
 /// Maximum password attempts before aborting the stop.
@@ -52,8 +64,8 @@ static STOP_CONFIRMED: AtomicBool = AtomicBool::new(false);
 /// Number of failed attempts this stop cycle.
 static FAILED_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 
-/// Resolved dlp-admin LDAP DN (read once from registry).
-static ADMIN_DN: Mutex<Option<String>> = Mutex::new(None);
+/// Cached bcrypt hash of the dlp-admin password (read once from registry).
+static AUTH_HASH: Mutex<Option<String>> = Mutex::new(None);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -401,7 +413,7 @@ pub fn handle_password_submit(request_id: &str, password: String) {
             }
         }
         Err(e) => {
-            error!(error = %e, "LDAP bind failed");
+            error!(error = %e, "password verification failed");
             if attempt >= MAX_ATTEMPTS {
                 log_failure(attempt);
                 abort_stop();
@@ -497,19 +509,33 @@ fn read_registry_string(subkey: &str, name: &str) -> Result<String> {
     }
 }
 
-/// Returns the dlp-admin LDAP DN from registry (cached after first call).
-pub fn get_admin_dn() -> Result<String> {
+/// Returns the bcrypt hash of the dlp-admin password from registry (cached after first call).
+///
+/// Returns an error if the hash is missing or unreadable.  The service
+/// cannot start if no hash is configured.
+pub fn get_auth_hash() -> Result<String> {
     {
-        let guard = ADMIN_DN.lock();
-        if let Some(ref dn) = *guard {
-            return Ok(dn.clone());
+        let guard = AUTH_HASH.lock();
+        if let Some(ref hash) = *guard {
+            return Ok(hash.clone());
         }
     }
 
-    let dn = read_registry_string(REG_KEY_PATH, "AdminDN")?;
-    let mut guard = ADMIN_DN.lock();
-    *guard = Some(dn.clone());
-    Ok(dn)
+    let hash = read_registry_string(REG_KEY_PATH, "DLPAuthHash")
+        .context("dlp-admin password hash not found in registry. \
+                  Set HKLM\\SOFTWARE\\DLP\\Agent\\Credentials\\DLPAuthHash \
+                  to the bcrypt hash of the dlp-admin password (cost 12).")?;
+    let hash = hash.trim().to_string();
+    if hash.is_empty() {
+        anyhow::bail!(
+            "dlp-admin password hash is empty in registry. \
+             Set HKLM\\SOFTWARE\\DLP\\Agent\\Credentials\\DLPAuthHash \
+             to the bcrypt hash of the dlp-admin password (cost 12)."
+        );
+    }
+    let mut guard = AUTH_HASH.lock();
+    *guard = Some(hash.clone());
+    Ok(hash)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -519,8 +545,7 @@ pub fn get_admin_dn() -> Result<String> {
 /// Decrypts a DPAPI-protected blob (`CryptUnprotectData`).
 ///
 /// The UI side wrapped the password with `CryptProtectData`; the agent must
-/// unwrap it before passing the plaintext to LDAP.  This closes the security
-/// gap where the DPAPI protection was bypassed by sending the raw blob to LDAP.
+/// unwrap it before passing the plaintext to bcrypt for verification.
 ///
 /// Returns the plaintext password as a `Vec<u8>` (UTF-8 bytes).
 fn dpapi_unprotect(protected: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -600,7 +625,7 @@ fn base64_decode(input: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LDAP verification
+// Password verification
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Verifies the dlp-admin password received from the UI.
@@ -608,14 +633,12 @@ fn base64_decode(input: &str) -> anyhow::Result<Vec<u8>> {
 /// The UI sends a DPAPI-protected, base64-encoded blob.  This function:
 /// 1. Base64-decodes the blob.
 /// 2. Calls `CryptUnprotectData` to recover the plaintext password.
-/// 3. Converts the plaintext UTF-16 bytes to a UTF-8 string.
-/// 4. Performs an LDAP simple bind to verify the credentials.
+/// 3. Converts the plaintext bytes to a UTF-8 string.
+/// 4. Verifies the plaintext against the stored bcrypt hash.
 ///
-/// Returns `Ok(true)` on successful bind, `Ok(false)` on invalid credentials,
-/// and `Err(...)` on a connection, decoding, or DPAPI error.
+/// Returns `Ok(true)` on successful match, `Ok(false)` on wrong password,
+/// and `Err(...)` on a decoding, DPAPI, or bcrypt error.
 fn verify_credentials(password_b64: &str) -> Result<bool> {
-    use ldap3::LdapConn;
-
     // Step 1: Base64-decode the DPAPI blob.
     let protected_bytes =
         base64_decode(password_b64).context("base64 decode of DPAPI blob from UI")?;
@@ -623,27 +646,16 @@ fn verify_credentials(password_b64: &str) -> Result<bool> {
     // Step 2: DPAPI-unprotect to recover the raw password bytes.
     let password_bytes = dpapi_unprotect(&protected_bytes).context("CryptUnprotectData failed")?;
 
-    // Step 3: Convert bytes to String (ASCII/Latin-1 passwords; lossy conversion
-    // handles any encoding edge cases by replacing invalid sequences).
+    // Step 3: Convert bytes to String (lossy conversion handles any encoding
+    // edge cases by replacing invalid sequences with U+FFFD).
     let password = String::from_utf8_lossy(&password_bytes).into_owned();
 
-    // Step 4: LDAP simple bind.
-    let admin_dn = get_admin_dn().context("get dlp-admin DN")?;
-    let ldap_url =
-        std::env::var("DLP_LDAP_URL").unwrap_or_else(|_| "ldaps://localhost:636".to_string());
-
-    let mut ldap =
-        LdapConn::new(&ldap_url).with_context(|| format!("invalid LDAP URL: {}", ldap_url))?;
-
-    let result = ldap.simple_bind(&admin_dn, &password);
-
-    match result {
-        Ok(res) if res.rc == 0 => Ok(true),
-        Ok(res) => {
-            warn!(rc = res.rc, "LDAP bind failed — invalid credentials");
-            Ok(false)
-        }
-        Err(e) => Err(anyhow::anyhow!("LDAP bind error: {}", e)),
+    // Step 4: bcrypt verification against the stored hash.
+    let stored_hash = get_auth_hash()?;
+    match bcrypt::verify(&password, &stored_hash) {
+        Ok(true) => Ok(true),
+        Ok(false) => Ok(false),
+        Err(e) => Err(anyhow::anyhow!("bcrypt verify error: {e}")),
     }
 }
 

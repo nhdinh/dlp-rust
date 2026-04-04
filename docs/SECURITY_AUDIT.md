@@ -82,7 +82,7 @@ All Phase 1–3 controls were verified against the source code.
 | SCM crash recovery | N-AVA-05 | MSI `<ServiceConfig>` with restart-on-failure actions; 3 attempts, then event log | **Implemented** |
 | UI runs in user session | F-SVC-01, F-SVC-04 | `WTSQueryUserToken` + `CreateProcessAsUser` (`ui_spawner.rs`) | **Implemented** |
 | Multi-session support | F-SVC-01 | `WTSEnumerateSessionsW` + `HashMap<u32, HANDLE>` session map | **Implemented** |
-| Password-protected stop | F-SVC-10–F-SVC-14 | LDAPS bind, 3-attempt limit, `sc stop` → `StopPending` + 120s wait hint | **Implemented** |
+| Password-protected stop | F-SVC-10–F-SVC-14 | bcrypt hash compare via DPAPI, 3-attempt limit, `sc stop` → `StopPending` + 120s wait hint | **Implemented** |
 
 ### 3.3 Audit and Logging
 
@@ -217,7 +217,7 @@ All Phase 1–3 controls were verified against the source code.
 | THREAT-017 | NTFS xattr leakage | Info Disclosure | **N/A** | Classification not stored in NTFS xattrs | Not applicable |
 | THREAT-018 | Policy rules disclosed | Info Disclosure | **Implemented** | Policy file ACL restricted to SYSTEM + Admins | MSI ACLs |
 | THREAT-019 | Cache decision exposure | Info Disclosure | **Implemented** | In-memory only; process DACL | `cache.rs` |
-| THREAT-020 | Service stop without password | Elevation | **Implemented** | LDAPS bind; 3-attempt limit; DPAPI | `password_stop.rs` |
+| THREAT-020 | Service stop without password | Elevation | **Implemented** | bcrypt hash compare; 3-attempt limit; DPAPI | `password_stop.rs` |
 | THREAT-021 | Engine offline T2/T1 allow | DoS | **Design Decision** | T2/T1 ALLOW offline is a documented risk | `offline.rs` |
 | THREAT-022 | Direct syscall bypass | DoS | **Not Mitigated** | `notify`/`ReadDirectoryChangesW` cannot cover direct NTFS syscalls; future minifilter | Future work |
 | THREAT-023 | Disk full | DoS | **Implemented** | Rotation + failure isolation | `audit_emitter.rs` |

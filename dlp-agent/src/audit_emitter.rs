@@ -212,6 +212,8 @@ pub struct EmitContext {
     pub user_sid: String,
     /// The user's display name.
     pub user_name: String,
+    /// Machine hostname, set once at startup.
+    pub machine_name: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

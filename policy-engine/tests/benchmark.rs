@@ -125,6 +125,7 @@ mod benchmarks {
                 access_context: AccessContext::Local,
             },
             action: dlp_common::abac::Action::READ,
+            ..Default::default()
         }
     }
 

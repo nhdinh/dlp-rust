@@ -52,14 +52,15 @@ $PSDefaultParameterValues['*:ErrorAction'] = 'Stop'
 
 # ── Resolve script directory ────────────────────────────────────────────────
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot  = Split-Path -Parent $ScriptDir          # dlp-agent/  → repo root
-$InstallerDir = $ScriptDir                          # .../dlp-agent/installer/
+$RepoRoot  = Split-Path -Parent $ScriptDir          # installer/  → repo root
+$InstallerDir = $ScriptDir                          # .../installer/
 $DistDir   = Join-Path $InstallerDir 'dist'
 $WxsFile   = Join-Path $InstallerDir 'DLPAgent.wxs'
 
 # Resolve the release binaries relative to the repo root.
-$AgentExe = Join-Path $RepoRoot "target\$Configuration\dlp-agent.exe"
-$UiExe    = Join-Path $RepoRoot "target\$Configuration\dlp-user-ui.exe"
+$AgentExe    = Join-Path $RepoRoot "target\$Configuration\dlp-agent.exe"
+$UiExe       = Join-Path $RepoRoot "target\$Configuration\dlp-user-ui.exe"
+$AdminExe    = Join-Path $RepoRoot "target\$Configuration\dlp-admin.exe"
 $Wixobj   = Join-Path $DistDir 'DLPAgent.wixobj'
 $CabFile  = Join-Path $DistDir 'DLP.cab'
 $MsiOut   = Join-Path $DistDir 'DLPAgent.msi'
@@ -143,9 +144,9 @@ if (-not $SkipRustBuild) {
     # Build both crates.  dlp-user-ui must be built alongside dlp-agent
     # so both .exe files land in the same target directory.
     Invoke-BuildStep `
-        -Description "cargo build --$Configuration -p dlp-agent -p dlp-user-ui" `
+        -Description "cargo build --$Configuration -p dlp-agent -p dlp-user-ui -p dlp-admin" `
         -Command cargo `
-        -ArgList @('build', "--$Configuration", '-p', 'dlp-agent', '-p', 'dlp-user-ui')
+        -ArgList @('build', "--$Configuration", '-p', 'dlp-agent', '-p', 'dlp-user-ui', '-p', 'dlp-admin')
 
     # Validate binaries exist.
     if (-not (Test-Path $AgentExe)) {
@@ -154,10 +155,15 @@ if (-not $SkipRustBuild) {
     if (-not (Test-Path $UiExe)) {
         Write-Error "UI binary not found at: $UiExe"
     }
+    if (-not (Test-Path $AdminExe)) {
+        Write-Error "dlp-admin binary not found at: $AdminExe"
+    }
     $agentSize = (Get-Item $AgentExe).Length / 1MB
     $uiSize    = (Get-Item $UiExe).Length    / 1MB
+    $adminSize = (Get-Item $AdminExe).Length  / 1MB
     Write-Host "  dlp-agent.exe   : $('{0:N1}' -f $agentSize) MB"
     Write-Host "  dlp-user-ui.exe : $('{0:N1}' -f $uiSize) MB"
+    Write-Host "  dlp-admin.exe   : $('{0:N1}' -f $adminSize) MB"
 } else {
     Write-Host ""
     Write-Host "[SKIP] Rust build step skipped (using existing binaries)" -ForegroundColor Yellow
