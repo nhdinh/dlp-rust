@@ -46,7 +46,8 @@ mod audit_enrichment {
         }
 
         let path = get_process_image_path(pid);
-        // TODO (Phase 2): compute SHA-256 hash of the executable.
+        // TODO (Phase 5, N-SEC-07): compute SHA-256 hash of the executable
+        // as part of the append-only hash chain on the audit log.
         (path, None)
     }
 

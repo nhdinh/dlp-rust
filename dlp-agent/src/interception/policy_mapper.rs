@@ -17,7 +17,7 @@ use crate::clipboard::ContentClassifier;
 /// A sensitive-directory rule for the extension-layer classifier.
 ///
 /// Each rule maps a path prefix (lowercase) to a minimum classification tier.
-// TODO (Phase 2): load from policy-engine sync or config file.
+// TODO (Phase 5): load from policy-engine sync or agent config push (P5-T13).
 const DEFAULT_SENSITIVE_PREFIXES: &[(&str, Classification)] = &[
     (r"c:\restricted\", Classification::T4),
     (r"c:\confidential\", Classification::T3),
