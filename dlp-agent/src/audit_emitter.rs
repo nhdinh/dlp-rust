@@ -21,9 +21,12 @@
 //!
 //! ## Audit Enrichment
 //!
-//! [`get_application_metadata`] and [`get_resource_owner`] are stubbed in this build
-//! pending resolution of the correct `windows` crate feature paths. They return `None`
-//! so audit emission is never blocked by enrichment failures.
+//! [`get_application_metadata`] resolves the process image path via
+//! `OpenProcess` + `GetModuleFileNameExW`.  [`get_resource_owner`] reads the
+//! file owner SID via `GetNamedSecurityInfoW` + `ConvertSidToStringSidW`.
+//! Both return `None` on failure so audit emission is never blocked by
+//! enrichment errors.  SHA-256 hashing of the process executable is deferred
+//! to Phase 2.
 
 /// Audit enrichment — resolves process metadata and resource ownership.
 #[cfg(windows)]
