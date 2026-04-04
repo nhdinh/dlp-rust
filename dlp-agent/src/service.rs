@@ -90,6 +90,11 @@ pub fn run_service() -> Result<()> {
     // Acquire single-instance mutex.
     acquire_instance_mutex();
 
+    // Harden the agent process DACL — deny PROCESS_TERMINATE etc. to Everyone.
+    // This prevents Task Manager / taskkill from killing the agent without
+    // dlp-admin credentials.  Failures are logged but do not block startup.
+    crate::protection::harden_agent_process();
+
     // ── Configure the UI binary path ─────────────────────────────────
     // In production: installed alongside the service binary.
     // Override with DLP_UI_BINARY env var for development.
@@ -570,6 +575,9 @@ pub fn run_console() -> Result<()> {
         service_name = SERVICE_NAME,
         "DLP Agent running in console mode (full pipeline)"
     );
+
+    // Harden the agent process DACL — same hardening as service mode.
+    crate::protection::harden_agent_process();
 
     // ── Health monitor first (sets ROUTER state before Pipe 3 clients connect) ──
     let _health_handle = crate::health_monitor::start();
