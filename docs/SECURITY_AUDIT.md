@@ -182,15 +182,15 @@ All Phase 1–3 controls were verified against the source code.
 
 ### 4.3 Phase 5 Deferred Items
 
-| Item | Description | Blocking |
-|------|-------------|---------|
-| dlp-server / SIEM relay | F-AUD-03, F-AUD-04, F-AUD-07, F-AUD-08, F-AUD-09; all F-SRV-* | Phase 4 complete |
-| Certificate pinning | N-SEC-08; THREAT-004 | Phase 4 complete |
-| SHA-256 hash chain | N-SEC-07; THREAT-008 | Phase 4 complete |
-| HSM / Key Vault | THREAT-002 (TLS key), SIEM token | Phase 4 complete |
-| TOTP + JWT admin auth | N-SEC-05, F-ADM-06; THREAT-001, THREAT-011 | Phase 4 complete |
-| Policy store integrity (signed) | THREAT-006 | Phase 4 complete |
-| Agent self-update | F-AGT-15 | Phase 4 complete |
+| Item | Description | Unblocked After |
+|------|-------------|----------------|
+| dlp-server / SIEM relay | F-AUD-03, F-AUD-04, F-AUD-07, F-AUD-08, F-AUD-09; all F-SRV-* | Phase 3 |
+| Certificate pinning | N-SEC-08; THREAT-004 | Phase 3 |
+| SHA-256 hash chain | N-SEC-07; THREAT-008 | Phase 3 |
+| HSM / Key Vault | THREAT-002 (TLS key), SIEM token | Phase 3 |
+| TOTP + JWT admin auth | N-SEC-05, F-ADM-06; THREAT-001, THREAT-011 | Phase 3 |
+| Policy store integrity (signed) | THREAT-006 | Phase 3 |
+| Agent self-update | F-AGT-15 | Phase 3 |
 
 ---
 
@@ -224,7 +224,7 @@ All Phase 1–3 controls were verified against the source code.
 | THREAT-024 | Named pipe DoS | DoS | **Implemented** | `NUM_INSTANCES=4` + SYSTEM ACL | `ipc/server.rs` |
 | THREAT-025 | Clipboard listener exhaustion | DoS | **Partially Mitigated** | Windows clipboard limits; classifier size limits | `clipboard/listener.rs` |
 | THREAT-026 | SYSTEM privilege abuse | Elevation | **Partially Mitigated** | SYSTEM necessary; process DACL restricts interaction | `protection.rs` |
-| THREAT-027 | DLL injection into agent | Elevation | **Partially Mitigated** | Process DACL; DLL hardening Phase 2 | `protection.rs` |
+| THREAT-027 | DLL injection into agent | Elevation | **Partially Mitigated** | Process DACL; DLL load hardening (Phase 2 remaining) | `protection.rs` |
 | THREAT-028 | DLL injection into UI | Elevation | **Not Mitigated** | Inherent: UI runs in user session | `ui_spawner.rs` |
 | THREAT-029 | ABAC policy misconfiguration | Elevation | **Partially Mitigated** | Structural validation + audit | `policy_store.rs` |
 | THREAT-030 | Service stop race condition | Elevation | **Not a Threat** | Verified: atomic flag; no exploitable race | `password_stop.rs` |
@@ -267,9 +267,8 @@ The following risks are accepted by design, depend on external controls, or are 
 | P2 | TOTP + JWT for admin portal | N-SEC-05, F-ADM-06, THREAT-001, THREAT-011 |
 | P3 | Policy store integrity (signed policies) | THREAT-006 |
 | P3 | HSM / Key Vault for secrets | THREAT-002 |
-| P3 | DLL load hardening | THREAT-027 |
 
-### 7.3 Phase 2 Items (Already Planned)
+### 7.3 Phase 2 Remaining Items
 
 | Item | Source |
 |------|--------|

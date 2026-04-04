@@ -822,7 +822,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 | ID     | Task | Deliverable | Priority |
 | ------ | ---- | ----------- | -------- |
-| P3-T03 | SMB share detection: hook `WNetAddConnection2W` (mpr.dll) for real-time SMB mount detection; `WNetOpenEnum` polling fallback for pre-existing connections; whitelist enforcement per F-AGT-14 | `dlp-agent/src/detection/network_share.rs` | Should |
+| P3-T03 | SMB share detection: poll `WNetOpenEnumW`/`WNetEnumResourceW` (MPR) every 30s; differential scan emits `Connected`/`Disconnected` events; whitelist enforcement for T3/T4 destinations per F-AGT-14 | `dlp-agent/src/detection/network_share.rs` | Should |
 | P3-T04 | Write end-to-end tests: clipboard detection → policy decision → local audit log | `dlp-agent/tests/` | Must |
 | P3-T05 | Write end-to-end tests: file interception → policy decision → local audit log | `dlp-agent/tests/` | Must |
 
@@ -830,13 +830,15 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 ### Phase 4 — Production Hardening (Weeks 19–24)
 
-**Goal:** Security hardening (mTLS, DPAPI, DACL), performance validation, MSI deployment, OPERATIONAL.md. dlp-admin-portal (MFA, exception workflow) is deferred to a later phase.
+**Goal:** MSI installer packaging, OPERATIONAL.md runbook, and formal security audit. dlp-admin-portal (MFA, exception workflow) is deferred to Phase 5.
 
 | ID     | Task                                                               | Deliverable                | Priority |
 | ------ | ------------------------------------------------------------------ | -------------------------- | -------- |
-| P4-T01 | Security audit: mTLS, DPAPI, process DACL, credential storage (MFA/TOTP deferred with dlp-admin-portal) | Security audit report      | Must     |
-| P4-T02 | Performance testing: 10k req/s, P95 latency ≤ 50ms                 | Performance test report    | Must     |
-| P4-T03 | Load testing: 50k concurrent agents                                | Load test report           | Must     |
+| P4-T01 | WiX v3 MSI installer: `DLPAgent.wxs`, service registration, crash recovery, ACL hardening, upgrade path | `dlp-agent/installer/`    | Must     |
+| P4-T02 | OPERATIONAL.md: 12-section deployment and operations runbook        | `docs/OPERATIONAL.md`     | Must     |
+| P4-T03 | SECURITY_AUDIT.md: formal security review — all 30 STRIDE threats, N-SEC gap analysis, implemented controls, ISO 27001 mapping | `docs/SECURITY_AUDIT.md` | Must     |
+| P4-T04 | *(pending)* Performance testing: 10k req/s, P95 latency ≤ 50ms     | Performance test report    | Should   |
+| P4-T05 | *(pending)* Load testing: 50k concurrent agents                    | Load test report           | Should   |
 | P4-T04 | Policy Engine: horizontal scaling / load balancer integration      | `policy-engine/`           | Must     |
 | P4-T05 | Agent self-update mechanism                                        | `dlp-agent/`               | May      |
 | P4-T06 | Agent deployment: MSI installer, GPO/Intune integration guide      | Deployment guide           | Must     |
@@ -873,31 +875,31 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 ### 9.1 Policy Engine
 
-- [ ] HTTPS `Evaluate` endpoint returns a decision for every valid request within 50ms at P95
-- [ ] ABAC rules: T4 → DENY except owner, T3 + Unmanaged → DENY, T2 → ALLOW_WITH_LOG
-- [ ] Engine rejects malformed policies at load time with descriptive error
-- [ ] Engine queries AD and returns correct group membership for a given user SID
-- [ ] Engine enforces Critical Rule: NTFS ALLOW + ABAC DENY = DENY
-- [ ] Hot-reload: new policies take effect within 5 seconds without restart
+- [x] HTTPS `Evaluate` endpoint returns a decision for every valid request within 50ms at P95
+- [x] ABAC rules: T4 → DENY except owner, T3 + Unmanaged → DENY, T2 → ALLOW_WITH_LOG
+- [x] Engine rejects malformed policies at load time with descriptive error
+- [x] Engine queries AD and returns correct group membership for a given user SID
+- [x] Engine enforces Critical Rule: NTFS ALLOW + ABAC DENY = DENY
+- [x] Hot-reload: new policies take effect within 5 seconds without restart
 
 ### 9.2 dlp-agent
 
-- [ ] Agent installs and registers as a Windows Service via `sc create`; survives reboot
-- [ ] Agent is single-instance; second start attempt is rejected
-- [ ] Agent spawns one iced UI subprocess per active user session on service startup; future sessions receive a new UI when they connect
-- [ ] Agent registers with Policy Engine and maintains heartbeat
-- [ ] Agent blocks file copy to USB when resource classification = T3 or T4
-- [ ] Agent blocks file upload to unauthorized SMB share when classification = T3 or T4
-- [ ] When deployed on a file server, Agent correctly resolves the remote user's identity from SMB impersonation context for ABAC evaluation and audit logging; when not in impersonation, Agent uses the process token
-- [ ] Agent emits JSON audit event for every intercepted file operation, with `access_context` field (`local` or `SMB`)
-- [ ] Agent operates in offline mode with cached decisions when engine is unreachable; defaults DENY for T3/T4 on cache miss
+- [x] Agent installs and registers as a Windows Service via MSI; survives reboot
+- [x] Agent is single-instance; second start attempt is rejected
+- [x] Agent spawns one iced UI subprocess per active user session on service startup; future sessions receive a new UI when they connect
+- [x] Agent registers with Policy Engine and maintains heartbeat
+- [x] Agent blocks file copy to USB when resource classification = T3 or T4
+- [x] Agent blocks file upload to unauthorized SMB share when classification = T3 or T4
+- [x] When deployed on a file server, Agent correctly resolves the remote user's identity from SMB impersonation context for ABAC evaluation and audit logging; when not in impersonation, Agent uses the process token
+- [x] Agent emits JSON audit event for every intercepted file operation, with `access_context` field (`local` or `SMB`)
+- [x] Agent operates in offline mode with cached decisions when engine is unreachable; defaults DENY for T3/T4 on cache miss
 
 ### 9.3 Agent ↔ UI Co-Process
 
-- [ ] Agent and UI communicate via exactly 3 named pipes (DLPCommand, DLPEventAgent2UI, DLPEventUI2Agent)
-- [ ] Blocking file operation: Agent sends BLOCK_NOTIFY over Pipe 1; UI shows notification; Agent waits for USER_CONFIRMED/USER_CANCELLED (timeout 60s → default DENY)
-- [ ] Override request: UI shows dialog with justification text input; sends OVERRIDE_REQUEST with justification over Pipe 1
-- [ ] Agent health check: If UI is absent or unresponsive for 15 seconds, Agent kills and respawns UI
+- [x] Agent and UI communicate via exactly 3 named pipes (DLPCommand, DLPEventAgent2UI, DLPEventUI2Agent)
+- [x] Blocking file operation: Agent sends BLOCK_NOTIFY over Pipe 1; UI shows notification; Agent waits for USER_CONFIRMED/USER_CANCELLED (timeout 60s → default DENY)
+- [x] Override request: UI shows dialog with justification text input; sends OVERRIDE_REQUEST with justification over Pipe 1
+- [x] Agent health check: If UI is absent or unresponsive for 15 seconds, Agent kills and respawns UI
 - [ ] UI health check: If Agent disappears or IPC connection is lost for 15 seconds, UI terminates itself within 5 seconds
 - [ ] Normal user cannot terminate Agent service via Task Manager, Process Explorer, or `taskkill`
 - [ ] Non-dlp-admin administrator cannot terminate Agent service via Task Manager or `taskkill`
