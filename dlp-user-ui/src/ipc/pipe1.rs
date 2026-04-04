@@ -32,6 +32,11 @@ impl SendableHandle {
     }
 }
 
+/// Opens a handle to an existing Pipe 1 instance (public for stop-password mode).
+pub fn open_pipe_pub() -> Result<HANDLE> {
+    open_pipe()
+}
+
 /// Opens a handle to an existing Pipe 1 instance.
 fn open_pipe() -> Result<HANDLE> {
     let name_wide: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();

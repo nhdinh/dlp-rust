@@ -74,10 +74,25 @@ fn reset_stop_state() {
     };
 }
 
+/// Maximum time (seconds) to wait for a UI client to connect after spawning.
+const UI_CONNECT_TIMEOUT_SECS: u64 = 15;
+
+/// Maximum time (seconds) the password stop can remain pending before
+/// aborting automatically (guards against the service staying in
+/// StopPending forever if the UI never responds).
+const STOP_TIMEOUT_SECS: u64 = 120;
+
 /// Initiates the password-challenge stop sequence.
 ///
-/// Returns immediately — the actual verification happens asynchronously
-/// via [`handle_password_response`](handle_password_submit).
+/// Spawns a background thread that:
+/// 1. Tries to send PASSWORD_DIALOG to an already-connected UI.
+/// 2. If no UI is connected, spawns one in the active console session
+///    and waits up to [`UI_CONNECT_TIMEOUT_SECS`] for it to connect.
+/// 3. Retries sending PASSWORD_DIALOG.
+/// 4. If still no UI, aborts the stop.
+///
+/// The actual password verification happens asynchronously via
+/// [`handle_password_submit`].
 pub fn initiate_stop() {
     let mut state = STOP_STATE.lock();
     if state.pending {
@@ -89,18 +104,212 @@ pub fn initiate_stop() {
     drop(state);
 
     let request_id = uuid::Uuid::new_v4().to_string();
-    let request_id_clone = request_id.clone();
-
     set_pending_request(&request_id);
 
     std::thread::spawn(move || {
-        info!(
-            request_id = request_id_clone,
-            "sending PASSWORD_DIALOG to UI"
-        );
-        if let Err(e) = send_password_dialog(&request_id_clone) {
-            error!(error = %e, "failed to send PASSWORD_DIALOG — aborting stop");
+        info!(request_id, "initiating password-protected stop");
+
+        // Step 1: try sending to already-connected UI clients.
+        match send_password_dialog(&request_id) {
+            Ok(reached) if reached > 0 => {
+                info!(reached, "PASSWORD_DIALOG delivered to UI");
+                start_stop_timeout(&request_id);
+                return;
+            }
+            Ok(_) => {
+                warn!("no UI clients connected — attempting to spawn UI");
+            }
+            Err(e) => {
+                error!(error = %e, "failed to serialise PASSWORD_DIALOG");
+                cancel_stop();
+                return;
+            }
+        }
+
+        // Step 2: spawn a lightweight stop-password UI in the active session.
+        // This process shows only the dialog and sends the result over Pipe 1.
+        if !try_spawn_password_ui(&request_id) {
+            error!("failed to spawn password UI — aborting stop");
             cancel_stop();
+            return;
+        }
+
+        // Step 3: wait for the UI to connect to Pipe 1.
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(UI_CONNECT_TIMEOUT_SECS);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if crate::ipc::pipe1::connected_client_count() > 0 {
+                info!("UI connected to Pipe 1 after spawn");
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                error!(
+                    "UI did not connect within {}s — aborting stop",
+                    UI_CONNECT_TIMEOUT_SECS
+                );
+                cancel_stop();
+                return;
+            }
+        }
+
+        // Step 4: retry sending PASSWORD_DIALOG.
+        match send_password_dialog(&request_id) {
+            Ok(reached) if reached > 0 => {
+                info!(reached, "PASSWORD_DIALOG delivered to UI (after spawn)");
+                start_stop_timeout(&request_id);
+            }
+            _ => {
+                error!("PASSWORD_DIALOG still could not reach UI — aborting stop");
+                cancel_stop();
+            }
+        }
+    });
+}
+
+/// Spawns a lightweight `dlp-user-ui --stop-password <request_id>` process
+/// in the active console session.
+///
+/// This mode skips all iced/tray initialization — it only shows the password
+/// dialog, sends the result over Pipe 1, and exits.
+///
+/// Returns `true` if the process was successfully created.
+fn try_spawn_password_ui(request_id: &str) -> bool {
+    let binary = match crate::ui_spawner::ui_binary() {
+        Some(b) => b,
+        None => {
+            error!("UI binary path not configured");
+            return false;
+        }
+    };
+
+    // Find the active console session.
+    let sessions = match crate::ui_spawner::enumerate_active_sessions_pub() {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "failed to enumerate sessions");
+            return false;
+        }
+    };
+
+    // Build command line: "dlp-user-ui.exe" --stop-password <request_id>
+    let cmd = format!(
+        "\"{}\" --stop-password {}",
+        binary.display(),
+        request_id
+    );
+
+    // Try each active session (skip session 0).
+    for session_id in sessions {
+        if session_id == 0 {
+            continue;
+        }
+        match spawn_process_in_session(session_id, &cmd) {
+            Ok(pid) => {
+                info!(
+                    session_id,
+                    pid,
+                    "spawned stop-password UI"
+                );
+                return true;
+            }
+            Err(e) => {
+                warn!(
+                    session_id,
+                    error = %e,
+                    "failed to spawn stop-password UI in session"
+                );
+            }
+        }
+    }
+
+    false
+}
+
+/// Spawns a process with the given command line in the specified session
+/// using `CreateProcessAsUserW`.
+fn spawn_process_in_session(session_id: u32, cmd: &str) -> Result<u32> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::RemoteDesktop::WTSQueryUserToken;
+    use windows::Win32::System::Threading::{
+        CreateProcessAsUserW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+
+    if session_id == 0 {
+        anyhow::bail!("session 0 has no interactive desktop");
+    }
+
+    // Get user token for the session.
+    let mut token = HANDLE::default();
+    unsafe {
+        WTSQueryUserToken(session_id, &mut token)
+            .ok()
+            .ok_or_else(|| anyhow::anyhow!(
+                "WTSQueryUserToken failed for session {session_id}"
+            ))?;
+    }
+
+    // Build wide command line (must be mutable for CreateProcessAsUserW).
+    let mut cmd_wide: Vec<u16> = std::ffi::OsStr::new(cmd)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // Target the interactive desktop.
+    let desktop: Vec<u16> = "WinSta0\\Default\0".encode_utf16().collect();
+
+    let startup_info = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        lpDesktop: windows::core::PWSTR::from_raw(desktop.as_ptr() as _),
+        ..Default::default()
+    };
+
+    let mut proc_info = PROCESS_INFORMATION::default();
+
+    unsafe {
+        let result = CreateProcessAsUserW(
+            token,
+            PCWSTR::null(),
+            windows::core::PWSTR::from_raw(cmd_wide.as_mut_ptr()),
+            None,
+            None,
+            false,
+            PROCESS_CREATION_FLAGS(0),
+            None,
+            PCWSTR::null(),
+            &startup_info,
+            &mut proc_info,
+        );
+
+        let _ = CloseHandle(token);
+
+        if result.is_err() {
+            return Err(anyhow::anyhow!(
+                "CreateProcessAsUserW failed for session {session_id}"
+            ));
+        }
+
+        let _ = CloseHandle(proc_info.hThread);
+        let _ = CloseHandle(proc_info.hProcess);
+
+        Ok(proc_info.dwProcessId)
+    }
+}
+
+/// Starts a background timeout that aborts the stop if no password
+/// response arrives within [`STOP_TIMEOUT_SECS`].
+fn start_stop_timeout(request_id: &str) {
+    let rid = request_id.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(STOP_TIMEOUT_SECS));
+        if matches_pending_request(&rid) {
+            error!(
+                "password stop timed out after {}s — aborting",
+                STOP_TIMEOUT_SECS
+            );
+            abort_stop();
         }
     });
 }
