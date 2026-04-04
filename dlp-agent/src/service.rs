@@ -221,8 +221,9 @@ async fn run_loop(
         offline_hb.heartbeat_loop(shutdown_rx).await;
     });
 
-    // ── Start the file system monitor pipeline ───────────────────────
-    let file_monitor = crate::interception::InterceptionEngine::new()
+    // ── Load agent config and start the file system monitor pipeline ──
+    let agent_config = crate::config::AgentConfig::load_default();
+    let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
         .expect("file monitor initialisation always succeeds");
     let file_monitor_for_shutdown = file_monitor.clone();
 
@@ -613,9 +614,10 @@ async fn async_run_console() -> Result<()> {
         offline_hb.heartbeat_loop(shutdown_rx).await;
     });
 
-    // ── File system monitor pipeline ──────────────────────────────
-    let file_monitor =
-        crate::interception::InterceptionEngine::new().expect("file monitor must be constructable");
+    // ── Load agent config and start file system monitor pipeline ──
+    let agent_config = crate::config::AgentConfig::load_default();
+    let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
+        .expect("file monitor must be constructable");
     let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
 
     // Resolve the actual console user via process token (not a stub).

@@ -22,6 +22,8 @@
 //! - [`audit_emitter`] — Append-only JSONL audit log with rotation (Sprint 15, T-19/T-26/T-27).
 //! - [`clipboard`] — Clipboard hooks and content classifier (Sprint 16, T-20).
 
+pub mod config;
+
 pub mod prelude {
     pub use dlp_common::*;
 }
