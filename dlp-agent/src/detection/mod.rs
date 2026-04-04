@@ -8,5 +8,5 @@
 pub mod network_share;
 pub mod usb;
 
-pub use network_share::NetworkShareDetector;
+pub use network_share::{NetworkShareDetector, SmbShareEvent, SmbMonitor};
 pub use usb::UsbDetector;
