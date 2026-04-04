@@ -280,17 +280,38 @@ fn dispatch(msg: Pipe1UiMsg) -> Option<Vec<u8>> {
             // Remove any pending clipboard data associated with this request.
             let _ = CLIPBOARD_CACHE.write().remove(&request_id);
 
-            // If this was an override confirmation, clear the pending context.
-            let cancelled = OVERRIDE_PENDING.write().remove(&request_id);
-            if let Some(ctx) = cancelled {
+            // If this was an override confirmation, emit an override-granted
+            // audit event for the compliance trail.  The file operation itself
+            // is not retried (notify watcher is observe-only; actual blocking
+            // requires a kernel-level minifilter in a future phase).
+            let removed = OVERRIDE_PENDING.write().remove(&request_id);
+            if let Some(ctx) = removed {
                 warn!(
                     request_id,
                     session_id = ctx.session_id,
                     elapsed_ms = ctx.created_at.elapsed().as_millis() as u64,
-                    "Pipe 1: override confirmed — proceeding with operation"
+                    "Pipe 1: override confirmed — audit event emitted"
                 );
-                // TODO (Phase 2): signal the interception pipeline to retry the
-                // blocked operation now that the override is authorised.
+                // Emit an override-granted audit event.
+                let event = dlp_common::AuditEvent::new(
+                    dlp_common::EventType::Access,
+                    "OVERRIDE".to_string(),
+                    "OVERRIDE".to_string(),
+                    request_id.clone(),
+                    dlp_common::Classification::T1,
+                    dlp_common::Action::READ,
+                    dlp_common::Decision::AllowWithLog,
+                    "AGENT".to_string(),
+                    ctx.session_id,
+                )
+                .with_override_granted();
+                let ctx = crate::audit_emitter::EmitContext {
+                    agent_id: "AGENT".to_string(),
+                    session_id: ctx.session_id,
+                    user_sid: "OVERRIDE".to_string(),
+                    user_name: "OVERRIDE".to_string(),
+                };
+                crate::audit_emitter::emit_audit(&ctx, &mut event.clone());
             } else {
                 debug!(
                     request_id,

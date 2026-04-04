@@ -157,13 +157,40 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
         }
         Pipe1AgentMsg::OverrideRequest {
             request_id,
-            reason: _,
-            classification: _,
-            resource_path: _,
+            reason,
+            classification,
+            resource_path,
         } => {
             info!(session_id, request_id, "Pipe 1: OverrideRequest received");
-            // TODO (Phase 2): show override justification dialog.
-            None
+            let result = crate::dialogs::override_request::show_override_dialog(
+                &classification,
+                &resource_path,
+                &reason,
+            );
+            let msg = match result {
+                crate::dialogs::override_request::OverrideDialogResult::Approved {
+                    justification,
+                } => {
+                    info!(
+                        session_id,
+                        request_id,
+                        justification = %justification,
+                        "override approved by user"
+                    );
+                    Pipe1UiMsg::UserConfirmed { request_id }
+                }
+                crate::dialogs::override_request::OverrideDialogResult::Cancelled => {
+                    info!(session_id, request_id, "override cancelled by user");
+                    Pipe1UiMsg::UserCancelled { request_id }
+                }
+            };
+            match serde_json::to_vec(&msg) {
+                Ok(json) => Some(json),
+                Err(e) => {
+                    error!(session_id, "serialise override response failed: {e}");
+                    None
+                }
+            }
         }
         Pipe1AgentMsg::ClipboardRead { request_id } => {
             info!(session_id, request_id, "Pipe 1: ClipboardRead received");
