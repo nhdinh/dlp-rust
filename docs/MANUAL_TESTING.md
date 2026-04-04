@@ -10,20 +10,12 @@ Phase 1 component on a Windows development machine.
 
 ## 1. Prerequisites
 
-| Requirement | Version | Check |
-|-------------|---------|-------|
-| Windows | 10 or 11 | `winver` |
-| Rust toolchain | stable 1.75+ | `rustup show` |
-| Git | any | `git --version` |
-| curl (or Invoke-WebRequest) | any | Ships with Windows 10+ |
-| **Administrator rights** | -- | Optional — the `notify` crate works without elevation; admin rights are only needed for Windows Service registration |
+Assumes you have the following installed:
 
-Clone the repository if you haven't already:
-
-```cmd
-git clone <repo-url> dlp-rust
-cd dlp-rust
-```
+- Rust toolchain (stable) with `cargo` and `rustc`
+- Windows 10 or later (for file system monitoring and service management)
+- PowerShell (for service management and log parsing)
+- `curl` (for API testing; included in Windows 10+)
 
 ---
 
@@ -32,45 +24,31 @@ cd dlp-rust
 Build all workspace crates in release mode:
 
 ```cmd
-cargo build --release
+cargo build --all --release
 ```
 
 Output binaries:
 
-| Binary | Path |
-|--------|------|
+| Binary        | Path                               |
+| ------------- | ---------------------------------- |
 | Policy Engine | `target\release\policy-engine.exe` |
-| DLP Agent | `target\release\dlp-agent.exe` |
-
-To build a single crate:
-
-```cmd
-cargo build -p policy-engine --release
-cargo build -p dlp-agent --release
-```
+| DLP Agent     | `target\release\dlp-agent.exe`     |
 
 ---
 
 ## 3. Start the Policy Engine
 
-Open **Terminal 1** and run:
-
-```cmd
-set RUST_LOG=info
-cargo run -p policy-engine
-```
-
 The engine listens on `http://127.0.0.1:8443` by default.
 
 ### Configuration (environment variables)
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BIND_ADDR` | `127.0.0.1:8443` | Listen address and port |
-| `POLICY_FILE` | `./policies.json` | Path to the policy JSON file |
-| `RUST_LOG` | `info` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
+| Variable      | Default           | Description                                           |
+| ------------- | ----------------- | ----------------------------------------------------- |
+| `BIND_ADDR`   | `127.0.0.1:8443`  | Listen address and port                               |
+| `POLICY_FILE` | `./policies.json` | Path to the policy JSON file                          |
+| `RUST_LOG`    | `info`            | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
 
-Example with custom settings:
+Open **Terminal 1** and run:
 
 ```cmd
 set BIND_ADDR=0.0.0.0:9000
@@ -97,7 +75,13 @@ Expected: HTTP 200 (policy store loaded).
 
 ## 4. Seed Policies
 
-The engine starts with an empty policy set. Use the REST API to add the
+Check for the policies first.
+
+```cmd
+curl http://127.0.0.1:8443/policies
+```
+
+Expected: JSON array with three policy objects. If empty, use the REST API to add the
 three standard ABAC rules from `docs/ABAC_POLICIES.md`.
 
 ### Rule 1: T4 Deny All
@@ -251,7 +235,7 @@ audit log writer. Press `Ctrl+C` to stop.
 
 The agent writes structured JSONL audit events to:
 
-```
+```text
 C:\ProgramData\DLP\logs\audit.jsonl
 ```
 
@@ -285,7 +269,7 @@ Get-Content C:\ProgramData\DLP\logs\audit.jsonl | ForEach-Object { $_ | ConvertF
 3. The agent detects the engine is unreachable and enters **offline mode**.
    Observe the log output:
 
-   ```
+   ```log
    WARN  Policy Engine unreachable -- entering offline mode
    ```
 
@@ -297,7 +281,7 @@ Get-Content C:\ProgramData\DLP\logs\audit.jsonl | ForEach-Object { $_ | ConvertF
 5. **Restart the Policy Engine**. The agent's heartbeat loop (30 s interval)
    detects the engine is back and transitions to online mode:
 
-   ```
+   ```log
    INFO  Policy Engine reachable -- resuming online mode
    ```
 
@@ -323,12 +307,12 @@ mkdir C:\Data
 mkdir C:\Public
 ```
 
-| Directory | Classification | Sensitivity |
-|-----------|---------------|-------------|
-| `C:\Restricted\` | T4 Restricted | Highest -- fail-closed DENY |
-| `C:\Confidential\` | T3 Confidential | High |
-| `C:\Data\` | T2 Internal | Moderate |
-| `C:\Public\` | T1 Public | Low |
+| Directory          | Classification  | Sensitivity                 |
+| ------------------ | --------------- | --------------------------- |
+| `C:\Restricted\`   | T4 Restricted   | Highest -- fail-closed DENY |
+| `C:\Confidential\` | T3 Confidential | High                        |
+| `C:\Data\`         | T2 Internal     | Moderate                    |
+| `C:\Public\`       | T1 Public       | Low                         |
 
 ### 10.2 File Operations (F-AGT-05)
 
@@ -400,7 +384,7 @@ Plug in a USB thumb drive. The agent scans drive types on arrival.
 
 Expected agent log:
 
-```
+```log
 INFO  USB mass storage arrived -- blocking writes  drive=E
 ```
 
@@ -429,7 +413,7 @@ Safely eject or pull the drive.
 
 Expected agent log:
 
-```
+```log
 INFO  USB mass storage removed  drive=E
 ```
 
@@ -560,17 +544,17 @@ $events | Group-Object decision | Format-Table Count, Name
 
 Expected output should show:
 
-| Event Type | Expected |
-|------------|----------|
-| `ACCESS` | File read/write operations |
-| `BLOCK` | T3/T4 to USB or non-whitelisted SMB |
+| Event Type | Expected                            |
+| ---------- | ----------------------------------- |
+| `ACCESS`   | File read/write operations          |
+| `BLOCK`    | T3/T4 to USB or non-whitelisted SMB |
 
-| Classification | Expected |
-|---------------|----------|
-| T4 | Restricted directory + SSN/CC clipboard |
-| T3 | Confidential directory + keyword clipboard |
-| T2 | Data directory + internal keyword clipboard |
-| T1 | Public directory (if logged) |
+| Classification | Expected                                    |
+| -------------- | ------------------------------------------- |
+| T4             | Restricted directory + SSN/CC clipboard     |
+| T3             | Confidential directory + keyword clipboard  |
+| T2             | Data directory + internal keyword clipboard |
+| T1             | Public directory (if logged)                |
 
 ### 10.8 Cleanup Test Files
 
@@ -635,10 +619,10 @@ Get-Process dlp-user-ui -ErrorAction SilentlyContinue |
 
 Expected:
 
-| Process | Session | Account |
-|---------|---------|---------|
-| `dlp-agent` | 0 (SYSTEM) | `NT AUTHORITY\SYSTEM` |
-| `dlp-user-ui` | Your session (e.g. 1, 2) | Your AD user account |
+| Process       | Session                  | Account               |
+| ------------- | ------------------------ | --------------------- |
+| `dlp-agent`   | 0 (SYSTEM)               | `NT AUTHORITY\SYSTEM` |
+| `dlp-user-ui` | Your session (e.g. 1, 2) | Your AD user account  |
 
 If `dlp-user-ui` is **not** running:
 
@@ -675,13 +659,25 @@ it to see the context menu:
 - **Agent Status: Running** -- read-only status label
 - **Exit** -- closes the UI (agent will respawn it within 15 seconds)
 
+### Password-Protected Stop
+
+When `sc stop dlp-agent` is issued, the service reports `STOP_PENDING` to the SCM
+with a 120-second wait hint, then sends a `PASSWORD_DIALOG` to the UI via Pipe 1.
+The admin password dialog appears on the interactive desktop. Expected behavior:
+
+1. `sc stop dlp-agent` returns immediately (no error) and `sc query` shows `STOP_PENDING`
+2. The UI displays a password dialog
+3. Correct password: service stops cleanly
+4. Wrong password (x3) or Cancel: service reverts to `RUNNING` (`sc query` confirms)
+
 ### Force-Stop (when password dialog is stuck)
 
-If `sc stop` hangs waiting for the password dialog (no UI is connected), force-kill:
+If no UI is connected, the password dialog cannot be shown. The service remains
+in `STOP_PENDING` until the 120-second wait hint expires. Force-kill:
 
 ```powershell
 sc stop dlp-agent
-# Wait 30s — if still running:
+# Wait up to 120s — if still running:
 Stop-Process -Name dlp-agent -Force
 sc query dlp-agent  # Should show STOPPED
 ```
@@ -849,12 +845,12 @@ set RUST_LOG=policy_engine=debug,dlp_agent=trace
 
 ## 14. Component Summary
 
-| Component | Binary | Default Address | Config |
-|-----------|--------|-----------------|--------|
-| Policy Engine | `policy-engine.exe` | `127.0.0.1:8443` | `BIND_ADDR`, `POLICY_FILE`, `RUST_LOG` |
-| DLP Agent | `dlp-agent.exe --console` | N/A (local service) | `RUST_LOG` |
-| DLP User UI | `dlp-user-ui.exe` | N/A (spawned by agent) | `RUST_LOG`, `DLP_UI_BINARY` |
-| Audit Log | N/A (file output) | `C:\ProgramData\DLP\logs\audit.jsonl` | Hardcoded path (Phase 1) |
+| Component     | Binary                    | Default Address                       | Config                                 |
+| ------------- | ------------------------- | ------------------------------------- | -------------------------------------- |
+| Policy Engine | `policy-engine.exe`       | `127.0.0.1:8443`                      | `BIND_ADDR`, `POLICY_FILE`, `RUST_LOG` |
+| DLP Agent     | `dlp-agent.exe --console` | N/A (local service)                   | `RUST_LOG`                             |
+| DLP User UI   | `dlp-user-ui.exe`         | N/A (spawned by agent)                | `RUST_LOG`, `DLP_UI_BINARY`            |
+| Audit Log     | N/A (file output)         | `C:\ProgramData\DLP\logs\audit.jsonl` | Hardcoded path (Phase 1)               |
 
 ---
 
@@ -862,14 +858,14 @@ set RUST_LOG=policy_engine=debug,dlp_agent=trace
 
 ### Policy Engine
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Liveness probe (always 200) |
-| `GET` | `/ready` | Readiness probe (200 if store loaded) |
-| `POST` | `/evaluate` | ABAC policy evaluation |
-| `GET` | `/policies` | List all policies |
-| `POST` | `/policies` | Create a policy (returns 201) |
-| `GET` | `/policies/:id` | Get a policy by ID |
-| `PUT` | `/policies/:id` | Update a policy |
-| `DELETE` | `/policies/:id` | Delete a policy (returns 204) |
-| `GET` | `/policies/:id/versions` | Get version history (stub) |
+| Method   | Path                     | Description                           |
+| -------- | ------------------------ | ------------------------------------- |
+| `GET`    | `/health`                | Liveness probe (always 200)           |
+| `GET`    | `/ready`                 | Readiness probe (200 if store loaded) |
+| `POST`   | `/evaluate`              | ABAC policy evaluation                |
+| `GET`    | `/policies`              | List all policies                     |
+| `POST`   | `/policies`              | Create a policy (returns 201)         |
+| `GET`    | `/policies/:id`          | Get a policy by ID                    |
+| `PUT`    | `/policies/:id`          | Update a policy                       |
+| `DELETE` | `/policies/:id`          | Delete a policy (returns 204)         |
+| `GET`    | `/policies/:id/versions` | Get version history (stub)            |
