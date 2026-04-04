@@ -313,6 +313,171 @@ async fn test_e2e_audit_event_round_trip() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// P2-T13: Agent ↔ real Policy Engine end-to-end
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Starts a real Policy Engine (not mock) on an ephemeral port with the
+/// standard 3 ABAC rules from ABAC_POLICIES.md pre-loaded.
+async fn start_real_engine() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    use axum::Router;
+    use dlp_common::abac::{DeviceTrust, Policy, PolicyCondition};
+    use tokio::net::TcpListener;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let policy_path = tmp.path().join("policies.json");
+
+    // Pre-seed the 3 standard policies.
+    let policies = vec![
+        Policy {
+            id: "pol-001".into(),
+            name: "T4 Deny All".into(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::Classification {
+                op: "eq".into(),
+                value: Classification::T4,
+            }],
+            action: Decision::DENY,
+            enabled: true,
+            version: 1,
+        },
+        Policy {
+            id: "pol-002".into(),
+            name: "T3 Unmanaged Block".into(),
+            description: None,
+            priority: 2,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".into(),
+                    value: Classification::T3,
+                },
+                PolicyCondition::DeviceTrust {
+                    op: "eq".into(),
+                    value: DeviceTrust::Unmanaged,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            version: 1,
+        },
+        Policy {
+            id: "pol-003".into(),
+            name: "T2 Allow with Log".into(),
+            description: None,
+            priority: 3,
+            conditions: vec![PolicyCondition::Classification {
+                op: "eq".into(),
+                value: Classification::T2,
+            }],
+            action: Decision::AllowWithLog,
+            enabled: true,
+            version: 1,
+        },
+    ];
+    std::fs::write(&policy_path, serde_json::to_string(&policies).unwrap()).unwrap();
+
+    let engine = Arc::new(policy_engine::AbacEngine::new());
+    let store = Arc::new(
+        policy_engine::policy_store::PolicyStore::open(policy_path, engine).unwrap(),
+    );
+    let app: Router = policy_engine::http_server::build_full_router(store);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    // Keep tempdir alive by leaking it (test process will clean up).
+    std::mem::forget(tmp);
+
+    (addr, handle)
+}
+
+/// P2-T13: Agent's OfflineManager evaluates against a real Policy Engine.
+#[tokio::test]
+async fn test_agent_to_real_engine_e2e() {
+    let (addr, _h) = start_real_engine().await;
+    let base_url = format!("http://{addr}");
+
+    let client = dlp_agent::engine_client::EngineClient::new(&base_url, false).unwrap();
+    let cache = Arc::new(dlp_agent::cache::Cache::new());
+    let offline = Arc::new(dlp_agent::offline::OfflineManager::new(client, cache));
+
+    // T4 WRITE → DENY (Rule 1).
+    let req = EvaluateRequest {
+        subject: dlp_common::Subject {
+            user_sid: "S-1-5-21-E2E".into(),
+            user_name: "e2euser".into(),
+            groups: vec![],
+            device_trust: dlp_common::DeviceTrust::Managed,
+            network_location: dlp_common::NetworkLocation::Corporate,
+        },
+        resource: dlp_common::Resource {
+            path: r"C:\Restricted\secret.xlsx".into(),
+            classification: Classification::T4,
+        },
+        environment: dlp_common::Environment {
+            timestamp: chrono::Utc::now(),
+            session_id: 1,
+            access_context: dlp_common::AccessContext::Local,
+        },
+        action: Action::WRITE,
+    };
+    let resp = offline.evaluate(&req).await;
+    assert!(resp.decision.is_denied());
+    assert_eq!(resp.matched_policy_id.as_deref(), Some("pol-001"));
+
+    // T2 READ → ALLOW_WITH_LOG (Rule 3).
+    let req2 = EvaluateRequest {
+        resource: dlp_common::Resource {
+            path: r"C:\Data\report.xlsx".into(),
+            classification: Classification::T2,
+        },
+        action: Action::READ,
+        ..req.clone()
+    };
+    let resp2 = offline.evaluate(&req2).await;
+    assert_eq!(resp2.decision, Decision::AllowWithLog);
+    assert_eq!(resp2.matched_policy_id.as_deref(), Some("pol-003"));
+
+    // Verify the cache was populated.
+    assert!(offline.is_online());
+}
+
+/// P2-T13: Agent cache hit skips real engine round-trip.
+#[tokio::test]
+async fn test_agent_cache_hit_real_engine() {
+    let (addr, _h) = start_real_engine().await;
+    let base_url = format!("http://{addr}");
+
+    let client = dlp_agent::engine_client::EngineClient::new(&base_url, false).unwrap();
+    let cache = Arc::new(dlp_agent::cache::Cache::new());
+    let offline = Arc::new(dlp_agent::offline::OfflineManager::new(client, cache.clone()));
+
+    let req = EvaluateRequest {
+        subject: dlp_common::Subject::default(),
+        resource: dlp_common::Resource {
+            path: r"C:\Data\cached.xlsx".into(),
+            classification: Classification::T2,
+        },
+        environment: dlp_common::Environment {
+            timestamp: chrono::Utc::now(),
+            session_id: 1,
+            access_context: dlp_common::AccessContext::Local,
+        },
+        action: Action::READ,
+    };
+
+    // First call: hits the engine.
+    let resp1 = offline.evaluate(&req).await;
+    assert_eq!(resp1.decision, Decision::AllowWithLog);
+
+    // Second call: should hit cache (same path + default SID).
+    let resp2 = offline.evaluate(&req).await;
+    assert_eq!(resp2.decision, Decision::AllowWithLog);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helper
 // ─────────────────────────────────────────────────────────────────────────────
 

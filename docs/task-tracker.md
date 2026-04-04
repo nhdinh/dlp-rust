@@ -214,3 +214,15 @@
 | Sprint 16 | T-20                         | 1/1  |
 | Sprint 17 | T-21, T-28                   | 2/2  |
 | Sprint 18 | T-24                         | 1/1  |
+
+## Phase 2 — Process Protection + Integration Tests
+
+| Task   | Status | Story | Description                                                                                               | Deliverable                                |
+| ------ | ------ | ----- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| P2-T03 | [x]    | --    | Process DACL hardening: deny PROCESS_TERMINATE to non-dlp-admin (Everyone DENY ACE)                       | `dlp-agent/src/protection.rs`              |
+| P2-T04 | [x]    | --    | Mutual health monitoring: Agent pings UI (5s), respawn if no pong (15s); UI exits if Agent gone (15s)     | `dlp-agent/src/health_monitor.rs`          |
+| P2-T10 | [x]    | --    | Tray icon double-click opens portal URL (stub: "Coming Soon")                                             | `dlp-user-ui/src/tray.rs`                  |
+| P2-T11 | [x]    | --    | Service stop: STOP_PENDING + password dialog + file-based response + debug bypass                         | `dlp-agent/src/password_stop.rs`           |
+| P2-T12 | [x]    | --    | Policy Engine REST CRUD (GET/POST/PUT/DELETE /policies)                                                   | `policy-engine/src/rest_api.rs`            |
+| P2-T13 | [x]    | --    | Agent-to-Engine E2E integration tests (real Policy Engine, OfflineManager, cache)                          | `dlp-agent/tests/integration.rs`           |
+| P2-T14 | [x]    | --    | ABAC policy integration tests (all 3 rules, priority, disabled, AccessContext, multi-condition)            | `policy-engine/tests/integration.rs`       |
