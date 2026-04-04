@@ -26,48 +26,36 @@ pub fn run() -> iced::Result {
 /// Lightweight stop-password mode.
 ///
 /// Skips all iced / tray / IPC initialization.  Shows the Win32 password
-/// dialog, connects to Pipe 1, sends the result (`PasswordSubmit` or
-/// `PasswordCancel`), and exits.  Designed to be spawned by the agent
-/// via `CreateProcessAsUserW` when `sc stop` is issued and no full UI
-/// is running.
+/// dialog and writes the result to `response_path` as JSON.  The agent
+/// polls this file to receive the response.
+///
+/// This avoids Pipe 1 entirely because synchronous `ReadFile`/`WriteFile`
+/// on the same named-pipe handle deadlock (Windows serializes I/O on
+/// synchronous handles).
 ///
 /// # Arguments
 ///
 /// * `request_id` - The password request ID (passed by the agent).
+/// * `response_path` - File path where the result JSON is written.
 ///
 /// # Errors
 ///
-/// Returns an error if the pipe connection or dialog fails.
-pub fn run_stop_password(request_id: &str) -> anyhow::Result<()> {
-    use ipc::frame::write_frame;
+/// Returns an error if the dialog or file write fails.
+pub fn run_stop_password(request_id: &str, response_path: &str) -> anyhow::Result<()> {
     use ipc::messages::Pipe1UiMsg;
 
-    // Step 1: resolve session ID.
-    let session_id = unsafe {
-        use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
-        use windows::Win32::System::Threading::GetCurrentProcessId;
-        let mut sid: u32 = 0;
-        let _ = ProcessIdToSessionId(GetCurrentProcessId(), &mut sid);
-        sid
-    };
-
-    // Step 2: connect to Pipe 1.
-    let pipe = ipc::pipe1::open_pipe_pub()?;
-
-    // Step 3: send RegisterSession so the agent recognises this client.
-    let register = Pipe1UiMsg::RegisterSession { session_id };
-    let register_json = serde_json::to_vec(&register)?;
-    write_frame(pipe, &register_json)?;
-
-    // Step 4: show the password dialog (blocks until user acts).
+    // Show the password dialog (blocks until the user acts).
     let result = dialogs::stop_password::show_password_dialog(request_id)?;
 
-    // Step 5: send the result over Pipe 1.
-    let result_json = serde_json::to_vec(&result)?;
-    write_frame(pipe, &result_json)?;
+    // Write the response as JSON to the file the agent is polling.
+    let json = match result {
+        Pipe1UiMsg::PasswordSubmit { password, .. } => {
+            format!(r#"{{"result":"submit","password":"{}"}}"#, password)
+        }
+        _ => r#"{"result":"cancel"}"#.to_string(),
+    };
 
-    // Step 6: close the pipe.
-    ipc::frame::close_pipe(pipe);
+    std::fs::write(response_path, json)?;
 
     Ok(())
 }

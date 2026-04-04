@@ -10,8 +10,34 @@ fn main() -> iced::Result {
             .get(pos + 1)
             .map(|s| s.as_str())
             .unwrap_or("stop-unknown");
-        if let Err(e) = dlp_user_ui::run_stop_password(request_id) {
-            eprintln!("[ERROR] stop-password failed: {e}");
+        let response_path = args
+            .get(pos + 2)
+            .map(|s| s.as_str())
+            .unwrap_or(r"C:\ProgramData\DLP\logs\stop-response.json");
+
+        // Log to file since this runs from a SYSTEM-spawned process.
+        let log = |msg: &str| {
+            let _ = std::fs::create_dir_all(r"C:\ProgramData\DLP\logs");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(r"C:\ProgramData\DLP\logs\stop-debug.log")
+            {
+                use std::io::Write;
+                let _ = writeln!(f, "[UI] {msg}");
+            }
+        };
+
+        log(&format!(
+            "--stop-password started, request_id={request_id}, response_path={response_path}"
+        ));
+
+        match dlp_user_ui::run_stop_password(request_id, response_path) {
+            Ok(()) => log("run_stop_password completed OK"),
+            Err(e) => {
+                log(&format!("run_stop_password FAILED: {e}"));
+                eprintln!("[ERROR] stop-password failed: {e}");
+            }
         }
         std::process::exit(0);
     }

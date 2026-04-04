@@ -558,7 +558,7 @@ This separation prevents the service from being manipulated through UI automatio
 | `CONTINUE` | Transitions back to Running |
 | `INTERROGATE` | No-op; SCM reads current status via the status handle |
 
-The `STOP` control does **not** immediately stop the service. The control handler reports `StopPending` with a 120-second `wait_hint` directly to the SCM via a global `OnceLock<ServiceStatusHandle>` (`SCM_HANDLE`), giving the password dialog ample time. The actual exit occurs only after password verification (F-SVC-10 through F-SVC-12). If the password challenge fails or is cancelled, `revert_stop()` reports `Running` to the SCM so `sc query` reflects the correct state.
+The `STOP` control does **not** immediately stop the service. The control handler reports `StopPending` with a 120-second `wait_hint` directly to the SCM via a global `OnceLock<ServiceStatusHandle>` (`SCM_HANDLE`), giving the password dialog ample time. The agent spawns a lightweight `dlp-user-ui.exe --stop-password` process in the active console session via `CreateProcessAsUserW`. This process shows only the Win32 password dialog (no iced/tray) and writes the result to a temp file that the agent polls. This avoids the Pipe 1 synchronous I/O deadlock (Windows serialises `ReadFile`/`WriteFile` on non-overlapped handles). The actual exit occurs only after password verification (F-SVC-10 through F-SVC-12). If the password challenge fails or is cancelled, `revert_stop()` reports `Running` to the SCM so `sc query` reflects the correct state.
 
 ---
 
