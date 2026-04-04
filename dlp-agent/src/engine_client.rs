@@ -169,7 +169,7 @@ impl EngineClient {
     }
 
     /// Returns `true` if the error should trigger a retry.
-    fn is_retryable(e: &EngineClientError) -> bool {
+    pub fn is_retryable(e: &EngineClientError) -> bool {
         match e {
             EngineClientError::Unreachable { .. }
             | EngineClientError::TlsError(_)

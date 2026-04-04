@@ -344,7 +344,7 @@ impl AuditEmitter {
         }
     }
 
-    fn rotate(&self) -> Result<(), AuditError> {
+    pub fn rotate(&self) -> Result<(), AuditError> {
         let mut writer = self.writer.lock();
         writer.flush()?;
         let dir = self.log_path.parent().unwrap_or(Path::new("."));
