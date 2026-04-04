@@ -18,6 +18,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use anyhow::{anyhow, Context, Result};
+use std::io::Write;
 use parking_lot::Mutex;
 use tracing::{error, info, warn};
 use windows::core::PCWSTR;
@@ -28,7 +29,6 @@ use windows::Win32::System::Registry::{
     REG_VALUE_TYPE,
 };
 
-use crate::ipc::pipe1::send_password_dialog;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration (stored in registry)
@@ -64,6 +64,15 @@ pub fn is_stop_confirmed() -> bool {
     STOP_CONFIRMED.load(Ordering::Acquire)
 }
 
+/// Immediately confirms the stop without password verification.
+///
+/// Used in debug builds (`cfg(debug_assertions)`) to allow `sc stop`
+/// without an AD server.  Never compiled into release binaries.
+pub fn confirm_stop_immediate() {
+    info!("stop confirmed without password (debug mode)");
+    STOP_CONFIRMED.store(true, Ordering::Release);
+}
+
 /// Resets stop state between stop cycles.
 fn reset_stop_state() {
     STOP_CONFIRMED.store(false, Ordering::Release);
@@ -74,10 +83,38 @@ fn reset_stop_state() {
     };
 }
 
+/// Writes a diagnostic line to `C:\ProgramData\DLP\logs\stop-debug.log`.
+///
+/// Used to diagnose password-stop issues since the service runs in Session 0
+/// where tracing output is invisible.
+fn debug_log(msg: &str) {
+    let _ = std::fs::create_dir_all(r"C:\ProgramData\DLP\logs");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(r"C:\ProgramData\DLP\logs\stop-debug.log")
+    {
+        let now = chrono::Local::now().format("%H:%M:%S%.3f");
+        let _ = writeln!(f, "[{now}] {msg}");
+    }
+}
+
+/// Maximum time (seconds) the password stop can remain pending before
+/// aborting automatically (guards against the service staying in
+/// StopPending forever if the UI never responds).
+const STOP_TIMEOUT_SECS: u64 = 120;
+
 /// Initiates the password-challenge stop sequence.
 ///
-/// Returns immediately — the actual verification happens asynchronously
-/// via [`handle_password_response`](handle_password_submit).
+/// Spawns a background thread that:
+/// 1. Tries to send PASSWORD_DIALOG to an already-connected UI.
+/// 2. If no UI is connected, spawns one in the active console session
+///    and waits up to [`UI_CONNECT_TIMEOUT_SECS`] for it to connect.
+/// 3. Retries sending PASSWORD_DIALOG.
+/// 4. If still no UI, aborts the stop.
+///
+/// The actual password verification happens asynchronously via
+/// [`handle_password_submit`].
 pub fn initiate_stop() {
     let mut state = STOP_STATE.lock();
     if state.pending {
@@ -89,21 +126,244 @@ pub fn initiate_stop() {
     drop(state);
 
     let request_id = uuid::Uuid::new_v4().to_string();
-    let request_id_clone = request_id.clone();
-
     set_pending_request(&request_id);
 
     std::thread::spawn(move || {
-        info!(
-            request_id = request_id_clone,
-            "sending PASSWORD_DIALOG to UI"
+        debug_log("=== initiate_stop START ===");
+        info!(request_id, "initiating password-protected stop");
+
+        // Build the response file path.  The spawned UI writes its result
+        // here instead of going through Pipe 1 (which deadlocks because
+        // synchronous ReadFile/WriteFile on the same handle are serialised).
+        let response_path = format!(
+            r"C:\ProgramData\DLP\logs\stop-response-{}.json",
+            request_id
         );
-        if let Err(e) = send_password_dialog(&request_id_clone) {
-            error!(error = %e, "failed to send PASSWORD_DIALOG — aborting stop");
+        let _ = std::fs::create_dir_all(r"C:\ProgramData\DLP\logs");
+        // Remove any stale response file.
+        let _ = std::fs::remove_file(&response_path);
+
+        // Step 1: spawn a lightweight stop-password UI in the active session.
+        debug_log(&format!(
+            "step 1: spawning stop-password UI (request_id={request_id})"
+        ));
+        if !try_spawn_password_ui(&request_id, &response_path) {
+            debug_log("step 1: FAILED to spawn UI — aborting stop");
+            error!("failed to spawn password UI — aborting stop");
             cancel_stop();
+            return;
+        }
+        debug_log("step 1: UI process created successfully");
+
+        // Step 2: poll the response file.
+        debug_log("step 2: polling for response file...");
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(STOP_TIMEOUT_SECS);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+
+            if let Ok(data) = std::fs::read_to_string(&response_path) {
+                debug_log(&format!("step 2: response file found ({} bytes)", data.len()));
+                let _ = std::fs::remove_file(&response_path);
+                handle_file_response(&request_id, &data);
+                return;
+            }
+
+            if std::time::Instant::now() >= deadline {
+                debug_log(&format!(
+                    "step 2: TIMEOUT after {}s — aborting stop",
+                    STOP_TIMEOUT_SECS
+                ));
+                error!(
+                    "password stop timed out after {}s",
+                    STOP_TIMEOUT_SECS
+                );
+                let _ = std::fs::remove_file(&response_path);
+                abort_stop();
+                return;
+            }
         }
     });
 }
+
+/// Spawns a lightweight `dlp-user-ui --stop-password <request_id>` process
+/// in the active console session.
+///
+/// This mode skips all iced/tray initialization — it only shows the password
+/// dialog, sends the result over Pipe 1, and exits.
+///
+/// Returns `true` if the process was successfully created.
+/// Handles the JSON response written by the stop-password UI process.
+///
+/// Expected format:
+/// - `{"result":"submit","password":"<dpapi_base64>"}` → verify credentials
+/// - `{"result":"cancel"}` → abort stop
+fn handle_file_response(request_id: &str, data: &str) {
+    #[derive(serde::Deserialize)]
+    struct StopResponse {
+        result: String,
+        #[serde(default)]
+        password: Option<String>,
+    }
+
+    match serde_json::from_str::<StopResponse>(data) {
+        Ok(resp) if resp.result == "submit" => {
+            if let Some(password) = resp.password {
+                debug_log("handle_file_response: PasswordSubmit received");
+                handle_password_submit(request_id, password);
+            } else {
+                debug_log("handle_file_response: submit with no password — treating as cancel");
+                handle_password_cancel(request_id);
+            }
+        }
+        Ok(_) => {
+            debug_log("handle_file_response: PasswordCancel received");
+            handle_password_cancel(request_id);
+        }
+        Err(e) => {
+            debug_log(&format!("handle_file_response: parse error: {e}"));
+            error!(error = %e, "failed to parse stop response");
+            handle_password_cancel(request_id);
+        }
+    }
+}
+
+fn try_spawn_password_ui(request_id: &str, response_path: &str) -> bool {
+    let binary = match crate::ui_spawner::ui_binary() {
+        Some(b) => b,
+        None => {
+            debug_log("try_spawn: UI binary path not configured");
+            error!("UI binary path not configured");
+            return false;
+        }
+    };
+
+    debug_log(&format!("try_spawn: binary = {}", binary.display()));
+
+    // Check binary exists.
+    if !binary.exists() {
+        debug_log(&format!("try_spawn: binary does NOT exist at {}", binary.display()));
+        error!(path = %binary.display(), "UI binary not found");
+        return false;
+    }
+
+    // Find the active console session.
+    let sessions = match crate::ui_spawner::enumerate_active_sessions_pub() {
+        Ok(s) => s,
+        Err(e) => {
+            debug_log(&format!("try_spawn: enumerate sessions failed: {e}"));
+            error!(error = %e, "failed to enumerate sessions");
+            return false;
+        }
+    };
+
+    debug_log(&format!("try_spawn: active sessions = {sessions:?}"));
+
+    // Build command line: "dlp-user-ui.exe" --stop-password <request_id> <response_path>
+    let cmd = format!(
+        "\"{}\" --stop-password {} \"{}\"",
+        binary.display(),
+        request_id,
+        response_path,
+    );
+
+    debug_log(&format!("try_spawn: cmd = {cmd}"));
+
+    // Try each active session (skip session 0).
+    for session_id in sessions {
+        if session_id == 0 {
+            continue;
+        }
+        debug_log(&format!("try_spawn: attempting session {session_id}"));
+        match spawn_process_in_session(session_id, &cmd) {
+            Ok(pid) => {
+                debug_log(&format!("try_spawn: SUCCESS pid={pid} session={session_id}"));
+                info!(session_id, pid, "spawned stop-password UI");
+                return true;
+            }
+            Err(e) => {
+                debug_log(&format!("try_spawn: FAILED session {session_id}: {e}"));
+                warn!(session_id, error = %e, "failed to spawn stop-password UI");
+            }
+        }
+    }
+
+    debug_log("try_spawn: all sessions failed");
+    false
+}
+
+/// Spawns a process with the given command line in the specified session
+/// using `CreateProcessAsUserW`.
+fn spawn_process_in_session(session_id: u32, cmd: &str) -> Result<u32> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::RemoteDesktop::WTSQueryUserToken;
+    use windows::Win32::System::Threading::{
+        CreateProcessAsUserW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+
+    if session_id == 0 {
+        anyhow::bail!("session 0 has no interactive desktop");
+    }
+
+    // Get user token for the session.
+    let mut token = HANDLE::default();
+    unsafe {
+        WTSQueryUserToken(session_id, &mut token)
+            .ok()
+            .ok_or_else(|| anyhow::anyhow!(
+                "WTSQueryUserToken failed for session {session_id}"
+            ))?;
+    }
+
+    // Build wide command line (must be mutable for CreateProcessAsUserW).
+    let mut cmd_wide: Vec<u16> = std::ffi::OsStr::new(cmd)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // Target the interactive desktop.
+    let desktop: Vec<u16> = "WinSta0\\Default\0".encode_utf16().collect();
+
+    let startup_info = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        lpDesktop: windows::core::PWSTR::from_raw(desktop.as_ptr() as _),
+        ..Default::default()
+    };
+
+    let mut proc_info = PROCESS_INFORMATION::default();
+
+    unsafe {
+        let result = CreateProcessAsUserW(
+            token,
+            PCWSTR::null(),
+            windows::core::PWSTR::from_raw(cmd_wide.as_mut_ptr()),
+            None,
+            None,
+            false,
+            PROCESS_CREATION_FLAGS(0),
+            None,
+            PCWSTR::null(),
+            &startup_info,
+            &mut proc_info,
+        );
+
+        let _ = CloseHandle(token);
+
+        if result.is_err() {
+            return Err(anyhow::anyhow!(
+                "CreateProcessAsUserW failed for session {session_id}"
+            ));
+        }
+
+        let _ = CloseHandle(proc_info.hThread);
+        let _ = CloseHandle(proc_info.hProcess);
+
+        Ok(proc_info.dwProcessId)
+    }
+}
+
 
 /// Handles a `PASSWORD_CANCEL` response from the UI.
 pub fn handle_password_cancel(request_id: &str) {

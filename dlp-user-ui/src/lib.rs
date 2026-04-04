@@ -22,3 +22,40 @@ mod tray;
 pub fn run() -> iced::Result {
     app::run()
 }
+
+/// Lightweight stop-password mode.
+///
+/// Skips all iced / tray / IPC initialization.  Shows the Win32 password
+/// dialog and writes the result to `response_path` as JSON.  The agent
+/// polls this file to receive the response.
+///
+/// This avoids Pipe 1 entirely because synchronous `ReadFile`/`WriteFile`
+/// on the same named-pipe handle deadlock (Windows serializes I/O on
+/// synchronous handles).
+///
+/// # Arguments
+///
+/// * `request_id` - The password request ID (passed by the agent).
+/// * `response_path` - File path where the result JSON is written.
+///
+/// # Errors
+///
+/// Returns an error if the dialog or file write fails.
+pub fn run_stop_password(request_id: &str, response_path: &str) -> anyhow::Result<()> {
+    use ipc::messages::Pipe1UiMsg;
+
+    // Show the password dialog (blocks until the user acts).
+    let result = dialogs::stop_password::show_password_dialog(request_id)?;
+
+    // Write the response as JSON to the file the agent is polling.
+    let json = match result {
+        Pipe1UiMsg::PasswordSubmit { password, .. } => {
+            format!(r#"{{"result":"submit","password":"{}"}}"#, password)
+        }
+        _ => r#"{"result":"cancel"}"#.to_string(),
+    };
+
+    std::fs::write(response_path, json)?;
+
+    Ok(())
+}

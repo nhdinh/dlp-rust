@@ -16,12 +16,17 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::mpsc;
 
-/// Path prefixes to exclude from monitoring (case-insensitive).
+use crate::config::AgentConfig;
+
+/// Built-in path prefixes excluded from monitoring (case-insensitive).
 ///
 /// These directories generate high-volume, low-value events that clutter
 /// the audit log.  System directories, temp folders, and application
 /// caches are excluded since they are not relevant to DLP enforcement.
-const EXCLUDED_PREFIXES: &[&str] = &[
+///
+/// User-configured exclusions from [`AgentConfig::excluded_paths`] are
+/// merged with this list at runtime.
+const BUILTIN_EXCLUDED_PREFIXES: &[&str] = &[
     r"c:\windows\",
     r"c:\programdata\",
     r"c:\program files\",
@@ -38,10 +43,20 @@ const EXCLUDED_PREFIXES: &[&str] = &[
 
 /// Returns `true` if the path should be excluded from monitoring.
 ///
-/// Performs case-insensitive prefix matching against [`EXCLUDED_PREFIXES`].
-fn is_excluded(path: &str) -> bool {
+/// Checks the path against both the built-in exclusions and any
+/// user-configured exclusions.  All comparisons are case-insensitive
+/// substring matches.
+fn is_excluded(path: &str, custom_exclusions: &[String]) -> bool {
     let lower = path.to_lowercase();
-    EXCLUDED_PREFIXES.iter().any(|prefix| lower.contains(prefix))
+    if BUILTIN_EXCLUDED_PREFIXES
+        .iter()
+        .any(|prefix| lower.contains(prefix))
+    {
+        return true;
+    }
+    custom_exclusions
+        .iter()
+        .any(|prefix| lower.contains(&prefix.to_lowercase()))
 }
 
 /// The file action intercepted from the file system.
@@ -120,20 +135,38 @@ impl FileAction {
 
 /// The file-system interception engine.
 ///
-/// Watches all mounted volumes for file system change events using the
+/// Watches configured directories for file system change events using the
 /// `notify` crate.  Events are forwarded through a Tokio `mpsc` channel
 /// consumed by the caller.
+///
+/// Directories to watch and additional exclusions are controlled by
+/// [`AgentConfig`].  When no config is provided, all mounted drives
+/// are watched with only built-in exclusions.
 #[derive(Clone)]
 pub struct InterceptionEngine {
     /// Set to `true` by `stop()` to signal the `run()` loop to exit.
     stop_flag: Arc<AtomicBool>,
+    /// Runtime configuration (watch paths + custom exclusions).
+    config: AgentConfig,
 }
 
 impl InterceptionEngine {
-    /// Creates a new interception engine with a fresh stop flag.
+    /// Creates a new interception engine with default configuration
+    /// (all drives, built-in exclusions only).
     pub fn new() -> Result<Self> {
+        Self::with_config(AgentConfig::default())
+    }
+
+    /// Creates a new interception engine with the given configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Agent configuration specifying watched paths and
+    ///   custom exclusions.
+    pub fn with_config(config: AgentConfig) -> Result<Self> {
         Ok(Self {
             stop_flag: Arc::new(AtomicBool::new(false)),
+            config,
         })
     }
 
@@ -146,7 +179,6 @@ impl InterceptionEngine {
     /// Returns `Ok(())` when [`stop()`](InterceptionEngine::stop) is called.
     pub fn run(&self, tx: mpsc::Sender<FileAction>) -> Result<()> {
         use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-        use std::path::Path;
         use std::sync::mpsc;
         use std::time::Duration;
 
@@ -164,21 +196,30 @@ impl InterceptionEngine {
         )
         .map_err(|e| anyhow::anyhow!("Failed to create file system watcher: {e}"))?;
 
-        // Watch all available drive roots so we capture all file activity.
-        for letter in b'A'..=b'Z' {
-            let drive = format!("{}:\\", letter as char);
-            let path = Path::new(&drive);
-            if path.exists() {
-                if let Err(e) = watcher.watch(path, RecursiveMode::Recursive) {
-                    tracing::warn!(drive = %drive, error = %e, "could not watch drive");
-                } else {
-                    tracing::debug!(drive = %drive, "watching drive");
-                }
+        // Watch configured paths (or all drives if none configured).
+        let watch_paths = self.config.resolve_watch_paths();
+        for watch_path in &watch_paths {
+            if let Err(e) = watcher.watch(watch_path, RecursiveMode::Recursive) {
+                tracing::warn!(
+                    path = %watch_path.display(),
+                    error = %e,
+                    "could not watch path"
+                );
+            } else {
+                tracing::info!(path = %watch_path.display(), "watching path");
             }
         }
 
-        tracing::info!("file system watcher started");
-        eprintln!("[DIAG] file monitor: watching all volumes");
+        let mode = if self.config.monitored_paths.is_empty() {
+            "all drives"
+        } else {
+            "configured paths"
+        };
+        tracing::info!(
+            count = watch_paths.len(),
+            custom_exclusions = self.config.excluded_paths.len(),
+            "file system watcher started ({})", mode
+        );
 
         loop {
             // Check stop flag first — use a short timeout so we can also
@@ -220,8 +261,8 @@ impl InterceptionEngine {
                                 );
                                 return Ok(());
                             }
-                            // Skip excluded paths (system dirs, temp, caches).
-                            if is_excluded(action.path()) {
+                            // Skip excluded paths (built-in + custom).
+                            if is_excluded(action.path(), &self.config.excluded_paths) {
                                 continue;
                             }
                             // try_send is non-blocking — the watcher must not stall.
@@ -300,54 +341,79 @@ mod tests {
 
     // -- Path exclusion filter tests ----------------------------------------
 
+    /// No custom exclusions — tests built-in list only.
+    const NO_CUSTOM: &[String] = &[];
+
     #[test]
     fn test_excluded_windows_dir() {
-        assert!(is_excluded(r"C:\Windows\System32\config\SYSTEM.LOG2"));
-        assert!(is_excluded(r"c:\windows\temp\somefile.tmp"));
+        assert!(is_excluded(r"C:\Windows\System32\config\SYSTEM.LOG2", NO_CUSTOM));
+        assert!(is_excluded(r"c:\windows\temp\somefile.tmp", NO_CUSTOM));
     }
 
     #[test]
     fn test_excluded_program_files() {
-        assert!(is_excluded(r"C:\Program Files\SomeApp\data.bin"));
-        assert!(is_excluded(r"C:\Program Files (x86)\App\file.dll"));
+        assert!(is_excluded(r"C:\Program Files\SomeApp\data.bin", NO_CUSTOM));
+        assert!(is_excluded(r"C:\Program Files (x86)\App\file.dll", NO_CUSTOM));
     }
 
     #[test]
     fn test_excluded_programdata() {
-        assert!(is_excluded(r"C:\ProgramData\DLP\logs\audit.jsonl"));
+        assert!(is_excluded(r"C:\ProgramData\DLP\logs\audit.jsonl", NO_CUSTOM));
     }
 
     #[test]
     fn test_excluded_appdata_temp() {
         assert!(is_excluded(
-            r"C:\Users\jsmith\AppData\Local\Temp\tmp1234.dat"
+            r"C:\Users\jsmith\AppData\Local\Temp\tmp1234.dat",
+            NO_CUSTOM,
         ));
     }
 
     #[test]
     fn test_excluded_appdata_vscode() {
         assert!(is_excluded(
-            r"C:\Users\jsmith\AppData\Roaming\Code\User\state.vscdb"
+            r"C:\Users\jsmith\AppData\Roaming\Code\User\state.vscdb",
+            NO_CUSTOM,
         ));
     }
 
     #[test]
     fn test_not_excluded_user_documents() {
-        assert!(!is_excluded(r"C:\Users\jsmith\Documents\report.xlsx"));
+        assert!(!is_excluded(r"C:\Users\jsmith\Documents\report.xlsx", NO_CUSTOM));
     }
 
     #[test]
     fn test_not_excluded_data_dir() {
-        assert!(!is_excluded(r"C:\Data\financials.xlsx"));
+        assert!(!is_excluded(r"C:\Data\financials.xlsx", NO_CUSTOM));
     }
 
     #[test]
     fn test_not_excluded_restricted_dir() {
-        assert!(!is_excluded(r"C:\Restricted\secrets.docx"));
+        assert!(!is_excluded(r"C:\Restricted\secrets.docx", NO_CUSTOM));
     }
 
     #[test]
     fn test_excluded_recycle_bin() {
-        assert!(is_excluded(r"C:\$Recycle.Bin\S-1-5-21\$RXXXX.txt"));
+        assert!(is_excluded(r"C:\$Recycle.Bin\S-1-5-21\$RXXXX.txt", NO_CUSTOM));
+    }
+
+    // -- Custom exclusion tests -----------------------------------------------
+
+    #[test]
+    fn test_custom_exclusion_matches() {
+        let custom = vec![r"C:\BuildOutput\".to_string()];
+        assert!(is_excluded(r"C:\BuildOutput\release\app.exe", &custom));
+    }
+
+    #[test]
+    fn test_custom_exclusion_case_insensitive() {
+        let custom = vec![r"D:\MyCache\".to_string()];
+        assert!(is_excluded(r"d:\mycache\temp\data.bin", &custom));
+    }
+
+    #[test]
+    fn test_custom_exclusion_does_not_affect_non_matching() {
+        let custom = vec![r"C:\BuildOutput\".to_string()];
+        assert!(!is_excluded(r"C:\Data\report.xlsx", &custom));
     }
 }

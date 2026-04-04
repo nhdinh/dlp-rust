@@ -366,22 +366,24 @@ pub fn send_to_ui(session_id: u32, msg: &Pipe1AgentMsg) -> Result<()> {
     write_frame(pipe, &json).inspect_err(|e| debug!(session_id, error = %e, "Pipe 1: write failed"))
 }
 
-/// Sends a PASSWORD_DIALOG to the UI in a specific session.
+/// Sends a PASSWORD_DIALOG to the UI in all connected sessions.
 ///
 /// Used by [`crate::password_stop`] when the service receives `sc stop`.
-pub fn send_password_dialog(request_id: &str) -> Result<()> {
+///
+/// # Returns
+///
+/// The number of UI clients that successfully received the message.
+/// Returns `0` when no clients are connected (caller should spawn a UI).
+pub fn send_password_dialog(request_id: &str) -> Result<u32> {
     let msg = Pipe1AgentMsg::PasswordDialog {
         request_id: request_id.to_string(),
     };
 
-    // PASSWORD_DIALOG is always sent to the interactive session (session 1)
-    // or the session that initiated the stop.  We broadcast to all sessions
-    // to ensure the dialog reaches the right user.
     let json = serde_json::to_vec(&msg).context("serialise PASSWORD_DIALOG")?;
 
     let clients = CLIENTS.read();
     let count = clients.len();
-    let mut ok_count = 0;
+    let mut ok_count: u32 = 0;
 
     for (sid, handle) in clients.iter() {
         match write_frame(handle.as_handle(), &json) {
@@ -393,7 +395,7 @@ pub fn send_password_dialog(request_id: &str) -> Result<()> {
     }
 
     if count == 0 {
-        debug!("Pipe 1: no UI clients connected — PASSWORD_DIALOG not sent");
+        info!("Pipe 1: no UI clients connected — PASSWORD_DIALOG not sent");
     } else {
         info!(
             sessions_contacted = count,
@@ -402,5 +404,10 @@ pub fn send_password_dialog(request_id: &str) -> Result<()> {
         );
     }
 
-    Ok(())
+    Ok(ok_count)
+}
+
+/// Returns the number of currently connected Pipe 1 clients.
+pub fn connected_client_count() -> usize {
+    CLIENTS.read().len()
 }

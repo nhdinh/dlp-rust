@@ -33,10 +33,18 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use windows_service::service::{
     ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
 };
-use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+use windows_service::service_control_handler::{self, ServiceControlHandlerResult, ServiceStatusHandle};
 
 /// The Windows Service name registered with the SCM.
 pub const SERVICE_NAME: &str = "dlp-agent";
+
+/// Global SCM status handle — set once after `register()` returns.
+///
+/// The control handler callback cannot capture the status handle (chicken-and-egg:
+/// the handler is passed to `register`, which returns the handle).  This global
+/// bridges the gap so the handler can report state transitions (e.g. `StopPending`)
+/// directly to the SCM instead of only updating the internal `SERVICE_STATE` mutex.
+static SCM_HANDLE: std::sync::OnceLock<ServiceStatusHandle> = std::sync::OnceLock::new();
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Service main (invoked from the generated FFI entry in main.rs)
@@ -63,6 +71,10 @@ pub fn run_service() -> Result<()> {
 
     // Register the service control handler.
     let status_handle = service_control_handler::register(SERVICE_NAME, service_control_handler)?;
+
+    // Store the handle globally so the control handler callback can report
+    // state transitions (e.g. StopPending) directly to the SCM.
+    let _ = SCM_HANDLE.set(status_handle);
 
     // Wrap in Arc<Mutex<>> so we can use it across multiple set_status calls.
     let status_handle = Arc::new(Mutex::new(status_handle));
@@ -209,8 +221,9 @@ async fn run_loop(
         offline_hb.heartbeat_loop(shutdown_rx).await;
     });
 
-    // ── Start the file system monitor pipeline ───────────────────────
-    let file_monitor = crate::interception::InterceptionEngine::new()
+    // ── Load agent config and start the file system monitor pipeline ──
+    let agent_config = crate::config::AgentConfig::load_default();
+    let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
         .expect("file monitor initialisation always succeeds");
     let file_monitor_for_shutdown = file_monitor.clone();
 
@@ -393,17 +406,33 @@ pub fn current_state() -> ServiceState {
 }
 
 /// The SCM-issued service control handler.
-//
-// Runs on the SCM callback thread — keep all work minimal and non-blocking.
+///
+/// Runs on the SCM callback thread — keep all work minimal and non-blocking.
+/// Reports state transitions directly to the SCM via [`SCM_HANDLE`] so that
+/// `sc stop` sees `StopPending` immediately (with a generous `wait_hint`)
+/// instead of timing out because the service never reported a state change.
 fn service_control_handler(control: ServiceControl) -> ServiceControlHandlerResult {
     match control {
         ServiceControl::Stop => {
             info!(service_name = SERVICE_NAME, "SCM: STOP");
             *SERVICE_STATE.lock() = ServiceState::StopPending;
-            // Initiate the password challenge — the actual stop proceeds only
-            // after successful verification (detected in the run loop via
-            // password_stop::is_stop_confirmed).
-            crate::password_stop::initiate_stop();
+
+            // Report StopPending to the SCM with a 120-second wait_hint so the
+            // SCM does not time out while the password dialog is displayed.
+            report_scm_status(
+                ServiceState::StopPending,
+                ServiceControlAccept::empty(),
+                Duration::from_secs(120),
+            );
+
+            // In debug builds, skip the password challenge so `sc stop` works
+            // without an AD server.  Release builds require the full flow.
+            if cfg!(debug_assertions) {
+                info!("DEBUG MODE: skipping password challenge — stopping immediately");
+                crate::password_stop::confirm_stop_immediate();
+            } else {
+                crate::password_stop::initiate_stop();
+            }
         }
         ServiceControl::Pause => {
             info!(service_name = SERVICE_NAME, "SCM: PAUSE");
@@ -428,13 +457,57 @@ fn service_control_handler(control: ServiceControl) -> ServiceControlHandlerResu
 /// Reverts the service state from StopPending back to Running.
 ///
 /// Called by [`crate::password_stop`] when the dlp-admin cancels the stop
-/// dialog or fails the password challenge 3 times.
+/// dialog or fails the password challenge 3 times.  Reports the state change
+/// to the SCM so `sc query` reflects `Running` again.
 pub fn revert_stop() {
     *SERVICE_STATE.lock() = ServiceState::Running;
+
+    // Report Running to the SCM so it knows the service is healthy again.
+    report_scm_status(
+        ServiceState::Running,
+        ServiceControlAccept::STOP | ServiceControlAccept::PAUSE_CONTINUE,
+        Duration::ZERO,
+    );
+
     info!(
         service_name = SERVICE_NAME,
         "service stop reverted to Running"
     );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SCM status reporting (from the control handler callback)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Reports a service state transition directly to the SCM via the global handle.
+///
+/// Used by the control handler callback and by [`revert_stop`] — contexts that
+/// do not have access to the `Arc<Mutex<ServiceStatusHandle>>` used in the
+/// main service body.  Silently logs if the handle is not yet initialised
+/// (should never happen after `run_service` completes registration).
+fn report_scm_status(
+    state: ServiceState,
+    controls: ServiceControlAccept,
+    wait_hint: Duration,
+) {
+    let Some(handle) = SCM_HANDLE.get() else {
+        error!("SCM_HANDLE not initialised — cannot report {state:?}");
+        return;
+    };
+
+    let status = ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: state,
+        controls_accepted: controls,
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint,
+        process_id: None,
+    };
+
+    if let Err(e) = handle.set_service_status(status) {
+        error!(state = ?state, error = %e, "failed to report status to SCM");
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -541,9 +614,10 @@ async fn async_run_console() -> Result<()> {
         offline_hb.heartbeat_loop(shutdown_rx).await;
     });
 
-    // ── File system monitor pipeline ──────────────────────────────
-    let file_monitor =
-        crate::interception::InterceptionEngine::new().expect("file monitor must be constructable");
+    // ── Load agent config and start file system monitor pipeline ──
+    let agent_config = crate::config::AgentConfig::load_default();
+    let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
+        .expect("file monitor must be constructable");
     let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
 
     // Resolve the actual console user via process token (not a stub).
