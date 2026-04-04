@@ -226,3 +226,11 @@
 | P2-T12 | [x]    | --    | Policy Engine REST CRUD (GET/POST/PUT/DELETE /policies)                                                   | `policy-engine/src/rest_api.rs`            |
 | P2-T13 | [x]    | --    | Agent-to-Engine E2E integration tests (real Policy Engine, OfflineManager, cache)                          | `dlp-agent/tests/integration.rs`           |
 | P2-T14 | [x]    | --    | ABAC policy integration tests (all 3 rules, priority, disabled, AccessContext, multi-condition)            | `policy-engine/tests/integration.rs`       |
+
+## Phase 4 — Production Hardening
+
+| Task   | Status | Description                                                                                               | Deliverable                               |
+| ------ | ------ | --------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| P4-T01 | [x]    | WiX v3 MSI installer: `DLPAgent.wxs`, `build.ps1`, `readme.md`; service install/uninstall, crash recovery | `dlp-agent/installer/`                    |
+| P4-T02 | [x]    | OPERATIONAL.md runbook: 12-section deployment and operations guide                                           | `docs/OPERATIONAL.md`                     |
+| P4-T03 | [x]    | SECURITY_AUDIT.md: formal security review, STRIDE threat coverage, N-SEC gap analysis, ISO 27001 mapping  | `docs/SECURITY_AUDIT.md`                  |
