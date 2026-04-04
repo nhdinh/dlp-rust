@@ -46,7 +46,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 
 ### 1.2 In Scope
 
-- **Components:** dlp-agent (Windows Service), dlp-user-ui (iced subprocess), policy-engine (HTTPS REST API), Active Directory / LDAPS, Named pipes (Pipe 1/2/3), audit log (local JSONL), ETW file system interception
+- **Components:** dlp-agent (Windows Service), dlp-user-ui (iced subprocess), policy-engine (HTTPS REST API), Active Directory / LDAPS, Named pipes (Pipe 1/2/3), audit log (local JSONL), `notify`-based file system interception
 - **Phases:** Phase 1 (current implementation); Phase 5 (dlp-server, SIEM relay) noted where relevant
 - **Environments:** Enterprise Windows endpoints (domain-joined), corporate network
 
@@ -402,7 +402,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 #### THREAT-026: Service Account Privilege Abuse
 - **Asset:** SYSTEM account (agent process)
 - **Threat:** Attacker escapes a contained process and obtains SYSTEM privileges via the agent service
-- **Attack Vector:** Exploit in any agent subsystem (file interception, ETW, clipboard, HTTP client)
+- **Attack Vector:** Exploit in any agent subsystem (file interception, MPR/SMB, clipboard, HTTP client)
 - **Impact:** Attacker gains SYSTEM-level code execution on the endpoint
 - **Mitigation:**
   - Agent runs as SYSTEM because it needs filesystem interception privileges; this is the minimum privilege for the required functionality
@@ -498,7 +498,7 @@ The following risks are **Not Mitigated** or **Planned** in a future phase:
 | Device trust + network location ABAC | Contextual access control | `abac.rs`, `engine.rs` | Elevation |
 | Identity resolution via SMB impersonation | SMB session hijacking | `identity.rs` | Spoofing |
 | USB device notifications | Removable media exfiltration | `detection/usb.rs` | DoS |
-| SMB share ETW detection | Network share exfiltration | `detection/network_share.rs` | DoS |
+| SMB share MPR/mpr.dll hooks | Network share exfiltration | `detection/network_share.rs` | DoS |
 | WTSQueryUserToken UI spawning | Multi-session UI support | `ui_spawner.rs` | Elevation |
 | Mutual health monitor (Pipe 2/3) | Zombie UI / hung agent | `health_monitor.rs` | DoS |
 

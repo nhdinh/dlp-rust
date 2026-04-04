@@ -33,7 +33,7 @@
 | **Denial of Service** | Service disruption | Rate limiting, offline cached mode |
 | **Privilege Escalation** | Unauthorized elevation | Strict RBAC + ABAC, process DACLs |
 
-> For full threat coverage including ETW bypass (F-AGT-18) and named pipe impersonation (N-SEC-12), see SRS.md §6.1.
+> For full threat coverage including syscall bypass (F-AGT-18, future minifilter) and named pipe impersonation (N-SEC-12), see SRS.md §6.1.
 
 ## ISO 27001:2022 Control Mapping
 

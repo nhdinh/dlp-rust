@@ -54,9 +54,9 @@ See SRS.md §8 (Implementation Plan) for the full 5-phase task breakdown.
 - Process DACL hardening (deny PROCESS_TERMINATE to non-`dlp-admin`)
 - Named pipe security hardening
 
-### Phase 3 — ETW Bypass Detection + Integration Tests
+### Phase 3 — SMB Share Detection + Integration Tests
 
-- ETW bypass detection (F-AGT-18)
+- SMB share detection: hook `WNetAddConnection2W` (mpr.dll) to intercept SMB mount attempts; polling fallback via `WNetOpenEnum` (F-AGT-14)
 - Integration test suite
 
 ### Phase 4 — Production Hardening

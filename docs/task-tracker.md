@@ -141,7 +141,7 @@
 | ID   | Status | Story | Task                                                                                                                                                              | Deliverable                                |
 | ---- | ------ | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
 | T-13 | [x]    | US-09 | Implement `detection/usb.rs`: WMI `Win32_VolumeChangeEvent`, classify drive type (USB mass storage vs. internal), block T3/T4 writes                              | `dlp-agent/src/detection/usb.rs`           |
-| T-14 | [x]    | US-10 | Implement `detection/network_share.rs`: ETW `Microsoft-Windows-SMBClient` trace for outbound SMB tree connect events; match against admin-configured whitelist    | `dlp-agent/src/detection/network_share.rs` |
+| T-14 | [x]    | US-10 | Implement `detection/network_share.rs`: hook `WNetAddConnection2W` (mpr.dll) to intercept SMB mount attempts; whitelist enforcement for T3/T4 destinations; polling fallback via `WNetOpenEnum` | `dlp-agent/src/detection/network_share.rs` |
 | T-15 | [x]    | —     | *(superseded)* File interception uses `notify` crate; ETW bypass detection was removed              | —                                          |
 
 ---

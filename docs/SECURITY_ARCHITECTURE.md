@@ -152,10 +152,10 @@ Every ABAC decision, every block event, every admin action, and every failed aut
   ║  ┌───────────────────────────▼──────────────────────────────────┐    ║
   ║  │              ENDPOINT — dlp-agent (SYSTEM)                  │    ║
   ║  │  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐  │    ║
-  ║  │  │ File hooks  │  │  ETW subs. │  │ Named pipes (×3)    │  │    ║
-  ║  │  │ CreateFileW │  │ FileSystem  │  │ DLPCommand           │  │    ║
-  ║  │  │ WriteFile   │  │ ETW         │  │ DLPEventAgent2UI     │  │    ║
-  ║  │  │ DeleteFile  │  │             │  │ DLPEventUI2Agent    │  │    ║
+  ║  │  │ File hooks  │  │ MPR/mpr.dll│  │ Named pipes (×3)    │  │    ║
+  ║  │  │ CreateFileW │  │ SMB mount  │  │ DLPCommand           │  │    ║
+  ║  │  │ WriteFile   │  │ WNetAdd    │  │ DLPEventAgent2UI     │  │    ║
+  ║  │  │ DeleteFile  │  │ Connection2W│  │ DLPEventUI2Agent    │  │    ║
   ║  │  │ MoveFileEx  │  │             │  │ (SYSTEM-only ACL)    │  │    ║
   ║  │  └─────────────┘  └─────────────┘  └──────────────────────┘  │    ║
   ║  │           ↓                ↓                                 │    ║
@@ -585,7 +585,7 @@ The file system monitor in `dlp-agent/src/interception/file_monitor.rs` uses the
 
 **What it can detect:**
 - File create, write, delete, rename, and read via the Win32 API
-- Works cross-session without elevation (unlike ETW)
+- Works cross-session without elevation
 
 **What it cannot prevent:**
 - Direct syscall operations that never touch `ReadDirectoryChangesW`
@@ -700,5 +700,5 @@ This section maps the controls described in this document to ISO 27001:2022 anne
 | §6 (Secrets) | §4 (Info Disclosure — credentials) | N-SEC-02, N-SEC-09 |
 | §7 (Named Pipes) | §4 (Info Disclosure — pipe), §5 (DoS — pipe flood) | N-SEC-12, F-SVC-03 |
 | §8 (Service Hardening) | §6 (Elevation of Privilege) | N-SEC-11, F-SVC-09 |
-| §9 (ETW Bypass) | §3.3 (Tampering — ETW bypass) | F-AGT-18 |
+| §9 (ETW Bypass) | §3.3 (Tampering — ETW bypass) | F-AGT-18 (superseded) — SMB mount detection via mpr.dll hooks (F-AGT-14, Phase 3) |
 | §10 (Logging) | §3 (Repudiation) | F-AUD-06, F-AUD-09 |

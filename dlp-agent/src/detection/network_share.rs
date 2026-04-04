@@ -1,16 +1,28 @@
 //! SMB/network share detection (T-14, F-AGT-14).
 //!
-//! Detects outbound SMB connections by monitoring the
-//! `Microsoft-Windows-SMBClient` ETW provider for tree-connect events.
-//! Matched destinations are checked against an admin-configured whitelist;
-//! connections to non-whitelisted shares carrying T3/T4 data are blocked.
+//! Detects outbound SMB connections by monitoring the Windows Multi-Provider
+//! Router (MPR) for `WNetAddConnection2W` calls — the standard API that all
+//! applications use to map a drive letter or UNC path to a share.  Matched
+//! destinations are checked against an admin-configured whitelist; non-whitelisted
+//! connections carrying T3/T4 data are blocked.
+//!
+//! ## Why MPR hooks over ETW?
+//!
+//! `Microsoft-Windows-SMBClient` ETW requires session-local subscriptions,
+//! needs admin privileges, and can be silenced by stopping the ETW session.
+//! `WNetAddConnection2W` is the canonical entry point for all SMB mounts
+//! (drive letters, `net use`, `MapNetworkDrive`), making it a more reliable
+//! and auditable interception point that works cross-session without elevation.
 //!
 //! ## Detection model
 //!
-//! 1. Subscribe to `Microsoft-Windows-SMBClient` ETW trace.
-//! 2. Capture `TreeConnect` events (Event ID 30803) containing the server name.
-//! 3. Check destination against the whitelist.
+//! 1. Hook `WNetAddConnection2W` (via `mpr.dll` import) to capture mount requests.
+//! 2. Extract server name from the remote name.
+//! 3. Check destination against the whitelist (case-insensitive prefix match).
 //! 4. If not whitelisted and data classification is T3/T4, block + emit audit.
+//!
+//! A polling fallback using `WNetOpenEnum`/`WNetEnumResource` detects active
+//! connections that were established before the agent started.
 //!
 //! ## Whitelist format
 //!
@@ -25,19 +37,6 @@ use std::collections::HashSet;
 use dlp_common::Classification;
 use parking_lot::RwLock;
 use tracing::{debug, info};
-
-/// Well-known GUID for the Microsoft-Windows-SMBClient ETW provider.
-#[allow(dead_code)]
-const SMB_CLIENT_GUID: windows::core::GUID = windows::core::GUID::from_values(
-    0x988c59c5,
-    0x0a1c,
-    0x45b6,
-    [0xa5, 0x55, 0x0c, 0x62, 0x27, 0x6e, 0x32, 0x7e],
-);
-
-/// ETW event ID for SMB TreeConnect (outbound connection to a share).
-#[allow(dead_code)]
-const SMB_TREE_CONNECT_EVENT_ID: u16 = 30803;
 
 /// Detects outbound SMB connections and enforces destination whitelisting.
 #[derive(Debug)]

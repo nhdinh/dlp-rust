@@ -7,7 +7,7 @@
 **Status:** Draft
 **Author:** Principal Security Architect
 **Changelog (v1.1):** Added Agent-as-Service architecture (§3.2, §3.3), IPC protocol (§3.4), updated crate structure (§5.2), new NFRs (§4.7), updated ACs (§9.6); fixed story point totals; added F-ADM-12; fixed ISO27001 x-ref; fixed DPAPI spec; fixed pipe name; added terminology note
-**Changelog (v1.2):** Phase 1 scope revised: no minifilter driver; `notify`-based file interception (F-AGT-05); clipboard hooks (F-AGT-17); `dlp-agent` runs standalone (local JSON audit, Phase 5 adds dlp-server); `dlp-user-ui` moved from Phase 2 to Phase 1; `dlp-admin-portal` deferred to later phase; `dlp-server` deferred to Phase 5; ETW bypass detection was removed; updated §1.2 scope, §3.2 F-AGT-05/F-AGT-17, §5.2 crate structure, §8 Phase 1–2 task tables, §9 acceptance criteria
+**Changelog (v1.2):** Phase 1 scope revised: no minifilter driver; `notify`-based file interception (F-AGT-05); clipboard hooks (F-AGT-17); `dlp-agent` runs standalone (local JSON audit, Phase 5 adds dlp-server); `dlp-user-ui` moved from Phase 2 to Phase 1; `dlp-admin-portal` deferred to later phase; `dlp-server` deferred to Phase 5; ETW bypass detection (F-AGT-18) superseded — SMB mount detection via mpr.dll hooks added (F-AGT-14, Phase 3); updated §1.2 scope, §3.2 F-AGT-05/F-AGT-17, §5.2 crate structure, §8 Phase 1–2 task tables, §9 acceptance criteria
 
 **Changelog (v1.3):** Added F-AGT-19: SMB impersonation identity resolution — Agent resolves remote user's SID from SMB impersonation context using `QuerySecurityContextToken` / `ImpersonateSelf` + `GetTokenInformation`; audit events include `access_context` field; added `identity.rs` to crate structure; updated F-AUD-02 schema; added SMB Impersonation glossary entry; restructured Phase 1 task table with T-01–T-46 IDs matching `docs/plans/user-stories.md`; Phase 1 expanded to 18 sprints; added Phase 1 task breakdowns to each Epic in user-stories.md
 
@@ -40,7 +40,7 @@ This Software Requirements Specification (SRS) defines the complete requirements
 
 The system shall:
 
-- Enforce DLP policies on Windows endpoints using a Rust-based agent running as a Windows Service. File interception uses Windows API hooks (CreateFileW, WriteFile, NtWriteFile, DeleteFile, MoveFileEx, GetClipboardData, SetClipboardData, etc.). No minifilter or kernel driver. ETW (Microsoft-Windows-FileSystem-ETW) is used as a bypass-detection layer: if ETW reports a file operation that the hooks did not see, it is logged as EVASION_SUSPECTED.
+- Enforce DLP policies on Windows endpoints using a Rust-based agent running as a Windows Service. File interception uses the `notify` crate (backed by `ReadDirectoryChangesW`) to watch configured directories recursively. No minifilter or kernel driver. SMB mount detection uses `WNetAddConnection2W` hooks (mpr.dll) with `WNetOpenEnum` polling fallback.
 - Provide a centralized ABAC Policy Engine with an HTTP/REST interface
 - Classify data using a four-tier model (T1–T4)
 - Integrate with Active Directory for identity and group membership
@@ -217,7 +217,7 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 | F-AGT-15 | Agent shall self-update from a configured update server endpoint                                                                                                                                                                                                                                                  | May      |
 | F-AGT-16 | Agent shall support supervised (managed) and unsupervised (unmanaged) device detection                                                                                                                                                                                                                            | Must     |
 | F-AGT-17 | Agent shall intercept clipboard read/write via GetClipboardData/SetClipboardData and classify clipboard content                                                                                                                                                                                                   | Must     |
-| F-AGT-18 | *(superseded)* Replaced by `notify`-based file interception; ETW bypass detection was removed. Direct syscall bypass remains a limitation addressed by a future minifilter driver.                                                                                                                                          | —        |
+| F-AGT-18 | *(superseded)* ETW bypass detection was removed. Direct syscall bypass remains a limitation addressed by a future minifilter driver. SMB mount interception is handled by F-AGT-14 (mpr.dll hooks).                                                                                                                                                   | —        |
 | F-AGT-19 | When intercepting a file operation on a file server, Agent shall resolve the caller's identity from the active SMB impersonation context using `QuerySecurityContextToken` / `ImpersonateSelf` + `GetTokenInformation`; if no impersonation context is present (local process), Agent shall use the process token | Must     |
 
 ### 3.3 Agent ↔ UI Co-Process Architecture
@@ -564,8 +564,7 @@ dlp-rust/                           # Cargo workspace
 │   │   ├── detection/
 │   │   │   ├── mod.rs
 │   │   │   ├── usb.rs             # WMI DriveLetterChangeEvent
-│   │   │   ├── network_share.rs    # SMB write detection
-│   │   │   └── etw_bypass.rs      # (removed — replaced by notify-based file monitor)
+│   │   │   ├── network_share.rs    # SMB mount detection (mpr.dll hooks + WNetOpenEnum)
 │   │   ├── identity.rs             # SMB impersonation identity resolution: ImpersonateSelf, QuerySecurityContextToken, GetTokenInformation, RevertToSelf
 │   │   ├── engine_client.rs        # HTTPS/REST client to Policy Engine
 │   │   ├── server_client.rs        # HTTPS client to dlp-server (Phase 5+)
@@ -761,7 +760,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | T-11 | Implement `InterceptionEngine` trait + `file_monitor.rs`: detours/DllMain hooks for CreateFileW, WriteFile, NtWriteFile, DeleteFile, MoveFileEx, CopyFileEx | `dlp-agent/src/interception/file_monitor.rs` | Must |
 | T-12 | Implement `identity.rs`: SMB impersonation resolution — `ImpersonateSelf`, `QuerySecurityContextToken`, `GetTokenInformation(TokenUser)`, `RevertToSelf`; process token fallback | `dlp-agent/src/identity.rs` | Must |
 | T-13 | Implement `detection/usb.rs`: WMI `Win32_VolumeChangeEvent`, classify drive type (USB mass storage vs. internal), block T3/T4 writes | `dlp-agent/src/detection/usb.rs` | Must |
-| T-14 | Implement `detection/network_share.rs`: ETW `Microsoft-Windows-SMBClient` trace for outbound SMB tree connect events; match against admin-configured whitelist | `dlp-agent/src/detection/network_share.rs` | Must |
+| T-14 | Implement `detection/network_share.rs`: hook `WNetAddConnection2W` (mpr.dll) to intercept SMB mount attempts; whitelist enforcement for T3/T4 destinations; polling fallback via `WNetOpenEnum` | `dlp-agent/src/detection/network_share.rs` | Must |
 | T-15 | *(superseded)* File interception now uses the `notify` crate — ETW bypass detection was removed | — | — |
 | T-16 | Implement HTTPS client to Policy Engine: reqwest client, TLS, `POST /evaluate` request/response, retry on failure | `dlp-agent/src/engine_client.rs` | Must |
 | T-17 | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss | `dlp-agent/src/cache.rs` | Must |
@@ -823,7 +822,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 | ID     | Task | Deliverable | Priority |
 | ------ | ---- | ----------- | -------- |
-| P3-T03 | *(superseded)* File interception uses `notify` crate instead of ETW; ETW bypass detection was removed | — | — |
+| P3-T03 | SMB share detection: hook `WNetAddConnection2W` (mpr.dll) for real-time SMB mount detection; `WNetOpenEnum` polling fallback for pre-existing connections; whitelist enforcement per F-AGT-14 | `dlp-agent/src/detection/network_share.rs` | Should |
 | P3-T04 | Write end-to-end tests: clipboard detection → policy decision → local audit log | `dlp-agent/tests/` | Must |
 | P3-T05 | Write end-to-end tests: file interception → policy decision → local audit log | `dlp-agent/tests/` | Must |
 
