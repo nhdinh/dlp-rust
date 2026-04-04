@@ -191,6 +191,9 @@ impl DlpApp {
     fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
             Message::Tick(_) => {
+                // Apply any pending tray status updates from the Pipe 2 thread.
+                tray::apply_pending_status();
+
                 // Poll tray menu events from the muda receiver.
                 if let Ok(event) = muda::MenuEvent::receiver().try_recv()
                 {

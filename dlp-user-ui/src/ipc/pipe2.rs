@@ -105,7 +105,7 @@ fn handle_agent_msg(msg: Pipe2AgentMsg) {
         }
         Pipe2AgentMsg::StatusUpdate { status } => {
             info!(status, "Pipe 2: StatusUpdate received");
-            // TODO (Sprint 12): update tray icon / status display.
+            crate::tray::update_status(&status);
         }
         Pipe2AgentMsg::HealthPing => {
             debug!("Pipe 2: HealthPing received");
