@@ -349,6 +349,288 @@ async fn test_evaluate_default_deny() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// P2-T14: All ABAC policies from ABAC_POLICIES.md via HTTP API
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// T3 + Unmanaged device → DENY (Rule 2 from ABAC_POLICIES.md).
+fn t3_unmanaged_deny_policy() -> Policy {
+    Policy {
+        id: "pol-t3-unmanaged".into(),
+        name: "T3 Unmanaged Block".into(),
+        description: Some("Block T3 from unmanaged devices".into()),
+        priority: 2,
+        conditions: vec![
+            PolicyCondition::Classification {
+                op: "eq".into(),
+                value: Classification::T3,
+            },
+            PolicyCondition::DeviceTrust {
+                op: "eq".into(),
+                value: DeviceTrust::Unmanaged,
+            },
+        ],
+        action: Decision::DENY,
+        enabled: true,
+        version: 1,
+    }
+}
+
+#[tokio::test]
+async fn test_evaluate_t3_unmanaged_denied() {
+    let (base, _tmp, _h) = spawn_server().await;
+    let client = Client::new();
+
+    // Load all 3 standard policies.
+    for policy in [t4_deny_policy(), t3_unmanaged_deny_policy(), t2_log_policy()] {
+        let resp = client
+            .post(format!("{base}/policies"))
+            .json(&policy)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 201);
+    }
+
+    // T3 + Unmanaged → DENY (matches pol-t3-unmanaged).
+    let mut req = make_eval_request(Classification::T3, Action::COPY);
+    req.subject.device_trust = DeviceTrust::Unmanaged;
+    let resp = client
+        .post(format!("{base}/evaluate"))
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    let body: EvaluateResponse = resp.json().await.unwrap();
+    assert!(body.decision.is_denied());
+    assert_eq!(body.matched_policy_id.as_deref(), Some("pol-t3-unmanaged"));
+}
+
+#[tokio::test]
+async fn test_evaluate_t3_managed_default_deny() {
+    let (base, _tmp, _h) = spawn_server().await;
+    let client = Client::new();
+
+    // Only the T3+Unmanaged policy loaded.
+    client
+        .post(format!("{base}/policies"))
+        .json(&t3_unmanaged_deny_policy())
+        .send()
+        .await
+        .unwrap();
+
+    // T3 + Managed → no match → default-deny.
+    let mut req = make_eval_request(Classification::T3, Action::COPY);
+    req.subject.device_trust = DeviceTrust::Managed;
+    let resp = client
+        .post(format!("{base}/evaluate"))
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    let body: EvaluateResponse = resp.json().await.unwrap();
+    assert!(body.decision.is_denied());
+    assert!(body.matched_policy_id.is_none());
+}
+
+#[tokio::test]
+async fn test_evaluate_priority_ordering() {
+    let (base, _tmp, _h) = spawn_server().await;
+    let client = Client::new();
+
+    // Two policies that both match T4: high-priority DENY_WITH_ALERT
+    // and low-priority ALLOW. Higher priority (lower number) should win.
+    let high = Policy {
+        id: "pol-hi".into(),
+        name: "T4 Alert".into(),
+        description: None,
+        priority: 1,
+        conditions: vec![PolicyCondition::Classification {
+            op: "eq".into(),
+            value: Classification::T4,
+        }],
+        action: Decision::DenyWithAlert,
+        enabled: true,
+        version: 1,
+    };
+    let low = Policy {
+        id: "pol-lo".into(),
+        name: "T4 Allow".into(),
+        description: None,
+        priority: 99,
+        conditions: vec![PolicyCondition::Classification {
+            op: "eq".into(),
+            value: Classification::T4,
+        }],
+        action: Decision::ALLOW,
+        enabled: true,
+        version: 1,
+    };
+
+    for p in [&high, &low] {
+        client
+            .post(format!("{base}/policies"))
+            .json(p)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let resp = client
+        .post(format!("{base}/evaluate"))
+        .json(&make_eval_request(Classification::T4, Action::WRITE))
+        .send()
+        .await
+        .unwrap();
+    let body: EvaluateResponse = resp.json().await.unwrap();
+    assert_eq!(body.decision, Decision::DenyWithAlert);
+    assert_eq!(body.matched_policy_id.as_deref(), Some("pol-hi"));
+}
+
+#[tokio::test]
+async fn test_evaluate_disabled_policy_skipped() {
+    let (base, _tmp, _h) = spawn_server().await;
+    let client = Client::new();
+
+    let mut policy = t4_deny_policy();
+    policy.enabled = false;
+    client
+        .post(format!("{base}/policies"))
+        .json(&policy)
+        .send()
+        .await
+        .unwrap();
+
+    // Disabled T4 policy → no match → default-deny (but not from the policy).
+    let resp = client
+        .post(format!("{base}/evaluate"))
+        .json(&make_eval_request(Classification::T4, Action::READ))
+        .send()
+        .await
+        .unwrap();
+    let body: EvaluateResponse = resp.json().await.unwrap();
+    assert!(body.decision.is_denied());
+    assert!(body.matched_policy_id.is_none()); // Not matched by disabled policy.
+}
+
+#[tokio::test]
+async fn test_evaluate_access_context_smb() {
+    let (base, _tmp, _h) = spawn_server().await;
+    let client = Client::new();
+
+    // Policy that blocks SMB access for T2.
+    let policy = Policy {
+        id: "pol-smb-block".into(),
+        name: "T2 SMB Block".into(),
+        description: None,
+        priority: 1,
+        conditions: vec![
+            PolicyCondition::Classification {
+                op: "eq".into(),
+                value: Classification::T2,
+            },
+            PolicyCondition::AccessContext {
+                op: "eq".into(),
+                value: AccessContext::Smb,
+            },
+        ],
+        action: Decision::DENY,
+        enabled: true,
+        version: 1,
+    };
+    client
+        .post(format!("{base}/policies"))
+        .json(&policy)
+        .send()
+        .await
+        .unwrap();
+
+    // SMB request for T2 → DENY.
+    let mut req = make_eval_request(Classification::T2, Action::COPY);
+    req.environment.access_context = AccessContext::Smb;
+    let resp = client
+        .post(format!("{base}/evaluate"))
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    let body: EvaluateResponse = resp.json().await.unwrap();
+    assert!(body.decision.is_denied());
+
+    // Local request for T2 → no match (condition fails) → default-deny.
+    let req_local = make_eval_request(Classification::T2, Action::COPY);
+    let resp = client
+        .post(format!("{base}/evaluate"))
+        .json(&req_local)
+        .send()
+        .await
+        .unwrap();
+    let body: EvaluateResponse = resp.json().await.unwrap();
+    assert!(body.matched_policy_id.is_none());
+}
+
+#[tokio::test]
+async fn test_evaluate_all_three_abac_rules() {
+    let (base, _tmp, _h) = spawn_server().await;
+    let client = Client::new();
+
+    // Load all 3 standard rules from ABAC_POLICIES.md.
+    for policy in [t4_deny_policy(), t3_unmanaged_deny_policy(), t2_log_policy()] {
+        client
+            .post(format!("{base}/policies"))
+            .json(&policy)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Rule 1: T4 → DENY.
+    let resp = client
+        .post(format!("{base}/evaluate"))
+        .json(&make_eval_request(Classification::T4, Action::COPY))
+        .send()
+        .await
+        .unwrap();
+    let body: EvaluateResponse = resp.json().await.unwrap();
+    assert!(body.decision.is_denied());
+    assert_eq!(body.matched_policy_id.as_deref(), Some("pol-t4-deny"));
+
+    // Rule 2: T3 + Unmanaged → DENY.
+    let mut req_t3 = make_eval_request(Classification::T3, Action::WRITE);
+    req_t3.subject.device_trust = DeviceTrust::Unmanaged;
+    let resp = client
+        .post(format!("{base}/evaluate"))
+        .json(&req_t3)
+        .send()
+        .await
+        .unwrap();
+    let body: EvaluateResponse = resp.json().await.unwrap();
+    assert!(body.decision.is_denied());
+    assert_eq!(body.matched_policy_id.as_deref(), Some("pol-t3-unmanaged"));
+
+    // Rule 3: T2 → ALLOW_WITH_LOG.
+    let resp = client
+        .post(format!("{base}/evaluate"))
+        .json(&make_eval_request(Classification::T2, Action::READ))
+        .send()
+        .await
+        .unwrap();
+    let body: EvaluateResponse = resp.json().await.unwrap();
+    assert_eq!(body.decision, Decision::AllowWithLog);
+    assert_eq!(body.matched_policy_id.as_deref(), Some("pol-t2-log"));
+
+    // T1 → no match → default-deny.
+    let resp = client
+        .post(format!("{base}/evaluate"))
+        .json(&make_eval_request(Classification::T1, Action::READ))
+        .send()
+        .await
+        .unwrap();
+    let body: EvaluateResponse = resp.json().await.unwrap();
+    assert!(body.decision.is_denied());
+    assert!(body.matched_policy_id.is_none());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Full lifecycle test
 // ─────────────────────────────────────────────────────────────────────────────
 
