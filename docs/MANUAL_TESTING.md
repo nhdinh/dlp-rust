@@ -209,6 +209,41 @@ Or run the built binary directly:
 target\release\dlp-agent.exe --console
 ```
 
+### Agent Configuration File
+
+The agent reads `C:\ProgramData\DLP\agent-config.toml` at startup. If the file
+is missing the agent uses defaults (all drives, built-in exclusions only).
+
+```toml
+# Directories to watch recursively.
+# Empty or omitted = watch ALL mounted drives (A-Z).
+monitored_paths = [
+    'C:\Data\',
+    'C:\Confidential\',
+    'C:\Restricted\',
+    'D:\Shares\',
+]
+
+# Additional exclusion prefixes (case-insensitive substring match).
+# These are MERGED with the built-in exclusions, not replacing them.
+# Built-in exclusions: C:\Windows, C:\ProgramData, C:\Program Files,
+# C:\Program Files (x86), C:\$Recycle.Bin, System Volume Information,
+# AppData\Local\Temp, AppData\Local\Microsoft, AppData\Local\Packages,
+# AppData\Roaming\Code, AppData\Roaming\Microsoft.
+excluded_paths = [
+    'C:\BuildOutput\',
+    'C:\Users\dev\node_modules\',
+]
+```
+
+| Field | Default | Behavior |
+| --- | --- | --- |
+| `monitored_paths` | `[]` (empty) | Empty = watch all drives A-Z; non-empty = watch only listed paths |
+| `excluded_paths` | `[]` (empty) | Merged with built-in exclusions (additive, never replaces) |
+
+To apply changes, restart the agent (`Ctrl+C` in console mode, or `sc stop` + `sc start` for the service).
+```
+
 Console mode runs the agent in the foreground without registering as a
 Windows Service. The full interception pipeline starts: file-system
 monitoring (via the `notify` crate), Policy Engine client, and
@@ -786,9 +821,11 @@ cargo clippy --workspace -- -D warnings
 If file operations are not appearing in the audit log:
 
 - Verify the agent is running (`tasklist | findstr dlp-agent`)
-- Look for `watching drive` in the agent's stdout/stderr output confirming volumes are monitored
-- The `notify` crate polls every 500 ms — events may take up to 1 second to appear
-- The monitor only watches mounted volumes (A:\–Z:\); network shares require a UNC path watcher
+- Look for `watching path` in the agent's log output confirming paths are monitored
+- Check `C:\ProgramData\DLP\agent-config.toml` -- if `monitored_paths` lists specific directories, only those are watched
+- Check that the file is not matched by a built-in or custom exclusion in `excluded_paths`
+- The `notify` crate polls every 500 ms -- events may take up to 1 second to appear
+- Network shares require an explicit UNC path in `monitored_paths` (not watched by default)
 
 ### Policy Engine port already in use
 
