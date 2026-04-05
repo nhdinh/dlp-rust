@@ -195,7 +195,7 @@ sc continue dlp-agent
 
 ### 3.4 Single-Instance Guarantee
 
-The agent enforces a single running instance via the `Global\dlp-agent-instance` named mutex. A second start attempt exits cleanly without error. This prevents accidental double-start from startup scripts or Group Policy.
+The agent enforces a single running instance via an anonymous process-scoped mutex (`std::sync::Mutex::new(())`). A second start attempt exits cleanly without error. This prevents accidental double-start from startup scripts or Group Policy.
 
 ### 3.5 Console / Development Mode
 
@@ -280,7 +280,7 @@ To increase verbosity to `DEBUG` for a running service:
 | Path | `C:\ProgramData\DLP\logs\audit.jsonl` |
 | Format | One JSON object per line (JSONL) |
 | Rotation | 50 MB per file; `audit.1.jsonl` … `audit.9.jsonl` |
-| Rotation trigger | Every 100 emitted events |
+| Rotation trigger | File size exceeds 50 MB (size-based); event-count rotation is **not** used |
 | Rotation failure | Logged; audit continues; file operations are **not** blocked |
 
 **Append-only guarantee:** The file handle is opened with `FILE_APPEND_DATA` only. The MSI ACL on `C:\ProgramData\DLP\logs\` prevents non-admin deletion. See §8.
@@ -298,7 +298,7 @@ To increase verbosity to `DEBUG` for a running service:
 **What is NOT logged:**
 - File content or payloads
 - Passwords, tokens, or session keys
-- Classification metadata stored in NTFS xattrs (none used)
+- Classification metadata stored in NTFS extended attributes (not used — classification is a policy rule attribute, not a filesystem attribute)
 
 ### 5.3 SIEM Relay (Phase 5)
 
@@ -449,7 +449,7 @@ wevtutil qe Application /c:10 /f:text /q:"*[System[Provider[@Name='DLP-Agent']]]
 ```
 
 Common causes:
-- Second instance blocked by `Global\dlp-agent-instance` mutex → stop the existing instance first
+- Second instance blocked by anonymous single-instance mutex → stop the existing instance first
 - `dlp-user-ui.exe` not found at `{exe_dir}\dlp-user-ui.exe` → set `DLP_UI_BINARY` env var
 
 ### No audit events appearing

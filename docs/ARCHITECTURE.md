@@ -9,7 +9,7 @@
 > - **`dlp-admin`** — the DLP solution superuser credential. Stored as a bcrypt hash in `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`. NOT an AD account or Windows user account. NOT a crate name.
 > - **`dlp-admin-portal/`** — the iced administrative UI crate (deferred to a later phase).
 > - **`dlp-agent/`** — the Windows Service crate. Runs as SYSTEM account.
-> - **`dlp-user-ui/`** — the iced endpoint UI subprocess, embedded inside `dlp-user-ui/`. One instance per active user session; dlp-agent spawns a new instance for each session that connects. NOT a separate crate.
+> - **`dlp-user-ui/`** — the iced endpoint UI subprocess, a **separate crate** in the Cargo workspace (`dlp-user-ui/`). One instance per active user session; dlp-agent spawns a new instance for each session that connects via `CreateProcessAsUser`.
 > - **`dlp-server/`** — the central HTTP server crate (deferred to Phase 5).
 >
 > Do **not** use `dlp-ui` alone — it is ambiguous.
@@ -33,7 +33,7 @@ Enterprise DLP system integrating:
 - File Servers (NTFS)
 - Policy Engine (Rust, HTTPS/REST)
 - **dlp-agent** (`dlp-agent/` crate) — Windows Service, SYSTEM account, file interception, Policy Engine HTTPS client, audit emission, IPC pipe servers, UI spawner; configurable via `C:\ProgramData\DLP\agent-config.toml` (monitored paths, exclusions)
-- **dlp-user-ui** (`dlp-user-ui/` crate) — iced subprocess spawned by the Agent in each active user session; one UI instance per session; handles toast notifications, override dialogs, clipboard, system tray, and sc stop password dialog for that session's user
+- **dlp-user-ui** (`dlp-user-ui/` crate) — iced subprocess spawned by the Agent in each active user session; one UI instance per session; handles toast notifications, override dialogs, clipboard, system tray, and sc stop password dialog for that session's user (separate workspace crate)
 - **dlp-admin-portal** (`dlp-admin-portal/` crate) — iced-based administrative UI for `dlp-admin`; policy CRUD, dashboard, audit viewer — **deferred to a later phase** (audit logs read directly from local JSON during Phase 1)
 - **dlp-server** (`dlp-server/` crate) — Central HTTP server: audit store, SIEM relay, admin auth, policy sync — **deferred to Phase 5**
 - Logging + SIEM

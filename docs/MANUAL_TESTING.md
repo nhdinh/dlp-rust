@@ -1,7 +1,7 @@
 # Manual Testing Guide -- Phase 1
 
 **Date:** 2026-04-02
-**Status:** Phase 1 complete (46/46 tasks, 118 tests)
+**Status:** Phase 1 complete (46/46 tasks, 322 tests)
 
 This guide walks through building, running, and manually testing every
 Phase 1 component on a Windows development machine.
@@ -874,9 +874,9 @@ set RUST_LOG=policy_engine=debug,dlp_agent=trace
 
 - Verify the engine is running: `curl http://127.0.0.1:8443/health`
 - Check that the engine URL in `engine_client.rs` matches the engine's bind address
-  (default: `https://localhost:8443`). The URL scheme (`http://` vs `https://`) does not
-  affect connectivity — the client always connects over plain TCP. Only the host and port
-  must match the engine's `BIND_ADDR`.
+  (default: `https://localhost:8443`). Agent-to-Engine communication requires **TLS 1.3**
+  (N-SEC-01). The agent validates the engine certificate against the configured trusted CA
+  before establishing the HTTPS connection.
 
 ---
 

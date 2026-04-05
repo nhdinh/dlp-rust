@@ -2,16 +2,16 @@
 
 ## Enterprise DLP System — NTFS + Active Directory + ABAC
 
-**Document Version:** 1.3
-**Date:** 2026-03-31
+**Document Version:** 1.4
+**Date:** 2026-04-04
 **Status:** Draft
 **Author:** Principal Security Architect
 **Changelog (v1.1):** Added Agent-as-Service architecture (§3.2, §3.3), IPC protocol (§3.4), updated crate structure (§5.2), new NFRs (§4.7), updated ACs (§9.6); fixed story point totals; added F-ADM-12; fixed ISO27001 x-ref; fixed DPAPI spec; fixed pipe name; added terminology note
-**Changelog (v1.2):** Phase 1 scope revised: no minifilter driver; `notify`-based file interception (F-AGT-05); clipboard hooks (F-AGT-17); `dlp-agent` runs standalone (local JSON audit, Phase 5 adds dlp-server); `dlp-user-ui` moved from Phase 2 to Phase 1; `dlp-admin-portal` deferred to later phase; `dlp-server` deferred to Phase 5; ETW bypass detection (F-AGT-18) superseded — SMB mount detection via mpr.dll hooks added (F-AGT-14, Phase 3); updated §1.2 scope, §3.2 F-AGT-05/F-AGT-17, §5.2 crate structure, §8 Phase 1–2 task tables, §9 acceptance criteria
+**Changelog (v1.2):** Phase 1 scope revised: no minifilter driver; `notify`-based file interception (F-AGT-05); clipboard hooks (F-AGT-17); `dlp-agent` runs standalone (local JSON audit, Phase 5 adds dlp-server); `dlp-user-ui` moved from Phase 2 to Phase 1; `dlp-admin-portal` deferred to later phase; `dlp-server` deferred to Phase 5; ETW bypass detection (F-AGT-18) superseded — SMB mount detection via MPR polling added (F-AGT-14, Phase 3); updated §1.2 scope, §3.2 F-AGT-05/F-AGT-17, §5.2 crate structure, §8 Phase 1–2 task tables, §9 acceptance criteria
 
 **Changelog (v1.3):** Added F-AGT-19: SMB impersonation identity resolution — Agent resolves remote user's SID from SMB impersonation context using `QuerySecurityContextToken` / `ImpersonateSelf` + `GetTokenInformation`; audit events include `access_context` field; added `identity.rs` to crate structure; updated F-AUD-02 schema; added SMB Impersonation glossary entry; restructured Phase 1 task table with T-01–T-46 IDs matching `docs/plans/user-stories.md`; Phase 1 expanded to 18 sprints; added Phase 1 task breakdowns to each Epic in user-stories.md
 
-**Changelog (v1.4):** Implemented T-26 and T-27: audit pipeline is fully wired. `AuditEmitter` is a global singleton writing append-only JSONL to `C:\ProgramData\DLP\logs\audit.jsonl` with 50 MB size-based rotation (9 generations). `EmitContext` carries agent/session/user identity into every `emit_audit` call. File interception events flow: ETW → `InterceptionEngine` → `run_event_loop` → `OfflineManager::evaluate` → audit + Pipe 1 UI notification. Clipboard T2+ events are audited via `ClipboardListener::process_clipboard_text`. `Action::PASTE` added to ABAC types. `InterceptionEngine` made `Clone` for safe shutdown across Tokio tasks.
+**Changelog (v1.4):** Clarified F-ADM-01 scope (Phase 1: direct JSON edits or REST API; dlp-admin-portal deferred to Phase 5); consolidated N-SEC-06 and N-SEC-11 — N-SEC-11 was an alias for the process DACL control, now cross-referenced; N-SEC-12 signed pipe token deferred to Phase 5 backlog; corrected Assumption #8 (no NTFS extended attributes used for classification); aligned log rotation across all docs (50 MB size-based, not event-count); N-SEC-01 explicitly requires TLS 1.3 for Agent-to-Engine; dlp-user-ui corrected as separate workspace crate in §5.2; Phase 2 REST CRUD task (P2-T12) explicitly listed.
 
 ---
 
@@ -172,7 +172,7 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 5. SIEM infrastructure (Splunk or ELK) is available for log ingestion
 6. Network communication between agents and Policy Engine uses TLS 1.3
 7. All users have individual AD accounts; no shared accounts
-8. Data classification is applied at the file/folder level via extended attributes or EDR metadata
+8. Data classification is applied at the file/folder level via path-based classification rules (e.g., `C:\Restricted\` → T4). No NTFS extended attributes or alternate data streams are used — classification is a policy rule attribute, not a filesystem attribute.
 9. The Agent runs as a Windows Service (SYSTEM account); it spawns the DLP UI into each active interactive session
 10. Named pipe names are fixed well-known values (auditable and debuggable)
 
@@ -184,7 +184,7 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 
 | ID       | Requirement                                                                                                                                                                                                 | Priority |
 | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| F-ADM-01 | Admin shall create, read, update, and delete ABAC policies via the administrative UI                                                                                                                        | Must     |
+| F-ADM-01 | Admin shall create, read, update, and delete ABAC policies via the administrative UI (dlp-admin-portal, Phase 5). During Phase 1–4, policy management is performed via direct JSON edits to `policies.json` or via the Policy Engine REST API (`GET/POST/PUT/DELETE /policies`). | Must     |
 | F-ADM-02 | Admin shall assign data classification (T1–T4) to files and folders                                                                                                                                         | Must     |
 | F-ADM-03 | Admin shall view real-time system health (Policy Engine uptime, agent connectivity, policy hit rates)                                                                                                       | Must     |
 | F-ADM-04 | Admin shall configure alert thresholds and notification recipients                                                                                                                                          | Must     |
@@ -363,13 +363,13 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 | N-SEC-03 | Agent shall run as a Windows Service under the SYSTEM account; UI runs in the interactive user session as the logged-in user                                                                                                                                                                     | Must   |
 | N-SEC-04 | Policy Engine shall be deployed on an isolated, hardened host                                                                                                                                                                                                                                    | Must   |
 | N-SEC-05 | HTTPS API shall authenticate agents via mutual TLS (mTLS)                                                                                                                                                                                                                                        | Must   |
-| N-SEC-06 | DLP Admin shall use MFA for all administrative sessions                                                                                                                                                                                                                                          | Must   |
+| N-SEC-06 | DLP Admin shall use MFA for all administrative sessions *(see N-SEC-11 for the process DACL mechanism that protects MFA-gated service stop)*                                                                                                                                                                                                                              | Must   |
 | N-SEC-07 | Audit logs shall be immutable once written                                                                                                                                                                                                                                                       | Must   |
 | N-SEC-08 | Agent shall verify Policy Engine certificate before establishing connection                                                                                                                                                                                                                      | Must   |
 | N-SEC-09 | Sensitive data in memory shall be zeroized after use                                                                                                                                                                                                                                             | Should |
 | N-SEC-10 | Agent shall detect and alert on tampering / injection attempts                                                                                                                                                                                                                                   | Should |
-| N-SEC-11 | Process protection: Both Agent (service) and UI shall use Windows DACL to deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to all users via a DENY ACE for the `Everyone` SID; SYSTEM retains full access through inherited ACEs | Must   |
-| N-SEC-12 | Named pipe connections shall be validated — UI must present a signed token on connect to prevent unauthorized pipe access                                                                                                                                                                        | Should |
+| N-SEC-11 | Process DACL: Both Agent (service) and UI shall use Windows DACL to deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, and `PROCESS_VM_WRITE` to `Everyone` SID; SYSTEM retains full access through inherited ACEs. This prevents non-Admin process kill and DLL injection. See F-SVC-09 and `protection.rs`. *(supersedes and consolidates earlier alias; MFA-gated stop is covered by F-SVC-10/F-SVC-12)* | Must   |
+| N-SEC-12 | Named pipe connections shall be validated — UI must present a signed token on connect to prevent unauthorized pipe access *(deferred to Phase 5 backlog — see SECURITY_AUDIT.md §9 gap analysis)*                                                                                                                                                                        | Should |
 
 ### 4.2 Performance
 

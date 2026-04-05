@@ -90,7 +90,7 @@ All Phase 1–3 controls were verified against the source code.
 |---------|------------|----------------|--------|
 | F-AUD-02 schema | F-AUD-02 | All required fields: `timestamp`, `event_type`, `user_sid`, `user_name`, `resource_path`, `classification`, `decision`, `policy_id`, `agent_id`, `session_id`, `access_context` | **Implemented** |
 | No file content in audit | F-AUD-05 | Audit events contain metadata only; no payloads | **Implemented** |
-| Log rotation | F-AUD-06 | 50 MB per file; `audit.1.jsonl` … `audit.9.jsonl`; rotation checked every 100 events | **Implemented** |
+| Log rotation | F-AUD-06 | 50 MB per file (size-based); `audit.1.jsonl` … `audit.9.jsonl`; rotation is not triggered by event count | **Implemented** |
 | Rotation failure isolation | F-AUD-06 | Rotation failure logged; audit continues; file operations not blocked | **Implemented** |
 | ADMIN_ACTION audit events | F-AUD-09 | `event_type: ADMIN_ACTION` emitted on policy changes, service transitions | **Implemented** |
 | Append-only audit log | N-SEC-07 (partial) | File handle opened `append(true)` only; no `WRITE_OWNER`, `WRITE_DAC`, `DELETE` | **Implemented (partial)** |
@@ -153,8 +153,8 @@ All Phase 1–3 controls were verified against the source code.
 | N-SEC-08 | Verify Policy Engine cert | Must | **Not implemented** — no cert validation today; Phase 5 cert pinning planned | **Phase 5** |
 | N-SEC-09 | Memory zeroization | Should | **Not implemented** — no `zeroize` crate; sensitive buffers not explicitly zeroed | **Gap (Should)** |
 | N-SEC-10 | Detect tampering/injection | Should | **Partial** — process DACL mitigates THREAT-027; no active injection detection | **Phase 2** |
-| N-SEC-11 | Process DACL (alias of N-SEC-06) | Must | **Implemented** | — |
-| N-SEC-12 | Signed pipe token on connect | Should | **Not implemented** — SYSTEM ACL + RegisterSession gate partially satisfy this; signed token not wired | **Gap (Should, no phase)** |
+| N-SEC-11 | Process DACL | Must | **Implemented** (`protection.rs`) | — |
+| N-SEC-12 | Signed pipe token on connect | Should | **Not implemented** — SYSTEM ACL + RegisterSession gate partially satisfy this; signed token deferred to Phase 5 backlog per SRS §6 | **Phase 5** |
 
 ### 4.2 F-AGT-* Requirements
 
@@ -309,9 +309,9 @@ Updated from [SECURITY_OVERVIEW.md](SECURITY_OVERVIEW.md) with Phase 4 phase mar
 
 **Gap:** No cryptographic token is exchanged. A compromised `SYSTEM`-context process could send a `RegisterSession` message with a valid session ID and impersonate the UI.
 
-**Severity:** Should-level (N-SEC-12 is Should, not Must). No phase is assigned in SRS §6. No implementation exists today.
+**Severity:** Should-level (N-SEC-12 is Should, not Must). Per SRS §6 changelog v1.4, this item is assigned to the Phase 5 backlog alongside TOTP/JWT admin auth.
 
-**Recommendation:** Assign to Phase 5 alongside TOTP/JWT admin auth. The signed token mechanism should be defined in the SRS update before implementation.
+**Recommendation:** Define the signed token mechanism in the SRS before Phase 5 implementation begins.
 
 ---
 
