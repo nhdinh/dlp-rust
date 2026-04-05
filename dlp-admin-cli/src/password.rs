@@ -33,7 +33,7 @@ fn get_cost(hash: &str) -> u32 {
         .unwrap_or(12)
 }
 
-/// `dlp-admin set-password` — prompts for a new password (twice), hashes it with
+/// `dlp-admin-cli set-password` — prompts for a new password (twice), hashes it with
 /// bcrypt cost 12, and writes it to the registry under HKLM.
 pub fn set_password() -> anyhow::Result<()> {
     let pw1 = read_password("New password: ")?;
@@ -51,7 +51,7 @@ pub fn set_password() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `dlp-admin verify-password` — prompts for a password and verifies it against
+/// `dlp-admin-cli verify-password` — prompts for a password and verifies it against
 /// the stored bcrypt hash.
 pub fn verify_password() -> anyhow::Result<()> {
     let stored_hash = get_stored_hash()?;

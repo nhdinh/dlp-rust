@@ -1,4 +1,4 @@
-//! Interactive TUI for dlp-admin.
+//! Interactive TUI for dlp-admin-cli.
 //
 //! Uses the standard Windows console API — no external TUI crate required.
 
@@ -20,7 +20,7 @@ fn interactive_menu(_title: &str, items: &[MenuItem]) -> io::Result<usize> {
         io::stdout().flush()?;
 
         println!("╔══════════════════════════════════════════════════════════╗");
-        println!("║              dlp-admin — Interactive Mode                  ║");
+        println!("║           dlp-admin-cli — Interactive Mode                 ║");
         println!("╚══════════════════════════════════════════════════════════╝");
         println!();
 
@@ -470,7 +470,7 @@ pub fn run() {
     ];
 
     loop {
-        match interactive_menu("dlp-admin — Main Menu", MENU_ITEMS) {
+        match interactive_menu("dlp-admin-cli — Main Menu", MENU_ITEMS) {
             Ok(0) => change_password(),
             Ok(1) => check_engine_status(),
             Ok(2) => list_policies_ui(),

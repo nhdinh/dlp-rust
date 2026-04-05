@@ -1,4 +1,4 @@
-//! `dlp-admin.exe` — DLP system administration CLI.
+//! `dlp-admin-cli.exe` — DLP system administration CLI.
 //!
 //! ## Security notes
 //!
@@ -8,14 +8,14 @@
 //! ## Commands
 //!
 //! ```text
-//! dlp-admin.exe set-password              Set or update the dlp-admin password
-//! dlp-admin.exe verify-password           Verify a password against the stored hash
-//! dlp-admin.exe policy list              List all policies
-//! dlp-admin.exe policy get <id>         Get a policy by ID
-//! dlp-admin.exe policy create <file>    Create a policy from JSON
-//! dlp-admin.exe policy update <id> <file>  Update a policy from JSON
-//! dlp-admin.exe policy delete <id>       Delete a policy
-//! dlp-admin.exe status                   Check Policy Engine health
+//! dlp-admin-cli.exe set-password              Set or update the dlp-admin password
+//! dlp-admin-cli.exe verify-password           Verify a password against the stored hash
+//! dlp-admin-cli.exe policy list              List all policies
+//! dlp-admin-cli.exe policy get <id>         Get a policy by ID
+//! dlp-admin-cli.exe policy create <file>    Create a policy from JSON
+//! dlp-admin-cli.exe policy update <id> <file>  Update a policy from JSON
+//! dlp-admin-cli.exe policy delete <id>       Delete a policy
+//! dlp-admin-cli.exe status                   Check Policy Engine health
 //! ```
 
 mod client;
@@ -59,28 +59,28 @@ fn run(args: &[String]) -> Result<()> {
             Some("list") => policy::list(),
             Some("get") => {
                 let id = args.get(3).ok_or_else(|| {
-                    anyhow::anyhow!("Usage: dlp-admin policy get <policy-id>")
+                    anyhow::anyhow!("Usage: dlp-admin-cli policy get <policy-id>")
                 })?;
                 policy::get(id)
             }
             Some("create") => {
                 let file = args.get(3).ok_or_else(|| {
-                    anyhow::anyhow!("Usage: dlp-admin policy create <file.json>")
+                    anyhow::anyhow!("Usage: dlp-admin-cli policy create <file.json>")
                 })?;
                 policy::create_from_file(file)
             }
             Some("update") => {
                 let id = args.get(3).ok_or_else(|| {
-                    anyhow::anyhow!("Usage: dlp-admin policy update <policy-id> <file.json>")
+                    anyhow::anyhow!("Usage: dlp-admin-cli policy update <policy-id> <file.json>")
                 })?;
                 let file = args.get(4).ok_or_else(|| {
-                    anyhow::anyhow!("Usage: dlp-admin policy update <policy-id> <file.json>")
+                    anyhow::anyhow!("Usage: dlp-admin-cli policy update <policy-id> <file.json>")
                 })?;
                 policy::update_from_file(id, file)
             }
             Some("delete") => {
                 let id = args.get(3).ok_or_else(|| {
-                    anyhow::anyhow!("Usage: dlp-admin policy delete <policy-id>")
+                    anyhow::anyhow!("Usage: dlp-admin-cli policy delete <policy-id>")
                 })?;
                 policy::delete(id)
             }
@@ -92,7 +92,7 @@ fn run(args: &[String]) -> Result<()> {
             }
             None => {
                 anyhow::bail!(
-                    "Usage: dlp-admin policy <list|get|create|update|delete> [args]"
+                    "Usage: dlp-admin-cli policy <list|get|create|update|delete> [args]"
                 );
             }
         },
@@ -112,7 +112,7 @@ fn run(args: &[String]) -> Result<()> {
 
         // ── Help ─────────────────────────────────────────────────────────────
         _ => {
-            print_help(args.first().map(|s| s.as_str()).unwrap_or("dlp-admin"));
+            print_help(args.first().map(|s| s.as_str()).unwrap_or("dlp-admin-cli"));
             Ok(())
         }
     }
@@ -120,7 +120,7 @@ fn run(args: &[String]) -> Result<()> {
 
 fn print_help(name: &str) {
     eprintln!(
-        r#"dlp-admin — DLP system administration CLI
+        r#"dlp-admin-cli — DLP system administration CLI
 
 USAGE:
     {name} <command> [arguments]

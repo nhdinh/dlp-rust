@@ -1,5 +1,5 @@
 [package]
-name = "dlp-admin"
+name = "dlp-admin-cli"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

@@ -157,16 +157,16 @@ The dlp-admin password is a DLP-specific credential stored as a bcrypt hash in t
 
 #### Setting or Changing the Password
 
-Use `dlp-admin.exe` to set or update the password. Run as Administrator (required to write to HKLM):
+Use `dlp-admin-cli.exe` to set or update the password. Run as Administrator (required to write to HKLM):
 
 ```cmd
-C:\Program Files\DLP\dlp-admin.exe set-password
+C:\Program Files\DLP\dlp-admin-cli.exe set-password
 ```
 
 The tool prompts for the new password twice (with confirmation), hashes it with bcrypt (cost 12), and writes it to the registry. To verify the current password:
 
 ```cmd
-C:\Program Files\DLP\dlp-admin.exe verify-password
+C:\Program Files\DLP\dlp-admin-cli.exe verify-password
 ```
 
 > **Only administrators can run these commands** — they require write access to `HKLM\SOFTWARE\DLP`.
@@ -461,7 +461,7 @@ Common causes:
 
 ### Password stop always fails
 
-- Verify `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash` is set (use `dlp-admin` tool to configure).
+- Verify `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash` is set (use `dlp-admin-cli` tool to configure).
 - Verify the bcrypt hash was set with cost factor 12.
 - Remove any leading/trailing whitespace in the registry value.
 - Check the Windows Event Log for `EVENT_DLP_ADMIN_STOP_FAILED` with the bcrypt comparison error.

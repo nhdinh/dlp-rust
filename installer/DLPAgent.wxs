@@ -190,14 +190,14 @@
                         <util:PermissionEx User="Everyone" Read="yes" />
                     </Component>
 
-                    <!-- dlp-admin CLI tool — password management -->
-                    <Component Id="DLPADMINEXE"
+                    <!-- dlp-admin-cli tool — password management -->
+                    <Component Id="DLPADMINCLIEXE"
                                Guid="*"
                                NeverOverwrite="no">
-                        <File Id="DLPADMINEXE_FILE"
-                              Name="dlp-admin.exe"
-                              LongName="dlp-admin.exe"
-                              Source="$(var.SourceDir)\target\release\dlp-admin.exe"
+                        <File Id="DLPADMINCLIEXE_FILE"
+                              Name="dlp-admin-cli.exe"
+                              LongName="dlp-admin-cli.exe"
+                              Source="$(var.SourceDir)\target\release\dlp-admin-cli.exe"
                               KeyPath="yes"
                               AssemblyApplication="no"
                               AssemblyManifest="no" />
@@ -239,7 +239,7 @@
 
             <ComponentRef Id="DLPAGENTEXE" />
             <ComponentRef Id="DLPUSERUIEXE" />
-            <ComponentRef Id="DLPADMINEXE" />
+            <ComponentRef Id="DLPADMINCLIEXE" />
             <ComponentRef Id="DLP_CONFIG_DIR" />
             <ComponentRef Id="DLP_LOGS_DIR" />
 
@@ -399,12 +399,12 @@
                       ExeCommand="" />
 
         <!-- ══════════════════════════════════════════════════════════
-             CUSTOM ACTION: launch dlp-admin.exe set-password after install
+             CUSTOM ACTION: launch dlp-admin-cli.exe set-password after install
              Runs as LocalSystem (deferred, no impersonate) so it can
              write to HKLM.  The installing admin is already elevated.
              ══════════════════════════════════════════════════════════ -->
         <CustomAction Id="LaunchSetPassword"
-                      FileKey="DLPADMINEXE_FILE"
+                      FileKey="DLPADMINCLIEXE_FILE"
                       ExeCommand="set-password"
                       Execute="deferred"
                       Impersonate="no"

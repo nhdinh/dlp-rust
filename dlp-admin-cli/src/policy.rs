@@ -32,7 +32,7 @@ fn print_policy(policy: &dlp_common::abac::Policy) {
     println!("  {:-^60}", "");
 }
 
-/// `dlp-admin policy list` — list all policies.
+/// `dlp-admin-cli policy list` — list all policies.
 pub fn list() -> Result<()> {
     let engine = EngineClient::from_env()?;
     let policies = client::block_on(engine.get::<Vec<dlp_common::abac::Policy>>("/policies"))?;
@@ -60,7 +60,7 @@ pub fn list() -> Result<()> {
     Ok(())
 }
 
-/// `dlp-admin policy get <id>` — retrieve a single policy by ID.
+/// `dlp-admin-cli policy get <id>` — retrieve a single policy by ID.
 pub fn get(id: &str) -> Result<()> {
     let engine = EngineClient::from_env()?;
     let policy = client::block_on(
@@ -71,7 +71,7 @@ pub fn get(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// `dlp-admin policy create <file>` — create a policy from a JSON file.
+/// `dlp-admin-cli policy create <file>` — create a policy from a JSON file.
 pub fn create_from_file(file: &str) -> Result<()> {
     let policy: dlp_common::abac::Policy = load_policy_file(file)?;
 
@@ -84,7 +84,7 @@ pub fn create_from_file(file: &str) -> Result<()> {
     Ok(())
 }
 
-/// `dlp-admin policy update <id> <file>` — update an existing policy from a JSON file.
+/// `dlp-admin-cli policy update <id> <file>` — update an existing policy from a JSON file.
 pub fn update_from_file(id: &str, file: &str) -> Result<()> {
     let policy: dlp_common::abac::Policy = load_policy_file(file)?;
 
@@ -97,7 +97,7 @@ pub fn update_from_file(id: &str, file: &str) -> Result<()> {
     Ok(())
 }
 
-/// `dlp-admin policy delete <id>` — delete a policy by ID.
+/// `dlp-admin-cli policy delete <id>` — delete a policy by ID.
 pub fn delete(id: &str) -> Result<()> {
     let engine = EngineClient::from_env()?;
     client::block_on(engine.delete(&format!("/policies/{id}")))?;
