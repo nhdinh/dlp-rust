@@ -7,9 +7,8 @@
 .DESCRIPTION
     This script:
       1. Builds the Rust release binaries (dlp-agent + dlp-user-ui)
-      2. Compiles the WiX sources (candle.exe)
-      3. Links the MSI package (light.exe)
-      4. Validates the output MSI
+      2. Compiles and links the MSI package via `wix build` (WiX v4+)
+      3. Validates the output MSI
 
 .PARAMETER Configuration
     Rust build profile. Default: release.
@@ -61,8 +60,6 @@ $WxsFile   = Join-Path $InstallerDir 'DLPAgent.wxs'
 $AgentExe    = Join-Path $RepoRoot "target\$Configuration\dlp-agent.exe"
 $UiExe       = Join-Path $RepoRoot "target\$Configuration\dlp-user-ui.exe"
 $AdminExe    = Join-Path $RepoRoot "target\$Configuration\dlp-admin-cli.exe"
-$Wixobj   = Join-Path $DistDir 'DLPAgent.wixobj'
-$CabFile  = Join-Path $DistDir 'DLP.cab'
 $MsiOut   = Join-Path $DistDir 'DLPAgent.msi'
 
 # -- Helper: find tool on PATH ----------------------------------------------
@@ -72,12 +69,12 @@ function Find-Tool {
     if (-not $tool) {
         Write-Error @"
 $Name not found on PATH.
-Please install WiX v3 (https://wixtoolset.org/releases/) or install via:
-    dotnet tool install --global wix --version 3.14.0
+Install WiX v4+ via:
+    dotnet tool install --global wix
 
-After installation, ensure the tool directory is on your PATH:
-    dotnet tool update --global wix --version 3.14.0
-    # or add the WiX tool directory to PATH manually.
+Then add required extensions:
+    wix extension add WixToolset.Util.wixext
+    wix extension add WixToolset.UI.wixext
 "@
     }
     Write-Host "[OK] Found $Name at: $($tool.Source)" -ForegroundColor Green
@@ -197,69 +194,49 @@ if (-not $SkipRustBuild) {
     Write-Host "[SKIP] Rust build step skipped (using existing binaries)" -ForegroundColor Yellow
 }
 
-# -- 2. Locate WiX tools ----------------------------------------------------
+# -- 2. Locate WiX toolset --------------------------------------------------
 Write-Host ""
 Write-Host "----------------------------------------------------" -ForegroundColor Magenta
-Write-Host "  Step 2: Locate WiX tools" -ForegroundColor Magenta
+Write-Host "  Step 2: Locate WiX toolset" -ForegroundColor Magenta
 
-$candle = Find-Tool -Name 'WiX compiler (candle.exe)'  -ToolFile 'candle.exe'
-$light  = Find-Tool -Name 'WiX linker (light.exe)'       -ToolFile 'light.exe'
+$wixTool = Find-Tool -Name 'WiX CLI (wix.exe)' -ToolFile 'wix'
 
-# -- 3. Compile WiX sources ------------------------------------------------
+# -- 3. Build MSI package (compile + link in one step) ---------------------
 Write-Host ""
 Write-Host "----------------------------------------------------" -ForegroundColor Magenta
-Write-Host "  Step 3: Compile WiX sources" -ForegroundColor Magenta
+Write-Host "  Step 3: Build MSI package (wix build)" -ForegroundColor Magenta
 
 # Pre-build validation of .wxs file.
 if (-not (Test-Path $WxsFile)) {
     Write-Error "WiX source not found: $WxsFile"
 }
 
-# candle.exe compile:
-#   -nologo         -- suppress logo
-#   -out <dir>      -- output directory for .wixobj + .wixpdb
+# wix build:
+#   -ext WixToolset.Util.wixext  -- util:PermissionEx
+#   -ext WixToolset.UI.wixext    -- WixUI_InstallDir
+#   -d SourceDir=<path>          -- preprocessor variable for binary paths
+#   -o <output>                  -- output MSI path
 Invoke-BuildStep `
-    -Description "WiX compile: candle.exe DLPAgent.wxs" `
-    -Command $candle `
+    -Description "wix build DLPAgent.wxs -> DLPAgent.msi" `
+    -Command $wixTool `
     -ArgList @(
-        '-nologo',
-        '-dSourceDir=' + $RepoRoot.Replace('\', '\\'),
-        '-out', $DistDir,
+        'build',
+        '-ext', 'WixToolset.Util.wixext',
+        '-ext', 'WixToolset.UI.wixext',
+        "-d", "SourceDir=$RepoRoot",
+        '-o', $MsiOut,
         $WxsFile
     )
 
-if (-not (Test-Path $Wixobj)) {
-    Write-Error "WiX compile produced no .wixobj at: $Wixobj"
-}
-
-# -- 4. Link MSI package ----------------------------------------------------
-Write-Host ""
-Write-Host "----------------------------------------------------" -ForegroundColor Magenta
-Write-Host "  Step 4: Link MSI package" -ForegroundColor Magenta
-
-# light.exe link:
-#   -nologo            -- suppress logo
-#   -ext WixIIsExtension -- include IIS extension (ServiceInstall uses this)
-#   -o <output>         -- output MSI path
-Invoke-BuildStep `
-    -Description "WiX link: light.exe DLPAgent.wixobj -> DLPAgent.msi" `
-    -Command $light `
-    -ArgList @(
-        '-nologo',
-        '-ext', 'WixIIsExtension',
-        '-o', $MsiOut,
-        $Wixobj
-    )
-
 if (-not (Test-Path $MsiOut)) {
-    Write-Error "MSI link produced no output at: $MsiOut"
+    Write-Error "wix build produced no output at: $MsiOut"
 }
 
-# -- 5. Validation --------------------------------------------------------
+# -- 4. Validation --------------------------------------------------------
 if (-not $SkipValidation) {
     Write-Host ""
     Write-Host "----------------------------------------------------" -ForegroundColor Magenta
-    Write-Host "  Step 5: Validate MSI" -ForegroundColor Magenta
+    Write-Host "  Step 4: Validate MSI" -ForegroundColor Magenta
 
     $msiSize = (Get-Item $MsiOut).Length / 1MB
     Write-Host "  MSI size: $('{0:N1}' -f $msiSize) MB"
