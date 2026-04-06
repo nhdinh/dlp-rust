@@ -89,27 +89,49 @@ function Invoke-BuildStep {
     param(
         [string]$Description,
         [string]$Command,
-        [string[]]$ArgList,
-        [switch]$PassThru
+        [string[]]$ArgList
     )
     Write-Host ""
     Write-Host "  $Description" -ForegroundColor Cyan
     Write-Host "    > $Command $($ArgList -join ' ')"
     $start = Get-Date
-    $proc = Start-Process -FilePath $Command `
-                          -ArgumentList $ArgList `
-                          -NoNewWindow `
-                          -Wait `
-                          -PassThru:$PassThru `
-                          -RedirectStandardOutput "$env:TEMP\dlp_msi_stdout.txt" `
-                          -RedirectStandardError  "$env:TEMP\dlp_msi_stderr.txt"
+
+    # Use Process object with async stream reads to avoid the classic
+    # deadlock caused by Start-Process -RedirectStandardOutput/-Error
+    # when cargo (or any verbose tool) fills the pipe buffer.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName               = $Command
+    $psi.Arguments              = $ArgList -join ' '
+    $psi.UseShellExecute        = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $psi.CreateNoWindow         = $true
+    $psi.WorkingDirectory       = $RepoRoot
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+
+    # Read stdout/stderr asynchronously so the buffers never fill up.
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $proc.WaitForExit()
+
+    $stdout = $stdoutTask.Result
+    $stderr = $stderrTask.Result
     $elapsed = (Get-Date) - $start
 
-    if ($proc.ExitCode -ne 0 -and -not $PassThru) {
+    # Stream stderr to the console (cargo progress goes to stderr).
+    if ($stderr) {
+        $stderr -split "`n" | ForEach-Object {
+            $line = $_.TrimEnd()
+            if ($line) { Write-Host "    $_" -ForegroundColor DarkGray }
+        }
+    }
+
+    if ($proc.ExitCode -ne 0) {
         Write-Host "  FAILED (exit $($proc.ExitCode)) after $($elapsed.TotalSeconds)s" -ForegroundColor Red
-        if (Test-Path "$env:TEMP\dlp_msi_stderr.txt") {
-            Write-Host "  STDERR:" -ForegroundColor Red
-            Get-Content "$env:TEMP\dlp_msi_stderr.txt" | Select-Object -First 20 | ForEach-Object {
+        if ($stderr) {
+            Write-Host "  STDERR (last 20 lines):" -ForegroundColor Red
+            $stderr -split "`n" | Select-Object -Last 20 | ForEach-Object {
                 Write-Host "    $_" -ForegroundColor Red
             }
         }
