@@ -163,6 +163,12 @@ if (-not $SkipRustBuild) {
         Write-Error "Rust (cargo) not found on PATH. Install from https://rustup.rs/"
     }
 
+    # The `windows` crate with many features causes rustc to exceed its
+    # default 8 MB stack in release mode (STATUS_STACK_BUFFER_OVERRUN).
+    # Increase to 16 MB.
+    $env:RUST_MIN_STACK = '16777216'
+    Write-Host "  RUST_MIN_STACK=$env:RUST_MIN_STACK (16 MB — prevents rustc stack overflow)"
+
     # Build both crates.  dlp-user-ui must be built alongside dlp-agent
     # so both .exe files land in the same target directory.
     Invoke-BuildStep `
