@@ -28,6 +28,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tracing::info;
 
+use policy_engine::bind_registry;
 use policy_engine::engine::AbacEngine;
 use policy_engine::http_server;
 use policy_engine::policy_store::PolicyStore;
@@ -62,8 +63,30 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to bind")?;
 
+    // Register the bind address in the Windows registry so
+    // dlp-admin-cli can auto-detect the engine on the same machine.
+    bind_registry::register(&addr);
+
     info!(%addr, "policy engine listening");
-    axum::serve(listener, app).await.context("server error")?;
+
+    // Serve until shutdown signal (Ctrl+C or process termination).
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("server error")?;
+
+    // Clear the registry entry so stale addresses are never left behind.
+    bind_registry::unregister();
+    info!("policy engine stopped");
 
     Ok(())
+}
+
+/// Returns a future that resolves when a shutdown signal is received
+/// (Ctrl+C on the console, or SIGTERM on Unix).
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to listen for Ctrl+C");
+    info!("shutdown signal received");
 }

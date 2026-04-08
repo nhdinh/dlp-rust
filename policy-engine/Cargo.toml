@@ -60,6 +60,13 @@ async-trait = "0.1"
 dashmap = "6"
 parking_lot = "0.12"
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Registry",
+] }
+
 [[bin]]
 name = "policy-engine"
 path = "src/main.rs"
