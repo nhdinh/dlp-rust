@@ -14,6 +14,7 @@
 //! - [`error`] — Shared error types
 
 pub mod ad_client;
+pub mod bind_registry;
 pub mod engine;
 pub mod error;
 pub mod http_server;
