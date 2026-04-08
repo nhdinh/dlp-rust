@@ -30,10 +30,13 @@ fn load_identity(cert_path: &str, key_path: &str) -> Result<reqwest::Identity> {
 }
 
 impl EngineClient {
-    /// Reads `DLP_POLICY_ENGINE_URL` (or falls back to the default).
+    /// Resolves the Policy Engine URL using auto-detection, then builds
+    /// the HTTP client.
+    ///
+    /// Resolution order: env var -> registry BIND_ADDR -> local port
+    /// probe -> compiled default.
     pub fn from_env() -> Result<Self> {
-        let base_url = std::env::var("DLP_POLICY_ENGINE_URL")
-            .unwrap_or_else(|_| "https://localhost:8443".to_string());
+        let base_url = crate::engine::resolve_engine_url();
 
         let cert_path = std::env::var("DLP_ENGINE_CERT_PATH").ok();
         let key_path = std::env::var("DLP_ENGINE_KEY_PATH").ok();

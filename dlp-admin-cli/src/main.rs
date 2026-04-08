@@ -8,17 +8,20 @@
 //! ## Commands
 //!
 //! ```text
-//! dlp-admin-cli.exe set-password              Set or update the dlp-admin password
-//! dlp-admin-cli.exe verify-password           Verify a password against the stored hash
-//! dlp-admin-cli.exe policy list              List all policies
-//! dlp-admin-cli.exe policy get <id>         Get a policy by ID
-//! dlp-admin-cli.exe policy create <file>    Create a policy from JSON
-//! dlp-admin-cli.exe policy update <id> <file>  Update a policy from JSON
-//! dlp-admin-cli.exe policy delete <id>       Delete a policy
-//! dlp-admin-cli.exe status                   Check Policy Engine health
+//! dlp-admin-cli.exe set-password                      Set/update dlp-admin password
+//! dlp-admin-cli.exe verify-password                   Verify password hash
+//! dlp-admin-cli.exe policy list                       List all policies
+//! dlp-admin-cli.exe policy get <id>                   Get a policy by ID
+//! dlp-admin-cli.exe policy create <file>              Create from JSON
+//! dlp-admin-cli.exe policy update <id> <file>         Update from JSON
+//! dlp-admin-cli.exe policy delete <id>                Delete a policy
+//! dlp-admin-cli.exe engine get-bind-addr              Show BIND_ADDR
+//! dlp-admin-cli.exe engine set-bind-addr <host:port>  Set BIND_ADDR
+//! dlp-admin-cli.exe status                            Check engine health
 //! ```
 
 mod client;
+mod engine;
 mod password;
 mod policy;
 mod registry;
@@ -97,10 +100,34 @@ fn run(args: &[String]) -> Result<()> {
             }
         },
 
+        // ── Engine configuration ─────────────────────────────────────────────
+        Some("engine") => match args.get(2).map(|s| s.as_str()) {
+            Some("get-bind-addr") => engine::get_bind_addr(),
+            Some("set-bind-addr") => {
+                let addr = args.get(3).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Usage: dlp-admin-cli engine set-bind-addr <host:port>"
+                    )
+                })?;
+                engine::set_bind_addr(addr)
+            }
+            Some(cmd) => {
+                anyhow::bail!(
+                    "Unknown engine subcommand: {cmd}\n\
+                     Valid: get-bind-addr, set-bind-addr"
+                );
+            }
+            None => {
+                anyhow::bail!(
+                    "Usage: dlp-admin-cli engine <get-bind-addr|set-bind-addr> [args]"
+                );
+            }
+        },
+
         // ── System status ─────────────────────────────────────────────────────
         Some("status") => {
-            let url = env::var("DLP_POLICY_ENGINE_URL")
-                .unwrap_or_else(|_| DEFAULT_ENGINE_URL.to_string());
+            let url = engine::resolve_engine_url();
+            println!("Connecting to: {url}");
             client::block_on(status(&url))
         }
 
@@ -120,28 +147,40 @@ fn run(args: &[String]) -> Result<()> {
 
 fn print_help(name: &str) {
     eprintln!(
-        r#"dlp-admin-cli — DLP system administration CLI
+        r#"dlp-admin-cli -- DLP system administration CLI
 
 USAGE:
     {name} <command> [arguments]
 
 PASSWORD MANAGEMENT:
-    {name} set-password          Set or update the dlp-admin password
-    {name} verify-password       Verify a password against the stored hash
+    {name} set-password                      Set or update the dlp-admin password
+    {name} verify-password                   Verify a password against the stored hash
 
 POLICY MANAGEMENT:
     {name} policy list                       List all policies
-    {name} policy get <id>                    Get a policy by ID
-    {name} policy create <file.json>          Create a policy from JSON
+    {name} policy get <id>                   Get a policy by ID
+    {name} policy create <file.json>         Create a policy from JSON
     {name} policy update <id> <file.json>    Update a policy from JSON
     {name} policy delete <id>                Delete a policy
 
+ENGINE CONFIGURATION:
+    {name} engine get-bind-addr              Show configured BIND_ADDR
+    {name} engine set-bind-addr <host:port>  Set BIND_ADDR (requires admin)
+
 SYSTEM:
-    {name} status                           Check Policy Engine health
+    {name} status                            Check Policy Engine health
     {name} interactive                       Interactive TUI (menu-driven)
 
+CONNECTION AUTO-DETECTION:
+    The CLI automatically finds the Policy Engine when running on the same
+    machine. Resolution order:
+      1. DLP_POLICY_ENGINE_URL env var (explicit override)
+      2. BIND_ADDR from registry (HKLM\SOFTWARE\DLP\PolicyEngine)
+      3. Probe local ports: 8443, 9443, 8080
+      4. Default: {DEFAULT_ENGINE_URL}
+
 ENVIRONMENT VARIABLES:
-    DLP_POLICY_ENGINE_URL   Policy Engine URL (default: {DEFAULT_ENGINE_URL})
+    DLP_POLICY_ENGINE_URL   Policy Engine URL (overrides auto-detection)
     DLP_ENGINE_CERT_PATH    Path to client certificate (mTLS)
     DLP_ENGINE_KEY_PATH     Path to client key (mTLS)
     DLP_ENGINE_CA_PATH      Path to CA certificate (default: system trust store)
