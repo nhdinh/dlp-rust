@@ -75,7 +75,7 @@ impl EngineClient {
 
     /// Sends a GET request and deserialises the JSON response.
     pub async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path);
+        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
         tracing::debug!(url);
         let resp = self
             .inner
@@ -101,7 +101,7 @@ impl EngineClient {
         path: &str,
         body: &B,
     ) -> Result<T> {
-        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path);
+        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
         tracing::debug!(url);
         let resp = self
             .inner
@@ -128,7 +128,7 @@ impl EngineClient {
         path: &str,
         body: &B,
     ) -> Result<T> {
-        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path);
+        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
         tracing::debug!(url);
         let resp = self
             .inner
@@ -151,7 +151,7 @@ impl EngineClient {
 
     /// Sends a DELETE request.  Returns `Ok(())` on 204 No Content.
     pub async fn delete(&self, path: &str) -> Result<()> {
-        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path);
+        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
         tracing::debug!(url);
         let resp = self
             .inner
