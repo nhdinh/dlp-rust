@@ -161,7 +161,7 @@ pub fn resolve_engine_url() -> String {
 /// Converts a `host:port` bind address to an HTTP URL.
 ///
 /// Uses `http://` for loopback addresses and `https://` for others.
-fn addr_to_url(addr: &str) -> String {
+pub fn addr_to_url(addr: &str) -> String {
     let scheme = if addr.starts_with("127.")
         || addr.starts_with("localhost")
         || addr.starts_with("0.0.0.0")

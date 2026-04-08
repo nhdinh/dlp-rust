@@ -43,12 +43,42 @@ fn main() {
         .init();
 
     let args: Vec<String> = env::args().collect();
+
+    // Parse --connect <addr:port> from anywhere in the args and set it
+    // as DLP_POLICY_ENGINE_URL so resolve_engine_url() picks it up.
+    let args = extract_connect_flag(args);
+
     let rc = run(&args);
 
     if let Err(e) = rc {
         error!("{e}");
         std::process::exit(1);
     }
+}
+
+/// Extracts `--connect <addr:port>` from the argument list.
+///
+/// If found, sets `DLP_POLICY_ENGINE_URL` so that
+/// [`engine::resolve_engine_url`] uses it as the highest-priority
+/// source.  Returns the remaining arguments with the flag removed.
+fn extract_connect_flag(mut args: Vec<String>) -> Vec<String> {
+    if let Some(pos) = args.iter().position(|a| a == "--connect") {
+        if let Some(addr) = args.get(pos + 1).cloned() {
+            // Normalise: if it looks like host:port, prepend http(s).
+            let url = if addr.starts_with("http://")
+                || addr.starts_with("https://")
+            {
+                addr
+            } else {
+                engine::addr_to_url(&addr)
+            };
+            env::set_var("DLP_POLICY_ENGINE_URL", &url);
+            // Remove --connect and the value from the arg list.
+            args.remove(pos + 1);
+            args.remove(pos);
+        }
+    }
+    args
 }
 
 fn run(args: &[String]) -> Result<()> {
@@ -170,6 +200,9 @@ ENGINE CONFIGURATION:
 SYSTEM:
     {name} status                            Check Policy Engine health
     {name} interactive                       Interactive TUI (menu-driven)
+
+GLOBAL OPTIONS:
+    --connect <host:port>                    Connect to a specific engine address
 
 CONNECTION AUTO-DETECTION:
     The CLI automatically finds the Policy Engine when running on the same
