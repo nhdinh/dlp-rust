@@ -167,8 +167,7 @@ fn change_password() {
 fn check_engine_status() {
     use crate::client::EngineClient;
 
-    let base_url = std::env::var("DLP_POLICY_ENGINE_URL")
-        .unwrap_or_else(|_| "https://localhost:8443".to_string());
+    let base_url = crate::engine::resolve_engine_url();
 
     let client = match EngineClient::from_env() {
         Ok(c) => c,
@@ -186,18 +185,14 @@ fn check_engine_status() {
     println!("  Base URL: {}", base_url);
     println!();
 
-    // Health check
-    match client::block_on(
-        client.get::<serde_json::Value>(&format!("{}/health", base_url.trim_end_matches('/')))
-    ) {
+    // Health check — pass just the path, not a full URL.
+    match client::block_on(client.get::<serde_json::Value>("/health")) {
         Ok(_) => println!("  [OK]   /health  — engine is healthy"),
         Err(e) => println!("  [FAIL] /health  — {e}"),
     }
 
     // Ready check
-    match client::block_on(
-        client.get::<serde_json::Value>(&format!("{}/ready", base_url.trim_end_matches('/')))
-    ) {
+    match client::block_on(client.get::<serde_json::Value>("/ready")) {
         Ok(_) => println!("  [OK]   /ready  — engine is ready"),
         Err(e) => println!("  [WARN] /ready  — {e}"),
     }
