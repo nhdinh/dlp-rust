@@ -78,7 +78,7 @@ tempfile = "3"
 axum = { version = "0.7", features = ["macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
-policy-engine = { path = "../policy-engine" }
+dlp-server = { path = "../dlp-server" }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
