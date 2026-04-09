@@ -171,7 +171,7 @@ All code you write MUST be fully optimized.
 
 Example doc comment:
 
-```rust
+````rust
 /// Calculate the total cost of items including tax.
 ///
 /// # Arguments
@@ -198,7 +198,7 @@ Example doc comment:
 pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, CalculationError> {
     // ...
 }
-```
+````
 
 ### 9.4 Type System
 
@@ -296,16 +296,28 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 - **MUST** use `rustfmt` for code formatting
 - **MUST** use `clippy` for linting and follow its suggestions
 - **MUST** ensure code compiles with no warnings (use `-D warnings` flag in CI, not `#![deny(warnings)]` in source)
+- **MUST** use `sonar-scanner` for static code analysis and security scanning.
 - Use `cargo` for building, testing, and dependency management
 - Use `cargo test` for running tests
 - Use `cargo doc` for generating documentation
 
-### 9.16 Before Committing
+### 9.16 Code Review
+
+- You MUST verify All generated code before asking me to push.
+- To verify code, run the `sonar-scanner` command.
+- When running the scanner, use the `SONAR_TOKEN`, which I will have exported in the session.
+- After scanning, use your MCP tools to check the Quality Gate status or read the scanner output to identify issues.
+- If SonarQube reports bugs or smells, fix them immediately and re-scan. If low test coverage is causing a failed quality gate, you MUST treat this as a blocking issue requiring code generation (Unit Tests).
+
+Only recommend pushing when the Quality Gate PASSES.
+
+### 9.17 Before Committing
 
 - [ ] All tests pass (`cargo test`)
 - [ ] No compiler warnings (`cargo build`)
 - [ ] Clippy passes (`cargo clippy -- -D warnings`)
 - [ ] Code is formatted (`cargo fmt --check`)
+- [ ] Verify code (`sonar-scanner`)
 - [ ] All docs are up-to-date and accurate
 - [ ] All public items have doc comments
 - [ ] No commented-out code or debug statements
