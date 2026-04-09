@@ -1,4 +1,5 @@
-//! Policy Store — JSON file persistence with version tracking and hot-reload.
+//! Policy Store -- JSON file persistence with version tracking and
+//! hot-reload.
 //!
 //! ## Responsibilities
 //!
@@ -9,9 +10,10 @@
 //!
 //! ## Hot-Reload
 //!
-//! File-system notifications via `notify` detect external policy file changes.
-//! On a modify event the store reloads and re-validates the file within 5 s.
-//! The policy store operates standalone with file-based persistence and hot-reload.
+//! File-system notifications via `notify` detect external policy file
+//! changes. On a modify event the store reloads and re-validates the
+//! file within 5 s. The policy store operates standalone with
+//! file-based persistence and hot-reload.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,9 +26,10 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{debug, error, info, warn};
 
 use crate::engine::AbacEngine;
-use crate::error::{PolicyEngineError, Result};
+use crate::policy_engine_error::{PolicyEngineError, Result};
 
-/// The policy store manages the JSON file on disk and keeps the engine in sync.
+/// The policy store manages the JSON file on disk and keeps the engine
+/// in sync.
 #[derive(Debug)]
 pub struct PolicyStore {
     /// Path to the policy JSON file on disk.
@@ -49,16 +52,23 @@ impl PolicyStore {
     ///
     /// # Errors
     ///
-    /// Returns `PolicyEngineError::PolicyStoreError` if the file cannot be read
-    /// or if the JSON is malformed.
-    pub fn open(path: PathBuf, engine: Arc<AbacEngine>) -> Result<Self> {
+    /// Returns `PolicyEngineError::PolicyStoreError` if the file cannot
+    /// be read or if the JSON is malformed.
+    pub fn open(
+        path: PathBuf,
+        engine: Arc<AbacEngine>,
+    ) -> Result<Self> {
         let (policies, max_version) = Self::load_from_disk(&path)?;
 
         // Sync loaded policies into the engine immediately.
         engine.reload_policies(policies.clone())?;
 
         let policy_count = policies.len();
-        info!(path = %path.display(), policy_count, "policy store loaded");
+        info!(
+            path = %path.display(),
+            policy_count,
+            "policy store loaded"
+        );
 
         Ok(Self {
             path,
@@ -69,35 +79,53 @@ impl PolicyStore {
         })
     }
 
-    /// Loads policies from the JSON file, returning the policy list and the
-    /// highest version number found (for version sequencing).
+    /// Loads policies from the JSON file, returning the policy list and
+    /// the highest version number found (for version sequencing).
     fn load_from_disk(path: &Path) -> Result<(Vec<Policy>, u64)> {
         if !path.exists() {
-            info!(path = %path.display(), "policy file not found; creating with empty policy set");
+            info!(
+                path = %path.display(),
+                "policy file not found; creating with empty policy set"
+            );
             let empty: Vec<Policy> = Vec::new();
-            let json =
-                serde_json::to_string_pretty(&empty).expect("serializing empty vec cannot fail");
+            let json = serde_json::to_string_pretty(&empty)
+                .expect("serializing empty vec cannot fail");
             fs::write(path, json).map_err(|e| {
-                PolicyEngineError::PolicyStoreError(format!("failed to create policy file: {e}"))
+                PolicyEngineError::PolicyStoreError(format!(
+                    "failed to create policy file: {e}"
+                ))
             })?;
             return Ok((empty, 0));
         }
 
-        let content = fs::read_to_string(path)
-            .map_err(|e| PolicyEngineError::PolicyStoreError(format!("failed to read: {e}")))?;
+        let content = fs::read_to_string(path).map_err(|e| {
+            PolicyEngineError::PolicyStoreError(format!(
+                "failed to read: {e}"
+            ))
+        })?;
 
-        let policies: Vec<Policy> = serde_json::from_str(&content)
-            .map_err(|e| PolicyEngineError::PolicyStoreError(format!("JSON parse error: {e}")))?;
+        let policies: Vec<Policy> =
+            serde_json::from_str(&content).map_err(|e| {
+                PolicyEngineError::PolicyStoreError(format!(
+                    "JSON parse error: {e}"
+                ))
+            })?;
 
-        let max_version = policies.iter().map(|p| p.version).max().unwrap_or(0);
+        let max_version =
+            policies.iter().map(|p| p.version).max().unwrap_or(0);
 
-        // Validate each policy on load; skip invalid ones so a single bad entry
-        // does not prevent the entire store from loading.
+        // Validate each policy on load; skip invalid ones so a single
+        // bad entry does not prevent the entire store from loading.
         let valid_policies: Vec<Policy> = policies
             .into_iter()
             .filter(|policy| {
-                if let Err(e) = super::engine::validate_policy(policy) {
-                    warn!(policy_id = %policy.id, "invalid policy skipped: {}", e);
+                if let Err(e) =
+                    super::engine::validate_policy(policy)
+                {
+                    warn!(
+                        policy_id = %policy.id,
+                        "invalid policy skipped: {}", e
+                    );
                     false
                 } else {
                     true
@@ -110,8 +138,8 @@ impl PolicyStore {
 
     /// Saves the current in-memory policy set to disk.
     ///
-    /// This is a full overwrite — the file is rewritten atomically using a
-    /// rename-from-temporary to avoid partial-write corruption.
+    /// This is a full overwrite -- the file is rewritten atomically
+    /// using a rename-from-temporary to avoid partial-write corruption.
     pub fn save(&self) -> Result<()> {
         let policies = self.engine.get_policies();
         self.save_policies(&policies)
@@ -119,22 +147,34 @@ impl PolicyStore {
 
     /// Saves the given policy set to disk.
     fn save_policies(&self, policies: &[Policy]) -> Result<()> {
-        let json = serde_json::to_string_pretty(policies).map_err(PolicyEngineError::JsonError)?;
+        let json = serde_json::to_string_pretty(policies)
+            .map_err(PolicyEngineError::JsonError)?;
 
-        let tmp_path = PathBuf::from(format!("{}.tmp", self.path.display()));
-        fs::write(&tmp_path, json)
-            .map_err(|e| PolicyEngineError::PolicyStoreError(format!("write failed: {e}")))?;
-
-        // Atomic rename — eliminates partial-write window.
-        fs::rename(&tmp_path, &self.path).map_err(|e| {
-            PolicyEngineError::PolicyStoreError(format!("atomic rename failed: {e}"))
+        let tmp_path =
+            PathBuf::from(format!("{}.tmp", self.path.display()));
+        fs::write(&tmp_path, json).map_err(|e| {
+            PolicyEngineError::PolicyStoreError(format!(
+                "write failed: {e}"
+            ))
         })?;
 
-        info!(path = %self.path.display(), count = policies.len(), "policies persisted");
+        // Atomic rename -- eliminates partial-write window.
+        fs::rename(&tmp_path, &self.path).map_err(|e| {
+            PolicyEngineError::PolicyStoreError(format!(
+                "atomic rename failed: {e}"
+            ))
+        })?;
+
+        info!(
+            path = %self.path.display(),
+            count = policies.len(),
+            "policies persisted"
+        );
         Ok(())
     }
 
-    /// Adds a new policy to the store with the next available version number.
+    /// Adds a new policy to the store with the next available version
+    /// number.
     ///
     /// The new policy is saved to disk and the engine is reloaded.
     pub fn add_policy(&self, mut policy: Policy) -> Result<()> {
@@ -154,17 +194,27 @@ impl PolicyStore {
 
     /// Updates an existing policy in the store.
     ///
-    /// The policy's version number is incremented. The engine is reloaded.
+    /// The policy's version number is incremented. The engine is
+    /// reloaded.
     ///
     /// # Errors
     ///
-    /// Returns `PolicyEngineError::PolicyNotFound` if `policy_id` does not exist.
-    pub fn update_policy(&self, policy_id: &str, mut updated: Policy) -> Result<()> {
+    /// Returns `PolicyEngineError::PolicyNotFound` if `policy_id` does
+    /// not exist.
+    pub fn update_policy(
+        &self,
+        policy_id: &str,
+        mut updated: Policy,
+    ) -> Result<()> {
         let mut policies = self.engine.get_policies();
         let idx = policies
             .iter()
             .position(|p| p.id == policy_id)
-            .ok_or_else(|| PolicyEngineError::PolicyNotFound(policy_id.to_string()))?;
+            .ok_or_else(|| {
+                PolicyEngineError::PolicyNotFound(
+                    policy_id.to_string(),
+                )
+            })?;
 
         let version = {
             let mut guard = self.version_lock.lock();
@@ -185,13 +235,16 @@ impl PolicyStore {
     ///
     /// # Errors
     ///
-    /// Returns `PolicyEngineError::PolicyNotFound` if `policy_id` does not exist.
+    /// Returns `PolicyEngineError::PolicyNotFound` if `policy_id` does
+    /// not exist.
     pub fn delete_policy(&self, policy_id: &str) -> Result<()> {
         let mut policies = self.engine.get_policies();
         let initial_len = policies.len();
         policies.retain(|p| p.id != policy_id);
         if policies.len() == initial_len {
-            return Err(PolicyEngineError::PolicyNotFound(policy_id.to_string()));
+            return Err(PolicyEngineError::PolicyNotFound(
+                policy_id.to_string(),
+            ));
         }
         self.engine.reload_policies(policies.clone())?;
         self.save_policies(&policies)?;
@@ -203,13 +256,15 @@ impl PolicyStore {
         self.engine.get_policies()
     }
 
-    /// Starts a background thread that watches the policy file for changes.
+    /// Starts a background thread that watches the policy file for
+    /// changes.
     ///
-    /// On a file-modify event the new content is loaded, validated, and
-    /// atomically swapped into the engine. Concurrent modify events are
-    /// coalesced — only one reload runs at a time.
+    /// On a file-modify event the new content is loaded, validated,
+    /// and atomically swapped into the engine. Concurrent modify events
+    /// are coalesced -- only one reload runs at a time.
     ///
-    /// The watcher stops when `shutdown_flag` (stored in `PolicyStore`) is set.
+    /// The watcher stops when `shutdown_flag` (stored in
+    /// `PolicyStore`) is set.
     ///
     /// # Panics
     ///
@@ -226,32 +281,35 @@ impl PolicyStore {
             let (tx, rx) = std::sync::mpsc::channel();
 
             let mut watcher = RecommendedWatcher::new(
-                move |res: std::result::Result<notify::Event, notify::Error>| {
+                move |res: std::result::Result<
+                    notify::Event,
+                    notify::Error,
+                >| {
                     if res.is_ok() {
                         let _ = tx.send(());
                     }
                 },
-                Config::default().with_poll_interval(Duration::from_secs(1)),
+                Config::default()
+                    .with_poll_interval(Duration::from_secs(1)),
             )
             .expect("failed to create notify watcher");
 
-            // Watch the parent directory to catch rename/replace events too.
+            // Watch the parent directory to catch rename/replace
+            // events too.
             if let Some(parent) = path.parent() {
-                let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
+                let _ = watcher
+                    .watch(parent, RecursiveMode::NonRecursive);
             }
 
             let mut pending_reload = false;
 
             loop {
-                // Check shutdown flag.
                 if shutdown_flag.load(Ordering::Relaxed) {
                     debug!("hot-reload watcher stopping");
                     break;
                 }
 
-                // Wait for an event (with timeout so we can re-check shutdown).
                 let timeout = if pending_reload {
-                    // After an event, wait for debounce period then reload.
                     debounce
                 } else {
                     Duration::from_secs(1)
@@ -259,44 +317,73 @@ impl PolicyStore {
 
                 match rx.recv_timeout(timeout) {
                     Ok(()) => {
-                        // Event received — set flag to reload after debounce.
                         pending_reload = true;
                     }
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    Err(
+                        std::sync::mpsc::RecvTimeoutError::Timeout,
+                    ) => {
                         if pending_reload {
                             pending_reload = false;
-                            // Perform reload on this thread to avoid blocking notify.
                             let engine_clone = engine.clone();
                             let path_clone = path.clone();
-                            std::thread::spawn(move || match Self::load_from_disk(&path_clone) {
-                                Ok((policies, _)) => {
-                                    if let Err(e) = engine_clone.reload_policies(policies) {
-                                        error!(error = %e, "hot-reload failed: invalid policies");
-                                    } else {
-                                        debug!("hot-reload: policies reloaded");
+                            std::thread::spawn(move || {
+                                match Self::load_from_disk(
+                                    &path_clone,
+                                ) {
+                                    Ok((policies, _)) => {
+                                        if let Err(e) =
+                                            engine_clone
+                                                .reload_policies(
+                                                    policies,
+                                                )
+                                        {
+                                            error!(
+                                                error = %e,
+                                                "hot-reload failed: \
+                                                 invalid policies"
+                                            );
+                                        } else {
+                                            debug!(
+                                                "hot-reload: \
+                                                 policies reloaded"
+                                            );
+                                        }
                                     }
-                                }
-                                Err(e) => {
-                                    error!(error = %e, "hot-reload failed: could not read file");
+                                    Err(e) => {
+                                        error!(
+                                            error = %e,
+                                            "hot-reload failed: \
+                                             could not read file"
+                                        );
+                                    }
                                 }
                             });
                         }
                     }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    Err(
+                        std::sync::mpsc::RecvTimeoutError::Disconnected,
+                    ) => {
                         break;
                     }
                 }
             }
         });
 
-        info!(path = %self.path.display(), "hot-reload watcher started");
+        info!(
+            path = %self.path.display(),
+            "hot-reload watcher started"
+        );
     }
 
     /// Evaluates an ABAC access request against the loaded policy set.
     ///
-    /// This is the async wrapper around the engine's synchronous `evaluate()`.
-    /// The engine call runs on a blocking thread to avoid stalling the async runtime.
-    pub async fn evaluate(&self, request: &EvaluateRequest) -> EvaluateResponse {
+    /// This is the async wrapper around the engine's synchronous
+    /// `evaluate()`. The engine call runs on a blocking thread to avoid
+    /// stalling the async runtime.
+    pub async fn evaluate(
+        &self,
+        request: &EvaluateRequest,
+    ) -> EvaluateResponse {
         let engine = self.engine.clone();
         let request = request.clone();
         tokio::task::spawn_blocking(move || engine.evaluate(&request))
@@ -305,11 +392,9 @@ impl PolicyStore {
     }
 }
 
-// `get_policies()` is defined as `pub(crate)` in `engine.rs`.
-
-// ─────────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Tests
-// ─────────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

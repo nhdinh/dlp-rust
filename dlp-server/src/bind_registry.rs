@@ -1,20 +1,20 @@
-//! Self-registration of the Policy Engine bind address in the Windows
+//! Self-registration of the DLP Server bind address in the Windows
 //! registry.
 //!
-//! On startup the engine writes its resolved `BIND_ADDR` to:
+//! On startup the server writes its resolved `BIND_ADDR` to:
 //!
 //! ```text
-//! HKLM\SOFTWARE\DLP\PolicyEngine\BindAddr
+//! HKLM\SOFTWARE\DLP\Server\BindAddr
 //! ```
 //!
-//! On shutdown (normal exit) it clears the value so stale addresses are
-//! never left behind.  The `dlp-admin-cli` reads this key to
-//! auto-detect the engine without manual configuration.
+//! On shutdown (normal exit) it clears the value so stale addresses
+//! are never left behind. The `dlp-admin-cli` reads this key to
+//! auto-detect the server without manual configuration.
 
 use tracing::{debug, info, warn};
 
 /// Registry key path.
-const REG_KEY: &str = r"SOFTWARE\DLP\PolicyEngine";
+const REG_KEY: &str = r"SOFTWARE\DLP\Server";
 
 /// Registry value name.
 const REG_VALUE: &str = "BindAddr";
@@ -22,12 +22,12 @@ const REG_VALUE: &str = "BindAddr";
 /// Writes the bind address to the registry.
 ///
 /// Best-effort: logs a warning on failure but never panics or returns
-/// an error, because the engine must start even if registry access is
+/// an error, because the server must start even if registry access is
 /// unavailable (e.g., running as a non-admin user in development).
 ///
 /// # Arguments
 ///
-/// * `addr` - The socket address the engine is listening on.
+/// * `addr` - The socket address the server is listening on.
 pub fn register(addr: &std::net::SocketAddr) {
     let addr_str = addr.to_string();
     match write_reg(REG_KEY, REG_VALUE, &addr_str) {
@@ -48,7 +48,7 @@ pub fn register(addr: &std::net::SocketAddr) {
 /// Clears the bind address from the registry.
 ///
 /// Called on graceful shutdown so the CLI does not connect to a stale
-/// address after the engine stops.
+/// address after the server stops.
 pub fn unregister() {
     match delete_reg(REG_KEY, REG_VALUE) {
         Ok(()) => debug!(
@@ -62,10 +62,14 @@ pub fn unregister() {
     }
 }
 
-// ── Win32 registry helpers (Windows only) ────────────────────────────────
+// ---- Win32 registry helpers (Windows only) ------------------------------
 
 #[cfg(windows)]
-fn write_reg(subkey: &str, name: &str, value: &str) -> anyhow::Result<()> {
+fn write_reg(
+    subkey: &str,
+    name: &str,
+    value: &str,
+) -> anyhow::Result<()> {
     use windows::core::PCWSTR;
     use windows::Win32::System::Registry::{
         RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY,
@@ -74,12 +78,18 @@ fn write_reg(subkey: &str, name: &str, value: &str) -> anyhow::Result<()> {
     };
 
     unsafe {
-        let subkey_wide: Vec<u16> =
-            subkey.encode_utf16().chain(std::iter::once(0)).collect();
-        let name_wide: Vec<u16> =
-            name.encode_utf16().chain(std::iter::once(0)).collect();
-        let value_wide: Vec<u16> =
-            value.encode_utf16().chain(std::iter::once(0)).collect();
+        let subkey_wide: Vec<u16> = subkey
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let name_wide: Vec<u16> = name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let value_wide: Vec<u16> = value
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let value_bytes = std::slice::from_raw_parts(
             value_wide.as_ptr().cast::<u8>(),
             value_wide.len() * 2,
@@ -116,7 +126,10 @@ fn write_reg(subkey: &str, name: &str, value: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(windows)]
-fn delete_reg(subkey: &str, name: &str) -> anyhow::Result<()> {
+fn delete_reg(
+    subkey: &str,
+    name: &str,
+) -> anyhow::Result<()> {
     use windows::core::PCWSTR;
     use windows::Win32::System::Registry::{
         RegCloseKey, RegDeleteValueW, RegOpenKeyExW, HKEY,
@@ -124,10 +137,14 @@ fn delete_reg(subkey: &str, name: &str) -> anyhow::Result<()> {
     };
 
     unsafe {
-        let subkey_wide: Vec<u16> =
-            subkey.encode_utf16().chain(std::iter::once(0)).collect();
-        let name_wide: Vec<u16> =
-            name.encode_utf16().chain(std::iter::once(0)).collect();
+        let subkey_wide: Vec<u16> = subkey
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let name_wide: Vec<u16> = name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
 
         let mut hkey = HKEY::default();
         RegOpenKeyExW(
@@ -152,14 +169,21 @@ fn delete_reg(subkey: &str, name: &str) -> anyhow::Result<()> {
     }
 }
 
-// ── Non-Windows stubs ────────────────────────────────────────────────────
+// ---- Non-Windows stubs --------------------------------------------------
 
 #[cfg(not(windows))]
-fn write_reg(_subkey: &str, _name: &str, _value: &str) -> anyhow::Result<()> {
+fn write_reg(
+    _subkey: &str,
+    _name: &str,
+    _value: &str,
+) -> anyhow::Result<()> {
     Ok(()) // No-op on non-Windows.
 }
 
 #[cfg(not(windows))]
-fn delete_reg(_subkey: &str, _name: &str) -> anyhow::Result<()> {
+fn delete_reg(
+    _subkey: &str,
+    _name: &str,
+) -> anyhow::Result<()> {
     Ok(()) // No-op on non-Windows.
 }

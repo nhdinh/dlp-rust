@@ -45,7 +45,7 @@ The DLP system enforces five foundational security principles across all layers.
 |---|---|---|
 | `dlp-agent` (Windows Service) | Runs as `SYSTEM` (LocalSystem); process DACL denies terminate/read/write to Authenticated Users; Administrators get explicit Allow | SYSTEM required for `SeSecurityPrivilege` to set process DACL; no broader privilege needed |
 | `dlp-user-ui` (iced subprocess) | Runs as the interactive logged-in user; no elevated privileges; SYSTEM-only named pipe ACLs prevent cross-session access | UI is a userland process; cannot perform privileged operations |
-| `policy-engine` | Runs as a dedicated AD service account (non-SYSTEM); LDAPS bind uses the AD service account exclusively for ABAC attribute lookups | Principle of least privilege: the engine does not need SYSTEM |
+| `dlp-server` (policy evaluator) | Runs as a dedicated AD service account (non-SYSTEM); LDAPS bind uses the AD service account exclusively for ABAC attribute lookups | Principle of least privilege: the server does not need SYSTEM |
 | AD service account (`CN=dlp-svc,...`) | Read-only LDAP queries to AD; used only by Policy Engine for ABAC attribute lookups; no domain join or replication rights | Limits exposure if the service account is compromised |
 | `dlp-admin` (DLP credential) | Credential stored as bcrypt hash at `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`; verified by bcrypt comparison at service stop; not an AD account | Not stored in AD; no LDAPS verification |
 
@@ -100,7 +100,7 @@ The defense-in-depth model has five layers:
 ├──────────────────────────────────────────────────────┤
 │  Layer 4: Alert & Response (DENY_WITH_ALERT)         │  Real-time SOC notification
 ├──────────────────────────────────────────────────────┤
-│  Layer 3: ABAC Policy Enforcement (policy-engine)      │  Fine-grained runtime veto
+│  Layer 3: ABAC Policy Enforcement (dlp-server)         │  Fine-grained runtime veto
 ├──────────────────────────────────────────────────────┤
 │  Layer 2: NTFS ACLs (baseline, file server)           │  Coarse-grained OS-level gate
 ├──────────────────────────────────────────────────────┤
@@ -143,8 +143,9 @@ Every ABAC decision, every block event, every admin action, and every failed aut
   ║                               │ TLS 1.3 + certificate verify           ║
   ║  ┌──────────────────────────▼──────────────────────────────────┐    ║
   ║  │           POLICY TRUST ZONE — DMZ / Isolated Subnet           │    ║
-  ║  │   Policy Engine (HTTPS :8443) — Rust, stateless replicas     │    ║
+  ║  │   dlp-server (HTTPS :9090) — Rust, stateless replicas        │    ║
   ║  │   Evaluates ABAC rules; queries AD; returns ALLOW/DENY        │    ║
+  ║  │   Also: policy CRUD, audit ingestion, agent registry          │    ║
   ║  └──────────────────────────┬──────────────────────────────────┘    ║
   ║                               │ HTTPS / mTLS                         ║
   ║  ════════════════════════════╪══════════════════════════════════════ ║
@@ -181,17 +182,17 @@ Every ABAC decision, every block event, every admin action, and every failed aut
 | Zone | Components | Trust Level | Boundary Controls |
 |---|---|---|---|
 | **Identity Trust Zone** | AD Domain Controllers | Highest | LDAPS (TLS 1.3); service account read-only; no interactive logon |
-| **Policy Trust Zone** | Policy Engine replicas | High | Network segmentation (DMZ); mTLS agents → engine; no inbound from general network |
-| **Endpoint** | dlp-agent, dlp-user-ui | Medium (assume compromised) | Named pipe ACLs; process DACL; DPAPI; no outbound except to policy engine |
+| **Policy Trust Zone** | dlp-server replicas (port 9090) | High | Network segmentation (DMZ); mTLS agents → server; no inbound from general network |
+| **Endpoint** | dlp-agent, dlp-user-ui | Medium (assume compromised) | Named pipe ACLs; process DACL; DPAPI; no outbound except to dlp-server |
 | **Management Zone** | dlp-server | High | TLS 1.3; JWT admin auth; SIEM credentials held only here |
 
 ### 2.3 Cross-Boundary Flows
 
 | Flow | Direction | Protocol | Auth | Threat (see [THREAT_MODEL.md](./THREAT_MODEL.md)) |
 |---|---|---|---|---|
-| Agent → Policy Engine | Outbound | HTTPS / TLS 1.3 + mTLS | Server cert verify + client cert | Spoofing the engine; tampering the decision |
-| Policy Engine → AD | Outbound | LDAPS :636 | TLS + service account bind | Credential theft from engine host |
-| Agent → dlp-server (Phase 5) | Outbound | HTTPS / TLS 1.3 | mTLS or signed JWT | Tampering audit stream; impersonating agent |
+| Agent → dlp-server (`POST /evaluate`) | Outbound | HTTPS / TLS 1.3 + mTLS | Server cert verify + client cert | Spoofing the server; tampering the decision |
+| dlp-server → AD | Outbound | LDAPS :636 | TLS + service account bind | Credential theft from server host |
+| Agent → dlp-server (audit, heartbeat) | Outbound | HTTPS / TLS 1.3 | mTLS or signed JWT | Tampering audit stream; impersonating agent |
 | dlp-server → SIEM | Outbound | HTTPS / TLS 1.3 | HEC token / API key | Credential sprawl (SIEM token in agent — mitigated by relay model) |
 | Admin → dlp-server | Inbound | HTTPS | TOTP + JWT (Phase 5) | Admin credential theft |
 | Agent ↔ UI (Pipe 1/2/3) | Local only | Named pipe / DPAPI | SYSTEM-only ACL | Pipe impersonation; UI → admin password over pipe |
@@ -247,7 +248,7 @@ In `dlp-agent/src/interception/file_monitor.rs`, the interception hook:
 
 1. Resolves caller identity via `identity.rs` (SMB impersonation or process token)
 2. Constructs an `EvaluateRequest` (subject, resource, environment, action)
-3. Calls `engine_client.rs` → Policy Engine
+3. Calls `engine_client.rs` → dlp-server (`POST /evaluate`)
 4. Applies the response decision:
    - `DENY` or `DENY_WITH_ALERT`: blocks the operation, emits `BLOCK` audit event
    - `ALLOW` or `ALLOW_WITH_LOG`: permits the operation (subject to NTFS), emits `ACCESS` audit event
@@ -261,7 +262,7 @@ The **NTFS check always happens first at the OS level** — the process cannot o
 ### 4.1 Statement of the Rule
 
 > **NTFS ALLOW + ABAC DENY = DENY**
-> If NTFS permits an operation but the ABAC Policy Engine returns DENY or DENY_WITH_ALERT, the dlp-agent **blocks the operation**.
+> If NTFS permits an operation but the ABAC evaluator in dlp-server returns DENY or DENY_WITH_ALERT, the dlp-agent **blocks the operation**.
 
 This rule is the cornerstone of the dual-layer model. Without it, any user with sufficient NTFS permissions could exfiltrate data by simply copying it to a USB device or an unauthorized SMB share — NTFS knows nothing about device trust or network location.
 
@@ -269,9 +270,9 @@ This rule is the cornerstone of the dual-layer model. Without it, any user with 
 
 The Critical Rule is enforced at two decision points:
 
-**Decision Point 1 — Policy Engine (`policy-engine/src/engine.rs`)**
+**Decision Point 1 — dlp-server ABAC evaluator (`dlp-server/src/engine.rs`)**
 
-The ABAC engine receives an `EvaluateRequest` from the agent and returns an `EvaluateResponse` with a `Decision` enum value. The engine evaluates policies in priority order (first-match). The decision is:
+The ABAC evaluator receives an `EvaluateRequest` from the agent and returns an `EvaluateResponse` with a `Decision` enum value. The evaluator processes policies in priority order (first-match). The decision is:
 
 ```rust
 pub enum Decision {
@@ -282,11 +283,11 @@ pub enum Decision {
 }
 ```
 
-For a DENY or DENY_WITH_ALERT, the engine returns the decision and the `matched_policy_id`. The agent is responsible for enforcing this decision.
+For a DENY or DENY_WITH_ALERT, the evaluator returns the decision and the `matched_policy_id`. The agent is responsible for enforcing this decision.
 
 **Decision Point 2 — dlp-agent (`dlp-agent/src/engine_client.rs` + interception layer)**
 
-After receiving the Policy Engine response, the interception hook in `file_monitor.rs` checks the decision:
+After receiving the dlp-server evaluation response, the interception hook in `file_monitor.rs` checks the decision:
 
 ```rust
 // Pseudocode — actual implementation in file_monitor.rs
@@ -308,7 +309,7 @@ match response.decision {
 
 **Decision Point 3 — Offline Mode (`dlp-agent/src/offline.rs`)**
 
-When the Policy Engine is unreachable, `offline.rs::offline_decision()` applies the fail-closed response for T3/T4 (see §5). The Critical Rule is preserved in offline mode: if the cache returns a DENY for a sensitive resource, the operation is blocked.
+When dlp-server is unreachable, `offline.rs::offline_decision()` applies the fail-closed response for T3/T4 (see §5). The Critical Rule is preserved in offline mode: if the cache returns a DENY for a sensitive resource, the operation is blocked.
 
 ### 4.3 Fail-Safe Behavior
 
@@ -331,18 +332,18 @@ The fail-closed guarantee addresses two scenarios:
 
 In both scenarios, the system must default to **DENY** for sensitive resources rather than silently allowing access.
 
-### 5.2 AD Outage: Policy Engine Behavior
+### 5.2 AD Outage: dlp-server Behavior
 
-`policy-engine/src/ad_client.rs` caches all AD lookups with a 5-minute TTL. If AD is unreachable during a cache miss:
+`dlp-server/src/ad_client.rs` caches all AD lookups with a 5-minute TTL. If AD is unreachable during a cache miss:
 
 1. The LDAP query returns `AdClientError`
-2. The Policy Engine logs the error and returns a DENY decision for any request where AD attributes are required
+2. dlp-server logs the error and returns a DENY decision for any request where AD attributes are required
 3. The decision is accompanied by an audit event indicating the AD lookup failure
 4. Once AD is restored, the next request triggers a fresh cache entry
 
 The AD service account has no privilege to modify AD objects — even if the account is compromised during an outage, it cannot alter group memberships or device trust attributes.
 
-### 5.3 Policy Engine Unreachable: Offline Mode
+### 5.3 dlp-server Unreachable: Offline Mode
 
 `dlp-agent/src/offline.rs` implements a three-tier offline decision model:
 
@@ -368,7 +369,7 @@ This is hard-coded behavior, not configurable — there is no registry setting o
 
 ### 5.4 Heartbeat Loop
 
-`offline.rs::heartbeat_loop()` probes the Policy Engine every 30 seconds when offline. On successful probe, the agent transitions back to online mode and resumes live ABAC evaluation. The transition is logged as an audit event (`SERVICE_STOP_FAILED` family — specifically a transition event).
+`offline.rs::heartbeat_loop()` probes dlp-server every 30 seconds when offline. On successful probe, the agent transitions back to online mode and resumes live ABAC evaluation. The transition is logged as an audit event (`SERVICE_STOP_FAILED` family — specifically a transition event).
 
 ### 5.5 Guaranteed Properties
 
@@ -392,8 +393,8 @@ All secrets are stored outside source code, in environment variables or `.env` f
 
 | Secret | Storage Location | Access |
 |---|---|---|
-| Policy Engine TLS client certificate + key | `.env` (`DLP_ENGINE_CERT_PATH`, `DLP_ENGINE_KEY_PATH`) | Read by `dlp-agent` at startup via `dotenvy` |
-| AD service account password (LDAPS bind) | `.env` (`DLP_AD_BIND_PASSWORD`) | Read by `policy-engine` at startup via `dotenvy` |
+| dlp-server TLS client certificate + key | `.env` (`DLP_ENGINE_CERT_PATH`, `DLP_ENGINE_KEY_PATH`) | Read by `dlp-agent` at startup via `dotenvy` |
+| AD service account password (LDAPS bind) | `.env` (`DLP_AD_BIND_PASSWORD`) | Read by `dlp-server` at startup via `dotenvy` |
 | dlp-admin password | Not stored; verified via bcrypt hash comparison at service stop | Never persisted; verified in memory |
 | SIEM HEC token | `.env` (`DLP_SIEM_HEC_TOKEN`) — Phase 5 only | Stored in `dlp-server`; agents never see SIEM credentials |
 | dlp-server JWT signing key | Generated at startup; stored in memory only (Phase 5) | Not persisted; no secret file |
@@ -419,7 +420,7 @@ All secrets are stored outside source code, in environment variables or `.env` f
 The `ad_client.rs` connects to AD over LDAPS on port 636 by default. TLS certificate verification is enforced:
 
 ```rust
-// policy-engine/src/ad_client.rs
+// dlp-server/src/ad_client.rs
 let mut ldap = LdapConn::new(&url)  // url must be ldaps://...
     .map_err(|e| AdClientError::LdapInitError(e.to_string()))?;
 ```
@@ -573,8 +574,8 @@ This section summarizes the threat landscape. For the full STRIDE analysis with 
 | **File interception hooks** | Windows API hooks in `file_monitor.rs` | High — if hooks are bypassed, ABAC is not consulted |
 | **File monitor interference** | The `notify` watcher can be interfered with by admin-level processes | Medium — relies on EDR to detect process-level interference |
 | **Named pipes** | 3 pipes connecting Agent ↔ UI | Medium — mitigated by SYSTEM-only ACL and DPAPI |
-| **Policy Engine HTTPS API** | `engine_client.rs` → Policy Engine | High — protected by mTLS |
-| **AD LDAP interface** | `ad_client.rs` (policy-engine only) → Domain Controller | High — protected by LDAPS + service account |
+| **dlp-server HTTPS API** | `engine_client.rs` → dlp-server (`POST /evaluate`, audit, heartbeat) | High — protected by mTLS |
+| **AD LDAP interface** | `ad_client.rs` (dlp-server only) → Domain Controller | High — protected by LDAPS + service account |
 | **dlp-server API** (Phase 5) | Agent → dlp-server audit relay | Medium — protected by TLS + mTLS |
 | **Admin interface** (Phase 5) | dlp-admin → dlp-server REST API | High — protected by TOTP + JWT |
 | **Service stop flow** | `sc stop` → password challenge | High — protected by bcrypt hash comparison |

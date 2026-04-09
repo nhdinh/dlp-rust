@@ -377,11 +377,11 @@ async fn start_real_engine() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     ];
     std::fs::write(&policy_path, serde_json::to_string(&policies).unwrap()).unwrap();
 
-    let engine = Arc::new(policy_engine::AbacEngine::new());
+    let engine = Arc::new(dlp_server::engine::AbacEngine::new());
     let store = Arc::new(
-        policy_engine::policy_store::PolicyStore::open(policy_path, engine).unwrap(),
+        dlp_server::policy_store::PolicyStore::open(policy_path, engine).unwrap(),
     );
-    let app: Router = policy_engine::http_server::build_full_router(store);
+    let app: Router = dlp_server::policy_api::router(store);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {

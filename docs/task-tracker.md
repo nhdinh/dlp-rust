@@ -11,7 +11,9 @@
 
 ---
 
-## Sprint 1 — Policy Engine Scaffold
+> **Architecture note (2026-04-08):** The `policy-engine/` crate has been merged into `dlp-server/`. All ABAC evaluation (`POST /evaluate`) and policy CRUD are now served by `dlp-server` on port 9090. The task deliverable paths below (`policy-engine/src/...`) reflect the historical implementation location; those modules now reside under `dlp-server/src/`. Phase 2 task P2-T12 and Phase 5 task P5-T07 are likewise now part of `dlp-server`.
+
+## Sprint 1 — Policy Engine Scaffold (now in dlp-server)
 
 | ID   | Status | Story | Task                                                                                                             | Deliverable                         |
 | ---- | ------ | ----- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
@@ -22,7 +24,7 @@
 
 ---
 
-## Sprint 2 — HTTPS Server + AD Client + REST API
+## Sprint 2 — HTTPS Server + AD Client + REST API (now in dlp-server)
 
 | ID   | Status | Story | Task                                                                                                            | Deliverable                        |
 | ---- | ------ | ----- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
@@ -33,7 +35,7 @@
 
 ---
 
-## Sprint 3 — AD Group Lookup + Hot-Reload + Benchmark
+## Sprint 3 — AD Group Lookup + Hot-Reload + Benchmark (now in dlp-server)
 
 | ID   | Status | Story | Task                                                                                                              | Deliverable                         |
 | ---- | ------ | ----- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
@@ -179,7 +181,7 @@
 
 | ID   | Status | Story | Task                                                                                 | Deliverable                        |
 | ---- | ------ | ----- | ------------------------------------------------------------------------------------ | ---------------------------------- |
-| T-24 | [x]    | US-14 | Performance validation: P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput | `policy-engine/tests/benchmark.rs` |
+| T-24 | [x]    | US-14 | Performance validation: P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput | `dlp-server/tests/benchmark.rs` |
 
 ---
 
@@ -223,9 +225,9 @@
 | P2-T04 | [x]    | --    | Mutual health monitoring: Agent pings UI (5s), respawn if no pong (15s); UI exits if Agent gone (15s)     | `dlp-agent/src/health_monitor.rs`          |
 | P2-T10 | [x]    | --    | Tray icon double-click opens portal URL (stub: "Coming Soon")                                             | `dlp-user-ui/src/tray.rs`                  |
 | P2-T11 | [x]    | --    | Service stop: STOP_PENDING + password dialog + file-based response + debug bypass                         | `dlp-agent/src/password_stop.rs`           |
-| P2-T12 | [x]    | --    | Policy Engine REST CRUD (GET/POST/PUT/DELETE /policies)                                                   | `policy-engine/src/rest_api.rs`            |
-| P2-T13 | [x]    | --    | Agent-to-Engine E2E integration tests (real Policy Engine, OfflineManager, cache)                          | `dlp-agent/tests/integration.rs`           |
-| P2-T14 | [x]    | --    | ABAC policy integration tests (all 3 rules, priority, disabled, AccessContext, multi-condition)            | `policy-engine/tests/integration.rs`       |
+| P2-T12 | [x]    | --    | Policy CRUD REST API (GET/POST/PUT/DELETE /policies) — now in `dlp-server/src/rest_api.rs`                | `dlp-server/src/rest_api.rs`               |
+| P2-T13 | [x]    | --    | Agent-to-Server E2E integration tests (real dlp-server, OfflineManager, cache)                             | `dlp-agent/tests/integration.rs`           |
+| P2-T14 | [x]    | --    | ABAC policy integration tests (all 3 rules, priority, disabled, AccessContext, multi-condition)            | `dlp-server/tests/integration.rs`          |
 
 ## Phase 4 — Production Hardening
 

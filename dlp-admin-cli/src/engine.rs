@@ -1,36 +1,36 @@
-//! Policy Engine connection management.
+//! DLP Server connection management.
 //!
-//! Provides auto-detection of the Policy Engine bind address when the CLI
-//! and engine run on the same machine, plus commands to query and update
-//! the configured `BIND_ADDR` in the Windows registry.
+//! Provides auto-detection of the DLP Server bind address when the CLI
+//! and server run on the same machine, plus commands to query and
+//! update the configured `BIND_ADDR` in the Windows registry.
 //!
 //! ## Registry layout
 //!
 //! ```text
-//! HKLM\SOFTWARE\DLP\PolicyEngine
-//!   BindAddr  REG_SZ  "127.0.0.1:8443"
+//! HKLM\SOFTWARE\DLP\Server
+//!   BindAddr  REG_SZ  "127.0.0.1:9090"
 //! ```
 //!
 //! ## Auto-detection strategy
 //!
 //! 1. Check `DLP_POLICY_ENGINE_URL` env var (explicit override).
 //! 2. Read `BIND_ADDR` from the registry (same-machine deployment).
-//! 3. Probe well-known local ports: 8443, 9443, 8080.
-//! 4. Fall back to the compiled default (`https://localhost:8443`).
+//! 3. Probe well-known local ports: 9090, 8443, 8080.
+//! 4. Fall back to the compiled default (`http://127.0.0.1:9090`).
 
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
 use crate::registry;
 
-/// Registry key path for Policy Engine settings.
-const ENGINE_REG_KEY: &str = r"SOFTWARE\DLP\PolicyEngine";
+/// Registry key path for DLP Server settings.
+const ENGINE_REG_KEY: &str = r"SOFTWARE\DLP\Server";
 
 /// Registry value name for the bind address.
 const BIND_ADDR_VALUE: &str = "BindAddr";
 
 /// Well-known ports to probe when auto-detecting.
-const PROBE_PORTS: &[u16] = &[8443, 9443, 8080];
+const PROBE_PORTS: &[u16] = &[9090, 8443, 8080];
 
 /// Probe timeout per port.
 const PROBE_TIMEOUT: std::time::Duration =
@@ -42,28 +42,40 @@ const PROBE_TIMEOUT: std::time::Duration =
 ///
 /// # Errors
 ///
-/// Returns an error if the registry key does not exist or cannot be read.
+/// Returns an error if the registry key does not exist or cannot be
+/// read.
 pub fn get_bind_addr() -> Result<()> {
-    match registry::read_registry_string(ENGINE_REG_KEY, BIND_ADDR_VALUE) {
+    match registry::read_registry_string(
+        ENGINE_REG_KEY,
+        BIND_ADDR_VALUE,
+    ) {
         Ok(addr) if !addr.is_empty() => {
-            println!("Policy Engine BIND_ADDR: {addr}");
-            println!("  (from HKLM\\{ENGINE_REG_KEY}\\{BIND_ADDR_VALUE})");
+            println!("DLP Server BIND_ADDR: {addr}");
+            println!(
+                "  (from HKLM\\{ENGINE_REG_KEY}\\{BIND_ADDR_VALUE})"
+            );
             Ok(())
         }
         Ok(_) => {
-            println!("Policy Engine BIND_ADDR is not configured in the registry.");
             println!(
-                "  Set it with: dlp-admin-cli engine set-bind-addr <host:port>"
+                "DLP Server BIND_ADDR is not configured \
+                 in the registry."
+            );
+            println!(
+                "  Set it with: dlp-admin-cli engine \
+                 set-bind-addr <host:port>"
             );
             Ok(())
         }
         Err(e) => {
-            println!("Policy Engine BIND_ADDR is not configured.");
+            println!("DLP Server BIND_ADDR is not configured.");
             println!(
-                "  Registry key HKLM\\{ENGINE_REG_KEY} not found: {e}"
+                "  Registry key HKLM\\{ENGINE_REG_KEY} \
+                 not found: {e}"
             );
             println!(
-                "  Set it with: dlp-admin-cli engine set-bind-addr <host:port>"
+                "  Set it with: dlp-admin-cli engine \
+                 set-bind-addr <host:port>"
             );
             Ok(())
         }
@@ -89,24 +101,27 @@ pub fn set_bind_addr(addr: &str) -> Result<()> {
     registry::write_registry_string(ENGINE_REG_KEY, BIND_ADDR_VALUE, addr)
         .context("failed to write BIND_ADDR to registry (run as Administrator)")?;
 
-    println!("Policy Engine BIND_ADDR set to: {addr}");
-    println!("  (stored in HKLM\\{ENGINE_REG_KEY}\\{BIND_ADDR_VALUE})");
-    println!("  Restart the Policy Engine for this to take effect.");
+    println!("DLP Server BIND_ADDR set to: {addr}");
+    println!(
+        "  (stored in HKLM\\{ENGINE_REG_KEY}\\{BIND_ADDR_VALUE})"
+    );
+    println!("  Restart dlp-server for this to take effect.");
     Ok(())
 }
 
 // ─── Auto-detection ──────────────────────────────────────────────────────
 
-/// Resolves the Policy Engine URL using a multi-step strategy.
+/// Resolves the DLP Server URL using a multi-step strategy.
 ///
-/// 1. `DLP_POLICY_ENGINE_URL` env var (explicit override, highest priority).
+/// 1. `DLP_POLICY_ENGINE_URL` env var (explicit override, highest
+///    priority).
 /// 2. `BIND_ADDR` from the Windows registry (same-machine deployment).
-/// 3. Probe well-known local ports (8443, 9443, 8080).
-/// 4. Compiled default (`https://localhost:8443`).
+/// 3. Probe well-known local ports (9090, 8443, 8080).
+/// 4. Compiled default (`http://127.0.0.1:9090`).
 ///
 /// # Returns
 ///
-/// The resolved base URL (e.g., `http://127.0.0.1:8443`).
+/// The resolved base URL (e.g., `http://127.0.0.1:9090`).
 pub fn resolve_engine_url() -> String {
     // Step 1: explicit env var.
     if let Ok(url) = std::env::var("DLP_POLICY_ENGINE_URL") {
@@ -123,18 +138,22 @@ pub fn resolve_engine_url() -> String {
     ) {
         if !addr.is_empty() {
             let url = addr_to_url(&addr);
-            debug!(addr = %addr, url = %url, "Read BIND_ADDR from registry");
-            // Probe to confirm the engine is actually listening.
+            debug!(
+                addr = %addr,
+                url = %url,
+                "Read BIND_ADDR from registry"
+            );
+            // Probe to confirm the server is actually listening.
             if probe_health(&url) {
                 info!(
                     url = %url,
-                    "Auto-detected Policy Engine from registry BIND_ADDR"
+                    "Auto-detected DLP Server from registry BIND_ADDR"
                 );
                 return url;
             }
             warn!(
                 url = %url,
-                "Registry BIND_ADDR set but engine not responding"
+                "Registry BIND_ADDR set but server not responding"
             );
         }
     }
@@ -146,7 +165,7 @@ pub fn resolve_engine_url() -> String {
         if probe_health(&url) {
             info!(
                 url = %url,
-                "Auto-detected Policy Engine on local port {port}"
+                "Auto-detected DLP Server on local port {port}"
             );
             return url;
         }

@@ -1,29 +1,32 @@
 //! ABAC Policy Evaluation Engine.
 //!
-//! Implements first-match policy evaluation: policies are sorted by priority (ascending),
-//! evaluated in order, and the first matching policy's action is returned.
+//! Implements first-match policy evaluation: policies are sorted by priority
+//! (ascending), evaluated in order, and the first matching policy's action
+//! is returned.
 //!
 //! ## Critical Rule
 //!
 //! > NTFS ALLOW + ABAC DENY = **DENY** (ABAC always has final veto)
 //!
-//! This is enforced by returning `DENY` or `DENY_WITH_ALERT` decisions regardless
-//! of what NTFS would have allowed.
+//! This is enforced by returning `DENY` or `DENY_WITH_ALERT` decisions
+//! regardless of what NTFS would have allowed.
 
 use std::sync::Arc;
 
 use dlp_common::abac::{EvaluateRequest, EvaluateResponse, Policy, PolicyCondition};
 use parking_lot::RwLock;
 
-use crate::error::{PolicyEngineError, Result};
+use crate::policy_engine_error::{PolicyEngineError, Result};
 
 /// The ABAC evaluation engine.
 ///
-/// Evaluates incoming access requests against the loaded policy set using first-match semantics.
-/// Thread-safe: can be shared across many async tasks simultaneously.
+/// Evaluates incoming access requests against the loaded policy set using
+/// first-match semantics. Thread-safe: can be shared across many async
+/// tasks simultaneously.
 #[derive(Debug, Default)]
 pub struct AbacEngine {
-    /// The currently active policy set. Read-mostly; replaced atomically on hot-reload.
+    /// The currently active policy set. Read-mostly; replaced atomically
+    /// on hot-reload.
     pub(crate) policies: Arc<RwLock<Vec<Policy>>>,
 }
 
@@ -36,7 +39,8 @@ impl AbacEngine {
 
     /// Creates a new engine with an initial set of policies.
     pub fn with_policies(policies: Vec<Policy>) -> Self {
-        // Sort by priority ascending — lower number = higher priority = evaluated first.
+        // Sort by priority ascending -- lower number = higher priority =
+        // evaluated first.
         let mut sorted = policies;
         sorted.sort_by_key(|p| p.priority);
         Self {
@@ -47,8 +51,8 @@ impl AbacEngine {
     /// Replaces the active policy set with a new set (hot-reload path).
     ///
     /// Validates that all policies are well-formed before swapping.
-    /// Uses atomic swap via `Arc` to ensure in-flight evaluations complete
-    /// against the old policy set without corruption.
+    /// Uses atomic swap via `Arc` to ensure in-flight evaluations
+    /// complete against the old policy set without corruption.
     pub fn reload_policies(&self, new_policies: Vec<Policy>) -> Result<()> {
         for policy in &new_policies {
             validate_policy(policy)?;
@@ -62,14 +66,15 @@ impl AbacEngine {
 
     /// Evaluates an access request against the current policy set.
     ///
-    /// Policies are evaluated in priority order (lowest number first). The first
-    /// matching policy's action is returned. If no policy matches, returns a
-    /// default-deny response (fail-closed for safety).
+    /// Policies are evaluated in priority order (lowest number first). The
+    /// first matching policy's action is returned. If no policy matches,
+    /// returns a default-deny response (fail-closed for safety).
     ///
     /// # Critical Rule
     ///
-    /// > NTFS ALLOW + ABAC DENY = **DENY** — enforced here by always returning
-    /// > DENY/DENY_WITH_ALERT when any policy matches with that action.
+    /// > NTFS ALLOW + ABAC DENY = **DENY** -- enforced here by always
+    /// > returning DENY/DENY_WITH_ALERT when any policy matches with that
+    /// > action.
     pub fn evaluate(&self, request: &EvaluateRequest) -> EvaluateResponse {
         let policies = self.policies.read();
 
@@ -86,7 +91,7 @@ impl AbacEngine {
             }
         }
 
-        // No policy matched — fail closed: default-deny.
+        // No policy matched -- fail closed: default-deny.
         EvaluateResponse::default_deny()
     }
 
@@ -108,10 +113,18 @@ impl AbacEngine {
     }
 
     /// Evaluates a single condition against the request.
-    fn evaluate_condition(&self, condition: &PolicyCondition, request: &EvaluateRequest) -> bool {
+    fn evaluate_condition(
+        &self,
+        condition: &PolicyCondition,
+        request: &EvaluateRequest,
+    ) -> bool {
         match condition {
             PolicyCondition::Classification { op, value } => {
-                evaluate_op(op, request.resource.classification as u8, (*value) as u8)
+                evaluate_op(
+                    op,
+                    request.resource.classification as u8,
+                    (*value) as u8,
+                )
             }
             PolicyCondition::MemberOf { op, group_sid } => request
                 .subject
@@ -122,10 +135,18 @@ impl AbacEngine {
                 evaluate_eq_op(op, value, &request.subject.device_trust)
             }
             PolicyCondition::NetworkLocation { op, value } => {
-                evaluate_eq_op(op, value, &request.subject.network_location)
+                evaluate_eq_op(
+                    op,
+                    value,
+                    &request.subject.network_location,
+                )
             }
             PolicyCondition::AccessContext { op, value } => {
-                evaluate_eq_op(op, value, &request.environment.access_context)
+                evaluate_eq_op(
+                    op,
+                    value,
+                    &request.environment.access_context,
+                )
             }
         }
     }
@@ -160,16 +181,20 @@ fn evaluate_op(op: &str, actual: u8, expected: u8) -> bool {
         "lte" => actual <= expected,
         "gt" => actual > expected,
         "gte" => actual >= expected,
-        // Unknown operator: fail-safe — do not match.
+        // Unknown operator: fail-safe -- do not match.
         _ => false,
     }
 }
 
 /// Evaluates a group membership check with a string comparison operator.
 ///
-/// `eq` — user is a member of the specified group
-/// `neq` — user is NOT a member of the specified group
-fn evaluate_group_op(op: &str, actual_group: &str, expected_group: &str) -> bool {
+/// `eq` -- user is a member of the specified group
+/// `neq` -- user is NOT a member of the specified group
+fn evaluate_group_op(
+    op: &str,
+    actual_group: &str,
+    expected_group: &str,
+) -> bool {
     match op {
         "eq" => actual_group == expected_group,
         "neq" => actual_group != expected_group,
@@ -190,7 +215,8 @@ fn evaluate_eq_op<T: PartialEq>(op: &str, actual: &T, expected: &T) -> bool {
 fn reason_for(policy: Policy, request: &EvaluateRequest) -> String {
     let classification = request.resource.classification;
     format!(
-        "Policy '{}' (id={}) matched; action={:?}; classification={}; action_requested={:?}",
+        "Policy '{}' (id={}) matched; action={:?}; \
+         classification={}; action_requested={:?}",
         policy.name,
         policy.id,
         policy.action,
@@ -199,21 +225,24 @@ fn reason_for(policy: Policy, request: &EvaluateRequest) -> String {
     )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────
-// Tests — all 3 rules from docs/ABAC_POLICIES.md
-// ─────────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
     use dlp_common::abac::{
-        AccessContext, Action, Decision, DeviceTrust, Environment, NetworkLocation, Resource,
-        Subject,
+        AccessContext, Action, Decision, DeviceTrust, Environment,
+        NetworkLocation, Resource, Subject,
     };
     use dlp_common::Classification;
 
-    fn make_request(classification: Classification, action: Action) -> EvaluateRequest {
+    fn make_request(
+        classification: Classification,
+        action: Action,
+    ) -> EvaluateRequest {
         EvaluateRequest {
             subject: Subject {
                 user_sid: "S-1-5-21-123".to_string(),
@@ -236,9 +265,7 @@ mod tests {
         }
     }
 
-    /// Rule 1 from ABAC_POLICIES.md:
-    /// IF resource.classification == "T4" THEN deny_all_except_owner
-    /// Maps to: classification == T4 → DENY
+    /// Rule 1: classification == T4 -> DENY
     fn t4_deny_policy() -> Policy {
         Policy {
             id: "pol-001".into(),
@@ -255,10 +282,7 @@ mod tests {
         }
     }
 
-    /// Rule 2 from ABAC_POLICIES.md:
-    /// IF resource.classification == "T3" AND device.trust == "Unmanaged"
-    /// THEN deny_upload
-    /// Maps to: classification == T3 AND device_trust == Unmanaged → DENY
+    /// Rule 2: classification == T3 AND device_trust == Unmanaged -> DENY
     fn t3_unmanaged_deny_policy() -> Policy {
         Policy {
             id: "pol-002".into(),
@@ -281,9 +305,7 @@ mod tests {
         }
     }
 
-    /// Rule 3 from ABAC_POLICIES.md:
-    /// IF resource.classification == "T2" THEN allow_with_logging
-    /// Maps to: classification == T2 → ALLOW_WITH_LOG
+    /// Rule 3: classification == T2 -> ALLOW_WITH_LOG
     fn t2_log_policy() -> Policy {
         Policy {
             id: "pol-003".into(),
@@ -308,12 +330,11 @@ mod tests {
         ])
     }
 
-    // ── Rule 1 tests ──────────────────────────────────────────────────────────
-
     #[test]
     fn test_t4_denied() {
         let engine = engine_with_rules();
-        let resp = engine.evaluate(&make_request(Classification::T4, Action::COPY));
+        let resp =
+            engine.evaluate(&make_request(Classification::T4, Action::COPY));
         assert!(resp.decision.is_denied());
         assert_eq!(resp.matched_policy_id.as_deref(), Some("pol-001"));
     }
@@ -321,23 +342,22 @@ mod tests {
     #[test]
     fn test_t4_read_denied() {
         let engine = engine_with_rules();
-        let resp = engine.evaluate(&make_request(Classification::T4, Action::READ));
+        let resp =
+            engine.evaluate(&make_request(Classification::T4, Action::READ));
         assert!(resp.decision.is_denied());
     }
-
-    // ── Rule 2 tests ──────────────────────────────────────────────────────────
 
     #[test]
     fn test_t3_unmanaged_denied() {
         let engine = engine_with_rules();
-        let resp = engine.evaluate(&make_request(Classification::T3, Action::COPY));
+        let resp =
+            engine.evaluate(&make_request(Classification::T3, Action::COPY));
         assert!(resp.decision.is_denied());
         assert_eq!(resp.matched_policy_id.as_deref(), Some("pol-002"));
     }
 
     #[test]
     fn test_t3_managed_falls_through_to_default_deny() {
-        // T3 + Managed device → pol-002 Unmanaged condition fails → no match → default-deny
         let engine = AbacEngine::with_policies(vec![Policy {
             id: "pol-002".into(),
             name: "T3 Unmanaged Block".into(),
@@ -360,38 +380,31 @@ mod tests {
         let mut req = make_request(Classification::T3, Action::COPY);
         req.subject.device_trust = DeviceTrust::Managed;
         let resp = engine.evaluate(&req);
-        // No policy matched — fail-closed default-deny applies.
         assert!(resp.decision.is_denied());
         assert!(resp.matched_policy_id.is_none());
     }
 
-    // ── Rule 3 tests ──────────────────────────────────────────────────────────
-
     #[test]
     fn test_t2_allowed_with_log() {
         let engine = engine_with_rules();
-        let resp = engine.evaluate(&make_request(Classification::T2, Action::WRITE));
+        let resp = engine
+            .evaluate(&make_request(Classification::T2, Action::WRITE));
         assert_eq!(resp.decision, Decision::AllowWithLog);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("pol-003"));
     }
 
-    // ── Default-deny tests ─────────────────────────────────────────────────────
-
     #[test]
     fn test_t1_default_deny() {
         let engine = engine_with_rules();
-        // T1 does not match any of our three policies → default-deny
-        let resp = engine.evaluate(&make_request(Classification::T1, Action::COPY));
+        let resp =
+            engine.evaluate(&make_request(Classification::T1, Action::COPY));
         assert!(resp.decision.is_denied());
         assert!(resp.matched_policy_id.is_none());
         assert!(resp.reason.contains("No matching policy"));
     }
 
-    // ── Priority / first-match tests ───────────────────────────────────────────
-
     #[test]
     fn test_higher_priority_wins() {
-        // Two policies could match; lower priority number wins.
         let engine = AbacEngine::with_policies(vec![
             Policy {
                 id: "pol-hi".into(),
@@ -420,12 +433,11 @@ mod tests {
                 version: 1,
             },
         ]);
-        let resp = engine.evaluate(&make_request(Classification::T3, Action::COPY));
+        let resp =
+            engine.evaluate(&make_request(Classification::T3, Action::COPY));
         assert_eq!(resp.matched_policy_id.as_deref(), Some("pol-hi"));
         assert_eq!(resp.decision, Decision::DenyWithAlert);
     }
-
-    // ── Disabled policy tests ──────────────────────────────────────────────────
 
     #[test]
     fn test_disabled_policy_ignored() {
@@ -442,11 +454,10 @@ mod tests {
             enabled: false,
             version: 1,
         }]);
-        let resp = engine.evaluate(&make_request(Classification::T4, Action::COPY));
+        let resp =
+            engine.evaluate(&make_request(Classification::T4, Action::COPY));
         assert!(resp.matched_policy_id.is_none());
     }
-
-    // ── Hot-reload tests ──────────────────────────────────────────────────────
 
     #[test]
     fn test_reload_policies() {
@@ -454,7 +465,8 @@ mod tests {
         engine
             .reload_policies(vec![t4_deny_policy()])
             .expect("reload should succeed");
-        let resp = engine.evaluate(&make_request(Classification::T4, Action::READ));
+        let resp =
+            engine.evaluate(&make_request(Classification::T4, Action::READ));
         assert!(resp.decision.is_denied());
     }
 
@@ -462,7 +474,7 @@ mod tests {
     fn test_reload_rejects_invalid_policy() {
         let engine = AbacEngine::new();
         let bad = Policy {
-            id: "".into(), // invalid: empty ID
+            id: "".into(),
             name: "Bad".into(),
             description: None,
             priority: 1,
@@ -475,23 +487,21 @@ mod tests {
         assert!(err.to_string().contains("empty"));
     }
 
-    // ── Classification ordering tests ─────────────────────────────────────────
-
     #[test]
     fn test_t3_not_denied_by_t4_rule() {
         let engine = engine_with_rules();
-        let resp = engine.evaluate(&make_request(Classification::T3, Action::DELETE));
-        // T3 matches pol-002 (device trust condition), which DENYs
+        let resp = engine
+            .evaluate(&make_request(Classification::T3, Action::DELETE));
         assert!(resp.decision.is_denied());
     }
 
     #[test]
     fn test_t3_managed_device_not_denied() {
-        let engine = AbacEngine::with_policies(vec![t3_unmanaged_deny_policy()]);
+        let engine =
+            AbacEngine::with_policies(vec![t3_unmanaged_deny_policy()]);
         let mut req = make_request(Classification::T3, Action::COPY);
         req.subject.device_trust = DeviceTrust::Managed;
         let resp = engine.evaluate(&req);
-        // Managed device → condition fails → no match → default-deny
         assert!(resp.decision.is_denied());
     }
 }

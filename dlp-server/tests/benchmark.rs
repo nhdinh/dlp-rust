@@ -1,12 +1,12 @@
-//! ABAC engine benchmark — P95 latency and throughput.
-//
+//! ABAC engine benchmark -- P95 latency and throughput.
+//!
 //! ## Running
 //!
 //! ```sh
-//! cargo test --package policy-engine -- bench_ --nocapture
+//! cargo test --package dlp-server -- bench_ --nocapture
 //! ```
 //!
-//! ## Acceptance criteria (Sprint 18)
+//! ## Acceptance criteria
 //!
 //! - P95 single-request latency <= 50 ms
 //! - Throughput >= 10 000 req/s
@@ -16,32 +16,31 @@ mod benchmarks {
     use std::sync::Arc;
 
     use dlp_common::abac::{
-        AccessContext, Decision, DeviceTrust, NetworkLocation, Policy, PolicyCondition, Resource,
-        Subject,
+        AccessContext, Decision, DeviceTrust, NetworkLocation,
+        Policy, PolicyCondition, Resource, Subject,
     };
     use dlp_common::Classification;
 
-    use policy_engine::engine::AbacEngine;
+    use dlp_server::engine::AbacEngine;
 
-    /// Builds a representative policy set for benchmarking.
     fn bench_engine() -> Arc<AbacEngine> {
         let engine = AbacEngine::new();
         let policies = vec![
-            // Low-priority ALLOW for T1 on any device.
             Policy {
                 id: "t1-allow".into(),
                 name: "T1 Allow".into(),
                 description: None,
                 priority: 1,
-                conditions: vec![PolicyCondition::Classification {
-                    op: "eq".into(),
-                    value: Classification::T1,
-                }],
+                conditions: vec![
+                    PolicyCondition::Classification {
+                        op: "eq".into(),
+                        value: Classification::T1,
+                    },
+                ],
                 action: Decision::ALLOW,
                 enabled: true,
                 version: 1,
             },
-            // Medium-priority ALLOW_WITH_LOG for T2 on managed/corporate.
             Policy {
                 id: "t2-allow-log".into(),
                 name: "T2 Allow Log".into(),
@@ -61,7 +60,6 @@ mod benchmarks {
                 enabled: true,
                 version: 1,
             },
-            // High-priority DENY for T4 on unmanaged devices.
             Policy {
                 id: "t4-deny-unmanaged".into(),
                 name: "T4 Deny Unmanaged".into(),
@@ -81,16 +79,17 @@ mod benchmarks {
                 enabled: true,
                 version: 1,
             },
-            // Catch-all DENY for T3/T4 (fallback if no rule matches).
             Policy {
                 id: "t34-deny".into(),
                 name: "T3/T4 Deny".into(),
                 description: None,
                 priority: 100,
-                conditions: vec![PolicyCondition::Classification {
-                    op: "gte".into(),
-                    value: Classification::T3,
-                }],
+                conditions: vec![
+                    PolicyCondition::Classification {
+                        op: "gte".into(),
+                        value: Classification::T3,
+                    },
+                ],
                 action: Decision::DENY,
                 enabled: true,
                 version: 1,
@@ -109,8 +108,8 @@ mod benchmarks {
                 user_sid: "S-1-5-21-100-jsmith".into(),
                 user_name: "jsmith".into(),
                 groups: vec![
-                    "S-1-5-21-10".into(), // Domain Users
-                    "S-1-5-21-11".into(), // Finance
+                    "S-1-5-21-10".into(),
+                    "S-1-5-21-11".into(),
                 ],
                 device_trust: DeviceTrust::Managed,
                 network_location: NetworkLocation::Corporate,
@@ -139,7 +138,6 @@ mod benchmarks {
             let _ = engine.evaluate(&request);
         }
 
-        // Benchmark: 10 000 iterations.
         let iterations = 10_000;
         let start = std::time::Instant::now();
 
@@ -149,10 +147,10 @@ mod benchmarks {
 
         let elapsed = start.elapsed();
         let ns_per_op = elapsed.as_nanos() / iterations as u128;
-        // Approximate P95: use 105th-percentile multiplier for a simple loop.
         let latency_p95_ns = ns_per_op * 105 / 100;
         let latency_ms = latency_p95_ns as f64 / 1_000_000.0;
-        let throughput = (iterations as f64 / elapsed.as_secs_f64()) as u64;
+        let throughput =
+            (iterations as f64 / elapsed.as_secs_f64()) as u64;
 
         println!(
             "ABAC benchmark: {} iterations | \
@@ -161,14 +159,13 @@ mod benchmarks {
             iterations, latency_ms, throughput
         );
 
-        // Acceptance criteria.
         assert!(
             latency_ms <= 50.0,
-            "P95 latency {latency_ms:.2} ms exceeds 50 ms threshold"
+            "P95 latency {latency_ms:.2} ms exceeds 50 ms"
         );
         assert!(
             throughput >= 10_000,
-            "throughput {throughput} req/s below 10 000 req/s threshold"
+            "throughput {throughput} req/s below 10 000 req/s"
         );
     }
 }

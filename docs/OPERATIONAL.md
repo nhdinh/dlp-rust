@@ -17,9 +17,9 @@
 |-----------|-------------|
 | OS | Windows Server 2019 or later; Windows 10/11 Enterprise |
 | .NET | .NET Framework 4.8 (for DPAPI password transport) |
-| Network | None beyond Policy Engine connectivity |
-| Policy Engine | `policy-engine` deployed and reachable at the configured URL |
-| Firewall | Outbound TCP 8443 to Policy Engine |
+| Network | None beyond dlp-server connectivity |
+| dlp-server | `dlp-server` deployed and reachable at the configured URL (default port 9090) |
+| Firewall | Outbound TCP 9090 to dlp-server |
 
 ### 1.2 MSI Installation
 
@@ -126,13 +126,13 @@ The following paths are **always** excluded from monitoring, regardless of confi
 
 ### 2.3 Policy Engine URL
 
-The Policy Engine URL is compiled into the agent binary at build time. To override at runtime, set the `DLP_POLICY_ENGINE_URL` environment variable before starting the service:
+The dlp-server URL is compiled into the agent binary at build time. To override at runtime, set the `DLP_POLICY_ENGINE_URL` environment variable before starting the service:
 
 ```cmd
-setx /M DLP_POLICY_ENGINE_URL "https://dlp-engine.corp.local:8443"
+setx /M DLP_POLICY_ENGINE_URL "https://dlp-server.corp.local:9090"
 ```
 
-Default: `https://localhost:8443`
+Default: `https://localhost:9090`
 
 ---
 
@@ -512,16 +512,16 @@ When a user requests an override, they type a justification into the block dialo
 | `DLP_AGENT_ID` | `AGENT-UNKNOWN` | Unique endpoint identifier in audit events |
 | `DLP_UI_BINARY` | `{exe_dir}\dlp-user-ui.exe` | UI binary path override (dev only) |
 | `DLP_AUTH_HASH_SET` | `false` | Set to `true` once `DLPAuthHash` is configured in registry |
-| `DLP_POLICY_ENGINE_URL` | `https://localhost:8443` | Policy Engine HTTPS endpoint (build-time default) |
+| `DLP_POLICY_ENGINE_URL` | `https://localhost:9090` | dlp-server HTTPS endpoint (build-time default) |
 | `RUST_LOG` | `info` | Tracing log level (`error`, `warn`, `info`, `debug`, `trace`) |
 | `RUST_BACKTRACE` | `0` | Rust stack trace verbosity (`1` = full) |
 
-### Policy Engine (policy-engine)
+### dlp-server
 
 | Variable | Default | Source |
 |----------|---------|--------|
-| `BIND_ADDR` | `0.0.0.0:8443` | `policy-engine/src/main.rs` |
-| `POLICY_FILE` | `./policies.json` | `policy-engine/src/main.rs` |
+| `BIND_ADDR` | `0.0.0.0:9090` | `dlp-server/src/main.rs` |
+| `POLICY_FILE` | `./policies.json` | `dlp-server/src/main.rs` |
 | `DLP_ENGINE_CERT_PATH` | `.env` (dotenvy) | Not an env var; loaded from `.env` |
 | `DLP_ENGINE_KEY_PATH` | `.env` (dotenvy) | Not an env var; loaded from `.env` |
 | `DLP_AD_BIND_PASSWORD` | `.env` (dotenvy) | AD service account password; loaded from `.env` |

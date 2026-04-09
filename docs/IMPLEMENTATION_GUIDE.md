@@ -10,13 +10,12 @@
 
 The project is a Cargo workspace with the following crates:
 
-| Crate                  | Role                                                                    | Phase        |
-| ---------------------- | ----------------------------------------------------------------------- | ------------ |
-| `dlp-common/`          | Shared types: Subject, Resource, ABAC enums, AuditEvent, Classification | 1            |
-| `policy-engine/`       | ABAC evaluator, HTTPS/REST server, AD LDAP client, policy cache         | 1            |
-| `dlp-agent/`           | Windows Service: file interception, policy enforcement                  | 1            |
-| `dlp-user-ui/`         | iced endpoint UI: toasts, dialogs, clipboard, tray                      | 1            |
-| `dlp-server/`          | Central HTTP server: audit store, SIEM relay, admin auth, policy sync   | **Phase 5**  |
+| Crate                  | Role                                                                                       | Phase        |
+| ---------------------- | ------------------------------------------------------------------------------------------ | ------------ |
+| `dlp-common/`          | Shared types: Subject, Resource, ABAC enums, AuditEvent, Classification                    | 1            |
+| `dlp-agent/`           | Windows Service: file interception, policy enforcement                                     | 1            |
+| `dlp-user-ui/`         | iced endpoint UI: toasts, dialogs, clipboard, tray                                         | 1            |
+| `dlp-server/`          | ABAC policy evaluator, policy CRUD REST API, audit store, SIEM relay, admin auth           | **Phase 5**  |
 
 > **Note:** During Phase 1–4, audit logs are read directly from the local append-only JSON file. SIEM relay activates when dlp-server is deployed in Phase 5.
 
@@ -44,8 +43,7 @@ See SRS.md §8 (Implementation Plan) for the full 5-phase task breakdown.
 
 - Workspace scaffold (`Cargo.toml`)
 - `dlp-common/`: Subject, Resource, ABAC enums, AuditEvent, Classification
-- `policy-engine/`: HTTPS/REST server, ABAC evaluator, AD integration, hot-reload
-- `dlp-agent/`: Windows Service, file interception hooks, IPC pipe servers, UI spawner
+- `dlp-agent/`: Windows Service, file interception hooks, IPC pipe servers, UI spawner; connects to dlp-server on port 9090 for evaluation, audit, and heartbeats
 - `dlp-user-ui/`: Endpoint UI (toasts, override dialogs, clipboard, tray)
 
 ### Phase 2 — Process Protection + IPC Hardening
@@ -66,4 +64,6 @@ See SRS.md §8 (Implementation Plan) for the full 5-phase task breakdown.
 
 ### Phase 5 — dlp-server
 
-- `dlp-server/`: audit store, SIEM relay, admin auth (TOTP+JWT), policy sync
+- `dlp-server/`: ABAC policy evaluator (`POST /evaluate`), policy CRUD REST API, audit store, SIEM relay, admin auth (TOTP+JWT), agent registry; listens on port 9090
+- All agent connections (evaluation, audit, heartbeats) target `dlp-server:9090`
+- `dlp-admin-cli` targets `dlp-server` for policy management

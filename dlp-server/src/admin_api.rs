@@ -3,16 +3,20 @@
 //! Builds the complete axum `Router` with all sub-routes. Public
 //! endpoints (health, ready, auth) are unauthenticated. All other
 //! routes require a valid JWT Bearer token.
+//!
+//! **Note:** Policy CRUD and evaluation endpoints are served by
+//! [`crate::policy_api`] (backed by `PolicyStore` JSON file +
+//! hot-reload). This module handles agents, audit, exceptions, and
+//! admin auth only.
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::extract::State;
 use axum::middleware;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::admin_auth;
 use crate::agent_registry;
@@ -21,51 +25,9 @@ use crate::db::Database;
 use crate::exception_store;
 use crate::AppError;
 
-// ---------------------------------------------------------------------------
-// Policy request / response types
-// ---------------------------------------------------------------------------
-
-/// Payload for creating or updating a policy.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PolicyPayload {
-    /// Unique policy ID (provided by the caller on create).
-    pub id: String,
-    /// Human-readable policy name.
-    pub name: String,
-    /// Optional description.
-    pub description: Option<String>,
-    /// Evaluation priority (lower = evaluated first).
-    pub priority: u32,
-    /// JSON-encoded conditions array.
-    pub conditions: serde_json::Value,
-    /// The enforcement action (ALLOW, DENY, etc.).
-    pub action: String,
-    /// Whether the policy is enabled.
-    pub enabled: bool,
-}
-
-/// Policy record returned by the API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PolicyResponse {
-    /// Unique policy ID.
-    pub id: String,
-    /// Human-readable name.
-    pub name: String,
-    /// Optional description.
-    pub description: Option<String>,
-    /// Evaluation priority.
-    pub priority: u32,
-    /// JSON conditions.
-    pub conditions: serde_json::Value,
-    /// Enforcement action.
-    pub action: String,
-    /// Whether the policy is active.
-    pub enabled: bool,
-    /// Monotonic version number.
-    pub version: i64,
-    /// ISO 8601 timestamp of last update.
-    pub updated_at: String,
-}
+// -----------------------------------------------------------------------
+// Response types
+// -----------------------------------------------------------------------
 
 /// Health/readiness probe response.
 #[derive(Debug, Serialize)]
@@ -76,11 +38,14 @@ pub struct HealthResponse {
     pub timestamp: String,
 }
 
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Router construction
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
-/// Builds the complete admin API router with all routes.
+/// Builds the admin API router for agents, audit, exceptions, and auth.
+///
+/// Policy CRUD and `/evaluate` are handled by the separate
+/// `policy_api` router, which is merged in `main.rs`.
 ///
 /// # Arguments
 ///
@@ -89,27 +54,22 @@ pub struct HealthResponse {
 /// # Routes
 ///
 /// **Unauthenticated:**
-/// - `GET /health` — health probe
-/// - `GET /ready` — readiness probe
-/// - `POST /auth/login` — admin login
-/// - `POST /auth/admin` — create admin user
-/// - `POST /agents/register` — agent self-registration
-/// - `POST /agents/:id/heartbeat` — agent heartbeat
-/// - `POST /audit/events` — event ingestion (agent-to-server)
+/// - `GET /health` -- health probe
+/// - `GET /ready` -- readiness probe
+/// - `POST /auth/login` -- admin login
+/// - `POST /auth/admin` -- create admin user
+/// - `POST /agents/register` -- agent self-registration
+/// - `POST /agents/:id/heartbeat` -- agent heartbeat
+/// - `POST /audit/events` -- event ingestion (agent-to-server)
 ///
 /// **Authenticated (JWT required):**
-/// - `GET /agents` — list agents
-/// - `GET /agents/:id` — get agent
-/// - `GET /audit/events` — query audit events
-/// - `GET /audit/events/count` — event count
-/// - `GET /policies` — list policies
-/// - `GET /policies/:id` — get policy
-/// - `PUT /policies/:id` — update policy
-/// - `POST /policies` — create policy
-/// - `DELETE /policies/:id` — delete policy
-/// - `GET /exceptions` — list exceptions
-/// - `GET /exceptions/:id` — get exception
-/// - `POST /exceptions` — create exception
+/// - `GET /agents` -- list agents
+/// - `GET /agents/:id` -- get agent
+/// - `GET /audit/events` -- query audit events
+/// - `GET /audit/events/count` -- event count
+/// - `GET /exceptions` -- list exceptions
+/// - `GET /exceptions/:id` -- get exception
+/// - `POST /exceptions` -- create exception
 pub fn admin_router(db: Arc<Database>) -> Router {
     // Routes that do NOT require authentication.
     let public_routes = Router::new()
@@ -133,7 +93,10 @@ pub fn admin_router(db: Arc<Database>) -> Router {
     // Routes that require a valid JWT.
     let protected_routes = Router::new()
         .route("/agents", get(agent_registry::list_agents))
-        .route("/agents/{id}", get(agent_registry::get_agent))
+        .route(
+            "/agents/{id}",
+            get(agent_registry::get_agent),
+        )
         .route(
             "/audit/events",
             get(audit_store::query_events),
@@ -142,11 +105,6 @@ pub fn admin_router(db: Arc<Database>) -> Router {
             "/audit/events/count",
             get(audit_store::get_event_count),
         )
-        .route("/policies", get(list_policies))
-        .route("/policies", post(create_policy))
-        .route("/policies/{id}", get(get_policy))
-        .route("/policies/{id}", put(update_policy))
-        .route("/policies/{id}", delete(delete_policy))
         .route(
             "/exceptions",
             get(exception_store::list_exceptions),
@@ -161,16 +119,14 @@ pub fn admin_router(db: Arc<Database>) -> Router {
         )
         .layer(middleware::from_fn(admin_auth::require_auth));
 
-    public_routes
-        .merge(protected_routes)
-        .with_state(db)
+    public_routes.merge(protected_routes).with_state(db)
 }
 
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Health probes
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
-/// `GET /health` — liveness probe.
+/// `GET /health` -- liveness probe.
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
@@ -178,7 +134,7 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
-/// `GET /ready` — readiness probe.
+/// `GET /ready` -- readiness probe.
 async fn ready(
     State(db): State<Arc<Database>>,
 ) -> Result<Json<HealthResponse>, AppError> {
@@ -188,252 +144,14 @@ async fn ready(
         conn.execute_batch("SELECT 1")
     })
     .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    .map_err(|e| {
+        AppError::Internal(anyhow::anyhow!("join error: {e}"))
+    })??;
 
     Ok(Json(HealthResponse {
         status: "ready".to_string(),
         timestamp: Utc::now().to_rfc3339(),
     }))
-}
-
-// ---------------------------------------------------------------------------
-// Policy CRUD handlers
-// ---------------------------------------------------------------------------
-
-/// `GET /policies` — list all policies.
-async fn list_policies(
-    State(db): State<Arc<Database>>,
-) -> Result<Json<Vec<PolicyResponse>>, AppError> {
-    let policies = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, description, priority, conditions, \
-                    action, enabled, version, updated_at \
-             FROM policies ORDER BY priority ASC",
-        )?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                let conditions_str: String = row.get(4)?;
-                let conditions: serde_json::Value =
-                    serde_json::from_str(&conditions_str)
-                        .unwrap_or(serde_json::Value::Null);
-                Ok(PolicyResponse {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    priority: row.get(3)?,
-                    conditions,
-                    action: row.get(5)?,
-                    enabled: row.get::<_, bool>(6)?,
-                    version: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok::<_, rusqlite::Error>(rows)
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
-
-    Ok(Json(policies))
-}
-
-/// `GET /policies/{id}` — get a single policy.
-async fn get_policy(
-    State(db): State<Arc<Database>>,
-    Path(policy_id): Path<String>,
-) -> Result<Json<PolicyResponse>, AppError> {
-    let id = policy_id.clone();
-
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
-        conn.query_row(
-            "SELECT id, name, description, priority, conditions, \
-                    action, enabled, version, updated_at \
-             FROM policies WHERE id = ?1",
-            rusqlite::params![id],
-            |row| {
-                let conditions_str: String = row.get(4)?;
-                let conditions: serde_json::Value =
-                    serde_json::from_str(&conditions_str)
-                        .unwrap_or(serde_json::Value::Null);
-                Ok(PolicyResponse {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    priority: row.get(3)?,
-                    conditions,
-                    action: row.get(5)?,
-                    enabled: row.get::<_, bool>(6)?,
-                    version: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            },
-        )
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?;
-
-    match result {
-        Ok(p) => Ok(Json(p)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            Err(AppError::NotFound(
-                format!("policy {policy_id} not found"),
-            ))
-        }
-        Err(e) => Err(AppError::Database(e)),
-    }
-}
-
-/// `POST /policies` — create a new policy.
-async fn create_policy(
-    State(db): State<Arc<Database>>,
-    Json(payload): Json<PolicyPayload>,
-) -> Result<(StatusCode, Json<PolicyResponse>), AppError> {
-    if payload.id.is_empty() || payload.name.is_empty() {
-        return Err(AppError::BadRequest(
-            "id and name are required".to_string(),
-        ));
-    }
-
-    let now = Utc::now().to_rfc3339();
-    let conditions_json =
-        serde_json::to_string(&payload.conditions)?;
-
-    let resp = PolicyResponse {
-        id: payload.id.clone(),
-        name: payload.name.clone(),
-        description: payload.description.clone(),
-        priority: payload.priority,
-        conditions: payload.conditions.clone(),
-        action: payload.action.clone(),
-        enabled: payload.enabled,
-        version: 1,
-        updated_at: now.clone(),
-    };
-
-    let r = resp.clone();
-    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = db.conn().lock();
-        conn.execute(
-            "INSERT INTO policies \
-                (id, name, description, priority, conditions, \
-                 action, enabled, version, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
-            rusqlite::params![
-                r.id,
-                r.name,
-                r.description,
-                r.priority,
-                conditions_json,
-                r.action,
-                r.enabled,
-                r.updated_at,
-            ],
-        )?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
-
-    tracing::info!(policy_id = %resp.id, "policy created");
-    Ok((StatusCode::CREATED, Json(resp)))
-}
-
-/// `PUT /policies/{id}` — update an existing policy.
-async fn update_policy(
-    State(db): State<Arc<Database>>,
-    Path(policy_id): Path<String>,
-    Json(payload): Json<PolicyPayload>,
-) -> Result<Json<PolicyResponse>, AppError> {
-    let now = Utc::now().to_rfc3339();
-    let conditions_json =
-        serde_json::to_string(&payload.conditions)?;
-    let id = policy_id.clone();
-
-    let resp = tokio::task::spawn_blocking(
-        move || -> Result<PolicyResponse, AppError> {
-            let conn = db.conn().lock();
-
-            // Increment the version number atomically.
-            let rows = conn.execute(
-                "UPDATE policies SET \
-                    name = ?1, description = ?2, priority = ?3, \
-                    conditions = ?4, action = ?5, enabled = ?6, \
-                    version = version + 1, updated_at = ?7 \
-                 WHERE id = ?8",
-                rusqlite::params![
-                    payload.name,
-                    payload.description,
-                    payload.priority,
-                    conditions_json,
-                    payload.action,
-                    payload.enabled,
-                    now,
-                    id,
-                ],
-            )?;
-
-            if rows == 0 {
-                return Err(AppError::NotFound(
-                    format!("policy {id} not found"),
-                ));
-            }
-
-            // Read back the updated row for the version.
-            let version: i64 = conn.query_row(
-                "SELECT version FROM policies WHERE id = ?1",
-                rusqlite::params![id],
-                |row| row.get(0),
-            )?;
-
-            Ok(PolicyResponse {
-                id,
-                name: payload.name,
-                description: payload.description,
-                priority: payload.priority,
-                conditions: payload.conditions,
-                action: payload.action,
-                enabled: payload.enabled,
-                version,
-                updated_at: now,
-            })
-        },
-    )
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
-
-    tracing::info!(policy_id = %resp.id, "policy updated");
-    Ok(Json(resp))
-}
-
-/// `DELETE /policies/{id}` — delete a policy.
-async fn delete_policy(
-    State(db): State<Arc<Database>>,
-    Path(policy_id): Path<String>,
-) -> Result<StatusCode, AppError> {
-    let id = policy_id.clone();
-
-    let rows = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
-        conn.execute(
-            "DELETE FROM policies WHERE id = ?1",
-            rusqlite::params![id],
-        )
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
-
-    if rows == 0 {
-        return Err(AppError::NotFound(
-            format!("policy {policy_id} not found"),
-        ));
-    }
-
-    tracing::info!(policy_id = %policy_id, "policy deleted");
-    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
@@ -449,44 +167,5 @@ mod tests {
         let json =
             serde_json::to_string(&resp).expect("serialize");
         assert!(json.contains("\"status\":\"ok\""));
-    }
-
-    #[test]
-    fn test_policy_payload_serde() {
-        let json = r#"{
-            "id": "pol-001",
-            "name": "Block T4 Copy",
-            "description": "Prevent copying T4 files",
-            "priority": 1,
-            "conditions": [{"attribute":"classification","op":"eq","value":"T4"}],
-            "action": "DENY",
-            "enabled": true
-        }"#;
-        let p: PolicyPayload =
-            serde_json::from_str(json).expect("deserialize");
-        assert_eq!(p.id, "pol-001");
-        assert_eq!(p.priority, 1);
-        assert!(p.enabled);
-    }
-
-    #[test]
-    fn test_policy_response_serde() {
-        let resp = PolicyResponse {
-            id: "pol-001".to_string(),
-            name: "Test".to_string(),
-            description: None,
-            priority: 10,
-            conditions: serde_json::json!([]),
-            action: "ALLOW".to_string(),
-            enabled: true,
-            version: 1,
-            updated_at: "2026-01-01T00:00:00Z".to_string(),
-        };
-        let json =
-            serde_json::to_string(&resp).expect("serialize");
-        let rt: PolicyResponse =
-            serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(rt.id, "pol-001");
-        assert_eq!(rt.version, 1);
     }
 }

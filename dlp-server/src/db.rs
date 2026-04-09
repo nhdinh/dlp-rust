@@ -91,18 +91,6 @@ impl Database {
                 correlation_id   TEXT UNIQUE
             );
 
-            CREATE TABLE IF NOT EXISTS policies (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                description TEXT,
-                priority    INTEGER NOT NULL,
-                conditions  TEXT NOT NULL,
-                action      TEXT NOT NULL,
-                enabled     INTEGER NOT NULL DEFAULT 1,
-                version     INTEGER NOT NULL DEFAULT 1,
-                updated_at  TEXT NOT NULL
-            );
-
             CREATE TABLE IF NOT EXISTS exceptions (
                 id               TEXT PRIMARY KEY,
                 policy_id        TEXT NOT NULL,
@@ -158,7 +146,6 @@ mod tests {
 
         assert!(tables.contains(&"agents".to_string()));
         assert!(tables.contains(&"audit_events".to_string()));
-        assert!(tables.contains(&"policies".to_string()));
         assert!(tables.contains(&"exceptions".to_string()));
         assert!(tables.contains(&"admin_users".to_string()));
     }

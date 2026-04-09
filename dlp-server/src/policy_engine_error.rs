@@ -1,9 +1,9 @@
-//! Shared error types for the Policy Engine.
+//! Error types for the ABAC policy engine subsystem.
 //!
-//! Uses `thiserror` for all crate-level error types. `anyhow` is used only at
-//! the `main.rs` entry point boundary for context-wrapping.
+//! These were previously in the `policy-engine` crate. Now that the engine
+//! lives inside `dlp-server`, they are defined here and converted into
+//! the top-level [`crate::AppError`] at the HTTP boundary.
 
-use http::StatusCode;
 use thiserror::Error;
 
 /// Errors that can occur during ABAC policy evaluation.
@@ -92,67 +92,35 @@ impl From<AdClientError> for PolicyEngineError {
 }
 
 impl PolicyEngineError {
-    /// Returns `true` if this error represents a client-facing HTTP 4xx condition.
+    /// Returns `true` if this error represents a client-facing HTTP 4xx
+    /// condition.
     #[must_use]
     pub fn is_client_error(&self) -> bool {
         matches!(
             self,
-            Self::PolicyNotFound(_) | Self::PolicyValidationError(_) | Self::JsonError(_)
+            Self::PolicyNotFound(_)
+                | Self::PolicyValidationError(_)
+                | Self::JsonError(_)
         )
     }
 }
 
-/// Axum-level application error that maps `PolicyEngineError` to HTTP status codes.
-///
-/// This type implements `IntoResponse`, allowing it to be returned directly from
-/// axum request handlers.
-#[derive(Debug)]
-pub struct AppError {
-    /// The underlying error.
-    pub inner: PolicyEngineError,
-    /// The HTTP status code to return to the client.
-    pub status: StatusCode,
-}
-
-impl std::fmt::Display for AppError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.inner.fmt(f)
-    }
-}
-
-impl std::error::Error for AppError {}
-
-impl From<PolicyEngineError> for AppError {
+/// Converts a [`PolicyEngineError`] into the top-level [`crate::AppError`].
+impl From<PolicyEngineError> for crate::AppError {
     fn from(err: PolicyEngineError) -> Self {
-        let status = if err.is_client_error() {
-            StatusCode::BAD_REQUEST
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR
-        };
-        Self { inner: err, status }
-    }
-}
-
-impl AppError {
-    /// Constructs an `AppError` from a `PolicyEngineError`.
-    #[allow(non_snake_case)]
-    pub fn PolicyEngine(err: PolicyEngineError) -> Self {
-        From::from(err)
-    }
-
-    /// Constructs an `AppError` with an explicit status code.
-    pub fn with_status(err: PolicyEngineError, status: StatusCode) -> Self {
-        Self { inner: err, status }
-    }
-}
-
-// Required for axum's IntoResponse blanket impl.
-impl axum::response::IntoResponse for AppError {
-    fn into_response(self) -> axum::response::Response {
-        let body = serde_json::json!({
-            "error": self.inner.to_string(),
-        });
-        (self.status, axum::Json(body)).into_response()
+        match err {
+            PolicyEngineError::PolicyNotFound(ref id) => {
+                crate::AppError::NotFound(format!(
+                    "policy not found: {id}"
+                ))
+            }
+            _ if err.is_client_error() => {
+                crate::AppError::BadRequest(err.to_string())
+            }
+            _ => {
+                crate::AppError::Internal(anyhow::anyhow!(err))
+            }
+        }
     }
 }
 

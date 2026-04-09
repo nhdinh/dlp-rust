@@ -1,17 +1,24 @@
-//! `dlp-server` — Central management HTTP server for the Enterprise DLP System.
+//! `dlp-server` -- Central management and policy engine server for the
+//! Enterprise DLP System.
 //!
-//! Provides agent registration, audit event ingestion, policy management,
-//! SIEM relay, alerting, and admin APIs over HTTP (axum).
+//! Provides agent registration, audit event ingestion, ABAC policy
+//! evaluation, policy CRUD, SIEM relay, alerting, and admin APIs over
+//! HTTP (axum).
 
+pub mod ad_client;
 pub mod admin_api;
 pub mod admin_auth;
 pub mod agent_registry;
 pub mod alert_router;
 pub mod audit_store;
+pub mod bind_registry;
 pub mod config_push;
 pub mod db;
+pub mod engine;
 pub mod exception_store;
-pub mod policy_sync;
+pub mod policy_api;
+pub mod policy_engine_error;
+pub mod policy_store;
 pub mod siem_connector;
 
 use axum::http::StatusCode;
@@ -19,8 +26,9 @@ use axum::response::{IntoResponse, Response};
 
 /// Unified application error type returned by all HTTP handlers.
 ///
-/// Converts internal errors into appropriate HTTP status codes and JSON bodies.
-/// This ensures consistent error responses across the entire API surface.
+/// Converts internal errors into appropriate HTTP status codes and JSON
+/// bodies. This ensures consistent error responses across the entire
+/// API surface.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     /// A database operation failed.
@@ -60,15 +68,24 @@ impl IntoResponse for AppError {
         let (status, message) = match &self {
             AppError::Database(e) => {
                 tracing::error!("database error: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    self.to_string(),
+                )
             }
             AppError::Json(e) => {
                 tracing::error!("json error: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    self.to_string(),
+                )
             }
             AppError::Internal(e) => {
                 tracing::error!("internal error: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    self.to_string(),
+                )
             }
             AppError::NotFound(_) => {
                 (StatusCode::NOT_FOUND, self.to_string())

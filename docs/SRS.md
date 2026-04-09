@@ -41,7 +41,7 @@ This Software Requirements Specification (SRS) defines the complete requirements
 The system shall:
 
 - Enforce DLP policies on Windows endpoints using a Rust-based agent running as a Windows Service. File interception uses the `notify` crate (backed by `ReadDirectoryChangesW`) to watch configured directories recursively. No minifilter or kernel driver. SMB share detection polls `WNetOpenEnumW`/`WNetEnumResourceW` (MPR) every 30s.
-- Provide a centralized ABAC Policy Engine with an HTTP/REST interface
+- Provide a centralized ABAC policy evaluation service within dlp-server with an HTTP/REST interface (port 9090)
 - Classify data using a four-tier model (T1–T4)
 - Integrate with Active Directory for identity and group membership
 - Use NTFS ACLs as the baseline (coarse-grained) access control layer
@@ -72,15 +72,15 @@ The system shall:
 | **T3 Confidential** | High sensitivity — serious impact if disclosed                                                                                                                                                                                           |
 | **T2 Internal**     | Moderate sensitivity — internal use only                                                                                                                                                                                                 |
 | **T1 Public**       | Low sensitivity — no harm if disclosed                                                                                                                                                                                                   |
-| **Policy Engine**   | ABAC decision service, evaluates access requests                                                                                                                                                                                         |
+| **Policy Engine**   | ABAC decision service — co-located within dlp-server; evaluates access requests at `POST /evaluate` on port 9090; no longer a separate crate                                                                                            |
 | **dlp-agent**       | Endpoint enforcement component, runs as Windows Service under SYSTEM account, does not interact with OS users directly                                                                                                                   |
 | **dlp-user-ui**     | Endpoint interaction component, iced subprocess spawned by the Agent in **each active user session**; one UI instance per active session; handles all user-facing work (notifications, dialogs, clipboard, tray) for that session's user |
 | **IPC**             | Inter-Process Communication — Agent ↔ UI communication via Windows named pipes                                                                                                                                                           |
 | **Named Pipe**      | Windows kernel object for bidirectional message-mode IPC between processes                                                                                                                                                               |
 | **SCM**             | Service Control Manager — Windows component that manages Windows Services                                                                                                                                                                |
 | **SIEM**            | Security Information and Event Management                                                                                                                                                                                                |
-| **REST API**        | Representational State Transfer — HTTP-based API used for Policy Engine communication                                                                                                                                                    |
-| **dlp-server**      | Central management HTTP server — owns agent registry, audit ingestion & SIEM relay, admin auth (TOTP + JWT), policy sync to engine replicas, alert routing, exception records                                                            |
+| **REST API**        | Representational State Transfer — HTTP-based API used for dlp-server communication                                                                                                                                                       |
+| **dlp-server**      | Central HTTP server — owns ABAC policy evaluation (`POST /evaluate`), policy CRUD REST API, agent registry, audit ingestion & SIEM relay, admin auth (TOTP + JWT), alert routing, exception records; default port 9090                   |
 
 ### 1.4 References
 
@@ -112,8 +112,8 @@ The Enterprise DLP System is a four-layer defense-in-depth architecture. The Enf
 │         User desktop, spawned by Agent               │
 │         Handles: notifications, dialogs, clipboard   │
 ├─────────────────────────────────────────────────────-┤
-│              Policy Layer (ABAC Engine)              │
-│         Rust, HTTPS/REST, Policy Evaluation          │
+│      Policy Layer (dlp-server ABAC Evaluator)        │
+│      Rust, HTTPS/REST :9090, Policy Evaluation       │
 ├────────────────────────────────────────────────────-─┤
 │              Access Layer (NTFS ACLs)                │
 │         Coarse-grained baseline enforcement          │
@@ -134,7 +134,7 @@ The dlp-agent runs as a Windows Service under the SYSTEM account. Because a SERV
 | Concern                                 | Owner      |
 | --------------------------------------- | ---------- |
 | File operation interception             | Agent      |
-| Policy Engine HTTPS communication       | Agent      |
+| dlp-server HTTPS communication          | Agent      |
 | Audit event emission                    | Agent      |
 | Windows Service lifecycle               | Agent      |
 | User notifications (toast)              | DLP UI     |
@@ -168,9 +168,9 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 1. Target environment is Windows Server 2019+ / Windows 10/11 Enterprise
 2. All endpoints are joined to Active Directory Domain
 3. DLP Admin account is a dedicated, privileged AD account
-4. Policy Engine server runs on a hardened Windows or Linux host
+4. dlp-server runs on a hardened Windows or Linux host
 5. SIEM infrastructure (Splunk or ELK) is available for log ingestion
-6. Network communication between agents and Policy Engine uses TLS 1.3
+6. Network communication between agents and dlp-server uses TLS 1.3
 7. All users have individual AD accounts; no shared accounts
 8. Data classification is applied at the file/folder level via path-based classification rules (e.g., `C:\Restricted\` → T4). No NTFS extended attributes or alternate data streams are used — classification is a policy rule attribute, not a filesystem attribute.
 9. The Agent runs as a Windows Service (SYSTEM account); it spawns the DLP UI into each active interactive session
@@ -184,9 +184,9 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 
 | ID       | Requirement                                                                                                                                                                                                 | Priority |
 | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| F-ADM-01 | Admin shall create, read, update, and delete ABAC policies via direct JSON edits to `policies.json` or via the Policy Engine REST API (`GET/POST/PUT/DELETE /policies`). | Must     |
+| F-ADM-01 | Admin shall create, read, update, and delete ABAC policies via direct JSON edits to `policies.json` or via the dlp-server REST API (`GET/POST/PUT/DELETE /policies`). | Must     |
 | F-ADM-02 | Admin shall assign data classification (T1–T4) to files and folders                                                                                                                                         | Must     |
-| F-ADM-03 | Admin shall view real-time system health (Policy Engine uptime, agent connectivity, policy hit rates)                                                                                                       | Must     |
+| F-ADM-03 | Admin shall view real-time system health (dlp-server uptime, agent connectivity, policy hit rates)                                                                                                          | Must     |
 | F-ADM-04 | Admin shall configure alert thresholds and notification recipients                                                                                                                                          | Must     |
 | F-ADM-05 | Admin shall view and export audit logs filtered by date range, user, resource, and event type                                                                                                               | Must     |
 | F-ADM-06 | Admin shall define exclusion paths (e.g., IT scan folders) that bypass DLP enforcement                                                                                                                      | Should   |
@@ -204,14 +204,14 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 | F-AGT-01 | Agent shall run as a Windows Service under the SYSTEM account                                                                                                                                                                                                                                                     | Must     |
 | F-AGT-02 | Agent shall start automatically at Windows boot via Service Control Manager                                                                                                                                                                                                                                       | Must     |
 | F-AGT-03 | Agent shall be a single-instance service; a second start attempt shall be rejected                                                                                                                                                                                                                                | Must     |
-| F-AGT-04 | Agent shall register with Policy Engine on startup and maintain heartbeat                                                                                                                                                                                                                                         | Must     |
+| F-AGT-04 | Agent shall register with dlp-server on startup and maintain heartbeat                                                                                                                                                                                                                                         | Must     |
 | F-AGT-05 | Agent shall intercept file open/write/delete/rename/move operations via the `notify` crate (`ReadDirectoryChangesW`) on monitored paths                                                                                                                                                                           | Must     |
-| F-AGT-06 | Agent shall request ABAC decision from Policy Engine before allowing sensitive file operations                                                                                                                                                                                                                    | Must     |
+| F-AGT-06 | Agent shall request ABAC decision from dlp-server before allowing sensitive file operations                                                                                                                                                                                                                    | Must     |
 | F-AGT-07 | Agent shall enforce ABAC DENY decisions by blocking the operation and logging the event                                                                                                                                                                                                                           | Must     |
 | F-AGT-08 | Agent shall enforce ABAC ALLOW decisions by permitting the operation (subject to NTFS)                                                                                                                                                                                                                            | Must     |
 | F-AGT-09 | Agent shall emit structured JSON audit events for every intercepted operation                                                                                                                                                                                                                                     | Must     |
 | F-AGT-10 | Agent shall apply local caching of policy decisions to minimize latency (TTL configurable)                                                                                                                                                                                                                        | Should   |
-| F-AGT-11 | Agent shall operate in offline mode with cached policy decisions when Policy Engine is unreachable                                                                                                                                                                                                                | Must     |
+| F-AGT-11 | Agent shall operate in offline mode with cached policy decisions when dlp-server is unreachable                                                                                                                                                                                                                | Must     |
 | F-AGT-12 | Agent shall support configurable monitored paths (registry / config file)                                                                                                                                                                                                                                         | Must     |
 | F-AGT-13 | Agent shall detect and block USB mass storage copy of classified files                                                                                                                                                                                                                                            | Must     |
 | F-AGT-14 | Agent shall detect and block SMB/FTP upload of classified files to unauthorized destinations                                                                                                                                                                                                                      | Must     |
@@ -303,7 +303,7 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 { "type": "UI_CLOSING",     "reason": "user_logoff" }
 ```
 
-### 3.6 Policy Engine Features
+### 3.6 Policy Engine Features (served by dlp-server)
 
 | ID       | Requirement                                                                                                                                           | Priority |
 | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
@@ -346,7 +346,7 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 | F-SRV-06 | dlp-server shall expose a REST API: GET /agents, GET /audit-events, policy CRUD, exception approval    | Must     |
 | F-SRV-07 | dlp-server shall act as the TOTP validation and JWT issuance server for admin sessions                               | Must     |
 | F-SRV-08 | dlp-server shall store exception/override approval records (approver, timestamp, duration, justification)                       | Should   |
-| F-SRV-09 | dlp-server shall sync policies to all policy-engine replicas on policy create/update                                            | Must     |
+| F-SRV-09 | dlp-server shall distribute updated policies to all dlp-server replicas on policy create/update (policy evaluation is co-located in dlp-server) | Must     |
 | F-SRV-10 | dlp-server shall push agent configuration changes to selected dlp-agents                                                        | Should   |
 | F-SRV-11 | dlp-server shall buffer audit events locally when SIEM is unreachable and drain when connectivity is restored                   | Must     |
 
@@ -361,11 +361,11 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 | N-SEC-01 | All network communication shall use TLS 1.3                                                                                                                                                                                                                                                      | Must   |
 | N-SEC-02 | Credentials shall never be stored in plaintext; use Windows Credential Manager or HSM                                                                                                                                                                                                            | Must   |
 | N-SEC-03 | Agent shall run as a Windows Service under the SYSTEM account; UI runs in the interactive user session as the logged-in user                                                                                                                                                                     | Must   |
-| N-SEC-04 | Policy Engine shall be deployed on an isolated, hardened host                                                                                                                                                                                                                                    | Must   |
+| N-SEC-04 | dlp-server shall be deployed on an isolated, hardened host                                                                                                                                                                                                                                    | Must   |
 | N-SEC-05 | HTTPS API shall authenticate agents via mutual TLS (mTLS)                                                                                                                                                                                                                                        | Must   |
 | N-SEC-06 | DLP Admin shall use MFA for all administrative sessions *(see N-SEC-11 for the process DACL mechanism that protects MFA-gated service stop)*                                                                                                                                                                                                                              | Must   |
 | N-SEC-07 | Audit logs shall be immutable once written                                                                                                                                                                                                                                                       | Must   |
-| N-SEC-08 | Agent shall verify Policy Engine certificate before establishing connection                                                                                                                                                                                                                      | Must   |
+| N-SEC-08 | Agent shall verify dlp-server certificate before establishing connection                                                                                                                                                                                                                      | Must   |
 | N-SEC-09 | Sensitive data in memory shall be zeroized after use                                                                                                                                                                                                                                             | Should |
 | N-SEC-10 | Agent shall detect and alert on tampering / injection attempts                                                                                                                                                                                                                                   | Should |
 | N-SEC-11 | Process DACL: Both Agent (service) and UI shall use Windows DACL to deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, and `PROCESS_VM_WRITE` to `Everyone` SID; SYSTEM retains full access through inherited ACEs. This prevents non-Admin process kill and DLL injection. See F-SVC-09 and `protection.rs`. *(supersedes and consolidates earlier alias; MFA-gated stop is covered by F-SVC-10/F-SVC-12)* | Must   |
@@ -375,31 +375,31 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 
 | ID       | Requirement                                                                                                                      | Target |
 | -------- | -------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| N-PER-01 | Policy Engine shall handle ≥ 10,000 decision requests per second                                                                 | Must   |
+| N-PER-01 | dlp-server shall handle ≥ 10,000 decision requests per second                                                                    | Must   |
 | N-PER-02 | End-to-end decision latency (agent → engine → response) shall be ≤ 100ms at P95                                                  | Must   |
-| N-PER-03 | Policy Engine decision latency (engine-only) shall be ≤ 50ms at P95                                                              | Must   |
+| N-PER-03 | dlp-server evaluation latency (server-only) shall be ≤ 50ms at P95                                                               | Must   |
 | N-PER-04 | Agent shall consume ≤ 2% CPU at idle on a standard endpoint                                                                      | Should |
 | N-PER-05 | Agent shall not increase file copy/save latency by more than 50ms                                                                | Must   |
-| N-PER-06 | Policy Engine shall start and be ready to serve within 30 seconds                                                                | Must   |
+| N-PER-06 | dlp-server shall start and be ready to serve within 30 seconds                                                                   | Must   |
 | N-PER-07 | Agent ↔ UI IPC round-trip (blocking request → user response) shall complete within 60 seconds; Agent defaults to DENY on timeout | Must   |
 
 ### 4.3 Scalability
 
 | ID       | Requirement                                                                              | Target |
 | -------- | ---------------------------------------------------------------------------------------- | ------ |
-| N-SCA-01 | Policy Engine shall support horizontal scaling (multiple instances behind load balancer) | Must   |
-| N-SCA-02 | Agent shall support configuration for primary and secondary Policy Engine endpoints      | Must   |
+| N-SCA-01 | dlp-server shall support horizontal scaling (multiple instances behind load balancer)    | Must   |
+| N-SCA-02 | Agent shall support configuration for primary and secondary dlp-server endpoints         | Must   |
 | N-SCA-03 | System shall support ≥ 50,000 concurrent endpoints                                       | Must   |
-| N-SCA-04 | Policy Engine shall support ≥ 100,000 active policies                                    | Must   |
+| N-SCA-04 | dlp-server shall support ≥ 100,000 active policies                                       | Must   |
 
 ### 4.4 Availability
 
 | ID       | Requirement                                                                                                     | Target |
 | -------- | --------------------------------------------------------------------------------------------------------------- | ------ |
-| N-AVA-01 | Policy Engine shall achieve 99.9% uptime (≤ 8.7 hours downtime/year)                                            | Must   |
-| N-AVA-02 | Agent shall operate in offline/cached mode when Policy Engine is unreachable                                    | Must   |
-| N-AVA-03 | System shall support active-passive failover for Policy Engine                                                  | Should |
-| N-AVA-04 | Agent shall reconnect automatically when Policy Engine becomes available                                        | Must   |
+| N-AVA-01 | dlp-server shall achieve 99.9% uptime (≤ 8.7 hours downtime/year)                                               | Must   |
+| N-AVA-02 | Agent shall operate in offline/cached mode when dlp-server is unreachable                                       | Must   |
+| N-AVA-03 | System shall support active-passive failover for dlp-server                                                     | Should |
+| N-AVA-04 | Agent shall reconnect automatically when dlp-server becomes available                                           | Must   |
 | N-AVA-05 | Agent shall survive user logoff; the UI shall be terminated by Agent on logoff and respawned on next user logon | Must   |
 
 ### 4.5 Compatibility
@@ -409,7 +409,7 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 | N-COM-01 | Agent shall support Windows 10 Enterprise (1903+)                             | Must   |
 | N-COM-02 | Agent shall support Windows 11 Enterprise                                     | Must   |
 | N-COM-03 | Agent shall support Windows Server 2019 and 2022                              | Must   |
-| N-COM-04 | Policy Engine shall support Windows Server 2019+ and Linux (Ubuntu 22.04 LTS) | Must   |
+| N-COM-04 | dlp-server shall support Windows Server 2019+ and Linux (Ubuntu 22.04 LTS)    | Must   |
 | N-COM-05 | Administrative UI shall support Chrome 110+, Edge 110+, Firefox 110+          | Must   |
 | N-COM-06 | SIEM integration shall support Splunk HEC and ELK HTTP Ingest                 | Must   |
 
@@ -475,10 +475,10 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
               HTTPS audit                 │   HTTPS       │ HTTPS / TLS
              heartbeat /                  │   config push │
              config pull                  │              │
-             ┌────────────────────────────▼──┐  ┌───────▼──────────────┐
-             │   dlp-agent (Service, N)        │  │  policy-engine (N)   │
-             │   SYSTEM account               │  │  REST/HTTPS, stateless │
-             └────┬───────────────────────────┘  └─────────────────────┘
+             ┌────────────────────────────▼──┐
+             │   dlp-agent (Service, N)        │
+             │   SYSTEM account               │
+             └────┬───────────────────────────┘
                   │ IPC (3 Named Pipes)
         ┌─────────┼───────────────────┐
         │         │                   │
@@ -513,24 +513,18 @@ dlp-rust/                           # Cargo workspace
 │       ├── audit.rs                # AuditEvent, EventType enums
 │       └── classification.rs       # T1–T4 classification types
 │
-├── policy-engine/                  # ABAC decision engine (unchanged)
+├── dlp-server/                    # Central server: ABAC evaluator + management
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs
-│       ├── engine.rs               # Policy evaluation logic
-│       ├── ad_client.rs            # Active Directory LDAP client
-│       ├── http_server.rs          # HTTPS/REST API server implementation
-│       └── policy_store.rs          # JSON file persistence + hot-reload
-│
-├── dlp-server/                    # NEW — Central management server
-│   ├── Cargo.toml
-│   └── src/
-│       ├── main.rs               # axum HTTP server entry
+│       ├── main.rs               # axum HTTP server entry (port 9090)
+│       ├── engine.rs             # ABAC policy evaluation logic
+│       ├── ad_client.rs          # Active Directory LDAP client
+│       ├── http_server.rs        # HTTPS/REST API server implementation
+│       ├── policy_store.rs       # JSON file persistence + hot-reload
 │       ├── agent_registry.rs      # Agent heartbeat, online/offline tracking
 │       ├── audit_store.rs       # Append-only audit ingestion + query API
 │       ├── siem_connector.rs    # Splunk HEC + ELK relay (batched)
 │       ├── alert_router.rs      # Email (SMTP/TLS) + webhook for DENY_WITH_ALERT
-│       ├── policy_sync.rs        # Push policies to policy-engine replicas
 │       ├── exception_store.rs   # Override/exception approval records
 │       ├── admin_auth.rs        # TOTP validation, JWT issuance/refresh
 │       ├── admin_audit.rs      # Admin action audit log
@@ -561,7 +555,7 @@ dlp-rust/                           # Cargo workspace
 │   │   │   ├── usb.rs             # RegisterDeviceNotificationW (DBT_DEVICEARRIVAL/DBT_DEVICEREMOVECOMPLETE)
 │   │   │   ├── network_share.rs    # SMB share detection via MPR polling (WNetOpenEnumW/WNetEnumResourceW)
 │   │   ├── identity.rs             # SMB impersonation identity resolution: ImpersonateSelf, QuerySecurityContextToken, GetTokenInformation, RevertToSelf
-│   │   ├── engine_client.rs        # HTTPS/REST client to Policy Engine
+│   │   ├── engine_client.rs        # HTTPS/REST client to dlp-server (:9090)
 │   │   ├── server_client.rs        # HTTPS client to dlp-server (Phase 5+)
 │   │   ├── cache.rs               # Local policy decision cache
 │   │   ├── audit_emitter.rs       # Local append-only JSON (Phase 1); → dlp-server in Phase 5
@@ -588,7 +582,7 @@ dlp-rust/                           # Cargo workspace
 1. Windows boots → SCM starts dlp-agent service (SYSTEM account)
 2. Agent sends REGISTER to dlp-server HTTPS endpoint (agent_id, hostname, version, OS)
    — dlp-server adds agent to registry, returns agent config
-3. Agent registers with Policy Engine via HTTPS, starts listening on 3 named pipes
+3. Agent connects to dlp-server (evaluation + heartbeat endpoint), starts listening on 3 named pipes
 4. Agent enumerates all active user sessions via WTSEnumerateSessionsW
 5. For each active session, Agent calls CreateProcessAsUser → one iced UI launches in each session's desktop
 5b. Agent registers WTSRegisterSessionNotification to detect future session connect/disconnect events
@@ -601,9 +595,9 @@ dlp-rust/                           # Cargo workspace
 9. Agent intercepts via Windows API hook (minifilter / SSDT hook)
 10. Agent constructs ABAC request (subject: user SID resolved from impersonation context or process token, groups, device trust;
     resource: path, T3 classification; action: COPY; access_context: SMB or local)
-11. Agent sends HTTPS POST /evaluate request to Policy Engine
-12. Policy Engine evaluates policies in priority order
-13. Policy Engine returns DENY_WITH_ALERT
+11. Agent sends HTTPS POST /evaluate request to dlp-server
+12. dlp-server evaluates policies in priority order
+13. dlp-server returns DENY_WITH_ALERT
 14. Agent emits JSON AuditEvent → dlp-server HTTPS endpoint
 15. dlp-server writes to append-only audit store
 16. dlp-server batches events (≤1s / ≤1000 events) → SIEM
@@ -615,7 +609,7 @@ A1. dlp-admin authenticates to dlp-server (username + password + TOTP)
 A2. dlp-server POST /auth/login validates TOTP
 A3. dlp-server returns JWT (8h); all subsequent API calls carry bearer token
 A4. Admin creates policy via dlp-server REST API POST /policies
-A5. dlp-server writes to policy DB, syncs to all policy-engine replicas
+A5. dlp-server writes to policy DB; running dlp-server replicas pick up the update
 A6. dlp-server emits admin_audit event (admin identity, action, timestamp)
 
 --- sc stop flow ---
@@ -699,7 +693,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | **A.5.1** Information Security Policies | Policies documented and approved                                            | SRS, ABAC_POLICIES.md |
 | **A.5.3** Segregation of Duties         | dlp-admin vs. end users vs. auditors                                        | SRS.md §2.3           |
 | **A.6.2** Privileged Access Rights      | dlp-admin is single superuser; dlp-admin password required for service stop | F-SVC-10–F-SVC-12     |
-| **A.7.2** Physical Security             | Policy Engine hosted on hardened, physically secure server                  | N-SEC-04              |
+| **A.7.2** Physical Security             | dlp-server hosted on hardened, physically secure server                     | N-SEC-04              |
 | **A.8.1** Asset Responsibility          | Data classification (T1–T4) applied to all assets                           | F-ADM-02              |
 | **A.8.2** Classification                | Four-tier classification enforced by ABAC                                   | F-ENG-01              |
 | **A.9.1** Access Control Policy         | NTFS + ABAC dual-layer enforcement                                          | Architecture §2.1     |
@@ -716,25 +710,27 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 ### Phase 1 — Foundation + dlp-user-ui (Weeks 1–18)
 
-**Goal:** Workspace, shared types, Policy Engine, dlp-agent (standalone, API hooks, clipboard, local audit, IPC, UI spawner), dlp-user-ui (iced, IPC client, dialogs). dlp-agent operates without dlp-server in this phase.
+**Goal:** Workspace, shared types, dlp-agent (standalone, API hooks, clipboard, local audit, IPC, UI spawner), dlp-user-ui (iced, IPC client, dialogs). dlp-agent operates without dlp-server in this phase (local JSON audit; ABAC evaluation deferred to Phase 5 with dlp-server).
 
 > **Note:** Task IDs (T-01 through T-46) match `docs/plans/user-stories.md` which is the authoritative Phase 1 task reference. Audit logs are read directly from the local append-only JSON file during Phase 1. SIEM relay (Splunk HEC / ELK) deferred to Phase 5 (dlp-server).
 
-#### EP-01 & EP-03 — Policy Engine
+#### EP-01 & EP-03 — ABAC Policy Evaluator (now in dlp-server)
+
+> **Note:** These tasks were originally planned as `policy-engine/` crate work. The `policy-engine` crate has been merged into `dlp-server/`. All deliverables below now reside under `dlp-server/src/`.
 
 | ID | Task | Deliverable | Priority |
 |----|------|-------------|----------|
-| T-01 | Initialize `policy-engine/` workspace crate: `Cargo.toml`, `axum`, TLS config, `tower` middleware scaffold | `policy-engine/src/` | Must |
-| T-02 | Implement policy store: JSON file persistence, hot-reload via `notify`, version tracking | `policy-engine/src/policy_store.rs` | Must |
-| T-03 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching | `policy-engine/src/evaluator.rs` | Must |
-| T-04 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/` | `policy-engine/src/http_server.rs` | Must |
-| T-05 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup | `policy-engine/src/ad_client.rs` | Must |
-| T-06 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec | `policy-engine/src/rest_api.rs` | Must |
-| T-07 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md` | `policy-engine/tests/` | Must |
-| T-08 | Implement AD mock server for integration tests | `policy-engine/tests/mock_ad/` | Must |
-| T-22 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `policy-engine/src/ad_client.rs` | Must |
-| T-23 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s | `policy-engine/src/policy_store.rs` | Must |
-| T-24 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput | `policy-engine/tests/benchmark.rs` | Must |
+| T-01 | Initialize ABAC evaluator within `dlp-server/`: `Cargo.toml`, `axum`, TLS config, `tower` middleware scaffold | `dlp-server/src/` | Must |
+| T-02 | Implement policy store: JSON file persistence, hot-reload via `notify`, version tracking | `dlp-server/src/policy_store.rs` | Must |
+| T-03 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching | `dlp-server/src/evaluator.rs` | Must |
+| T-04 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/` | `dlp-server/src/http_server.rs` | Must |
+| T-05 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup | `dlp-server/src/ad_client.rs` | Must |
+| T-06 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec | `dlp-server/src/rest_api.rs` | Must |
+| T-07 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md` | `dlp-server/tests/` | Must |
+| T-08 | Implement AD mock server for integration tests | `dlp-server/tests/mock_ad/` | Must |
+| T-22 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `dlp-server/src/ad_client.rs` | Must |
+| T-23 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s | `dlp-server/src/policy_store.rs` | Must |
+| T-24 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput | `dlp-server/tests/benchmark.rs` | Must |
 
 #### EP-02 — Endpoint Enforcement
 
@@ -747,11 +743,11 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | T-13 | Implement `detection/usb.rs`: `RegisterDeviceNotificationW` for `DBT_DEVICEARRIVAL`/`DBT_DEVICEREMOVECOMPLETE`; `GetDriveTypeW` classifies removable drives; block T3/T4 writes to USB | `dlp-agent/src/detection/usb.rs` | Must |
 | T-14 | Implement `detection/network_share.rs`: poll `WNetOpenEnumW`/`WNetEnumResourceW` (MPR) every 30s; differential scan emits `Connected`/`Disconnected` events; whitelist enforcement for T3/T4 destinations | `dlp-agent/src/detection/network_share.rs` | Must |
 | T-15 | *(superseded)* File interception now uses the `notify` crate — ETW bypass detection was removed | — | — |
-| T-16 | Implement HTTPS client to Policy Engine: reqwest client, TLS, `POST /evaluate` request/response, retry on failure | `dlp-agent/src/engine_client.rs` | Must |
+| T-16 | Implement HTTPS client to dlp-server: reqwest client, TLS, `POST /evaluate` request/response, retry on failure | `dlp-agent/src/engine_client.rs` | Must |
 | T-17 | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss | `dlp-agent/src/cache.rs` | Must |
-| T-18 | Implement offline mode: detect Policy Engine unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat | `dlp-agent/src/offline.rs` | Must |
+| T-18 | Implement offline mode: detect dlp-server unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat | `dlp-agent/src/offline.rs` | Must |
 | T-20 | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE`; `detection/clipboard/classifier.rs`: classify text content → T1–T4 | `dlp-agent/src/clipboard/` | Must |
-| T-21 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock Policy Engine) | `dlp-agent/tests/` | Must |
+| T-21 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock dlp-server) | `dlp-agent/tests/` | Must |
 
 #### EP-04 — Audit & Compliance
 
@@ -794,9 +790,9 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | P2-T03 | Process protection: DACL hardening — deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to `Everyone` SID on Agent and UI processes | `dlp-agent/src/protection.rs` | Must |
 | P2-T04 | Implement mutual health monitoring: Agent pings UI (Pipe 2 every 5s, respawn if no pong in 15s); UI pings Agent (Pipe 3 every 5s, exit if no message in 15s) | `dlp-agent/src/`, `dlp-user-ui/src/` | Must |
 | P2-T11 | dlp-agent: service stop shutdown sequence — STOP_PENDING → signal UI → password dialog → clean shutdown | `dlp-agent/src/service.rs` | Must |
-| P2-T12 | Policy Engine: REST API for policy CRUD (GET /policies, POST /policies, PUT /policies/{id}, DELETE /policies/{id}) | `policy-engine/src/rest_api.rs` | Must |
-| P2-T13 | Write integration tests: Agent ↔ Policy Engine end-to-end | `dlp-agent/tests/` | Must |
-| P2-T14 | Write integration tests: all ABAC policies from ABAC_POLICIES.md | `policy-engine/tests/` | Must |
+| P2-T12 | dlp-server: REST API for policy CRUD (GET /policies, POST /policies, PUT /policies/{id}, DELETE /policies/{id}) | `dlp-server/src/rest_api.rs` | Must |
+| P2-T13 | Write integration tests: Agent ↔ dlp-server end-to-end | `dlp-agent/tests/` | Must |
+| P2-T14 | Write integration tests: all ABAC policies from ABAC_POLICIES.md | `dlp-server/tests/` | Must |
 
 > **Note:** The IPC servers (T-31) and UI spawner (T-30) were originally Phase 2 tasks but are implemented in Phase 1 alongside the iced UI (T-39–T-46).
 
@@ -821,7 +817,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | P4-T03 | SECURITY_AUDIT.md: formal security review — all 30 STRIDE threats, N-SEC gap analysis, implemented controls, ISO 27001 mapping | `docs/SECURITY_AUDIT.md` | Must     |
 | P4-T04 | *(pending)* Performance testing: 10k req/s, P95 latency ≤ 50ms     | Performance test report    | Should   |
 | P4-T05 | *(pending)* Load testing: 50k concurrent agents                    | Load test report           | Should   |
-| P4-T04 | Policy Engine: horizontal scaling / load balancer integration      | `policy-engine/`           | Must     |
+| P4-T04 | dlp-server: horizontal scaling / load balancer integration          | `dlp-server/`              | Must     |
 | P4-T05 | Agent self-update mechanism                                        | `dlp-agent/`               | May      |
 | P4-T06 | Agent deployment: MSI installer, GPO/Intune integration guide      | Deployment guide           | Must     |
 | P4-T07 | Write OPERATIONAL.md: runbook, failover, backup                    | `docs/OPERATIONAL.md`      | Must     |
@@ -831,7 +827,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 ### Phase 5 — dlp-server (Weeks 25–30)
 
-**Goal:** Introduce dlp-server as the central management hub; replace local JSON audit in dlp-agent with dlp-server ingestion; replace policy-engine local policy store with dlp-server sync.
+**Goal:** Introduce dlp-server as the central hub serving both ABAC policy evaluation and management; replace local JSON audit in dlp-agent with dlp-server ingestion; all agents connect to dlp-server (:9090) for evaluation, audit, and heartbeats.
 
 | ID     | Task                                                                       | Deliverable                          | Priority |
 | ------ | -------------------------------------------------------------------------- | ------------------------------------ | -------- |
@@ -841,7 +837,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | P5-T04 | Implement audit store: append-only ingestion, query API                     | `dlp-server/src/audit_store.rs`       | Must     |
 | P5-T05 | Implement SIEM connector: batched Splunk HEC + ELK relay                  | `dlp-server/src/siem_connector.rs`    | Must     |
 | P5-T06 | Implement alert router: email (SMTP/TLS) + webhook (HTTPS/TLS)             | `dlp-server/src/alert_router.rs`      | Must     |
-| P5-T07 | Implement policy sync: push policies to policy-engine replicas              | `dlp-server/src/policy_sync.rs`       | Must     |
+| P5-T07 | Implement policy replication: distribute policies across dlp-server replicas | `dlp-server/src/policy_sync.rs`       | Must     |
 | P5-T08 | Implement exception store: approval records                                  | `dlp-server/src/exception_store.rs`   | Should   |
 | P5-T09 | Implement admin REST API: /agents, /audit-events, /policies, /exceptions | `dlp-server/src/admin_api.rs`         | Must     |
 | P5-T10 | Update dlp-agent: send audit to dlp-server (remove direct SIEM)            | `dlp-agent/src/audit_emitter.rs`      | Must     |
@@ -853,7 +849,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 ## 9. Acceptance Criteria
 
-### 9.1 Policy Engine
+### 9.1 Policy Engine (served by dlp-server)
 
 - [x] HTTPS `Evaluate` endpoint returns a decision for every valid request within 50ms at P95
 - [x] ABAC rules: T4 → DENY except owner, T3 + Unmanaged → DENY, T2 → ALLOW_WITH_LOG
@@ -867,12 +863,12 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 - [x] Agent installs and registers as a Windows Service via MSI; survives reboot
 - [x] Agent is single-instance; second start attempt is rejected
 - [x] Agent spawns one iced UI subprocess per active user session on service startup; future sessions receive a new UI when they connect
-- [x] Agent registers with Policy Engine and maintains heartbeat
+- [x] Agent registers with dlp-server and maintains heartbeat
 - [x] Agent blocks file copy to USB when resource classification = T3 or T4
 - [x] Agent blocks file upload to unauthorized SMB share when classification = T3 or T4
 - [x] When deployed on a file server, Agent correctly resolves the remote user's identity from SMB impersonation context for ABAC evaluation and audit logging; when not in impersonation, Agent uses the process token
 - [x] Agent emits JSON audit event for every intercepted file operation, with `access_context` field (`local` or `SMB`)
-- [x] Agent operates in offline mode with cached decisions when engine is unreachable; defaults DENY for T3/T4 on cache miss
+- [x] Agent operates in offline mode with cached decisions when dlp-server is unreachable; defaults DENY for T3/T4 on cache miss
 
 ### 9.3 Agent ↔ UI Co-Process
 
@@ -912,7 +908,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 - [ ] dlp-server forwards audit events to SIEM in batches (≤1s latency, ≤1000 events/batch)
 - [ ] dlp-server marks agent offline if heartbeat missed for 3 intervals (90 seconds)
 - [ ] dlp-server routes DENY_WITH_ALERT to email (SMTP/TLS) and webhook (HTTPS/TLS)
-- [ ] Policy create/update via dlp-server REST API syncs to all policy-engine replicas
+- [ ] Policy create/update via dlp-server REST API is distributed to all dlp-server replicas
 - [ ] dlp-server issues JWT on admin login (TOTP validated); all admin API calls are logged with admin identity
 - [ ] dlp-server is horizontally scalable (stateless replicas)
 - [ ] ISO 27001 A.5 through A.16 controls are implemented as documented in §7
@@ -938,7 +934,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | **DPAPI**                        | Data Protection API — Windows API for encrypting data using the user's credentials (CryptProtectData/CryptUnprotectData)     |
 | **EDR**                          | Endpoint Detection and Response                                                                                              |
 | **ELK**                          | Elasticsearch, Logstash, Kibana — open-source SIEM stack                                                                     |
-| **REST API**                     | Representational State Transfer — HTTP-based API used for Policy Engine communication                                                               |
+| **REST API**                     | Representational State Transfer — HTTP-based API used for dlp-server communication                                                                  |
 | **HEC**                          | HTTP Event Collector — Splunk's HTTP-based log ingestion endpoint                                                            |
 | **HSM**                          | Hardware Security Module                                                                                                     |
 | **IPC**                          | Inter-Process Communication — mechanism for processes to communicate; here: Windows named pipes                              |

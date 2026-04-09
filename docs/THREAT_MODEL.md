@@ -46,7 +46,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 
 ### 1.2 In Scope
 
-- **Components:** dlp-agent (Windows Service), dlp-user-ui (iced subprocess), policy-engine (HTTPS REST API), Active Directory / LDAPS, Named pipes (Pipe 1/2/3), audit log (local JSONL), `notify`-based file system interception
+- **Components:** dlp-agent (Windows Service), dlp-user-ui (iced subprocess), dlp-server (HTTPS REST API, ABAC evaluator, policy CRUD, port 9090), Active Directory / LDAPS, Named pipes (Pipe 1/2/3), audit log (local JSONL), `notify`-based file system interception
 - **Phases:** Phase 1 (current implementation); Phase 5 (dlp-server, SIEM relay) noted where relevant
 - **Environments:** Enterprise Windows endpoints (domain-joined), corporate network
 
@@ -72,7 +72,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   │     ├── detection/network_share.rs  — SMB share access detector
   │     ├── clipboard/listener.rs       — WH_GETMESSAGE clipboard hook
   │     ├── identity.rs                 — SMB impersonation resolution
-  │     ├── engine_client.rs            — HTTPS client → policy-engine
+  │     ├── engine_client.rs            — HTTPS client → dlp-server (:9090)
   │     ├── cache.rs                   — Policy decision cache (TTL)
   │     ├── offline.rs                 — Offline mode (fail-closed)
   │     ├── audit_emitter.rs           — JSONL append-only audit log
@@ -91,11 +91,14 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
         └── stop_password.rs           — sc stop password dialog (DPAPI)
 
 [Corporate Network]
-  └── policy-engine (HTTPS REST, Rust)
+  └── dlp-server (HTTPS REST, Rust, :9090)
         ├── ad_client.rs              — LDAPS → Active Directory
         ├── engine.rs                 — ABAC policy evaluation
         ├── policy_store.rs           — JSON policy file + hot-reload
-        └── rest_api.rs              — Policy CRUD REST endpoints
+        ├── rest_api.rs              — Policy CRUD REST endpoints
+        ├── agent_registry.rs         — Agent heartbeat, online/offline tracking
+        ├── audit_store.rs            — Append-only audit ingestion
+        └── admin_auth.rs             — TOTP + JWT (Phase 5)
 
 [Active Directory]
   └── Domain Controller (LDAPS :636)
@@ -109,10 +112,10 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 
 | Boundary | Description |
 |---|---|
-| **Endpoint ↔ Policy Engine** | HTTPS/TLS 1.3; mTLS client certificates; network segmentation |
+| **Endpoint ↔ dlp-server** | HTTPS/TLS 1.3; mTLS client certificates; network segmentation; port 9090 |
 | **Agent ↔ AD** | (Not used — Agent does not query AD directly) |
 | **Agent ↔ UI (Pipe 1/2/3)** | Named pipes; SYSTEM-only ACL; DPAPI encryption for password payload |
-| **Policy Engine ↔ AD** | LDAPS :636; TLS; AD service account (read-only); ABAC attribute lookups |
+| **dlp-server ↔ AD** | LDAPS :636; TLS; AD service account (read-only); ABAC attribute lookups |
 | **Admin ↔ dlp-server** | HTTPS; TOTP + JWT (Phase 5) |
 
 ---
@@ -133,13 +136,13 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   - **Status:** Partially Mitigated — LSASS dump from SYSTEM context is not blocked by the agent itself; relies on Windows Defender/EDR for prevention
 
 #### THREAT-002: Agent Impersonation
-- **Asset:** Agent → Policy Engine HTTPS channel
+- **Asset:** Agent → dlp-server HTTPS channel
 - **Threat:** Attacker presents a forged TLS client certificate to impersonate a legitimate agent
 - **Attack Vector:** Theft of the agent's TLS client private key from the endpoint filesystem
 - **Impact:** Malicious agent could submit forged evaluation requests, receive policy decisions for other users' actions, and corrupt the audit trail
 - **Mitigation:**
   - Agent TLS client certificate stored in `.env` (not in source); filesystem ACLs restrict access
-  - Policy Engine verifies client certificate against its trusted certificate store
+  - dlp-server verifies client certificate against its trusted certificate store
   - **Status:** Partially Mitigated — key storage security depends on endpoint hardening
 
 #### THREAT-003: UI Process Impersonation
@@ -153,13 +156,13 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   - Service runs as SYSTEM; user-level code cannot connect to SYSTEM-owned pipes without privilege escalation
   - **Status:** Implemented
 
-#### THREAT-004: Policy Engine Certificate Spoofing
-- **Asset:** Agent ↔ Policy Engine HTTPS channel
-- **Threat:** Attacker presents a forged TLS server certificate to intercept agent ↔ engine traffic
+#### THREAT-004: dlp-server Certificate Spoofing
+- **Asset:** Agent ↔ dlp-server HTTPS channel
+- **Threat:** Attacker presents a forged TLS server certificate to intercept agent ↔ server traffic
 - **Attack Vector:** Corporate proxy, DNS poisoning, or compromised CA
 - **Impact:** Agent sends evaluation requests to a malicious server; decisions are forged; audit trail is polluted
 - **Mitigation:**
-  - Agent validates Policy Engine TLS certificate against a configured trusted CA
+  - Agent validates dlp-server TLS certificate against a configured trusted CA
   - Certificate pinned or validated against a known good certificate
   - **Status:** Planned — certificate pinning in Phase 5 (N-SEC-08)
 
@@ -183,7 +186,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 - **Attack Vector:** Write access to the path where `policies.json` is stored; file server share with weak ACLs
 - **Impact:** T4/T3 files become accessible; data exfiltration becomes possible
 - **Mitigation:**
-  - `policy-store.rs::reload_policies()` validates all policies on hot-reload before swapping into the engine
+  - `dlp-server/src/policy_store.rs::reload_policies()` validates all policies on hot-reload before swapping into the evaluator
   - Invalid policies (empty ID, priority > 100,000) are rejected with a logged error
   - Policy store path is configurable; default ACLs restrict write access to Administrators
   - Hot-reload happens on file change; tampering is detected only by monitoring the file externally

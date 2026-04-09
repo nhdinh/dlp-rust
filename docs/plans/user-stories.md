@@ -29,16 +29,18 @@ _As a DLP Admin, I need to define and manage ABAC policies so that the organizat
 
 ### Phase 1 Tasks
 
-| ID   | Task                                                                                                             | Deliverable                         |
-| ---- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| T-01 | Initialize `policy-engine/` workspace crate: `Cargo.toml`, `tonic`, TLS config, `tower` middleware scaffold      | `policy-engine/src/`                |
-| T-02 | Implement policy store: JSON file persistence, hot-reload via `notify` crate, version tracking                   | `policy-engine/src/policy_store.rs` |
-| T-03 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching | `policy-engine/src/evaluator.rs`    |
-| T-04 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/`  | `policy-engine/src/http_server.rs`  |
-| T-05 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup              | `policy-engine/src/ad_client.rs`    |
-| T-06 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                   | `policy-engine/src/rest_api.rs`     |
-| T-07 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                       | `policy-engine/tests/`              |
-| T-08 | Implement AD mock server for integration tests                                                                   | `policy-engine/tests/mock_ad/`      |
+> **Architecture note (2026-04-08):** The `policy-engine/` crate has been merged into `dlp-server/`. All deliverable paths below that previously referenced `policy-engine/src/` now reside under `dlp-server/src/`.
+
+| ID   | Task                                                                                                             | Deliverable                      |
+| ---- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| T-01 | Initialize ABAC evaluator within `dlp-server/`: `Cargo.toml`, `axum`, TLS config, `tower` middleware scaffold    | `dlp-server/src/`                |
+| T-02 | Implement policy store: JSON file persistence, hot-reload via `notify` crate, version tracking                   | `dlp-server/src/policy_store.rs` |
+| T-03 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching | `dlp-server/src/evaluator.rs`    |
+| T-04 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/`  | `dlp-server/src/http_server.rs`  |
+| T-05 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup              | `dlp-server/src/ad_client.rs`    |
+| T-06 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                   | `dlp-server/src/rest_api.rs`     |
+| T-07 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                       | `dlp-server/tests/`              |
+| T-08 | Implement AD mock server for integration tests                                                                   | `dlp-server/tests/mock_ad/`      |
 
 ---
 
@@ -140,7 +142,7 @@ _As a DLP Admin, I need to define and manage ABAC policies so that the organizat
 **Acceptance Criteria:**
 
 - [ ] Admin can add, edit, and remove exclusion paths
-- [ ] Exclusions are evaluated before the ABAC policy engine
+- [ ] Exclusions are evaluated before the ABAC evaluator in dlp-server
 - [ ] Exclusion rules are logged for audit purposes
 - [ ] Exclusions are validated as valid paths
 
@@ -334,11 +336,11 @@ _As a Policy Engine, I need to evaluate ABAC policies accurately and at low late
 
 > EP-03 tasks overlap significantly with EP-01 tasks above. Only EP-03-specific tasks are listed here.
 
-| ID   | Task                                                                                                              | Deliverable                         |
-| ---- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| T-22 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `policy-engine/src/ad_client.rs`    |
-| T-23 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `policy-engine/src/policy_store.rs` |
-| T-24 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `policy-engine/tests/benchmark.rs`  |
+| ID   | Task                                                                                                              | Deliverable                      |
+| ---- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| T-22 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `dlp-server/src/ad_client.rs`    |
+| T-23 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `dlp-server/src/policy_store.rs` |
+| T-24 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `dlp-server/tests/benchmark.rs`  |
 
 ---
 
@@ -624,7 +626,7 @@ _As a DLP Admin, I need a dedicated administrative interface so that I can manag
 
 **As a** DLP Admin
 **I want** to push configuration updates to deployed endpoint agents
-**So that** I can change monitored paths, policy engine endpoints, or cache TTL without redeploying agents
+**So that** I can change monitored paths, dlp-server endpoints, or cache TTL without redeploying agents
 
 **Acceptance Criteria:**
 
@@ -1026,16 +1028,16 @@ _As the DLP system, we need a central management server (dlp-server) that owns a
 **Story Points:** 5 | **MoSCoW:** Must
 
 **As** dlp-server
-**I want** to push policies to all policy-engine replicas so that horizontal scaling works correctly
-**So that** new or updated policies take effect across all engines without manual intervention
+**I want** to distribute policies across all dlp-server replicas so that horizontal scaling works correctly
+**So that** new or updated policies take effect across all instances without manual intervention
 
 **Acceptance Criteria:**
 
 - [ ] When a policy is created or updated via the dlp-server REST API, dlp-server writes it to the policy DB
-- [ ] dlp-server pushes the updated policy set to all connected policy-engine replicas
-- [ ] New policy-engine replicas pull the full policy set on startup from dlp-server
-- [ ] Policy sync completes within 5 seconds of policy change
-- [ ] Sync failures are retried; replicas continue with last-known policy set
+- [ ] dlp-server distributes the updated policy set to all connected dlp-server replicas
+- [ ] New dlp-server replicas pull the full policy set on startup
+- [ ] Policy distribution completes within 5 seconds of policy change
+- [ ] Distribution failures are retried; replicas continue with last-known policy set
 
 ---
 
@@ -1077,21 +1079,23 @@ _As the DLP system, we need a central management server (dlp-server) that owns a
 
 This table maps all Phase 1 implementation tasks to their stories, deliverable paths, and crate.
 
-### EP-01 & EP-03: Policy Engine
+### EP-01 & EP-03: ABAC Policy Evaluator (now in dlp-server)
 
-| ID   | Story | Task                                                                                                              | Deliverable                         |
-| ---- | ----- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| T-01 | US-01 | Initialize `policy-engine/` workspace crate: `Cargo.toml`, `tonic`, TLS config, `tower` middleware scaffold       | `policy-engine/src/`                |
-| T-02 | US-01 | Implement policy store: JSON file persistence, hot-reload via `notify`, version tracking                          | `policy-engine/src/policy_store.rs` |
-| T-03 | US-01 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching  | `policy-engine/src/evaluator.rs`    |
-| T-04 | US-17 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/`   | `policy-engine/src/http_server.rs`  |
-| T-05 | US-16 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup               | `policy-engine/src/ad_client.rs`    |
-| T-06 | US-17 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                    | `policy-engine/src/rest_api.rs`     |
-| T-07 | US-01 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                        | `policy-engine/tests/`              |
-| T-08 | US-16 | Implement AD mock server for integration tests                                                                    | `policy-engine/tests/mock_ad/`      |
-| T-22 | US-16 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `policy-engine/src/ad_client.rs`    |
-| T-23 | US-15 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `policy-engine/src/policy_store.rs` |
-| T-24 | US-14 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `policy-engine/tests/benchmark.rs`  |
+> **Architecture note (2026-04-08):** The `policy-engine/` crate has been merged into `dlp-server/`. All deliverable paths below now reside under `dlp-server/src/`.
+
+| ID   | Story | Task                                                                                                              | Deliverable                      |
+| ---- | ----- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| T-01 | US-01 | Initialize ABAC evaluator within `dlp-server/`: `Cargo.toml`, `axum`, TLS config, `tower` middleware scaffold     | `dlp-server/src/`                |
+| T-02 | US-01 | Implement policy store: JSON file persistence, hot-reload via `notify`, version tracking                          | `dlp-server/src/policy_store.rs` |
+| T-03 | US-01 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching  | `dlp-server/src/evaluator.rs`    |
+| T-04 | US-17 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/`   | `dlp-server/src/http_server.rs`  |
+| T-05 | US-16 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup               | `dlp-server/src/ad_client.rs`    |
+| T-06 | US-17 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                    | `dlp-server/src/rest_api.rs`     |
+| T-07 | US-01 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                        | `dlp-server/tests/`              |
+| T-08 | US-16 | Implement AD mock server for integration tests                                                                    | `dlp-server/tests/mock_ad/`      |
+| T-22 | US-16 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `dlp-server/src/ad_client.rs`    |
+| T-23 | US-15 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `dlp-server/src/policy_store.rs` |
+| T-24 | US-14 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `dlp-server/tests/benchmark.rs`  |
 
 ### EP-02: Endpoint Enforcement
 
@@ -1143,13 +1147,13 @@ This table maps all Phase 1 implementation tasks to their stories, deliverable p
 
 ### Phase 1 Task Summary
 
-| Crate                  | Tasks                           | Count  |
-| ---------------------- | ------------------------------- | ------ |
-| `dlp-common/`          | T-25                            | 1      |
-| `policy-engine/`       | T-01–T-08, T-22–T-24            | 11     |
-| `dlp-agent/`           | T-09–T-18, T-20–T-21, T-30–T-38 | 19     |
-| `dlp-user-ui/`         | T-39–T-46                       | 8      |
-| **Total**              |                                 | **39** |
+| Crate                  | Tasks                            | Count  |
+| ---------------------- | -------------------------------- | ------ |
+| `dlp-common/`          | T-25                             | 1      |
+| `dlp-server/`          | T-01–T-08, T-22–T-24 (ABAC eval) | 11     |
+| `dlp-agent/`           | T-09–T-18, T-20–T-21, T-30–T-38  | 19     |
+| `dlp-user-ui/`         | T-39–T-46                        | 8      |
+| **Total**              |                                  | **39** |
 
 > **Note:** Tasks T-22–T-23 share deliverables with T-05 and T-02 respectively. Tasks T-16–T-17 are shared between EP-02 and EP-07 (agent-core + IPC). T-28 is a note clarifying Phase 1 audit scope (SIEM relay deferred to Phase 5).
 

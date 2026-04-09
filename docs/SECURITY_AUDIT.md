@@ -4,7 +4,7 @@
 **Date:** 2026-04-04
 **Status:** Complete
 **Auditor:** Internal / Claude Code
-**Scope:** dlp-agent (Phase 1–3), dlp-user-ui, policy-engine, dlp-common
+**Scope:** dlp-agent (Phase 1–3), dlp-user-ui, dlp-server (ABAC evaluator + management), dlp-common
 
 > **Companion documents:**
 > - [THREAT_MODEL.md](THREAT_MODEL.md) — STRIDE threat analysis, residual risks
@@ -23,12 +23,12 @@
 |----------|-------------|-------|
 | `dlp-agent/` | Windows Service — file interception, USB/SMB detection, IPC, audit | 1–3 |
 | `dlp-user-ui/` | Iced subprocess — block dialogs, tray, clipboard | 1–3 |
-| `policy-engine/` | HTTPS REST API — ABAC evaluation, AD LDAP, hot-reload | 1–3 |
+| `dlp-server/` | HTTPS REST API — ABAC evaluation, policy CRUD, AD LDAP, hot-reload, audit, agent registry | 5 |
 | `dlp-common/` | Shared types — Classification, ABAC enums, AuditEvent | 1 |
 
 ### 1.2 Methodology
 
-- **Code review** of all 33 source files in `dlp-agent/`, `policy-engine/`, `dlp-common/`
+- **Code review** of all 33 source files in `dlp-agent/`, `dlp-server/`, `dlp-common/`
 - **Architecture review** against SRS.md requirements (F-*, N-*)
 - **Threat-model walkthrough** against THREAT_MODEL.md §3 (STRIDE)
 - **Gap analysis** against SRS.md §6 (Security Requirements) and §7 (Compliance)

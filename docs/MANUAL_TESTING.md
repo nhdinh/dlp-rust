@@ -29,44 +29,44 @@ cargo build --all --release
 
 Output binaries:
 
-| Binary        | Path                               |
-| ------------- | ---------------------------------- |
-| Policy Engine | `target\release\policy-engine.exe` |
-| DLP Agent     | `target\release\dlp-agent.exe`     |
+| Binary        | Path                            |
+| ------------- | ------------------------------- |
+| dlp-server    | `target\release\dlp-server.exe` |
+| DLP Agent     | `target\release\dlp-agent.exe`  |
 
 ---
 
-## 3. Start the Policy Engine
+## 3. Start dlp-server
 
-The engine listens on `http://127.0.0.1:8443` by default.
+dlp-server listens on `http://127.0.0.1:9090` by default and serves ABAC policy evaluation (`POST /evaluate`), policy CRUD, audit ingestion, agent registry, and heartbeats.
 
 ### Configuration (environment variables)
 
 | Variable      | Default           | Description                                           |
 | ------------- | ----------------- | ----------------------------------------------------- |
-| `BIND_ADDR`   | `127.0.0.1:8443`  | Listen address and port                               |
+| `BIND_ADDR`   | `127.0.0.1:9090`  | Listen address and port                               |
 | `POLICY_FILE` | `./policies.json` | Path to the policy JSON file                          |
 | `RUST_LOG`    | `info`            | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
 
 Open **Terminal 1** and run:
 
 ```cmd
-set BIND_ADDR=0.0.0.0:9000
+set BIND_ADDR=0.0.0.0:9090
 set POLICY_FILE=C:\config\policies.json
 set RUST_LOG=debug
-cargo run -p policy-engine
+cargo run -p dlp-server
 ```
 
-### Verify the engine is running
+### Verify dlp-server is running
 
 ```cmd
-curl http://127.0.0.1:8443/health
+curl http://127.0.0.1:9090/health
 ```
 
 Expected: HTTP 200 (empty body).
 
 ```cmd
-curl http://127.0.0.1:8443/ready
+curl http://127.0.0.1:9090/ready
 ```
 
 Expected: HTTP 200 (policy store loaded).
@@ -78,7 +78,7 @@ Expected: HTTP 200 (policy store loaded).
 Check for the policies first.
 
 ```cmd
-curl http://127.0.0.1:8443/policies
+curl http://127.0.0.1:9090/policies
 ```
 
 Expected: JSON array with three policy objects. If empty, use the REST API to add the
@@ -87,7 +87,7 @@ three standard ABAC rules from `docs/ABAC_POLICIES.md`.
 ### Rule 1: T4 Deny All
 
 ```cmd
-curl -X POST http://127.0.0.1:8443/policies ^
+curl -X POST http://127.0.0.1:9090/policies ^
   -H "Content-Type: application/json" ^
   -d "{\"id\":\"pol-001\",\"name\":\"T4 Deny All\",\"description\":\"Block all access to T4 Restricted resources\",\"priority\":1,\"conditions\":[{\"attribute\":\"classification\",\"op\":\"eq\",\"value\":\"T4\"}],\"action\":\"DENY\",\"enabled\":true,\"version\":1}"
 ```
@@ -95,7 +95,7 @@ curl -X POST http://127.0.0.1:8443/policies ^
 ### Rule 2: T3 Unmanaged Device Deny
 
 ```cmd
-curl -X POST http://127.0.0.1:8443/policies ^
+curl -X POST http://127.0.0.1:9090/policies ^
   -H "Content-Type: application/json" ^
   -d "{\"id\":\"pol-002\",\"name\":\"T3 Unmanaged Block\",\"description\":\"Block T3 from unmanaged devices\",\"priority\":2,\"conditions\":[{\"attribute\":\"classification\",\"op\":\"eq\",\"value\":\"T3\"},{\"attribute\":\"device_trust\",\"op\":\"eq\",\"value\":\"Unmanaged\"}],\"action\":\"DENY\",\"enabled\":true,\"version\":1}"
 ```
@@ -103,7 +103,7 @@ curl -X POST http://127.0.0.1:8443/policies ^
 ### Rule 3: T2 Allow with Logging
 
 ```cmd
-curl -X POST http://127.0.0.1:8443/policies ^
+curl -X POST http://127.0.0.1:9090/policies ^
   -H "Content-Type: application/json" ^
   -d "{\"id\":\"pol-003\",\"name\":\"T2 Allow with Log\",\"description\":\"Permit T2 access with audit logging\",\"priority\":3,\"conditions\":[{\"attribute\":\"classification\",\"op\":\"eq\",\"value\":\"T2\"}],\"action\":\"ALLOW_WITH_LOG\",\"enabled\":true,\"version\":1}"
 ```
@@ -111,7 +111,7 @@ curl -X POST http://127.0.0.1:8443/policies ^
 ### Verify policies loaded
 
 ```cmd
-curl http://127.0.0.1:8443/policies
+curl http://127.0.0.1:9090/policies
 ```
 
 Expected: JSON array with three policy objects.
@@ -123,7 +123,7 @@ Expected: JSON array with three policy objects.
 ### Test 1: T4 resource -- expect DENY
 
 ```cmd
-curl -X POST http://127.0.0.1:8443/evaluate ^
+curl -X POST http://127.0.0.1:9090/evaluate ^
   -H "Content-Type: application/json" ^
   -d "{\"subject\":{\"user_sid\":\"S-1-5-21-123\",\"user_name\":\"jsmith\",\"groups\":[],\"device_trust\":\"Managed\",\"network_location\":\"Corporate\"},\"resource\":{\"path\":\"C:\\\\Restricted\\\\secrets.xlsx\",\"classification\":\"T4\"},\"environment\":{\"timestamp\":\"2026-04-01T12:00:00Z\",\"session_id\":1,\"access_context\":\"local\"},\"action\":\"COPY\"}"
 ```
@@ -141,7 +141,7 @@ Expected response:
 ### Test 2: T2 resource -- expect ALLOW_WITH_LOG
 
 ```cmd
-curl -X POST http://127.0.0.1:8443/evaluate ^
+curl -X POST http://127.0.0.1:9090/evaluate ^
   -H "Content-Type: application/json" ^
   -d "{\"subject\":{\"user_sid\":\"S-1-5-21-123\",\"user_name\":\"jsmith\",\"groups\":[],\"device_trust\":\"Managed\",\"network_location\":\"Corporate\"},\"resource\":{\"path\":\"C:\\\\Data\\\\report.xlsx\",\"classification\":\"T2\"},\"environment\":{\"timestamp\":\"2026-04-01T12:00:00Z\",\"session_id\":1,\"access_context\":\"local\"},\"action\":\"WRITE\"}"
 ```
@@ -151,7 +151,7 @@ Expected: `"decision": "ALLOW_WITH_LOG"`, `"matched_policy_id": "pol-003"`.
 ### Test 3: T1 resource -- expect default DENY (no matching policy)
 
 ```cmd
-curl -X POST http://127.0.0.1:8443/evaluate ^
+curl -X POST http://127.0.0.1:9090/evaluate ^
   -H "Content-Type: application/json" ^
   -d "{\"subject\":{\"user_sid\":\"S-1-5-21-123\",\"user_name\":\"jsmith\",\"groups\":[],\"device_trust\":\"Managed\",\"network_location\":\"Corporate\"},\"resource\":{\"path\":\"C:\\\\Public\\\\readme.txt\",\"classification\":\"T1\"},\"environment\":{\"timestamp\":\"2026-04-01T12:00:00Z\",\"session_id\":1,\"access_context\":\"local\"},\"action\":\"READ\"}"
 ```
@@ -165,7 +165,7 @@ Expected: `"decision": "DENY"`, `"matched_policy_id": null` (no T1 rule loaded -
 ### Update a policy
 
 ```cmd
-curl -X PUT http://127.0.0.1:8443/policies/pol-003 ^
+curl -X PUT http://127.0.0.1:9090/policies/pol-003 ^
   -H "Content-Type: application/json" ^
   -d "{\"id\":\"pol-003\",\"name\":\"T2 Allow with Log (Updated)\",\"description\":\"Updated description\",\"priority\":3,\"conditions\":[{\"attribute\":\"classification\",\"op\":\"eq\",\"value\":\"T2\"}],\"action\":\"ALLOW_WITH_LOG\",\"enabled\":true,\"version\":1}"
 ```
@@ -175,7 +175,7 @@ Expected: HTTP 200 with the updated policy (version incremented by the store).
 ### Delete a policy
 
 ```cmd
-curl -X DELETE http://127.0.0.1:8443/policies/pol-003
+curl -X DELETE http://127.0.0.1:9090/policies/pol-003
 ```
 
 Expected: HTTP 204 No Content.
@@ -183,7 +183,7 @@ Expected: HTTP 204 No Content.
 ### Get a single policy
 
 ```cmd
-curl http://127.0.0.1:8443/policies/pol-001
+curl http://127.0.0.1:9090/policies/pol-001
 ```
 
 Expected: JSON object for `pol-001`.
@@ -249,8 +249,8 @@ Windows Service. The full interception pipeline starts: file-system
 monitoring (via the `notify` crate), Policy Engine client, and
 audit log writer. Press `Ctrl+C` to stop.
 
-> **Note:** The agent requires the Policy Engine to be running for online
-> evaluation. If the engine is not reachable, the agent operates in offline
+> **Note:** The agent requires dlp-server to be running for online
+> evaluation. If dlp-server is not reachable, the agent operates in offline
 > mode with fail-closed semantics (DENY for T3/T4 on cache miss).
 
 > **Console mode does not auto-spawn the UI.** The `dlp-user-ui` subprocess
@@ -299,13 +299,13 @@ Get-Content C:\ProgramData\DLP\logs\audit.jsonl | ForEach-Object { $_ | ConvertF
 1. With both the engine and agent running, send an evaluate request to
    confirm online operation.
 
-2. **Stop the Policy Engine** (Ctrl+C in Terminal 1).
+2. **Stop dlp-server** (Ctrl+C in Terminal 1).
 
 3. The agent detects the engine is unreachable and enters **offline mode**.
    Observe the log output:
 
    ```log
-   WARN  Policy Engine unreachable -- entering offline mode
+   WARN  dlp-server unreachable -- entering offline mode
    ```
 
 4. In offline mode:
@@ -313,11 +313,11 @@ Get-Content C:\ProgramData\DLP\logs\audit.jsonl | ForEach-Object { $_ | ConvertF
    - **T1/T2 resources** with no cache entry are **ALLOWED** (default-allow for non-sensitive).
    - Cached decisions continue to be served until TTL expires (default 60 s).
 
-5. **Restart the Policy Engine**. The agent's heartbeat loop (30 s interval)
-   detects the engine is back and transitions to online mode:
+5. **Restart dlp-server**. The agent's heartbeat loop (30 s interval)
+   detects the server is back and transitions to online mode:
 
    ```log
-   INFO  Policy Engine reachable -- resuming online mode
+   INFO  dlp-server reachable -- resuming online mode
    ```
 
 ---
@@ -779,13 +779,13 @@ cargo test
 ### Policy Engine only (33 tests: 20 unit + 13 integration)
 
 ```cmd
-cargo test -p policy-engine
+cargo test -p dlp-server
 ```
 
 ### Policy Engine integration tests only (13 tests)
 
 ```cmd
-cargo test -p policy-engine --test integration
+cargo test -p dlp-server --test integration
 ```
 
 ### DLP Agent only (105 tests: 78 unit + 20 integration + 7 negative)
@@ -833,7 +833,7 @@ If file operations are not appearing in the audit log:
 Error: failed to bind
 ```
 
-Another process is using port 8443. Either stop it or change the port:
+Another process is using port 9090. Either stop it or change the port:
 
 ```cmd
 set BIND_ADDR=127.0.0.1:9443
@@ -867,15 +867,15 @@ set RUST_LOG=debug
 Per-crate filtering:
 
 ```cmd
-set RUST_LOG=policy_engine=debug,dlp_agent=trace
+set RUST_LOG=dlp_server=debug,dlp_agent=trace
 ```
 
-### Agent cannot reach Policy Engine
+### Agent cannot reach dlp-server
 
-- Verify the engine is running: `curl http://127.0.0.1:8443/health`
-- Check that the engine URL in `engine_client.rs` matches the engine's bind address
-  (default: `https://localhost:8443`). Agent-to-Engine communication requires **TLS 1.3**
-  (N-SEC-01). The agent validates the engine certificate against the configured trusted CA
+- Verify dlp-server is running: `curl http://127.0.0.1:9090/health`
+- Check that the server URL in `engine_client.rs` matches dlp-server's bind address
+  (default: `https://localhost:9090`). Agent-to-server communication requires **TLS 1.3**
+  (N-SEC-01). The agent validates the server certificate against the configured trusted CA
   before establishing the HTTPS connection.
 
 ---
@@ -884,7 +884,7 @@ set RUST_LOG=policy_engine=debug,dlp_agent=trace
 
 | Component     | Binary                    | Default Address                       | Config                                 |
 | ------------- | ------------------------- | ------------------------------------- | -------------------------------------- |
-| Policy Engine | `policy-engine.exe`       | `127.0.0.1:8443`                      | `BIND_ADDR`, `POLICY_FILE`, `RUST_LOG` |
+| dlp-server    | `dlp-server.exe`          | `127.0.0.1:9090`                      | `BIND_ADDR`, `POLICY_FILE`, `RUST_LOG` |
 | DLP Agent     | `dlp-agent.exe --console` | N/A (local service)                   | `RUST_LOG`                             |
 | DLP User UI   | `dlp-user-ui.exe`         | N/A (spawned by agent)                | `RUST_LOG`, `DLP_UI_BINARY`            |
 | Audit Log     | N/A (file output)         | `C:\ProgramData\DLP\logs\audit.jsonl` | Hardcoded path (Phase 1)               |
@@ -893,7 +893,7 @@ set RUST_LOG=policy_engine=debug,dlp_agent=trace
 
 ## 15. Phase 1 Endpoint Reference
 
-### Policy Engine
+### dlp-server
 
 | Method   | Path                     | Description                           |
 | -------- | ------------------------ | ------------------------------------- |

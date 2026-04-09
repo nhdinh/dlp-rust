@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "DLP central management server — audit store, agent registry, SIEM relay, admin API"
+description = "DLP central management and policy engine server — audit store, agent registry, ABAC engine, SIEM relay, admin API"
 
 [dependencies]
 # Shared types
@@ -14,6 +14,9 @@ dlp-common = { path = "../dlp-common" }
 axum = { version = "0.7", features = ["macros"] }
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["trace", "cors"] }
+
+# HTTP types
+http = "1"
 
 # Async runtime
 tokio = { workspace = true }
@@ -29,11 +32,17 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 jsonwebtoken = "9"
 bcrypt = "0.16"
 
-# HTTP client (SIEM relay, policy sync, alerts)
+# HTTP client (SIEM relay, alerts)
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
 # Email (alert router)
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+
+# Hot-reload / file watching
+notify = { workspace = true }
+
+# LDAP client (AD integration)
+ldap3 = { workspace = true }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
@@ -51,8 +60,20 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Concurrency
 parking_lot = { workspace = true }
+dashmap = "6"
+
+# Async utilities
+async-trait = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Registry",
+] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"], default-features = false }
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 tempfile = "3"
+axum = { version = "0.7", features = ["macros"] }
