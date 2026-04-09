@@ -7,7 +7,7 @@
 **Status:** Draft
 **Parent Document:** `docs/SRS.md`
 **Changelog (v1.1):** Added EP-07 Agent-as-Service (US-A1–A8); added US-X×2 (On-Demand Scan, Agent Config); fixed story point totals; added terminology note
-**Changelog (v1.2):** Updated US-A2, US-A4, US-A8 for multi-session UI model; updated US-10 with SMB impersonation identity resolution (F-AGT-19); added detailed Phase 1 task breakdowns; Phase 1 scope confirmed: EP-01, EP-02, EP-03, EP-04, EP-07 only. EP-05 deferred. EP-06 in Phase 4. EP-08 in Phase 5.
+**Changelog (v1.2):** Updated US-A2, US-A4, US-A8 for multi-session UI model; updated US-10 with SMB impersonation identity resolution (F-AGT-19); added detailed Phase 1 task breakdowns; Phase 1 scope confirmed: EP-01, EP-02, EP-03, EP-04, EP-07 only. EP-05 removed from scope (admin interface is dlp-admin-cli + dlp-server REST API). EP-06 in Phase 4. EP-08 in Phase 5.
 
 ---
 
@@ -935,7 +935,7 @@ _As the DLP system, we need a central management server (dlp-server) that owns a
 
 **As** dlp-server
 **I want** to maintain a registry of all connected agents so that the admin can see which endpoints are online
-**So that** the dlp-admin-portal can display agent health in the dashboard
+**So that** the admin can view agent health via the dlp-server REST API
 
 **Acceptance Criteria:**
 
@@ -943,7 +943,7 @@ _As the DLP system, we need a central management server (dlp-server) that owns a
 - [ ] dlp-server adds agent to the registry and returns the agent's configuration
 - [ ] Agents send heartbeat to GET /agents/{id}/heartbeat every 30 seconds
 - [ ] dlp-server marks an agent offline if no heartbeat is received for 3 consecutive intervals (90 seconds)
-- [ ] dlp-admin-portal calls GET /agents to display agent health dashboard (online/offline/degraded count, per-agent detail)
+- [ ] GET /agents returns agent health dashboard data (online/offline/degraded count, per-agent detail)
 
 ---
 
@@ -989,7 +989,7 @@ _As the DLP system, we need a central management server (dlp-server) that owns a
 **Story Points:** 8 | **MoSCoW:** Must
 
 **As** dlp-server
-**I want** to validate admin credentials and issue JWT sessions so that the dlp-admin-portal has a secure auth backend
+**I want** to validate admin credentials and issue JWT sessions so that dlp-admin has a secure auth backend
 **So that** only authenticated admins can manage policies, view logs, or approve exceptions
 
 **Acceptance Criteria:**
@@ -998,7 +998,7 @@ _As the DLP system, we need a central management server (dlp-server) that owns a
 - [ ] TOTP validation (RFC 6238) accepts any compliant authenticator app
 - [ ] On success: dlp-server returns a JWT (8-hour expiry) and a refresh token
 - [ ] dlp-server stores admin credentials using PBKDF2 + salt (not plaintext)
-- [ ] All subsequent dlp-admin-portal API calls must include the JWT bearer token
+- [ ] All subsequent admin API calls must include the JWT bearer token
 - [ ] Every admin API call is logged with admin identity, action, timestamp, and client IP
 
 ---
@@ -1031,7 +1031,7 @@ _As the DLP system, we need a central management server (dlp-server) that owns a
 
 **Acceptance Criteria:**
 
-- [ ] When a policy is created or updated via dlp-admin-portal, dlp-server writes it to the policy DB
+- [ ] When a policy is created or updated via the dlp-server REST API, dlp-server writes it to the policy DB
 - [ ] dlp-server pushes the updated policy set to all connected policy-engine replicas
 - [ ] New policy-engine replicas pull the full policy set on startup from dlp-server
 - [ ] Policy sync completes within 5 seconds of policy change
@@ -1157,7 +1157,7 @@ This table maps all Phase 1 implementation tasks to their stories, deliverable p
 
 ## Summary
 
-> **Note:** EP-05 (Administrative UI) is **deferred** to a later phase. Phase 1–4 scope is shaded.
+> **Note:** EP-05 (Administrative UI) is out of scope. Phase 1–4 scope is shaded. Admin management is via `dlp-admin-cli` and the dlp-server REST API.
 
 | Epic                                 | Story Points | MoSCoW | Phase        |
 | ------------------------------------ | ------------ | ------ | ------------ |
@@ -1165,7 +1165,7 @@ This table maps all Phase 1 implementation tasks to their stories, deliverable p
 | EP-02: Endpoint Enforcement          | 40           | Must   | Phase 1–4    |
 | EP-03: Policy Engine Operations      | 26           | Must   | Phase 1–4    |
 | EP-04: Audit & Compliance            | 21           | Must   | Phase 1–4    |
-| EP-05: Administrative UI             | 24           | Must   | **Deferred** |
+| EP-05: Administrative UI             | 24           | Must   | **Out of Scope** |
 | EP-06: Deployment & Operations       | 21           | Should | Phase 4      |
 | EP-07: Agent-as-Service Operations   | 44           | Must   | Phase 1–4    |
 | EP-08: dlp-server Central Management | 42           | Must   | Phase 5      |
@@ -1173,7 +1173,7 @@ This table maps all Phase 1 implementation tasks to their stories, deliverable p
 
 ### Sprint Planning Guide (18-Sprint Increment)
 
-> **Note:** dlp-admin-portal (EP-05: US-05, US-21–27, US-X Agent Config) is **deferred** to a later phase. Sprint planning below reflects Phase 1–4 scope only. Audit logs are read directly from the local JSON file during Phase 1.
+> **Note:** EP-05 (Administrative UI) is out of scope. Sprint planning below reflects Phase 1–4 scope only. Audit logs are read directly from the local JSON file during Phase 1. Admin management is via `dlp-admin-cli` and the dlp-server REST API.
 
 | Sprint    | Stories             | Tasks                        | Focus                                                                                                              |
 | --------- | ------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------ |

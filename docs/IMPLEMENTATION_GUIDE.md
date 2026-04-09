@@ -16,10 +16,9 @@ The project is a Cargo workspace with the following crates:
 | `policy-engine/`       | ABAC evaluator, HTTPS/REST server, AD LDAP client, policy cache         | 1            |
 | `dlp-agent/`           | Windows Service: file interception, policy enforcement                  | 1            |
 | `dlp-user-ui/`         | iced endpoint UI: toasts, dialogs, clipboard, tray                      | 1            |
-| `dlp-admin-portal/`    | iced admin UI: policy CRUD, dashboard, audit viewer, TOTP               | **Deferred** |
 | `dlp-server/`          | Central HTTP server: audit store, SIEM relay, admin auth, policy sync   | **Phase 5**  |
 
-> **Note:** `dlp-admin-portal/` is deferred to a later phase. During Phase 1–4, audit logs are read directly from the local append-only JSON file.
+> **Note:** During Phase 1–4, audit logs are read directly from the local append-only JSON file. SIEM relay activates when dlp-server is deployed in Phase 5.
 
 ## Key Libraries
 
@@ -68,4 +67,3 @@ See SRS.md §8 (Implementation Plan) for the full 5-phase task breakdown.
 ### Phase 5 — dlp-server
 
 - `dlp-server/`: audit store, SIEM relay, admin auth (TOTP+JWT), policy sync
-- `dlp-admin-portal/`: admin UI (policy CRUD, audit viewer, TOTP)

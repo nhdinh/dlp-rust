@@ -690,7 +690,7 @@ Once `dlp-user-ui.exe` is running in your session, look for the DLP tray
 icon (blue square) in the Windows notification area (system tray). Right-click
 it to see the context menu:
 
-- **Show Portal** -- opens the admin portal URL (Phase 5 target)
+- **Show Portal** -- opens the dlp-server admin URL (Phase 5)
 - **Agent Status: Running** -- read-only status label
 - **Exit** -- closes the UI (agent will respawn it within 15 seconds)
 

@@ -7,11 +7,11 @@
 **Status:** Draft
 **Author:** Principal Security Architect
 **Changelog (v1.1):** Added Agent-as-Service architecture (§3.2, §3.3), IPC protocol (§3.4), updated crate structure (§5.2), new NFRs (§4.7), updated ACs (§9.6); fixed story point totals; added F-ADM-12; fixed ISO27001 x-ref; fixed DPAPI spec; fixed pipe name; added terminology note
-**Changelog (v1.2):** Phase 1 scope revised: no minifilter driver; `notify`-based file interception (F-AGT-05); clipboard hooks (F-AGT-17); `dlp-agent` runs standalone (local JSON audit, Phase 5 adds dlp-server); `dlp-user-ui` moved from Phase 2 to Phase 1; `dlp-admin-portal` deferred to later phase; `dlp-server` deferred to Phase 5; ETW bypass detection (F-AGT-18) superseded — SMB mount detection via MPR polling added (F-AGT-14, Phase 3); updated §1.2 scope, §3.2 F-AGT-05/F-AGT-17, §5.2 crate structure, §8 Phase 1–2 task tables, §9 acceptance criteria
+**Changelog (v1.2):** Phase 1 scope revised: no minifilter driver; `notify`-based file interception (F-AGT-05); clipboard hooks (F-AGT-17); `dlp-agent` runs standalone (local JSON audit, Phase 5 adds dlp-server); `dlp-user-ui` moved from Phase 2 to Phase 1; `dlp-server` deferred to Phase 5; ETW bypass detection (F-AGT-18) superseded — SMB mount detection via MPR polling added (F-AGT-14, Phase 3); updated §1.2 scope, §3.2 F-AGT-05/F-AGT-17, §5.2 crate structure, §8 Phase 1–2 task tables, §9 acceptance criteria
 
 **Changelog (v1.3):** Added F-AGT-19: SMB impersonation identity resolution — Agent resolves remote user's SID from SMB impersonation context using `QuerySecurityContextToken` / `ImpersonateSelf` + `GetTokenInformation`; audit events include `access_context` field; added `identity.rs` to crate structure; updated F-AUD-02 schema; added SMB Impersonation glossary entry; restructured Phase 1 task table with T-01–T-46 IDs matching `docs/plans/user-stories.md`; Phase 1 expanded to 18 sprints; added Phase 1 task breakdowns to each Epic in user-stories.md
 
-**Changelog (v1.4):** Clarified F-ADM-01 scope (Phase 1: direct JSON edits or REST API; dlp-admin-portal deferred to Phase 5); consolidated N-SEC-06 and N-SEC-11 — N-SEC-11 was an alias for the process DACL control, now cross-referenced; N-SEC-12 signed pipe token deferred to Phase 5 backlog; corrected Assumption #8 (no NTFS extended attributes used for classification); aligned log rotation across all docs (50 MB size-based, not event-count); N-SEC-01 explicitly requires TLS 1.3 for Agent-to-Engine; dlp-user-ui corrected as separate workspace crate in §5.2; Phase 2 REST CRUD task (P2-T12) explicitly listed.
+**Changelog (v1.4):** Clarified F-ADM-01 scope (Phase 1: direct JSON edits or REST API); consolidated N-SEC-06 and N-SEC-11 — N-SEC-11 was an alias for the process DACL control, now cross-referenced; N-SEC-12 signed pipe token deferred to Phase 5 backlog; corrected Assumption #8 (no NTFS extended attributes used for classification); aligned log rotation across all docs (50 MB size-based, not event-count); N-SEC-01 explicitly requires TLS 1.3 for Agent-to-Engine; dlp-user-ui corrected as separate workspace crate in §5.2; Phase 2 REST CRUD task (P2-T12) explicitly listed.
 
 ---
 
@@ -49,7 +49,7 @@ The system shall:
 - Emit structured JSON audit logs (Phase 1: local append-only JSON file; Phase 5: dlp-server relay to SIEM)
 - Provide an iced-based endpoint UI (dlp-user-ui, spawned by the Agent) for all user-facing interactions — implemented in Phase 1
 - dlp-agent operates standalone in Phase 1 without dlp-server; dlp-server is introduced in Phase 5
-- dlp-admin-portal is deferred to a later phase (audit logs are read directly from the local JSON file during Phase 1)
+- Admin interface is `dlp-admin-cli` (CLI only); audit logs are read directly from the local JSON file during Phase 1
 
 **Out of Scope:**
 
@@ -184,7 +184,7 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 
 | ID       | Requirement                                                                                                                                                                                                 | Priority |
 | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| F-ADM-01 | Admin shall create, read, update, and delete ABAC policies via the administrative UI (dlp-admin-portal, Phase 5). During Phase 1–4, policy management is performed via direct JSON edits to `policies.json` or via the Policy Engine REST API (`GET/POST/PUT/DELETE /policies`). | Must     |
+| F-ADM-01 | Admin shall create, read, update, and delete ABAC policies via direct JSON edits to `policies.json` or via the Policy Engine REST API (`GET/POST/PUT/DELETE /policies`). | Must     |
 | F-ADM-02 | Admin shall assign data classification (T1–T4) to files and folders                                                                                                                                         | Must     |
 | F-ADM-03 | Admin shall view real-time system health (Policy Engine uptime, agent connectivity, policy hit rates)                                                                                                       | Must     |
 | F-ADM-04 | Admin shall configure alert thresholds and notification recipients                                                                                                                                          | Must     |
@@ -332,7 +332,7 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 | F-AUD-06 | Audit log integrity shall be protected by append-only file storage or equivalent                                                                                                                    | Must     |
 | F-AUD-07 | DLP Admin shall be able to query and export audit events from the administrative UI                                                                                                                 | Must     |
 | F-AUD-08 | Policy violation events (DENY_WITH_ALERT) shall trigger immediate alert to configured recipients via dlp-server                                                                                     | Must     |
-| F-AUD-09 | dlp-server shall emit an audit event for every administrative action performed via dlp-admin-portal (identity, action, timestamp, resource)                                                         | Must     |
+| F-AUD-09 | dlp-server shall emit an audit event for every administrative action (identity, action, timestamp, resource)                                                         | Must     |
 
 ### 3.8 dlp-server Features
 
@@ -343,8 +343,8 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 | F-SRV-03 | dlp-server shall forward audit events to SIEM (Splunk HEC / ELK HTTP Ingest) in batches (max 1s latency, max 1000 events/batch) | Must     |
 | F-SRV-04 | dlp-server shall maintain an agent registry: agent_id, hostname, IP, OS version, agent version, last_heartbeat, status          | Must     |
 | F-SRV-05 | dlp-server shall receive agent heartbeats over HTTPS and mark agents offline after 90 seconds of no heartbeat                   | Must     |
-| F-SRV-06 | dlp-server shall expose a REST API for the dlp-admin-portal: GET /agents, GET /audit-events, policy CRUD, exception approval    | Must     |
-| F-SRV-07 | dlp-server shall act as the TOTP validation and JWT issuance server for dlp-admin-portal sessions                               | Must     |
+| F-SRV-06 | dlp-server shall expose a REST API: GET /agents, GET /audit-events, policy CRUD, exception approval    | Must     |
+| F-SRV-07 | dlp-server shall act as the TOTP validation and JWT issuance server for admin sessions                               | Must     |
 | F-SRV-08 | dlp-server shall store exception/override approval records (approver, timestamp, duration, justification)                       | Should   |
 | F-SRV-09 | dlp-server shall sync policies to all policy-engine replicas on policy create/update                                            | Must     |
 | F-SRV-10 | dlp-server shall push agent configuration changes to selected dlp-agents                                                        | Should   |
@@ -459,12 +459,6 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 
 ```
                                     ┌──────────────────────────────┐
-                                    │     dlp-admin-portal         │
-                                    │     (Rust / iced)            │
-                                    │     dlp-admin only           │
-                                    └──────────────┬───────────────┘
-                                                   │ REST / HTTPS / JWT
-                                    ┌──────────────▼───────────────┐
                                     │       dlp-server              │
                                     │  (axum HTTP, Rust)             │
                                     │  ┌─────────────────────────┐ │
@@ -526,7 +520,7 @@ dlp-rust/                           # Cargo workspace
 │       ├── engine.rs               # Policy evaluation logic
 │       ├── ad_client.rs            # Active Directory LDAP client
 │       ├── http_server.rs          # HTTPS/REST API server implementation
-│       └── policy_cache.rs         # Local policy cache (synced from dlp-server)
+│       └── policy_store.rs          # JSON file persistence + hot-reload
 │
 ├── dlp-server/                    # NEW — Central management server
 │   ├── Cargo.toml
@@ -541,7 +535,7 @@ dlp-rust/                           # Cargo workspace
 │       ├── admin_auth.rs        # TOTP validation, JWT issuance/refresh
 │       ├── admin_audit.rs      # Admin action audit log
 │       ├── config_push.rs       # Agent configuration push
-│       └── admin_api.rs        # REST API consumed by dlp-admin-portal
+│       └── admin_api.rs        # REST API for administrative operations
 │
 ├── dlp-agent/                      # Endpoint enforcement (Windows Service)
 │   ├── Cargo.toml
@@ -586,15 +580,6 @@ dlp-rust/                           # Cargo workspace
 │           ├── clipboard.rs        # Clipboard read/write
 │           └── health_monitor.rs  # Pings Agent via Pipe 3
 │
-└── dlp-admin-portal/             # Administrative UI
-    ├── Cargo.toml
-    ├── src/
-    │   ├── main.rs
-    │   ├── policies.rs             # Policy management panel
-    │   ├── dashboard.rs           # Agent health dashboard (GET /agents from dlp-server)
-    │   ├── incidents.rs          # Incident log viewer (GET /audit-events from dlp-server)
-    │   ├── exceptions.rs        # Exception approval workflow
-    │   └── api.rs               # dlp-server REST client (bearer JWT)
 ```
 
 ### 5.3 Data Flow
@@ -626,13 +611,12 @@ dlp-rust/                           # Cargo workspace
 
 --- Policy CRUD flow ---
 
-A1. dlp-admin logs into dlp-admin-portal (username + password + TOTP)
-A2. dlp-admin-portal → dlp-server POST /auth/login (TOTP validated)
+A1. dlp-admin authenticates to dlp-server (username + password + TOTP)
+A2. dlp-server POST /auth/login validates TOTP
 A3. dlp-server returns JWT (8h); all subsequent API calls carry bearer token
-A4. Admin creates policy via dlp-admin-portal
-A5. dlp-admin-portal → dlp-server POST /policies
-A6. dlp-server writes to policy DB, syncs to all policy-engine replicas
-A7. dlp-server emits admin_audit event (admin identity, action, timestamp)
+A4. Admin creates policy via dlp-server REST API POST /policies
+A5. dlp-server writes to policy DB, syncs to all policy-engine replicas
+A6. dlp-server emits admin_audit event (admin identity, action, timestamp)
 
 --- sc stop flow ---
 
@@ -732,7 +716,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 ### Phase 1 — Foundation + dlp-user-ui (Weeks 1–18)
 
-**Goal:** Workspace, shared types, Policy Engine, dlp-agent (standalone, API hooks, clipboard, local audit, IPC, UI spawner), dlp-user-ui (iced, IPC client, dialogs). dlp-admin-portal deferred to a later phase. dlp-agent operates without dlp-server in this phase.
+**Goal:** Workspace, shared types, Policy Engine, dlp-agent (standalone, API hooks, clipboard, local audit, IPC, UI spawner), dlp-user-ui (iced, IPC client, dialogs). dlp-agent operates without dlp-server in this phase.
 
 > **Note:** Task IDs (T-01 through T-46) match `docs/plans/user-stories.md` which is the authoritative Phase 1 task reference. Audit logs are read directly from the local append-only JSON file during Phase 1. SIEM relay (Splunk HEC / ELK) deferred to Phase 5 (dlp-server).
 
@@ -803,23 +787,22 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 ### Phase 2 — Process Protection + IPC Hardening (Weeks 7–12)
 
-**Goal:** dlp-user-ui is built in Phase 1. Phase 2 focuses on process hardening and remaining integration work. dlp-admin-portal is deferred to a later phase.
+**Goal:** dlp-user-ui is built in Phase 1. Phase 2 focuses on process hardening and remaining integration work.
 
 | ID     | Task | Deliverable | Priority |
 | ------ | ---- | ----------- | -------- |
 | P2-T03 | Process protection: DACL hardening — deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to `Everyone` SID on Agent and UI processes | `dlp-agent/src/protection.rs` | Must |
 | P2-T04 | Implement mutual health monitoring: Agent pings UI (Pipe 2 every 5s, respawn if no pong in 15s); UI pings Agent (Pipe 3 every 5s, exit if no message in 15s) | `dlp-agent/src/`, `dlp-user-ui/src/` | Must |
-| P2-T10 | dlp-user-ui: double-click tray icon → open dlp-admin-portal (dlp-admin-portal deferred; stub shows "Coming Soon" for now) | `dlp-user-ui/src/tray.rs` | Should |
 | P2-T11 | dlp-agent: service stop shutdown sequence — STOP_PENDING → signal UI → password dialog → clean shutdown | `dlp-agent/src/service.rs` | Must |
 | P2-T12 | Policy Engine: REST API for policy CRUD (GET /policies, POST /policies, PUT /policies/{id}, DELETE /policies/{id}) | `policy-engine/src/rest_api.rs` | Must |
 | P2-T13 | Write integration tests: Agent ↔ Policy Engine end-to-end | `dlp-agent/tests/` | Must |
 | P2-T14 | Write integration tests: all ABAC policies from ABAC_POLICIES.md | `policy-engine/tests/` | Must |
 
-> **Note:** The IPC servers (T-31) and UI spawner (T-30) were originally Phase 2 tasks but are implemented in Phase 1 alongside the iced UI (T-39–T-46). dlp-admin-portal (policy CRUD, exception workflow) is deferred to a later phase.
+> **Note:** The IPC servers (T-31) and UI spawner (T-30) were originally Phase 2 tasks but are implemented in Phase 1 alongside the iced UI (T-39–T-46).
 
-### Phase 3 — API Hooks + Admin Portal Preparation (Weeks 13–18)
+### Phase 3 — API Hooks (Weeks 13–18)
 
-**Goal:** API hooks for file interception, dlp-admin-portal TOTP preparation. dlp-user-ui is fully built in Phase 1.
+**Goal:** API hooks for file interception. dlp-user-ui is fully built in Phase 1.
 
 | ID     | Task | Deliverable | Priority |
 | ------ | ---- | ----------- | -------- |
@@ -827,11 +810,9 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | P3-T04 | Write end-to-end tests: clipboard detection → policy decision → local audit log | `dlp-agent/tests/` | Must |
 | P3-T05 | Write end-to-end tests: file interception → policy decision → local audit log | `dlp-agent/tests/` | Must |
 
-> **Note:** P3-T01 (exception approval workflow) and P3-T02 (TOTP enrollment + login) are part of dlp-admin-portal, which is deferred to a later phase.
-
 ### Phase 4 — Production Hardening (Weeks 19–24)
 
-**Goal:** MSI installer packaging, OPERATIONAL.md runbook, and formal security audit. dlp-admin-portal (MFA, exception workflow) is deferred to Phase 5.
+**Goal:** MSI installer packaging, OPERATIONAL.md runbook, and formal security audit.
 
 | ID     | Task                                                               | Deliverable                | Priority |
 | ------ | ------------------------------------------------------------------ | -------------------------- | -------- |
@@ -850,7 +831,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 ### Phase 5 — dlp-server (Weeks 25–30)
 
-**Goal:** Introduce dlp-server as the central management hub; replace local JSON audit in dlp-agent with dlp-server ingestion; dlp-admin-portal calls dlp-server REST API; replace policy-engine local policy store with dlp-server sync.
+**Goal:** Introduce dlp-server as the central management hub; replace local JSON audit in dlp-agent with dlp-server ingestion; replace policy-engine local policy store with dlp-server sync.
 
 | ID     | Task                                                                       | Deliverable                          | Priority |
 | ------ | -------------------------------------------------------------------------- | ------------------------------------ | -------- |
@@ -865,9 +846,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | P5-T09 | Implement admin REST API: /agents, /audit-events, /policies, /exceptions | `dlp-server/src/admin_api.rs`         | Must     |
 | P5-T10 | Update dlp-agent: send audit to dlp-server (remove direct SIEM)            | `dlp-agent/src/audit_emitter.rs`      | Must     |
 | P5-T11 | Update dlp-agent: send heartbeats to dlp-server                           | `dlp-agent/src/server_client.rs`     | Must     |
-| P5-T12 | Update dlp-admin-portal: use dlp-server REST API (remove direct policy-engine calls) | `dlp-admin-portal/src/api.rs`   | Must     |
 | P5-T13 | Implement config push: agent configuration management                       | `dlp-server/src/config_push.rs`      | Should   |
-| P5-T14 | Update policy-engine: replace policy_store.rs with policy_cache.rs (sync from dlp-server) | `policy-engine/src/`            | Must     |
 | P5-T15 | Load test: 50k agent heartbeats, 10k audit events/sec                    | Load test report                     | Must     |
 
 ---
@@ -914,38 +893,26 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 - [ ] On 3 consecutive incorrect password attempts → event is logged, service cancels stop, returns to RUNNING
 - [ ] UI terminates cleanly within 5 seconds after stop confirmation
 
-### 9.5 dlp-admin-portal (Deferred to Later Phase)
-
-> dlp-admin-portal (policy CRUD, audit viewer, exception workflow, TOTP auth) is **deferred** to a later phase. During Phase 1, audit logs are read directly from the local append-only JSON file. The ACs below represent the target state.
-
-- [ ] DLP Admin can create, edit, delete, and view ABAC policies
-- [ ] DLP Admin can assign T1–T4 classification to a file/folder
-- [ ] DLP Admin can view agent health: connected agents, offline count, agent version via dlp-server GET /agents
-- [ ] DLP Admin can query and export audit logs filtered by date, user, and event type via dlp-server GET /audit-events
-- [ ] DLP Admin receives real-time alert for every T3/T4 DENY_WITH_ALERT event
-- [ ] Admin login requires username + password + TOTP; dlp-server issues JWT on success
-- [ ] All dlp-admin-portal API calls carry JWT bearer token from dlp-server
-
-### 9.6 Security
+### 9.5 Security
 
 - [ ] All network traffic is TLS 1.3 (no downgrade)
 - [ ] HTTPS API uses mutual TLS (mTLS)
-- [ ] DLP Admin MFA is enforced (TOTP validated by dlp-server) — **deferred with dlp-admin-portal**
+- [ ] DLP Admin MFA is enforced (TOTP validated by dlp-server) — **Phase 5**
 - [ ] Audit logs are immutable (append-only, in dlp-server)
 - [ ] Named pipe password traffic is protected by DPAPI (CryptProtectData)
 - [ ] No credentials stored in plaintext
 - [ ] Process DACL denies PROCESS_TERMINATE, PROCESS_CREATE_THREAD, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE to `Everyone` SID on both Agent and UI processes; SYSTEM retains full access
-- [ ] dlp-server uses PBKDF2 + salt for admin credential storage — **deferred with dlp-admin-portal**
+- [ ] dlp-server uses PBKDF2 + salt for admin credential storage — **Phase 5**
 - [ ] dlp-server audit store has no update or delete API exposed
 
-### 9.7 Compliance
+### 9.6 Compliance
 
 - [ ] dlp-server receives audit events from all connected agents over HTTPS
 - [ ] dlp-server writes audit events to append-only storage
 - [ ] dlp-server forwards audit events to SIEM in batches (≤1s latency, ≤1000 events/batch)
 - [ ] dlp-server marks agent offline if heartbeat missed for 3 intervals (90 seconds)
 - [ ] dlp-server routes DENY_WITH_ALERT to email (SMTP/TLS) and webhook (HTTPS/TLS)
-- [ ] Policy create/update via dlp-admin-portal syncs to all policy-engine replicas via dlp-server
+- [ ] Policy create/update via dlp-server REST API syncs to all policy-engine replicas
 - [ ] dlp-server issues JWT on admin login (TOTP validated); all admin API calls are logged with admin identity
 - [ ] dlp-server is horizontally scalable (stateless replicas)
 - [ ] ISO 27001 A.5 through A.16 controls are implemented as documented in §7

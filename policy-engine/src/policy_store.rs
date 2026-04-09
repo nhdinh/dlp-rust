@@ -11,13 +11,7 @@
 //!
 //! File-system notifications via `notify` detect external policy file changes.
 //! On a modify event the store reloads and re-validates the file within 5 s.
-//!
-//! ## Future: dlp-server Sync (P5-T14)
-//!
-//! The policy engine currently operates standalone with file-based hot-reload.
-//! A future task (P5-T14) will add periodic synchronization from dlp-server's
-//! `GET /policies` endpoint, allowing centralized policy management while
-//! retaining the local file as a fallback.
+//! The policy store operates standalone with file-based persistence and hot-reload.
 
 use std::fs;
 use std::path::{Path, PathBuf};

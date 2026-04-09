@@ -36,7 +36,7 @@ pub enum EventType {
     ConfigChange,
     /// A user session logged off.
     SessionLogoff,
-    /// An administrative action was performed via the dlp-admin-portal API.
+    /// An administrative action was performed via the dlp-server admin API.
     AdminAction,
     /// A dlp-agent service stop was attempted and failed after 3 wrong passwords.
     ServiceStopFailed,

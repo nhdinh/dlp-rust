@@ -1,7 +1,7 @@
 //! System tray icon and context menu (T-46).
 //!
 //! Shows a tray icon with status, and a context menu:
-//! - "Show Portal" -- opens the DLP admin portal URL
+//! - "Show Portal" -- opens the dlp-admin-cli admin interface URL (Phase 5: dlp-server REST API)
 //! - "Agent Status: Running" (disabled, non-interactive label)
 //! - Separator
 //! - "Exit" -- closes the UI
@@ -122,9 +122,12 @@ pub fn apply_pending_status() {
     }
 }
 
-/// Opens the DLP admin portal URL in the default browser.
+/// Opens the DLP admin interface URL in the default browser.
+///
+/// The admin interface is `dlp-admin-cli` (CLI only). In Phase 5, this URL
+/// will point to the dlp-server REST API endpoint for administrative operations.
 pub fn open_portal() {
-    tracing::info!("Show Portal clicked -- Phase 5 target");
+    tracing::info!("Show Portal clicked -- dlp-admin-cli is the admin interface (no web portal)");
     unsafe {
         let _ = ShellExecuteW(
             None,
