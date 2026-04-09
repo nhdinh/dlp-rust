@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 
 use crate::cache::{self, Cache};
 use crate::engine_client::{EngineClient, EngineClientError};
+use crate::server_client::ServerClient;
 
 /// Default heartbeat interval for reconnection attempts.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -41,6 +42,9 @@ pub struct OfflineManager {
     heartbeat_interval: Duration,
     /// Machine hostname, included in heartbeat probe requests.
     machine_name: Option<String>,
+    /// Optional client for sending heartbeats to dlp-server.
+    /// When set, each heartbeat iteration also pings the central server.
+    server_client: Option<ServerClient>,
 }
 
 impl OfflineManager {
@@ -48,8 +52,9 @@ impl OfflineManager {
     ///
     /// # Arguments
     ///
-    /// * `client` — the HTTPS client to the Policy Engine
-    /// * `cache` — the shared policy decision cache
+    /// * `client` -- the HTTPS client to the Policy Engine
+    /// * `cache` -- the shared policy decision cache
+    /// * `machine_name` -- optional hostname for heartbeat probe requests
     pub fn new(client: EngineClient, cache: Arc<Cache>, machine_name: Option<String>) -> Self {
         Self {
             online: Arc::new(AtomicBool::new(true)),
@@ -57,6 +62,7 @@ impl OfflineManager {
             client,
             heartbeat_interval: HEARTBEAT_INTERVAL,
             machine_name,
+            server_client: None,
         }
     }
 
@@ -74,7 +80,18 @@ impl OfflineManager {
             client,
             heartbeat_interval: interval,
             machine_name,
+            server_client: None,
         }
+    }
+
+    /// Attaches a `ServerClient` for sending heartbeats to dlp-server.
+    ///
+    /// When set, the heartbeat loop will also call
+    /// `server_client.send_heartbeat()` every iteration.
+    #[must_use]
+    pub fn with_server_client(mut self, sc: ServerClient) -> Self {
+        self.server_client = Some(sc);
+        self
     }
 
     /// Returns `true` if the Policy Engine is currently considered reachable.
@@ -148,6 +165,17 @@ impl OfflineManager {
                 _ = shutdown.changed() => {
                     debug!("heartbeat loop shutting down");
                     return;
+                }
+            }
+
+            // Best-effort heartbeat to dlp-server (independent of
+            // Policy Engine online/offline state).
+            if let Some(ref sc) = self.server_client {
+                if let Err(e) = sc.send_heartbeat().await {
+                    debug!(
+                        error = %e,
+                        "dlp-server heartbeat failed (best-effort)"
+                    );
                 }
             }
 

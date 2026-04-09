@@ -178,6 +178,33 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+#[cfg(windows)]
+use crate::server_client::AuditBuffer;
+
+/// Global audit buffer for relaying events to dlp-server.
+///
+/// Set once during startup via [`set_audit_buffer`]. If not set,
+/// events are only written to the local JSONL file (the primary path).
+/// Server relay is always best-effort.
+#[cfg(windows)]
+static AUDIT_BUFFER: once_cell::sync::OnceCell<Arc<AuditBuffer>> =
+    once_cell::sync::OnceCell::new();
+
+/// Installs the global audit buffer for server relay.
+///
+/// Called once during agent startup after `ServerClient` is created.
+/// Subsequent calls are silently ignored.
+///
+/// # Arguments
+///
+/// * `buffer` -- the shared `AuditBuffer` instance
+#[cfg(windows)]
+pub fn set_audit_buffer(buffer: Arc<AuditBuffer>) {
+    if AUDIT_BUFFER.set(buffer).is_err() {
+        warn!("audit buffer already set -- ignoring duplicate call");
+    }
+}
+
 const DEFAULT_LOG_DIR: &str = r"C:\ProgramData\DLP\logs";
 const DEFAULT_LOG_NAME: &str = "audit.jsonl";
 const DEFAULT_MAX_BYTES: u64 = 50 * 1024 * 1024;
@@ -258,13 +285,22 @@ pub fn emit_audit(ctx: &EmitContext, event: &mut AuditEvent) {
     }
 
     if let Err(e) = EMITTER.emit(event) {
-        // Log but do not propagate — audit failures must never block DLP enforcement.
+        // Log but do not propagate -- audit failures must never block DLP enforcement.
         error!(
             error = %e,
             event_type = ?event.event_type,
             path = %event.resource_path,
-            "audit emission failed — event dropped"
+            "audit emission failed -- event dropped"
         );
+    }
+
+    // Best-effort relay to dlp-server via the audit buffer.
+    // The buffer is flushed periodically by a background task.
+    // If the buffer is not set (server client not configured), this
+    // is a no-op.
+    #[cfg(windows)]
+    if let Some(buffer) = AUDIT_BUFFER.get() {
+        buffer.enqueue(event.clone());
     }
 }
 
