@@ -430,17 +430,107 @@ fn delete_policy_ui() {
     }
 }
 
+// ─── Engine configuration ────────────────────────────────────────────────────
+
+fn show_engine_connection_ui() {
+    let url = crate::engine::resolve_engine_url();
+
+    print!("\x1B[2J\x1B[H");
+    println!("╔══════════════════════════════════════════════════════════╗");
+    println!("║           Policy Engine — Connection Info                  ║");
+    println!("╚══════════════════════════════════════════════════════════╝");
+    println!();
+    println!("  Resolved URL: {url}");
+    println!();
+
+    // Show how it was resolved.
+    if let Ok(env_url) = std::env::var("DLP_POLICY_ENGINE_URL") {
+        if !env_url.is_empty() {
+            println!("  Source: DLP_POLICY_ENGINE_URL env var");
+        }
+    } else {
+        match crate::registry::read_registry_string(
+            r"SOFTWARE\DLP\PolicyEngine",
+            "BindAddr",
+        ) {
+            Ok(addr) if !addr.is_empty() => {
+                println!("  Source: Registry BIND_ADDR = {addr}");
+            }
+            _ => {
+                println!("  Source: auto-detected or default");
+            }
+        }
+    }
+
+    println!();
+    pause("");
+}
+
+fn get_bind_addr_ui() {
+    if let Err(e) = crate::engine::get_bind_addr() {
+        pause_on_error(&format!("{e}"));
+    } else {
+        pause("");
+    }
+}
+
+fn set_bind_addr_ui() {
+    let addr = match read_line("Enter BIND_ADDR (host:port, e.g. 127.0.0.1:8443): ") {
+        Some(s) => s,
+        None => {
+            pause_on_error("Address cannot be empty.");
+            return;
+        }
+    };
+
+    match crate::engine::set_bind_addr(&addr) {
+        Ok(()) => pause(""),
+        Err(e) => pause_on_error(&format!("{e}")),
+    }
+}
+
+fn connect_to_engine_ui() {
+    let addr = match read_line(
+        "Enter engine address (host:port, e.g. 127.0.0.1:9000): ",
+    ) {
+        Some(s) => s,
+        None => {
+            pause_on_error("Address cannot be empty.");
+            return;
+        }
+    };
+
+    let url = crate::engine::addr_to_url(&addr);
+    std::env::set_var("DLP_POLICY_ENGINE_URL", &url);
+    println!();
+    println!("  Connected to: {url}");
+    println!("  (active for this session only)");
+    pause("");
+}
+
 /// ─── Main entry point ────────────────────────────────────────────────────────
 /// Runs the interactive TUI menu loop.
 pub fn run() {
     const MENU_ITEMS: &[MenuItem] = &[
         MenuItem {
-            label: "Change Password",
-            description: "Set or update the dlp-admin password (requires elevation)",
+            label: "Check Policy Engine Status",
+            description: "Ping /health and /ready endpoints",
         },
         MenuItem {
-            label: "Check Policy Engine Status",
-            description: "Ping /health and /ready on the configured Policy Engine URL",
+            label: "Connect to Engine",
+            description: "Set the engine address for this session",
+        },
+        MenuItem {
+            label: "Show Connection Info",
+            description: "Show resolved engine URL and detection source",
+        },
+        MenuItem {
+            label: "Get BIND_ADDR (registry)",
+            description: "Read the configured BIND_ADDR from the registry",
+        },
+        MenuItem {
+            label: "Set BIND_ADDR (registry)",
+            description: "Write a new BIND_ADDR to the registry (requires admin)",
         },
         MenuItem {
             label: "List Policies",
@@ -462,17 +552,25 @@ pub fn run() {
             label: "Delete Policy",
             description: "Delete a policy by ID",
         },
+        MenuItem {
+            label: "Change Password",
+            description: "Set or update the dlp-admin password (requires elevation)",
+        },
     ];
 
     loop {
         match interactive_menu("dlp-admin-cli — Main Menu", MENU_ITEMS) {
-            Ok(0) => change_password(),
-            Ok(1) => check_engine_status(),
-            Ok(2) => list_policies_ui(),
-            Ok(3) => get_policy_ui(),
-            Ok(4) => create_policy_ui(),
-            Ok(5) => update_policy_ui(),
-            Ok(6) => delete_policy_ui(),
+            Ok(0) => check_engine_status(),
+            Ok(1) => connect_to_engine_ui(),
+            Ok(2) => show_engine_connection_ui(),
+            Ok(3) => get_bind_addr_ui(),
+            Ok(4) => set_bind_addr_ui(),
+            Ok(5) => list_policies_ui(),
+            Ok(6) => get_policy_ui(),
+            Ok(7) => create_policy_ui(),
+            Ok(8) => update_policy_ui(),
+            Ok(9) => delete_policy_ui(),
+            Ok(10) => change_password(),
             Ok(_) => unreachable!(),
             Err(e) => {
                 eprintln!("Console error: {e}");
