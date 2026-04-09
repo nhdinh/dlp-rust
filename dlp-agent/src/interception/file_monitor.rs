@@ -178,7 +178,7 @@ impl InterceptionEngine {
     ///
     /// Returns `Ok(())` when [`stop()`](InterceptionEngine::stop) is called.
     pub fn run(&self, tx: mpsc::Sender<FileAction>) -> Result<()> {
-        use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+        use notify::{Config, RecommendedWatcher, Watcher};
         use std::sync::mpsc as std_mpsc;
         use std::time::Duration;
 
@@ -198,17 +198,7 @@ impl InterceptionEngine {
 
         // Watch configured paths (or all drives if none configured).
         let watch_paths = self.config.resolve_watch_paths();
-        for watch_path in &watch_paths {
-            if let Err(e) = watcher.watch(watch_path, RecursiveMode::Recursive) {
-                tracing::warn!(
-                    path = %watch_path.display(),
-                    error = %e,
-                    "could not watch path"
-                );
-            } else {
-                tracing::info!(path = %watch_path.display(), "watching path");
-            }
-        }
+        register_watch_paths(&mut watcher, &watch_paths);
 
         let mode = if self.config.monitored_paths.is_empty() {
             "all drives"
@@ -292,6 +282,22 @@ impl Default for InterceptionEngine {
 impl Drop for InterceptionEngine {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// Registers each path with the watcher, logging success or failure.
+fn register_watch_paths(
+    watcher: &mut notify::RecommendedWatcher,
+    paths: &[std::path::PathBuf],
+) {
+    use notify::{RecursiveMode, Watcher};
+
+    for path in paths {
+        if let Err(e) = watcher.watch(path, RecursiveMode::Recursive) {
+            tracing::warn!(path = %path.display(), error = %e, "could not watch path");
+        } else {
+            tracing::info!(path = %path.display(), "watching path");
+        }
     }
 }
 
