@@ -12,17 +12,9 @@
 //!   --bind <host:port>    Listen address (default: 127.0.0.1:9090)
 //!   --db <path>           SQLite database path (default: ./dlp-server.db)
 //!   --log-level <level>   Log level: trace, debug, info, warn, error
-//!                         (default: info, overridden by RUST_LOG env var)
+//!                         (default: info)
 //!   --help                Show this help message
 //! ```
-//!
-//! Environment variables override defaults but CLI flags take priority:
-//!
-//! | Env var       | CLI flag        | Default              |
-//! |---------------|-----------------|----------------------|
-//! | `BIND_ADDR`   | `--bind`        | `127.0.0.1:9090`     |
-//! | `DB_PATH`     | `--db`          | `./dlp-server.db`    |
-//! | `RUST_LOG`    | `--log-level`   | `info`               |
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -50,9 +42,9 @@ struct Config {
     log_level: String,
 }
 
-/// Parses CLI flags and environment variables into a [`Config`].
+/// Parses CLI flags into a [`Config`].
 ///
-/// Priority: CLI flag > env var > compiled default.
+/// Falls back to compiled defaults when a flag is not provided.
 fn parse_config() -> Config {
     let args: Vec<String> = std::env::args().collect();
 
@@ -67,10 +59,8 @@ fn parse_config() -> Config {
 
     Config {
         bind_addr: get_flag(&args, "--bind")
-            .or_else(|| std::env::var("BIND_ADDR").ok())
             .unwrap_or_else(|| DEFAULT_BIND.to_string()),
         db_path: get_flag(&args, "--db")
-            .or_else(|| std::env::var("DB_PATH").ok())
             .unwrap_or_else(|| DEFAULT_DB.to_string()),
         log_level: get_flag(&args, "--log-level")
             .unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string()),
@@ -99,11 +89,6 @@ OPTIONS:
                           (default: {DEFAULT_LOG_LEVEL})
     --help                Show this help message
 
-ENVIRONMENT VARIABLES (CLI flags take priority):
-    BIND_ADDR             Listen address
-    DB_PATH               SQLite database path
-    RUST_LOG              Tracing filter (overrides --log-level)
-
 EXAMPLES:
     {name}
     {name} --bind 0.0.0.0:9090 --db /data/dlp.db
@@ -117,9 +102,7 @@ async fn main() -> anyhow::Result<()> {
     let config = parse_config();
 
     // Initialise structured logging.
-    // RUST_LOG env var takes priority over --log-level flag.
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.log_level));
+    let filter = EnvFilter::new(&config.log_level);
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     // Validate bind address.
