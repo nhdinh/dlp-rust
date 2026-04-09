@@ -50,7 +50,7 @@ dlp-agent (per endpoint)
 | `ALERT` | DENY_WITH_ALERT triggered | Yes (Phase 5) | Yes (email + webhook) |
 | `CONFIG_CHANGE` | Policy or config changed | Yes (Phase 5) | No |
 | `SESSION_LOGOFF` | User logoff detected | Yes (Phase 5) | No |
-| `ADMIN_ACTION` | dlp-admin-portal API call | Yes (Phase 5) | No |
+| `ADMIN_ACTION` | dlp-server admin API call | Yes (Phase 5) | No |
 | `SERVICE_STOP_FAILED` | Failed sc stop attempt | Yes (Phase 5) | Yes |
 | `EVASION_SUSPECTED` | *(removed — ETW bypass detection not implemented)* | — | — |
 
@@ -111,7 +111,7 @@ All events are UTF-8 JSON matching the `AuditEvent` schema in `common-types/src/
 
 ## Admin Audit Log
 
-Every call to a dlp-admin-portal API is itself audited (F-AUD-09):
+Every call to a dlp-server admin API is itself audited (F-AUD-09):
 
 ```json
 {
@@ -122,7 +122,7 @@ Every call to a dlp-admin-portal API is itself audited (F-AUD-09):
   "action": "POLICY_CREATE",
   "resource": "pol-010",
   "ip_address": "10.0.1.50",
-  "user_agent": "dlp-admin-portal/1.0"
+  "user_agent": "dlp-admin-cli/1.0"
 }
 ```
 

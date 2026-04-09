@@ -30,7 +30,6 @@ Data exfiltration paths blocked include USB mass storage, SMB/FTP uploads, and c
 | `policy-engine/`    | ABAC policy evaluator, HTTPS/REST server                  | 1            |
 | `dlp-agent/`        | Windows Service: file interception, policy enforcement    | 1            |
 | `dlp-user-ui/`      | iced subprocess: notifications, dialogs, clipboard, tray  | 1            |
-| `dlp-admin-portal/` | Admin UI: policy management, audit viewer, TOTP auth      | **Deferred** |
 | `dlp-server/`       | Audit ingestion, SIEM relay, admin auth, policy sync      | 5            |
 
 The agent runs as a Windows Service under SYSTEM. User-facing interactions (notifications, clipboard, dialogs) are handled by a subprocess spawned on the interactive desktop. Stopping the service requires dlp-admin credentials.
@@ -71,6 +70,5 @@ Currently in the documentation and design phase. Implementation follows a phased
 | 3     | API hooks for file interception + integration tests                           | `dlp-agent`                                               |
 | 4     | Production hardening — security audit, MSI deployment, OPERATIONAL.md       | All                                                       |
 | 5     | dlp-server — central management, SIEM relay, admin auth                     | `dlp-server`                                              |
-| —     | **dlp-admin-portal** deferred to a later phase                              |                                                           |
 
 No code committed yet.

@@ -59,7 +59,7 @@ The DLP system enforces five foundational security principles across all layers.
 
 - **ABAC layer:** The Policy Engine evaluates rules in priority order (first-match wins). No catch-all ALLOW rule is generated for T3/T4 resources. If no policy matches a T3 or T4 resource, the default decision is DENY.
 - **Offline mode:** On cache miss, `offline.rs` returns `cache::fail_closed_response()` for T3/T4 resources (see §5).
-- **dlp-admin-portal:** Exception/override approvals are explicit, time-limited, and audited. No override is permanent.
+- **dlp-server:** Exception/override approvals are explicit, time-limited, and audited. No override is permanent.
 - **dlp-server:** The audit store exposes no update or delete API (`N-SRV-06`). Audit records are append-only.
 
 ### 1.3 Zero Trust
@@ -193,7 +193,7 @@ Every ABAC decision, every block event, every admin action, and every failed aut
 | Policy Engine → AD | Outbound | LDAPS :636 | TLS + service account bind | Credential theft from engine host |
 | Agent → dlp-server (Phase 5) | Outbound | HTTPS / TLS 1.3 | mTLS or signed JWT | Tampering audit stream; impersonating agent |
 | dlp-server → SIEM | Outbound | HTTPS / TLS 1.3 | HEC token / API key | Credential sprawl (SIEM token in agent — mitigated by relay model) |
-| Admin → dlp-admin-portal | Inbound | HTTPS | TOTP + JWT (Phase 5) | Admin credential theft |
+| Admin → dlp-server | Inbound | HTTPS | TOTP + JWT (Phase 5) | Admin credential theft |
 | Agent ↔ UI (Pipe 1/2/3) | Local only | Named pipe / DPAPI | SYSTEM-only ACL | Pipe impersonation; UI → admin password over pipe |
 
 ---
@@ -576,7 +576,7 @@ This section summarizes the threat landscape. For the full STRIDE analysis with 
 | **Policy Engine HTTPS API** | `engine_client.rs` → Policy Engine | High — protected by mTLS |
 | **AD LDAP interface** | `ad_client.rs` (policy-engine only) → Domain Controller | High — protected by LDAPS + service account |
 | **dlp-server API** (Phase 5) | Agent → dlp-server audit relay | Medium — protected by TLS + mTLS |
-| **Admin portal** (Phase 5) | dlp-admin → dlp-admin-portal | High — protected by TOTP + JWT |
+| **Admin interface** (Phase 5) | dlp-admin → dlp-server REST API | High — protected by TOTP + JWT |
 | **Service stop flow** | `sc stop` → password challenge | High — protected by bcrypt hash comparison |
 
 ### 9.2 File Monitor Limitations
@@ -654,7 +654,7 @@ A SHA-256 hash chain for tamper-evident audit logs is identified as a **future e
 
 ### 10.5 Admin Action Audit Trail
 
-Every dlp-admin action via `dlp-admin-portal` generates an `ADMIN_ACTION` audit event (F-AUD-09). This includes:
+Every dlp-admin action via `dlp-server` generates an `ADMIN_ACTION` audit event (F-AUD-09). This includes:
 - Admin identity (user_sid, user_name)
 - Action type (POLICY_CREATE, POLICY_DELETE, POLICY_UPDATE, etc.)
 - Resource affected

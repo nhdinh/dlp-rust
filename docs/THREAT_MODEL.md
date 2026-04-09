@@ -113,7 +113,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 | **Agent ↔ AD** | (Not used — Agent does not query AD directly) |
 | **Agent ↔ UI (Pipe 1/2/3)** | Named pipes; SYSTEM-only ACL; DPAPI encryption for password payload |
 | **Policy Engine ↔ AD** | LDAPS :636; TLS; AD service account (read-only); ABAC attribute lookups |
-| **Admin ↔ dlp-admin-portal** | HTTPS; TOTP + JWT (Phase 5) |
+| **Admin ↔ dlp-server** | HTTPS; TOTP + JWT (Phase 5) |
 
 ---
 
@@ -244,7 +244,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   - `ADMIN_ACTION` audit events include `user_sid` and `user_name` from the JWT
   - Audit log is append-only and timestamps each action
   - Phase 5: TOTP + JWT enforces authentication before admin actions
-  - **Status:** Partially Mitigated in Phase 1 (admin portal not yet implemented); fully mitigated in Phase 5
+  - **Status:** Partially Mitigated in Phase 1 (TOTP + JWT auth via dlp-server in Phase 5); fully mitigated in Phase 5
 
 #### THREAT-012: User Override Justification Not Audited
 - **Asset:** Override justification text
@@ -512,5 +512,5 @@ The following risks are **Not Mitigated** or **Planned** in a future phase:
 | SHA-256 hash chain for audit logs | Phase 5 | Audit log tampering |
 | HSM / Azure Key Vault for secrets | Phase 5 | SIEM token theft, key disclosure |
 | dlp-server (SIEM relay, append-only audit store) | Phase 5 | Audit log tampering, persistence |
-| TOTP + JWT for admin portal | Phase 5 | Admin action non-repudiation, credential theft |
+| TOTP + JWT for admin auth (dlp-server) | Phase 5 | Admin action non-repudiation, credential theft |
 | Policy store integrity (signed policies) | Phase 5 | Policy file tampering |
