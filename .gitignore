@@ -33,5 +33,10 @@ dlp-agent/src-tauri/gen/
 # Installer build output
 installer/dist/
 
+# SQLite databases (runtime artifacts)
+*.db
+*.db-shm
+*.db-wal
+
 # Claude session config (local machine-specific, never committed)
 .claude/
