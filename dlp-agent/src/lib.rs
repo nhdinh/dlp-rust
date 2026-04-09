@@ -74,3 +74,6 @@ pub mod clipboard;
 
 #[cfg(windows)]
 pub mod session_identity;
+
+#[cfg(windows)]
+pub mod server_client;

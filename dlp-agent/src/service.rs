@@ -223,7 +223,43 @@ async fn run_loop(
         });
 
     let cache = Arc::new(crate::cache::Cache::new());
-    let offline = Arc::new(crate::offline::OfflineManager::new(engine_client, cache, machine_name.clone()));
+
+    // ── dlp-server client (best-effort -- server may not be running) ─────
+    let server_client = match crate::server_client::ServerClient::from_env() {
+        Ok(sc) => {
+            // Register with dlp-server. Errors are logged, not fatal.
+            if let Err(e) = sc.register().await {
+                warn!(error = %e, "dlp-server registration failed (best-effort)");
+            }
+            Some(sc)
+        }
+        Err(e) => {
+            warn!(error = %e, "dlp-server client init failed -- server relay disabled");
+            None
+        }
+    };
+
+    // ── Audit buffer for server relay ────────────────────────────────────
+    let (audit_shutdown_tx, audit_shutdown_rx) =
+        tokio::sync::watch::channel(false);
+    let _audit_flush_handle = if let Some(ref sc) = server_client {
+        let buffer = Arc::new(crate::server_client::AuditBuffer::new(sc.clone()));
+        crate::audit_emitter::set_audit_buffer(Arc::clone(&buffer));
+        Some(crate::server_client::AuditBuffer::spawn_flush_task(
+            buffer,
+            audit_shutdown_rx,
+        ))
+    } else {
+        drop(audit_shutdown_rx);
+        None
+    };
+
+    let mut offline_manager =
+        crate::offline::OfflineManager::new(engine_client, cache, machine_name.clone());
+    if let Some(sc) = server_client {
+        offline_manager = offline_manager.with_server_client(sc);
+    }
+    let offline = Arc::new(offline_manager);
 
     // ── Start the Policy Engine heartbeat ─────────────────────────────────
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -346,6 +382,12 @@ async fn run_loop(
     // Stop the heartbeat loop.
     let _ = shutdown_tx.send(true);
     let _ = _heartbeat_handle.await;
+
+    // Stop the audit buffer flush task (final flush runs inside).
+    let _ = audit_shutdown_tx.send(true);
+    if let Some(h) = _audit_flush_handle {
+        let _ = h.await;
+    }
 
     info!(
         service_name = SERVICE_NAME,
@@ -624,7 +666,42 @@ async fn async_run_console() -> Result<()> {
         });
 
     let cache = Arc::new(crate::cache::Cache::new());
-    let offline = Arc::new(crate::offline::OfflineManager::new(engine_client, cache, machine_name.clone()));
+
+    // ── dlp-server client (best-effort) ──────────────────────────────────
+    let server_client = match crate::server_client::ServerClient::from_env() {
+        Ok(sc) => {
+            if let Err(e) = sc.register().await {
+                warn!(error = %e, "dlp-server registration failed (best-effort)");
+            }
+            Some(sc)
+        }
+        Err(e) => {
+            warn!(error = %e, "dlp-server client init failed -- server relay disabled");
+            None
+        }
+    };
+
+    // ── Audit buffer for server relay ────────────────────────────────────
+    let (audit_shutdown_tx, audit_shutdown_rx) =
+        tokio::sync::watch::channel(false);
+    let _audit_flush_handle = if let Some(ref sc) = server_client {
+        let buffer = Arc::new(crate::server_client::AuditBuffer::new(sc.clone()));
+        crate::audit_emitter::set_audit_buffer(Arc::clone(&buffer));
+        Some(crate::server_client::AuditBuffer::spawn_flush_task(
+            buffer,
+            audit_shutdown_rx,
+        ))
+    } else {
+        drop(audit_shutdown_rx);
+        None
+    };
+
+    let mut offline_manager =
+        crate::offline::OfflineManager::new(engine_client, cache, machine_name.clone());
+    if let Some(sc) = server_client {
+        offline_manager = offline_manager.with_server_client(sc);
+    }
+    let offline = Arc::new(offline_manager);
 
     // ── Heartbeat ───────────────────────────────────────────────────────────
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -719,6 +796,12 @@ async fn async_run_console() -> Result<()> {
     drop(event_loop_handle);
     let _ = shutdown_tx.send(true);
     let _ = _heartbeat_handle.await;
+
+    // Stop the audit buffer flush task (final flush runs inside).
+    let _ = audit_shutdown_tx.send(true);
+    if let Some(h) = _audit_flush_handle {
+        let _ = h.await;
+    }
 
     info!(
         service_name = SERVICE_NAME,
