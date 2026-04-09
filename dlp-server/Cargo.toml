@@ -1,0 +1,58 @@
+[package]
+name = "dlp-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "DLP central management server — audit store, agent registry, SIEM relay, admin API"
+
+[dependencies]
+# Shared types
+dlp-common = { path = "../dlp-common" }
+
+# Web server
+axum = { version = "0.7", features = ["macros"] }
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Auth
+jsonwebtoken = "9"
+bcrypt = "0.16"
+
+# HTTP client (SIEM relay, policy sync, alerts)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Email (alert router)
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Identifiers
+uuid = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Concurrency
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"], default-features = false }
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
+tempfile = "3"
