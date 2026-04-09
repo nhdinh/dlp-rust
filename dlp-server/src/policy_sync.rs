@@ -1,19 +1,19 @@
-//! Push policies to policy-engine replicas (P5-T07).
+//! Push policies to dlp-server replicas (P5-T07).
 //!
 //! When a policy is created, updated, or deleted via the admin API,
-//! this module pushes the change to all configured policy-engine
+//! this module pushes the change to all configured dlp-server
 //! replicas so they evaluate with the latest rules.
 
 use dlp_common::abac::Policy;
 use reqwest::Client;
 
-/// Synchronizes policies to remote policy-engine replicas.
+/// Synchronizes policies to remote dlp-server replicas.
 ///
-/// Reads replica URLs from the `POLICY_ENGINE_REPLICAS` environment
+/// Reads replica URLs from the `DLP_SERVER_REPLICAS` environment
 /// variable (comma-separated). If not set, sync calls are no-ops.
 #[derive(Debug, Clone)]
 pub struct PolicySyncer {
-    /// List of policy-engine replica base URLs.
+    /// List of dlp-server replica base URLs.
     replicas: Vec<String>,
     /// Shared HTTP client.
     client: Client,
@@ -46,11 +46,11 @@ pub enum SyncError {
 impl PolicySyncer {
     /// Constructs a `PolicySyncer` from environment variables.
     ///
-    /// Reads `POLICY_ENGINE_REPLICAS` as a comma-separated list of
+    /// Reads `DLP_SERVER_REPLICAS` as a comma-separated list of
     /// base URLs (e.g., `http://pe1:8080,http://pe2:8080`).
     pub fn from_env() -> Self {
         let replicas: Vec<String> =
-            std::env::var("POLICY_ENGINE_REPLICAS")
+            std::env::var("DLP_SERVER_REPLICAS")
                 .unwrap_or_default()
                 .split(',')
                 .map(|s| s.trim().to_string())

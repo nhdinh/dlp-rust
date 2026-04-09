@@ -1,4 +1,4 @@
-//! HTTP client for the Policy Engine REST API.
+//! HTTP client for the DLP Server REST API.
 //!
 //! Handles TLS certificate configuration and provides typed request helpers.
 
@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use reqwest::Client;
 
-/// The Policy Engine HTTP client, built from environment variables.
+/// The DLP Server HTTP client, built from environment variables.
 #[derive(Clone)]
 pub struct EngineClient {
     inner: Client,
@@ -30,7 +30,7 @@ fn load_identity(cert_path: &str, key_path: &str) -> Result<reqwest::Identity> {
 }
 
 impl EngineClient {
-    /// Resolves the Policy Engine URL using auto-detection, then builds
+    /// Resolves the DLP Server URL using auto-detection, then builds
     /// the HTTP client.
     ///
     /// Resolution order: env var -> registry BIND_ADDR -> local port

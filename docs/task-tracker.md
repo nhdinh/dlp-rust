@@ -11,14 +11,14 @@
 
 ---
 
-## Sprint 1 — Policy Engine Scaffold
+## Sprint 1 — dlp-server Scaffold
 
 | ID   | Status | Story | Task                                                                                                             | Deliverable                         |
 | ---- | ------ | ----- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| T-01 | [x]    | US-01 | Initialize `policy-engine/` workspace crate: `Cargo.toml`, `tonic`, TLS config, `tower` middleware scaffold      | `policy-engine/src/`                |
-| T-02 | [x]    | US-01 | Implement policy store: JSON file persistence, hot-reload via `notify` crate, version tracking                   | `policy-engine/src/policy_store.rs` |
-| T-03 | [x]    | US-01 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching | `policy-engine/src/evaluator.rs`    |
-| T-07 | [x]    | US-01 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                       | `policy-engine/tests/`              |
+| T-01 | [x]    | US-01 | Initialize `dlp-server/` workspace crate: `Cargo.toml`, `tonic`, TLS config, `tower` middleware scaffold      | `dlp-server/src/`                |
+| T-02 | [x]    | US-01 | Implement policy store: JSON file persistence, hot-reload via `notify` crate, version tracking                   | `dlp-server/src/policy_store.rs` |
+| T-03 | [x]    | US-01 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching | `dlp-server/src/evaluator.rs`    |
+| T-07 | [x]    | US-01 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                       | `dlp-server/tests/`              |
 
 ---
 
@@ -26,10 +26,10 @@
 
 | ID   | Status | Story | Task                                                                                                            | Deliverable                        |
 | ---- | ------ | ----- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| T-04 | [x]    | US-17 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/` | `policy-engine/src/http_server.rs` |
-| T-05 | [x]    | US-16 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup             | `policy-engine/src/ad_client.rs`   |
-| T-06 | [x]    | US-17 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                  | `policy-engine/src/rest_api.rs`    |
-| T-08 | [x]    | US-16 | Implement AD mock server for integration tests                                                                  | `policy-engine/tests/mock_ad/`     |
+| T-04 | [x]    | US-17 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/` | `dlp-server/src/http_server.rs` |
+| T-05 | [x]    | US-16 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup             | `dlp-server/src/ad_client.rs`   |
+| T-06 | [x]    | US-17 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                  | `dlp-server/src/rest_api.rs`    |
+| T-08 | [x]    | US-16 | Implement AD mock server for integration tests                                                                  | `dlp-server/tests/mock_ad/`     |
 
 ---
 
@@ -37,9 +37,9 @@
 
 | ID   | Status | Story | Task                                                                                                              | Deliverable                         |
 | ---- | ------ | ----- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| T-22 | [x]    | US-16 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `policy-engine/src/ad_client.rs`    |
-| T-23 | [x]    | US-15 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `policy-engine/src/policy_store.rs` |
-| T-24 | [x]    | US-14 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `policy-engine/tests/benchmark.rs`  |
+| T-22 | [x]    | US-16 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `dlp-server/src/ad_client.rs`    |
+| T-23 | [x]    | US-15 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `dlp-server/src/policy_store.rs` |
+| T-24 | [x]    | US-14 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `dlp-server/tests/benchmark.rs`  |
 
 ---
 
@@ -131,7 +131,7 @@
 | ---- | ------ | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
 | T-11 | [x]    | US-07 | Implement `InterceptionEngine` trait + `file_monitor.rs`: `notify` crate (`ReadDirectoryChangesW`) watching configured paths for file create/write/delete/move events | `dlp-agent/src/interception/file_monitor.rs` |
 | T-12 | [x]    | US-10 | Implement `identity.rs`: SMB impersonation resolution — `ImpersonateSelf`, `QuerySecurityContextToken`, `GetTokenInformation(TokenUser)`, `RevertToSelf`; process token fallback | `dlp-agent/src/identity.rs`                  |
-| T-16 | [x]    | US-08 | Implement HTTPS client to Policy Engine: reqwest client, TLS, `POST /evaluate` request/response, retry on failure                                                               | `dlp-agent/src/engine_client.rs`             |
+| T-16 | [x]    | US-08 | Implement HTTPS client to dlp-server: reqwest client, TLS, `POST /evaluate` request/response, retry on failure                                                               | `dlp-agent/src/engine_client.rs`             |
 | T-17 | [x]    | US-08 | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss                                               | `dlp-agent/src/cache.rs`                     |
 
 ---
@@ -150,7 +150,7 @@
 
 | ID   | Status | Story | Task                                                                                                                                                 | Deliverable                      |
 | ---- | ------ | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| T-18 | [x]    | US-11 | Implement offline mode: detect Policy Engine unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat                      | `dlp-agent/src/offline.rs`       |
+| T-18 | [x]    | US-11 | Implement offline mode: detect dlp-server unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat                      | `dlp-agent/src/offline.rs`       |
 | T-19 | [x]    | US-18 | Implement local append-only JSON audit log: `serde_json`, write-only file handle, `FsOptions::FILE_FLAG_BACKUP_SEMANTICS` for SERVICE account access | `dlp-agent/src/audit_emitter.rs` |
 | T-25 | [x]    | US-18 | Define `AuditEvent` Rust types: serde serialization, all fields per F-AUD-02 schema (`access_context: local\|SMB`)                                   | `dlp-common/src/audit.rs`        |
 | T-26 | [x]    | US-18 | Implement audit event emission: emit every intercepted file operation as JSON, no file content, real-time                                            | `dlp-agent/src/audit_emitter.rs` |
@@ -170,7 +170,7 @@
 
 | ID   | Status | Story        | Task                                                                                                                                 | Deliverable                      |
 | ---- | ------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- |
-| T-21 | [x]    | US-07, US-13 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock Policy Engine)                             | `dlp-agent/tests/`               |
+| T-21 | [x]    | US-07, US-13 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock dlp-server)                             | `dlp-agent/tests/`               |
 | T-28 | [x]    | US-19        | Phase 1: agent writes to local JSON log only. SIEM relay deferred to Phase 5 (dlp-server). Audit log queryable via direct file read. | `dlp-agent/src/audit_emitter.rs` |
 
 ---
@@ -179,7 +179,7 @@
 
 | ID   | Status | Story | Task                                                                                 | Deliverable                        |
 | ---- | ------ | ----- | ------------------------------------------------------------------------------------ | ---------------------------------- |
-| T-24 | [x]    | US-14 | Performance validation: P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput | `policy-engine/tests/benchmark.rs` |
+| T-24 | [x]    | US-14 | Performance validation: P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput | `dlp-server/tests/benchmark.rs` |
 
 ---
 
@@ -223,9 +223,9 @@
 | P2-T04 | [x]    | --    | Mutual health monitoring: Agent pings UI (5s), respawn if no pong (15s); UI exits if Agent gone (15s)     | `dlp-agent/src/health_monitor.rs`          |
 | P2-T10 | [x]    | --    | Tray icon double-click opens portal URL (stub: "Coming Soon")                                             | `dlp-user-ui/src/tray.rs`                  |
 | P2-T11 | [x]    | --    | Service stop: STOP_PENDING + password dialog + file-based response + debug bypass                         | `dlp-agent/src/password_stop.rs`           |
-| P2-T12 | [x]    | --    | Policy Engine REST CRUD (GET/POST/PUT/DELETE /policies)                                                   | `policy-engine/src/rest_api.rs`            |
-| P2-T13 | [x]    | --    | Agent-to-Engine E2E integration tests (real Policy Engine, OfflineManager, cache)                          | `dlp-agent/tests/integration.rs`           |
-| P2-T14 | [x]    | --    | ABAC policy integration tests (all 3 rules, priority, disabled, AccessContext, multi-condition)            | `policy-engine/tests/integration.rs`       |
+| P2-T12 | [x]    | --    | dlp-server REST CRUD (GET/POST/PUT/DELETE /policies)                                                   | `dlp-server/src/rest_api.rs`            |
+| P2-T13 | [x]    | --    | Agent-to-Engine E2E integration tests (real dlp-server, OfflineManager, cache)                          | `dlp-agent/tests/integration.rs`           |
+| P2-T14 | [x]    | --    | ABAC policy integration tests (all 3 rules, priority, disabled, AccessContext, multi-condition)            | `dlp-server/tests/integration.rs`       |
 
 ## Phase 4 — Production Hardening
 

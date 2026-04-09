@@ -12,8 +12,8 @@ use dlp_common::{EvaluateRequest, EvaluateResponse};
 use reqwest::Client;
 use tracing::{debug, error, warn};
 
-/// Default base URL for the Policy Engine HTTPS endpoint.
-pub const DEFAULT_ENGINE_URL: &str = "https://localhost:8443";
+/// Default base URL for the dlp-server evaluate endpoint.
+pub const DEFAULT_ENGINE_URL: &str = "http://127.0.0.1:9090";
 
 /// Maximum number of retry attempts before giving up.
 const MAX_RETRIES: u32 = 3;
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_engine_client_new() {
-        let client = EngineClient::new("https://dlp-policy-engine.local", true);
+        let client = EngineClient::new("http://127.0.0.1:9090", true);
         assert!(client.is_ok());
     }
 

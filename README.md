@@ -27,10 +27,10 @@ Data exfiltration paths blocked include USB mass storage, SMB/FTP uploads, and c
 
 | Crate               | Role                                                      | Phase        |
 | ------------------- | --------------------------------------------------------- | ------------ |
-| `policy-engine/`    | ABAC policy evaluator, HTTPS/REST server                  | 1            |
+| `dlp-server/`       | Central server: ABAC evaluator, audit store, agent registry, SIEM relay, admin API | 1+5 |
 | `dlp-agent/`        | Windows Service: file interception, policy enforcement    | 1            |
 | `dlp-user-ui/`      | iced subprocess: notifications, dialogs, clipboard, tray  | 1            |
-| `dlp-server/`       | Audit ingestion, SIEM relay, admin auth, policy sync      | 5            |
+| `dlp-admin-cli/`    | Admin CLI: password management, policy CRUD, server status | 1            |
 
 The agent runs as a Windows Service under SYSTEM. User-facing interactions (notifications, clipboard, dialogs) are handled by a subprocess spawned on the interactive desktop. Stopping the service requires dlp-admin credentials.
 
@@ -61,14 +61,12 @@ docs/
 
 ## Status
 
-Currently in the documentation and design phase. Implementation follows a phased plan:
+Phase 1 through 5 are complete. All crates are implemented and tested.
 
-| Phase | Focus                                                                       | Crates                                                    |
-| ----- | --------------------------------------------------------------------------- | --------------------------------------------------------- |
-| 1     | Foundation — workspace, shared types, Policy Engine (HTTPS), dlp-agent, dlp-user-ui | `dlp-common`, `policy-engine`, `dlp-agent`, `dlp-user-ui` |
-| 2     | Process protection + IPC hardening                                          | `dlp-agent`, `dlp-user-ui`                                |
-| 3     | API hooks for file interception + integration tests                           | `dlp-agent`                                               |
-| 4     | Production hardening — security audit, MSI deployment, OPERATIONAL.md       | All                                                       |
-| 5     | dlp-server — central management, SIEM relay, admin auth                     | `dlp-server`                                              |
-
-No code committed yet.
+| Phase | Focus                                                   | Crates                                                   |
+| ----- | ------------------------------------------------------- | -------------------------------------------------------- |
+| 1     | Foundation: shared types, ABAC evaluation, agent, UI    | `dlp-common`, `dlp-server`, `dlp-agent`, `dlp-user-ui`  |
+| 2     | Process protection + IPC hardening                      | `dlp-agent`, `dlp-user-ui`                               |
+| 3     | File interception + integration tests                   | `dlp-agent`                                              |
+| 4     | Production hardening: MSI installer, security audit     | All                                                      |
+| 5     | Central management: audit store, SIEM, admin API        | `dlp-server`, `dlp-admin-cli`                            |

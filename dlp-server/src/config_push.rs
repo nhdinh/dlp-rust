@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 pub struct AgentConfig {
     /// List of directory paths the agent should monitor.
     pub monitored_paths: Vec<String>,
-    /// Policy-engine URL the agent should use for evaluations.
-    pub policy_engine_url: String,
+    /// DLP server URL the agent should use for evaluations.
+    pub server_url: String,
     /// Heartbeat interval in seconds.
     pub heartbeat_interval_secs: u64,
     /// Whether offline caching is enabled.
@@ -145,7 +145,7 @@ mod tests {
                 r"C:\Data".to_string(),
                 r"D:\Shared".to_string(),
             ],
-            policy_engine_url: "http://pe:8080".to_string(),
+            server_url: "http://dlp-server:9090".to_string(),
             heartbeat_interval_secs: 30,
             offline_cache_enabled: true,
         };

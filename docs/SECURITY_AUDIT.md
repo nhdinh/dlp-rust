@@ -4,7 +4,7 @@
 **Date:** 2026-04-04
 **Status:** Complete
 **Auditor:** Internal / Claude Code
-**Scope:** dlp-agent (Phase 1–3), dlp-user-ui, policy-engine, dlp-common
+**Scope:** dlp-agent (Phase 1–3), dlp-user-ui, dlp-server, dlp-common
 
 > **Companion documents:**
 > - [THREAT_MODEL.md](THREAT_MODEL.md) — STRIDE threat analysis, residual risks
@@ -23,12 +23,12 @@
 |----------|-------------|-------|
 | `dlp-agent/` | Windows Service — file interception, USB/SMB detection, IPC, audit | 1–3 |
 | `dlp-user-ui/` | Iced subprocess — block dialogs, tray, clipboard | 1–3 |
-| `policy-engine/` | HTTPS REST API — ABAC evaluation, AD LDAP, hot-reload | 1–3 |
+| `dlp-server/` | HTTPS REST API — ABAC evaluation, AD LDAP, hot-reload | 1–3 |
 | `dlp-common/` | Shared types — Classification, ABAC enums, AuditEvent | 1 |
 
 ### 1.2 Methodology
 
-- **Code review** of all 33 source files in `dlp-agent/`, `policy-engine/`, `dlp-common/`
+- **Code review** of all 33 source files in `dlp-agent/`, `dlp-server/`, `dlp-common/`
 - **Architecture review** against SRS.md requirements (F-*, N-*)
 - **Threat-model walkthrough** against THREAT_MODEL.md §3 (STRIDE)
 - **Gap analysis** against SRS.md §6 (Security Requirements) and §7 (Compliance)
@@ -67,7 +67,7 @@ All Phase 1–3 controls were verified against the source code.
 | Agent runs as SYSTEM | F-ADM-01, F-AGT-01 | `sc create ... obj= LocalSystem`; MSI `<ServiceInstall Account="LocalSystem">` | **Implemented** |
 | Service starts at boot | F-AGT-02 | `StartType= auto` in MSI | **Implemented** |
 | Single-instance service | F-AGT-03 | `Global\dlp-agent-instance` named mutex (`service.rs`) | **Implemented** |
-| mTLS to Policy Engine | N-SEC-01 | `reqwest` with TLS; client cert loaded from `.env` | **Implemented** |
+| mTLS to dlp-server | N-SEC-01 | `reqwest` with TLS; client cert loaded from `.env` | **Implemented** |
 | LDAPS (:636) for AD | N-SEC-02 | `ldap3` connects on port 636; TLS enforced | **Implemented** |
 | DPAPI password over Pipe 1 | N-SEC-03 | `CryptProtectData` in UI; `CryptUnprotectData` in agent (`password_stop.rs`) | **Implemented** |
 | Named pipe SYSTEM-only ACL | THREAT-003 | SDDL `D:(A;;GA;;;SY)(A;;GA;;;BA)` via `ConvertStringSecurityDescriptorToSecurityDescriptorW` (`pipe_security.rs`) | **Implemented** |
@@ -102,7 +102,7 @@ All Phase 1–3 controls were verified against the source code.
 | Control | Requirement | Implementation | Status |
 |---------|------------|----------------|--------|
 | TLS 1.2+ enforced | N-SEC-01 | `reqwest` with rustls-tls; TLS 1.2 minimum | **Implemented** |
-| Policy Engine URL configurable | F-AGT-16 | `DLP_POLICY_ENGINE_URL` env var; `DEFAULT_ENGINE_URL` fallback | **Implemented** |
+| dlp-server URL configurable | F-AGT-16 | `DLP_SERVER_URL` env var; `DEFAULT_ENGINE_URL` fallback | **Implemented** |
 | LDAPS AD integration | F-ADM-02 | `ldap3` with TLS on port 636 | **Implemented** |
 
 ### 3.5 File Interception
@@ -146,11 +146,11 @@ All Phase 1–3 controls were verified against the source code.
 | N-SEC-01 | TLS enforced | Must | **Implemented** | — |
 | N-SEC-02 | Credentials not in plaintext | Must | **Implemented** (DPAPI + .env, no storage) | — |
 | N-SEC-03 | SYSTEM account | Must | **Implemented** | — |
-| N-SEC-04 | Isolated Policy Engine host | Must | **Design decision** (F-ADM-03: engine must be on isolated host; MSI enforces via docs) | — |
+| N-SEC-04 | Isolated dlp-server host | Must | **Design decision** (F-ADM-03: engine must be on isolated host; MSI enforces via docs) | — |
 | N-SEC-05 | MFA for admin sessions | Must | **Deferred** | Phase 5 |
 | N-SEC-06 | Process DACL | Must | **Implemented** (`protection.rs`) | — |
 | N-SEC-07 | Immutable audit logs | Must | **Partial** — append-only handle + MSI ACLs; hash chain not yet implemented | **Phase 5** |
-| N-SEC-08 | Verify Policy Engine cert | Must | **Not implemented** — no cert validation today; Phase 5 cert pinning planned | **Phase 5** |
+| N-SEC-08 | Verify dlp-server cert | Must | **Not implemented** — no cert validation today; Phase 5 cert pinning planned | **Phase 5** |
 | N-SEC-09 | Memory zeroization | Should | **Not implemented** — no `zeroize` crate; sensitive buffers not explicitly zeroed | **Gap (Should)** |
 | N-SEC-10 | Detect tampering/injection | Should | **Partial** — process DACL mitigates THREAT-027; no active injection detection | **Phase 2** |
 | N-SEC-11 | Process DACL | Must | **Implemented** (`protection.rs`) | — |
@@ -175,7 +175,7 @@ All Phase 1–3 controls were verified against the source code.
 | F-AGT-13 | USB detection | Must | **Implemented** | — |
 | F-AGT-14 | SMB share detection | Must | **Implemented** | — |
 | F-AGT-15 | Agent self-update | May | **Not implemented** | — |
-| F-AGT-16 | Policy Engine URL configurable | Must | **Implemented** | — |
+| F-AGT-16 | dlp-server URL configurable | Must | **Implemented** | — |
 | F-AGT-17 | Clipboard monitoring | Must | **Implemented** | — |
 | F-AGT-18 | Syscall bypass detection | — | **Superseded** — replaced by SMB MPR detection; direct syscall bypass acknowledged as future minifilter work | **Future** |
 | F-AGT-19 | SMB identity resolution | Must | **Implemented** (`identity.rs`) | — |
@@ -201,7 +201,7 @@ All Phase 1–3 controls were verified against the source code.
 | THREAT-001 | LSASS credential dump | Spoofing | **Partially Mitigated** | Process DACL; DPAPI; no LSASS block — relies on Defender/EDR | `protection.rs`, `password_stop.rs` |
 | THREAT-002 | TLS key theft | Spoofing | **Partially Mitigated** | Key in `.env` + filesystem ACLs; no HSM | `.env`, `engine_client.rs` |
 | THREAT-003 | UI process impersonation | Spoofing | **Implemented** | SYSTEM ACL + RegisterSession gate | `pipe_security.rs`, `pipe1.rs` |
-| THREAT-004 | Policy Engine cert spoofing | Spoofing | **Phase 5** | Cert pinning deferred | `engine_client.rs` |
+| THREAT-004 | dlp-server cert spoofing | Spoofing | **Phase 5** | Cert pinning deferred | `engine_client.rs` |
 | THREAT-005 | SMB session hijacking | Spoofing | **Partially Mitigated** | `identity.rs` resolves impersonation token; SMB signing depends on infrastructure | `identity.rs` |
 | THREAT-006 | Policy file tampering | Tampering | **Partially Mitigated** | ACL + validation; no hash/integrity check | `policy_store.rs` |
 | THREAT-007 | File monitor disabling | Tampering / DoS | **Not Mitigated** | No integrity check on notify watcher | `file_monitor.rs` |
@@ -255,7 +255,7 @@ The following risks are accepted by design, depend on external controls, or are 
 
 2. **MSI ACL review** — Verify the MSI ACLs on `C:\Program Files\DLP\logs\` actually deny DELETE to non-admin. Confirm with `icacls` on a test machine post-install.
 
-3. **Policy Engine cert validation** — Until Phase 5 cert pinning is implemented, ensure the Policy Engine is on a dedicated, isolated host (N-SEC-04) and the network path is not accessible to non-admin endpoints.
+3. **dlp-server cert validation** — Until Phase 5 cert pinning is implemented, ensure the dlp-server is on a dedicated, isolated host (N-SEC-04) and the network path is not accessible to non-admin endpoints.
 
 ### 7.2 Phase 5 Prioritized Backlog
 

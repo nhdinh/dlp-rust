@@ -46,7 +46,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 
 ### 1.2 In Scope
 
-- **Components:** dlp-agent (Windows Service), dlp-user-ui (iced subprocess), policy-engine (HTTPS REST API), Active Directory / LDAPS, Named pipes (Pipe 1/2/3), audit log (local JSONL), `notify`-based file system interception
+- **Components:** dlp-agent (Windows Service), dlp-user-ui (iced subprocess), dlp-server (HTTPS REST API), Active Directory / LDAPS, Named pipes (Pipe 1/2/3), audit log (local JSONL), `notify`-based file system interception
 - **Phases:** Phase 1 (current implementation); Phase 5 (dlp-server, SIEM relay) noted where relevant
 - **Environments:** Enterprise Windows endpoints (domain-joined), corporate network
 
@@ -72,7 +72,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   │     ├── detection/network_share.rs  — SMB share access detector
   │     ├── clipboard/listener.rs       — WH_GETMESSAGE clipboard hook
   │     ├── identity.rs                 — SMB impersonation resolution
-  │     ├── engine_client.rs            — HTTPS client → policy-engine
+  │     ├── engine_client.rs            — HTTPS client → dlp-server
   │     ├── cache.rs                   — Policy decision cache (TTL)
   │     ├── offline.rs                 — Offline mode (fail-closed)
   │     ├── audit_emitter.rs           — JSONL append-only audit log
@@ -91,7 +91,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
         └── stop_password.rs           — sc stop password dialog (DPAPI)
 
 [Corporate Network]
-  └── policy-engine (HTTPS REST, Rust)
+  └── dlp-server (HTTPS REST, Rust)
         ├── ad_client.rs              — LDAPS → Active Directory
         ├── engine.rs                 — ABAC policy evaluation
         ├── policy_store.rs           — JSON policy file + hot-reload
@@ -109,10 +109,10 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 
 | Boundary | Description |
 |---|---|
-| **Endpoint ↔ Policy Engine** | HTTPS/TLS 1.3; mTLS client certificates; network segmentation |
+| **Endpoint ↔ dlp-server** | HTTPS/TLS 1.3; mTLS client certificates; network segmentation |
 | **Agent ↔ AD** | (Not used — Agent does not query AD directly) |
 | **Agent ↔ UI (Pipe 1/2/3)** | Named pipes; SYSTEM-only ACL; DPAPI encryption for password payload |
-| **Policy Engine ↔ AD** | LDAPS :636; TLS; AD service account (read-only); ABAC attribute lookups |
+| **dlp-server ↔ AD** | LDAPS :636; TLS; AD service account (read-only); ABAC attribute lookups |
 | **Admin ↔ dlp-server** | HTTPS; TOTP + JWT (Phase 5) |
 
 ---
@@ -133,13 +133,13 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   - **Status:** Partially Mitigated — LSASS dump from SYSTEM context is not blocked by the agent itself; relies on Windows Defender/EDR for prevention
 
 #### THREAT-002: Agent Impersonation
-- **Asset:** Agent → Policy Engine HTTPS channel
+- **Asset:** Agent → dlp-server HTTPS channel
 - **Threat:** Attacker presents a forged TLS client certificate to impersonate a legitimate agent
 - **Attack Vector:** Theft of the agent's TLS client private key from the endpoint filesystem
 - **Impact:** Malicious agent could submit forged evaluation requests, receive policy decisions for other users' actions, and corrupt the audit trail
 - **Mitigation:**
   - Agent TLS client certificate stored in `.env` (not in source); filesystem ACLs restrict access
-  - Policy Engine verifies client certificate against its trusted certificate store
+  - dlp-server verifies client certificate against its trusted certificate store
   - **Status:** Partially Mitigated — key storage security depends on endpoint hardening
 
 #### THREAT-003: UI Process Impersonation
@@ -153,13 +153,13 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   - Service runs as SYSTEM; user-level code cannot connect to SYSTEM-owned pipes without privilege escalation
   - **Status:** Implemented
 
-#### THREAT-004: Policy Engine Certificate Spoofing
-- **Asset:** Agent ↔ Policy Engine HTTPS channel
+#### THREAT-004: dlp-server Certificate Spoofing
+- **Asset:** Agent ↔ dlp-server HTTPS channel
 - **Threat:** Attacker presents a forged TLS server certificate to intercept agent ↔ engine traffic
 - **Attack Vector:** Corporate proxy, DNS poisoning, or compromised CA
 - **Impact:** Agent sends evaluation requests to a malicious server; decisions are forged; audit trail is polluted
 - **Mitigation:**
-  - Agent validates Policy Engine TLS certificate against a configured trusted CA
+  - Agent validates dlp-server TLS certificate against a configured trusted CA
   - Certificate pinned or validated against a known good certificate
   - **Status:** Planned — certificate pinning in Phase 5 (N-SEC-08)
 
@@ -342,10 +342,10 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   - SCM auto-restart on crash: `sc.exe failure` recovery actions (Phase 1 config in `Manage-DlpAgentService.ps1`)
   - **Status:** Implemented
 
-#### THREAT-021: Policy Engine Offline (No ABAC Decisions)
-- **Asset:** Policy Engine availability
-- **Threat:** Policy Engine becomes unreachable; all requests fall back to cache
-- **Attack Vector:** Network disruption; Policy Engine process crash
+#### THREAT-021: dlp-server Offline (No ABAC Decisions)
+- **Asset:** dlp-server availability
+- **Threat:** dlp-server becomes unreachable; all requests fall back to cache
+- **Attack Vector:** Network disruption; dlp-server process crash
 - **Impact:** Offline mode activates; T3/T4 deny (fail-closed); T2/T1 allow (default-allow). T2/T1 files can be exfiltrated without ABAC evaluation during the outage.
 - **Mitigation:**
   - Offline mode is the designed fallback, not a failure
@@ -466,8 +466,8 @@ The following risks are **Not Mitigated** or **Planned** in a future phase:
 | SIEM relay credentials in dlp-server memory | Information Disclosure | SIEM token theft | **Planned Phase 5** — HSM / Azure Key Vault |
 | Override justification free-text may contain PII | Information Disclosure | PII in audit log | **Not Mitigated** — admin process guidance required |
 | UI process DLL injection leads to fake UserConfirmed | Elevation of Privilege | Blocked operations confirmed without user consent | **Not Mitigated** — inherent to user-session UI |
-| Policy Engine certificate spoofing | Spoofing | Forged ABAC decisions | **Planned Phase 5** — certificate pinning |
-| AD service account credential theft from LSASS (SYSTEM context) | Spoofing | ABAC attribute queries via Policy Engine LDAPS channel | **Not Mitigated** — dlp-admin credential (bcrypt hash) is not in LSASS; AD service account still at risk |
+| dlp-server certificate spoofing | Spoofing | Forged ABAC decisions | **Planned Phase 5** — certificate pinning |
+| AD service account credential theft from LSASS (SYSTEM context) | Spoofing | ABAC attribute queries via dlp-server LDAPS channel | **Not Mitigated** — dlp-admin credential (bcrypt hash) is not in LSASS; AD service account still at risk |
 | Physical access: cold-boot attack on endpoint | Information Disclosure | Memory decryption key extracted | **Out of Scope** — physical security domain |
 
 ---
@@ -508,7 +508,7 @@ The following risks are **Not Mitigated** or **Planned** in a future phase:
 |---|---|---|
 | Code signing + binary integrity verification | Phase 4 | Binary tampering, code injection |
 | DLL load hardening | Phase 2 | DLL injection |
-| Certificate pinning (mTLS) | Phase 5 | Policy Engine certificate spoofing |
+| Certificate pinning (mTLS) | Phase 5 | dlp-server certificate spoofing |
 | SHA-256 hash chain for audit logs | Phase 5 | Audit log tampering |
 | HSM / Azure Key Vault for secrets | Phase 5 | SIEM token theft, key disclosure |
 | dlp-server (SIEM relay, append-only audit store) | Phase 5 | Audit log tampering, persistence |

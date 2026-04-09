@@ -17,9 +17,9 @@
 |-----------|-------------|
 | OS | Windows Server 2019 or later; Windows 10/11 Enterprise |
 | .NET | .NET Framework 4.8 (for DPAPI password transport) |
-| Network | None beyond Policy Engine connectivity |
-| Policy Engine | `policy-engine` deployed and reachable at the configured URL |
-| Firewall | Outbound TCP 8443 to Policy Engine |
+| Network | None beyond dlp-server connectivity |
+| dlp-server | `dlp-server` deployed and reachable at the configured URL |
+| Firewall | Outbound TCP 9090 to dlp-server |
 
 ### 1.2 MSI Installation
 
@@ -124,15 +124,15 @@ The following paths are **always** excluded from monitoring, regardless of confi
 | `%APPDATA%\Code\` | VS Code settings |
 | `%APPDATA%\Microsoft\` | Office, Windows caches |
 
-### 2.3 Policy Engine URL
+### 2.3 dlp-server URL
 
-The Policy Engine URL is compiled into the agent binary at build time. To override at runtime, set the `DLP_POLICY_ENGINE_URL` environment variable before starting the service:
+The dlp-server URL is compiled into the agent binary at build time. To override at runtime, set the `DLP_SERVER_URL` environment variable before starting the service:
 
 ```cmd
-setx /M DLP_POLICY_ENGINE_URL "https://dlp-engine.corp.local:8443"
+setx /M DLP_SERVER_URL "https://dlp-engine.corp.local:9090"
 ```
 
-Default: `https://localhost:8443`
+Default: `https://localhost:9090`
 
 ---
 
@@ -252,7 +252,7 @@ All three pipes require `SYSTEM` or `Administrators` access. No inbound firewall
 | Symptom | Likely Cause |
 |---------|-------------|
 | Service in `STOPPED` state, no crash log | Password-protected stop completed; expected |
-| Service crashed repeatedly | Policy Engine unreachable + cache miss; check network |
+| Service crashed repeatedly | dlp-server unreachable + cache miss; check network |
 | No audit events for any file operations | `agent-config.toml` has no `monitored_paths` or all paths excluded |
 | UI not appearing in user session | `CreateProcessAsUser` failure; check user logon rights |
 | `Pipe 2` errors in trace | UI process crashed; health monitor should have respawned |
@@ -313,7 +313,7 @@ In Phase 1–4, audit logs are written to the local JSONL file only. SIEM relay 
 
 ### 6.1 How Offline Mode Activates
 
-The agent maintains a heartbeat loop that probes the Policy Engine every **30 seconds**:
+The agent maintains a heartbeat loop that probes the dlp-server every **30 seconds**:
 
 1. If the probe fails (network error, TLS error, 5xx HTTP response), the engine is marked **unreachable**.
 2. A second consecutive failure triggers **offline mode**.
@@ -321,7 +321,7 @@ The agent maintains a heartbeat loop that probes the Policy Engine every **30 se
 
 ### 6.2 Fail-Closed Decision Table
 
-When the Policy Engine is unreachable and the local cache has no decision for the requested resource:
+When the dlp-server is unreachable and the local cache has no decision for the requested resource:
 
 | Classification | Decision | Rationale |
 |---------------|---------|-----------|
@@ -339,20 +339,20 @@ When the Policy Engine is unreachable and the local cache has no decision for th
 
 ### 6.4 Heartbeat and Auto-Reconnect
 
-When the Policy Engine becomes reachable again:
+When the dlp-server becomes reachable again:
 1. Next heartbeat probe succeeds.
 2. Transition audit event emitted: `{ "event_type": "AGENT_ONLINE" }`.
 3. Live ABAC evaluation resumes immediately.
 4. Policy hot-reload: if `policies.json` changed on disk, engine picks it up within 5 seconds (no restart needed).
 
-### 6.5 Policy Engine Outage
+### 6.5 dlp-server Outage
 
 The agent's own stop-password verification does NOT use AD or LDAPS — it relies solely on the bcrypt hash in the registry. Therefore, AD unavailability does not affect the agent's ability to stop.
 
-If the Policy Engine is unreachable:
-- Policy Engine denies requests that depend on AD group membership (the Policy Engine itself queries AD).
+If the dlp-server is unreachable:
+- dlp-server denies requests that depend on AD group membership (the dlp-server itself queries AD).
 - The agent continues to enforce cached decisions.
-- Once the Policy Engine recovers, the agent reconnects automatically.
+- Once the dlp-server recovers, the agent reconnects automatically.
 
 ---
 
@@ -399,10 +399,10 @@ The in-memory policy decision cache is **not persisted**. On service restart, th
 
 ### 8.2 Policy Hot-Reload
 
-The Policy Engine watches `policies.json` on disk via the `notify` crate. Changes are validated and atomically swapped within **5 seconds** without restarting the engine or the agent.
+The dlp-server watches `policies.json` on disk via the `notify` crate. Changes are validated and atomically swapped within **5 seconds** without restarting the engine or the agent.
 
 To hot-reload policies:
-1. Edit `policies.json` on the Policy Engine host.
+1. Edit `policies.json` on the dlp-server host.
 2. Wait 5 seconds.
 3. New policy takes effect on the next agent heartbeat.
 
@@ -414,8 +414,8 @@ Before deploying to production:
 - [ ] Confirm audit events appear in `C:\ProgramData\DLP\logs\audit.jsonl`
 - [ ] Verify a T4 file write is blocked (denied and logged)
 - [ ] Verify USB block works for a T3 file
-- [ ] Confirm offline mode activates when Policy Engine is stopped
-- [ ] Confirm offline mode clears when Policy Engine restarts
+- [ ] Confirm offline mode activates when dlp-server is stopped
+- [ ] Confirm offline mode clears when dlp-server restarts
 - [ ] Verify password-protected stop works with a real dlp-admin account
 - [ ] Review audit log for false positives (adjust `excluded_paths` in config)
 
@@ -512,16 +512,16 @@ When a user requests an override, they type a justification into the block dialo
 | `DLP_AGENT_ID` | `AGENT-UNKNOWN` | Unique endpoint identifier in audit events |
 | `DLP_UI_BINARY` | `{exe_dir}\dlp-user-ui.exe` | UI binary path override (dev only) |
 | `DLP_AUTH_HASH_SET` | `false` | Set to `true` once `DLPAuthHash` is configured in registry |
-| `DLP_POLICY_ENGINE_URL` | `https://localhost:8443` | Policy Engine HTTPS endpoint (build-time default) |
+| `DLP_SERVER_URL` | `https://localhost:9090` | dlp-server HTTPS endpoint (build-time default) |
 | `RUST_LOG` | `info` | Tracing log level (`error`, `warn`, `info`, `debug`, `trace`) |
 | `RUST_BACKTRACE` | `0` | Rust stack trace verbosity (`1` = full) |
 
-### Policy Engine (policy-engine)
+### dlp-server (dlp-server)
 
 | Variable | Default | Source |
 |----------|---------|--------|
-| `BIND_ADDR` | `0.0.0.0:8443` | `policy-engine/src/main.rs` |
-| `POLICY_FILE` | `./policies.json` | `policy-engine/src/main.rs` |
+| `BIND_ADDR` | `0.0.0.0:9090` | `dlp-server/src/main.rs` |
+| `POLICY_FILE` | `./policies.json` | `dlp-server/src/main.rs` |
 | `DLP_ENGINE_CERT_PATH` | `.env` (dotenvy) | Not an env var; loaded from `.env` |
 | `DLP_ENGINE_KEY_PATH` | `.env` (dotenvy) | Not an env var; loaded from `.env` |
 | `DLP_AD_BIND_PASSWORD` | `.env` (dotenvy) | AD service account password; loaded from `.env` |

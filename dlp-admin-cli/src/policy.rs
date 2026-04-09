@@ -1,4 +1,4 @@
-//! Policy management commands — CRUD operations via the Policy Engine REST API.
+//! Policy management commands — CRUD operations via the DLP Server REST API.
 
 use anyhow::{Context, Result};
 

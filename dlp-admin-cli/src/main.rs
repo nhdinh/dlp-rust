@@ -3,7 +3,7 @@
 //! ## Security notes
 //!
 //! - `set-password` requires Administrator privileges (HKLM write).
-//! - Policy management commands require a configured Policy Engine URL.
+//! - Policy management commands require a configured DLP Server URL.
 //!
 //! ## Commands
 //!
@@ -31,7 +31,7 @@ use anyhow::Result;
 use std::env;
 use tracing::error;
 
-const DEFAULT_ENGINE_URL: &str = "https://localhost:8443";
+const DEFAULT_ENGINE_URL: &str = "http://127.0.0.1:9090";
 
 fn main() {
     // Initialize tracing — log level controlled by RUST_LOG env var.
@@ -45,7 +45,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     // Parse --connect <addr:port> from anywhere in the args and set it
-    // as DLP_POLICY_ENGINE_URL so resolve_engine_url() picks it up.
+    // as DLP_SERVER_URL so resolve_engine_url() picks it up.
     let args = extract_connect_flag(args);
 
     let rc = run(&args);
@@ -58,7 +58,7 @@ fn main() {
 
 /// Extracts `--connect <addr:port>` from the argument list.
 ///
-/// If found, sets `DLP_POLICY_ENGINE_URL` so that
+/// If found, sets `DLP_SERVER_URL` so that
 /// [`engine::resolve_engine_url`] uses it as the highest-priority
 /// source.  Returns the remaining arguments with the flag removed.
 fn extract_connect_flag(mut args: Vec<String>) -> Vec<String> {
@@ -72,7 +72,7 @@ fn extract_connect_flag(mut args: Vec<String>) -> Vec<String> {
             } else {
                 engine::addr_to_url(&addr)
             };
-            env::set_var("DLP_POLICY_ENGINE_URL", &url);
+            env::set_var("DLP_SERVER_URL", &url);
             // Remove --connect and the value from the arg list.
             args.remove(pos + 1);
             args.remove(pos);
@@ -198,22 +198,22 @@ ENGINE CONFIGURATION:
     {name} engine set-bind-addr <host:port>  Set BIND_ADDR (requires admin)
 
 SYSTEM:
-    {name} status                            Check Policy Engine health
+    {name} status                            Check DLP Server health
     {name} interactive                       Interactive TUI (menu-driven)
 
 GLOBAL OPTIONS:
     --connect <host:port>                    Connect to a specific engine address
 
 CONNECTION AUTO-DETECTION:
-    The CLI automatically finds the Policy Engine when running on the same
+    The CLI automatically finds the DLP Server when running on the same
     machine. Resolution order:
-      1. DLP_POLICY_ENGINE_URL env var (explicit override)
+      1. DLP_SERVER_URL env var (explicit override)
       2. BIND_ADDR from registry (HKLM\SOFTWARE\DLP\PolicyEngine)
-      3. Probe local ports: 8443, 9443, 8080
+      3. Probe local ports: 9090, 8443, 8080
       4. Default: {DEFAULT_ENGINE_URL}
 
 ENVIRONMENT VARIABLES:
-    DLP_POLICY_ENGINE_URL   Policy Engine URL (overrides auto-detection)
+    DLP_SERVER_URL          DLP Server URL (overrides auto-detection)
     DLP_ENGINE_CERT_PATH    Path to client certificate (mTLS)
     DLP_ENGINE_KEY_PATH     Path to client key (mTLS)
     DLP_ENGINE_CA_PATH      Path to CA certificate (default: system trust store)
@@ -237,18 +237,18 @@ async fn status(base_url: &str) -> Result<()> {
     // Check /health
     match client.get(&health_url).send().await {
         Ok(resp) if resp.status().is_success() => {
-            println!("[OK]   Policy Engine health: {}", health_url);
+            println!("[OK]   DLP Server health: {}", health_url);
         }
         Ok(resp) => {
             anyhow::bail!(
-                "[FAIL] Policy Engine health returned {}: {}",
+                "[FAIL] DLP Server health returned {}: {}",
                 resp.status(),
                 health_url
             );
         }
         Err(e) => {
             anyhow::bail!(
-                "[FAIL] Cannot connect to Policy Engine at {}: {e}",
+                "[FAIL] Cannot connect to DLP Server at {}: {e}",
                 health_url
             );
         }
@@ -257,17 +257,17 @@ async fn status(base_url: &str) -> Result<()> {
     // Check /ready
     match client.get(&ready_url).send().await {
         Ok(resp) if resp.status().is_success() => {
-            println!("[OK]   Policy Engine ready:  {}", ready_url);
+            println!("[OK]   DLP Server ready:  {}", ready_url);
         }
         Ok(resp) => {
             println!(
-                "[WARN] Policy Engine not ready ({}): {}",
+                "[WARN] DLP Server not ready ({}): {}",
                 resp.status().as_u16(),
                 ready_url
             );
         }
         Err(e) => {
-            println!("[WARN] Policy Engine readiness check failed: {e}");
+            println!("[WARN] DLP Server readiness check failed: {e}");
         }
     }
 

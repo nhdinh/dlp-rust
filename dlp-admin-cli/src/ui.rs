@@ -179,7 +179,7 @@ fn check_engine_status() {
 
     print!("\x1B[2J\x1B[H");
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║           Policy Engine — Connection Status               ║");
+    println!("║           DLP Server — Connection Status                     ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();
     println!("  Base URL: {}", base_url);
@@ -437,16 +437,16 @@ fn show_engine_connection_ui() {
 
     print!("\x1B[2J\x1B[H");
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║           Policy Engine — Connection Info                  ║");
+    println!("║           DLP Server — Connection Info                       ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();
     println!("  Resolved URL: {url}");
     println!();
 
     // Show how it was resolved.
-    if let Ok(env_url) = std::env::var("DLP_POLICY_ENGINE_URL") {
+    if let Ok(env_url) = std::env::var("DLP_SERVER_URL") {
         if !env_url.is_empty() {
-            println!("  Source: DLP_POLICY_ENGINE_URL env var");
+            println!("  Source: DLP_SERVER_URL env var");
         }
     } else {
         match crate::registry::read_registry_string(
@@ -475,7 +475,7 @@ fn get_bind_addr_ui() {
 }
 
 fn set_bind_addr_ui() {
-    let addr = match read_line("Enter BIND_ADDR (host:port, e.g. 127.0.0.1:8443): ") {
+    let addr = match read_line("Enter BIND_ADDR (host:port, e.g. 127.0.0.1:9090): ") {
         Some(s) => s,
         None => {
             pause_on_error("Address cannot be empty.");
@@ -501,7 +501,7 @@ fn connect_to_engine_ui() {
     };
 
     let url = crate::engine::addr_to_url(&addr);
-    std::env::set_var("DLP_POLICY_ENGINE_URL", &url);
+    std::env::set_var("DLP_SERVER_URL", &url);
     println!();
     println!("  Connected to: {url}");
     println!("  (active for this session only)");
@@ -513,16 +513,16 @@ fn connect_to_engine_ui() {
 pub fn run() {
     const MENU_ITEMS: &[MenuItem] = &[
         MenuItem {
-            label: "Check Policy Engine Status",
+            label: "Check DLP Server Status",
             description: "Ping /health and /ready endpoints",
         },
         MenuItem {
-            label: "Connect to Engine",
-            description: "Set the engine address for this session",
+            label: "Connect to DLP Server",
+            description: "Set the server address for this session",
         },
         MenuItem {
             label: "Show Connection Info",
-            description: "Show resolved engine URL and detection source",
+            description: "Show resolved server URL and detection source",
         },
         MenuItem {
             label: "Get BIND_ADDR (registry)",
@@ -534,7 +534,7 @@ pub fn run() {
         },
         MenuItem {
             label: "List Policies",
-            description: "List all policies from the Policy Engine",
+            description: "List all policies from the DLP Server",
         },
         MenuItem {
             label: "Get Policy",

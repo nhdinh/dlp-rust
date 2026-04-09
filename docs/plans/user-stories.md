@@ -31,14 +31,14 @@ _As a DLP Admin, I need to define and manage ABAC policies so that the organizat
 
 | ID   | Task                                                                                                             | Deliverable                         |
 | ---- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| T-01 | Initialize `policy-engine/` workspace crate: `Cargo.toml`, `tonic`, TLS config, `tower` middleware scaffold      | `policy-engine/src/`                |
-| T-02 | Implement policy store: JSON file persistence, hot-reload via `notify` crate, version tracking                   | `policy-engine/src/policy_store.rs` |
-| T-03 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching | `policy-engine/src/evaluator.rs`    |
-| T-04 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/`  | `policy-engine/src/http_server.rs`  |
-| T-05 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup              | `policy-engine/src/ad_client.rs`    |
-| T-06 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                   | `policy-engine/src/rest_api.rs`     |
-| T-07 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                       | `policy-engine/tests/`              |
-| T-08 | Implement AD mock server for integration tests                                                                   | `policy-engine/tests/mock_ad/`      |
+| T-01 | Initialize `dlp-server/` workspace crate: `Cargo.toml`, `tonic`, TLS config, `tower` middleware scaffold      | `dlp-server/src/`                |
+| T-02 | Implement policy store: JSON file persistence, hot-reload via `notify` crate, version tracking                   | `dlp-server/src/policy_store.rs` |
+| T-03 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching | `dlp-server/src/evaluator.rs`    |
+| T-04 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/`  | `dlp-server/src/http_server.rs`  |
+| T-05 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup              | `dlp-server/src/ad_client.rs`    |
+| T-06 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                   | `dlp-server/src/rest_api.rs`     |
+| T-07 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                       | `dlp-server/tests/`              |
+| T-08 | Implement AD mock server for integration tests                                                                   | `dlp-server/tests/mock_ad/`      |
 
 ---
 
@@ -181,12 +181,12 @@ _As a dlp-agent, I need to intercept file operations and enforce ABAC decisions 
 | T-13 | Implement `detection/usb.rs`: `RegisterDeviceNotificationW` for `DBT_DEVICEARRIVAL`/`DBT_DEVICEREMOVECOMPLETE`; `GetDriveTypeW` classifies removable drives; block T3/T4 writes to USB                                                  | `dlp-agent/src/detection/usb.rs`             |
 | T-14 | Implement `detection/network_share.rs`: poll `WNetOpenEnumW`/`WNetEnumResourceW` (MPR) every 30s; differential scan emits `Connected`/`Disconnected` events; whitelist enforcement for T3/T4 destinations                          | `dlp-agent/src/detection/network_share.rs`   |
 | T-15 | *(superseded)* File interception uses `notify` crate; ETW bypass detection was removed                                                                                               | —                                 |
-| T-16 | Implement HTTPS client to Policy Engine: reqwest client, TLS, `POST /evaluate` request/response, retry on failure                                                                     | `dlp-agent/src/engine_client.rs`             |
+| T-16 | Implement HTTPS client to dlp-server: reqwest client, TLS, `POST /evaluate` request/response, retry on failure                                                                       | `dlp-agent/src/engine_client.rs`             |
 | T-17 | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss                                                     | `dlp-agent/src/cache.rs`                     |
-| T-18 | Implement offline mode: detect Policy Engine unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat                                                        | `dlp-agent/src/offline.rs`                   |
+| T-18 | Implement offline mode: detect dlp-server unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat                                                          | `dlp-agent/src/offline.rs`                   |
 | T-19 | Implement local append-only JSON audit log: `serde_json`, write-only file handle, `FsOptions::FILE_FLAG_BACKUP_SEMANTICS` for SERVICE account access                                   | `dlp-agent/src/audit_emitter.rs`             |
 | T-20 | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE` / clipboard reads; `detection/clipboard/classifier.rs`: classify text content | `dlp-agent/src/clipboard/`                   |
-| T-21 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock Policy Engine)                                                                              | `dlp-agent/tests/`                           |
+| T-21 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock dlp-server)                                                                                | `dlp-agent/tests/`                           |
 
 ---
 
@@ -212,7 +212,7 @@ _As a dlp-agent, I need to intercept file operations and enforce ABAC decisions 
 **Story Points:** 5 | **MoSCoW:** Must
 
 **As a** dlp-agent
-**I want** to enforce the ABAC decision returned by the Policy Engine
+**I want** to enforce the ABAC decision returned by dlp-server
 **So that** ALLOW operations proceed and DENY operations are blocked
 
 **Acceptance Criteria:**
@@ -275,17 +275,17 @@ _As a dlp-agent, I need to intercept file operations and enforce ABAC decisions 
 **Story Points:** 5 | **MoSCoW:** Must
 
 **As a** dlp-agent
-**I want** to continue enforcing cached ABAC decisions when the Policy Engine is unreachable
+**I want** to continue enforcing cached ABAC decisions when dlp-server is unreachable
 **So that** data protection is not dependent on network connectivity
 
 **Acceptance Criteria:**
 
 - [ ] Agent caches the last N policy decisions (configurable, default 10,000 entries)
 - [ ] Cache entries have a configurable TTL (default 1 hour)
-- [ ] When Policy Engine is unreachable, agent evaluates requests against the cache
+- [ ] When dlp-server is unreachable, agent evaluates requests against the cache
 - [ ] Cache miss in offline mode defaults to DENY for T3/T4 resources (fail-closed)
-- [ ] Agent automatically resumes live Policy Engine queries when connectivity is restored
-- [ ] Heartbeat mechanism detects Policy Engine availability within 30 seconds
+- [ ] Agent automatically resumes live dlp-server queries when connectivity is restored
+- [ ] Heartbeat mechanism detects dlp-server availability within 30 seconds
 
 ---
 
@@ -312,23 +312,23 @@ _As a dlp-agent, I need to intercept file operations and enforce ABAC decisions 
 **Story Points:** 3 | **MoSCoW:** Must
 
 **As a** dlp-agent
-**I want** to send a heartbeat to the Policy Engine every 30 seconds
+**I want** to send a heartbeat to dlp-server every 30 seconds
 **So that** the admin can see which endpoints are online and the engine can track agent version and status
 
 **Acceptance Criteria:**
 
 - [ ] Agent sends HTTPS heartbeat with: agent_id, hostname, OS version, agent version, timestamp
-- [ ] Policy Engine marks agent as offline if heartbeat is missed for 3 consecutive intervals (90 seconds)
-- [ ] Agent can be configured with primary and secondary Policy Engine endpoints
+- [ ] dlp-server marks agent as offline if heartbeat is missed for 3 consecutive intervals (90 seconds)
+- [ ] Agent can be configured with primary and secondary dlp-server endpoints
 - [ ] Agent reconnects automatically when a previously unavailable engine becomes reachable
 
 ---
 
-## Epic 3: Policy Engine Operations
+## Epic 3: dlp-server Operations
 
 **Epic ID:** EP-03 | **Story Points:** 26 | **MoSCoW:** Must
 
-_As a Policy Engine, I need to evaluate ABAC policies accurately and at low latency so that every enforcement decision is correct and fast enough for production use._
+_As dlp-server, I need to evaluate ABAC policies accurately and at low latency so that every enforcement decision is correct and fast enough for production use._
 
 ### Phase 1 Tasks
 
@@ -336,9 +336,9 @@ _As a Policy Engine, I need to evaluate ABAC policies accurately and at low late
 
 | ID   | Task                                                                                                              | Deliverable                         |
 | ---- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| T-22 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `policy-engine/src/ad_client.rs`    |
-| T-23 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `policy-engine/src/policy_store.rs` |
-| T-24 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `policy-engine/tests/benchmark.rs`  |
+| T-22 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `dlp-server/src/ad_client.rs`    |
+| T-23 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `dlp-server/src/policy_store.rs` |
+| T-24 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `dlp-server/tests/benchmark.rs`  |
 
 ---
 
@@ -346,7 +346,7 @@ _As a Policy Engine, I need to evaluate ABAC policies accurately and at low late
 
 **Story Points:** 8 | **MoSCoW:** Must
 
-**As a** Policy Engine
+**As** dlp-server
 **I want** to receive an ABAC evaluation request and return a decision
 **So that** dlp-agents know whether to allow or deny each file operation
 
@@ -364,7 +364,7 @@ _As a Policy Engine, I need to evaluate ABAC policies accurately and at low late
 
 **Story Points:** 5 | **MoSCoW:** Should
 
-**As a** Policy Engine
+**As** dlp-server
 **I want** to reload policies from the policy store without restarting
 **So that** policy changes take effect immediately without disrupting enforcement
 
@@ -381,7 +381,7 @@ _As a Policy Engine, I need to evaluate ABAC policies accurately and at low late
 
 **Story Points:** 5 | **MoSCoW:** Must
 
-**As a** Policy Engine
+**As** dlp-server
 **I want** to query Active Directory for a user's current group memberships and device trust attributes
 **So that** ABAC policies can make context-aware decisions based on the live AD state
 
@@ -435,7 +435,7 @@ _As a DLP Admin or Auditor, I need a complete, tamper-evident audit trail of all
 
 **Story Points:** 5 | **MoSCoW:** Must
 
-**As a** dlp-agent or Policy Engine
+**As a** dlp-agent or dlp-server
 **I want** to emit structured JSON audit events for every enforcement action
 **So that** all security-relevant activity is recorded for investigation and compliance
 
@@ -555,7 +555,7 @@ _As a DLP Admin, I need a dedicated administrative interface so that I can manag
 
 **Acceptance Criteria:**
 
-- [ ] Dashboard shows: Policy Engine uptime and version, total connected agents, agents online vs. offline
+- [ ] Dashboard shows: dlp-server uptime and version, total connected agents, agents online vs. offline
 - [ ] Dashboard shows: requests per second, P95 decision latency, cache hit rate
 - [ ] Dashboard shows: T1–T4 block/allow counts for the last 24 hours (bar chart)
 - [ ] Dashboard shows: top 5 users with most policy blocks (potential insider risk)
@@ -654,25 +654,25 @@ _As an IT Operations team, I need reliable, automatable deployment and operation
 
 **Acceptance Criteria:**
 
-- [ ] MSI installer accepts command-line arguments: Policy Engine endpoint, agent ID, monitored paths
+- [ ] MSI installer accepts command-line arguments: dlp-server endpoint, agent ID, monitored paths
 - [ ] Agent installs silently without user interaction
-- [ ] Agent registers with the Policy Engine on first launch
+- [ ] Agent registers with dlp-server on first launch
 - [ ] Installer logs all steps to a log file for troubleshooting
 - [ ] Uninstaller cleanly removes the agent and all configuration
 
 ---
 
-### US-29: Policy Engine Failover
+### US-29: dlp-server Failover
 
 **Story Points:** 5 | **MoSCoW:** Should
 
 **As an** IT Operations team
-**I want** the Policy Engine to support active-passive failover
+**I want** dlp-server to support active-passive failover
 **So that** agent connectivity is maintained during planned maintenance or unplanned outages
 
 **Acceptance Criteria:**
 
-- [ ] Active Policy Engine instance is load-balanced; passive instance is on standby
+- [ ] Active dlp-server instance is load-balanced; passive instance is on standby
 - [ ] Agents are configured with primary and secondary engine endpoints
 - [ ] Failover to passive instance occurs automatically within 60 seconds of primary failure
 - [ ] No enforcement decisions are lost during failover (buffered by agents in offline mode)
@@ -697,17 +697,17 @@ _As an IT Operations team, I need reliable, automatable deployment and operation
 
 ---
 
-### US-31: Policy Engine Scaling
+### US-31: dlp-server Scaling
 
 **Story Points:** 5 | **MoSCoW:** Must
 
 **As an** IT Operations team
-**I want** the Policy Engine to support horizontal scaling
+**I want** dlp-server to support horizontal scaling
 **So that** the system can handle 10,000+ agents without degrading latency
 
 **Acceptance Criteria:**
 
-- [ ] Multiple Policy Engine instances can run behind a load balancer
+- [ ] Multiple dlp-server instances can run behind a load balancer
 - [ ] Engine instances share no mutable state (stateless evaluation, policy store on shared NFS or database)
 - [ ] Load balancer health checks remove unhealthy instances automatically
 - [ ] System supports ≥ 10,000 decision requests per second at P95 latency ≤ 50ms with 4 engine instances
@@ -897,7 +897,7 @@ _As a DLP system, the Agent must run as a Windows Service under the SYSTEM accou
 - [ ] Agent sends CLIPBOARD_READ over Pipe 1 (2-way), waits for response (timeout 10 seconds)
 - [ ] UI calls Windows clipboard API to read current clipboard text content
 - [ ] UI sends CLIPBOARD_DATA over Pipe 1 response with the clipboard text content (or empty if not text)
-- [ ] Agent sends clipboard content to Policy Engine for content inspection
+- [ ] Agent sends clipboard content to dlp-server for content inspection
 - [ ] If clipboard read fails or times out, Agent defaults to a conservative classification decision
 
 ---
@@ -1026,14 +1026,14 @@ _As the DLP system, we need a central management server (dlp-server) that owns a
 **Story Points:** 5 | **MoSCoW:** Must
 
 **As** dlp-server
-**I want** to push policies to all policy-engine replicas so that horizontal scaling works correctly
+**I want** to push policies to all dlp-server replicas so that horizontal scaling works correctly
 **So that** new or updated policies take effect across all engines without manual intervention
 
 **Acceptance Criteria:**
 
 - [ ] When a policy is created or updated via the dlp-server REST API, dlp-server writes it to the policy DB
-- [ ] dlp-server pushes the updated policy set to all connected policy-engine replicas
-- [ ] New policy-engine replicas pull the full policy set on startup from dlp-server
+- [ ] dlp-server pushes the updated policy set to all connected dlp-server replicas
+- [ ] New dlp-server replicas pull the full policy set on startup from dlp-server
 - [ ] Policy sync completes within 5 seconds of policy change
 - [ ] Sync failures are retried; replicas continue with last-known policy set
 
@@ -1050,7 +1050,7 @@ _As the DLP system, we need a central management server (dlp-server) that owns a
 **Acceptance Criteria:**
 
 - [ ] When an override is approved by dlp-admin, the record includes: approver, requesting user, resource, justification, timestamp, expiry duration
-- [ ] Temporary exceptions auto-expire; expired exceptions stop being honored by the Policy Engine
+- [ ] Temporary exceptions auto-expire; expired exceptions stop being honored by dlp-server
 - [ ] Exception records are queryable and exportable for audit purposes
 
 ---
@@ -1077,21 +1077,21 @@ _As the DLP system, we need a central management server (dlp-server) that owns a
 
 This table maps all Phase 1 implementation tasks to their stories, deliverable paths, and crate.
 
-### EP-01 & EP-03: Policy Engine
+### EP-01 & EP-03: dlp-server
 
 | ID   | Story | Task                                                                                                              | Deliverable                         |
 | ---- | ----- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| T-01 | US-01 | Initialize `policy-engine/` workspace crate: `Cargo.toml`, `tonic`, TLS config, `tower` middleware scaffold       | `policy-engine/src/`                |
-| T-02 | US-01 | Implement policy store: JSON file persistence, hot-reload via `notify`, version tracking                          | `policy-engine/src/policy_store.rs` |
-| T-03 | US-01 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching  | `policy-engine/src/evaluator.rs`    |
-| T-04 | US-17 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/`   | `policy-engine/src/http_server.rs`  |
-| T-05 | US-16 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup               | `policy-engine/src/ad_client.rs`    |
-| T-06 | US-17 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                    | `policy-engine/src/rest_api.rs`     |
-| T-07 | US-01 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                        | `policy-engine/tests/`              |
-| T-08 | US-16 | Implement AD mock server for integration tests                                                                    | `policy-engine/tests/mock_ad/`      |
-| T-22 | US-16 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `policy-engine/src/ad_client.rs`    |
-| T-23 | US-15 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `policy-engine/src/policy_store.rs` |
-| T-24 | US-14 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `policy-engine/tests/benchmark.rs`  |
+| T-01 | US-01 | Initialize `dlp-server/` workspace crate: `Cargo.toml`, `tonic`, TLS config, `tower` middleware scaffold       | `dlp-server/src/`                |
+| T-02 | US-01 | Implement policy store: JSON file persistence, hot-reload via `notify`, version tracking                          | `dlp-server/src/policy_store.rs` |
+| T-03 | US-01 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching  | `dlp-server/src/evaluator.rs`    |
+| T-04 | US-17 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/`   | `dlp-server/src/http_server.rs`  |
+| T-05 | US-16 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup               | `dlp-server/src/ad_client.rs`    |
+| T-06 | US-17 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                    | `dlp-server/src/rest_api.rs`     |
+| T-07 | US-01 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                        | `dlp-server/tests/`              |
+| T-08 | US-16 | Implement AD mock server for integration tests                                                                    | `dlp-server/tests/mock_ad/`      |
+| T-22 | US-16 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `dlp-server/src/ad_client.rs`    |
+| T-23 | US-15 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `dlp-server/src/policy_store.rs` |
+| T-24 | US-14 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `dlp-server/tests/benchmark.rs`  |
 
 ### EP-02: Endpoint Enforcement
 
@@ -1102,11 +1102,11 @@ This table maps all Phase 1 implementation tasks to their stories, deliverable p
 | T-13 | US-09        | Implement `detection/usb.rs`: `RegisterDeviceNotificationW` for `DBT_DEVICEARRIVAL`/`DBT_DEVICEREMOVECOMPLETE`; `GetDriveTypeW` classifies removable drives; block T3/T4 writes to USB                                             | `dlp-agent/src/detection/usb.rs`             |
 | T-14 | US-10        | Implement `detection/network_share.rs`: poll `WNetOpenEnumW`/`WNetEnumResourceW` (MPR) every 30s; differential scan emits `Connected`/`Disconnected` events; whitelist enforcement for T3/T4 destinations                  | `dlp-agent/src/detection/network_share.rs`   |
 | T-15 | —            | *(superseded)* File interception uses `notify` crate; ETW bypass detection was removed                                                                                                | —                                 |
-| T-16 | US-08        | Implement HTTPS client to Policy Engine: reqwest client, TLS, `POST /evaluate` request/response, retry on failure                                                               | `dlp-agent/src/engine_client.rs`             |
+| T-16 | US-08        | Implement HTTPS client to dlp-server: reqwest client, TLS, `POST /evaluate` request/response, retry on failure                                                                  | `dlp-agent/src/engine_client.rs`             |
 | T-17 | US-08        | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss                                               | `dlp-agent/src/cache.rs`                     |
-| T-18 | US-11        | Implement offline mode: detect Policy Engine unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat                                                  | `dlp-agent/src/offline.rs`                   |
+| T-18 | US-11        | Implement offline mode: detect dlp-server unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat                                                     | `dlp-agent/src/offline.rs`                   |
 | T-20 | US-07        | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE`; `detection/clipboard/classifier.rs`: classify text content → T1–T4     | `dlp-agent/src/clipboard/`                   |
-| T-21 | US-07, US-13 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock Policy Engine)                                                                        | `dlp-agent/tests/`                           |
+| T-21 | US-07, US-13 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock dlp-server)                                                                           | `dlp-agent/tests/`                           |
 
 ### EP-04: Audit & Compliance
 
@@ -1146,7 +1146,7 @@ This table maps all Phase 1 implementation tasks to their stories, deliverable p
 | Crate                  | Tasks                           | Count  |
 | ---------------------- | ------------------------------- | ------ |
 | `dlp-common/`          | T-25                            | 1      |
-| `policy-engine/`       | T-01–T-08, T-22–T-24            | 11     |
+| `dlp-server/`       | T-01–T-08, T-22–T-24            | 11     |
 | `dlp-agent/`           | T-09–T-18, T-20–T-21, T-30–T-38 | 19     |
 | `dlp-user-ui/`         | T-39–T-46                       | 8      |
 | **Total**              |                                 | **39** |
@@ -1163,7 +1163,7 @@ This table maps all Phase 1 implementation tasks to their stories, deliverable p
 | ------------------------------------ | ------------ | ------ | ------------ |
 | EP-01: Policy Management             | 23           | Must   | Phase 1–4    |
 | EP-02: Endpoint Enforcement          | 40           | Must   | Phase 1–4    |
-| EP-03: Policy Engine Operations      | 26           | Must   | Phase 1–4    |
+| EP-03: dlp-server Operations         | 26           | Must   | Phase 1–4    |
 | EP-04: Audit & Compliance            | 21           | Must   | Phase 1–4    |
 | EP-05: Administrative UI             | 24           | Must   | **Out of Scope** |
 | EP-06: Deployment & Operations       | 21           | Should | Phase 4      |
