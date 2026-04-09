@@ -179,10 +179,10 @@ impl InterceptionEngine {
     /// Returns `Ok(())` when [`stop()`](InterceptionEngine::stop) is called.
     pub fn run(&self, tx: mpsc::Sender<FileAction>) -> Result<()> {
         use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-        use std::sync::mpsc;
+        use std::sync::mpsc as std_mpsc;
         use std::time::Duration;
 
-        let (notify_tx, notify_rx) = mpsc::channel();
+        let (notify_tx, notify_rx) = std_mpsc::channel();
 
         // Watch the root of all mounted volumes (C:\, D:\, etc.) so we catch
         // activity on any drive.  Use a cross-platform RecommendedWatcher.
@@ -222,67 +222,55 @@ impl InterceptionEngine {
         );
 
         loop {
-            // Check stop flag first — use a short timeout so we can also
-            // process pending events before exiting.
+            // Use a short timeout so we can check the stop flag between events.
             match notify_rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(event) => {
-                    let kind = event.kind;
-                    let paths: Vec<_> = event
-                        .paths
-                        .iter()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .collect();
-
-                    for path in paths {
-                        let action = match kind {
-                            notify::EventKind::Create(_) => Some(FileAction::Created {
-                                path,
-                                process_id: 0,
-                                related_process_id: 0,
-                            }),
-                            notify::EventKind::Modify(_) => Some(FileAction::Written {
-                                path,
-                                process_id: 0,
-                                related_process_id: 0,
-                                byte_count: 0,
-                            }),
-                            notify::EventKind::Remove(_) => Some(FileAction::Deleted {
-                                path,
-                                process_id: 0,
-                                related_process_id: 0,
-                            }),
-                            _ => None,
-                        };
-
-                        if let Some(action) = action {
-                            if self.stop_flag.load(Ordering::SeqCst) {
-                                tracing::info!(
-                                    "stop flag set — exiting file monitor"
-                                );
-                                return Ok(());
-                            }
-                            // Skip excluded paths (built-in + custom).
-                            if is_excluded(action.path(), &self.config.excluded_paths) {
-                                continue;
-                            }
-                            // try_send is non-blocking — the watcher must not stall.
-                            let _ = tx.clone().try_send(action);
-                        }
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    // Check stop flag on timeout.
-                    if self.stop_flag.load(Ordering::SeqCst) {
-                        tracing::info!("stop flag set — exiting file monitor");
+                    if !self.dispatch_event(event, &tx) {
                         return Ok(());
                     }
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => {
                     tracing::info!("watcher channel disconnected — exiting");
                     return Ok(());
                 }
             }
+
+            if self.stop_flag.load(Ordering::SeqCst) {
+                tracing::info!("stop flag set — exiting file monitor");
+                return Ok(());
+            }
         }
+    }
+
+    /// Converts a single `notify` event into [`FileAction`]s and sends them
+    /// through the channel.
+    ///
+    /// Returns `false` if the stop flag is set (caller should exit the loop).
+    fn dispatch_event(
+        &self,
+        event: notify::Event,
+        tx: &mpsc::Sender<FileAction>,
+    ) -> bool {
+        for path_buf in &event.paths {
+            let path = path_buf.to_string_lossy().to_string();
+            let action = match event_kind_to_action(event.kind, path) {
+                Some(a) => a,
+                None => continue,
+            };
+
+            if is_excluded(action.path(), &self.config.excluded_paths) {
+                continue;
+            }
+
+            if self.stop_flag.load(Ordering::SeqCst) {
+                return false;
+            }
+
+            // try_send is non-blocking — the watcher must not stall.
+            let _ = tx.try_send(action);
+        }
+        true
     }
 
     /// Stops the file system monitor.
@@ -304,6 +292,32 @@ impl Default for InterceptionEngine {
 impl Drop for InterceptionEngine {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// Converts a `notify::EventKind` and file path into a [`FileAction`].
+///
+/// Returns `None` for event kinds that do not map to a DLP-relevant action
+/// (e.g. metadata-only changes, access events).
+fn event_kind_to_action(kind: notify::EventKind, path: String) -> Option<FileAction> {
+    match kind {
+        notify::EventKind::Create(_) => Some(FileAction::Created {
+            path,
+            process_id: 0,
+            related_process_id: 0,
+        }),
+        notify::EventKind::Modify(_) => Some(FileAction::Written {
+            path,
+            process_id: 0,
+            related_process_id: 0,
+            byte_count: 0,
+        }),
+        notify::EventKind::Remove(_) => Some(FileAction::Deleted {
+            path,
+            process_id: 0,
+            related_process_id: 0,
+        }),
+        _ => None,
     }
 }
 

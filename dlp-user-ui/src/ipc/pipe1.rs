@@ -116,6 +116,31 @@ fn client_loop(pipe: HANDLE, session_id: u32) -> Result<()> {
     Ok(())
 }
 
+/// Serialises a UI response message into JSON bytes.
+///
+/// Returns `None` and logs an error if serialisation fails.
+fn serialize_response(msg: &Pipe1UiMsg, session_id: u32, label: &str) -> Option<Vec<u8>> {
+    serde_json::to_vec(msg).map_err(|e| error!(session_id, "serialise {label} failed: {e}")).ok()
+}
+
+/// Handles a `ClipboardRead` request by reading the clipboard and building
+/// a response message.
+///
+/// Returns `None` when the clipboard is empty, not text, or unreadable.
+fn handle_clipboard_read(request_id: String, session_id: u32) -> Option<Pipe1UiMsg> {
+    match crate::dialogs::clipboard::read_clipboard() {
+        Ok(Some(data)) => Some(Pipe1UiMsg::ClipboardData { request_id, data }),
+        Ok(None) => {
+            info!(session_id, request_id, "clipboard empty or not text");
+            None
+        }
+        Err(e) => {
+            error!(session_id, request_id, error = %e, "failed to read clipboard");
+            None
+        }
+    }
+}
+
 /// Handles an incoming agent message and returns an optional response.
 fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
     match msg {
@@ -131,7 +156,6 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
                 resource_path = %resource_path,
                 "Pipe 1: BlockNotify received"
             );
-            // Show the block notification dialog and relay the user's choice back.
             let request_id = format!("block-{}", session_id);
             let dialog_result = crate::dialogs::show_block_dialog_with_result(
                 &classification,
@@ -147,13 +171,7 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
                     Pipe1UiMsg::UserCancelled { request_id }
                 }
             };
-            match serde_json::to_vec(&msg) {
-                Ok(json) => Some(json),
-                Err(e) => {
-                    error!(session_id, "serialise BlockNotify response failed: {e}");
-                    None
-                }
-            }
+            serialize_response(&msg, session_id, "BlockNotify response")
         }
         Pipe1AgentMsg::OverrideRequest {
             request_id,
@@ -184,36 +202,12 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
                     Pipe1UiMsg::UserCancelled { request_id }
                 }
             };
-            match serde_json::to_vec(&msg) {
-                Ok(json) => Some(json),
-                Err(e) => {
-                    error!(session_id, "serialise override response failed: {e}");
-                    None
-                }
-            }
+            serialize_response(&msg, session_id, "override response")
         }
         Pipe1AgentMsg::ClipboardRead { request_id } => {
             info!(session_id, request_id, "Pipe 1: ClipboardRead received");
-            match crate::dialogs::clipboard::read_clipboard() {
-                Ok(Some(data)) => {
-                    let msg = Pipe1UiMsg::ClipboardData { request_id, data };
-                    match serde_json::to_vec(&msg) {
-                        Ok(json) => Some(json),
-                        Err(e) => {
-                            error!(session_id, "serialise ClipboardData failed: {e}");
-                            None
-                        }
-                    }
-                }
-                Ok(None) => {
-                    info!(session_id, request_id, "clipboard empty or not text");
-                    None
-                }
-                Err(e) => {
-                    error!(session_id, request_id, error = %e, "failed to read clipboard");
-                    None
-                }
-            }
+            let msg = handle_clipboard_read(request_id, session_id)?;
+            serialize_response(&msg, session_id, "ClipboardData")
         }
         Pipe1AgentMsg::PasswordDialog { request_id } => {
             info!(session_id, request_id, "Pipe 1: PasswordDialog received");
@@ -224,13 +218,7 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
                     Pipe1UiMsg::PasswordCancel { request_id }
                 }
             };
-            match serde_json::to_vec(&msg) {
-                Ok(json) => Some(json),
-                Err(e) => {
-                    error!(session_id, "serialise password message failed: {e}");
-                    None
-                }
-            }
+            serialize_response(&msg, session_id, "password message")
         }
     }
 }

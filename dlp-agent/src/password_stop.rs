@@ -575,50 +575,66 @@ fn dpapi_unprotect(protected: &[u8]) -> anyhow::Result<Vec<u8>> {
 // Base64 decode (no external dep)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Lookup table mapping ASCII byte values to their 6-bit base64 index.
+/// Invalid characters are represented as `-1`.
+const BASE64_DECODE_TABLE: [i8; 256] = {
+    let mut table = [-1i8; 256];
+    let b64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut i = 0u8;
+    while i < 64 {
+        table[b64[i as usize] as usize] = i as i8;
+        i += 1;
+    }
+    table
+};
+
+/// Decodes a single base64 chunk (up to 4 bytes) into its 6-bit values.
+///
+/// Padding characters (`=`) are decoded as 0.  Returns `Err` if a non-padding
+/// byte is not a valid base64 character.
+fn decode_base64_chunk(chunk: &[u8]) -> anyhow::Result<[u8; 4]> {
+    let mut buf = [0u8; 4];
+    for (i, &b) in chunk.iter().enumerate() {
+        if b == b'=' {
+            continue; // buf[i] is already 0
+        }
+        let v = BASE64_DECODE_TABLE[b as usize];
+        if v < 0 {
+            return Err(anyhow::anyhow!("invalid base64 character: {:?}", b as char));
+        }
+        buf[i] = v as u8;
+    }
+    Ok(buf)
+}
+
+/// Emits 1-3 decoded bytes from a base64 chunk, respecting padding.
+///
+/// A full 4-byte chunk with no padding yields 3 output bytes. Trailing `=`
+/// padding reduces the count.
+fn emit_decoded_bytes(chunk: &[u8], buf: &[u8; 4], out: &mut Vec<u8>) {
+    out.push((buf[0] << 2) | (buf[1] >> 4));
+    if chunk.len() > 2 && chunk[2] != b'=' {
+        out.push((buf[1] << 4) | (buf[2] >> 2));
+    }
+    if chunk.len() > 3 && chunk[3] != b'=' {
+        out.push((buf[2] << 6) | buf[3]);
+    }
+}
+
 /// Decodes a base64 string into bytes.  Used to decode the DPAPI blob received
 /// from the UI before passing it to `dpapi_unprotect`.
 fn base64_decode(input: &str) -> anyhow::Result<Vec<u8>> {
-    const DECODE_TABLE: [i8; 256] = {
-        let mut table = [-1i8; 256];
-        let b64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut i = 0u8;
-        while i < 64 {
-            table[b64[i as usize] as usize] = i as i8;
-            i += 1;
-        }
-        table
-    };
-
     // Remove whitespace.
     let filtered: Vec<u8> = input
         .bytes()
-        .filter(|&b| b != b' ' && b != b'\n' && b != b'\r' && b != b'\t')
+        .filter(|&b| !b.is_ascii_whitespace())
         .collect();
 
     let mut out = Vec::with_capacity(filtered.len() / 4 * 3);
-    let chunks: Vec<&[u8]> = filtered.chunks(4).collect();
 
-    for chunk in chunks {
-        let mut buf = [0u8; 4];
-        for (i, &b) in chunk.iter().enumerate() {
-            if b == b'=' {
-                buf[i] = 0;
-            } else {
-                let v = DECODE_TABLE[b as usize];
-                if v < 0 {
-                    return Err(anyhow::anyhow!("invalid base64 character: {:?}", b as char));
-                }
-                buf[i] = v as u8;
-            }
-        }
-
-        out.push((buf[0] << 2) | (buf[1] >> 4));
-        if chunk.len() > 2 && chunk[2] != b'=' {
-            out.push((buf[1] << 4) | (buf[2] >> 2));
-        }
-        if chunk.len() > 3 && chunk[3] != b'=' {
-            out.push((buf[2] << 6) | buf[3]);
-        }
+    for chunk in filtered.chunks(4) {
+        let buf = decode_base64_chunk(chunk)?;
+        emit_decoded_bytes(chunk, &buf, &mut out);
     }
 
     Ok(out)

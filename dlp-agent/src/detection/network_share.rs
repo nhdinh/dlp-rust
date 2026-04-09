@@ -229,6 +229,71 @@ impl SmbMonitor {
     }
 }
 
+/// Returns `true` if the UNC path matches any entry in the whitelist snapshot.
+///
+/// Matching is case-insensitive: the path is lowered and compared against each
+/// entry by prefix or extracted server name.
+fn matches_whitelist(unc: &str, whitelist_snapshot: &[String]) -> bool {
+    let lower = unc.to_lowercase();
+    let server = extract_server_name(&lower);
+    whitelist_snapshot
+        .iter()
+        .any(|entry| lower.starts_with(entry) || server.as_deref() == Some(entry.as_str()))
+}
+
+/// Sends [`SmbShareEvent::Connected`] for each newly-added, non-whitelisted share.
+///
+/// Returns `false` if the channel receiver has been dropped (caller should stop).
+async fn emit_connected_events(
+    added: &[String],
+    whitelist_snapshot: &[String],
+    event_tx: &mpsc::Sender<SmbShareEvent>,
+) -> bool {
+    for unc_path in added {
+        if matches_whitelist(unc_path, whitelist_snapshot) {
+            continue;
+        }
+        let server = extract_server_name(unc_path)
+            .unwrap_or_else(|| unc_path.clone());
+        let share_name = unc_path
+            .rsplit('\\')
+            .next()
+            .unwrap_or(unc_path)
+            .to_string();
+        let event = SmbShareEvent::Connected {
+            unc_path: unc_path.clone(),
+            server,
+            share_name,
+        };
+        debug!(unc_path = %unc_path, "new SMB connection detected");
+        if event_tx.send(event).await.is_err() {
+            warn!("SMB event receiver dropped — stopping monitor");
+            return false;
+        }
+    }
+    true
+}
+
+/// Sends [`SmbShareEvent::Disconnected`] for each share that disappeared.
+///
+/// Returns `false` if the channel receiver has been dropped (caller should stop).
+async fn emit_disconnected_events(
+    removed: &[String],
+    event_tx: &mpsc::Sender<SmbShareEvent>,
+) -> bool {
+    for unc_path in removed {
+        debug!(unc_path = %unc_path, "SMB connection removed");
+        let event = SmbShareEvent::Disconnected {
+            unc_path: unc_path.clone(),
+        };
+        if event_tx.send(event).await.is_err() {
+            warn!("SMB event receiver dropped — stopping monitor");
+            return false;
+        }
+    }
+    true
+}
+
 /// The async polling loop — runs on a dedicated Tokio runtime.
 async fn poll_loop(
     whitelist: std::sync::Arc<parking_lot::RwLock<HashSet<String>>>,
@@ -250,7 +315,6 @@ async fn poll_loop(
 
         // Enumerate all current SMB connections via MPR.
         let current = enumerate_connected_shares();
-
         let previous: HashSet<String> = last_seen.read().clone();
 
         // Update last_seen to current.
@@ -261,48 +325,18 @@ async fn poll_loop(
         let removed: Vec<_> = previous.difference(&current).cloned().collect();
 
         // Snapshot the whitelist into a plain Vec inside a narrow scope so the
-        // MutexGuard is provably dropped (and the lock released) before any
+        // RwLockReadGuard is provably dropped (and the lock released) before any
         // `.await` — avoiding clippy::await_holding_lock.
-        let whitelist_vec: Vec<String> = {
+        let whitelist_snapshot: Vec<String> = {
             let guard = whitelist.read();
             guard.iter().cloned().collect()
         };
 
-        let is_whitelisted = |unc: &str| -> bool {
-            let lower = unc.to_lowercase();
-            let server = extract_server_name(&lower);
-            whitelist_vec
-                .iter()
-                .any(|entry| lower.starts_with(entry) || server.as_deref() == Some(entry.as_str()))
-        };
-
-        // Emit events.
-        for unc_path in &added {
-            if !is_whitelisted(unc_path) {
-                let server = extract_server_name(unc_path).unwrap_or_else(|| unc_path.clone());
-                let share_name = unc_path.rsplit('\\').next().unwrap_or(unc_path).to_string();
-                let event = SmbShareEvent::Connected {
-                    unc_path: unc_path.clone(),
-                    server,
-                    share_name,
-                };
-                debug!(unc_path = %unc_path, "new SMB connection detected");
-                if event_tx.send(event).await.is_err() {
-                    warn!("SMB event receiver dropped — stopping monitor");
-                    return;
-                }
-            }
+        if !emit_connected_events(&added, &whitelist_snapshot, &event_tx).await {
+            return;
         }
-
-        for unc_path in &removed {
-            debug!(unc_path = %unc_path, "SMB connection removed");
-            let event = SmbShareEvent::Disconnected {
-                unc_path: unc_path.clone(),
-            };
-            if event_tx.send(event).await.is_err() {
-                warn!("SMB event receiver dropped — stopping monitor");
-                return;
-            }
+        if !emit_disconnected_events(&removed, &event_tx).await {
+            return;
         }
     }
 }
