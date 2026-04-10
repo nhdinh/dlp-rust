@@ -42,19 +42,14 @@ fn get_current_session_id() -> u32 {
         if ProcessIdToSessionId(pid, &mut session_id).is_ok() {
             session_id
         } else {
-            warn!(
-                "ProcessIdToSessionId failed -- defaulting to session 0"
-            );
+            warn!("ProcessIdToSessionId failed -- defaulting to session 0");
             0
         }
     }
 }
 
 /// Spawns all named-pipe IPC tasks on the tokio runtime.
-fn spawn_ipc_tasks(
-    session_id: u32,
-    pipe1_connected: Arc<RwLock<bool>>,
-) {
+fn spawn_ipc_tasks(session_id: u32, pipe1_connected: Arc<RwLock<bool>>) {
     // Pipe 1 -- bidirectional command pipe.
     let connected = pipe1_connected;
     tokio::spawn(async move {
@@ -87,8 +82,7 @@ fn spawn_ipc_tasks(
 
     // Pipe 3 -- send UiReady to agent.
     tokio::spawn(async move {
-        if let Err(e) = ipc::pipe3::send_ui_ready(session_id).await
-        {
+        if let Err(e) = ipc::pipe3::send_ui_ready(session_id).await {
             debug!(error = %e, "Pipe 3: UiReady failed");
         }
     });
@@ -124,7 +118,22 @@ fn install_crash_hook() {
     }));
 }
 
+/// Log directory shared with the agent.
+const LOG_DIR: &str = r"C:\ProgramData\DLP\logs";
+
+/// Holds the `WorkerGuard` for the non-blocking file writer for the entire
+/// process lifetime.  See `dlp-agent::service::LOG_WORKER_GUARD` for the
+/// rationale for using `OnceLock` instead of `mem::forget`.
+static LOG_WORKER_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuard> =
+    std::sync::OnceLock::new();
+
 /// Initialises logging and runs the iced application.
+///
+/// Logging is set up with two layers:
+/// - A rolling daily file at `C:\ProgramData\DLP\logs\dlp-user-ui.log.*`
+///   (always active; this is the primary diagnostic output because
+///   `windows_subsystem = "windows"` suppresses stderr in release builds).
+/// - A stderr layer for interactive/debug use.
 ///
 /// # Errors
 ///
@@ -132,16 +141,41 @@ fn install_crash_hook() {
 pub fn run() -> iced::Result {
     install_crash_hook();
 
-    // Always log to stderr so debug builds show output in the console.
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    // Default to INFO; RUST_LOG overrides for development.
     let filter = tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(Level::DEBUG.into())
+        .with_default_directive(Level::INFO.into())
         .from_env_lossy();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_span_events(FmtSpan::CLOSE)
-        .with_target(true)
-        .init();
+    let _ = std::fs::create_dir_all(LOG_DIR);
+
+    // Rolling daily log file: C:\ProgramData\DLP\logs\dlp-user-ui.log.<date>
+    // This is the only reliable output channel when the UI runs as a
+    // `windows_subsystem = "windows"` process (no attached console).
+    let file_appender = tracing_appender::rolling::daily(LOG_DIR, "dlp-user-ui.log");
+    let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
+    let _ = LOG_WORKER_GUARD.set(guard);
+
+    // Two layers: file (always) + stderr (debug/console use only).
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_span_events(FmtSpan::CLOSE)
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_ansi(false),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_span_events(FmtSpan::CLOSE)
+                .with_target(true)
+                .with_thread_ids(true),
+        )
+        .try_init();
 
     let session_id = get_current_session_id();
     info!(session_id, "DLP Agent UI starting");
@@ -156,30 +190,26 @@ pub fn run() -> iced::Result {
 
     let pipe1_connected = Arc::new(RwLock::new(false));
 
-    let result = iced::application(
-        "DLP Agent UI",
-        DlpApp::update,
-        DlpApp::view,
-    )
-    .subscription(DlpApp::subscription)
-    .window_size(iced::Size::new(480.0, 200.0))
-    .run_with(move || {
-        // Spawn IPC tasks here — inside `run_with` — because the iced
-        // tokio runtime is only available after the application starts.
-        // Calling `tokio::spawn` before this point panics with
-        // "there is no reactor running".
-        spawn_ipc_tasks(session_id, pipe1_connected.clone());
+    let result = iced::application("DLP Agent UI", DlpApp::update, DlpApp::view)
+        .subscription(DlpApp::subscription)
+        .window_size(iced::Size::new(480.0, 200.0))
+        .run_with(move || {
+            // Spawn IPC tasks here — inside `run_with` — because the iced
+            // tokio runtime is only available after the application starts.
+            // Calling `tokio::spawn` before this point panics with
+            // "there is no reactor running".
+            spawn_ipc_tasks(session_id, pipe1_connected.clone());
 
-        // Start clipboard monitoring — watches for sensitive content
-        // pasted into the clipboard and alerts the agent via Pipe 3.
-        let _clipboard_stop = crate::clipboard_monitor::start(session_id);
+            // Start clipboard monitoring — watches for sensitive content
+            // pasted into the clipboard and alerts the agent via Pipe 3.
+            let _clipboard_stop = crate::clipboard_monitor::start(session_id);
 
-        let state = UiState {
-            session_id,
-            pipe1_connected,
-        };
-        (DlpApp { state }, iced::Task::none())
-    });
+            let state = UiState {
+                session_id,
+                pipe1_connected,
+            };
+            (DlpApp { state }, iced::Task::none())
+        });
 
     info!(?result, "iced application exited");
     result
@@ -199,8 +229,7 @@ impl DlpApp {
                 tray::apply_pending_status();
 
                 // Poll tray menu events from the muda receiver.
-                if let Ok(event) = muda::MenuEvent::receiver().try_recv()
-                {
+                if let Ok(event) = muda::MenuEvent::receiver().try_recv() {
                     let id = event.id.0.clone();
                     match id.as_str() {
                         "show_portal" => tray::open_portal(),
@@ -226,11 +255,7 @@ impl DlpApp {
 
         iced::widget::column![
             iced::widget::text("DLP Agent UI").size(18),
-            iced::widget::text(format!(
-                "Session: {}",
-                self.state.session_id
-            ))
-            .size(14),
+            iced::widget::text(format!("Session: {}", self.state.session_id)).size(14),
             iced::widget::text(format!("Status: {status}")).size(14),
         ]
         .padding(20)
@@ -241,7 +266,6 @@ impl DlpApp {
     /// Returns a subscription that periodically polls for tray menu
     /// events.
     fn subscription(&self) -> iced::Subscription<Message> {
-        iced::time::every(std::time::Duration::from_millis(100))
-            .map(|_| Message::Tick(()))
+        iced::time::every(std::time::Duration::from_millis(100)).map(|_| Message::Tick(()))
     }
 }
