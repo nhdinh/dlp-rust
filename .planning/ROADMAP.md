@@ -2,6 +2,13 @@
 
 ## Milestone: v0.2.0
 
+### Phase 0.1: Fix clipboard monitoring runtime pipeline [COMPLETED]
+**Status:** Resolved via `/gsd-debug` — see `.planning/debug/clipboard-monitoring-no-alerts.md`
+**Files:** `dlp-agent/src/service.rs`, `dlp-user-ui/src/app.rs`, `dlp-user-ui/src/ipc/pipe3.rs`
+**Description:** Urgent bugfix — clipboard monitoring was wired in code and passed Phase 99 integration tests, but produced no runtime alerts. Four compounding root causes: (A) WorkerGuard lifetime bug + `.init()` panics in agent logging; (B) UI subscriber wrote to stderr only under `windows_subsystem="windows"`; (C) `tracing_appender::non_blocking` 0.2.4 silently swallows IO errors; (D) Pipe 3 `PIPE_NAME_DEFAULT` was missing one backslash (`r"\.\pipe\..."` vs `r"\\.\pipe\..."`), which Phase 99 tests bypassed via `DLP_PIPE3_NAME`.
+**UAT:** Copying `4111 1111 1111 1111` produces a new line in `C:\ProgramData\DLP\logs\audit.jsonl` within 2 seconds with `event_type=Alert`, `classification=T4`, `action_attempted=PASTE`. **Verified 2026-04-10.**
+**Commits:** `c038173`, `6244ac1`, `62be9ef`
+
 ### Phase 1: Fix integration tests
 **Requirement:** R-06
 **Files:** `dlp-agent/tests/integration.rs`

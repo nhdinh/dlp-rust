@@ -1,8 +1,10 @@
 ---
-status: verifying
+status: resolved
 trigger: "clipboard-monitoring-no-alerts — copying sensitive content produces no audit event, agent tracing log is 0 bytes"
 created: 2026-04-10T00:00:00Z
-updated: 2026-04-10T16:50:00Z
+updated: 2026-04-10T17:00:00Z
+resolved: 2026-04-10T17:00:00Z
+resolution: "User confirmed UAT passes after commit 62be9ef. Four root causes fixed across commits c038173, 6244ac1, 62be9ef: (A) WorkerGuard lifetime + .init() panics, (B) UI stderr-only subscriber under windows_subsystem, (C) tracing_appender::non_blocking silently swallows IO errors, (D) Pipe 3 default pathname missing one backslash. Clipboard alerts now reach audit.jsonl end-to-end."
 ---
 
 ## Current Focus
