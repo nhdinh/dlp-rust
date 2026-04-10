@@ -1008,6 +1008,14 @@ mod tests {
         validate_webhook_url("https://192.168.1.1/hook").expect("RFC1918 must be accepted");
     }
 
+    /// Shared test secret. All integration tests in this module and in
+    /// admin_auth::tests must agree on this value because
+    /// `admin_auth::set_jwt_secret` is backed by a `OnceLock` that silently
+    /// ignores duplicate set calls — whichever test runs first wins. We use
+    /// the same literal that `admin_auth::DEV_JWT_SECRET` does (checked into
+    /// `admin_auth.rs`) so all cross-module tests converge on one secret.
+    const TEST_JWT_SECRET: &str = "dlp-server-dev-secret-change-me";
+
     #[tokio::test]
     async fn test_get_alert_config_requires_auth() {
         // Integration test at the handler level: a real router build that
@@ -1019,9 +1027,7 @@ mod tests {
 
         // JWT secret must be set for the middleware to initialise. OnceLock
         // silently ignores duplicate set calls, so this is safe across tests.
-        crate::admin_auth::set_jwt_secret(
-            "test-secret-phase4-alert-config-auth-32bytes-longenough".to_string(),
-        );
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
         let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
@@ -1046,10 +1052,9 @@ mod tests {
         use jsonwebtoken::{encode, EncodingKey, Header};
         use tower::ServiceExt;
 
-        // JWT secret — OnceLock ignores duplicate set calls. Use the SAME
-        // value the other test sets so both tests agree on the secret.
-        let secret = "test-secret-phase4-alert-config-auth-32bytes-longenough".to_string();
-        crate::admin_auth::set_jwt_secret(secret.clone());
+        // Use the shared constant so all cross-module tests agree on the
+        // secret stored in the process-wide OnceLock.
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
         let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
@@ -1065,7 +1070,7 @@ mod tests {
         let token = encode(
             &Header::default(),
             &claims,
-            &EncodingKey::from_secret(secret.as_bytes()),
+            &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
         )
         .expect("encode JWT");
 

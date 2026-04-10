@@ -140,6 +140,16 @@ pub async fn ingest_events(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
+    // G7: Compute alert-eligible events BEFORE the SIEM spawn so
+    // relay_events can still be moved into the SIEM closure while
+    // alert_events is moved into the alert closure. Filtered to
+    // Decision::DenyWithAlert — do NOT alert on Deny or AllowWithLog.
+    let alert_events: Vec<AuditEvent> = relay_events
+        .iter()
+        .filter(|e| matches!(e.decision, dlp_common::Decision::DenyWithAlert))
+        .cloned()
+        .collect();
+
     // Best-effort SIEM relay — fire-and-forget in a background task
     // so the HTTP response is not delayed by external SIEM latency.
     let siem = state.siem.clone();
@@ -148,6 +158,22 @@ pub async fn ingest_events(
             tracing::warn!(error = %e, "SIEM relay failed (best-effort)");
         }
     });
+
+    // Best-effort alert routing — fire-and-forget, only when there are
+    // DenyWithAlert events. Per-channel (SMTP/webhook) warn! logging
+    // happens inside AlertRouter::send_alert (TM-04); this wrapper
+    // catches the outer error path only. The spawned task is never
+    // awaited — ingest latency must be unaffected by alert I/O.
+    if !alert_events.is_empty() {
+        let alert = state.alert.clone();
+        tokio::spawn(async move {
+            for event in alert_events {
+                if let Err(e) = alert.send_alert(&event).await {
+                    tracing::warn!(error = %e, "alert delivery failed (best-effort)");
+                }
+            }
+        });
+    }
 
     tracing::info!(count, "ingested audit events");
     Ok(StatusCode::CREATED)
