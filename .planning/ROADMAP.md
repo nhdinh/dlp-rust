@@ -17,11 +17,13 @@
 **UAT:** `cargo test --workspace` passes with zero compilation errors. **Verified 2026-04-10** (364/364 tests passing across 15 binaries + doc tests).
 **Commits:** `8c62fec`, `5d60f6a`
 
-### Phase 2: Require JWT_SECRET in production
+### Phase 2: Require JWT_SECRET in production [COMPLETED]
 **Requirement:** R-08
+**Status:** Resolved — see `.planning/phases/02-require-jwt-secret-in-production/SUMMARY.md`
 **Files:** `dlp-server/src/admin_auth.rs`, `dlp-server/src/main.rs`
 **Description:** Remove hardcoded dev fallback. Add `--dev` flag to allow insecure secret in development only. Fail on startup otherwise.
-**UAT:** Server refuses to start without JWT_SECRET (no --dev flag). Server starts with --dev flag and warns.
+**UAT:** Server refuses to start without JWT_SECRET (no --dev flag). Server starts with --dev flag and warns. **Verified 2026-04-10** (31/31 dlp-server lib tests passing).
+**Commits:** `664c528`
 
 ### Phase 3: Wire SIEM connector into server startup
 **Requirement:** R-01
