@@ -23,6 +23,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::PasswordInput { .. } => handle_password_input(app, key),
         Screen::Confirm { .. } => handle_confirm(app, key),
         Screen::SiemConfig { .. } => handle_siem_config(app, key),
+        Screen::AlertConfig { .. } => handle_alert_config(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -170,12 +171,13 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        KeyCode::Up | KeyCode::Down => nav(selected, 4, key.code),
+        KeyCode::Up | KeyCode::Down => nav(selected, 5, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
             2 => action_load_siem_config(app),
-            3 => app.screen = Screen::MainMenu { selected: 2 },
+            3 => action_load_alert_config(app),
+            4 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
@@ -768,5 +770,270 @@ fn handle_siem_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
             app.screen = Screen::SystemMenu { selected: 2 };
         }
         _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Alert Config screen
+// ---------------------------------------------------------------------------
+
+/// JSON keys for the Alert config form, indexed by row (10 editable fields).
+///
+/// Must match `AlertRouterConfigPayload` field names in
+/// `dlp-server/src/admin_api.rs` exactly so the PUT round-trip deserializes.
+const ALERT_KEYS: [&str; 10] = [
+    "smtp_host",
+    "smtp_port",
+    "smtp_username",
+    "smtp_password",
+    "smtp_from",
+    "smtp_to",
+    "smtp_enabled",
+    "webhook_url",
+    "webhook_secret",
+    "webhook_enabled",
+];
+
+/// Row index of the Save button.
+const ALERT_SAVE_ROW: usize = 10;
+/// Row index of the Back button.
+const ALERT_BACK_ROW: usize = 11;
+/// Total number of rows in the Alert config form (10 editable + Save + Back).
+const ALERT_ROW_COUNT: usize = 12;
+
+/// Returns `true` if the row index is a bool (toggle) field.
+fn alert_is_bool(index: usize) -> bool {
+    matches!(index, 6 | 9) // smtp_enabled, webhook_enabled
+}
+
+/// Returns `true` if the row index is the numeric SMTP port field.
+fn alert_is_numeric(index: usize) -> bool {
+    matches!(index, 1) // smtp_port
+}
+
+/// Fetches the current alert router config from the server and switches
+/// to the `AlertConfig` screen.
+///
+/// Uses the generic `client.get::<serde_json::Value>` path (matching the
+/// Phase 3.1 SIEM Config pattern) rather than adding a typed client helper.
+fn action_load_alert_config(app: &mut App) {
+    match app
+        .rt
+        .block_on(app.client.get::<serde_json::Value>("admin/alert-config"))
+    {
+        Ok(config) => {
+            app.screen = Screen::AlertConfig {
+                config,
+                selected: 0,
+                editing: false,
+                buffer: String::new(),
+            };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Persists the in-memory alert router config to the server.
+fn action_save_alert_config(app: &mut App) {
+    // Clone the config out of the screen so we can release the borrow.
+    let payload = match &app.screen {
+        Screen::AlertConfig { config, .. } => config.clone(),
+        _ => return,
+    };
+    match app.rt.block_on(
+        app.client
+            .put::<serde_json::Value, _>("admin/alert-config", &payload),
+    ) {
+        Ok(_) => {
+            app.set_status("Alert config saved", StatusKind::Success);
+            app.screen = Screen::SystemMenu { selected: 3 };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Handles key events while the Alert config form is active.
+fn handle_alert_config(app: &mut App, key: KeyEvent) {
+    let (selected, editing) = match &app.screen {
+        Screen::AlertConfig {
+            selected, editing, ..
+        } => (*selected, *editing),
+        _ => return,
+    };
+
+    if editing {
+        handle_alert_config_editing(app, key, selected);
+    } else {
+        handle_alert_config_nav(app, key, selected);
+    }
+}
+
+/// Handles key events while editing a text/numeric field in the Alert
+/// config form.
+///
+/// The numeric branch (row 1, `smtp_port`) parses the buffer as `u16`. On
+/// parse failure the function sets a status error and stays in edit mode
+/// so the user can correct the value without losing their input.
+fn handle_alert_config_editing(app: &mut App, key: KeyEvent, selected: usize) {
+    match key.code {
+        KeyCode::Char(c) => {
+            if let Screen::AlertConfig { buffer, .. } = &mut app.screen {
+                buffer.push(c);
+            }
+        }
+        KeyCode::Backspace => {
+            if let Screen::AlertConfig { buffer, .. } = &mut app.screen {
+                buffer.pop();
+            }
+        }
+        KeyCode::Enter => {
+            // G2: commit the buffer. Numeric row 1 requires u16 parsing.
+            if alert_is_numeric(selected) {
+                // Parse smtp_port. On failure, set a status error and stay
+                // in edit mode so the user can correct the value.
+                let buffer_copy = match &app.screen {
+                    Screen::AlertConfig { buffer, .. } => buffer.clone(),
+                    _ => return,
+                };
+                match buffer_copy.trim().parse::<u16>() {
+                    Ok(port) => {
+                        if let Screen::AlertConfig {
+                            config,
+                            buffer,
+                            editing,
+                            ..
+                        } = &mut app.screen
+                        {
+                            let key_name = ALERT_KEYS[selected];
+                            // G9: store as JSON Number, not String, so the
+                            // server's `smtp_port: u16` deserialization
+                            // succeeds on PUT.
+                            config[key_name] =
+                                serde_json::Value::Number(serde_json::Number::from(port));
+                            buffer.clear();
+                            *editing = false;
+                        }
+                    }
+                    Err(_) => {
+                        app.set_status(
+                            "SMTP port must be a number in 0..=65535",
+                            StatusKind::Error,
+                        );
+                        // Stay in edit mode so the user can fix the buffer.
+                    }
+                }
+            } else if let Screen::AlertConfig {
+                config,
+                buffer,
+                editing,
+                ..
+            } = &mut app.screen
+            {
+                let key_name = ALERT_KEYS[selected];
+                config[key_name] = serde_json::Value::String(buffer.clone());
+                buffer.clear();
+                *editing = false;
+            }
+        }
+        KeyCode::Esc => {
+            if let Screen::AlertConfig {
+                buffer, editing, ..
+            } = &mut app.screen
+            {
+                buffer.clear();
+                *editing = false;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events while navigating the Alert config form.
+fn handle_alert_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::AlertConfig { selected: sel, .. } = &mut app.screen {
+                nav(sel, ALERT_ROW_COUNT, key.code);
+            }
+        }
+        KeyCode::Enter => {
+            if selected == ALERT_SAVE_ROW {
+                action_save_alert_config(app);
+            } else if selected == ALERT_BACK_ROW {
+                app.screen = Screen::SystemMenu { selected: 3 };
+            } else if alert_is_bool(selected) {
+                // Toggle the bool in place.
+                if let Screen::AlertConfig { config, .. } = &mut app.screen {
+                    let key_name = ALERT_KEYS[selected];
+                    let cur = config[key_name].as_bool().unwrap_or(false);
+                    config[key_name] = serde_json::Value::Bool(!cur);
+                }
+            } else if alert_is_numeric(selected) {
+                // Enter edit mode pre-filled with the current port value.
+                if let Screen::AlertConfig {
+                    config,
+                    editing,
+                    buffer,
+                    ..
+                } = &mut app.screen
+                {
+                    let key_name = ALERT_KEYS[selected];
+                    let n = config[key_name].as_i64().unwrap_or(587);
+                    *buffer = n.to_string();
+                    *editing = true;
+                }
+            } else {
+                // Enter text-edit mode with the current string value pre-filled.
+                if let Screen::AlertConfig {
+                    config,
+                    editing,
+                    buffer,
+                    ..
+                } = &mut app.screen
+                {
+                    let key_name = ALERT_KEYS[selected];
+                    *buffer = config[key_name].as_str().unwrap_or("").to_string();
+                    *editing = true;
+                }
+            }
+        }
+        KeyCode::Esc => {
+            app.screen = Screen::SystemMenu { selected: 3 };
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_menu_has_alert_config() {
+        // Verify the Alert config constants are consistent with the 12-row form.
+        assert_eq!(ALERT_KEYS.len(), 10, "10 editable fields");
+        assert_eq!(ALERT_SAVE_ROW, 10);
+        assert_eq!(ALERT_BACK_ROW, 11);
+        assert_eq!(ALERT_ROW_COUNT, 12);
+
+        // Verify the bool rows map to the enabled columns.
+        assert!(alert_is_bool(6)); // smtp_enabled
+        assert!(alert_is_bool(9)); // webhook_enabled
+        assert!(!alert_is_bool(0)); // smtp_host
+        assert!(!alert_is_bool(1)); // smtp_port (numeric, not bool)
+
+        // Verify the numeric row is smtp_port.
+        assert!(alert_is_numeric(1));
+        assert!(!alert_is_numeric(0));
+        assert!(!alert_is_numeric(6));
+
+        // Verify the KEYS order matches the documented form.
+        assert_eq!(ALERT_KEYS[0], "smtp_host");
+        assert_eq!(ALERT_KEYS[1], "smtp_port");
+        assert_eq!(ALERT_KEYS[3], "smtp_password");
+        assert_eq!(ALERT_KEYS[6], "smtp_enabled");
+        assert_eq!(ALERT_KEYS[7], "webhook_url");
+        assert_eq!(ALERT_KEYS[8], "webhook_secret");
+        assert_eq!(ALERT_KEYS[9], "webhook_enabled");
     }
 }
