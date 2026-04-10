@@ -1,16 +1,10 @@
 {
   "granularity": "fine",
-  "auto_commit": true,
-  "yolo_mode": true,
+  "commit_docs": true,
   "workflow": {
     "code_review": true,
     "code_review_depth": "standard",
     "tests": true,
     "docs_update": true
-  },
-  "models": {
-    "researcher": "sonnet",
-    "synthesizer": "sonnet",
-    "roadmapper": "sonnet"
   }
 }
