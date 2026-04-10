@@ -60,27 +60,60 @@ The system shall:
 
 ### 1.3 Definitions
 
-| Term                | Definition                                                                                                                                                                                                                               |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **DLP**             | Data Loss Prevention — controls to detect and prevent data exfiltration                                                                                                                                                                  |
-| **NTFS**            | New Technology File System — Windows file system with ACL support                                                                                                                                                                        |
-| **ABAC**            | Attribute-Based Access Control — policy model using subject/resource/environment attributes                                                                                                                                              |
-| **AD**              | Active Directory — Microsoft identity and access management service                                                                                                                                                                      |
-| **dlp-admin**       | Designated superuser with full policy and system control                                                                                                                                                                                 |
-| **Classification**  | Data sensitivity tier assignment (T1–T4)                                                                                                                                                                                                 |
-| **T4 Restricted**   | Highest sensitivity — catastrophic impact if disclosed                                                                                                                                                                                   |
-| **T3 Confidential** | High sensitivity — serious impact if disclosed                                                                                                                                                                                           |
-| **T2 Internal**     | Moderate sensitivity — internal use only                                                                                                                                                                                                 |
-| **T1 Public**       | Low sensitivity — no harm if disclosed                                                                                                                                                                                                   |
-| **dlp-server**   | ABAC decision service, evaluates access requests                                                                                                                                                                                         |
-| **dlp-agent**       | Endpoint enforcement component, runs as Windows Service under SYSTEM account, does not interact with OS users directly                                                                                                                   |
-| **dlp-user-ui**     | Endpoint interaction component, iced subprocess spawned by the Agent in **each active user session**; one UI instance per active session; handles all user-facing work (notifications, dialogs, clipboard, tray) for that session's user |
-| **IPC**             | Inter-Process Communication — Agent ↔ UI communication via Windows named pipes                                                                                                                                                           |
-| **Named Pipe**      | Windows kernel object for bidirectional message-mode IPC between processes                                                                                                                                                               |
-| **SCM**             | Service Control Manager — Windows component that manages Windows Services                                                                                                                                                                |
-| **SIEM**            | Security Information and Event Management                                                                                                                                                                                                |
-| **REST API**        | Representational State Transfer — HTTP-based API used for dlp-server communication                                                                                                                                                    |
-| **dlp-server**      | Central management HTTP server — owns agent registry, audit ingestion & SIEM relay, admin auth (TOTP + JWT), policy sync to engine replicas, alert routing, exception records                                                            |
+| Term                               | Definition                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **ABAC**                           | Attribute-Based Access Control — policy model using subject/resource/environment attributes                                                                                                                                                                                                                                                |
+| **ACL**                            | Access Control List — list of permissions attached to an object                                                                                                                                                                                                                                                                            |
+| **AD**                             | Active Directory — Microsoft identity and access management service                                                                                                                                                                                                                                                                        |
+| **AES-256**                        | Advanced Encryption Standard with 256-bit key — symmetric encryption algorithm                                                                                                                                                                                                                                                             |
+| **API**                            | Application Programming Interface                                                                                                                                                                                                                                                                                                          |
+| **BitLocker**                      | Microsoft full-disk encryption for Windows                                                                                                                                                                                                                                                                                                 |
+| **CLAUDE.md**                      | Project definition file used by AI assistants                                                                                                                                                                                                                                                                                              |
+| **Classification**                 | Data sensitivity tier assignment (T1-T4)                                                                                                                                                                                                                                                                                                   |
+| **CreateProcessAsUser**            | Windows API to spawn a process in a specific user session                                                                                                                                                                                                                                                                                  |
+| **DACL**                           | Discretionary Access Control List — part of an object's security descriptor controlling access                                                                                                                                                                                                                                             |
+| **DLP**                            | Data Loss Prevention — system to monitor and prevent unauthorized data transfer                                                                                                                                                                                                                                                            |
+| **DPAPI**                          | Data Protection API — Windows API for encrypting data using the user's credentials (CryptProtectData/CryptUnprotectData)                                                                                                                                                                                                                   |
+| **EDR**                            | Endpoint Detection and Response                                                                                                                                                                                                                                                                                                            |
+| **ELK**                            | Elasticsearch, Logstash, Kibana — open-source SIEM stack                                                                                                                                                                                                                                                                                   |
+| **HEC**                            | HTTP Event Collector — Splunk's HTTP-based log ingestion endpoint                                                                                                                                                                                                                                                                          |
+| **HSM**                            | Hardware Security Module                                                                                                                                                                                                                                                                                                                   |
+| **IPC**                            | Inter-Process Communication — mechanism for processes to communicate; here: Windows named pipes                                                                                                                                                                                                                                            |
+| **ISO 27001**                      | ISO/IEC 27001 — international standard for information security management                                                                                                                                                                                                                                                                 |
+| **LDAPS**                          | LDAP over TLS — secure directory protocol                                                                                                                                                                                                                                                                                                  |
+| **MFA**                            | Multi-Factor Authentication                                                                                                                                                                                                                                                                                                                |
+| **Named Pipe**                     | Windows kernel object (\\.\pipe\*) for message-mode IPC between processes                                                                                                                                                                                                                                                                  |
+| **NTFS**                           | New Technology File System — Windows default file system with ACL support                                                                                                                                                                                                                                                                  |
+| **P95**                            | 95th percentile — 95% of observations are at or below this value                                                                                                                                                                                                                                                                           |
+| **PII**                            | Personally Identifiable Information                                                                                                                                                                                                                                                                                                        |
+| **RBAC**                           | Role-Based Access Control — authorization model using roles and permissions                                                                                                                                                                                                                                                                |
+| **REST API**                       | Representational State Transfer — HTTP-based API used for dlp-server communication                                                                                                                                                                                                                                                         |
+| **Rust**                           | Systems programming language focused on safety and performance                                                                                                                                                                                                                                                                             |
+| **SCM**                            | Service Control Manager — Windows component managing Windows Services lifecycle                                                                                                                                                                                                                                                            |
+| **SID**                            | Security Identifier — unique identifier for Windows principals (users, groups)                                                                                                                                                                                                                                                             |
+| **SIEM**                           | Security Information and Event Management — centralized log collection and analysis                                                                                                                                                                                                                                                        |
+| **SMB Impersonation**              | Windows security mechanism where the SMB server temporarily adopts the security context of the remote client via `RpcImpersonateClient` / `ImpersonateNamedPipeClient`; file operations on the server execute in the caller's context, enabling the agent to attribute operations to the actual remote user rather than the server process |
+| **Splunk**                         | Commercial SIEM platform                                                                                                                                                                                                                                                                                                                   |
+| **SRS**                            | Software Requirements Specification                                                                                                                                                                                                                                                                                                        |
+| **STRIDE**                         | Spoofing, Tampering, Repudiation, Information Disclosure, DoS, Privilege Escalation — threat modeling methodology                                                                                                                                                                                                                          |
+| **SYSTEM account**                 | Windows local system account with highest privilege on a single machine                                                                                                                                                                                                                                                                    |
+| **T1 Public**                      | Low sensitivity — no harm if disclosed                                                                                                                                                                                                                                                                                                     |
+| **T2 Internal**                    | Moderate sensitivity — internal use only                                                                                                                                                                                                                                                                                                   |
+| **T3 Confidential**                | High sensitivity — serious impact if disclosed                                                                                                                                                                                                                                                                                             |
+| **T4 Restricted**                  | Highest sensitivity — catastrophic impact if disclosed                                                                                                                                                                                                                                                                                     |
+| **TLS 1.3**                        | Transport Layer Security version 1.3 — current best-practice encryption in transit                                                                                                                                                                                                                                                         |
+| **TOTP**                           | Time-based One-Time Password — MFA method (RFC 6238)                                                                                                                                                                                                                                                                                       |
+| **TTL**                            | Time-To-Live — duration a cached entry remains valid                                                                                                                                                                                                                                                                                       |
+| **WinAPI**                         | Windows Application Programming Interface                                                                                                                                                                                                                                                                                                  |
+| **WTSEnumerateSessionsW**          | Windows API to enumerate all active user sessions on the local machine (returns an array of WTS_SESSION_INFOW structs, including session ID, state, and username)                                                                                                                                                                          |
+| **WTSGetActiveConsoleSessionId**   | Superseded by `WTSEnumerateSessionsW` — returns only the active console session (single session); not used in this architecture which enumerates all sessions. Retained for reference only.                                                                                                                                                |
+| **WTSRegisterSessionNotification** | Windows API to register for session change events (session connect, disconnect, logon, logoff) for a specific session's window station                                                                                                                                                                                                     |
+| **dlp-admin**                      | Designated superuser account for DLP system administration and secure service stop                                                                                                                                                                                                                                                         |
+| **dlp-agent**                      | Endpoint enforcement component, runs as Windows Service under SYSTEM account, does not interact with OS users directly                                                                                                                                                                                                                     |
+| **dlp-server**                     | Central management HTTP server — owns agent registry, audit ingestion & SIEM relay, admin auth (TOTP + JWT), policy sync to engine replicas, alert routing, exception records                                                                                                                                                              |
+| **dlp-user-ui**                    | Endpoint interaction component, iced subprocess spawned by the Agent in **each active user session**; one UI instance per active session; handles all user-facing work (notifications, dialogs, clipboard, tray) for that session's user                                                                                                   |
+| **iced**                           | Pure Rust native GUI framework; here used for the endpoint interaction UI                                                                                                                                                                                                                                                                  |
+| **mTLS**                           | Mutual TLS — TLS with both client and server certificate authentication                                                                                                                                                                                                                                                                    |
 
 ### 1.4 References
 
@@ -134,7 +167,7 @@ The dlp-agent runs as a Windows Service under the SYSTEM account. Because a SERV
 | Concern                                 | Owner      |
 | --------------------------------------- | ---------- |
 | File operation interception             | Agent      |
-| dlp-server HTTPS communication       | Agent      |
+| dlp-server HTTPS communication          | Agent      |
 | Audit event emission                    | Agent      |
 | Windows Service lifecycle               | Agent      |
 | User notifications (toast)              | DLP UI     |
@@ -182,19 +215,19 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 
 ### 3.1 DLP Admin Features
 
-| ID       | Requirement                                                                                                                                                                                                 | Priority |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| F-ADM-01 | Admin shall create, read, update, and delete ABAC policies via direct JSON edits to `policies.json` or via the dlp-server REST API (`GET/POST/PUT/DELETE /policies`). | Must     |
-| F-ADM-02 | Admin shall assign data classification (T1–T4) to files and folders                                                                                                                                         | Must     |
-| F-ADM-03 | Admin shall view real-time system health (dlp-server uptime, agent connectivity, policy hit rates)                                                                                                       | Must     |
-| F-ADM-04 | Admin shall configure alert thresholds and notification recipients                                                                                                                                          | Must     |
-| F-ADM-05 | Admin shall view and export audit logs filtered by date range, user, resource, and event type                                                                                                               | Must     |
-| F-ADM-06 | Admin shall define exclusion paths (e.g., IT scan folders) that bypass DLP enforcement                                                                                                                      | Should   |
-| F-ADM-07 | Admin shall manage endpoint agent configurations (push updates, version control)                                                                                                                            | Should   |
-| F-ADM-08 | Admin shall receive real-time alerts for T3/T4 policy violations                                                                                                                                            | Must     |
-| F-ADM-09 | Admin shall trigger on-demand file scans for classification review                                                                                                                                          | May      |
-| F-ADM-10 | Admin shall review and approve or deny exception requests submitted by end users                                                                                                                            | Should   |
-| F-ADM-11 | Admin shall stop the dlp-agent via `sc stop dlp-agent` after entering the dlp-admin password in a UI dialog                                                                                                 | Must     |
+| ID       | Requirement                                                                                                                                                                                                                                                                                                                | Priority |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| F-ADM-01 | Admin shall create, read, update, and delete ABAC policies via direct JSON edits to `policies.json` or via the dlp-server REST API (`GET/POST/PUT/DELETE /policies`).                                                                                                                                                      | Must     |
+| F-ADM-02 | Admin shall assign data classification (T1–T4) to files and folders                                                                                                                                                                                                                                                        | Must     |
+| F-ADM-03 | Admin shall view real-time system health (dlp-server uptime, agent connectivity, policy hit rates)                                                                                                                                                                                                                         | Must     |
+| F-ADM-04 | Admin shall configure alert thresholds and notification recipients                                                                                                                                                                                                                                                         | Must     |
+| F-ADM-05 | Admin shall view and export audit logs filtered by date range, user, resource, and event type                                                                                                                                                                                                                              | Must     |
+| F-ADM-06 | Admin shall define exclusion paths (e.g., IT scan folders) that bypass DLP enforcement                                                                                                                                                                                                                                     | Should   |
+| F-ADM-07 | Admin shall manage endpoint agent configurations (push updates, version control)                                                                                                                                                                                                                                           | Should   |
+| F-ADM-08 | Admin shall receive real-time alerts for T3/T4 policy violations                                                                                                                                                                                                                                                           | Must     |
+| F-ADM-09 | Admin shall trigger on-demand file scans for classification review                                                                                                                                                                                                                                                         | May      |
+| F-ADM-10 | Admin shall review and approve or deny exception requests submitted by end users                                                                                                                                                                                                                                           | Should   |
+| F-ADM-11 | Admin shall stop the dlp-agent via `sc stop dlp-agent` after entering the dlp-admin password in a UI dialog                                                                                                                                                                                                                | Must     |
 | F-ADM-12 | Admin shall set or change the dlp-admin password via `dlp-admin-cli.exe set-password`; the tool shall hash the password with bcrypt (cost 12) and push the hash to dlp-server via `PUT /agent-credentials/auth-hash`; agents sync the hash from the server on startup and cache it locally in the registry for offline use | Must     |
 
 ### 3.2 Endpoint Agent (Windows Service)
@@ -204,14 +237,14 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 | F-AGT-01 | Agent shall run as a Windows Service under the SYSTEM account                                                                                                                                                                                                                                                     | Must     |
 | F-AGT-02 | Agent shall start automatically at Windows boot via Service Control Manager                                                                                                                                                                                                                                       | Must     |
 | F-AGT-03 | Agent shall be a single-instance service; a second start attempt shall be rejected                                                                                                                                                                                                                                | Must     |
-| F-AGT-04 | Agent shall register with dlp-server on startup and maintain heartbeat                                                                                                                                                                                                                                         | Must     |
+| F-AGT-04 | Agent shall register with dlp-server on startup and maintain heartbeat                                                                                                                                                                                                                                            | Must     |
 | F-AGT-05 | Agent shall intercept file open/write/delete/rename/move operations via the `notify` crate (`ReadDirectoryChangesW`) on monitored paths                                                                                                                                                                           | Must     |
-| F-AGT-06 | Agent shall request ABAC decision from dlp-server before allowing sensitive file operations                                                                                                                                                                                                                    | Must     |
+| F-AGT-06 | Agent shall request ABAC decision from dlp-server before allowing sensitive file operations                                                                                                                                                                                                                       | Must     |
 | F-AGT-07 | Agent shall enforce ABAC DENY decisions by blocking the operation and logging the event                                                                                                                                                                                                                           | Must     |
 | F-AGT-08 | Agent shall enforce ABAC ALLOW decisions by permitting the operation (subject to NTFS)                                                                                                                                                                                                                            | Must     |
 | F-AGT-09 | Agent shall emit structured JSON audit events for every intercepted operation                                                                                                                                                                                                                                     | Must     |
 | F-AGT-10 | Agent shall apply local caching of policy decisions to minimize latency (TTL configurable)                                                                                                                                                                                                                        | Should   |
-| F-AGT-11 | Agent shall operate in offline mode with cached policy decisions when dlp-server is unreachable                                                                                                                                                                                                                | Must     |
+| F-AGT-11 | Agent shall operate in offline mode with cached policy decisions when dlp-server is unreachable                                                                                                                                                                                                                   | Must     |
 | F-AGT-12 | Agent shall support configurable monitored paths (registry / config file)                                                                                                                                                                                                                                         | Must     |
 | F-AGT-13 | Agent shall detect and block USB mass storage copy of classified files                                                                                                                                                                                                                                            | Must     |
 | F-AGT-14 | Agent shall detect and block SMB/FTP upload of classified files to unauthorized destinations                                                                                                                                                                                                                      | Must     |
@@ -332,7 +365,7 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 | F-AUD-06 | Audit log integrity shall be protected by append-only file storage or equivalent                                                                                                                    | Must     |
 | F-AUD-07 | DLP Admin shall be able to query and export audit events from the administrative UI                                                                                                                 | Must     |
 | F-AUD-08 | Policy violation events (DENY_WITH_ALERT) shall trigger immediate alert to configured recipients via dlp-server                                                                                     | Must     |
-| F-AUD-09 | dlp-server shall emit an audit event for every administrative action (identity, action, timestamp, resource)                                                         | Must     |
+| F-AUD-09 | dlp-server shall emit an audit event for every administrative action (identity, action, timestamp, resource)                                                                                        | Must     |
 
 ### 3.8 dlp-server Features
 
@@ -343,8 +376,8 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 | F-SRV-03 | dlp-server shall forward audit events to SIEM (Splunk HEC / ELK HTTP Ingest) in batches (max 1s latency, max 1000 events/batch) | Must     |
 | F-SRV-04 | dlp-server shall maintain an agent registry: agent_id, hostname, IP, OS version, agent version, last_heartbeat, status          | Must     |
 | F-SRV-05 | dlp-server shall receive agent heartbeats over HTTPS and mark agents offline after 90 seconds of no heartbeat                   | Must     |
-| F-SRV-06 | dlp-server shall expose a REST API: GET /agents, GET /audit-events, policy CRUD, exception approval    | Must     |
-| F-SRV-07 | dlp-server shall act as the TOTP validation and JWT issuance server for admin sessions                               | Must     |
+| F-SRV-06 | dlp-server shall expose a REST API: GET /agents, GET /audit-events, policy CRUD, exception approval                             | Must     |
+| F-SRV-07 | dlp-server shall act as the TOTP validation and JWT issuance server for admin sessions                                          | Must     |
 | F-SRV-08 | dlp-server shall store exception/override approval records (approver, timestamp, duration, justification)                       | Should   |
 | F-SRV-09 | dlp-server shall sync policies to all dlp-server replicas on policy create/update                                               | Must     |
 | F-SRV-10 | dlp-server shall push agent configuration changes to selected dlp-agents                                                        | Should   |
@@ -356,62 +389,62 @@ All IPC messages are UTF-8 JSON over Windows named pipes. Named pipes use `PIPE_
 
 ### 4.1 Security
 
-| ID       | Requirement                                                                                                                                                                                                                                                                                      | Target |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
-| N-SEC-01 | All network communication shall use TLS 1.3                                                                                                                                                                                                                                                      | Must   |
-| N-SEC-02 | Credentials shall never be stored in plaintext; use Windows Credential Manager or HSM                                                                                                                                                                                                            | Must   |
-| N-SEC-03 | Agent shall run as a Windows Service under the SYSTEM account; UI runs in the interactive user session as the logged-in user                                                                                                                                                                     | Must   |
-| N-SEC-04 | dlp-server shall be deployed on an isolated, hardened host                                                                                                                                                                                                                                    | Must   |
-| N-SEC-05 | HTTPS API shall authenticate agents via mutual TLS (mTLS)                                                                                                                                                                                                                                        | Must   |
-| N-SEC-06 | DLP Admin shall use MFA for all administrative sessions *(see N-SEC-11 for the process DACL mechanism that protects MFA-gated service stop)*                                                                                                                                                                                                                              | Must   |
-| N-SEC-07 | Audit logs shall be immutable once written                                                                                                                                                                                                                                                       | Must   |
-| N-SEC-08 | Agent shall verify dlp-server certificate before establishing connection                                                                                                                                                                                                                      | Must   |
-| N-SEC-09 | Sensitive data in memory shall be zeroized after use                                                                                                                                                                                                                                             | Should |
-| N-SEC-10 | Agent shall detect and alert on tampering / injection attempts                                                                                                                                                                                                                                   | Should |
-| N-SEC-11 | Process DACL: Both Agent (service) and UI shall use Windows DACL to deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, and `PROCESS_VM_WRITE` to `Everyone` SID; SYSTEM retains full access through inherited ACEs. This prevents non-Admin process kill and DLL injection. See F-SVC-09 and `protection.rs`. *(supersedes and consolidates earlier alias; MFA-gated stop is covered by F-SVC-10/F-SVC-12)* | Must   |
-| N-SEC-12 | Named pipe connections shall be validated — UI must present a signed token on connect to prevent unauthorized pipe access *(deferred to Phase 5 backlog — see SECURITY_AUDIT.md §9 gap analysis)*                                                                                                                                                                        | Should |
+| ID       | Requirement                                                                                                                                                                                                                                                                                                                                                                                                                                            | Target |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
+| N-SEC-01 | All network communication shall use TLS 1.3                                                                                                                                                                                                                                                                                                                                                                                                            | Must   |
+| N-SEC-02 | Credentials shall never be stored in plaintext; use Windows Credential Manager or HSM                                                                                                                                                                                                                                                                                                                                                                  | Must   |
+| N-SEC-03 | Agent shall run as a Windows Service under the SYSTEM account; UI runs in the interactive user session as the logged-in user                                                                                                                                                                                                                                                                                                                           | Must   |
+| N-SEC-04 | dlp-server shall be deployed on an isolated, hardened host                                                                                                                                                                                                                                                                                                                                                                                             | Must   |
+| N-SEC-05 | HTTPS API shall authenticate agents via mutual TLS (mTLS)                                                                                                                                                                                                                                                                                                                                                                                              | Must   |
+| N-SEC-06 | DLP Admin shall use MFA for all administrative sessions _(see N-SEC-11 for the process DACL mechanism that protects MFA-gated service stop)_                                                                                                                                                                                                                                                                                                           | Must   |
+| N-SEC-07 | Audit logs shall be immutable once written                                                                                                                                                                                                                                                                                                                                                                                                             | Must   |
+| N-SEC-08 | Agent shall verify dlp-server certificate before establishing connection                                                                                                                                                                                                                                                                                                                                                                               | Must   |
+| N-SEC-09 | Sensitive data in memory shall be zeroized after use                                                                                                                                                                                                                                                                                                                                                                                                   | Should |
+| N-SEC-10 | Agent shall detect and alert on tampering / injection attempts                                                                                                                                                                                                                                                                                                                                                                                         | Should |
+| N-SEC-11 | Process DACL: Both Agent (service) and UI shall use Windows DACL to deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, and `PROCESS_VM_WRITE` to `Everyone` SID; SYSTEM retains full access through inherited ACEs. This prevents non-Admin process kill and DLL injection. See F-SVC-09 and `protection.rs`. _(supersedes and consolidates earlier alias; MFA-gated stop is covered by F-SVC-10/F-SVC-12)_ | Must   |
+| N-SEC-12 | Named pipe connections shall be validated — UI must present a signed token on connect to prevent unauthorized pipe access _(deferred to Phase 5 backlog — see SECURITY_AUDIT.md §9 gap analysis)_                                                                                                                                                                                                                                                      | Should |
 
 ### 4.2 Performance
 
 | ID       | Requirement                                                                                                                      | Target |
 | -------- | -------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| N-PER-01 | dlp-server shall handle ≥ 10,000 decision requests per second                                                                 | Must   |
+| N-PER-01 | dlp-server shall handle ≥ 10,000 decision requests per second                                                                    | Must   |
 | N-PER-02 | End-to-end decision latency (agent → engine → response) shall be ≤ 100ms at P95                                                  | Must   |
-| N-PER-03 | dlp-server decision latency (engine-only) shall be ≤ 50ms at P95                                                              | Must   |
+| N-PER-03 | dlp-server decision latency (engine-only) shall be ≤ 50ms at P95                                                                 | Must   |
 | N-PER-04 | Agent shall consume ≤ 2% CPU at idle on a standard endpoint                                                                      | Should |
 | N-PER-05 | Agent shall not increase file copy/save latency by more than 50ms                                                                | Must   |
-| N-PER-06 | dlp-server shall start and be ready to serve within 30 seconds                                                                | Must   |
+| N-PER-06 | dlp-server shall start and be ready to serve within 30 seconds                                                                   | Must   |
 | N-PER-07 | Agent ↔ UI IPC round-trip (blocking request → user response) shall complete within 60 seconds; Agent defaults to DENY on timeout | Must   |
 
 ### 4.3 Scalability
 
-| ID       | Requirement                                                                              | Target |
-| -------- | ---------------------------------------------------------------------------------------- | ------ |
+| ID       | Requirement                                                                           | Target |
+| -------- | ------------------------------------------------------------------------------------- | ------ |
 | N-SCA-01 | dlp-server shall support horizontal scaling (multiple instances behind load balancer) | Must   |
 | N-SCA-02 | Agent shall support configuration for primary and secondary dlp-server endpoints      | Must   |
-| N-SCA-03 | System shall support ≥ 50,000 concurrent endpoints                                       | Must   |
+| N-SCA-03 | System shall support ≥ 50,000 concurrent endpoints                                    | Must   |
 | N-SCA-04 | dlp-server shall support ≥ 100,000 active policies                                    | Must   |
 
 ### 4.4 Availability
 
 | ID       | Requirement                                                                                                     | Target |
 | -------- | --------------------------------------------------------------------------------------------------------------- | ------ |
-| N-AVA-01 | dlp-server shall achieve 99.9% uptime (≤ 8.7 hours downtime/year)                                            | Must   |
-| N-AVA-02 | Agent shall operate in offline/cached mode when dlp-server is unreachable                                    | Must   |
-| N-AVA-03 | System shall support active-passive failover for dlp-server                                                  | Should |
-| N-AVA-04 | Agent shall reconnect automatically when dlp-server becomes available                                        | Must   |
+| N-AVA-01 | dlp-server shall achieve 99.9% uptime (≤ 8.7 hours downtime/year)                                               | Must   |
+| N-AVA-02 | Agent shall operate in offline/cached mode when dlp-server is unreachable                                       | Must   |
+| N-AVA-03 | System shall support active-passive failover for dlp-server                                                     | Should |
+| N-AVA-04 | Agent shall reconnect automatically when dlp-server becomes available                                           | Must   |
 | N-AVA-05 | Agent shall survive user logoff; the UI shall be terminated by Agent on logoff and respawned on next user logon | Must   |
 
 ### 4.5 Compatibility
 
-| ID       | Requirement                                                                   | Target |
-| -------- | ----------------------------------------------------------------------------- | ------ |
-| N-COM-01 | Agent shall support Windows 10 Enterprise (1903+)                             | Must   |
-| N-COM-02 | Agent shall support Windows 11 Enterprise                                     | Must   |
-| N-COM-03 | Agent shall support Windows Server 2019 and 2022                              | Must   |
+| ID       | Requirement                                                                | Target |
+| -------- | -------------------------------------------------------------------------- | ------ |
+| N-COM-01 | Agent shall support Windows 10 Enterprise (1903+)                          | Must   |
+| N-COM-02 | Agent shall support Windows 11 Enterprise                                  | Must   |
+| N-COM-03 | Agent shall support Windows Server 2019 and 2022                           | Must   |
 | N-COM-04 | dlp-server shall support Windows Server 2019+ and Linux (Ubuntu 22.04 LTS) | Must   |
-| N-COM-05 | Administrative UI shall support Chrome 110+, Edge 110+, Firefox 110+          | Must   |
-| N-COM-06 | SIEM integration shall support Splunk HEC and ELK HTTP Ingest                 | Must   |
+| N-COM-05 | Administrative UI shall support Chrome 110+, Edge 110+, Firefox 110+       | Must   |
+| N-COM-06 | SIEM integration shall support Splunk HEC and ELK HTTP Ingest              | Must   |
 
 ### 4.6 Maintainability
 
@@ -628,7 +661,7 @@ S5. Admin enters credentials, submits
 S6. DLP endpoint UI sends PASSWORD_SUBMIT over Pipe 1
 S7. Agent validates password via bcrypt hash comparison against `DLPAuthHash` registry value; correct → clean shutdown
 S8. dlp-server marks agent as uninstalled in registry
-```
+
 
 Op-1. Agent sends BLOCK_NOTIFY over Pipe 1, waits for response
 Op-2. DLP UI receives BLOCK_NOTIFY, shows toast notification
@@ -664,19 +697,19 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 ### 6.1 Threat Coverage (STRIDE)
 
-| Threat                     | Security Control                                              | Implementation               |
-| -------------------------- | ------------------------------------------------------------- | ---------------------------- |
-| **Spoofing**               | MFA for admin, mTLS for agent-to-engine                       | F-ADM-06, N-SEC-05           |
-| **Tampering**              | NTFS ACLs, code signing for agent updates, process protection | N-SEC-03, N-SEC-11           |
-| **Repudiation**            | Immutable audit logs, signed events                           | F-AUD-06, F-AUD-07           |
-| **Information Disclosure** | ABAC + DLP enforcement, encryption at rest                    | F-ENG-12, N-SEC-01           |
-| **Denial of Service**      | Rate limiting, horizontal scaling                             | N-SCA-01, F-ENG-10           |
-| **Privilege Escalation**   | Strict RBAC + ABAC, process DACL, service stop MFA            | N-SEC-11, F-SVC-12           |
-| **Agent Kill Bypass**      | Process protection DACL, health monitoring                    | N-SEC-11, F-SVC-04, F-SVC-08 |
-| **Agent Impersonation**     | dlp-server authenticates agents via mTLS or signed JWT          | F-SRV-04, N-SRV-07           |
-| **Audit Tampering**        | Append-only audit store + hash chain                           | F-SRV-02, N-SRV-06           |
-| **Admin Credential Theft** | TOTP + JWT, PBKDF2 storage, DPAPI                           | F-SRV-07, N-SRV-08           |
-| **SIEM Token Sprawl**     | Single SIEM credential in dlp-server; agents hold only dlp-server credentials | F-SRV-03              |
+| Threat                     | Security Control                                                              | Implementation               |
+| -------------------------- | ----------------------------------------------------------------------------- | ---------------------------- |
+| **Spoofing**               | MFA for admin, mTLS for agent-to-engine                                       | F-ADM-06, N-SEC-05           |
+| **Tampering**              | NTFS ACLs, code signing for agent updates, process protection                 | N-SEC-03, N-SEC-11           |
+| **Repudiation**            | Immutable audit logs, signed events                                           | F-AUD-06, F-AUD-07           |
+| **Information Disclosure** | ABAC + DLP enforcement, encryption at rest                                    | F-ENG-12, N-SEC-01           |
+| **Denial of Service**      | Rate limiting, horizontal scaling                                             | N-SCA-01, F-ENG-10           |
+| **Privilege Escalation**   | Strict RBAC + ABAC, process DACL, service stop MFA                            | N-SEC-11, F-SVC-12           |
+| **Agent Kill Bypass**      | Process protection DACL, health monitoring                                    | N-SEC-11, F-SVC-04, F-SVC-08 |
+| **Agent Impersonation**    | dlp-server authenticates agents via mTLS or signed JWT                        | F-SRV-04, N-SRV-07           |
+| **Audit Tampering**        | Append-only audit store + hash chain                                          | F-SRV-02, N-SRV-06           |
+| **Admin Credential Theft** | TOTP + JWT, PBKDF2 storage, DPAPI                                             | F-SRV-07, N-SRV-08           |
+| **SIEM Token Sprawl**      | Single SIEM credential in dlp-server; agents hold only dlp-server credentials | F-SRV-03                     |
 
 ### 6.2 Encryption Requirements
 
@@ -699,7 +732,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | **A.5.1** Information Security Policies | Policies documented and approved                                            | SRS, ABAC_POLICIES.md |
 | **A.5.3** Segregation of Duties         | dlp-admin vs. end users vs. auditors                                        | SRS.md §2.3           |
 | **A.6.2** Privileged Access Rights      | dlp-admin is single superuser; dlp-admin password required for service stop | F-SVC-10–F-SVC-12     |
-| **A.7.2** Physical Security             | dlp-server hosted on hardened, physically secure server                  | N-SEC-04              |
+| **A.7.2** Physical Security             | dlp-server hosted on hardened, physically secure server                     | N-SEC-04              |
 | **A.8.1** Asset Responsibility          | Data classification (T1–T4) applied to all assets                           | F-ADM-02              |
 | **A.8.2** Classification                | Four-tier classification enforced by ABAC                                   | F-ENG-01              |
 | **A.9.1** Access Control Policy         | NTFS + ABAC dual-layer enforcement                                          | Architecture §2.1     |
@@ -722,66 +755,66 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 #### EP-01 & EP-03 — dlp-server
 
-| ID | Task | Deliverable | Priority |
-|----|------|-------------|----------|
-| T-01 | Initialize `dlp-server/` workspace crate: `Cargo.toml`, `axum`, TLS config, `tower` middleware scaffold | `dlp-server/src/` | Must |
-| T-02 | Implement policy store: JSON file persistence, hot-reload via `notify`, version tracking | `dlp-server/src/policy_store.rs` | Must |
-| T-03 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching | `dlp-server/src/evaluator.rs` | Must |
-| T-04 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/` | `dlp-server/src/http_server.rs` | Must |
-| T-05 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup | `dlp-server/src/ad_client.rs` | Must |
-| T-06 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec | `dlp-server/src/rest_api.rs` | Must |
-| T-07 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md` | `dlp-server/tests/` | Must |
-| T-08 | Implement AD mock server for integration tests | `dlp-server/tests/mock_ad/` | Must |
-| T-22 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `dlp-server/src/ad_client.rs` | Must |
-| T-23 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s | `dlp-server/src/policy_store.rs` | Must |
-| T-24 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput | `dlp-server/tests/benchmark.rs` | Must |
+| ID   | Task                                                                                                              | Deliverable                      | Priority |
+| ---- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------- | -------- |
+| T-01 | Initialize `dlp-server/` workspace crate: `Cargo.toml`, `axum`, TLS config, `tower` middleware scaffold           | `dlp-server/src/`                | Must     |
+| T-02 | Implement policy store: JSON file persistence, hot-reload via `notify`, version tracking                          | `dlp-server/src/policy_store.rs` | Must     |
+| T-03 | Implement ABAC evaluation engine: first-match policy evaluation, subject/resource/environment condition matching  | `dlp-server/src/evaluator.rs`    | Must     |
+| T-04 | Implement HTTPS `Evaluate` endpoint: axum server, TLS 1.3, mTLS auth, request/response types from `dlp-common/`   | `dlp-server/src/http_server.rs`  | Must     |
+| T-05 | Implement AD LDAP client: `ldap3` connection, group membership query, device trust attribute lookup               | `dlp-server/src/ad_client.rs`    | Must     |
+| T-06 | Implement REST CRUD API: axum server, policy endpoints (GET/POST/PUT/DELETE), OpenAPI 3.0 spec                    | `dlp-server/src/rest_api.rs`     | Must     |
+| T-07 | Write unit tests: all 3 ABAC rules from `ABAC_POLICIES.md`                                                        | `dlp-server/tests/`              | Must     |
+| T-08 | Implement AD mock server for integration tests                                                                    | `dlp-server/tests/mock_ad/`      | Must     |
+| T-22 | Implement AD group membership lookup: `ldap3` query by user SID, return all group SIDs; TTL cache (default 5 min) | `dlp-server/src/ad_client.rs`    | Must     |
+| T-23 | Implement hot-reload: `notify` watcher on policy JSON files, validate on reload, atomic swap, within 5s           | `dlp-server/src/policy_store.rs` | Must     |
+| T-24 | Performance validation: benchmark P95 latency ≤ 50ms on single request; ≥ 10k req/s throughput                    | `dlp-server/tests/benchmark.rs`  | Must     |
 
 #### EP-02 — Endpoint Enforcement
 
-| ID | Task | Deliverable | Priority |
-|----|------|-------------|----------|
-| T-09 | Initialize `dlp-agent/` workspace crate: `Cargo.toml`, `windows-rs`, tokio, `dlp-common` | `dlp-agent/src/` | Must |
-| T-10 | Implement Windows Service skeleton: `windows-service` crate, SCM lifecycle, `sc create dlp-agent type= own start= auto`, single-instance mutex | `dlp-agent/src/service.rs` | Must |
-| T-11 | Implement `InterceptionEngine` trait + `file_monitor.rs`: `notify` crate (`ReadDirectoryChangesW`) watching configured paths for file create/write/delete/move events | `dlp-agent/src/interception/file_monitor.rs` | Must |
-| T-12 | Implement `identity.rs`: SMB impersonation resolution — `ImpersonateSelf`, `QuerySecurityContextToken`, `GetTokenInformation(TokenUser)`, `RevertToSelf`; process token fallback | `dlp-agent/src/identity.rs` | Must |
-| T-13 | Implement `detection/usb.rs`: `RegisterDeviceNotificationW` for `DBT_DEVICEARRIVAL`/`DBT_DEVICEREMOVECOMPLETE`; `GetDriveTypeW` classifies removable drives; block T3/T4 writes to USB | `dlp-agent/src/detection/usb.rs` | Must |
-| T-14 | Implement `detection/network_share.rs`: poll `WNetOpenEnumW`/`WNetEnumResourceW` (MPR) every 30s; differential scan emits `Connected`/`Disconnected` events; whitelist enforcement for T3/T4 destinations | `dlp-agent/src/detection/network_share.rs` | Must |
-| T-15 | *(superseded)* File interception now uses the `notify` crate — ETW bypass detection was removed | — | — |
-| T-16 | Implement HTTPS client to dlp-server: reqwest client, TLS, `POST /evaluate` request/response, retry on failure | `dlp-agent/src/engine_client.rs` | Must |
-| T-17 | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss | `dlp-agent/src/cache.rs` | Must |
-| T-18 | Implement offline mode: detect dlp-server unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat | `dlp-agent/src/offline.rs` | Must |
-| T-20 | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE`; `detection/clipboard/classifier.rs`: classify text content → T1–T4 | `dlp-agent/src/clipboard/` | Must |
-| T-21 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock dlp-server) | `dlp-agent/tests/` | Must |
+| ID   | Task                                                                                                                                                                                                      | Deliverable                                  | Priority |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- | -------- |
+| T-09 | Initialize `dlp-agent/` workspace crate: `Cargo.toml`, `windows-rs`, tokio, `dlp-common`                                                                                                                  | `dlp-agent/src/`                             | Must     |
+| T-10 | Implement Windows Service skeleton: `windows-service` crate, SCM lifecycle, `sc create dlp-agent type= own start= auto`, single-instance mutex                                                            | `dlp-agent/src/service.rs`                   | Must     |
+| T-11 | Implement `InterceptionEngine` trait + `file_monitor.rs`: `notify` crate (`ReadDirectoryChangesW`) watching configured paths for file create/write/delete/move events                                     | `dlp-agent/src/interception/file_monitor.rs` | Must     |
+| T-12 | Implement `identity.rs`: SMB impersonation resolution — `ImpersonateSelf`, `QuerySecurityContextToken`, `GetTokenInformation(TokenUser)`, `RevertToSelf`; process token fallback                          | `dlp-agent/src/identity.rs`                  | Must     |
+| T-13 | Implement `detection/usb.rs`: `RegisterDeviceNotificationW` for `DBT_DEVICEARRIVAL`/`DBT_DEVICEREMOVECOMPLETE`; `GetDriveTypeW` classifies removable drives; block T3/T4 writes to USB                    | `dlp-agent/src/detection/usb.rs`             | Must     |
+| T-14 | Implement `detection/network_share.rs`: poll `WNetOpenEnumW`/`WNetEnumResourceW` (MPR) every 30s; differential scan emits `Connected`/`Disconnected` events; whitelist enforcement for T3/T4 destinations | `dlp-agent/src/detection/network_share.rs`   | Must     |
+| T-15 | _(superseded)_ File interception now uses the `notify` crate — ETW bypass detection was removed                                                                                                           | —                                            | —        |
+| T-16 | Implement HTTPS client to dlp-server: reqwest client, TLS, `POST /evaluate` request/response, retry on failure                                                                                            | `dlp-agent/src/engine_client.rs`             | Must     |
+| T-17 | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss                                                                        | `dlp-agent/src/cache.rs`                     | Must     |
+| T-18 | Implement offline mode: detect dlp-server unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat                                                                              | `dlp-agent/src/offline.rs`                   | Must     |
+| T-20 | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE`; `detection/clipboard/classifier.rs`: classify text content → T1–T4                              | `dlp-agent/src/clipboard/`                   | Must     |
+| T-21 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock dlp-server)                                                                                                   | `dlp-agent/tests/`                           | Must     |
 
 #### EP-04 — Audit & Compliance
 
-| ID | Task | Deliverable | Priority |
-|----|------|-------------|----------|
-| T-25 | Define `AuditEvent` Rust types: serde serialization, all fields per F-AUD-02 schema (`access_context: local\|SMB`) | `dlp-common/src/audit.rs` | Must |
-| T-26 | Implement audit event emission: emit every intercepted file operation as JSON, no file content, real-time | `dlp-agent/src/audit_emitter.rs` | Must |
-| T-27 | Implement append-only local audit log: write-only file handle, service account access via `FILE_FLAG_BACKUP_SEMANTICS`, log rotation (size-based) | `dlp-agent/src/audit_emitter.rs` | Must |
+| ID   | Task                                                                                                                                              | Deliverable                      | Priority |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- | -------- |
+| T-25 | Define `AuditEvent` Rust types: serde serialization, all fields per F-AUD-02 schema (`access_context: local\|SMB`)                                | `dlp-common/src/audit.rs`        | Must     |
+| T-26 | Implement audit event emission: emit every intercepted file operation as JSON, no file content, real-time                                         | `dlp-agent/src/audit_emitter.rs` | Must     |
+| T-27 | Implement append-only local audit log: write-only file handle, service account access via `FILE_FLAG_BACKUP_SEMANTICS`, log rotation (size-based) | `dlp-agent/src/audit_emitter.rs` | Must     |
 
 #### EP-07 — Agent-as-Service Operations
 
-| ID | Task | Deliverable | Priority |
-|----|------|-------------|----------|
-| T-30 | Implement `ui_spawner.rs`: `WTSEnumerateSessionsW` on startup → `CreateProcessAsUser` per session; `WTSRegisterSessionNotification` for connect/disconnect; `HashMap<u32, HANDLE>` session-ID-to-UI-handle map | `dlp-agent/src/ui_spawner.rs` | Must |
-| T-31 | Implement 3 named pipe IPC servers: `\\.\pipe\DLPCommand` (Pipe 1, 2-way duplex), `\\.\pipe\DLPEventAgent2UI` (Pipe 2, 1-way A→U), `\\.\pipe\DLPEventUI2Agent` (Pipe 3, 1-way U→A); `PIPE_TYPE_MESSAGE \| PIPE_READMODE_MESSAGE`; JSON serde | `dlp-agent/src/ipc/server.rs` | Must |
-| T-32 | Implement Pipe 1 handler: BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG, PASSWORD_CANCEL; send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT | `dlp-agent/src/ipc/pipe1.rs` | Must |
-| T-33 | Implement Pipe 2 sender: TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE — fire-and-forget, per session | `dlp-agent/src/ipc/pipe2.rs` | Must |
-| T-34 | Implement Pipe 3 receiver: HEALTH_PONG, UI_READY, UI_CLOSING — per session pipe | `dlp-agent/src/ipc/pipe3.rs` | Must |
-| T-35 | Implement mutual health monitor: Agent pings all session UIs via Pipe 2 every 5s; per-session 15s timeout → kill + respawn; UI pings Agent via Pipe 3 every 5s; Agent pings back on Pipe 2; 15s timeout → UI exits | `dlp-agent/src/health_monitor.rs` | Must |
-| T-36 | Implement session change handler: `WTSRegisterSessionNotification` per active session; on Session_Logoff → send UI_CLOSING_SEQUENCE, wait 5s, force-kill, remove from map; on Session_Connect → spawn new UI in new session | `dlp-agent/src/session_monitor.rs` | Must |
-| T-37 | Implement process protection DACL: `SetKernelObjectSecurity` on Agent and UI process handles; deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to `Everyone` SID; SYSTEM retains full access through inherited ACEs | `dlp-agent/src/protection.rs` | Must |
-| T-38 | Implement password-protected service stop: `sc stop` → STOP_PENDING → send PASSWORD_DIALOG over Pipe 1 → collect PASSWORD_SUBMIT → DPAPI unprotect → bcrypt verify against `DLPAuthHash` registry value → clean shutdown; 3 wrong attempts → log EVENT_DLP_ADMIN_STOP_FAILED | `dlp-agent/src/service.rs` | Must |
-| T-39 | Implement iced UI scaffold: `dlp-user-ui/` — `Cargo.toml`, devtools enabled, system tray, multi-session IPC client per session | `dlp-user-ui/` | Must |
-| T-40 | Implement UI Pipe 1 client: per-session pipe connection, send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL; handle BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG | `dlp-user-ui/src/ipc/pipe1.rs` | Must |
-| T-41 | Implement UI Pipe 2 listener: receive TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE per session; display Windows toast notifications | `dlp-user-ui/src/ipc/pipe2.rs` | Must |
-| T-42 | Implement UI Pipe 3 sender: send HEALTH_PONG, UI_READY, UI_CLOSING | `dlp-user-ui/src/ipc/pipe3.rs` | Must |
-| T-43 | Implement block dialog: Windows toast + modal dialog showing policy info and classification; "Request Override" button opens justification dialog | `dlp-user-ui/src/dialogs/block.rs` | Must |
-| T-44 | Implement clipboard dialog: read clipboard via Windows API, return CLIPBOARD_DATA over Pipe 1 | `dlp-user-ui/src/dialogs/clipboard.rs` | Must |
-| T-45 | Implement service stop password dialog: PASSWORD_SUBMIT / PASSWORD_CANCEL; DPAPI `CryptProtectData` before send | `dlp-user-ui/src/dialogs/stop_password.rs` | Must |
-| T-46 | Implement system tray: icon with agent status (Running / Stopped / Offline), context menu (Show Portal, Agent Status, Exit) | `dlp-user-ui/src/tray.rs` | Should |
+| ID   | Task                                                                                                                                                                                                                                                                                | Deliverable                                | Priority |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | -------- |
+| T-30 | Implement `ui_spawner.rs`: `WTSEnumerateSessionsW` on startup → `CreateProcessAsUser` per session; `WTSRegisterSessionNotification` for connect/disconnect; `HashMap<u32, HANDLE>` session-ID-to-UI-handle map                                                                      | `dlp-agent/src/ui_spawner.rs`              | Must     |
+| T-31 | Implement 3 named pipe IPC servers: `\\.\pipe\DLPCommand` (Pipe 1, 2-way duplex), `\\.\pipe\DLPEventAgent2UI` (Pipe 2, 1-way A→U), `\\.\pipe\DLPEventUI2Agent` (Pipe 3, 1-way U→A); `PIPE_TYPE_MESSAGE \| PIPE_READMODE_MESSAGE`; JSON serde                                        | `dlp-agent/src/ipc/server.rs`              | Must     |
+| T-32 | Implement Pipe 1 handler: BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG, PASSWORD_CANCEL; send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT                                                                                                    | `dlp-agent/src/ipc/pipe1.rs`               | Must     |
+| T-33 | Implement Pipe 2 sender: TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE — fire-and-forget, per session                                                                                                                                                          | `dlp-agent/src/ipc/pipe2.rs`               | Must     |
+| T-34 | Implement Pipe 3 receiver: HEALTH_PONG, UI_READY, UI_CLOSING — per session pipe                                                                                                                                                                                                     | `dlp-agent/src/ipc/pipe3.rs`               | Must     |
+| T-35 | Implement mutual health monitor: Agent pings all session UIs via Pipe 2 every 5s; per-session 15s timeout → kill + respawn; UI pings Agent via Pipe 3 every 5s; Agent pings back on Pipe 2; 15s timeout → UI exits                                                                  | `dlp-agent/src/health_monitor.rs`          | Must     |
+| T-36 | Implement session change handler: `WTSRegisterSessionNotification` per active session; on Session_Logoff → send UI_CLOSING_SEQUENCE, wait 5s, force-kill, remove from map; on Session_Connect → spawn new UI in new session                                                         | `dlp-agent/src/session_monitor.rs`         | Must     |
+| T-37 | Implement process protection DACL: `SetKernelObjectSecurity` on Agent and UI process handles; deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to `Everyone` SID; SYSTEM retains full access through inherited ACEs | `dlp-agent/src/protection.rs`              | Must     |
+| T-38 | Implement password-protected service stop: `sc stop` → STOP_PENDING → send PASSWORD_DIALOG over Pipe 1 → collect PASSWORD_SUBMIT → DPAPI unprotect → bcrypt verify against `DLPAuthHash` registry value → clean shutdown; 3 wrong attempts → log EVENT_DLP_ADMIN_STOP_FAILED        | `dlp-agent/src/service.rs`                 | Must     |
+| T-39 | Implement iced UI scaffold: `dlp-user-ui/` — `Cargo.toml`, devtools enabled, system tray, multi-session IPC client per session                                                                                                                                                      | `dlp-user-ui/`                             | Must     |
+| T-40 | Implement UI Pipe 1 client: per-session pipe connection, send USER_CONFIRMED, USER_CANCELLED, CLIPBOARD_DATA, PASSWORD_SUBMIT, PASSWORD_CANCEL; handle BLOCK_NOTIFY, OVERRIDE_REQUEST, CLIPBOARD_READ, PASSWORD_DIALOG                                                              | `dlp-user-ui/src/ipc/pipe1.rs`             | Must     |
+| T-41 | Implement UI Pipe 2 listener: receive TOAST, STATUS_UPDATE, HEALTH_PING, UI_RESPAWN, UI_CLOSING_SEQUENCE per session; display Windows toast notifications                                                                                                                           | `dlp-user-ui/src/ipc/pipe2.rs`             | Must     |
+| T-42 | Implement UI Pipe 3 sender: send HEALTH_PONG, UI_READY, UI_CLOSING                                                                                                                                                                                                                  | `dlp-user-ui/src/ipc/pipe3.rs`             | Must     |
+| T-43 | Implement block dialog: Windows toast + modal dialog showing policy info and classification; "Request Override" button opens justification dialog                                                                                                                                   | `dlp-user-ui/src/dialogs/block.rs`         | Must     |
+| T-44 | Implement clipboard dialog: read clipboard via Windows API, return CLIPBOARD_DATA over Pipe 1                                                                                                                                                                                       | `dlp-user-ui/src/dialogs/clipboard.rs`     | Must     |
+| T-45 | Implement service stop password dialog: PASSWORD_SUBMIT / PASSWORD_CANCEL; DPAPI `CryptProtectData` before send                                                                                                                                                                     | `dlp-user-ui/src/dialogs/stop_password.rs` | Must     |
+| T-46 | Implement system tray: icon with agent status (Running / Stopped / Offline), context menu (Show Portal, Agent Status, Exit)                                                                                                                                                         | `dlp-user-ui/src/tray.rs`                  | Should   |
 
 **Phase 1 task total: 39 tasks (T-01 through T-46, skipping T-19 which is shared with Phase 2, T-28 which is a scope note)**
 
@@ -789,14 +822,14 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 **Goal:** dlp-user-ui is built in Phase 1. Phase 2 focuses on process hardening and remaining integration work.
 
-| ID     | Task | Deliverable | Priority |
-| ------ | ---- | ----------- | -------- |
-| P2-T03 | Process protection: DACL hardening — deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to `Everyone` SID on Agent and UI processes | `dlp-agent/src/protection.rs` | Must |
-| P2-T04 | Implement mutual health monitoring: Agent pings UI (Pipe 2 every 5s, respawn if no pong in 15s); UI pings Agent (Pipe 3 every 5s, exit if no message in 15s) | `dlp-agent/src/`, `dlp-user-ui/src/` | Must |
-| P2-T11 | dlp-agent: service stop shutdown sequence — STOP_PENDING → signal UI → password dialog → clean shutdown | `dlp-agent/src/service.rs` | Must |
-| P2-T12 | dlp-server: REST API for policy CRUD (GET /policies, POST /policies, PUT /policies/{id}, DELETE /policies/{id}) | `dlp-server/src/rest_api.rs` | Must |
-| P2-T13 | Write integration tests: Agent ↔ dlp-server end-to-end | `dlp-agent/tests/` | Must |
-| P2-T14 | Write integration tests: all ABAC policies from ABAC_POLICIES.md | `dlp-server/tests/` | Must |
+| ID     | Task                                                                                                                                                                                              | Deliverable                          | Priority |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ | -------- |
+| P2-T03 | Process protection: DACL hardening — deny `PROCESS_TERMINATE`, `PROCESS_CREATE_THREAD`, `PROCESS_VM_OPERATION`, `PROCESS_VM_READ`, `PROCESS_VM_WRITE` to `Everyone` SID on Agent and UI processes | `dlp-agent/src/protection.rs`        | Must     |
+| P2-T04 | Implement mutual health monitoring: Agent pings UI (Pipe 2 every 5s, respawn if no pong in 15s); UI pings Agent (Pipe 3 every 5s, exit if no message in 15s)                                      | `dlp-agent/src/`, `dlp-user-ui/src/` | Must     |
+| P2-T11 | dlp-agent: service stop shutdown sequence — STOP_PENDING → signal UI → password dialog → clean shutdown                                                                                           | `dlp-agent/src/service.rs`           | Must     |
+| P2-T12 | dlp-server: REST API for policy CRUD (GET /policies, POST /policies, PUT /policies/{id}, DELETE /policies/{id})                                                                                   | `dlp-server/src/rest_api.rs`         | Must     |
+| P2-T13 | Write integration tests: Agent ↔ dlp-server end-to-end                                                                                                                                            | `dlp-agent/tests/`                   | Must     |
+| P2-T14 | Write integration tests: all ABAC policies from ABAC_POLICIES.md                                                                                                                                  | `dlp-server/tests/`                  | Must     |
 
 > **Note:** The IPC servers (T-31) and UI spawner (T-30) were originally Phase 2 tasks but are implemented in Phase 1 alongside the iced UI (T-39–T-46).
 
@@ -804,50 +837,50 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 
 **Goal:** API hooks for file interception. dlp-user-ui is fully built in Phase 1.
 
-| ID     | Task | Deliverable | Priority |
-| ------ | ---- | ----------- | -------- |
-| P3-T03 | SMB share detection: poll `WNetOpenEnumW`/`WNetEnumResourceW` (MPR) every 30s; differential scan emits `Connected`/`Disconnected` events; whitelist enforcement for T3/T4 destinations per F-AGT-14 | `dlp-agent/src/detection/network_share.rs` | Should |
-| P3-T04 | Write end-to-end tests: clipboard detection → policy decision → local audit log | `dlp-agent/tests/` | Must |
-| P3-T05 | Write end-to-end tests: file interception → policy decision → local audit log | `dlp-agent/tests/` | Must |
+| ID     | Task                                                                                                                                                                                                | Deliverable                                | Priority |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | -------- |
+| P3-T03 | SMB share detection: poll `WNetOpenEnumW`/`WNetEnumResourceW` (MPR) every 30s; differential scan emits `Connected`/`Disconnected` events; whitelist enforcement for T3/T4 destinations per F-AGT-14 | `dlp-agent/src/detection/network_share.rs` | Should   |
+| P3-T04 | Write end-to-end tests: clipboard detection → policy decision → local audit log                                                                                                                     | `dlp-agent/tests/`                         | Must     |
+| P3-T05 | Write end-to-end tests: file interception → policy decision → local audit log                                                                                                                       | `dlp-agent/tests/`                         | Must     |
 
 ### Phase 4 — Production Hardening (Weeks 19–24)
 
 **Goal:** MSI installer packaging, OPERATIONAL.md runbook, and formal security audit.
 
-| ID     | Task                                                               | Deliverable                | Priority |
-| ------ | ------------------------------------------------------------------ | -------------------------- | -------- |
-| P4-T01 | WiX v3 MSI installer: `DLPAgent.wxs`, service registration, crash recovery, ACL hardening, upgrade path | `installer/`               | Must     |
-| P4-T02 | OPERATIONAL.md: 12-section deployment and operations runbook        | `docs/OPERATIONAL.md`     | Must     |
-| P4-T03 | SECURITY_AUDIT.md: formal security review — all 30 STRIDE threats, N-SEC gap analysis, implemented controls, ISO 27001 mapping | `docs/SECURITY_AUDIT.md` | Must     |
-| P4-T04 | *(pending)* Performance testing: 10k req/s, P95 latency ≤ 50ms     | Performance test report    | Should   |
-| P4-T05 | *(pending)* Load testing: 50k concurrent agents                    | Load test report           | Should   |
-| P4-T04 | dlp-server: horizontal scaling / load balancer integration      | `dlp-server/`           | Must     |
-| P4-T05 | Agent self-update mechanism                                        | `dlp-agent/`               | May      |
-| P4-T06 | Agent deployment: MSI installer, GPO/Intune integration guide      | Deployment guide           | Must     |
-| P4-T07 | Write OPERATIONAL.md: runbook, failover, backup                    | `docs/OPERATIONAL.md`      | Must     |
-| P4-T08 | Final integration testing and regression suite                     | Full test suite            | Must     |
-| P4-T09 | Threat model review and red-team assessment                        | Security assessment report | Should   |
-| P4-T10 | Pre-production deployment to staging environment                   | Staging deployment         | Must     |
+| ID     | Task                                                                                                                           | Deliverable                | Priority |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------- | -------- |
+| P4-T01 | WiX v3 MSI installer: `DLPAgent.wxs`, service registration, crash recovery, ACL hardening, upgrade path                        | `installer/`               | Must     |
+| P4-T02 | OPERATIONAL.md: 12-section deployment and operations runbook                                                                   | `docs/OPERATIONAL.md`      | Must     |
+| P4-T03 | SECURITY_AUDIT.md: formal security review — all 30 STRIDE threats, N-SEC gap analysis, implemented controls, ISO 27001 mapping | `docs/SECURITY_AUDIT.md`   | Must     |
+| P4-T04 | _(pending)_ Performance testing: 10k req/s, P95 latency ≤ 50ms                                                                 | Performance test report    | Should   |
+| P4-T05 | _(pending)_ Load testing: 50k concurrent agents                                                                                | Load test report           | Should   |
+| P4-T04 | dlp-server: horizontal scaling / load balancer integration                                                                     | `dlp-server/`              | Must     |
+| P4-T05 | Agent self-update mechanism                                                                                                    | `dlp-agent/`               | May      |
+| P4-T06 | Agent deployment: MSI installer, GPO/Intune integration guide                                                                  | Deployment guide           | Must     |
+| P4-T07 | Write OPERATIONAL.md: runbook, failover, backup                                                                                | `docs/OPERATIONAL.md`      | Must     |
+| P4-T08 | Final integration testing and regression suite                                                                                 | Full test suite            | Must     |
+| P4-T09 | Threat model review and red-team assessment                                                                                    | Security assessment report | Should   |
+| P4-T10 | Pre-production deployment to staging environment                                                                               | Staging deployment         | Must     |
 
 ### Phase 5 — dlp-server (Weeks 25–30)
 
 **Goal:** Introduce dlp-server as the central management hub; replace local JSON audit in dlp-agent with dlp-server ingestion; replace dlp-server local policy store with dlp-server sync.
 
-| ID     | Task                                                                       | Deliverable                          | Priority |
-| ------ | -------------------------------------------------------------------------- | ------------------------------------ | -------- |
-| P5-T01 | Implement dlp-server HTTP skeleton: axum, TLS, health endpoint             | `dlp-server/src/main.rs`             | Must     |
-| P5-T02 | Implement agent registry: registration, heartbeat, offline detection        | `dlp-server/src/agent_registry.rs`   | Must     |
-| P5-T03 | Implement admin auth: TOTP validation, PBKDF2 store, JWT issuance         | `dlp-server/src/admin_auth.rs`        | Must     |
-| P5-T04 | Implement audit store: append-only ingestion, query API                     | `dlp-server/src/audit_store.rs`       | Must     |
-| P5-T05 | Implement SIEM connector: batched Splunk HEC + ELK relay                  | `dlp-server/src/siem_connector.rs`    | Must     |
-| P5-T06 | Implement alert router: email (SMTP/TLS) + webhook (HTTPS/TLS)             | `dlp-server/src/alert_router.rs`      | Must     |
-| P5-T07 | Implement policy sync: push policies to dlp-server replicas                 | `dlp-server/src/policy_sync.rs`       | Must     |
-| P5-T08 | Implement exception store: approval records                                  | `dlp-server/src/exception_store.rs`   | Should   |
-| P5-T09 | Implement admin REST API: /agents, /audit-events, /policies, /exceptions | `dlp-server/src/admin_api.rs`         | Must     |
-| P5-T10 | Update dlp-agent: send audit to dlp-server (remove direct SIEM)            | `dlp-agent/src/audit_emitter.rs`      | Must     |
-| P5-T11 | Update dlp-agent: send heartbeats to dlp-server                           | `dlp-agent/src/server_client.rs`     | Must     |
-| P5-T13 | Implement config push: agent configuration management                       | `dlp-server/src/config_push.rs`      | Should   |
-| P5-T15 | Load test: 50k agent heartbeats, 10k audit events/sec                    | Load test report                     | Must     |
+| ID     | Task                                                                     | Deliverable                         | Priority |
+| ------ | ------------------------------------------------------------------------ | ----------------------------------- | -------- |
+| P5-T01 | Implement dlp-server HTTP skeleton: axum, TLS, health endpoint           | `dlp-server/src/main.rs`            | Must     |
+| P5-T02 | Implement agent registry: registration, heartbeat, offline detection     | `dlp-server/src/agent_registry.rs`  | Must     |
+| P5-T03 | Implement admin auth: TOTP validation, PBKDF2 store, JWT issuance        | `dlp-server/src/admin_auth.rs`      | Must     |
+| P5-T04 | Implement audit store: append-only ingestion, query API                  | `dlp-server/src/audit_store.rs`     | Must     |
+| P5-T05 | Implement SIEM connector: batched Splunk HEC + ELK relay                 | `dlp-server/src/siem_connector.rs`  | Must     |
+| P5-T06 | Implement alert router: email (SMTP/TLS) + webhook (HTTPS/TLS)           | `dlp-server/src/alert_router.rs`    | Must     |
+| P5-T07 | Implement policy sync: push policies to dlp-server replicas              | `dlp-server/src/policy_sync.rs`     | Must     |
+| P5-T08 | Implement exception store: approval records                              | `dlp-server/src/exception_store.rs` | Should   |
+| P5-T09 | Implement admin REST API: /agents, /audit-events, /policies, /exceptions | `dlp-server/src/admin_api.rs`       | Must     |
+| P5-T10 | Update dlp-agent: send audit to dlp-server (remove direct SIEM)          | `dlp-agent/src/audit_emitter.rs`    | Must     |
+| P5-T11 | Update dlp-agent: send heartbeats to dlp-server                          | `dlp-agent/src/server_client.rs`    | Must     |
+| P5-T13 | Implement config push: agent configuration management                    | `dlp-server/src/config_push.rs`     | Should   |
+| P5-T15 | Load test: 50k agent heartbeats, 10k audit events/sec                    | Load test report                    | Must     |
 
 ---
 
@@ -918,54 +951,3 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 - [ ] ISO 27001 A.5 through A.16 controls are implemented as documented in §7
 - [ ] Audit event schema matches F-AUD-02 for all logged events
 - [ ] All doc files in `docs/` are consistent with this SRS
-
----
-
-## 10. Glossary
-
-| Term                             | Definition                                                                                                                   |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **ABAC**                         | Attribute-Based Access Control — authorization model evaluating subject/resource/environment attributes against policy rules |
-| **ACL**                          | Access Control List — list of permissions attached to an object                                                              |
-| **AES-256**                      | Advanced Encryption Standard with 256-bit key — symmetric encryption algorithm                                               |
-| **API**                          | Application Programming Interface                                                                                            |
-| **BitLocker**                    | Microsoft full-disk encryption for Windows                                                                                   |
-| **CLAUDE.md**                    | Project definition file used by AI assistants                                                                                |
-| **CreateProcessAsUser**          | Windows API to spawn a process in a specific user session                                                                    |
-| **DACL**                         | Discretionary Access Control List — part of an object's security descriptor controlling access                               |
-| **DLP**                          | Data Loss Prevention — system to monitor and prevent unauthorized data transfer                                              |
-| **dlp-admin**                    | Designated superuser account for DLP system administration and secure service stop                                           |
-| **DPAPI**                        | Data Protection API — Windows API for encrypting data using the user's credentials (CryptProtectData/CryptUnprotectData)     |
-| **EDR**                          | Endpoint Detection and Response                                                                                              |
-| **ELK**                          | Elasticsearch, Logstash, Kibana — open-source SIEM stack                                                                     |
-| **REST API**                     | Representational State Transfer — HTTP-based API used for dlp-server communication                                                               |
-| **HEC**                          | HTTP Event Collector — Splunk's HTTP-based log ingestion endpoint                                                            |
-| **HSM**                          | Hardware Security Module                                                                                                     |
-| **IPC**                          | Inter-Process Communication — mechanism for processes to communicate; here: Windows named pipes                              |
-| **ISO 27001**                    | ISO/IEC 27001 — international standard for information security management                                                   |
-| **LDAPS**                        | LDAP over TLS — secure directory protocol                                                                                    |
-| **MFA**                          | Multi-Factor Authentication                                                                                                  |
-| **mTLS**                         | Mutual TLS — TLS with both client and server certificate authentication                                                      |
-| **Named Pipe**                   | Windows kernel object (\\.\pipe\*) for message-mode IPC between processes                                                    |
-| **NTFS**                         | New Technology File System — Windows default file system with ACL support                                                    |
-| **P95**                          | 95th percentile — 95% of observations are at or below this value                                                             |
-| **PII**                          | Personally Identifiable Information                                                                                          |
-| **RBAC**                         | Role-Based Access Control — authorization model using roles and permissions                                                  |
-| **Rust**                         | Systems programming language focused on safety and performance                                                               |
-| **SCM**                          | Service Control Manager — Windows component managing Windows Services lifecycle                                              |
-| **SID**                          | Security Identifier — unique identifier for Windows principals (users, groups)                                               |
-| **SMB Impersonation**            | Windows security mechanism where the SMB server temporarily adopts the security context of the remote client via `RpcImpersonateClient` / `ImpersonateNamedPipeClient`; file operations on the server execute in the caller's context, enabling the agent to attribute operations to the actual remote user rather than the server process |
-| **SIEM**                         | Security Information and Event Management — centralized log collection and analysis                                          |
-| **Splunk**                       | Commercial SIEM platform                                                                                                     |
-| **SRS**                          | Software Requirements Specification                                                                                          |
-| **STRIDE**                       | Spoofing, Tampering, Repudiation, Information Disclosure, DoS, Privilege Escalation — threat modeling methodology            |
-| **SYSTEM account**               | Windows local system account with highest privilege on a single machine                                                      |
-| **iced**                         | Pure Rust native GUI framework; here used for the endpoint interaction UI                                                    |
-| **TLS 1.3**                      | Transport Layer Security version 1.3 — current best-practice encryption in transit                                           |
-| **TOTP**                         | Time-based One-Time Password — MFA method (RFC 6238)                                                                         |
-| **TTL**                          | Time-To-Live — duration a cached entry remains valid                                                                         |
-| **WinAPI**                       | Windows Application Programming Interface                                                                                    |
-| **WTSEnumerateSessionsW**        | Windows API to enumerate all active user sessions on the local machine (returns an array of WTS_SESSION_INFOW structs, including session ID, state, and username) |
-| **WTSGetActiveConsoleSessionId** | Superseded by `WTSEnumerateSessionsW` — returns only the active console session (single session); not used in this architecture which enumerates all sessions. Retained for reference only. |
-| **WTSRegisterSessionNotification** | Windows API to register for session change events (session connect, disconnect, logon, logoff) for a specific session's window station |
-```
