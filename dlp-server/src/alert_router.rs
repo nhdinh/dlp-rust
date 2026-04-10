@@ -493,10 +493,7 @@ mod tests {
             // First address is invalid; second is invalid; neither reaches
             // the network. Both MUST be attempted — the old short-circuit
             // code would return after the first one.
-            to: vec![
-                "not-an-email".to_string(),
-                "also bad".to_string(),
-            ],
+            to: vec!["not-an-email".to_string(), "also bad".to_string()],
         };
 
         let event = AuditEvent::new(

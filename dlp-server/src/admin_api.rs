@@ -844,13 +844,12 @@ async fn update_alert_config_handler(
         let conn = db.conn().lock();
 
         // Resolve masked secrets against the currently stored row.
-        let (stored_smtp_password, stored_webhook_secret): (String, String) = conn
-            .query_row(
-                "SELECT smtp_password, webhook_secret \
+        let (stored_smtp_password, stored_webhook_secret): (String, String) = conn.query_row(
+            "SELECT smtp_password, webhook_secret \
                  FROM alert_router_config WHERE id = 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
         let smtp_password_to_write = if p.smtp_password == ALERT_SECRET_MASK {
             stored_smtp_password
         } else {
