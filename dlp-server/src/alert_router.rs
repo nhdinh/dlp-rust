@@ -134,6 +134,12 @@ impl AlertRouter {
     /// `spawn_blocking` for a single-row read (matches the rationale in
     /// [`crate::siem_connector::SiemConnector`]'s `load_config`).
     ///
+    /// Note: this method calls `self.db.conn().lock()` directly instead of
+    /// wrapping in `tokio::task::spawn_blocking` because it is a single-row
+    /// SELECT on the fire-and-forget alert path. The admin PUT handler in
+    /// `admin_api.rs::update_alert_config_handler` uses `spawn_blocking`
+    /// because it writes under a transaction — the asymmetry is deliberate.
+    ///
     /// # Errors
     ///
     /// Returns [`AlertError::Database`] if the row cannot be read or the
