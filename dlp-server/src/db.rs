@@ -138,6 +138,22 @@ impl Database {
                 updated_at      TEXT NOT NULL DEFAULT ''
             );
             INSERT OR IGNORE INTO siem_config (id) VALUES (1);
+
+            CREATE TABLE IF NOT EXISTS alert_router_config (
+                id                INTEGER PRIMARY KEY CHECK (id = 1),
+                smtp_host         TEXT NOT NULL DEFAULT '',
+                smtp_port         INTEGER NOT NULL DEFAULT 587,
+                smtp_username     TEXT NOT NULL DEFAULT '',
+                smtp_password     TEXT NOT NULL DEFAULT '',
+                smtp_from         TEXT NOT NULL DEFAULT '',
+                smtp_to           TEXT NOT NULL DEFAULT '',
+                smtp_enabled      INTEGER NOT NULL DEFAULT 0,
+                webhook_url       TEXT NOT NULL DEFAULT '',
+                webhook_secret    TEXT NOT NULL DEFAULT '',
+                webhook_enabled   INTEGER NOT NULL DEFAULT 0,
+                updated_at        TEXT NOT NULL DEFAULT ''
+            );
+            INSERT OR IGNORE INTO alert_router_config (id) VALUES (1);
             ",
         )
         .context("failed to initialize database tables")?;
