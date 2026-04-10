@@ -485,8 +485,16 @@ Common causes:
 
 ### Clipboard monitoring not working
 
-- Clipboard hooks require an active UI in the session to process `WM_PASTE` messages.
-- If the UI is not running in a session (e.g., locked screen), clipboard monitoring is inactive.
+Clipboard monitoring runs inside the dlp-user-ui process (not in the agent). The UI registers
+`AddClipboardFormatListener` on a message-only window to receive `WM_CLIPBOARDUPDATE` events.
+When clipboard text changes, dlp-user-ui classifies it via `dlp_common::classify_text`. If the
+result is T2 or higher, the UI sends a `ClipboardAlert` message to the agent over Pipe 3
+(`\\.\pipe\DLPEventUI2Agent`). The agent then emits an audit event with `action=PASTE` and
+`resource_path=clipboard:<preview>` to `C:\ProgramData\DLP\logs\audit.jsonl`.
+
+Clipboard monitoring is inactive if the UI is not running in the session (locked screen,
+session 0, or UI crash). Verify that `dlp-user-ui.exe` is running in the affected session
+before investigating the agent-side logs.
 
 ---
 

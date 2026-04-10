@@ -81,9 +81,7 @@ pub async fn create_exception(
     let id = Uuid::new_v4().to_string();
     let now = Utc::now();
     let granted_at = now.to_rfc3339();
-    let expires_at =
-        (now + chrono::Duration::seconds(payload.duration_seconds))
-            .to_rfc3339();
+    let expires_at = (now + chrono::Duration::seconds(payload.duration_seconds)).to_rfc3339();
 
     let exception = Exception {
         id: id.clone(),
@@ -205,11 +203,9 @@ pub async fn get_exception(
 
     match result {
         Ok(exc) => Ok(Json(exc)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            Err(AppError::NotFound(
-                format!("exception {exception_id} not found"),
-            ))
-        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(AppError::NotFound(format!(
+            "exception {exception_id} not found"
+        ))),
         Err(e) => Err(AppError::Database(e)),
     }
 }
@@ -227,8 +223,7 @@ mod tests {
             "justification": "Emergency access needed",
             "duration_seconds": 3600
         }"#;
-        let req: CreateExceptionRequest =
-            serde_json::from_str(json).expect("deserialize");
+        let req: CreateExceptionRequest = serde_json::from_str(json).expect("deserialize");
         assert_eq!(req.policy_id, "pol-001");
         assert_eq!(req.duration_seconds, 3600);
     }
@@ -245,10 +240,8 @@ mod tests {
             granted_at: "2026-01-01T00:00:00Z".to_string(),
             expires_at: "2026-01-01T02:00:00Z".to_string(),
         };
-        let json =
-            serde_json::to_string(&exc).expect("serialize");
-        let rt: Exception =
-            serde_json::from_str(&json).expect("deserialize");
+        let json = serde_json::to_string(&exc).expect("serialize");
+        let rt: Exception = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(exc.id, rt.id);
         assert_eq!(exc.duration_seconds, rt.duration_seconds);
     }

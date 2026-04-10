@@ -2,9 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
-use crate::app::{
-    App, ConfirmPurpose, InputPurpose, PasswordPurpose, Screen, StatusKind,
-};
+use crate::app::{App, ConfirmPurpose, InputPurpose, PasswordPurpose, Screen, StatusKind};
 use crate::event::AppEvent;
 
 /// Routes an event to the handler for the current screen.
@@ -26,9 +24,9 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::Confirm { .. } => handle_confirm(app, key),
         Screen::SiemConfig { .. } => handle_siem_config(app, key),
         // Read-only views: Enter or Esc goes back.
-        Screen::PolicyDetail { .. }
-        | Screen::ServerStatus { .. }
-        | Screen::ResultView { .. } => handle_view(app, key),
+        Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
+            handle_view(app, key)
+        }
     }
 }
 
@@ -196,7 +194,9 @@ fn handle_text_input(app: &mut App, key: KeyEvent) {
     };
     match key.code {
         KeyCode::Char(c) => input.push(c),
-        KeyCode::Backspace => { input.pop(); }
+        KeyCode::Backspace => {
+            input.pop();
+        }
         KeyCode::Enter => {
             let value = input.clone();
             if value.is_empty() {
@@ -251,7 +251,9 @@ fn handle_password_input(app: &mut App, key: KeyEvent) {
     };
     match key.code {
         KeyCode::Char(c) => input.push(c),
-        KeyCode::Backspace => { input.pop(); }
+        KeyCode::Backspace => {
+            input.pop();
+        }
         KeyCode::Enter => {
             let value = input.clone();
             if value.is_empty() {
@@ -420,7 +422,10 @@ fn handle_agent_list(app: &mut App, key: KeyEvent) {
 // ---------------------------------------------------------------------------
 
 fn action_list_policies(app: &mut App) {
-    match app.rt.block_on(app.client.get::<Vec<serde_json::Value>>("policies")) {
+    match app
+        .rt
+        .block_on(app.client.get::<Vec<serde_json::Value>>("policies"))
+    {
         Ok(policies) => {
             app.set_status(
                 format!("Loaded {} policies", policies.len()),
@@ -452,8 +457,7 @@ fn action_create_policy(app: &mut App, file_path: &str) {
     let result = (|| -> anyhow::Result<()> {
         let data = std::fs::read_to_string(file_path)?;
         let payload: serde_json::Value = serde_json::from_str(&data)?;
-        let _resp: serde_json::Value =
-            app.rt.block_on(app.client.post("policies", &payload))?;
+        let _resp: serde_json::Value = app.rt.block_on(app.client.post("policies", &payload))?;
         Ok(())
     })();
     match result {
@@ -473,8 +477,7 @@ fn action_update_policy(app: &mut App, id: &str, file_path: &str) {
         let data = std::fs::read_to_string(file_path)?;
         let payload: serde_json::Value = serde_json::from_str(&data)?;
         let path = format!("policies/{id}");
-        let _resp: serde_json::Value =
-            app.rt.block_on(app.client.put(&path, &payload))?;
+        let _resp: serde_json::Value = app.rt.block_on(app.client.put(&path, &payload))?;
         Ok(())
     })();
     match result {
@@ -508,7 +511,10 @@ fn action_change_admin_password(app: &mut App, current: &str, new_pw: &str) {
         "current_password": current,
         "new_password": new_pw,
     });
-    match app.rt.block_on(app.client.put::<serde_json::Value, _>("auth/password", &payload)) {
+    match app.rt.block_on(
+        app.client
+            .put::<serde_json::Value, _>("auth/password", &payload),
+    ) {
         Ok(_) => {
             app.set_status("Admin password changed", StatusKind::Success);
         }
@@ -521,8 +527,8 @@ fn action_change_admin_password(app: &mut App, current: &str, new_pw: &str) {
 
 fn action_set_agent_password(app: &mut App, password: &str) {
     let result = (|| -> anyhow::Result<()> {
-        let hash = bcrypt::hash(password, 12)
-            .map_err(|e| anyhow::anyhow!("bcrypt hash failed: {e}"))?;
+        let hash =
+            bcrypt::hash(password, 12).map_err(|e| anyhow::anyhow!("bcrypt hash failed: {e}"))?;
         let payload = serde_json::json!({ "hash": hash });
         let _resp: serde_json::Value = app
             .rt
@@ -654,12 +660,10 @@ fn action_save_siem_config(app: &mut App) {
         Screen::SiemConfig { config, .. } => config.clone(),
         _ => return,
     };
-    match app
-        .rt
-        .block_on(app.client.put::<serde_json::Value, _>(
-            "admin/siem-config",
-            &payload,
-        )) {
+    match app.rt.block_on(
+        app.client
+            .put::<serde_json::Value, _>("admin/siem-config", &payload),
+    ) {
         Ok(_) => {
             app.set_status("SIEM config saved", StatusKind::Success);
             app.screen = Screen::SystemMenu { selected: 2 };
@@ -729,10 +733,7 @@ fn handle_siem_config_editing(app: &mut App, key: KeyEvent, selected: usize) {
 fn handle_siem_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
     match key.code {
         KeyCode::Up | KeyCode::Down => {
-            if let Screen::SiemConfig {
-                selected: sel, ..
-            } = &mut app.screen
-            {
+            if let Screen::SiemConfig { selected: sel, .. } = &mut app.screen {
                 nav(sel, SIEM_ROW_COUNT, key.code);
             }
         }
@@ -758,10 +759,7 @@ fn handle_siem_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 } = &mut app.screen
                 {
                     let key_name = SIEM_KEYS[selected];
-                    *buffer = config[key_name]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
+                    *buffer = config[key_name].as_str().unwrap_or("").to_string();
                     *editing = true;
                 }
             }

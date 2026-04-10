@@ -157,10 +157,7 @@ impl SessionIdentityMap {
     ///
     /// Returns [`SessionIdentityError`] if the Win32 token query chain fails.
     /// The map is left unchanged on error.
-    pub fn add_session(
-        &self,
-        session_id: u32,
-    ) -> Result<(), SessionIdentityError> {
+    pub fn add_session(&self, session_id: u32) -> Result<(), SessionIdentityError> {
         if session_id == 0 {
             debug!("Skipping session 0 (SYSTEM services)");
             return Err(SessionIdentityError::SessionZero);
@@ -177,7 +174,9 @@ impl SessionIdentityMap {
 
         let lower_name = identity.name.to_lowercase();
         self.sessions.write().insert(session_id, identity);
-        self.username_to_session.write().insert(lower_name, session_id);
+        self.username_to_session
+            .write()
+            .insert(lower_name, session_id);
 
         Ok(())
     }
@@ -261,7 +260,10 @@ impl SessionIdentityMap {
         }
 
         // Tier 3: fallback to SYSTEM.
-        debug!(path, "No interactive user resolved — falling back to SYSTEM");
+        debug!(
+            path,
+            "No interactive user resolved — falling back to SYSTEM"
+        );
         (SYSTEM_SID.to_owned(), SYSTEM_NAME.to_owned())
     }
 
@@ -308,7 +310,8 @@ fn extract_profile_username(path: &str) -> Option<&str> {
     // The username sits between `C:\Users\` and the next backslash.
     let after_prefix = &path[USERS_PREFIX.len()..];
     // Find the end of the username component.
-    let end = after_prefix.find('\\')
+    let end = after_prefix
+        .find('\\')
         .or_else(|| after_prefix.find('/'))
         .unwrap_or(after_prefix.len());
 
@@ -338,9 +341,7 @@ fn extract_profile_username(path: &str) -> Option<&str> {
 ///
 /// Returns [`SessionIdentityError`] if any step of the Win32 API chain fails.
 #[cfg(windows)]
-fn query_session_user(
-    session_id: u32,
-) -> Result<UserIdentity, SessionIdentityError> {
+fn query_session_user(session_id: u32) -> Result<UserIdentity, SessionIdentityError> {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::RemoteDesktop::WTSQueryUserToken;
 
@@ -373,9 +374,7 @@ fn query_session_user(
 /// Stub for non-Windows platforms (allows the module to compile in tests on
 /// any OS, though the Win32 calls are gated behind `#[cfg(windows)]`).
 #[cfg(not(windows))]
-fn query_session_user(
-    _session_id: u32,
-) -> Result<UserIdentity, SessionIdentityError> {
+fn query_session_user(_session_id: u32) -> Result<UserIdentity, SessionIdentityError> {
     Err(SessionIdentityError::TokenInfoFailed(
         "Win32 APIs unavailable on this platform".to_owned(),
     ))
@@ -398,17 +397,13 @@ fn query_session_user(
 fn query_token_identity(
     token: windows::Win32::Foundation::HANDLE,
 ) -> Result<UserIdentity, SessionIdentityError> {
-    use windows::Win32::Security::{
-        GetTokenInformation, TokenUser, TOKEN_USER,
-    };
+    use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_USER};
 
     // First call: determine the required buffer size.
     let mut needed: u32 = 0;
     // SAFETY: passing None/0 to get the required size is the documented
     // two-call pattern for GetTokenInformation.
-    let _ = unsafe {
-        GetTokenInformation(token, TokenUser, None, 0, &mut needed)
-    };
+    let _ = unsafe { GetTokenInformation(token, TokenUser, None, 0, &mut needed) };
 
     if needed == 0 {
         return Err(SessionIdentityError::TokenInfoFailed(
@@ -427,9 +422,7 @@ fn query_token_identity(
             needed,
             &mut needed,
         )
-        .map_err(|e| {
-            SessionIdentityError::TokenInfoFailed(format!("{e}"))
-        })?;
+        .map_err(|e| SessionIdentityError::TokenInfoFailed(format!("{e}")))?;
     }
 
     // The buffer starts with a TOKEN_USER struct whose first field is a
@@ -461,29 +454,24 @@ fn query_token_identity(
 ///
 /// Returns [`SessionIdentityError::SidConversionFailed`] on Win32 failure.
 #[cfg(windows)]
-fn sid_to_string(
-    psid: windows::Win32::Security::PSID,
-) -> Result<String, SessionIdentityError> {
-    use windows::Win32::Foundation::{HLOCAL, LocalFree};
-    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+fn sid_to_string(psid: windows::Win32::Security::PSID) -> Result<String, SessionIdentityError> {
     use windows::core::PWSTR;
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 
     let mut sid_pwstr = PWSTR::null();
 
     // SAFETY: psid is a valid SID from GetTokenInformation.
     // ConvertSidToStringSidW allocates memory via LocalAlloc that we must free.
     unsafe {
-        ConvertSidToStringSidW(psid, &mut sid_pwstr).map_err(|e| {
-            SessionIdentityError::SidConversionFailed(format!("{e}"))
-        })?;
+        ConvertSidToStringSidW(psid, &mut sid_pwstr)
+            .map_err(|e| SessionIdentityError::SidConversionFailed(format!("{e}")))?;
     }
 
     // Read the null-terminated wide string.
     // SAFETY: ConvertSidToStringSidW wrote a valid null-terminated UTF-16 string.
     let result = unsafe { sid_pwstr.to_string() }.map_err(|e| {
-        SessionIdentityError::SidConversionFailed(format!(
-            "UTF-16 decode error: {e}"
-        ))
+        SessionIdentityError::SidConversionFailed(format!("UTF-16 decode error: {e}"))
     })?;
 
     // Free the buffer allocated by ConvertSidToStringSidW.
@@ -515,8 +503,8 @@ fn sid_to_string(
 fn lookup_account_name(
     psid: windows::Win32::Security::PSID,
 ) -> Result<String, SessionIdentityError> {
-    use windows::Win32::Security::{LookupAccountSidW, SID_NAME_USE};
     use windows::core::PWSTR;
+    use windows::Win32::Security::{LookupAccountSidW, SID_NAME_USE};
 
     let mut name_len: u32 = 0;
     let mut domain_len: u32 = 0;
@@ -557,9 +545,7 @@ fn lookup_account_name(
             &mut domain_len,
             &mut sid_type,
         )
-        .map_err(|e| {
-            SessionIdentityError::AccountLookupFailed(format!("{e}"))
-        })?;
+        .map_err(|e| SessionIdentityError::AccountLookupFailed(format!("{e}")))?;
     }
 
     // name_len now contains the length *excluding* the null terminator.
@@ -614,9 +600,7 @@ pub fn resolve_console_user() -> (String, String) {
 fn resolve_console_user_inner() -> Result<UserIdentity, SessionIdentityError> {
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Security::TOKEN_QUERY;
-    use windows::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcessToken,
-    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     let mut token = HANDLE::default();
 
@@ -624,9 +608,7 @@ fn resolve_console_user_inner() -> Result<UserIdentity, SessionIdentityError> {
     // with TOKEN_QUERY is a read-only operation.
     unsafe {
         OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)
-            .map_err(|e| {
-                SessionIdentityError::ProcessTokenFailed(format!("{e}"))
-            })?;
+            .map_err(|e| SessionIdentityError::ProcessTokenFailed(format!("{e}")))?;
     }
 
     let result = query_token_identity(token);
@@ -682,11 +664,11 @@ mod tests {
                 name: "jsmith".to_owned(),
             },
         );
-        map.username_to_session.write().insert("jsmith".to_owned(), 2);
+        map.username_to_session
+            .write()
+            .insert("jsmith".to_owned(), 2);
 
-        let (sid, name) = map.resolve_for_path(
-            r"C:\Users\jsmith\Documents\file.txt",
-        );
+        let (sid, name) = map.resolve_for_path(r"C:\Users\jsmith\Documents\file.txt");
         assert_eq!(sid, "S-1-5-21-999");
         assert_eq!(name, "jsmith");
     }
@@ -712,12 +694,12 @@ mod tests {
                 name: "JSmith".to_owned(),
             },
         );
-        map.username_to_session.write().insert("jsmith".to_owned(), 3);
+        map.username_to_session
+            .write()
+            .insert("jsmith".to_owned(), 3);
 
         // Mixed-case path should still resolve.
-        let (sid, name) = map.resolve_for_path(
-            r"C:\users\JSmith\Desktop\notes.txt",
-        );
+        let (sid, name) = map.resolve_for_path(r"C:\users\JSmith\Desktop\notes.txt");
         assert_eq!(sid, "S-1-5-21-888");
         assert_eq!(name, "JSmith");
     }
@@ -737,10 +719,7 @@ mod tests {
             .insert("testuser".to_owned(), 5);
 
         assert_eq!(map.session_count(), 1);
-        assert_eq!(
-            map.sessions.read().get(&5),
-            Some(&identity),
-        );
+        assert_eq!(map.sessions.read().get(&5), Some(&identity),);
 
         // Remove and verify cleanup.
         map.remove_session(5);
@@ -753,10 +732,7 @@ mod tests {
         let map = SessionIdentityMap::new();
         let result = map.add_session(0);
         assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(SessionIdentityError::SessionZero)
-        ));
+        assert!(matches!(result, Err(SessionIdentityError::SessionZero)));
     }
 
     #[test]
@@ -771,7 +747,9 @@ mod tests {
                 name: "alice".to_owned(),
             },
         );
-        map.username_to_session.write().insert("alice".to_owned(), 7);
+        map.username_to_session
+            .write()
+            .insert("alice".to_owned(), 7);
 
         // Path under a shared directory, not a user profile.
         let (sid, name) = map.resolve_for_path(r"D:\Shared\budget.xlsx");
@@ -823,10 +801,7 @@ mod tests {
 
     #[test]
     fn test_extract_profile_username_no_match() {
-        assert_eq!(
-            extract_profile_username(r"D:\Data\file.txt"),
-            None,
-        );
+        assert_eq!(extract_profile_username(r"D:\Data\file.txt"), None,);
     }
 
     #[test]
@@ -840,10 +815,7 @@ mod tests {
     #[test]
     fn test_extract_profile_username_bare_users() {
         // Just `C:\Users\` with nothing after it.
-        assert_eq!(
-            extract_profile_username(r"C:\Users\"),
-            None,
-        );
+        assert_eq!(extract_profile_username(r"C:\Users\"), None,);
     }
 
     #[test]

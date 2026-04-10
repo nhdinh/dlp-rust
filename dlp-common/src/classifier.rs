@@ -133,7 +133,10 @@ mod tests {
 
     #[test]
     fn test_classify_credit_card_dashes() {
-        assert_eq!(classify_text("Card: 4111-1111-1111-1111"), Classification::T4);
+        assert_eq!(
+            classify_text("Card: 4111-1111-1111-1111"),
+            Classification::T4
+        );
     }
 
     #[test]

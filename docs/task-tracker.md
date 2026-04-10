@@ -160,9 +160,13 @@
 
 ## Sprint 16 — Clipboard Hooks
 
-| ID   | Status | Story | Task                                                                                                                                                                         | Deliverable                |
-| ---- | ------ | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| T-20 | [x]    | US-07 | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE`; `detection/clipboard/classifier.rs`: classify text content → T1–T4 | `dlp-agent/src/clipboard/` |
+| ID   | Status | Story | Task                                                                                                                                                                                                                                                                                                  | Deliverable                                     |
+| ---- | ------ | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| T-20 | [x]    | US-07 | Implement clipboard monitoring in dlp-user-ui: `AddClipboardFormatListener` / `WM_CLIPBOARDUPDATE` message-only window; classify text via `dlp_common::classify_text`; send `ClipboardAlert` to agent over Pipe 3 (`\\.\pipe\DLPEventUI2Agent`); agent emits audit event with `action=PASTE` | `dlp-user-ui/src/clipboard_monitor.rs` |
+
+> **Note:** The original design placed a `WH_GETMESSAGE` / `WM_PASTE` hook in `dlp-agent/src/clipboard/listener.rs`.
+> That code exists as legacy but the hook is never installed at runtime — the agent runs as SYSTEM in session 0
+> and cannot access the interactive user's clipboard.  The shipped implementation lives entirely in `dlp-user-ui`.
 
 ---
 
@@ -234,3 +238,31 @@
 | P4-T01 | [x]    | WiX v3 MSI installer: `DLPAgent.wxs`, `build.ps1`, `readme.md`; service install/uninstall, crash recovery | `installer/`                              |
 | P4-T02 | [x]    | OPERATIONAL.md runbook: 12-section deployment and operations guide                                           | `docs/OPERATIONAL.md`                     |
 | P4-T03 | [x]    | SECURITY_AUDIT.md: formal security review, STRIDE threat coverage, N-SEC gap analysis, ISO 27001 mapping  | `docs/SECURITY_AUDIT.md`                  |
+
+## Phase 99 — Clipboard Monitoring Integration Tests
+
+| Task     | Status | Description                                                                                                                                                                       | Deliverable                                      |
+| -------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| P99-T01  | [x]    | 8 `#[serial]` integration tests for clipboard monitoring end-to-end: each test spawns a mock Pipe 3 server via `DLP_PIPE3_NAME` env-var override and verifies the `ClipboardAlert` frame | `dlp-user-ui/tests/clipboard_integration.rs`     |
+
+### Test inventory (8 tests)
+
+| Test function                   | Scenario                                |
+| ------------------------------- | --------------------------------------- |
+| `test_ssn_triggers_t4_alert`    | SSN pattern → T4 alert sent             |
+| `test_credit_card_triggers_t4_alert` | Credit card pattern → T4 alert sent |
+| `test_confidential_triggers_t3_alert` | "CONFIDENTIAL" keyword → T3 alert  |
+| `test_internal_triggers_t2_alert` | "INTERNAL ONLY" keyword → T2 alert   |
+| `test_ordinary_text_no_alert`   | Benign text → no alert emitted          |
+| `test_duplicate_deduplicated`   | Duplicate clipboard content → no double alert |
+| `test_empty_clipboard_ignored`  | Empty string → no alert                 |
+| `test_non_text_clipboard_ignored` | Non-text clipboard → no alert         |
+
+## Phase 0.1 — Runtime Bugfixes (Clipboard Monitoring)
+
+| Task     | Status | Description                                                                                                                                              | Deliverable                                    |
+| -------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| P01-T01  | [x]    | (A) Fix WorkerGuard lifetime + `.init()` panic in agent tracing subscriber                                                                               | `dlp-agent/src/service.rs`                     |
+| P01-T02  | [x]    | (B) UI tracing subscriber now writes to rolling daily file (`C:\ProgramData\DLP\logs\dlp-user-ui.log.YYYY-MM-DD`) instead of stderr (suppressed under `windows_subsystem="windows"`) | `dlp-user-ui/src/main.rs`        |
+| P01-T03  | [x]    | (C) Replace `tracing_appender::non_blocking` (silently swallows IO errors) with synchronous `RollingFileAppender` as `MakeWriter` in both services       | `dlp-agent/src/`, `dlp-user-ui/src/`           |
+| P01-T04  | [x]    | (D) Fix missing backslash in `PIPE_NAME_DEFAULT` in `dlp-user-ui/src/ipc/pipe3.rs` (`r"\.\pipe\..."` → `r"\\.\pipe\..."`)                               | `dlp-user-ui/src/ipc/pipe3.rs`                 |

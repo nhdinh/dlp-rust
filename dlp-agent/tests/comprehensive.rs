@@ -16,9 +16,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use dlp_common::{
-    Action, Classification, Decision, EvaluateRequest, EvaluateResponse,
-};
+use dlp_common::{Action, Classification, Decision, EvaluateRequest, EvaluateResponse};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IPC Message Serialisation Round-Trips
@@ -297,8 +295,7 @@ mod config_edge_cases {
 
     #[test]
     fn test_load_missing_file_uses_defaults() {
-        let config =
-            AgentConfig::load(Path::new(r"C:\nonexistent\path\agent-config.toml"));
+        let config = AgentConfig::load(Path::new(r"C:\nonexistent\path\agent-config.toml"));
         assert!(config.monitored_paths.is_empty());
         assert!(config.excluded_paths.is_empty());
     }
@@ -306,10 +303,12 @@ mod config_edge_cases {
     #[test]
     fn test_load_malformed_toml_returns_default() {
         // toml crate returns an error for invalid TOML.
-        let parse_result: Result<AgentConfig, _> = toml::from_str(r#"
+        let parse_result: Result<AgentConfig, _> = toml::from_str(
+            r#"
             monitored_paths = ['C:\Data\'.to_string()]
             this is not valid toml
-        "#);
+        "#,
+        );
         assert!(parse_result.is_err());
 
         // AgentConfig::load catches the parse error and returns Default.
@@ -353,10 +352,7 @@ mod config_edge_cases {
     #[test]
     fn test_resolve_watch_paths_configured() {
         let config = AgentConfig {
-            monitored_paths: vec![
-                r"C:\Data\".to_string(),
-                r"D:\Shares\".to_string(),
-            ],
+            monitored_paths: vec![r"C:\Data\".to_string(), r"D:\Shares\".to_string()],
             excluded_paths: Vec::new(),
             machine_name: None,
         };
@@ -805,9 +801,7 @@ mod policy_mapper_boundary {
             Classification::T4
         );
         assert_eq!(
-            PolicyMapper::provisional_classification(
-                r"C:\Confidential\Finance\2024\budget.xlsx"
-            ),
+            PolicyMapper::provisional_classification(r"C:\Confidential\Finance\2024\budget.xlsx"),
             Classification::T3
         );
         assert_eq!(
@@ -835,7 +829,10 @@ mod policy_mapper_boundary {
     #[test]
     fn test_provisional_classification_root_drive() {
         // C:\ alone is not in the prefix list.
-        assert_eq!(PolicyMapper::provisional_classification(r"C:\"), Classification::T1);
+        assert_eq!(
+            PolicyMapper::provisional_classification(r"C:\"),
+            Classification::T1
+        );
     }
 
     #[test]
@@ -929,9 +926,8 @@ mod audit_event_schema {
     }
 
     fn required_field<'a>(json: &'a Value, name: &str) -> &'a Value {
-        json.get(name).unwrap_or_else(|| {
-            panic!("required field '{name}' missing from audit event JSON")
-        })
+        json.get(name)
+            .unwrap_or_else(|| panic!("required field '{name}' missing from audit event JSON"))
     }
 
     #[test]
@@ -1003,8 +999,12 @@ mod audit_event_schema {
 
     #[test]
     fn test_audit_event_classification_serdes() {
-        for cls in [Classification::T1, Classification::T2, Classification::T3, Classification::T4]
-        {
+        for cls in [
+            Classification::T1,
+            Classification::T2,
+            Classification::T3,
+            Classification::T4,
+        ] {
             let event = AuditEvent::new(
                 EventType::Access,
                 "S-1-5-21-123".into(),
@@ -1049,10 +1049,7 @@ mod audit_event_schema {
             let json = serde_json::to_string(&event).unwrap();
             let v: Value = parse_json(&json);
             let dec_str = v.get("decision").unwrap().as_str().unwrap();
-            assert!(
-                !dec_str.is_empty(),
-                "decision field should not be empty"
-            );
+            assert!(!dec_str.is_empty(), "decision field should not be empty");
         }
     }
 
@@ -1164,10 +1161,7 @@ mod audit_event_schema {
             "AGENT-001".into(),
             2,
         )
-        .with_environment(
-            Some("Managed".into()),
-            Some("Corporate".into()),
-        );
+        .with_environment(Some("Managed".into()), Some("Corporate".into()));
 
         let json = serde_json::to_string(&event).unwrap();
         let v: Value = parse_json(&json);
@@ -1267,11 +1261,7 @@ mod cache_edge_cases {
     #[test]
     fn test_cache_different_paths_independent() {
         let cache = Cache::new();
-        cache.insert(
-            r"C:\Data\a.xlsx",
-            "S-1",
-            make_response(Decision::ALLOW),
-        );
+        cache.insert(r"C:\Data\a.xlsx", "S-1", make_response(Decision::ALLOW));
         cache.insert(
             r"C:\Restricted\b.xlsx",
             "S-1",
@@ -1381,32 +1371,20 @@ mod network_share_edge_cases {
         let detector = NetworkShareDetector::new();
 
         // No whitelist → all T3+ should be blocked.
-        assert!(detector.should_block(
-            r"\\server\share\file.xlsx",
-            Classification::T3
-        ));
-        assert!(detector.should_block(
-            r"\\server\share\file.xlsx",
-            Classification::T4
-        ));
+        assert!(detector.should_block(r"\\server\share\file.xlsx", Classification::T3));
+        assert!(detector.should_block(r"\\server\share\file.xlsx", Classification::T4));
     }
 
     #[test]
     fn test_t1_never_blocked() {
         let detector = NetworkShareDetector::new();
-        assert!(!detector.should_block(
-            r"\\anywhere\share\public.txt",
-            Classification::T1
-        ));
+        assert!(!detector.should_block(r"\\anywhere\share\public.txt", Classification::T1));
     }
 
     #[test]
     fn test_t2_never_blocked() {
         let detector = NetworkShareDetector::new();
-        assert!(!detector.should_block(
-            r"\\anywhere\share\report.xlsx",
-            Classification::T2
-        ));
+        assert!(!detector.should_block(r"\\anywhere\share\report.xlsx", Classification::T2));
     }
 
     #[test]
@@ -1415,20 +1393,16 @@ mod network_share_edge_cases {
         detector.add_to_whitelist("fileserver");
 
         // Share name contains spaces — whitelisted by server name.
-        assert!(!detector.should_block(
-            r"\\fileserver\My Documents\report.docx",
-            Classification::T3
-        ));
+        assert!(
+            !detector.should_block(r"\\fileserver\My Documents\report.docx", Classification::T3)
+        );
     }
 
     #[test]
     fn test_ipv6_server_name() {
         let detector = NetworkShareDetector::new();
         // IPv6 address as server name — should not match whitelist by default.
-        assert!(detector.should_block(
-            r"\\fe80::1\share\file.xlsx",
-            Classification::T3
-        ));
+        assert!(detector.should_block(r"\\fe80::1\share\file.xlsx", Classification::T3));
     }
 
     #[test]
@@ -1439,10 +1413,7 @@ mod network_share_edge_cases {
 
         // Full server name must match for whitelist to apply.
         // "files.corp.local" != "files" — not whitelisted.
-        assert!(detector.should_block(
-            r"\\files.corp.local\data\file.xlsx",
-            Classification::T3
-        ));
+        assert!(detector.should_block(r"\\files.corp.local\data\file.xlsx", Classification::T3));
     }
 
     #[test]
@@ -1450,22 +1421,13 @@ mod network_share_edge_cases {
         let detector = NetworkShareDetector::new();
         detector.add_to_whitelist("safe.server");
 
-        assert!(!detector.should_block(
-            r"\\safe.server\share\file.xlsx",
-            Classification::T3
-        ));
+        assert!(!detector.should_block(r"\\safe.server\share\file.xlsx", Classification::T3));
 
         // Clear and re-add different whitelist.
         detector.replace_whitelist(vec!["other.server".into()]);
 
-        assert!(detector.should_block(
-            r"\\safe.server\share\file.xlsx",
-            Classification::T3
-        ));
-        assert!(!detector.should_block(
-            r"\\other.server\share\file.xlsx",
-            Classification::T3
-        ));
+        assert!(detector.should_block(r"\\safe.server\share\file.xlsx", Classification::T3));
+        assert!(!detector.should_block(r"\\other.server\share\file.xlsx", Classification::T3));
     }
 }
 
@@ -1481,20 +1443,14 @@ mod usb_tier_coverage {
     fn test_usb_t1_not_blocked() {
         let detector = UsbDetector::new();
         // T1 (Public) is never blocked even on a USB drive.
-        assert!(!detector.should_block_write(
-            r"E:\public_readme.txt",
-            Classification::T1
-        ));
+        assert!(!detector.should_block_write(r"E:\public_readme.txt", Classification::T1));
     }
 
     #[test]
     fn test_usb_t2_not_blocked() {
         let detector = UsbDetector::new();
         // T2 is not blocked by USB policy.
-        assert!(!detector.should_block_write(
-            r"E:\internal_report.xlsx",
-            Classification::T2
-        ));
+        assert!(!detector.should_block_write(r"E:\internal_report.xlsx", Classification::T2));
     }
 
     #[test]
@@ -1504,20 +1460,14 @@ mod usb_tier_coverage {
         // Since we can't add drives via the public API without real hardware,
         // this test verifies the classification-based blocking logic:
         // T3 on a non-blocked drive returns false.
-        assert!(!detector.should_block_write(
-            r"C:\confidential\doc.docx",
-            Classification::T3
-        ));
+        assert!(!detector.should_block_write(r"C:\confidential\doc.docx", Classification::T3));
     }
 
     #[test]
     fn test_usb_t4_blocked() {
         let detector = UsbDetector::new();
         // T4 on C: is not blocked by USB detector (C: is not a USB).
-        assert!(!detector.should_block_write(
-            r"C:\restricted\secret.xlsx",
-            Classification::T4
-        ));
+        assert!(!detector.should_block_write(r"C:\restricted\secret.xlsx", Classification::T4));
     }
 
     #[test]
@@ -1901,7 +1851,10 @@ mod clipboard_classifier_patterns {
 
     #[test]
     fn test_benign_text() {
-        assert_eq!(ContentClassifier::classify("Hello world"), Classification::T1);
+        assert_eq!(
+            ContentClassifier::classify("Hello world"),
+            Classification::T1
+        );
         assert_eq!(ContentClassifier::classify(""), Classification::T1);
         assert_eq!(
             ContentClassifier::classify("The quick brown fox"),

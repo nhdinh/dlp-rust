@@ -271,9 +271,7 @@ mod tests {
         let path = dir.path().join("report.txt");
         std::fs::write(&path, "This report is CONFIDENTIAL").unwrap();
 
-        let tier = PolicyMapper::provisional_classification(
-            path.to_str().unwrap(),
-        );
+        let tier = PolicyMapper::provisional_classification(path.to_str().unwrap());
         assert_eq!(tier, Classification::T3);
     }
 }

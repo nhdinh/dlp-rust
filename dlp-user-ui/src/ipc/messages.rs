@@ -86,8 +86,12 @@ pub enum Pipe2AgentMsg {
 #[allow(dead_code)]
 pub enum Pipe3UiMsg {
     HealthPong,
-    UiReady { session_id: u32 },
-    UiClosing { session_id: u32 },
+    UiReady {
+        session_id: u32,
+    },
+    UiClosing {
+        session_id: u32,
+    },
     ClipboardAlert {
         session_id: u32,
         classification: String,

@@ -72,9 +72,8 @@ pub fn harden_ui_process(handle: HANDLE, session_id: u32) {
 /// in windows-rs 0.58.
 fn harden_process(handle: HANDLE) -> Result<()> {
     use windows::Win32::Security::{
-        InitializeSecurityDescriptor, SetKernelObjectSecurity,
-        SetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR, ACL,
+        InitializeSecurityDescriptor, SetKernelObjectSecurity, SetSecurityDescriptorDacl, ACL,
+        DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR,
     };
 
     // SECURITY_DESCRIPTOR_REVISION = 1 (avoid pulling in Win32_System_SystemServices).
@@ -96,9 +95,9 @@ fn harden_process(handle: HANDLE) -> Result<()> {
 
         SetSecurityDescriptorDacl(
             psd,
-            true,                                                // bDaclPresent
-            Some(dacl.as_ptr() as *const ACL),                   // pDacl
-            false,                                               // bDaclDefaulted
+            true,                              // bDaclPresent
+            Some(dacl.as_ptr() as *const ACL), // pDacl
+            false,                             // bDaclDefaulted
         )
         .ok()
         .context("SetSecurityDescriptorDacl failed")?;
@@ -128,8 +127,8 @@ fn build_deny_everyone_dacl(denied_mask: u32) -> Result<Vec<u8>> {
     // Revision=1, SubAuthorityCount=1, IdentifierAuthority={0,0,0,0,0,1},
     // SubAuthority[0]=0
     let everyone_sid: [u8; 12] = [
-        1,    // Revision
-        1,    // SubAuthorityCount
+        1, // Revision
+        1, // SubAuthorityCount
         0, 0, 0, 0, 0, 1, // IdentifierAuthority = SECURITY_WORLD_SID_AUTHORITY
         0, 0, 0, 0, // SubAuthority[0] = 0
     ];
@@ -146,12 +145,12 @@ fn build_deny_everyone_dacl(denied_mask: u32) -> Result<Vec<u8>> {
     buf[0] = 2; // ACL_REVISION
     buf[1] = 0; // Sbz1
     buf[2..4].copy_from_slice(&acl_size.to_le_bytes()); // AclSize
-    buf[4..6].copy_from_slice(&1u16.to_le_bytes());     // AceCount = 1
-    buf[6..8].copy_from_slice(&0u16.to_le_bytes());     // Sbz2
+    buf[4..6].copy_from_slice(&1u16.to_le_bytes()); // AceCount = 1
+    buf[6..8].copy_from_slice(&0u16.to_le_bytes()); // Sbz2
 
     // ACCESS_DENIED_ACE at offset 8:
     let ace_offset = 8usize;
-    buf[ace_offset] = 1;     // AceType = ACCESS_DENIED_ACE_TYPE
+    buf[ace_offset] = 1; // AceType = ACCESS_DENIED_ACE_TYPE
     buf[ace_offset + 1] = 0; // AceFlags = 0 (no inheritance)
     buf[ace_offset + 2..ace_offset + 4].copy_from_slice(&ace_size.to_le_bytes()); // AceSize
     buf[ace_offset + 4..ace_offset + 8].copy_from_slice(&denied_mask.to_le_bytes()); // Mask

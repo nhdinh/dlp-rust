@@ -57,9 +57,7 @@ fn main() -> iced::Result {
                 println!("  request_id: {rid}");
                 println!("  password (DPAPI+base64): {} bytes", password.len());
             }
-            Ok(dlp_user_ui::ipc::messages::Pipe1UiMsg::PasswordCancel {
-                request_id: rid,
-            }) => {
+            Ok(dlp_user_ui::ipc::messages::Pipe1UiMsg::PasswordCancel { request_id: rid }) => {
                 println!("[CANCEL] PasswordCancel received (request_id={rid})");
             }
             Ok(other) => println!("[UNEXPECTED] {other:?}"),

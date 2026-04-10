@@ -15,9 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 /// Lazily-constructed null-terminated wide strings for ShellExecuteW.
 static PORTAL_URL: std::sync::LazyLock<Vec<u16>> =
-    std::sync::LazyLock::new(|| {
-        "https://dlp-admin.local\0".encode_utf16().collect()
-    });
+    std::sync::LazyLock::new(|| "https://dlp-admin.local\0".encode_utf16().collect());
 static OP_OPEN: std::sync::LazyLock<Vec<u16>> =
     std::sync::LazyLock::new(|| "open\0".encode_utf16().collect());
 
@@ -56,20 +54,10 @@ pub fn init() -> Result<()> {
         None::<muda::accelerator::Accelerator>,
     );
     let separator = PredefinedMenuItem::separator();
-    let exit = MenuItem::with_id(
-        "exit",
-        "Exit",
-        true,
-        None::<muda::accelerator::Accelerator>,
-    );
+    let exit = MenuItem::with_id("exit", "Exit", true, None::<muda::accelerator::Accelerator>);
 
-    let menu = Menu::with_items(&[
-        &show_portal,
-        &agent_status,
-        &separator,
-        &exit,
-    ])
-    .map_err(|e| anyhow::anyhow!("failed to create tray menu: {e}"))?;
+    let menu = Menu::with_items(&[&show_portal, &agent_status, &separator, &exit])
+        .map_err(|e| anyhow::anyhow!("failed to create tray menu: {e}"))?;
 
     // Store the status item handle in the thread-local (main thread only).
     STATUS_ITEM.with(|cell| {
@@ -83,9 +71,7 @@ pub fn init() -> Result<()> {
         .with_tooltip("DLP Agent UI")
         .with_icon(icon)
         .build()
-        .map_err(|e| {
-            anyhow::anyhow!("failed to build tray icon: {e}")
-        })?;
+        .map_err(|e| anyhow::anyhow!("failed to build tray icon: {e}"))?;
 
     // Leak the tray icon so it lives for the process lifetime.
     // tray-icon drops the icon (and removes it from the taskbar)
@@ -147,6 +133,5 @@ fn load_default_icon() -> tray_icon::Icon {
         // DLP brand blue: RGBA = (0x00, 0x66, 0xCC, 0xFF)
         rgba.extend_from_slice(&[0x00, 0x66, 0xCC, 0xFF]);
     }
-    tray_icon::Icon::from_rgba(rgba, 16, 16)
-        .expect("failed to create tray icon from RGBA data")
+    tray_icon::Icon::from_rgba(rgba, 16, 16).expect("failed to create tray icon from RGBA data")
 }

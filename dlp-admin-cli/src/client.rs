@@ -21,8 +21,8 @@ pub struct EngineClient {
 
 /// Helper: load a mTLS client identity from cert + key PEM files.
 fn load_identity(cert_path: &str, key_path: &str) -> Result<reqwest::Identity> {
-    let cert_data =
-        std::fs::read(cert_path).with_context(|| format!("failed to read certificate: {cert_path}"))?;
+    let cert_data = std::fs::read(cert_path)
+        .with_context(|| format!("failed to read certificate: {cert_path}"))?;
     let key_data =
         std::fs::read(key_path).with_context(|| format!("failed to read key: {key_path}"))?;
     let pem = format!(
@@ -132,11 +132,7 @@ impl EngineClient {
     ///
     /// Returns an error if the login request fails or credentials are invalid.
     pub async fn login(&mut self, username: &str, password: &str) -> Result<()> {
-        let url = format!(
-            "{}/{}",
-            self.base_url.trim_end_matches('/'),
-            "auth/login"
-        );
+        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), "auth/login");
         let payload = serde_json::json!({
             "username": username,
             "password": password,
@@ -175,10 +171,7 @@ impl EngineClient {
     }
 
     /// Attaches the Bearer token to a request if one is set.
-    fn apply_auth(
-        &self,
-        builder: reqwest::RequestBuilder,
-    ) -> reqwest::RequestBuilder {
+    fn apply_auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(ref token) = self.token {
             builder.bearer_auth(token)
         } else {
@@ -274,4 +267,3 @@ impl EngineClient {
         Ok(())
     }
 }
-

@@ -125,14 +125,9 @@ fn accept_loop(first_pipe: HANDLE) -> Result<()> {
         if let Err(e) = unsafe { ConnectNamedPipe(pipe, None) } {
             let win32_code = (e.code().0 as u32) & 0xFFFF;
             if win32_code != 535 {
-                warn!(
-                    win32_code,
-                    "ConnectNamedPipe failed — recycling pipe"
-                );
+                warn!(win32_code, "ConnectNamedPipe failed — recycling pipe");
                 unsafe {
-                    let _ = windows::Win32::Foundation::CloseHandle(
-                        pipe,
-                    );
+                    let _ = windows::Win32::Foundation::CloseHandle(pipe);
                 }
                 pipe = create_pipe()?;
                 continue;
@@ -148,8 +143,7 @@ fn accept_loop(first_pipe: HANDLE) -> Result<()> {
 /// Creates a new named pipe instance with a DACL that allows
 /// Authenticated Users (the interactive-user UI process) to connect.
 fn create_pipe() -> Result<HANDLE> {
-    let name_wide: Vec<u16> =
-        PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+    let name_wide: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
 
     let sec = super::pipe_security::PipeSecurity::new()
         .map_err(|e| anyhow::anyhow!("pipe security: {e}"))?;

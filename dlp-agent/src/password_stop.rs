@@ -37,8 +37,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use anyhow::{anyhow, Context, Result};
-use std::io::Write;
 use parking_lot::Mutex;
+use std::io::Write;
 use tracing::{error, info, warn};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{LocalFree, ERROR_FILE_NOT_FOUND, HLOCAL, WIN32_ERROR};
@@ -47,7 +47,6 @@ use windows::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_SZ,
     REG_VALUE_TYPE,
 };
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration (stored in registry)
@@ -168,10 +167,7 @@ pub fn initiate_stop() {
         // Build the response file path.  The spawned UI writes its result
         // here instead of going through Pipe 1 (which deadlocks because
         // synchronous ReadFile/WriteFile on the same handle are serialised).
-        let response_path = format!(
-            r"C:\ProgramData\DLP\logs\stop-response-{}.json",
-            request_id
-        );
+        let response_path = format!(r"C:\ProgramData\DLP\logs\stop-response-{}.json", request_id);
         let _ = std::fs::create_dir_all(r"C:\ProgramData\DLP\logs");
         // Remove any stale response file.
         let _ = std::fs::remove_file(&response_path);
@@ -190,13 +186,16 @@ pub fn initiate_stop() {
 
         // Step 2: poll the response file.
         debug_log("step 2: polling for response file...");
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(STOP_TIMEOUT_SECS);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(STOP_TIMEOUT_SECS);
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
 
             if let Ok(data) = std::fs::read_to_string(&response_path) {
-                debug_log(&format!("step 2: response file found ({} bytes)", data.len()));
+                debug_log(&format!(
+                    "step 2: response file found ({} bytes)",
+                    data.len()
+                ));
                 let _ = std::fs::remove_file(&response_path);
                 handle_file_response(&request_id, &data);
                 return;
@@ -207,10 +206,7 @@ pub fn initiate_stop() {
                     "step 2: TIMEOUT after {}s — aborting stop",
                     STOP_TIMEOUT_SECS
                 ));
-                error!(
-                    "password stop timed out after {}s",
-                    STOP_TIMEOUT_SECS
-                );
+                error!("password stop timed out after {}s", STOP_TIMEOUT_SECS);
                 let _ = std::fs::remove_file(&response_path);
                 abort_stop();
                 return;
@@ -283,7 +279,10 @@ fn try_spawn_password_ui(request_id: &str, response_path: &str) -> bool {
 
     // Check binary exists.
     if !binary.exists() {
-        debug_log(&format!("try_spawn: binary does NOT exist at {}", binary.display()));
+        debug_log(&format!(
+            "try_spawn: binary does NOT exist at {}",
+            binary.display()
+        ));
         error!(path = %binary.display(), "UI binary not found");
         return false;
     }
@@ -318,7 +317,9 @@ fn try_spawn_password_ui(request_id: &str, response_path: &str) -> bool {
         debug_log(&format!("try_spawn: attempting session {session_id}"));
         match spawn_process_in_session(session_id, &cmd) {
             Ok(pid) => {
-                debug_log(&format!("try_spawn: SUCCESS pid={pid} session={session_id}"));
+                debug_log(&format!(
+                    "try_spawn: SUCCESS pid={pid} session={session_id}"
+                ));
                 info!(session_id, pid, "spawned stop-password UI");
                 return true;
             }
@@ -353,9 +354,7 @@ fn spawn_process_in_session(session_id: u32, cmd: &str) -> Result<u32> {
     unsafe {
         WTSQueryUserToken(session_id, &mut token)
             .ok()
-            .ok_or_else(|| anyhow::anyhow!(
-                "WTSQueryUserToken failed for session {session_id}"
-            ))?;
+            .ok_or_else(|| anyhow::anyhow!("WTSQueryUserToken failed for session {session_id}"))?;
     }
 
     // Build wide command line (must be mutable for CreateProcessAsUserW).
@@ -405,7 +404,6 @@ fn spawn_process_in_session(session_id: u32, cmd: &str) -> Result<u32> {
     }
 }
 
-
 /// Handles a `PASSWORD_CANCEL` response from the UI.
 pub fn handle_password_cancel(request_id: &str) {
     if !matches_pending_request(request_id) {
@@ -426,7 +424,9 @@ pub fn handle_password_submit(request_id: &str, password: String, is_plaintext: 
 
     let attempt = FAILED_ATTEMPTS.fetch_add(1, Ordering::AcqRel) + 1;
 
-    debug_log(&format!("handle_password_submit: verifying (attempt {attempt})"));
+    debug_log(&format!(
+        "handle_password_submit: verifying (attempt {attempt})"
+    ));
     let result = if is_plaintext {
         verify_credentials_plaintext(&password)
     } else {
@@ -582,9 +582,10 @@ pub fn get_auth_hash() -> Result<String> {
     }
 
     // 3. Fall back to the local registry.
-    let hash = read_registry_string(REG_KEY_PATH, "DLPAuthHash")
-        .context("agent password hash not found. \
-                  Set it via dlp-admin-cli or ensure dlp-server is reachable.")?;
+    let hash = read_registry_string(REG_KEY_PATH, "DLPAuthHash").context(
+        "agent password hash not found. \
+                  Set it via dlp-admin-cli or ensure dlp-server is reachable.",
+    )?;
     let hash = hash.trim().to_string();
     if hash.is_empty() {
         anyhow::bail!(
@@ -685,14 +686,9 @@ fn write_registry_auth_hash(hash: &str) -> Result<()> {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        let value_wide: Vec<u16> = hash
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-        let value_bytes: &[u8] = std::slice::from_raw_parts(
-            value_wide.as_ptr().cast(),
-            value_wide.len() * 2,
-        );
+        let value_wide: Vec<u16> = hash.encode_utf16().chain(std::iter::once(0)).collect();
+        let value_bytes: &[u8] =
+            std::slice::from_raw_parts(value_wide.as_ptr().cast(), value_wide.len() * 2);
 
         let mut hkey = HKEY::default();
         let result = RegCreateKeyExW(
@@ -856,8 +852,8 @@ fn base64_decode(input: &str) -> anyhow::Result<Vec<u8>> {
 /// different user contexts (user session vs SYSTEM).
 fn verify_credentials_plaintext(password_b64: &str) -> Result<bool> {
     debug_log("verify_plaintext: step 1 — base64 decode");
-    let password_bytes = base64_decode(password_b64)
-        .context("base64 decode of plaintext password")?;
+    let password_bytes =
+        base64_decode(password_b64).context("base64 decode of plaintext password")?;
     debug_log(&format!(
         "verify_plaintext: step 1 OK — {} bytes",
         password_bytes.len()
@@ -875,12 +871,10 @@ fn verify_credentials_plaintext(password_b64: &str) -> Result<bool> {
 /// Verifies a DPAPI-wrapped password (legacy pipe-based flow).
 fn verify_credentials_dpapi(password_b64: &str) -> Result<bool> {
     debug_log("verify_dpapi: step 1 — base64 decode");
-    let protected_bytes =
-        base64_decode(password_b64).context("base64 decode of DPAPI blob")?;
+    let protected_bytes = base64_decode(password_b64).context("base64 decode of DPAPI blob")?;
 
     debug_log("verify_dpapi: step 2 — DPAPI unprotect");
-    let password_bytes = dpapi_unprotect(&protected_bytes)
-        .context("CryptUnprotectData failed")?;
+    let password_bytes = dpapi_unprotect(&protected_bytes).context("CryptUnprotectData failed")?;
 
     let password = String::from_utf8_lossy(&password_bytes).into_owned();
     debug_log(&format!(

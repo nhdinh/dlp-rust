@@ -118,8 +118,7 @@ impl ServerClient {
             .map(|h| h.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "unknown-host".to_string());
 
-        let agent_id = std::env::var("DLP_AGENT_ID")
-            .unwrap_or_else(|_| hostname.clone());
+        let agent_id = std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| hostname.clone());
 
         // Build a client with a reasonable timeout so we never block
         // the agent for too long on a slow/dead server.
@@ -180,12 +179,7 @@ impl ServerClient {
             "agent_version": agent_version,
         });
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await?;
+        let resp = self.client.post(&url).json(&payload).send().await?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
@@ -209,21 +203,13 @@ impl ServerClient {
     /// Returns `ServerClientError::Http` on network failures.
     /// Returns `ServerClientError::ServerError` on non-2xx responses.
     pub async fn send_heartbeat(&self) -> Result<(), ServerClientError> {
-        let url = format!(
-            "{}/agents/{}/heartbeat",
-            self.base_url, self.agent_id
-        );
+        let url = format!("{}/agents/{}/heartbeat", self.base_url, self.agent_id);
 
         let payload = serde_json::json!({
             "status": "healthy",
         });
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await?;
+        let resp = self.client.post(&url).json(&payload).send().await?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
@@ -281,22 +267,14 @@ impl ServerClient {
     ///
     /// Returns `ServerClientError::Http` on network failures.
     /// Returns `ServerClientError::ServerError` on non-2xx responses.
-    pub async fn send_audit_events(
-        &self,
-        events: &[AuditEvent],
-    ) -> Result<(), ServerClientError> {
+    pub async fn send_audit_events(&self, events: &[AuditEvent]) -> Result<(), ServerClientError> {
         if events.is_empty() {
             return Ok(());
         }
 
         let url = format!("{}/audit/events", self.base_url);
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(events)
-            .send()
-            .await?;
+        let resp = self.client.post(&url).json(events).send().await?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
@@ -440,8 +418,7 @@ fn os_version_string() -> String {
     #[cfg(windows)]
     {
         // Best-effort: fall back to a generic string if the API fails.
-        std::env::var("OS")
-            .unwrap_or_else(|_| "Windows".to_string())
+        std::env::var("OS").unwrap_or_else(|_| "Windows".to_string())
     }
     #[cfg(not(windows))]
     {
@@ -483,8 +460,7 @@ mod tests {
         // vars are absent. It does NOT clear them (unsafe in parallel tests).
         // If DLP_SERVER_URL happens to be set in the test environment, the
         // assertion still passes because we only check non-emptiness.
-        let client = ServerClient::from_env()
-            .expect("from_env should succeed");
+        let client = ServerClient::from_env().expect("from_env should succeed");
         assert!(!client.base_url.is_empty());
         assert!(!client.agent_id.is_empty());
     }
@@ -496,8 +472,7 @@ mod tests {
 
     #[test]
     fn test_audit_buffer_enqueue() {
-        let client = ServerClient::from_env()
-            .expect("from_env should succeed");
+        let client = ServerClient::from_env().expect("from_env should succeed");
         let buffer = AuditBuffer::new(client);
 
         buffer.enqueue(make_event());
@@ -509,8 +484,7 @@ mod tests {
 
     #[test]
     fn test_audit_buffer_debug() {
-        let client = ServerClient::from_env()
-            .expect("from_env should succeed");
+        let client = ServerClient::from_env().expect("from_env should succeed");
         let buffer = AuditBuffer::new(client);
         // Should not panic.
         let debug_str = format!("{buffer:?}");
@@ -519,8 +493,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_flush_empty_buffer_is_noop() {
-        let client = ServerClient::from_env()
-            .expect("from_env should succeed");
+        let client = ServerClient::from_env().expect("from_env should succeed");
         let buffer = AuditBuffer::new(client);
         // Should not panic or send any HTTP request.
         buffer.flush().await;
@@ -528,8 +501,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_audit_events_empty_slice() {
-        let client = ServerClient::from_env()
-            .expect("from_env should succeed");
+        let client = ServerClient::from_env().expect("from_env should succeed");
         // Empty slice should return Ok immediately without HTTP call.
         let result = client.send_audit_events(&[]).await;
         assert!(result.is_ok());

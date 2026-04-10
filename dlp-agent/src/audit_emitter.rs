@@ -67,9 +67,7 @@ mod audit_enrichment {
     fn get_process_image_path(pid: u32) -> Option<String> {
         use windows::Win32::Foundation::{CloseHandle, HMODULE};
         use windows::Win32::System::ProcessStatus::GetModuleFileNameExW;
-        use windows::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        };
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
@@ -91,12 +89,8 @@ mod audit_enrichment {
         use std::os::windows::ffi::OsStrExt;
         use windows::core::PCWSTR;
         use windows::Win32::Foundation::LocalFree;
-        use windows::Win32::Security::Authorization::{
-            GetNamedSecurityInfoW, SE_FILE_OBJECT,
-        };
-        use windows::Win32::Security::{
-            OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-        };
+        use windows::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+        use windows::Win32::Security::{OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID};
 
         let path_wide: Vec<u16> = OsStr::new(path)
             .encode_wide()
@@ -126,7 +120,8 @@ mod audit_enrichment {
             // ConvertSidToStringSidW is in Win32_Security_Authorization.
             let mut sid_str = windows::core::PWSTR::null();
             let ok = windows::Win32::Security::Authorization::ConvertSidToStringSidW(
-                owner_sid, &mut sid_str,
+                owner_sid,
+                &mut sid_str,
             )
             .ok();
 
@@ -145,7 +140,7 @@ mod audit_enrichment {
             // Free the SID string allocated by ConvertSidToStringSidW.
             if !sid_str.is_null() {
                 let _ = LocalFree(windows::Win32::Foundation::HLOCAL(
-                    sid_str.as_ptr() as *mut _,
+                    sid_str.as_ptr() as *mut _
                 ));
             }
 
@@ -187,8 +182,7 @@ use crate::server_client::AuditBuffer;
 /// events are only written to the local JSONL file (the primary path).
 /// Server relay is always best-effort.
 #[cfg(windows)]
-static AUDIT_BUFFER: once_cell::sync::OnceCell<Arc<AuditBuffer>> =
-    once_cell::sync::OnceCell::new();
+static AUDIT_BUFFER: once_cell::sync::OnceCell<Arc<AuditBuffer>> = once_cell::sync::OnceCell::new();
 
 /// Installs the global audit buffer for server relay.
 ///

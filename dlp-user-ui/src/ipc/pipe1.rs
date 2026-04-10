@@ -120,7 +120,9 @@ fn client_loop(pipe: HANDLE, session_id: u32) -> Result<()> {
 ///
 /// Returns `None` and logs an error if serialisation fails.
 fn serialize_response(msg: &Pipe1UiMsg, session_id: u32, label: &str) -> Option<Vec<u8>> {
-    serde_json::to_vec(msg).map_err(|e| error!(session_id, "serialise {label} failed: {e}")).ok()
+    serde_json::to_vec(msg)
+        .map_err(|e| error!(session_id, "serialise {label} failed: {e}"))
+        .ok()
 }
 
 /// Handles a `ClipboardRead` request by reading the clipboard and building

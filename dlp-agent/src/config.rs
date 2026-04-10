@@ -182,10 +182,7 @@ mod tests {
     fn test_deserialize_server_url() {
         let toml_str = "server_url = 'http://10.0.1.5:9090'\n";
         let config: AgentConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(
-            config.server_url.as_deref(),
-            Some("http://10.0.1.5:9090")
-        );
+        assert_eq!(config.server_url.as_deref(), Some("http://10.0.1.5:9090"));
     }
 
     #[test]
@@ -194,10 +191,7 @@ mod tests {
         let toml_str = "\u{FEFF}server_url = 'http://10.0.1.5:9090'\n";
         let content = toml_str.strip_prefix('\u{FEFF}').unwrap_or(toml_str);
         let config: AgentConfig = toml::from_str(content).unwrap();
-        assert_eq!(
-            config.server_url.as_deref(),
-            Some("http://10.0.1.5:9090")
-        );
+        assert_eq!(config.server_url.as_deref(), Some("http://10.0.1.5:9090"));
     }
 
     #[test]

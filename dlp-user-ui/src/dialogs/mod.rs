@@ -43,8 +43,7 @@ pub fn show_block_dialog_with_result(
     );
 
     let body_wide: Vec<u16> = body.encode_utf16().chain([0]).collect();
-    let title_wide: Vec<u16> =
-        "DLP: Access Blocked".encode_utf16().chain([0]).collect();
+    let title_wide: Vec<u16> = "DLP: Access Blocked".encode_utf16().chain([0]).collect();
 
     // SAFETY: both pointers are valid for the duration of the call
     // and reference owned Vec data that lives until MessageBoxW
@@ -78,13 +77,11 @@ pub enum BlockDialogResult {
 /// Shows the closing sequence notification when the agent requests UI
 /// shutdown.
 pub fn show_closing_sequence() {
-    let body =
-        "The DLP Agent is shutting down. You may close this window.";
+    let body = "The DLP Agent is shutting down. You may close this window.";
     let title = "DLP Agent";
 
     let body_wide: Vec<u16> = body.encode_utf16().chain([0]).collect();
-    let title_wide: Vec<u16> =
-        title.encode_utf16().chain([0]).collect();
+    let title_wide: Vec<u16> = title.encode_utf16().chain([0]).collect();
 
     unsafe {
         let _ = MessageBoxW(

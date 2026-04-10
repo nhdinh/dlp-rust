@@ -94,10 +94,7 @@ impl AlertRouter {
     ///
     /// Returns the first error encountered. Both destinations are
     /// attempted even if one fails.
-    pub async fn send_alert(
-        &self,
-        event: &AuditEvent,
-    ) -> Result<(), AlertError> {
+    pub async fn send_alert(&self, event: &AuditEvent) -> Result<(), AlertError> {
         let mut errors: Vec<AlertError> = Vec::new();
 
         if let Some(ref cfg) = self.smtp {
@@ -124,10 +121,7 @@ impl AlertRouter {
     /// Loads SMTP configuration from environment variables.
     fn load_smtp_config() -> Option<SmtpConfig> {
         let host = std::env::var("SMTP_HOST").ok()?;
-        let port: u16 = std::env::var("SMTP_PORT")
-            .ok()?
-            .parse()
-            .ok()?;
+        let port: u16 = std::env::var("SMTP_PORT").ok()?.parse().ok()?;
         let username = std::env::var("SMTP_USERNAME").ok()?;
         let password = std::env::var("SMTP_PASSWORD").ok()?;
         let from = std::env::var("SMTP_FROM").ok()?;
@@ -165,11 +159,7 @@ impl AlertRouter {
     }
 
     /// Sends an email alert via SMTP.
-    async fn send_email(
-        &self,
-        config: &SmtpConfig,
-        event: &AuditEvent,
-    ) -> Result<(), AlertError> {
+    async fn send_email(&self, config: &SmtpConfig, event: &AuditEvent) -> Result<(), AlertError> {
         let subject = format!(
             "[DLP ALERT] {} on {} by {}",
             serde_json::to_value(event.event_type)
@@ -185,24 +175,14 @@ impl AlertRouter {
         let from_mailbox: Mailbox = config
             .from
             .parse()
-            .map_err(|e| AlertError::Email(format!(
-                "invalid from address: {e}"
-            )))?;
+            .map_err(|e| AlertError::Email(format!("invalid from address: {e}")))?;
 
         // Send to each recipient individually.
-        let creds = Credentials::new(
-            config.username.clone(),
-            config.password.clone(),
-        );
+        let creds = Credentials::new(config.username.clone(), config.password.clone());
 
         // Build the SMTP transport once (TLS via STARTTLS).
-        let mailer =
-            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(
-                &config.host,
-            )
-            .map_err(|e| AlertError::Email(format!(
-                "SMTP relay error: {e}"
-            )))?
+        let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.host)
+            .map_err(|e| AlertError::Email(format!("SMTP relay error: {e}")))?
             .port(config.port)
             .credentials(creds)
             .build();
@@ -210,31 +190,22 @@ impl AlertRouter {
         for recipient in &config.to {
             let to_mailbox: Mailbox = recipient
                 .parse()
-                .map_err(|e| AlertError::Email(format!(
-                    "invalid to address: {e}"
-                )))?;
+                .map_err(|e| AlertError::Email(format!("invalid to address: {e}")))?;
 
             let email = Message::builder()
                 .from(from_mailbox.clone())
                 .to(to_mailbox)
                 .subject(&subject)
                 .body(body.clone())
-                .map_err(|e| AlertError::Email(format!(
-                    "message build error: {e}"
-                )))?;
+                .map_err(|e| AlertError::Email(format!("message build error: {e}")))?;
 
             mailer
                 .send(email)
                 .await
-                .map_err(|e| AlertError::Email(format!(
-                    "SMTP send error: {e}"
-                )))?;
+                .map_err(|e| AlertError::Email(format!("SMTP send error: {e}")))?;
         }
 
-        tracing::info!(
-            recipients = config.to.len(),
-            "sent email alert"
-        );
+        tracing::info!(recipients = config.to.len(), "sent email alert");
         Ok(())
     }
 

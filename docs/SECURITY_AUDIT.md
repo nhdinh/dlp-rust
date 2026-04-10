@@ -213,7 +213,7 @@ All Phase 1–3 controls were verified against the source code.
 | THREAT-013 | No code signing | Tampering | **High Risk** | Binary not signed; no runtime integrity check | Not implemented |
 | THREAT-014 | Audit log read | Info Disclosure | **Implemented** | Directory ACLs (SYSTEM + Admins only) | MSI ACLs |
 | THREAT-015 | Password over pipe | Info Disclosure | **Implemented** | DPAPI `CryptProtectData`/`CryptUnprotectData` | `password_stop.rs` |
-| THREAT-016 | Clipboard memory exposure | Info Disclosure | **Inherent Risk** | Classified and emitted; not persisted; process DACL protects memory | `clipboard/listener.rs` |
+| THREAT-016 | Clipboard memory exposure | Info Disclosure | **Inherent Risk** | Classified and emitted; not persisted; process DACL protects memory | `dlp-user-ui/src/clipboard_monitor.rs` |
 | THREAT-017 | NTFS xattr leakage | Info Disclosure | **N/A** | Classification not stored in NTFS xattrs | Not applicable |
 | THREAT-018 | Policy rules disclosed | Info Disclosure | **Implemented** | Policy file ACL restricted to SYSTEM + Admins | MSI ACLs |
 | THREAT-019 | Cache decision exposure | Info Disclosure | **Implemented** | In-memory only; process DACL | `cache.rs` |
@@ -222,7 +222,7 @@ All Phase 1–3 controls were verified against the source code.
 | THREAT-022 | Direct syscall bypass | DoS | **Not Mitigated** | `notify`/`ReadDirectoryChangesW` cannot cover direct NTFS syscalls; future minifilter | Future work |
 | THREAT-023 | Disk full | DoS | **Implemented** | Rotation + failure isolation | `audit_emitter.rs` |
 | THREAT-024 | Named pipe DoS | DoS | **Implemented** | `NUM_INSTANCES=4` + SYSTEM ACL | `ipc/server.rs` |
-| THREAT-025 | Clipboard listener exhaustion | DoS | **Partially Mitigated** | Windows clipboard limits; classifier size limits | `clipboard/listener.rs` |
+| THREAT-025 | Clipboard listener exhaustion | DoS | **Partially Mitigated** | Windows clipboard limits; classifier size limits | `dlp-user-ui/src/clipboard_monitor.rs` |
 | THREAT-026 | SYSTEM privilege abuse | Elevation | **Partially Mitigated** | SYSTEM necessary; process DACL restricts interaction | `protection.rs` |
 | THREAT-027 | DLL injection into agent | Elevation | **Partially Mitigated** | Process DACL; DLL load hardening (Phase 2 remaining) | `protection.rs` |
 | THREAT-028 | DLL injection into UI | Elevation | **Not Mitigated** | Inherent: UI runs in user session | `ui_spawner.rs` |

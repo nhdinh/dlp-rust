@@ -1,4 +1,4 @@
-//! Pipe 3 client — connects to `\.\pipe\DLPEventUI2Agent` (T-42).
+//! Pipe 3 client — connects to `\\.\pipe\DLPEventUI2Agent` (T-42).
 //!
 //! Sends UI-to-agent events: `UiReady`.
 
@@ -14,12 +14,30 @@ use windows::Win32::Storage::FileSystem::{OPEN_EXISTING, PIPE_ACCESS_OUTBOUND};
 use super::frame::{flush, write_frame};
 use super::messages::Pipe3UiMsg;
 
-/// The Win32 pipe name.
-const PIPE_NAME: &str = r"\.\pipe\DLPEventUI2Agent";
+/// The default Win32 pipe name.
+///
+/// Tests may override this via the `DLP_PIPE3_NAME` environment variable
+/// so they can point Pipe 3 at a mock named-pipe server on a unique name.
+const PIPE_NAME_DEFAULT: &str = r"\\.\pipe\DLPEventUI2Agent";
+
+/// Resolves the Pipe 3 name, allowing tests to override via `DLP_PIPE3_NAME`.
+///
+/// In production this always returns [`PIPE_NAME_DEFAULT`]. Integration
+/// tests set `DLP_PIPE3_NAME` to a unique per-run name so they can spin
+/// up a mock server without colliding with other tests or the real agent.
+fn pipe_name() -> String {
+    // Env var lookup is cheap (a single syscall) and only happens on the
+    // short-lived connection open path — not inside any hot loop.
+    std::env::var("DLP_PIPE3_NAME").unwrap_or_else(|_| PIPE_NAME_DEFAULT.to_string())
+}
 
 /// Opens a handle to Pipe 3.
 fn open_pipe() -> Result<HANDLE> {
-    let name_wide: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+    let name = pipe_name();
+    // Windows named-pipe paths are passed to Win32 as UTF-16 with a
+    // trailing NUL terminator. Encode once here and keep the buffer
+    // alive for the duration of the CreateFileW call.
+    let name_wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
 
     let handle = unsafe {
         CreateFileW(
@@ -70,8 +88,8 @@ pub fn send_clipboard_alert(
         preview: preview.to_string(),
         text_length,
     };
-    let json = serde_json::to_vec(&msg)
-        .map_err(|e| anyhow::anyhow!("serialise ClipboardAlert: {}", e))?;
+    let json =
+        serde_json::to_vec(&msg).map_err(|e| anyhow::anyhow!("serialise ClipboardAlert: {}", e))?;
     write_frame(handle, &json)?;
     flush(handle)?;
 

@@ -28,8 +28,15 @@ chrono = { version = "0.4", features = ["clock"] }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
+    # Required by clipboard_monitor.rs — RegisterClassW/WNDCLASSW
+    # are gated behind Win32_Graphics_Gdi in the `windows` crate.
+    # Previously unified transitively via dlp-agent; made explicit
+    # here so this package also builds standalone (e.g. under
+    # `cargo check --package dlp-user-ui --tests`).
+    "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
@@ -47,3 +54,10 @@ windows = { version = "0.58", features = [
 
 [build-dependencies]
 winres = "0.1"
+
+[dev-dependencies]
+# Unique per-run names for mock named pipes used in integration tests.
+uuid = { workspace = true }
+# Force sequential test execution — clipboard + env var state is
+# process-wide, so parallel tests would race.
+serial_test = "3"

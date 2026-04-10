@@ -84,12 +84,7 @@ impl ConfigPusher {
         for base_url in agent_urls {
             let url = format!("{}/config", base_url);
 
-            let result = self
-                .client
-                .put(&url)
-                .json(config)
-                .send()
-                .await;
+            let result = self.client.put(&url).json(config).send().await;
 
             match result {
                 Ok(resp) if resp.status().is_success() => {
@@ -141,18 +136,13 @@ mod tests {
     #[test]
     fn test_agent_config_serde() {
         let cfg = AgentConfig {
-            monitored_paths: vec![
-                r"C:\Data".to_string(),
-                r"D:\Shared".to_string(),
-            ],
+            monitored_paths: vec![r"C:\Data".to_string(), r"D:\Shared".to_string()],
             server_url: "http://dlp-server:9090".to_string(),
             heartbeat_interval_secs: 30,
             offline_cache_enabled: true,
         };
-        let json =
-            serde_json::to_string(&cfg).expect("serialize");
-        let rt: AgentConfig =
-            serde_json::from_str(&json).expect("deserialize");
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let rt: AgentConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt.monitored_paths.len(), 2);
         assert_eq!(rt.heartbeat_interval_secs, 30);
     }

@@ -498,8 +498,8 @@ Expected: T4 write to a whitelisted server is **allowed**.
 
 ### 10.5 Clipboard Monitoring (F-AGT-17)
 
-The agent classifies clipboard text when paste events are detected.
-Use PowerShell to set clipboard content for repeatable testing.
+The dlp-user-ui process detects clipboard changes and classifies their text content.
+Use PowerShell to set clipboard content for repeatable testing. The UI monitors `WM_CLIPBOARDUPDATE` events — no paste action is needed; setting the clipboard is sufficient to trigger detection.
 
 #### Test 1: SSN pattern (T4)
 
@@ -507,10 +507,10 @@ Use PowerShell to set clipboard content for repeatable testing.
 Set-Clipboard -Value "Employee SSN: 123-45-6789"
 ```
 
-Then paste into any application (Notepad, Word, etc.).
 
-Expected: Agent detects T4 content (SSN pattern `XXX-XX-XXXX`), emits
-`ClipboardEvent` with `classification: T4`.
+
+Expected: dlp-user-ui detects T4 content (SSN pattern `XXX-XX-XXXX`). The UI sends a `ClipboardAlert` over Pipe 3; the agent emits
+an audit event with `classification: T4`, `action: PASTE`, `resource_path: clipboard:<preview>`.
 
 #### Test 2: Credit card number (T4)
 
@@ -518,7 +518,6 @@ Expected: Agent detects T4 content (SSN pattern `XXX-XX-XXXX`), emits
 Set-Clipboard -Value "Card: 4111-1111-1111-1111"
 ```
 
-Paste into any application.
 
 Expected: T4 classification (credit card pattern detected).
 
@@ -528,7 +527,6 @@ Expected: T4 classification (credit card pattern detected).
 Set-Clipboard -Value "This document is CONFIDENTIAL and must not be shared"
 ```
 
-Paste into any application.
 
 Expected: T3 classification (keyword "confidential" matched).
 
@@ -554,7 +552,7 @@ filtered out to reduce noise).
 ```powershell
 Get-Content C:\ProgramData\DLP\logs\audit.jsonl |
   ForEach-Object { $_ | ConvertFrom-Json } |
-  Where-Object { $_.resource_path -eq "clipboard" } |
+  Where-Object { $_.resource_path -like "clipboard:*" } |
   Format-Table timestamp, classification, decision
 ```
 
@@ -805,6 +803,22 @@ cargo test -p dlp-agent --test integration
 ```cmd
 cargo test -p dlp-agent --test negative
 ```
+
+### dlp-user-ui integration tests only (8 tests)
+
+Phase 99 — clipboard monitoring integration tests (serial, require Windows named pipes):
+
+```cmd
+cargo test -p dlp-user-ui --test clipboard_integration
+```
+
+Tests: `test_ssn_triggers_t4_alert`, `test_credit_card_triggers_t4_alert`,
+`test_confidential_triggers_t3_alert`, `test_internal_triggers_t2_alert`,
+`test_ordinary_text_no_alert`, `test_duplicate_deduplicated`,
+`test_empty_clipboard_ignored`, `test_non_text_clipboard_ignored`.
+
+Each test spawns a mock Pipe 3 server on a unique name via the `DLP_PIPE3_NAME`
+environment variable and verifies the `ClipboardAlert` frame received.
 
 ### Clippy (zero warnings required)
 

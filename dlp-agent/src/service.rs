@@ -33,7 +33,9 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use windows_service::service::{
     ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
 };
-use windows_service::service_control_handler::{self, ServiceControlHandlerResult, ServiceStatusHandle};
+use windows_service::service_control_handler::{
+    self, ServiceControlHandlerResult, ServiceStatusHandle,
+};
 
 /// The Windows Service name registered with the SCM.
 pub const SERVICE_NAME: &str = "dlp-agent";
@@ -257,8 +259,7 @@ async fn run_loop(
     }
 
     // ── Audit buffer for server relay ────────────────────────────────────
-    let (audit_shutdown_tx, audit_shutdown_rx) =
-        tokio::sync::watch::channel(false);
+    let (audit_shutdown_tx, audit_shutdown_rx) = tokio::sync::watch::channel(false);
     let _audit_flush_handle = if let Some(ref sc) = server_client {
         let buffer = Arc::new(crate::server_client::AuditBuffer::new(sc.clone()));
         crate::audit_emitter::set_audit_buffer(Arc::clone(&buffer));
@@ -294,14 +295,11 @@ async fn run_loop(
 
     // Per-session identity map — resolves actual interactive users for
     // file events instead of attributing everything to SYSTEM.
-    let session_map = Arc::new(
-        crate::session_identity::SessionIdentityMap::new(),
-    );
+    let session_map = Arc::new(crate::session_identity::SessionIdentityMap::new());
     crate::session_identity::init_global(session_map.clone());
 
     // Populate with any sessions that are already active.
-    if let Ok(sessions) = crate::ui_spawner::enumerate_active_sessions_pub()
-    {
+    if let Ok(sessions) = crate::ui_spawner::enumerate_active_sessions_pub() {
         for sid in sessions {
             if let Err(e) = session_map.add_session(sid) {
                 debug!(
@@ -314,8 +312,7 @@ async fn run_loop(
     }
 
     let audit_ctx = crate::audit_emitter::EmitContext {
-        agent_id: std::env::var("DLP_AGENT_ID")
-            .unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
+        agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
         session_id: 1,
         user_sid: "S-1-5-18".to_string(), // default; overridden per-event
         user_name: "SYSTEM".to_string(),
@@ -329,13 +326,7 @@ async fn run_loop(
     let ctx_ev = audit_ctx.clone();
     let session_map_ev = session_map.clone();
     let event_loop_handle = tokio::spawn(async move {
-        crate::interception::run_event_loop(
-            action_rx,
-            offline_ev,
-            ctx_ev,
-            session_map_ev,
-        )
-        .await;
+        crate::interception::run_event_loop(action_rx, offline_ev, ctx_ev, session_map_ev).await;
     });
 
     // Spawn the file monitor — run() is blocking and must run on a dedicated thread
@@ -566,11 +557,7 @@ pub fn revert_stop() {
 /// do not have access to the `Arc<Mutex<ServiceStatusHandle>>` used in the
 /// main service body.  Silently logs if the handle is not yet initialised
 /// (should never happen after `run_service` completes registration).
-fn report_scm_status(
-    state: ServiceState,
-    controls: ServiceControlAccept,
-    wait_hint: Duration,
-) {
+fn report_scm_status(state: ServiceState, controls: ServiceControlAccept, wait_hint: Duration) {
     let Some(handle) = SCM_HANDLE.get() else {
         error!("SCM_HANDLE not initialised — cannot report {state:?}");
         return;
@@ -619,36 +606,63 @@ fn acquire_instance_mutex() {
 /// Log directory for the DLP Agent service.
 const LOG_DIR: &str = r"C:\ProgramData\DLP\logs";
 
-/// Initialises structured logging to both a rolling log file and stdout.
+/// Initialises structured logging to a rolling daily log file.
 ///
 /// When running as a Windows Service, stdout is invisible — the log file
-/// at `C:\ProgramData\DLP\logs\dlp-agent.log.*` is the primary diagnostic
-/// output.  In console mode, both outputs are active.
+/// at `C:\ProgramData\DLP\logs\dlp-agent.log.<date>` is the primary diagnostic
+/// output.  In console mode, both the file and stderr outputs are active.
+///
+/// # Design: synchronous writer, no non_blocking channel
+///
+/// `tracing_appender::non_blocking` spawns a background writer thread that
+/// receives log records via a bounded channel.  In the Windows Service context
+/// (Session 0, LocalSystem, no console), the worker thread has been observed
+/// to silently fail — every `write_all` call returns an IO error, the
+/// `tracing-appender` worker loop swallows the error with a `// TODO` comment,
+/// and the log file stays at 0 bytes despite the subscriber being installed.
+///
+/// Using `RollingFileAppender` directly as a synchronous `MakeWriter` avoids
+/// the worker thread and the channel entirely: each log event is written on
+/// the calling thread.  The `RollingFileAppender` guards its internal `File`
+/// handle with an `RwLock` for multi-thread safety.
 fn init_logging() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
+    crate::password_stop::debug_log("init_logging: entered");
+
+    // Default to INFO unless RUST_LOG overrides.  `from_env_lossy` silently
+    // ignores unrecognised directives so a misconfigured RUST_LOG does not
+    // crash the service.
     let filter = tracing_subscriber::EnvFilter::builder()
         .with_default_directive(Level::INFO.into())
         .from_env_lossy();
 
-    // Ensure the log directory exists.
-    let _ = std::fs::create_dir_all(LOG_DIR);
+    crate::password_stop::debug_log(&format!("init_logging: filter = {filter}"));
 
-    // Rolling daily log file in C:\ProgramData\DLP\logs\.
+    // Ensure the log directory exists before creating any file appender.
+    let dir_result = std::fs::create_dir_all(LOG_DIR);
+    crate::password_stop::debug_log(&format!(
+        "init_logging: create_dir_all({LOG_DIR}) = {dir_result:?}"
+    ));
+
+    // Rolling daily log file: C:\ProgramData\DLP\logs\dlp-agent.log.<date>
+    // Used directly as a synchronous MakeWriter — no background thread required.
+    // `RollingFileAppender` is thread-safe via its internal RwLock<File>.
     let file_appender = tracing_appender::rolling::daily(LOG_DIR, "dlp-agent.log");
-    let (file_writer, _guard) = tracing_appender::non_blocking(file_appender);
 
-    // Leak the guard so the file writer stays alive for the process lifetime.
-    // This is intentional — the service runs until stopped; the guard must
-    // not be dropped or log writes will be lost.
-    std::mem::forget(_guard);
+    crate::password_stop::debug_log("init_logging: file_appender created");
 
-    tracing_subscriber::registry()
+    // Build a subscriber with two layers:
+    //   1. File layer  — always active; ANSI escape codes disabled so the
+    //      log file is readable by both humans and log-shipping agents.
+    //   2. Stderr layer — only useful in console/debug mode; silently
+    //      discarded when running as a Windows Service (no attached console).
+    let init_result = tracing_subscriber::registry()
         .with(filter)
         .with(
             tracing_subscriber::fmt::layer()
-                .with_writer(file_writer)
+                .with_writer(file_appender)
                 .with_span_events(FmtSpan::CLOSE)
                 .with_target(true)
                 .with_thread_ids(true)
@@ -660,7 +674,20 @@ fn init_logging() {
                 .with_target(true)
                 .with_thread_ids(true),
         )
-        .init();
+        .try_init();
+
+    match &init_result {
+        Ok(()) => {
+            crate::password_stop::debug_log("init_logging: try_init OK — subscriber installed");
+        }
+        Err(e) => {
+            // A global subscriber is already installed (e.g., during tests).
+            // Log via the bypass path so the conflict is never silently lost.
+            crate::password_stop::debug_log(&format!(
+                "init_logging: try_init ERR — subscriber already installed: {e}"
+            ));
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -754,8 +781,7 @@ async fn async_run_console() -> Result<()> {
     }
 
     // ── Audit buffer for server relay ────────────────────────────────────
-    let (audit_shutdown_tx, audit_shutdown_rx) =
-        tokio::sync::watch::channel(false);
+    let (audit_shutdown_tx, audit_shutdown_rx) = tokio::sync::watch::channel(false);
     let _audit_flush_handle = if let Some(ref sc) = server_client {
         let buffer = Arc::new(crate::server_client::AuditBuffer::new(sc.clone()));
         crate::audit_emitter::set_audit_buffer(Arc::clone(&buffer));
@@ -788,12 +814,10 @@ async fn async_run_console() -> Result<()> {
     let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
 
     // Resolve the actual console user via process token (not a stub).
-    let (console_sid, console_name) =
-        crate::session_identity::resolve_console_user();
+    let (console_sid, console_name) = crate::session_identity::resolve_console_user();
 
     let audit_ctx = crate::audit_emitter::EmitContext {
-        agent_id: std::env::var("DLP_AGENT_ID")
-            .unwrap_or_else(|_| "AGENT-CONSOLE".to_string()),
+        agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-CONSOLE".to_string()),
         session_id: 1,
         user_sid: console_sid.clone(),
         user_name: console_name.clone(),
@@ -804,9 +828,7 @@ async fn async_run_console() -> Result<()> {
     crate::clipboard::listener::init_emit_context(audit_ctx.clone());
 
     // Console mode identity map — pre-populated with the current user.
-    let session_map = Arc::new(
-        crate::session_identity::SessionIdentityMap::new(),
-    );
+    let session_map = Arc::new(crate::session_identity::SessionIdentityMap::new());
     crate::session_identity::init_global(session_map.clone());
     // Insert the console user directly (no WTSQueryUserToken needed).
     {
@@ -828,13 +850,7 @@ async fn async_run_console() -> Result<()> {
     let ctx_ev = audit_ctx.clone();
     let session_map_ev = session_map.clone();
     let event_loop_handle = tokio::spawn(async move {
-        crate::interception::run_event_loop(
-            action_rx,
-            offline_ev,
-            ctx_ev,
-            session_map_ev,
-        )
-        .await;
+        crate::interception::run_event_loop(action_rx, offline_ev, ctx_ev, session_map_ev).await;
     });
 
     // File monitor runs on a blocking thread so it doesn't starve the Tokio executor.

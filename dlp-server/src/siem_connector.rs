@@ -144,10 +144,7 @@ impl SiemConnector {
     ///
     /// Returns the first error encountered. Both backends are attempted
     /// even if one fails (errors are collected).
-    pub async fn relay_events(
-        &self,
-        events: &[AuditEvent],
-    ) -> Result<(), SiemError> {
+    pub async fn relay_events(&self, events: &[AuditEvent]) -> Result<(), SiemError> {
         if events.is_empty() {
             return Ok(());
         }
@@ -211,8 +208,7 @@ impl SiemConnector {
             body.push_str(&serde_json::to_string(&wrapper)?);
         }
 
-        let url =
-            format!("{}/services/collector/event", config.url);
+        let url = format!("{}/services/collector/event", config.url);
         let resp = self
             .client
             .post(&url)
@@ -228,10 +224,7 @@ impl SiemConnector {
             return Err(SiemError::BackendError { status, body });
         }
 
-        tracing::info!(
-            count = events.len(),
-            "relayed events to Splunk HEC"
-        );
+        tracing::info!(count = events.len(), "relayed events to Splunk HEC");
         Ok(())
     }
 
@@ -253,8 +246,7 @@ impl SiemConnector {
             body.push('\n');
         }
 
-        let url =
-            format!("{}/{}/_bulk", config.url, config.index);
+        let url = format!("{}/{}/_bulk", config.url, config.index);
         let mut req = self
             .client
             .post(&url)
@@ -272,10 +264,7 @@ impl SiemConnector {
             return Err(SiemError::BackendError { status, body });
         }
 
-        tracing::info!(
-            count = events.len(),
-            "relayed events to ELK"
-        );
+        tracing::info!(count = events.len(), "relayed events to ELK");
         Ok(())
     }
 }
@@ -331,9 +320,7 @@ mod tests {
 
     #[test]
     fn test_splunk_event_serialization() {
-        use dlp_common::{
-            Action, AuditEvent, Classification, Decision, EventType,
-        };
+        use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
 
         let event = AuditEvent::new(
             EventType::Block,
@@ -348,8 +335,7 @@ mod tests {
         );
 
         let wrapper = SplunkEvent { event: &event };
-        let json = serde_json::to_string(&wrapper)
-            .expect("serialize splunk event");
+        let json = serde_json::to_string(&wrapper).expect("serialize splunk event");
         assert!(json.contains("\"event\":{"));
     }
 }

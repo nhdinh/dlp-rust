@@ -53,9 +53,8 @@ fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
         AddClipboardFormatListener, RemoveClipboardFormatListener,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DispatchMessageW, RegisterClassW, TranslateMessage,
-        CW_USEDEFAULT, HMENU, MSG, WINDOW_EX_STYLE, WM_CLIPBOARDUPDATE,
-        WNDCLASSW, WS_OVERLAPPED,
+        CreateWindowExW, DispatchMessageW, RegisterClassW, TranslateMessage, CW_USEDEFAULT, HMENU,
+        MSG, WINDOW_EX_STYLE, WM_CLIPBOARDUPDATE, WNDCLASSW, WS_OVERLAPPED,
     };
 
     let class_name_str = "DLPClipboardMonitor\0";
@@ -162,36 +161,69 @@ fn handle_clipboard_change(session_id: u32, last_hash: &mut u64) {
     }
     *last_hash = hash;
 
-    let classification = dlp_common::classify_text(&text);
+    if let Some(tier_str) = classify_and_alert(session_id, &text) {
+        info!(
+            session_id,
+            classification = tier_str,
+            text_length = text.len(),
+            "clipboard contains sensitive content"
+        );
+    }
+}
 
-    // Only alert on sensitive content (T2+).
-    if !classification.is_sensitive() && classification < dlp_common::Classification::T2 {
-        return;
+/// Classifies `text` and, if the result is T2 or higher, emits a
+/// `ClipboardAlert` to the agent via Pipe 3.
+///
+/// This helper is factored out of [`handle_clipboard_change`] so integration
+/// tests can drive the full classify -> Pipe 3 path directly without having
+/// to run a Win32 message loop. It intentionally performs **no** dedup —
+/// callers (the live monitor) handle dedup upstream via the hash compare.
+///
+/// # Arguments
+///
+/// * `session_id` - The Windows session ID to attribute the alert to.
+/// * `text` - The clipboard text to classify.
+///
+/// # Returns
+///
+/// * `Some(tier)` where `tier` is `"T2"`, `"T3"`, or `"T4"` when an alert
+///   was attempted (even if the Pipe 3 send itself failed — failures are
+///   logged via `tracing::warn!`, matching the live monitor's semantics).
+/// * `None` if the text is empty or classifies as T1 (public) and no alert
+///   was sent.
+pub fn classify_and_alert(session_id: u32, text: &str) -> Option<&'static str> {
+    // Empty text should never have been scheduled for classification,
+    // but guard defensively so tests and callers cannot trigger a
+    // zero-length alert.
+    if text.is_empty() {
+        return None;
     }
 
+    let classification = dlp_common::classify_text(text);
+
+    // Only alert on T2+. `is_sensitive()` returns true for T3/T4, but
+    // we also want to alert on T2 ("Internal"), so compare explicitly.
+    if classification < dlp_common::Classification::T2 {
+        return None;
+    }
+
+    // Rust note: `chars().take(N).collect::<String>()` clamps on a code-point
+    // boundary — unlike `&text[..N]` which would panic on a non-ASCII cut.
     let preview: String = text.chars().take(PREVIEW_MAX).collect();
-    let tier_str = match classification {
+    let tier_str: &'static str = match classification {
         dlp_common::Classification::T4 => "T4",
         dlp_common::Classification::T3 => "T3",
         dlp_common::Classification::T2 => "T2",
-        dlp_common::Classification::T1 => "T1",
+        dlp_common::Classification::T1 => return None,
     };
 
-    info!(
-        session_id,
-        classification = tier_str,
-        text_length = text.len(),
-        "clipboard contains sensitive content"
-    );
-
-    if let Err(e) = crate::ipc::pipe3::send_clipboard_alert(
-        session_id,
-        tier_str,
-        &preview,
-        text.len(),
-    ) {
+    if let Err(e) =
+        crate::ipc::pipe3::send_clipboard_alert(session_id, tier_str, &preview, text.len())
+    {
         warn!(error = %e, "failed to send clipboard alert to agent");
     }
+
+    Some(tier_str)
 }
 
 /// Minimal window procedure — required by Windows but all real work

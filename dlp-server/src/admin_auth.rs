@@ -15,9 +15,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::Json;
 use chrono::Utc;
-use jsonwebtoken::{
-    decode, encode, DecodingKey, EncodingKey, Header, Validation,
-};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
@@ -46,15 +44,13 @@ pub fn resolve_jwt_secret(dev_mode: bool) -> Result<String, String> {
             );
             Ok(DEV_JWT_SECRET.to_string())
         }
-        _ => Err(
-            "JWT_SECRET environment variable is required.\n\
+        _ => Err("JWT_SECRET environment variable is required.\n\
              Set it before starting the server, or use --dev for development:\n\n\
              \x20 export JWT_SECRET=\"your-secure-random-secret\"\n\
              \x20 dlp-server.exe\n\n\
              Or for development only:\n\n\
              \x20 dlp-server.exe --dev"
-                .to_string(),
-        ),
+            .to_string()),
     }
 }
 
@@ -143,28 +139,19 @@ pub async fn login(
             )
         })
         .await
-        .map_err(|e| {
-            AppError::Internal(anyhow::anyhow!("join error: {e}"))
-        })?
-        .map_err(|_| {
-            AppError::Unauthorized("invalid credentials".to_string())
-        })?
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?
+        .map_err(|_| AppError::Unauthorized("invalid credentials".to_string()))?
     };
 
     // Verify the password against the bcrypt hash (CPU-bound).
     let password = creds.password.clone();
-    let valid = tokio::task::spawn_blocking(move || {
-        bcrypt::verify(password, &hash).unwrap_or(false)
-    })
-    .await
-    .map_err(|e| {
-        AppError::Internal(anyhow::anyhow!("join error: {e}"))
-    })?;
+    let valid =
+        tokio::task::spawn_blocking(move || bcrypt::verify(password, &hash).unwrap_or(false))
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?;
 
     if !valid {
-        return Err(AppError::Unauthorized(
-            "invalid credentials".to_string(),
-        ));
+        return Err(AppError::Unauthorized("invalid credentials".to_string()));
     }
 
     // Issue a JWT with 24-hour expiry.
@@ -180,9 +167,7 @@ pub async fn login(
         &claims,
         &EncodingKey::from_secret(jwt_secret().as_bytes()),
     )
-    .map_err(|e| {
-        AppError::Internal(anyhow::anyhow!("jwt encode error: {e}"))
-    })?;
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("jwt encode error: {e}")))?;
 
     tracing::info!(user = %claims.sub, "admin login successful");
 
@@ -231,7 +216,9 @@ pub async fn change_password(
     let payload: ChangePasswordRequest = serde_json::from_slice(&body)?;
 
     if payload.new_password.is_empty() {
-        return Err(AppError::BadRequest("new password cannot be empty".to_string()));
+        return Err(AppError::BadRequest(
+            "new password cannot be empty".to_string(),
+        ));
     }
 
     // Verify the current password.
@@ -257,7 +244,9 @@ pub async fn change_password(
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?;
 
     if !valid {
-        return Err(AppError::Unauthorized("current password is incorrect".to_string()));
+        return Err(AppError::Unauthorized(
+            "current password is incorrect".to_string(),
+        ));
     }
 
     // Hash the new password and update.
@@ -307,13 +296,9 @@ pub fn has_admin_users(db: &Database) -> anyhow::Result<bool> {
 /// # Errors
 ///
 /// Returns an error if bcrypt hashing or the database insert fails.
-pub fn create_admin_user(
-    db: &Database,
-    username: &str,
-    password: &str,
-) -> anyhow::Result<()> {
-    let hash = bcrypt::hash(password, 12)
-        .map_err(|e| anyhow::anyhow!("bcrypt hash failed: {e}"))?;
+pub fn create_admin_user(db: &Database, username: &str, password: &str) -> anyhow::Result<()> {
+    let hash =
+        bcrypt::hash(password, 12).map_err(|e| anyhow::anyhow!("bcrypt hash failed: {e}"))?;
     let now = Utc::now().to_rfc3339();
 
     let conn = db.conn().lock();
@@ -346,9 +331,7 @@ pub fn verify_jwt(token: &str) -> Result<Claims, AppError> {
         &DecodingKey::from_secret(jwt_secret().as_bytes()),
         &validation,
     )
-    .map_err(|e| {
-        AppError::Unauthorized(format!("invalid token: {e}"))
-    })?;
+    .map_err(|e| AppError::Unauthorized(format!("invalid token: {e}")))?;
 
     Ok(token_data.claims)
 }
@@ -365,17 +348,11 @@ pub async fn require_auth(
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            AppError::Unauthorized(
-                "missing Authorization header".to_string(),
-            )
-        })?;
+        .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?;
 
-    let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
-        AppError::Unauthorized(
-            "invalid Authorization header format".to_string(),
-        )
-    })?;
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| AppError::Unauthorized("invalid Authorization header format".to_string()))?;
 
     verify_jwt(token)?;
 
@@ -398,8 +375,7 @@ mod tests {
         ensure_test_secret();
         let claims = Claims {
             sub: "admin".to_string(),
-            exp: (Utc::now() + chrono::Duration::hours(1))
-                .timestamp() as usize,
+            exp: (Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
             iss: "dlp-server".to_string(),
         };
 
@@ -421,8 +397,7 @@ mod tests {
         let claims = Claims {
             sub: "admin".to_string(),
             // Expired 1 hour ago.
-            exp: (Utc::now() - chrono::Duration::hours(1))
-                .timestamp() as usize,
+            exp: (Utc::now() - chrono::Duration::hours(1)).timestamp() as usize,
             iss: "dlp-server".to_string(),
         };
 
@@ -447,8 +422,7 @@ mod tests {
     #[test]
     fn test_login_request_serde() {
         let json = r#"{"username":"admin","password":"secret"}"#;
-        let req: LoginRequest =
-            serde_json::from_str(json).expect("deserialize");
+        let req: LoginRequest = serde_json::from_str(json).expect("deserialize");
         assert_eq!(req.username, "admin");
     }
 }

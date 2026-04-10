@@ -8,10 +8,10 @@ use std::io::{self, Stdout};
 
 use anyhow::Result;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
 
 /// The concrete terminal type used throughout the application.
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
