@@ -13,8 +13,8 @@ Complete all features that are implemented but not wired, and add AD integration
 
 ### R-02: Alert Routing (Email + Webhook)
 **Priority:** Must
-**Description:** Wire the existing `alert_router` module into dlp-server. DenyWithAlert decisions should trigger email (SMTP via lettre) and/or webhook notifications.
-**Acceptance:** When SMTP/webhook env vars are set, T3/T4 block events trigger alerts.
+**Description:** Wire the existing `alert_router` module into dlp-server. DenyWithAlert decisions should trigger email (SMTP via lettre) and/or webhook notifications. Alert configuration is stored in the SQLite `alert_router_config` table and managed via `GET/PUT /admin/alert-config` + a dlp-admin-cli TUI screen (Phase 3.1 pattern) — **not** env vars.
+**Acceptance:** After admin sets SMTP/webhook config via dlp-admin-cli, DenyWithAlert events trigger the configured email and/or webhook. Hot-reload on every send (no restart). Webhook URL validated at PUT time (https-only, loopback/link-local blocked).
 
 ### R-03: Policy Sync (Multi-Replica)
 **Priority:** Should

@@ -160,6 +160,51 @@ Add an "Alert Config" item to the System menu AFTER "SIEM Config". New order: Se
 - Whether to add a single inserting test `test_alert_config_seed_row` or reuse the existing `test_tables_created`-style assertion. Recommendation: add the explicit seed test.
 - How port is validated (u16 vs i64 with cast) — mirror Phase 3.1 if it has precedent; otherwise store as `INTEGER NOT NULL DEFAULT 587` and parse as u16 in the row loader, returning a helpful error if out of range.
 
+### Threat-Model Ratifications (locked 2026-04-10 focused review)
+
+The original CONTEXT.md flagged four threat-model inputs as MANDATORY for the PLAN.md security gate but left them as open questions. The focused review pass ratified all four:
+
+#### TM-01: `smtp_password` storage — plaintext in SQLite
+**Decision:** Store `smtp_password` as plaintext TEXT in `alert_router_config`, identical to how Phase 3.1 stored `splunk_token` and `elk_api_key`. The trust boundary is the Windows ACL on `C:\ProgramData\DLP\dlp-server.db` — admin-only access.
+
+**PLAN.md must document:** accepted residual risk in a `## Threat Model` section citing the Phase 3.1 precedent. No new dependency on `aes-gcm` or similar. Encryption-at-rest for ALL secret columns (splunk_token, elk_api_key, smtp_password, webhook_secret) is explicitly deferred to a future dedicated key-management phase — see Deferred Ideas.
+
+#### TM-02: `webhook_url` SSRF hardening — scheme check + loopback/link-local block
+**Decision:** `PUT /admin/alert-config` MUST validate `webhook_url` before accepting the update. Validation rules:
+
+1. Parse with the `url` crate (already in `reqwest`'s dependency graph — no new crate needed).
+2. Require `scheme == "https"` — reject `http`, `file`, `ftp`, etc. with 400 Bad Request. (No `--dev` exception needed at the admin-API layer.)
+3. Extract the host and reject if it resolves textually to any of:
+   - `127.0.0.0/8` (loopback)
+   - `::1` (IPv6 loopback)
+   - `169.254.0.0/16` (link-local / cloud metadata, e.g., AWS/GCP/Azure 169.254.169.254)
+   - `fe80::/10` (IPv6 link-local)
+4. **ALLOW** RFC1918 private ranges (`10/8`, `172.16/12`, `192.168/16`) — on-premise webhooks to internal Slack/Teams/PagerDuty endpoints are a legitimate DLP use case.
+5. Validation failure message format: `"webhook_url rejected: {reason}"` (reason examples: "scheme must be https", "loopback addresses not allowed", "link-local addresses not allowed"). Return 400 with this text.
+6. Validation is purely **textual** — no DNS lookup at PUT time. A host like `internal.corp.example.com` passes PUT validation; if it later resolves to a blocked range, that's out of scope for Phase 4.
+
+**Implementation note:** Factor the check into a standalone `validate_webhook_url(url: &str) -> Result<(), String>` function in `admin_api.rs` and unit-test it with a table of positive and negative cases (empty string, http://, https://127.0.0.1, https://169.254.169.254, https://10.0.0.1, https://example.com, https://[::1]:8080, etc.).
+
+**Empty string is permitted** — an empty `webhook_url` means webhook delivery is disabled. Only validate when non-empty.
+
+#### TM-03: Email body PII — send full event, forward-compatible redaction rule
+**Decision:** Phase 4's `send_email` function MUST serialize `AuditEvent` as-is with no field projection. Rationale: inspection of `dlp-common/src/audit.rs:99-156` confirms `AuditEvent` contains no content-snippet field today — every field is either metadata (timestamps, IDs, classifications, decisions) or operator-useful routing data (`resource_path`, `user_name`, `justification`). The email body will be `serde_json::to_string_pretty(event)` exactly like the existing `send_email` helper already does.
+
+**PLAN.md must document (security checklist entry):**
+> If any future phase adds a content-snippet, sample, preview, matched_text, or equivalent raw-content field to `dlp_common::AuditEvent`, Phase 4's `alert_router::send_email` function MUST be updated **in the same phase that adds the field** to redact it before serialization. This rule must be enforced via a grep-based code-review checklist item — do not merge a change that adds such a field without updating `send_email`.
+
+Downstream reviewers checking the rule should grep for field names that suggest content: `sample_content`, `content_preview`, `matched_text`, `snippet`, `body`, `raw`, `payload_content`, `clipboard_text`, `file_excerpt`, `plaintext`.
+
+#### TM-04: Alert delivery observability — `tracing::warn!` only (no metrics)
+**Decision:** Match Phase 3.1's SIEM relay exactly. Alert delivery failures log at `warn` level with `error = %e` and a descriptive message. No `AtomicU64` counter, no new endpoint, no dlp-admin-cli Server Status line, no audit-event backchannel. Rationale: operators running dlp-server already require log aggregation for the SIEM relay pattern — adding a second observability channel for alerts is disproportionate scope and inconsistent with the existing pattern.
+
+**Concrete log messages the planner should use (mirror Phase 3.1 style):**
+- Email failure: `tracing::warn!(error = %e, "alert email delivery failed (best-effort)")`
+- Webhook failure: `tracing::warn!(error = %e, "alert webhook delivery failed (best-effort)")`
+- Both paths attempted and both failed: log each separately, do not collapse into one message.
+
+**Future observability** (counters, metrics, dashboards) is deferred to a dedicated observability phase — NOT Phase 4. Note added to Deferred Ideas.
+
 </decisions>
 
 <canonical_refs>
@@ -188,10 +233,13 @@ Add an "Alert Config" item to the System menu AFTER "SIEM Config". New order: Se
 - `.planning/REQUIREMENTS.md` — R-02 is the requirement this phase satisfies ("Route DenyWithAlert audit events to configured email/webhook destinations").
 
 ### Threat model inputs (MANDATORY for Phase 4 PLAN.md — security gate is enabled)
-- SMTP credentials stored in SQLite — consider whether `smtp_password` should be encrypted at rest. SIEM Phase 3.1 stored `splunk_token` and `elk_api_key` in plaintext under the same DB ACL rationale; Phase 4 should be consistent and cite that precedent. If the planner believes encryption is justified, it should propose it explicitly; otherwise the plan should document the accepted residual risk.
-- Webhook URL could be user-controlled SSRF vector — `AlertRouter` posts JSON to whatever URL is in the DB. Document that only an authenticated DLP admin can set this, and the DB is a trusted boundary.
-- Email body includes full audit event JSON which may contain PII or file paths — document that alerts go to ADMIN mailboxes only by policy, and the DB config is the only place to set recipients.
-- Fire-and-forget alert spawn means delivery failures are invisible to the client — acceptable; the tracing::warn log is the observability surface.
+
+**RATIFIED 2026-04-10 focused review** — see `<decisions>` → Threat-Model Ratifications for binding text. Summary:
+
+- **TM-01** SMTP credentials — plaintext in SQLite, same as Phase 3.1. Residual risk accepted; document in PLAN.md Threat Model section.
+- **TM-02** Webhook SSRF — PUT handler MUST call `validate_webhook_url(url)` that enforces `scheme == "https"` and blocks loopback + link-local hosts. RFC1918 allowed. Standalone function with table-driven unit tests.
+- **TM-03** Email PII — send full `AuditEvent` as-is (no content-snippet field exists today). Forward-compatible code-review rule: any future phase adding a content field MUST update `send_email` in the same phase.
+- **TM-04** Observability — `tracing::warn!` only, match Phase 3.1's SIEM relay pattern. No metrics/counters/endpoints in Phase 4.
 
 </canonical_refs>
 
@@ -215,8 +263,11 @@ Add an "Alert Config" item to the System menu AFTER "SIEM Config". New order: Se
 - **HMAC signing of webhook payloads** using `webhook_secret`. The field exists and can be stored, but the `send_webhook` implementation doesn't sign anything today. Leave it untouched for Phase 4. Plant a todo for a future security phase.
 - **Rate limiting of alerts** — prevent alert floods during mass DenyWithAlert events. Belongs to Phase 8 (rate limiting middleware) or its own phase.
 - **Alert acknowledgment / escalation** — tracking whether admins read/responded to alerts. New capability, out of scope.
-- **Encryption of `smtp_password` at rest in SQLite** — matches the same decision Phase 3.1 deferred. Belongs to a dedicated key-management phase.
+- **Encryption of `smtp_password` at rest in SQLite** — matches the same decision Phase 3.1 deferred. Belongs to a dedicated key-management phase that covers ALL secret columns (splunk_token, elk_api_key, smtp_password, webhook_secret) together for consistency. Ratified in TM-01.
 - **Test the actual SMTP send path** against a mock server (lettre has a `file` transport for tests). Consider for a later test-hardening phase.
+- **Alert delivery metrics / counters / dashboards** — an `AtomicU64` counter on `AppState`, a `GET /admin/alert-status` endpoint, a dlp-admin-cli Server Status line showing "Alert failures since startup: N", or audit-event backchanneling of failures. Ratified in TM-04 as out of scope for Phase 4 — matches Phase 3.1's SIEM relay observability pattern (tracing only). Revisit in a dedicated observability phase.
+- **DNS-based webhook_url validation** — resolving the host at PUT time and rejecting if it resolves to a blocked range. TM-02 explicitly chose textual-only validation to avoid DNS round-trips in the admin API and to avoid TOCTOU issues (resolution can change between PUT and first alert). A future policy phase could add periodic re-resolution of the stored webhook_url.
+- **http:// webhook support with a --dev flag on dlp-server** — TM-02 enforces https-only at the admin-API layer with no dev exception. If operators need http for local testing they can run a local reverse proxy that terminates TLS. If this proves too painful, revisit with a scoped dev flag.
 
 </deferred>
 
