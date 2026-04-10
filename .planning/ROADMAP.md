@@ -48,6 +48,12 @@
 **Description:** Wire AlertRouter into server startup and into the audit ingestion path, **and** move alert configuration from env vars to the SQLite `alert_router_config` table — mirroring Phase 3.1. JWT-protected `GET/PUT /admin/alert-config` endpoints, dlp-admin-cli TUI screen under the System menu, hot-reload on every `send_alert`. Route DenyWithAlert audit events to configured email (SMTP via lettre) and/or webhook destinations via fire-and-forget background tasks. Webhook URL is validated at PUT time (https-only, loopback/link-local blocked). See `.planning/phases/04-wire-alert-router-into-server/04-CONTEXT.md` for the full threat model and `04-PLAN.md` for the executable plan.
 **UAT:** After admin sets SMTP/webhook config via dlp-admin-cli, DenyWithAlert events trigger email/webhook notifications. Settings persist in DB across restarts. Webhook URL validation rejects loopback/link-local. No HTTP-ingest latency impact (fire-and-forget).
 
+**Plans:** 2 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — Server-side: DB schema + AlertRouter rewrite + admin_api handlers + validate_webhook_url + audit_store fire-and-forget spawn
+- [ ] 04-02-PLAN.md — dlp-admin-cli TUI: Screen::AlertConfig variant + draw_alert_config + 5-item System menu + handle_alert_config dispatch
+
 ### Phase 5: Wire policy sync for multi-replica
 **Requirement:** R-03
 **Files:** `dlp-server/src/main.rs`, `dlp-server/src/policy_sync.rs`, `dlp-server/src/admin_api.rs`
