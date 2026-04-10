@@ -3,6 +3,9 @@
 //! Builds the complete axum `Router` with all sub-routes. Public
 //! endpoints (health, ready, auth) are unauthenticated. All other
 //! routes require a valid JWT Bearer token.
+//
+// TODO(followup): apply the same ME-01 mask-on-GET pattern to siem-config
+// (Phase 3.1 has the same exposure).
 
 use std::sync::Arc;
 
@@ -117,6 +120,15 @@ pub struct SiemConfigPayload {
 // ---------------------------------------------------------------------------
 // Alert router config request / response types
 // ---------------------------------------------------------------------------
+
+/// ME-01: Sentinel placeholder returned by `GET /admin/alert-config` in place
+/// of the plaintext `smtp_password` and `webhook_secret` columns. The TUI
+/// save path treats this sentinel as "user kept the existing secret" and the
+/// PUT handler substitutes the stored value when it sees the mask echoed
+/// back, so the DB column is never overwritten with the literal string.
+/// Admins who need to rotate a secret type the new value over the mask in
+/// the TUI.
+pub(crate) const ALERT_SECRET_MASK: &str = "***MASKED***";
 
 /// Read/write payload for alert router configuration.
 ///
@@ -733,6 +745,12 @@ async fn update_siem_config_handler(
 /// Reads the single row from `alert_router_config` and returns it as a JSON
 /// [`AlertRouterConfigPayload`]. The row is guaranteed to exist because it
 /// is seeded during `Database::open`.
+///
+/// ME-01: `smtp_password` and `webhook_secret` are replaced with
+/// [`ALERT_SECRET_MASK`] in the response. Empty stored values are returned
+/// as empty strings so the TUI can distinguish "never set" from "set but
+/// hidden". The PUT handler substitutes the stored value when it sees the
+/// mask echoed back, preserving secret-preserving round-trips.
 async fn get_alert_config_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AlertRouterConfigPayload>, AppError> {
@@ -755,16 +773,30 @@ async fn get_alert_config_handler(
                             format!("smtp_port out of range: {port_i64}").into(),
                         )
                     })?;
+                    let smtp_password_stored: String = row.get(3)?;
+                    let webhook_secret_stored: String = row.get(8)?;
+                    // ME-01: Never return plaintext credentials on GET. Empty
+                    // stays empty so the TUI can render "not configured".
+                    let smtp_password_out = if smtp_password_stored.is_empty() {
+                        String::new()
+                    } else {
+                        ALERT_SECRET_MASK.to_string()
+                    };
+                    let webhook_secret_out = if webhook_secret_stored.is_empty() {
+                        String::new()
+                    } else {
+                        ALERT_SECRET_MASK.to_string()
+                    };
                     Ok(AlertRouterConfigPayload {
                         smtp_host: row.get(0)?,
                         smtp_port,
                         smtp_username: row.get(2)?,
-                        smtp_password: row.get(3)?,
+                        smtp_password: smtp_password_out,
                         smtp_from: row.get(4)?,
                         smtp_to: row.get(5)?,
                         smtp_enabled: row.get::<_, i64>(6)? != 0,
                         webhook_url: row.get(7)?,
-                        webhook_secret: row.get(8)?,
+                        webhook_secret: webhook_secret_out,
                         webhook_enabled: row.get::<_, i64>(9)? != 0,
                     })
                 },
@@ -802,8 +834,34 @@ async fn update_alert_config_handler(
     let p = payload.clone();
     let db = Arc::clone(&state.db);
 
+    // ME-01: if the client echoed back the masked sentinel from a prior GET,
+    // preserve the stored secret instead of overwriting the DB column with
+    // the literal mask string. Performed inside the spawn_blocking closure
+    // so the read and write share the same mutex acquisition — this avoids
+    // a TOCTOU window and keeps the secret-preservation atomic.
+    let response_payload = payload;
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let conn = db.conn().lock();
+
+        // Resolve masked secrets against the currently stored row.
+        let (stored_smtp_password, stored_webhook_secret): (String, String) = conn
+            .query_row(
+                "SELECT smtp_password, webhook_secret \
+                 FROM alert_router_config WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+        let smtp_password_to_write = if p.smtp_password == ALERT_SECRET_MASK {
+            stored_smtp_password
+        } else {
+            p.smtp_password
+        };
+        let webhook_secret_to_write = if p.webhook_secret == ALERT_SECRET_MASK {
+            stored_webhook_secret
+        } else {
+            p.webhook_secret
+        };
+
         conn.execute(
             "UPDATE alert_router_config SET \
                 smtp_host = ?1, smtp_port = ?2, smtp_username = ?3, \
@@ -815,12 +873,12 @@ async fn update_alert_config_handler(
                 p.smtp_host,
                 p.smtp_port as i64,
                 p.smtp_username,
-                p.smtp_password,
+                smtp_password_to_write,
                 p.smtp_from,
                 p.smtp_to,
                 p.smtp_enabled as i64,
                 p.webhook_url,
-                p.webhook_secret,
+                webhook_secret_to_write,
                 p.webhook_enabled as i64,
                 now,
             ],
@@ -831,7 +889,15 @@ async fn update_alert_config_handler(
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     tracing::info!("alert router config updated");
-    Ok(Json(payload))
+    // Re-mask the response so the secret never reappears on the wire.
+    let mut masked_response = response_payload;
+    if !masked_response.smtp_password.is_empty() {
+        masked_response.smtp_password = ALERT_SECRET_MASK.to_string();
+    }
+    if !masked_response.webhook_secret.is_empty() {
+        masked_response.webhook_secret = ALERT_SECRET_MASK.to_string();
+    }
+    Ok(Json(masked_response))
 }
 
 #[cfg(test)]
@@ -1132,6 +1198,115 @@ mod tests {
             .await
             .expect("read body");
         let rt: AlertRouterConfigPayload = serde_json::from_slice(&bytes).expect("parse body");
-        assert_eq!(rt, payload);
+
+        // ME-01: GET must return masked sentinels in place of plaintext
+        // secrets, but every other field must round-trip identically.
+        let mut expected = payload.clone();
+        expected.smtp_password = ALERT_SECRET_MASK.to_string();
+        expected.webhook_secret = ALERT_SECRET_MASK.to_string();
+        assert_eq!(rt, expected);
+        assert_eq!(rt.smtp_password, ALERT_SECRET_MASK);
+        assert_eq!(rt.webhook_secret, ALERT_SECRET_MASK);
+    }
+
+    #[tokio::test]
+    async fn test_put_alert_config_preserves_masked_secret() {
+        // ME-01 regression test: when the TUI echoes the masked sentinel
+        // back on save (user kept the existing secret), the server MUST
+        // preserve the stored plaintext value and NOT overwrite the DB
+        // column with the literal mask string.
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use jsonwebtoken::{encode, EncodingKey, Header};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let state = Arc::new(AppState {
+            db: Arc::clone(&db),
+            siem,
+            alert,
+        });
+        let app = admin_router(state);
+
+        let claims = crate::admin_auth::Claims {
+            sub: "test-admin".to_string(),
+            exp: (Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
+            iss: "dlp-server".to_string(),
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+        )
+        .expect("encode JWT");
+
+        // Step 1: Seed initial config with real plaintext secrets.
+        let initial = AlertRouterConfigPayload {
+            smtp_host: "smtp.internal.corp".to_string(),
+            smtp_port: 587,
+            smtp_username: "dlp-alerts".to_string(),
+            smtp_password: "s3cret".to_string(),
+            smtp_from: "dlp@internal.corp".to_string(),
+            smtp_to: "secops@internal.corp".to_string(),
+            smtp_enabled: true,
+            webhook_url: "https://hooks.internal.corp/dlp".to_string(),
+            webhook_secret: "hmac-key".to_string(),
+            webhook_enabled: true,
+        };
+        let put1 = Request::builder()
+            .method("PUT")
+            .uri("/admin/alert-config")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&initial).expect("ser")))
+            .expect("build PUT 1");
+        let put1_resp = app.clone().oneshot(put1).await.expect("PUT 1 oneshot");
+        assert_eq!(put1_resp.status(), StatusCode::OK);
+
+        // Step 2: GET — response must show masked sentinels.
+        let get1 = Request::builder()
+            .method("GET")
+            .uri("/admin/alert-config")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build GET 1");
+        let get1_resp = app.clone().oneshot(get1).await.expect("GET 1 oneshot");
+        assert_eq!(get1_resp.status(), StatusCode::OK);
+        let get1_bytes = to_bytes(get1_resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body 1");
+        let masked: AlertRouterConfigPayload =
+            serde_json::from_slice(&get1_bytes).expect("parse body 1");
+        assert_eq!(masked.smtp_password, ALERT_SECRET_MASK);
+        assert_eq!(masked.webhook_secret, ALERT_SECRET_MASK);
+
+        // Step 3: PUT the masked payload unchanged (TUI save-without-edit).
+        let put2 = Request::builder()
+            .method("PUT")
+            .uri("/admin/alert-config")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&masked).expect("ser 2")))
+            .expect("build PUT 2");
+        let put2_resp = app.clone().oneshot(put2).await.expect("PUT 2 oneshot");
+        assert_eq!(put2_resp.status(), StatusCode::OK);
+
+        // Step 4: Read the DB directly — stored secrets MUST be the original
+        // plaintext values, not the literal mask string.
+        let conn = db.conn().lock();
+        let (stored_smtp_password, stored_webhook_secret): (String, String) = conn
+            .query_row(
+                "SELECT smtp_password, webhook_secret FROM alert_router_config WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("direct DB read");
+        assert_eq!(stored_smtp_password, "s3cret");
+        assert_eq!(stored_webhook_secret, "hmac-key");
+        assert_ne!(stored_smtp_password, ALERT_SECRET_MASK);
+        assert_ne!(stored_webhook_secret, ALERT_SECRET_MASK);
     }
 }
