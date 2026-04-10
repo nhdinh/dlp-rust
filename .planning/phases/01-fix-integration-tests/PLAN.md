@@ -58,6 +58,26 @@ If `dlp-server` is no longer used in any test file, remove it from `[dev-depende
 
 ## UAT Criteria
 
-- [ ] `cargo test --workspace` passes with no compilation errors
-- [ ] Integration test `test_agent_to_real_engine_e2e` still validates T4 WRITE -> DENY and T2 READ -> AllowWithLog
-- [ ] No references to removed dlp_server modules remain
+- [x] `cargo test --workspace` passes with no compilation errors
+- [x] Integration test `test_agent_to_real_engine_e2e` still validates T4 WRITE -> DENY and T2 READ -> AllowWithLog
+- [x] No references to removed dlp_server modules remain
+
+## Addendum — Gap closure after re-verification (2026-04-10)
+
+Re-running `cargo test --workspace` after the original commit `8c62fec`
+surfaced two additional compile errors in `dlp-agent/tests/comprehensive.rs`
+that the original plan did not cover: the `AgentConfig` struct literal at
+lines 354 and 369 were missing the `server_url: Option<String>` field that
+Phase 0 added. `tests/integration.rs` also had an unused `extract::Json`
+import in `start_policy_engine` (the body uses the fully-qualified
+`axum::extract::Json` and `axum::Json` instead).
+
+Closure actions:
+1. Added `server_url: None` to both `AgentConfig { ... }` initializers in
+   `dlp-agent/tests/comprehensive.rs`.
+2. Removed the unused `extract::Json` from the import list inside
+   `start_policy_engine()` in `dlp-agent/tests/integration.rs`.
+
+Post-closure state: `cargo test` from the workspace root returns 364/364
+passing across all 15 test binaries — see VERIFICATION.md for the full
+breakdown.

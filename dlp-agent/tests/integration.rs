@@ -325,7 +325,7 @@ async fn test_e2e_audit_event_round_trip() {
 /// - pol-003: T2 any action -> AllowWithLog
 /// - default: ALLOW
 async fn start_policy_engine() -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    use axum::{extract::Json, routing::post, Router};
+    use axum::{routing::post, Router};
     use tokio::net::TcpListener;
 
     let app = Router::new()

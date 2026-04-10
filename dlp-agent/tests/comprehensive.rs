@@ -352,6 +352,7 @@ mod config_edge_cases {
     #[test]
     fn test_resolve_watch_paths_configured() {
         let config = AgentConfig {
+            server_url: None,
             monitored_paths: vec![r"C:\Data\".to_string(), r"D:\Shares\".to_string()],
             excluded_paths: Vec::new(),
             machine_name: None,
@@ -367,6 +368,7 @@ mod config_edge_cases {
         use dlp_agent::config::AgentConfig;
 
         let a = AgentConfig {
+            server_url: None,
             monitored_paths: vec![r"C:\Data\".to_string()],
             excluded_paths: vec![r"C:\Temp\".to_string()],
             machine_name: None,
