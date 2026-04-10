@@ -25,11 +25,22 @@
 **UAT:** Server refuses to start without JWT_SECRET (no --dev flag). Server starts with --dev flag and warns. **Verified 2026-04-10** (31/31 dlp-server lib tests passing).
 **Commits:** `664c528`
 
-### Phase 3: Wire SIEM connector into server startup
+### Phase 3: Wire SIEM connector into server startup [COMPLETED]
 **Requirement:** R-01
-**Files:** `dlp-server/src/main.rs`, `dlp-server/src/siem_connector.rs`, `dlp-server/src/audit_store.rs`
-**Description:** Initialize SiemConnector from env vars at startup. After audit events are ingested, relay them to configured SIEM endpoints.
-**UAT:** With SIEM env vars set, audit events are forwarded to Splunk/ELK endpoints.
+**Status:** Resolved — see `.planning/phases/03-wire-siem-connector-into-server-startup/SUMMARY.md`
+**Files:** `dlp-server/src/lib.rs`, `dlp-server/src/main.rs`, `dlp-server/src/admin_api.rs`, `dlp-server/src/admin_auth.rs`, `dlp-server/src/agent_registry.rs`, `dlp-server/src/audit_store.rs`, `dlp-server/src/exception_store.rs`
+**Description:** Phase 3 delivered the foundation work — `AppState { db, siem }` shared axum state, handler refactor from `State<Arc<Database>>` to `State<Arc<AppState>>`, and best-effort background SIEM relay spawned after audit event DB commit. The config-loading mechanism (env vars) was **superseded the same day by Phase 3.1** (DB-backed config); see Phase 3's PLAN.md addendum.
+**UAT:** Audit events ingested via `POST /audit/events` are relayed to configured backends; SIEM relay failures are logged but don't fail the ingest request. **Verified 2026-04-10** (31/31 dlp-server lib tests passing).
+**Commits:** `30ccaaf`
+
+### Phase 3.1: SIEM config in DB via dlp-admin-cli [COMPLETED]
+**Requirement:** R-01
+**Status:** Resolved — see `.planning/phases/03.1-siem-config-in-db/SUMMARY.md`
+**Supersedes:** Phase 3 config loading mechanism (env vars → DB)
+**Files:** `dlp-server/src/db.rs`, `dlp-server/src/siem_connector.rs`, `dlp-server/src/admin_api.rs`, `dlp-server/src/main.rs`, `dlp-admin-cli/src/app.rs`, `dlp-admin-cli/src/screens/render.rs`, `dlp-admin-cli/src/screens/dispatch.rs`
+**Description:** Move SIEM connector configuration from environment variables to the SQLite `siem_config` table (single-row, CHECK-constrained, hot-reloaded on every relay). Add JWT-protected `GET/PUT /admin/siem-config` endpoints and a dedicated dlp-admin-cli TUI screen under the System menu for managing Splunk/ELK settings. **Decision:** operator-tunable config lives in DB, not env vars — same pattern will apply to Phase 4 (alert router) and Phase 6 (config push) per user directive in CONTEXT.md.
+**UAT:** `siem_config` table + seed row exist; `GET/PUT /admin/siem-config` work (JWT); server hot-reloads config without restart; dlp-admin-cli TUI shows "SIEM Config" under System menu with Splunk/ELK edit and save. **Verified 2026-04-10** (31/31 dlp-server lib tests + 5/5 dlp-admin-cli tests passing).
+**Commits:** `8911669`
 
 ### Phase 4: Wire alert router into server
 **Requirement:** R-02
