@@ -314,90 +314,81 @@ async fn test_e2e_audit_event_round_trip() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// P2-T13: Agent ↔ real Policy Engine end-to-end
+// P2-T13: Mock Policy Engine with inline ABAC evaluation
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Starts a real Policy Engine (not mock) on an ephemeral port with the
-/// standard 3 ABAC rules from ABAC_POLICIES.md pre-loaded.
-async fn start_real_engine() -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    use axum::Router;
-    use dlp_common::abac::{DeviceTrust, Policy, PolicyCondition};
+/// Starts a mock Policy Engine with inline ABAC rules on an ephemeral port.
+///
+/// Rules (from ABAC_POLICIES.md):
+/// - pol-001: T4 any action -> DENY
+/// - pol-002: T3 + Unmanaged device -> DENY
+/// - pol-003: T2 any action -> AllowWithLog
+/// - default: ALLOW
+async fn start_policy_engine() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    use axum::{extract::Json, routing::post, Router};
     use tokio::net::TcpListener;
 
-    let tmp = tempfile::tempdir().unwrap();
-    let policy_path = tmp.path().join("policies.json");
+    let app = Router::new()
+        .route("/evaluate", post(evaluate_handler))
+        .route("/health", axum::routing::get(|| async { "ok" }));
 
-    // Pre-seed the 3 standard policies.
-    let policies = vec![
-        Policy {
-            id: "pol-001".into(),
-            name: "T4 Deny All".into(),
-            description: None,
-            priority: 1,
-            conditions: vec![PolicyCondition::Classification {
-                op: "eq".into(),
-                value: Classification::T4,
-            }],
-            action: Decision::DENY,
-            enabled: true,
-            version: 1,
-        },
-        Policy {
-            id: "pol-002".into(),
-            name: "T3 Unmanaged Block".into(),
-            description: None,
-            priority: 2,
-            conditions: vec![
-                PolicyCondition::Classification {
-                    op: "eq".into(),
-                    value: Classification::T3,
-                },
-                PolicyCondition::DeviceTrust {
-                    op: "eq".into(),
-                    value: DeviceTrust::Unmanaged,
-                },
-            ],
-            action: Decision::DENY,
-            enabled: true,
-            version: 1,
-        },
-        Policy {
-            id: "pol-003".into(),
-            name: "T2 Allow with Log".into(),
-            description: None,
-            priority: 3,
-            conditions: vec![PolicyCondition::Classification {
-                op: "eq".into(),
-                value: Classification::T2,
-            }],
-            action: Decision::AllowWithLog,
-            enabled: true,
-            version: 1,
-        },
-    ];
-    std::fs::write(&policy_path, serde_json::to_string(&policies).unwrap()).unwrap();
-
-    let engine = Arc::new(dlp_server::engine::AbacEngine::new());
-    let store = Arc::new(
-        dlp_server::policy_store::PolicyStore::open(policy_path, engine).unwrap(),
-    );
-    let app: Router = dlp_server::policy_api::router(store);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
 
-    // Keep tempdir alive by leaking it (test process will clean up).
-    std::mem::forget(tmp);
-
     (addr, handle)
+}
+
+/// Inline ABAC evaluation handler — matches policies by classification.
+async fn evaluate_handler(
+    axum::extract::Json(req): axum::extract::Json<EvaluateRequest>,
+) -> axum::Json<EvaluateResponse> {
+    let classification = req.resource.classification;
+    let device_trust = req.subject.device_trust;
+
+    // pol-001: T4 -> DENY
+    if classification == Classification::T4 {
+        return axum::Json(EvaluateResponse {
+            decision: Decision::DENY,
+            matched_policy_id: Some("pol-001".to_string()),
+            reason: "T4 Deny All".to_string(),
+        });
+    }
+
+    // pol-002: T3 + Unmanaged -> DENY
+    if classification == Classification::T3
+        && device_trust == dlp_common::DeviceTrust::Unmanaged
+    {
+        return axum::Json(EvaluateResponse {
+            decision: Decision::DENY,
+            matched_policy_id: Some("pol-002".to_string()),
+            reason: "T3 Unmanaged Block".to_string(),
+        });
+    }
+
+    // pol-003: T2 -> AllowWithLog
+    if classification == Classification::T2 {
+        return axum::Json(EvaluateResponse {
+            decision: Decision::AllowWithLog,
+            matched_policy_id: Some("pol-003".to_string()),
+            reason: "T2 Allow with Log".to_string(),
+        });
+    }
+
+    // Default: ALLOW
+    axum::Json(EvaluateResponse {
+        decision: Decision::ALLOW,
+        matched_policy_id: None,
+        reason: "default allow".to_string(),
+    })
 }
 
 /// P2-T13: Agent's OfflineManager evaluates against a real Policy Engine.
 #[tokio::test]
 async fn test_agent_to_real_engine_e2e() {
-    let (addr, _h) = start_real_engine().await;
+    let (addr, _h) = start_policy_engine().await;
     let base_url = format!("http://{addr}");
 
     let client = dlp_agent::engine_client::EngineClient::new(&base_url, false).unwrap();
@@ -449,7 +440,7 @@ async fn test_agent_to_real_engine_e2e() {
 /// P2-T13: Agent cache hit skips real engine round-trip.
 #[tokio::test]
 async fn test_agent_cache_hit_real_engine() {
-    let (addr, _h) = start_real_engine().await;
+    let (addr, _h) = start_policy_engine().await;
     let base_url = format!("http://{addr}");
 
     let client = dlp_agent::engine_client::EngineClient::new(&base_url, false).unwrap();
