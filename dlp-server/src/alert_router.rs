@@ -274,4 +274,37 @@ mod tests {
         assert!(router.smtp.is_none());
         assert!(router.webhook.is_none());
     }
+
+    #[tokio::test]
+    #[ignore = "Wave 0 stub — implemented in Wave 2 after struct rewrite"]
+    async fn test_alert_router_disabled_default() {
+        // Wave 2: construct AlertRouter::new(Arc::new(Database::open(":memory:")?))
+        // and assert send_alert returns Ok with no I/O when both channels are off.
+        todo!("Wave 2");
+    }
+
+    #[test]
+    #[ignore = "Wave 0 stub — implemented in Wave 2 after struct rewrite"]
+    fn test_load_config_roundtrip() {
+        // Wave 2: open in-memory DB, UPDATE alert_router_config with known values,
+        // construct AlertRouter::new, call load_config, assert round-trip.
+        todo!("Wave 2");
+    }
+
+    #[test]
+    #[ignore = "Wave 0 stub — implemented in Wave 2 after struct rewrite"]
+    fn test_load_config_port_overflow() {
+        // Wave 2: UPDATE alert_router_config SET smtp_port = 70000; load_config
+        // must return AlertError::Database (or equivalent) for the u16 overflow.
+        todo!("Wave 2");
+    }
+
+    #[tokio::test]
+    #[ignore = "Wave 0 stub — implemented in Wave 2 after struct rewrite"]
+    async fn test_hot_reload() {
+        // Wave 2: construct router; call load_config; UPDATE the row;
+        // call load_config again; assert the second read reflects the update
+        // (proves there is no caching).
+        todo!("Wave 2");
+    }
 }

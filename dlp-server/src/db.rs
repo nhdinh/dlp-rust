@@ -181,6 +181,7 @@ mod tests {
         assert!(tables.contains(&"admin_users".to_string()));
         assert!(tables.contains(&"agent_credentials".to_string()));
         assert!(tables.contains(&"siem_config".to_string()));
+        assert!(tables.contains(&"alert_router_config".to_string()));
 
         // Verify the seed row was inserted.
         let count: i64 = conn
@@ -195,5 +196,44 @@ mod tests {
         let db = Database::open(":memory:").expect("first open");
         let result = db.init_tables();
         assert!(result.is_ok(), "re-init should be idempotent");
+    }
+
+    #[test]
+    fn test_alert_router_config_seed_row() {
+        let db = Database::open(":memory:").expect("open in-memory db");
+        let conn = db.conn().lock();
+
+        // Table must exist.
+        let tables: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master \
+                 WHERE type='table' AND name='alert_router_config'",
+            )
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            tables.contains(&"alert_router_config".to_string()),
+            "alert_router_config table must exist after init"
+        );
+
+        // Seed row must exist.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM alert_router_config", [], |r| r.get(0))
+            .expect("count alert_router_config rows");
+        assert_eq!(count, 1, "alert_router_config must have exactly one seed row");
+
+        // Defaults: both channels disabled.
+        let (smtp_enabled, webhook_enabled): (i64, i64) = conn
+            .query_row(
+                "SELECT smtp_enabled, webhook_enabled FROM alert_router_config WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("read seed row");
+        assert_eq!(smtp_enabled, 0, "smtp_enabled default must be 0");
+        assert_eq!(webhook_enabled, 0, "webhook_enabled default must be 0");
     }
 }

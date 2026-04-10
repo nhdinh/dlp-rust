@@ -688,4 +688,46 @@ mod tests {
         assert_eq!(rt.id, "pol-001");
         assert_eq!(rt.version, 1);
     }
+
+    #[test]
+    #[ignore = "Wave 0 stub — implemented in Wave 3"]
+    fn test_alert_router_config_payload_roundtrip() {
+        todo!("Wave 3");
+    }
+
+    #[test]
+    #[ignore = "Wave 0 stub — implemented in Wave 3"]
+    fn test_validate_webhook_url() {
+        todo!("Wave 3 — 26-case table");
+    }
+
+    #[test]
+    #[ignore = "Wave 0 stub — implemented in Wave 3"]
+    fn test_put_alert_config_rejects_http() {
+        todo!("Wave 3");
+    }
+
+    #[test]
+    #[ignore = "Wave 0 stub — implemented in Wave 3"]
+    fn test_put_alert_config_rejects_loopback() {
+        todo!("Wave 3");
+    }
+
+    #[test]
+    #[ignore = "Wave 0 stub — implemented in Wave 3"]
+    fn test_put_alert_config_accepts_rfc1918() {
+        todo!("Wave 3");
+    }
+
+    #[test]
+    #[ignore = "Wave 0 stub — implemented in Wave 3"]
+    fn test_get_alert_config_requires_auth() {
+        todo!("Wave 3");
+    }
+
+    #[test]
+    #[ignore = "Wave 0 stub — implemented in Wave 3"]
+    fn test_put_alert_config_roundtrip() {
+        todo!("Wave 3");
+    }
 }
