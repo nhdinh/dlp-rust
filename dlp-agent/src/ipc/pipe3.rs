@@ -194,5 +194,42 @@ fn route(msg: Pipe3UiMsg) {
                 let _ = tx.try_send(UiSessionEvent::Closing { session_id });
             }
         }
+        Pipe3UiMsg::ClipboardAlert {
+            session_id,
+            classification,
+            preview,
+            text_length,
+        } => {
+            info!(
+                session_id,
+                classification,
+                text_length,
+                preview = %preview,
+                "Pipe 3: clipboard alert — sensitive content pasted"
+            );
+            // Emit an audit event for the clipboard paste.
+            let tier = match classification.as_str() {
+                "T4" => dlp_common::Classification::T4,
+                "T3" => dlp_common::Classification::T3,
+                "T2" => dlp_common::Classification::T2,
+                _ => dlp_common::Classification::T1,
+            };
+            let mut event = dlp_common::AuditEvent::new(
+                dlp_common::EventType::Alert,
+                "S-1-5-21-clipboard".to_string(),
+                "clipboard-user".to_string(),
+                format!("clipboard:{preview}"),
+                tier,
+                dlp_common::Action::PASTE,
+                dlp_common::Decision::AllowWithLog,
+                std::env::var("DLP_AGENT_ID")
+                    .unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
+                session_id,
+            );
+            event = event.with_access_context(
+                dlp_common::AuditAccessContext::Local,
+            );
+            crate::audit_emitter::emit(&event).ok();
+        }
     }
 }

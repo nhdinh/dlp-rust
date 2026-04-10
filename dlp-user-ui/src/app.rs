@@ -170,6 +170,10 @@ pub fn run() -> iced::Result {
         // "there is no reactor running".
         spawn_ipc_tasks(session_id, pipe1_connected.clone());
 
+        // Start clipboard monitoring — watches for sensitive content
+        // pasted into the clipboard and alerts the agent via Pipe 3.
+        let _clipboard_stop = crate::clipboard_monitor::start(session_id);
+
         let state = UiState {
             session_id,
             pipe1_connected,

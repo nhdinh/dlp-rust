@@ -92,4 +92,15 @@ pub enum Pipe3UiMsg {
     UiReady { session_id: u32 },
     /// The UI is closing (user logged out or closed voluntarily).
     UiClosing { session_id: u32 },
+    /// Clipboard paste detected with sensitive content.
+    ClipboardAlert {
+        /// Session ID where the paste occurred.
+        session_id: u32,
+        /// Classification tier of the pasted content.
+        classification: String,
+        /// Truncated preview of the pasted text.
+        preview: String,
+        /// Total length of the pasted text.
+        text_length: usize,
+    },
 }

@@ -7,6 +7,9 @@ license.workspace = true
 description = "DLP Agent iced UI — endpoint notifications, dialogs, clipboard, tray"
 
 [dependencies]
+# Shared DLP types (classification, text classifier)
+dlp-common = { path = "../dlp-common" }
+
 # Use tiny-skia (software renderer) instead of wgpu to avoid GPU
 # initialization failures when spawned by a SYSTEM service into a
 # user session via CreateProcessAsUserW.

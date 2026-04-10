@@ -52,3 +52,32 @@ pub async fn send_ui_ready(session_id: u32) -> Result<()> {
 
     Ok(())
 }
+
+/// Sends a clipboard alert to the agent via Pipe 3.
+///
+/// Opens a new Pipe 3 connection for each alert (short-lived).
+pub fn send_clipboard_alert(
+    session_id: u32,
+    classification: &str,
+    preview: &str,
+    text_length: usize,
+) -> Result<()> {
+    let handle = open_pipe()?;
+
+    let msg = Pipe3UiMsg::ClipboardAlert {
+        session_id,
+        classification: classification.to_string(),
+        preview: preview.to_string(),
+        text_length,
+    };
+    let json = serde_json::to_vec(&msg)
+        .map_err(|e| anyhow::anyhow!("serialise ClipboardAlert: {}", e))?;
+    write_frame(handle, &json)?;
+    flush(handle)?;
+
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+
+    Ok(())
+}

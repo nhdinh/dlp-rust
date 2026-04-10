@@ -88,4 +88,10 @@ pub enum Pipe3UiMsg {
     HealthPong,
     UiReady { session_id: u32 },
     UiClosing { session_id: u32 },
+    ClipboardAlert {
+        session_id: u32,
+        classification: String,
+        preview: String,
+        text_length: usize,
+    },
 }

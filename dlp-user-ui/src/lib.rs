@@ -5,6 +5,7 @@
 //! the dlp-agent Windows Service via three named pipes.
 
 mod app;
+pub mod clipboard_monitor;
 pub mod dialogs;
 pub mod ipc;
 mod notifications;

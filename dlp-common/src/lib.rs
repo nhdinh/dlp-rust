@@ -7,7 +7,9 @@
 pub mod abac;
 pub mod audit;
 pub mod classification;
+pub mod classifier;
 
 pub use abac::*;
 pub use audit::*;
 pub use classification::*;
+pub use classifier::classify_text;
