@@ -116,10 +116,15 @@ impl AlertRouter {
     ///
     /// * `db` — Shared database handle; the router keeps a clone.
     pub fn new(db: Arc<Database>) -> Self {
-        Self {
-            db,
-            client: Client::new(),
-        }
+        // HI-01: fire-and-forget alert tasks must not pin memory indefinitely on
+        // a hung/tarpit webhook endpoint. 5s connect + 10s total is tight enough
+        // to cap worst-case task lifetime under DenyWithAlert bursts.
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("reqwest client build (static config)");
+        Self { db, client }
     }
 
     /// Loads the current alert router configuration row from the database.
