@@ -189,9 +189,10 @@ impl AlertRouter {
     ///
     /// # Errors
     ///
-    /// Returns the first error seen. Both destinations are attempted
-    /// even if one fails; per-channel failures are logged at `warn` level
-    /// (TM-04).
+    /// Returns the first error encountered; **all** errors (SMTP and webhook)
+    /// are individually logged at `warn` level before returning (TM-04).
+    /// Subsequent errors after the first are dropped — callers who need
+    /// complete error accounting must collect per-channel results directly.
     pub async fn send_alert(&self, event: &AuditEvent) -> Result<(), AlertError> {
         let row = self.load_config()?;
 
@@ -250,6 +251,12 @@ impl AlertRouter {
     /// Serializes the full `AuditEvent` via `serde_json::to_string_pretty`.
     /// See the module-level TM-03 forward-compat rule.
     async fn send_email(&self, config: &SmtpConfig, event: &AuditEvent) -> Result<(), AlertError> {
+        // LO-02: event_type round-trips through serde_json::Value just to get a
+        // discriminant string. Fragile — if EventType ever adds a tuple/struct
+        // variant, as_str() silently returns None and the subject becomes
+        // "UNKNOWN". Replace once EventType has a Display impl in
+        // dlp-common/src/audit.rs with:
+        //   format!("[DLP ALERT] {} on {} by {}", event.event_type, event.resource_path, event.user_name)
         let subject = format!(
             "[DLP ALERT] {} on {} by {}",
             serde_json::to_value(event.event_type)

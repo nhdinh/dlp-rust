@@ -74,6 +74,12 @@ pub async fn ingest_events(
     let count = events.len();
 
     // Clone events before moving into spawn_blocking so we can relay to SIEM after.
+    // LO-03 (deferred): this clones the full batch into relay_events, then
+    // filter+clone again into alert_events below (lines 147-151). Each
+    // DenyWithAlert event is cloned twice (2N allocations for N events).
+    // Fix with Arc<AuditEvent> wrapping: Arc-clone at line 77 instead of
+    // full clone, then Arc-clone the filter subset. Requires updating
+    // SiemConnector::relay_events and AlertRouter::send_alert signatures.
     let relay_events = events.clone();
 
     let db = Arc::clone(&state.db);
