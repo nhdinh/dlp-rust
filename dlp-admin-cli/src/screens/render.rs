@@ -68,7 +68,13 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 frame,
                 area,
                 "System",
-                &["Server Status", "Agent List", "SIEM Config", "Back"],
+                &[
+                    "Server Status",
+                    "Agent List",
+                    "SIEM Config",
+                    "Alert Config",
+                    "Back",
+                ],
                 *selected,
             );
         }
@@ -109,6 +115,14 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         } => {
             draw_siem_config(frame, area, config, *selected, *editing, buffer);
         }
+        Screen::AlertConfig {
+            config,
+            selected,
+            editing,
+            buffer,
+        } => {
+            draw_alert_config(frame, area, config, *selected, *editing, buffer);
+        }
     }
 }
 
@@ -134,6 +148,40 @@ fn is_siem_secret(index: usize) -> bool {
 /// Returns `true` when a row index corresponds to a boolean field.
 fn is_siem_bool(index: usize) -> bool {
     matches!(index, 2 | 6)
+}
+
+/// Labels for each row of the Alert Config form (in display order).
+///
+/// 10 editable fields + Save + Back = 12 total rows.
+const ALERT_FIELD_LABELS: [&str; 12] = [
+    "SMTP Host",
+    "SMTP Port",
+    "SMTP Username",
+    "SMTP Password",
+    "SMTP From",
+    "SMTP To",
+    "SMTP Enabled",
+    "Webhook URL",
+    "Webhook Secret",
+    "Webhook Enabled",
+    "[ Save ]",
+    "[ Back ]",
+];
+
+/// Returns `true` when a row index corresponds to a secret field that
+/// should be masked outside of edit mode.
+fn is_alert_secret(index: usize) -> bool {
+    matches!(index, 3 | 8) // smtp_password, webhook_secret
+}
+
+/// Returns `true` when a row index corresponds to a boolean field.
+fn is_alert_bool(index: usize) -> bool {
+    matches!(index, 6 | 9) // smtp_enabled, webhook_enabled
+}
+
+/// Returns `true` when a row index corresponds to a numeric field.
+fn is_alert_numeric(index: usize) -> bool {
+    matches!(index, 1) // smtp_port
 }
 
 /// Draws the SIEM configuration form.
@@ -197,6 +245,107 @@ fn draw_siem_config(
         .block(
             Block::default()
                 .title(" SIEM Config ")
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut state);
+
+    let hints = if editing {
+        "Type to edit | Enter: commit | Esc: cancel"
+    } else {
+        "Up/Down: navigate | Enter: edit/toggle | Esc: back"
+    };
+    draw_hints(frame, area, hints);
+}
+
+/// Draws the alert router configuration form.
+///
+/// # Arguments
+///
+/// * `frame` - ratatui frame to render into
+/// * `area` - screen area allocated to the form
+/// * `config` - current config payload as a JSON object (loaded from the server)
+/// * `selected` - index of the currently highlighted row (0..=11)
+/// * `editing` - `true` when the highlighted text/numeric field is in edit mode
+/// * `buffer` - edit buffer contents (only meaningful when `editing` is `true`)
+fn draw_alert_config(
+    frame: &mut Frame,
+    area: Rect,
+    config: &serde_json::Value,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+) {
+    // Map row index -> JSON key for editable fields. The 10 keys here match
+    // the on-wire `AlertRouterConfigPayload` field names from
+    // `dlp-server/src/admin_api.rs` exactly.
+    const KEYS: [&str; 10] = [
+        "smtp_host",
+        "smtp_port",
+        "smtp_username",
+        "smtp_password",
+        "smtp_from",
+        "smtp_to",
+        "smtp_enabled",
+        "webhook_url",
+        "webhook_secret",
+        "webhook_enabled",
+    ];
+
+    let mut items: Vec<ListItem> = Vec::with_capacity(ALERT_FIELD_LABELS.len());
+    for (i, label) in ALERT_FIELD_LABELS.iter().enumerate() {
+        let line = if i < KEYS.len() {
+            let key = KEYS[i];
+            let value_display = if editing && i == selected {
+                // Show buffer with trailing cursor marker.
+                format!("[{buffer}_]")
+            } else if is_alert_bool(i) {
+                let b = config[key].as_bool().unwrap_or(false);
+                if b {
+                    "[x]".to_string()
+                } else {
+                    "[ ]".to_string()
+                }
+            } else if is_alert_numeric(i) {
+                // smtp_port is stored as a JSON number; default to 587 if absent.
+                let n = config[key].as_i64().unwrap_or(587);
+                n.to_string()
+            } else if is_alert_secret(i) {
+                let v = config[key].as_str().unwrap_or("");
+                if v.is_empty() {
+                    "(empty)".to_string()
+                } else {
+                    "*****".to_string()
+                }
+            } else {
+                let v = config[key].as_str().unwrap_or("");
+                if v.is_empty() {
+                    "(empty)".to_string()
+                } else {
+                    v.to_string()
+                }
+            };
+            format!("{label}: {value_display}")
+        } else {
+            // Save / Back action rows.
+            (*label).to_string()
+        };
+        items.push(ListItem::new(Line::from(line)));
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Alert Config ")
                 .borders(Borders::ALL),
         )
         .highlight_style(
