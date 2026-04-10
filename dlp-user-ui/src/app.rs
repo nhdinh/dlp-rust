@@ -121,12 +121,6 @@ fn install_crash_hook() {
 /// Log directory shared with the agent.
 const LOG_DIR: &str = r"C:\ProgramData\DLP\logs";
 
-/// Holds the `WorkerGuard` for the non-blocking file writer for the entire
-/// process lifetime.  See `dlp-agent::service::LOG_WORKER_GUARD` for the
-/// rationale for using `OnceLock` instead of `mem::forget`.
-static LOG_WORKER_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuard> =
-    std::sync::OnceLock::new();
-
 /// Initialises logging and runs the iced application.
 ///
 /// Logging is set up with two layers:
@@ -134,6 +128,12 @@ static LOG_WORKER_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::Wor
 ///   (always active; this is the primary diagnostic output because
 ///   `windows_subsystem = "windows"` suppresses stderr in release builds).
 /// - A stderr layer for interactive/debug use.
+///
+/// `RollingFileAppender` is used directly as a synchronous `MakeWriter` rather
+/// than wrapping it in `non_blocking`.  In the Windows interactive-session context
+/// (Session 1, standard user token), the `non_blocking` background worker thread
+/// was observed to produce 0-byte log files — every write silently failed.
+/// Synchronous writes avoid the worker thread entirely.
 ///
 /// # Errors
 ///
@@ -152,18 +152,16 @@ pub fn run() -> iced::Result {
     let _ = std::fs::create_dir_all(LOG_DIR);
 
     // Rolling daily log file: C:\ProgramData\DLP\logs\dlp-user-ui.log.<date>
-    // This is the only reliable output channel when the UI runs as a
-    // `windows_subsystem = "windows"` process (no attached console).
+    // Used directly as a synchronous MakeWriter — no background thread required.
+    // `RollingFileAppender` is thread-safe via its internal RwLock<File>.
     let file_appender = tracing_appender::rolling::daily(LOG_DIR, "dlp-user-ui.log");
-    let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
-    let _ = LOG_WORKER_GUARD.set(guard);
 
     // Two layers: file (always) + stderr (debug/console use only).
     let _ = tracing_subscriber::registry()
         .with(filter)
         .with(
             tracing_subscriber::fmt::layer()
-                .with_writer(file_writer)
+                .with_writer(file_appender)
                 .with_span_events(FmtSpan::CLOSE)
                 .with_target(true)
                 .with_thread_ids(true)

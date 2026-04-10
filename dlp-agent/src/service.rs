@@ -606,38 +606,30 @@ fn acquire_instance_mutex() {
 /// Log directory for the DLP Agent service.
 const LOG_DIR: &str = r"C:\ProgramData\DLP\logs";
 
-/// Holds the `WorkerGuard` for the non-blocking file writer for the entire
-/// process lifetime.
-///
-/// `tracing_appender::non_blocking` spawns a background writer thread and
-/// returns a `WorkerGuard` that keeps it alive.  If the guard is dropped
-/// the worker thread flushes and exits, silencing all further log writes.
-/// Storing it in a `OnceLock` — rather than leaking it with `mem::forget` —
-/// ensures the guard is reachable (not leaked memory) and lives until the
-/// process exits.
-static LOG_WORKER_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuard> =
-    std::sync::OnceLock::new();
-
-/// Initialises structured logging to both a rolling log file and stdout.
+/// Initialises structured logging to a rolling daily log file.
 ///
 /// When running as a Windows Service, stdout is invisible — the log file
-/// at `C:\ProgramData\DLP\logs\dlp-agent.log.*` is the primary diagnostic
-/// output.  In console mode, both outputs are active.
+/// at `C:\ProgramData\DLP\logs\dlp-agent.log.<date>` is the primary diagnostic
+/// output.  In console mode, both the file and stderr outputs are active.
 ///
-/// # Design: why OnceLock instead of mem::forget
+/// # Design: synchronous writer, no non_blocking channel
 ///
-/// `tracing_appender::non_blocking` works by sending each log record through
-/// a bounded channel to a background writer thread.  The `WorkerGuard` owns
-/// the only "flush-and-stop" signal: when dropped it drains the channel and
-/// joins the thread.  `mem::forget` bypasses Drop entirely — it keeps the
-/// channel open (correct) but leaves the guard value as leaked memory with
-/// no way to verify it is still reachable.  A `OnceLock` is the idiomatic
-/// Rust alternative: the guard is in static storage, always reachable, and
-/// will be cleaned up by the OS on process exit just like leaked memory —
-/// but without the ambiguity.
+/// `tracing_appender::non_blocking` spawns a background writer thread that
+/// receives log records via a bounded channel.  In the Windows Service context
+/// (Session 0, LocalSystem, no console), the worker thread has been observed
+/// to silently fail — every `write_all` call returns an IO error, the
+/// `tracing-appender` worker loop swallows the error with a `// TODO` comment,
+/// and the log file stays at 0 bytes despite the subscriber being installed.
+///
+/// Using `RollingFileAppender` directly as a synchronous `MakeWriter` avoids
+/// the worker thread and the channel entirely: each log event is written on
+/// the calling thread.  The `RollingFileAppender` guards its internal `File`
+/// handle with an `RwLock` for multi-thread safety.
 fn init_logging() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+
+    crate::password_stop::debug_log("init_logging: entered");
 
     // Default to INFO unless RUST_LOG overrides.  `from_env_lossy` silently
     // ignores unrecognised directives so a misconfigured RUST_LOG does not
@@ -646,35 +638,31 @@ fn init_logging() {
         .with_default_directive(Level::INFO.into())
         .from_env_lossy();
 
+    crate::password_stop::debug_log(&format!("init_logging: filter = {filter}"));
+
     // Ensure the log directory exists before creating any file appender.
-    // Failures are ignored — the directory almost certainly already exists,
-    // and if it does not the `RollingFileAppender` will surface the error
-    // when it attempts to open its first file.
-    let _ = std::fs::create_dir_all(LOG_DIR);
+    let dir_result = std::fs::create_dir_all(LOG_DIR);
+    crate::password_stop::debug_log(&format!(
+        "init_logging: create_dir_all({LOG_DIR}) = {dir_result:?}"
+    ));
 
     // Rolling daily log file: C:\ProgramData\DLP\logs\dlp-agent.log.<date>
-    // `non_blocking` offloads the actual write syscalls to a background
-    // thread so tracing macros in hot paths never block on I/O.
+    // Used directly as a synchronous MakeWriter — no background thread required.
+    // `RollingFileAppender` is thread-safe via its internal RwLock<File>.
     let file_appender = tracing_appender::rolling::daily(LOG_DIR, "dlp-agent.log");
-    let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
-    // Store the guard in a process-lifetime static so it is never dropped.
-    // Dropping the guard would flush and shut down the background writer
-    // thread, silencing all subsequent log events.  Using OnceLock instead
-    // of mem::forget makes the guard visible to tools (e.g., leak detectors)
-    // and avoids any ambiguity about whether the value is truly reachable.
-    let _ = LOG_WORKER_GUARD.set(guard);
+    crate::password_stop::debug_log("init_logging: file_appender created");
 
     // Build a subscriber with two layers:
     //   1. File layer  — always active; ANSI escape codes disabled so the
     //      log file is readable by both humans and log-shipping agents.
     //   2. Stderr layer — only useful in console/debug mode; silently
     //      discarded when running as a Windows Service (no attached console).
-    if let Err(e) = tracing_subscriber::registry()
+    let init_result = tracing_subscriber::registry()
         .with(filter)
         .with(
             tracing_subscriber::fmt::layer()
-                .with_writer(file_writer)
+                .with_writer(file_appender)
                 .with_span_events(FmtSpan::CLOSE)
                 .with_target(true)
                 .with_thread_ids(true)
@@ -686,13 +674,19 @@ fn init_logging() {
                 .with_target(true)
                 .with_thread_ids(true),
         )
-        .try_init()
-    {
-        // If a global subscriber is already installed (e.g., in tests),
-        // log the conflict via the bypass path so it is never silently lost.
-        crate::password_stop::debug_log(&format!(
-            "init_logging: tracing subscriber already installed — {e}"
-        ));
+        .try_init();
+
+    match &init_result {
+        Ok(()) => {
+            crate::password_stop::debug_log("init_logging: try_init OK — subscriber installed");
+        }
+        Err(e) => {
+            // A global subscriber is already installed (e.g., during tests).
+            // Log via the bypass path so the conflict is never silently lost.
+            crate::password_stop::debug_log(&format!(
+                "init_logging: try_init ERR — subscriber already installed: {e}"
+            ));
+        }
     }
 }
 
