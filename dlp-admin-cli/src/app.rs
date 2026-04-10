@@ -116,6 +116,27 @@ pub enum Screen {
         /// Buffered input while editing.
         buffer: String,
     },
+    /// Alert router configuration form.
+    ///
+    /// Navigable list of 12 rows (10 editable fields + Save + Back). When
+    /// `editing` is true, keystrokes append to `buffer`; Enter commits the
+    /// buffer into the selected field of `config`. Row 1 (`smtp_port`) is
+    /// the only numeric field; it is parsed as `u16` on commit.
+    ///
+    /// Editable field order (row index -> JSON key):
+    /// 0: smtp_host, 1: smtp_port, 2: smtp_username, 3: smtp_password,
+    /// 4: smtp_from, 5: smtp_to, 6: smtp_enabled, 7: webhook_url,
+    /// 8: webhook_secret, 9: webhook_enabled. Row 10 = [Save], Row 11 = [Back].
+    AlertConfig {
+        /// Currently loaded config as a JSON object.
+        config: serde_json::Value,
+        /// Index of the selected row (0..=11).
+        selected: usize,
+        /// Whether the selected text field is in edit mode.
+        editing: bool,
+        /// Buffered input while editing.
+        buffer: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
