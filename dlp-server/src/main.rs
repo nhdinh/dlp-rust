@@ -47,6 +47,8 @@ struct Config {
     /// Non-interactive admin password (from `--init-admin`).
     /// When set, the admin user is created without prompting.
     init_admin_password: Option<String>,
+    /// Development mode — allows insecure JWT secret fallback.
+    dev_mode: bool,
 }
 
 /// Parses CLI flags into a [`Config`].
@@ -72,6 +74,7 @@ fn parse_config() -> Config {
         log_level: get_flag(&args, "--log-level")
             .unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string()),
         init_admin_password: get_flag(&args, "--init-admin"),
+        dev_mode: args.iter().any(|a| a == "--dev"),
     }
 }
 
@@ -97,6 +100,8 @@ OPTIONS:
                                  (default: {DEFAULT_LOG_LEVEL})
     --init-admin <password>      Create dlp-admin user non-interactively
                                  (for installer / scripted setup)
+    --dev                        Development mode — allow insecure JWT
+                                 secret fallback (do NOT use in production)
     --help                       Show this help message
 
 FIRST RUN:
@@ -120,6 +125,14 @@ async fn main() -> anyhow::Result<()> {
     // Initialise structured logging.
     let filter = EnvFilter::new(&config.log_level);
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // Resolve and store the JWT secret (must happen before serving requests).
+    let jwt_secret = admin_auth::resolve_jwt_secret(config.dev_mode)
+        .map_err(|msg| {
+            eprintln!("Error: {msg}");
+            anyhow::anyhow!("{msg}")
+        })?;
+    admin_auth::set_jwt_secret(jwt_secret);
 
     // Validate bind address.
     let addr: SocketAddr = config.bind_addr.parse().with_context(

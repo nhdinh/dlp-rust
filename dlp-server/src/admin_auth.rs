@@ -23,13 +23,60 @@ use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::AppError;
 
-/// Secret used for HS256 JWT signing.
+/// Insecure fallback secret used only when `--dev` is active.
+const DEV_JWT_SECRET: &str = "dlp-server-dev-secret-change-me";
+
+/// Resolves the JWT signing secret.
 ///
-/// In production this MUST be loaded from an environment variable.
-/// Falls back to a compile-time default **only** for development.
-fn jwt_secret() -> String {
-    std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "dlp-server-dev-secret-change-me".to_string())
+/// - If `JWT_SECRET` env var is set, uses it.
+/// - If `dev_mode` is true and env var is absent, uses an insecure fallback.
+/// - Otherwise returns an error (server should refuse to start).
+///
+/// # Errors
+///
+/// Returns an error message if `JWT_SECRET` is not set and `dev_mode` is false.
+pub fn resolve_jwt_secret(dev_mode: bool) -> Result<String, String> {
+    match std::env::var("JWT_SECRET") {
+        Ok(s) if !s.is_empty() => Ok(s),
+        _ if dev_mode => {
+            tracing::warn!(
+                "JWT_SECRET not set — using insecure dev secret (--dev mode). \
+                 Do NOT use --dev in production!"
+            );
+            Ok(DEV_JWT_SECRET.to_string())
+        }
+        _ => Err(
+            "JWT_SECRET environment variable is required.\n\
+             Set it before starting the server, or use --dev for development:\n\n\
+             \x20 export JWT_SECRET=\"your-secure-random-secret\"\n\
+             \x20 dlp-server.exe\n\n\
+             Or for development only:\n\n\
+             \x20 dlp-server.exe --dev"
+                .to_string(),
+        ),
+    }
+}
+
+/// Process-wide JWT secret, set once at startup via [`resolve_jwt_secret`].
+///
+/// All JWT operations read from this static instead of re-reading the
+/// env var on every request.
+static JWT_SECRET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Stores the resolved JWT secret for the process lifetime.
+///
+/// Must be called once at startup before serving requests.
+pub fn set_jwt_secret(secret: String) {
+    if JWT_SECRET.set(secret).is_err() {
+        tracing::warn!("JWT secret already set — ignoring duplicate call");
+    }
+}
+
+/// Returns the JWT secret. Panics if [`set_jwt_secret`] was not called.
+fn jwt_secret() -> &'static str {
+    JWT_SECRET
+        .get()
+        .expect("JWT secret not initialized — call set_jwt_secret() at startup")
 }
 
 // ---------------------------------------------------------------------------
@@ -337,8 +384,16 @@ pub async fn require_auth(
 mod tests {
     use super::*;
 
+    /// Ensures the JWT secret is initialized for tests.
+    /// Safe to call from multiple tests — `OnceLock::set` is a no-op
+    /// after the first successful call.
+    fn ensure_test_secret() {
+        let _ = JWT_SECRET.set(DEV_JWT_SECRET.to_string());
+    }
+
     #[test]
     fn test_jwt_round_trip() {
+        ensure_test_secret();
         let claims = Claims {
             sub: "admin".to_string(),
             exp: (Utc::now() + chrono::Duration::hours(1))
@@ -360,6 +415,7 @@ mod tests {
 
     #[test]
     fn test_expired_token_rejected() {
+        ensure_test_secret();
         let claims = Claims {
             sub: "admin".to_string(),
             // Expired 1 hour ago.
@@ -381,6 +437,7 @@ mod tests {
 
     #[test]
     fn test_invalid_token_rejected() {
+        ensure_test_secret();
         let result = verify_jwt("not.a.valid.token");
         assert!(result.is_err());
     }
