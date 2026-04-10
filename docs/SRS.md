@@ -133,7 +133,7 @@ The system shall:
 
 ### 2.1 System Overview
 
-The Enterprise DLP System is a four-layer defense-in-depth architecture. The Enforcement Layer splits into two co-operating processes: the **dlp-agent** (Windows Service, SYSTEM account) and the **DLP UI** (iced subprocess, interactive user desktop).
+The Enterprise DLP System is a four-layer defense-in-depth architecture. The Enforcement Layer splits into two co-operating processes: the **dlp-agent** (Windows Service, SYSTEM account) and the **dlp-user-ui** (iced subprocess, interactive user desktop).
 
 ```
 ┌──────────────────────────────────────────────────-───┐
@@ -141,7 +141,7 @@ The Enterprise DLP System is a four-layer defense-in-depth architecture. The Enf
 │         Rust, SYSTEM account, Windows API            │
 │         Handles: interception, REST API, audit, IPC  │
 ├────────────────────────────────────────────────────-─┤
-│         Enforcement Layer — DLP UI (iced)            │
+│         Enforcement Layer — dlp-user-ui (iced)       │
 │         User desktop, spawned by Agent               │
 │         Handles: notifications, dialogs, clipboard   │
 ├─────────────────────────────────────────────────────-┤
@@ -160,30 +160,30 @@ The Enterprise DLP System is a four-layer defense-in-depth architecture. The Enf
 
 > NTFS ALLOW + ABAC DENY = **DENY** (ABAC always has final veto)
 
-### 2.2 Agent ↔ UI Co-Process Model
+### 2.2 dlp-agent ↔ dlp-user-ui Co-Process Model
 
-The dlp-agent runs as a Windows Service under the SYSTEM account. Because a SERVICE process cannot interact with the desktop of a user session, all user-facing work is delegated to **DLP UI** instances (iced subprocesses) — one spawned by the Agent in each active user session:
+The dlp-agent runs as a Windows Service under the SYSTEM account. Because a SERVICE process cannot interact with the desktop of a user session, all user-facing work is delegated to **dlp-user-ui** instances (iced subprocesses) — one spawned by the dlp-agent in each active user session:
 
-| Concern                                 | Owner      |
-| --------------------------------------- | ---------- |
-| File operation interception             | Agent      |
-| dlp-server HTTPS communication          | Agent      |
-| Audit event emission                    | Agent      |
-| Windows Service lifecycle               | Agent      |
-| User notifications (toast)              | DLP UI     |
-| Override request dialog + justification | DLP UI     |
-| Clipboard read/write                    | DLP UI     |
-| System tray widget                      | DLP UI     |
-| sc stop password dialog                 | DLP UI     |
-| Shell integration (tooltips)            | DLP UI     |
-| Audit event storage & SIEM relay        | dlp-server |
-| Agent registry & heartbeat tracking     | dlp-server |
-| Admin auth (TOTP + JWT)                 | dlp-server |
-| Policy sync to engine replicas          | dlp-server |
-| Alert routing (DENY_WITH_ALERT)         | dlp-server |
-| Exception/override approval records     | dlp-server |
+| Concern                                 | Owner       |
+| --------------------------------------- | ----------- |
+| File operation interception             | dlp-agent   |
+| dlp-server HTTPS communication          | dlp-agent   |
+| Audit event emission                    | dlp-agent   |
+| Windows Service lifecycle               | dlp-agent   |
+| User notifications (toast)              | dlp-user-ui |
+| Override request dialog + justification | dlp-user-ui |
+| Clipboard read/write                    | dlp-user-ui |
+| System tray widget                      | dlp-user-ui |
+| sc stop password dialog                 | dlp-user-ui |
+| Shell integration (tooltips)            | dlp-user-ui |
+| Audit event storage & SIEM relay        | dlp-server  |
+| Agent registry & heartbeat tracking     | dlp-server  |
+| Admin auth (TOTP + JWT)                 | dlp-server  |
+| Policy sync to engine replicas          | dlp-server  |
+| Alert routing (DENY_WITH_ALERT)         | dlp-server  |
+| Exception/override approval records     | dlp-server  |
 
-Communication between Agent and DLP UI uses **3 Windows named pipes**.
+Communication between dlp-agent and dlp-user-ui uses **3 Windows named pipes**.
 
 ### 2.3 Stakeholders
 
@@ -200,13 +200,13 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 
 1. Target environment is Windows Server 2019+ / Windows 10/11 Enterprise
 2. All endpoints are joined to Active Directory Domain
-3. DLP Admin account is a dedicated, privileged AD account
+3. dlp-admin account is a dedicated, single user of DLP system (which is created while setup/ first-run of dlp-server)
 4. dlp-server server runs on a hardened Windows or Linux host
 5. SIEM infrastructure (Splunk or ELK) is available for log ingestion
-6. Network communication between agents and dlp-server uses TLS 1.3
+6. Network communication between dlp-agent(s) and dlp-server uses TLS 1.3
 7. All users have individual AD accounts; no shared accounts
-8. Data classification is applied at the file/folder level via path-based classification rules (e.g., `C:\Restricted\` → T4). No NTFS extended attributes or alternate data streams are used — classification is a policy rule attribute, not a filesystem attribute.
-9. The Agent runs as a Windows Service (SYSTEM account); it spawns the DLP UI into each active interactive session
+8. Data classification is applied at the file/folder level via many ways: path-based classification rules (e.g., `C:\Restricted\` → T4); filename base classification rules (e.g., `T3_*.txt` → T3); NTFS extended attributes; File content inspection (Phase 2); user-submitted classification override requests;
+9. The dlp-agent runs as a Windows Service (SYSTEM account); it spawns the dlp-user-ui into each active interactive session
 10. Named pipe names are fixed well-known values (auditable and debuggable)
 
 ---
@@ -258,7 +258,7 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 
 | ID       | Requirement                                                                                                                                                                                                                                                                                                                | Priority |
 | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| F-SVC-01 | Agent shall enumerate all active user sessions and spawn one iced DLP UI as a child subprocess in each session's desktop when the service starts                                                                                                                                                                           | Must     |
+| F-SVC-01 | Agent shall enumerate all active user sessions and spawn one iced dlp-user-ui as a child subprocess in each session's desktop when the service starts                                                                                                                                                                      | Must     |
 | F-SVC-02 | Agent shall own the lifecycle of the UI subprocess (start, monitor, respawn on failure)                                                                                                                                                                                                                                    | Must     |
 | F-SVC-03 | Agent shall communicate with the UI via exactly 3 Windows named pipes (see §3.4 for protocol)                                                                                                                                                                                                                              | Must     |
 | F-SVC-04 | Agent shall check UI health every 5 seconds; if the UI is unresponsive or absent for 15 seconds, Agent shall terminate and respawn it                                                                                                                                                                                      | Must     |
@@ -273,7 +273,7 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 | F-SVC-13 | Agent shall enumerate all active user sessions via `WTSEnumerateSessionsW` and spawn one UI subprocess in each session's desktop via `CreateProcessAsUser`; on session connect, Agent shall spawn a new UI in that session; on session disconnect, Agent shall terminate the UI in that session                            | Must     |
 | F-SVC-14 | Password verification for service stop shall be performed by comparing the submitted password against the bcrypt hash stored in the Windows registry (`HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`), using DPAPI to protect the password in transit from the UI to the agent                                          | Must     |
 
-### 3.4 DLP UI (iced Endpoint Interface)
+### 3.4 dlp-user-ui (iced Endpoint Interface)
 
 | ID       | Requirement                                                                                                                 | Priority |
 | -------- | --------------------------------------------------------------------------------------------------------------------------- | -------- |
@@ -587,8 +587,8 @@ dlp-rust/                           # Cargo workspace
 │   │   │   └── policy_mapper.rs    # Maps file actions → ABAC Action; path + content-based classification
 │   │   ├── clipboard/
 │   │   │   ├── mod.rs
-│   │   │   ├── listener.rs         # Hooks: GetClipboardData, SetClipboardData
-│   │   │   └── classifier.rs       # Classify clipboard text → T1–T4
+│   │   │   ├── listener.rs         # (legacy) WH_GETMESSAGE hook — not started at runtime; hook is never installed
+│   │   │   └── classifier.rs       # (legacy) per-agent classifier — superseded by dlp_common::classify_text
 │   │   ├── detection/
 │   │   │   ├── mod.rs
 │   │   │   ├── usb.rs             # RegisterDeviceNotificationW (DBT_DEVICEARRIVAL/DBT_DEVICEREMOVECOMPLETE)
@@ -610,7 +610,8 @@ dlp-rust/                           # Cargo workspace
 │           │   ├── override_request.rs   # Override + justification
 │           │   └── password_dialog.rs    # sc stop password dialog
 │           ├── tray.rs             # System tray widget
-│           ├── clipboard.rs        # Clipboard read/write
+│           ├── clipboard.rs        # Clipboard read/write (Pipe 1 dialog helper)
+│           ├── clipboard_monitor.rs # AddClipboardFormatListener / WM_CLIPBOARDUPDATE → classify → Pipe 3 ClipboardAlert
 │           └── health_monitor.rs  # Pings Agent via Pipe 3
 │
 ```
@@ -664,15 +665,15 @@ S8. dlp-server marks agent as uninstalled in registry
 
 
 Op-1. Agent sends BLOCK_NOTIFY over Pipe 1, waits for response
-Op-2. DLP UI receives BLOCK_NOTIFY, shows toast notification
+Op-2. dlp-user-ui receives BLOCK_NOTIFY, shows toast notification
 Op-3. User reads notification; operation is blocked
 
 --- Override request ---
 
 Ov-1. User clicks "Request Override" in the notification
-Ov-2. DLP UI shows dialog: "Please provide business justification"
+Ov-2. dlp-user-ui shows dialog: "Please provide business justification"
 Ov-3. User types justification, clicks Submit
-Ov-4. DLP UI sends {USER_CONFIRMED, id, justification} over Pipe 1
+Ov-4. dlp-user-ui sends {USER_CONFIRMED, id, justification} over Pipe 1
 Ov-5. Agent receives response, creates exception record
 Ov-6. Agent permits operation (one-time or time-limited exception)
 Ov-7. Audit event emitted with override justification
@@ -682,9 +683,9 @@ Ov-7. Audit event emitted with override justification
 Sc-1. Admin runs: sc stop dlp-agent
 Sc-2. SCM sends SERVICE_CONTROL_STOP to Agent
 Sc-3. Agent sets state STOP_PENDING, sends PASSWORD_DIALOG over Pipe 1
-Sc-4. DLP UI shows dlp-admin password dialog
+Sc-4. dlp-user-ui shows dlp-admin password dialog
 Sc-5. Admin enters dlp-admin credentials, submits
-Sc-6. DLP UI sends PASSWORD_SUBMIT over Pipe 1
+Sc-6. dlp-user-ui sends PASSWORD_SUBMIT over Pipe 1
 Sc-7. Agent validates credentials via bcrypt hash comparison against `DLPAuthHash` registry value
 Sc-8. Password correct → Agent stops UI, stops service cleanly
 Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNNING
@@ -783,7 +784,7 @@ Sc-9. Password wrong (×3) → Agent cancels stop, logs failure, returns to RUNN
 | T-16 | Implement HTTPS client to dlp-server: reqwest client, TLS, `POST /evaluate` request/response, retry on failure                                                                                            | `dlp-agent/src/engine_client.rs`             | Must     |
 | T-17 | Implement local policy decision cache: in-memory `HashMap` (resource_hash, subject_hash, TTL), fail-closed for T3/T4 on cache miss                                                                        | `dlp-agent/src/cache.rs`                     | Must     |
 | T-18 | Implement offline mode: detect dlp-server unreachable, fall back to cache, fail-closed defaults, auto-reconnect on heartbeat                                                                              | `dlp-agent/src/offline.rs`                   | Must     |
-| T-20 | Implement `detection/clipboard/listener.rs`: `SetWindowsHookExW` for WH_GETMESSAGE, intercept `WM_PASTE`; `detection/clipboard/classifier.rs`: classify text content → T1–T4                              | `dlp-agent/src/clipboard/`                   | Must     |
+| T-20 | Implement clipboard monitoring in dlp-user-ui: `AddClipboardFormatListener` / `WM_CLIPBOARDUPDATE` message-only window; classify text via `dlp_common::classify_text`; send `ClipboardAlert` to agent over Pipe 3 (`\\\\.\\pipe\\DLPEventUI2Agent`); agent emits audit event with `action=PASTE` | `dlp-user-ui/src/clipboard_monitor.rs`        | Must     |
 | T-21 | Write integration tests: file interception → HTTPS call → local audit log (end-to-end, mock dlp-server)                                                                                                   | `dlp-agent/tests/`                           | Must     |
 
 #### EP-04 — Audit & Compliance

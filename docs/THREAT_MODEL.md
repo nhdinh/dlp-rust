@@ -70,7 +70,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   │     ├── interception/file_monitor.rs  — File system monitor (notify crate)
   │     ├── detection/usb.rs           — USB device notification listener
   │     ├── detection/network_share.rs  — SMB share access detector
-  │     ├── clipboard/listener.rs       — WH_GETMESSAGE clipboard hook
+  │     ├── clipboard/listener.rs       — (legacy) WH_GETMESSAGE hook; not started at runtime
   │     ├── identity.rs                 — SMB impersonation resolution
   │     ├── engine_client.rs            — HTTPS client → dlp-server
   │     ├── cache.rs                   — Policy decision cache (TTL)
@@ -86,7 +86,8 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
   └── dlp-user-ui (iced subprocess, interactive user session)
         ├── pipe1 client               — Receives BlockNotify, OverrideRequest; sends UserConfirmed/Cancelled
         ├── pipe2 listener             — Receives HEALTH_PING, toast, StatusUpdate
-        ├── pipe3 client               — Sends HEALTH_PONG, UiReady, UiClosing
+        ├── pipe3 client               — Sends HEALTH_PONG, UiReady, UiClosing, ClipboardAlert
+        ├── clipboard_monitor.rs       — AddClipboardFormatListener; WM_CLIPBOARDUPDATE → classify → Pipe 3
         ├── clipboard.rs               — Read clipboard (GetClipboardData)
         └── stop_password.rs           — sc stop password dialog (DPAPI)
 
@@ -291,8 +292,8 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 #### THREAT-016: Clipboard Data Disclosure
 - **Asset:** Clipboard content being read and classified
 - **Threat:** Clipboard data containing sensitive information (SSN, credit card) is read by the clipboard listener
-- **Attack Vector:** Clipboard listener reads clipboard text via `GetClipboardData`; data is held in process memory
-- **Impact:** Sensitive PII (SSN, credit card numbers) is temporarily held in agent process memory; could be dumped via memory inspection
+- **Attack Vector:** Clipboard monitor in dlp-user-ui reads clipboard text via `GetClipboardData`; data is held in dlp-user-ui process memory
+- **Impact:** Sensitive PII (SSN, credit card numbers) is temporarily held in dlp-user-ui process memory; could be dumped via memory inspection
 - **Mitigation:**
   - Clipboard data is classified and immediately emitted as an audit event; it is not persistently stored
   - Process memory is protected by the process DACL
@@ -391,7 +392,7 @@ STRIDE is a threat modeling methodology that categorises threats into six classe
 - **Attack Vector:** Clipboard write with multi-GB data
 - **Impact:** Listener thread hangs or consumes excessive memory
 - **Mitigation:**
-  - `GetClipboardData(CF_UNICODETEXT)` is called only after a `WM_PASTE` or `WM_CLIPBOARDUPDATE` message; Windows clips the data at a reasonable limit
+  - `GetClipboardData` is called only after a `WM_CLIPBOARDUPDATE` notification in the dlp-user-ui monitor thread; Windows clipboard limits the data size
   - Classifier applies size limits before processing
   - **Status:** Partially Mitigated — Windows clipboard itself limits data; classifier adds size limits
 
@@ -494,7 +495,7 @@ The following risks are **Not Mitigated** or **Planned** in a future phase:
 | Fail-closed for T3/T4 on cache miss | Engine offline bypass | `offline.rs::offline_decision()` | DoS |
 | Heartbeat loop (30s probe) | Permanent offline mode | `offline.rs::heartbeat_loop()` | DoS |
 | File monitor via `notify` crate | File access detection | `interception/file_monitor.rs` | Tampering (detective) |
-| Clipboard classification | PII clipboard exfiltration | `clipboard/listener.rs`, `clipboard/classifier.rs` | Information Disclosure |
+| Clipboard classification | PII clipboard exfiltration | `dlp-user-ui/src/clipboard_monitor.rs`, `dlp-common/src/classifier.rs` | Information Disclosure |
 | Device trust + network location ABAC | Contextual access control | `abac.rs`, `engine.rs` | Elevation |
 | Identity resolution via SMB impersonation | SMB session hijacking | `identity.rs` | Spoofing |
 | USB device notifications | Removable media exfiltration | `detection/usb.rs` | DoS |
