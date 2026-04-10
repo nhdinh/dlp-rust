@@ -278,22 +278,52 @@ impl AlertRouter {
             .credentials(creds)
             .build();
 
+        // ME-02: collect per-recipient errors but keep going so a single bad
+        // address in a distribution list does not starve the remaining
+        // recipients. Mirrors the best-effort semantics at the outer
+        // `send_alert` level. Per-recipient diagnostics are emitted at
+        // `debug!` so the TM-04 `warn!` budget (count == 2 for this file)
+        // is preserved; the outer `send_alert` still emits the aggregated
+        // `warn!` on the returned error.
+        let mut errors: Vec<AlertError> = Vec::new();
         for recipient in &config.to {
-            let to_mailbox: Mailbox = recipient
-                .parse()
-                .map_err(|e| AlertError::Email(format!("invalid to address: {e}")))?;
+            let to_mailbox: Mailbox = match recipient.parse() {
+                Ok(mb) => mb,
+                Err(e) => {
+                    tracing::debug!(recipient, error = %e, "invalid to address, skipping");
+                    errors.push(AlertError::Email(format!(
+                        "invalid to address {recipient}: {e}"
+                    )));
+                    continue;
+                }
+            };
 
-            let email = Message::builder()
+            let email = match Message::builder()
                 .from(from_mailbox.clone())
                 .to(to_mailbox)
                 .subject(&subject)
                 .body(body.clone())
-                .map_err(|e| AlertError::Email(format!("message build error: {e}")))?;
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::debug!(recipient, error = %e, "message build failed, skipping");
+                    errors.push(AlertError::Email(format!(
+                        "message build error for {recipient}: {e}"
+                    )));
+                    continue;
+                }
+            };
 
-            mailer
-                .send(email)
-                .await
-                .map_err(|e| AlertError::Email(format!("SMTP send error: {e}")))?;
+            if let Err(e) = mailer.send(email).await {
+                tracing::debug!(recipient, error = %e, "SMTP send failed for recipient");
+                errors.push(AlertError::Email(format!(
+                    "SMTP send error to {recipient}: {e}"
+                )));
+            }
+        }
+
+        if let Some(e) = errors.into_iter().next() {
+            return Err(e);
         }
 
         tracing::info!(recipients = config.to.len(), "sent email alert");
@@ -433,6 +463,65 @@ mod tests {
         let router = AlertRouter::new(db);
         let err = router.load_config().expect_err("must fail on u16 overflow");
         assert!(matches!(err, AlertError::Database(_)));
+    }
+
+    #[tokio::test]
+    async fn test_send_email_continues_past_bad_recipient() {
+        // ME-02 regression: when the first recipient fails parsing, the
+        // loop MUST continue to subsequent recipients and the function
+        // MUST return the first collected error rather than short-
+        // circuiting on the first `?`. This test exercises the address-
+        // parsing failure path (no network needed) because a bad address
+        // like "not-an-email" fails `Mailbox::parse()` deterministically.
+        use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+        let db = Arc::new(Database::open(":memory:").expect("open db"));
+        let router = AlertRouter::new(db);
+
+        let cfg = SmtpConfig {
+            host: "smtp.example.com".to_string(),
+            port: 587,
+            username: "u".to_string(),
+            password: "p".to_string(),
+            from: "dlp@example.com".to_string(),
+            // First address is invalid; second is invalid; neither reaches
+            // the network. Both MUST be attempted — the old short-circuit
+            // code would return after the first one.
+            to: vec![
+                "not-an-email".to_string(),
+                "also bad".to_string(),
+            ],
+        };
+
+        let event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\File.txt".to_string(),
+            Classification::T4,
+            Action::COPY,
+            Decision::DenyWithAlert,
+            "AGENT-001".to_string(),
+            1,
+        );
+
+        let err = router
+            .send_email(&cfg, &event)
+            .await
+            .expect_err("both recipients are invalid; must return Err");
+
+        // The returned error MUST be the FIRST error (from the first bad
+        // address), and its message MUST mention that first recipient to
+        // prove the loop started at the first item.
+        match err {
+            AlertError::Email(msg) => {
+                assert!(
+                    msg.contains("not-an-email"),
+                    "expected first error to reference the first bad recipient, got: {msg}"
+                );
+            }
+            other => panic!("expected AlertError::Email, got {other:?}"),
+        }
     }
 
     #[tokio::test]
