@@ -264,7 +264,13 @@ impl AlertRouter {
             .parse()
             .map_err(|e| AlertError::Email(format!("invalid from address: {e}")))?;
 
-        // Build the SMTP transport once (TLS via STARTTLS).
+        // HI-02: SMTP transport is rebuilt on every call, incurring DNS + TCP
+        // + STARTTLS handshake per alert. Acceptable for Phase 4 because
+        // DenyWithAlert volume is expected to be low; revisit with a
+        // parking_lot::RwLock<Option<(CacheKey, AsyncSmtpTransport<_>)>> cache
+        // keyed by (host, port, username) if alert volume grows. See 04-REVIEW.md
+        // HI-02 for Option A implementation notes.
+        // TODO(followup): cache SMTP transport keyed by config hash.
         let creds = Credentials::new(config.username.clone(), config.password.clone());
         let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.host)
             .map_err(|e| AlertError::Email(format!("SMTP relay error: {e}")))?
