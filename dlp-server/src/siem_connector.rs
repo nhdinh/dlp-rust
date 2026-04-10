@@ -1,12 +1,17 @@
 //! Batched SIEM relay for Splunk HEC and ELK (P5-T05).
 //!
-//! Reads SIEM endpoint configuration from environment variables and
-//! relays audit events to one or both backends. Events are batched
-//! in a single HTTP request per backend for efficiency.
+//! Reads SIEM endpoint configuration from the `siem_config` table on
+//! every relay call (hot-reload) and relays audit events to one or both
+//! backends. Events are batched in a single HTTP request per backend
+//! for efficiency.
+
+use std::sync::Arc;
 
 use dlp_common::AuditEvent;
 use reqwest::Client;
 use serde::Serialize;
+
+use crate::db::Database;
 
 /// Splunk HTTP Event Collector configuration.
 #[derive(Debug, Clone)]
@@ -28,17 +33,28 @@ pub struct ElkConfig {
     pub api_key: Option<String>,
 }
 
+/// Snapshot of the single `siem_config` row loaded from the database.
+#[derive(Debug, Clone)]
+struct SiemConfigRow {
+    splunk_url: String,
+    splunk_token: String,
+    splunk_enabled: bool,
+    elk_url: String,
+    elk_index: String,
+    elk_api_key: String,
+    elk_enabled: bool,
+}
+
 /// SIEM relay that forwards audit events to Splunk and/or ELK.
 ///
-/// Construct via `SiemConnector::from_env()` which reads configuration
-/// from environment variables. If neither backend is configured, relay
-/// calls are no-ops.
+/// Construct via `SiemConnector::new(db)`. On every `relay_events` call,
+/// the connector re-reads the single row from the `siem_config` table so
+/// that configuration changes made via the admin API take effect
+/// immediately without restarting the server.
 #[derive(Debug, Clone)]
 pub struct SiemConnector {
-    /// Optional Splunk HEC configuration.
-    splunk: Option<SplunkConfig>,
-    /// Optional ELK configuration.
-    elk: Option<ElkConfig>,
+    /// Shared database handle for reading the SIEM config row.
+    db: Arc<Database>,
     /// Shared HTTP client for outbound requests.
     client: Client,
 }
@@ -61,6 +77,10 @@ pub enum SiemError {
     #[error("SIEM serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    /// Reading SIEM config from the database failed.
+    #[error("SIEM config DB error: {0}")]
+    Database(#[from] rusqlite::Error),
+
     /// A SIEM backend returned a non-success status code.
     #[error("SIEM backend returned {status}: {body}")]
     BackendError {
@@ -72,50 +92,49 @@ pub enum SiemError {
 }
 
 impl SiemConnector {
-    /// Constructs a `SiemConnector` by reading environment variables.
+    /// Constructs a `SiemConnector` backed by the given database.
     ///
-    /// Environment variables:
-    /// - `SPLUNK_HEC_URL` + `SPLUNK_HEC_TOKEN` — enables Splunk relay
-    /// - `ELK_URL` + `ELK_INDEX` — enables ELK relay
-    /// - `ELK_API_KEY` — optional ELK authentication
-    ///
-    /// If neither set of variables is present, the connector is inert.
-    pub fn from_env() -> Self {
-        let splunk = match (
-            std::env::var("SPLUNK_HEC_URL"),
-            std::env::var("SPLUNK_HEC_TOKEN"),
-        ) {
-            (Ok(url), Ok(token)) if !url.is_empty() => {
-                tracing::info!("Splunk HEC relay enabled");
-                Some(SplunkConfig { url, token })
-            }
-            _ => None,
-        };
-
-        let elk = match (
-            std::env::var("ELK_URL"),
-            std::env::var("ELK_INDEX"),
-        ) {
-            (Ok(url), Ok(index)) if !url.is_empty() => {
-                let api_key = std::env::var("ELK_API_KEY").ok();
-                tracing::info!("ELK relay enabled");
-                Some(ElkConfig {
-                    url,
-                    index,
-                    api_key,
-                })
-            }
-            _ => None,
-        };
-
+    /// The connector reads SIEM configuration from the `siem_config`
+    /// table on each `relay_events` call. No caching is performed, so
+    /// admin updates via the API take effect on the next relay.
+    pub fn new(db: Arc<Database>) -> Self {
         Self {
-            splunk,
-            elk,
+            db,
             client: Client::new(),
         }
     }
 
+    /// Loads the current SIEM configuration row from the database.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SiemError::Database`] if the row cannot be read.
+    fn load_config(&self) -> Result<SiemConfigRow, SiemError> {
+        let conn = self.db.conn().lock();
+        let row = conn.query_row(
+            "SELECT splunk_url, splunk_token, splunk_enabled, \
+                    elk_url, elk_index, elk_api_key, elk_enabled \
+             FROM siem_config WHERE id = 1",
+            [],
+            |r| {
+                Ok(SiemConfigRow {
+                    splunk_url: r.get(0)?,
+                    splunk_token: r.get(1)?,
+                    splunk_enabled: r.get::<_, i64>(2)? != 0,
+                    elk_url: r.get(3)?,
+                    elk_index: r.get(4)?,
+                    elk_api_key: r.get(5)?,
+                    elk_enabled: r.get::<_, i64>(6)? != 0,
+                })
+            },
+        )?;
+        Ok(row)
+    }
+
     /// Relays a batch of audit events to all configured SIEM backends.
+    ///
+    /// Re-reads the SIEM config from the database on each call so that
+    /// admin updates take effect immediately (hot-reload).
     ///
     /// # Arguments
     ///
@@ -133,17 +152,35 @@ impl SiemConnector {
             return Ok(());
         }
 
+        // Load config synchronously — the mutex lock is brief and this
+        // avoids the overhead of spawn_blocking for a single row read.
+        let row = self.load_config()?;
+
         let mut errors: Vec<SiemError> = Vec::new();
 
-        if let Some(ref cfg) = self.splunk {
-            if let Err(e) = self.send_to_splunk(cfg, events).await {
+        if row.splunk_enabled && !row.splunk_url.is_empty() {
+            let cfg = SplunkConfig {
+                url: row.splunk_url.clone(),
+                token: row.splunk_token.clone(),
+            };
+            if let Err(e) = self.send_to_splunk(&cfg, events).await {
                 tracing::error!("Splunk relay failed: {e}");
                 errors.push(e);
             }
         }
 
-        if let Some(ref cfg) = self.elk {
-            if let Err(e) = self.send_to_elk(cfg, events).await {
+        if row.elk_enabled && !row.elk_url.is_empty() {
+            let api_key = if row.elk_api_key.is_empty() {
+                None
+            } else {
+                Some(row.elk_api_key.clone())
+            };
+            let cfg = ElkConfig {
+                url: row.elk_url.clone(),
+                index: row.elk_index.clone(),
+                api_key,
+            };
+            if let Err(e) = self.send_to_elk(&cfg, events).await {
                 tracing::error!("ELK relay failed: {e}");
                 errors.push(e);
             }
@@ -268,17 +305,28 @@ mod tests {
     }
 
     #[test]
-    fn test_from_env_no_vars() {
-        // When no env vars are set, both backends should be None.
-        // Note: this test assumes SPLUNK_HEC_URL etc. are not set
-        // in the test environment.
-        let connector = SiemConnector {
-            splunk: None,
-            elk: None,
-            client: Client::new(),
-        };
-        assert!(connector.splunk.is_none());
-        assert!(connector.elk.is_none());
+    fn test_new_with_in_memory_db() {
+        // `SiemConnector::new` should succeed with a fresh in-memory DB
+        // and the seed row inserted by `init_tables`.
+        let db = Arc::new(Database::open(":memory:").expect("open db"));
+        let connector = SiemConnector::new(Arc::clone(&db));
+        // Loading config from the seed row should yield disabled backends.
+        let row = connector.load_config().expect("load config");
+        assert!(!row.splunk_enabled);
+        assert!(!row.elk_enabled);
+        assert!(row.splunk_url.is_empty());
+        assert!(row.elk_url.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_relay_events_empty_is_noop() {
+        let db = Arc::new(Database::open(":memory:").expect("open db"));
+        let connector = SiemConnector::new(db);
+        // Empty slice must short-circuit before touching the DB/network.
+        connector
+            .relay_events(&[])
+            .await
+            .expect("empty relay should succeed");
     }
 
     #[test]

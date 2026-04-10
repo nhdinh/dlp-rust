@@ -24,6 +24,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::TextInput { .. } => handle_text_input(app, key),
         Screen::PasswordInput { .. } => handle_password_input(app, key),
         Screen::Confirm { .. } => handle_confirm(app, key),
+        Screen::SiemConfig { .. } => handle_siem_config(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. }
         | Screen::ServerStatus { .. }
@@ -171,11 +172,12 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        KeyCode::Up | KeyCode::Down => nav(selected, 3, key.code),
+        KeyCode::Up | KeyCode::Down => nav(selected, 4, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
-            2 => app.screen = Screen::MainMenu { selected: 2 },
+            2 => action_load_siem_config(app),
+            3 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
@@ -596,5 +598,177 @@ fn action_agent_list(app: &mut App) {
             };
         }
         Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SIEM config screen
+// ---------------------------------------------------------------------------
+
+/// JSON keys for the SIEM config form, indexed by row.
+const SIEM_KEYS: [&str; 7] = [
+    "splunk_url",
+    "splunk_token",
+    "splunk_enabled",
+    "elk_url",
+    "elk_index",
+    "elk_api_key",
+    "elk_enabled",
+];
+
+/// Row index of the Save button.
+const SIEM_SAVE_ROW: usize = 7;
+/// Row index of the Back button.
+const SIEM_BACK_ROW: usize = 8;
+/// Total number of rows in the SIEM config form.
+const SIEM_ROW_COUNT: usize = 9;
+
+/// Returns `true` if the row index is a bool (toggle) field.
+fn siem_is_bool(index: usize) -> bool {
+    matches!(index, 2 | 6)
+}
+
+/// Fetches the current SIEM config from the server and switches to the
+/// `SiemConfig` screen.
+fn action_load_siem_config(app: &mut App) {
+    match app
+        .rt
+        .block_on(app.client.get::<serde_json::Value>("admin/siem-config"))
+    {
+        Ok(config) => {
+            app.screen = Screen::SiemConfig {
+                config,
+                selected: 0,
+                editing: false,
+                buffer: String::new(),
+            };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Persists the in-memory SIEM config to the server.
+fn action_save_siem_config(app: &mut App) {
+    // Clone the config out of the screen so we can release the borrow.
+    let payload = match &app.screen {
+        Screen::SiemConfig { config, .. } => config.clone(),
+        _ => return,
+    };
+    match app
+        .rt
+        .block_on(app.client.put::<serde_json::Value, _>(
+            "admin/siem-config",
+            &payload,
+        )) {
+        Ok(_) => {
+            app.set_status("SIEM config saved", StatusKind::Success);
+            app.screen = Screen::SystemMenu { selected: 2 };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Handles key events while the SIEM config form is active.
+fn handle_siem_config(app: &mut App, key: KeyEvent) {
+    // Split the match on `editing` to keep borrow lifetimes tight.
+    let (selected, editing) = match &app.screen {
+        Screen::SiemConfig {
+            selected, editing, ..
+        } => (*selected, *editing),
+        _ => return,
+    };
+
+    if editing {
+        handle_siem_config_editing(app, key, selected);
+    } else {
+        handle_siem_config_nav(app, key, selected);
+    }
+}
+
+/// Handles key events while editing a text field in the SIEM config form.
+fn handle_siem_config_editing(app: &mut App, key: KeyEvent, selected: usize) {
+    match key.code {
+        KeyCode::Char(c) => {
+            if let Screen::SiemConfig { buffer, .. } = &mut app.screen {
+                buffer.push(c);
+            }
+        }
+        KeyCode::Backspace => {
+            if let Screen::SiemConfig { buffer, .. } = &mut app.screen {
+                buffer.pop();
+            }
+        }
+        KeyCode::Enter => {
+            if let Screen::SiemConfig {
+                config,
+                buffer,
+                editing,
+                ..
+            } = &mut app.screen
+            {
+                let key_name = SIEM_KEYS[selected];
+                config[key_name] = serde_json::Value::String(buffer.clone());
+                buffer.clear();
+                *editing = false;
+            }
+        }
+        KeyCode::Esc => {
+            if let Screen::SiemConfig {
+                buffer, editing, ..
+            } = &mut app.screen
+            {
+                buffer.clear();
+                *editing = false;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events while navigating the SIEM config form.
+fn handle_siem_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::SiemConfig {
+                selected: sel, ..
+            } = &mut app.screen
+            {
+                nav(sel, SIEM_ROW_COUNT, key.code);
+            }
+        }
+        KeyCode::Enter => {
+            if selected == SIEM_SAVE_ROW {
+                action_save_siem_config(app);
+            } else if selected == SIEM_BACK_ROW {
+                app.screen = Screen::SystemMenu { selected: 2 };
+            } else if siem_is_bool(selected) {
+                // Toggle the bool in place.
+                if let Screen::SiemConfig { config, .. } = &mut app.screen {
+                    let key_name = SIEM_KEYS[selected];
+                    let cur = config[key_name].as_bool().unwrap_or(false);
+                    config[key_name] = serde_json::Value::Bool(!cur);
+                }
+            } else {
+                // Enter text-edit mode with the current value pre-filled.
+                if let Screen::SiemConfig {
+                    config,
+                    editing,
+                    buffer,
+                    ..
+                } = &mut app.screen
+                {
+                    let key_name = SIEM_KEYS[selected];
+                    *buffer = config[key_name]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                    *editing = true;
+                }
+            }
+        }
+        KeyCode::Esc => {
+            app.screen = Screen::SystemMenu { selected: 2 };
+        }
+        _ => {}
     }
 }

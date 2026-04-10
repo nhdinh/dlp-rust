@@ -87,6 +87,33 @@ pub struct PolicyResponse {
     pub updated_at: String,
 }
 
+// ---------------------------------------------------------------------------
+// SIEM config request / response types
+// ---------------------------------------------------------------------------
+
+/// Read/write payload for SIEM connector configuration.
+///
+/// Represents the single row of the `siem_config` table. Both the
+/// `GET /admin/siem-config` response body and the `PUT
+/// /admin/siem-config` request body use this shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiemConfigPayload {
+    /// Splunk HEC base URL (e.g., `https://splunk:8088`).
+    pub splunk_url: String,
+    /// Splunk HEC authentication token.
+    pub splunk_token: String,
+    /// Whether the Splunk backend is active.
+    pub splunk_enabled: bool,
+    /// Elasticsearch base URL (e.g., `https://elastic:9200`).
+    pub elk_url: String,
+    /// Target Elasticsearch index name.
+    pub elk_index: String,
+    /// Optional ELK API key for authentication.
+    pub elk_api_key: String,
+    /// Whether the ELK backend is active.
+    pub elk_enabled: bool,
+}
+
 /// Health/readiness probe response.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -132,6 +159,8 @@ pub struct HealthResponse {
 /// - `POST /exceptions` — create exception
 /// - `PUT /agent-credentials/auth-hash` — set agent auth hash
 /// - `PUT /auth/password` — change admin password
+/// - `GET /admin/siem-config` — get SIEM connector configuration
+/// - `PUT /admin/siem-config` — update SIEM connector configuration
 pub fn admin_router(state: Arc<AppState>) -> Router {
     // Routes that do NOT require authentication.
     let public_routes = Router::new()
@@ -189,6 +218,8 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
             put(set_agent_auth_hash),
         )
         .route("/auth/password", put(admin_auth::change_password))
+        .route("/admin/siem-config", get(get_siem_config_handler))
+        .route("/admin/siem-config", put(update_siem_config_handler))
         .layer(middleware::from_fn(admin_auth::require_auth));
 
     public_routes
@@ -542,6 +573,86 @@ async fn get_agent_auth_hash(
     }
 }
 
+// ---------------------------------------------------------------------------
+// SIEM config handlers
+// ---------------------------------------------------------------------------
+
+/// `GET /admin/siem-config` — returns the current SIEM connector config.
+///
+/// Reads the single row from `siem_config` and returns it as a JSON
+/// [`SiemConfigPayload`]. The row is guaranteed to exist because it is
+/// seeded during `Database::open`.
+async fn get_siem_config_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<SiemConfigPayload>, AppError> {
+    let db = Arc::clone(&state.db);
+    let payload = tokio::task::spawn_blocking(move || {
+        let conn = db.conn().lock();
+        conn.query_row(
+            "SELECT splunk_url, splunk_token, splunk_enabled, \
+                    elk_url, elk_index, elk_api_key, elk_enabled \
+             FROM siem_config WHERE id = 1",
+            [],
+            |row| {
+                Ok(SiemConfigPayload {
+                    splunk_url: row.get(0)?,
+                    splunk_token: row.get(1)?,
+                    splunk_enabled: row.get::<_, i64>(2)? != 0,
+                    elk_url: row.get(3)?,
+                    elk_index: row.get(4)?,
+                    elk_api_key: row.get(5)?,
+                    elk_enabled: row.get::<_, i64>(6)? != 0,
+                })
+            },
+        )
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(payload))
+}
+
+/// `PUT /admin/siem-config` — updates the SIEM connector config.
+///
+/// Overwrites the single row in `siem_config` with the provided values
+/// and stamps `updated_at` with the current time. Returns the payload
+/// that was written so clients can refresh their local copy.
+async fn update_siem_config_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SiemConfigPayload>,
+) -> Result<Json<SiemConfigPayload>, AppError> {
+    let now = Utc::now().to_rfc3339();
+    let p = payload.clone();
+    let db = Arc::clone(&state.db);
+
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let conn = db.conn().lock();
+        conn.execute(
+            "UPDATE siem_config SET \
+                splunk_url = ?1, splunk_token = ?2, splunk_enabled = ?3, \
+                elk_url = ?4, elk_index = ?5, elk_api_key = ?6, \
+                elk_enabled = ?7, updated_at = ?8 \
+             WHERE id = 1",
+            rusqlite::params![
+                p.splunk_url,
+                p.splunk_token,
+                p.splunk_enabled as i64,
+                p.elk_url,
+                p.elk_index,
+                p.elk_api_key,
+                p.elk_enabled as i64,
+                now,
+            ],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!("SIEM config updated");
+    Ok(Json(payload))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,6 +705,26 @@ mod tests {
         let rt: AuthHashResponse =
             serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt.hash, "$2b$12$test");
+    }
+
+    #[test]
+    fn test_siem_config_payload_roundtrip() {
+        let p = SiemConfigPayload {
+            splunk_url: "https://splunk:8088".to_string(),
+            splunk_token: "tok-abc".to_string(),
+            splunk_enabled: true,
+            elk_url: "https://elastic:9200".to_string(),
+            elk_index: "dlp-events".to_string(),
+            elk_api_key: "k1".to_string(),
+            elk_enabled: false,
+        };
+        let json = serde_json::to_string(&p).expect("serialize");
+        let rt: SiemConfigPayload =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt.splunk_url, "https://splunk:8088");
+        assert!(rt.splunk_enabled);
+        assert!(!rt.elk_enabled);
+        assert_eq!(rt.elk_index, "dlp-events");
     }
 
     #[test]

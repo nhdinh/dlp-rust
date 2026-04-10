@@ -68,7 +68,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 frame,
                 area,
                 "System",
-                &["Server Status", "Agent List", "Back"],
+                &["Server Status", "Agent List", "SIEM Config", "Back"],
                 *selected,
             );
         }
@@ -101,7 +101,118 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         Screen::ResultView { title, body } => {
             draw_result(frame, area, title, body);
         }
+        Screen::SiemConfig {
+            config,
+            selected,
+            editing,
+            buffer,
+        } => {
+            draw_siem_config(frame, area, config, *selected, *editing, buffer);
+        }
     }
+}
+
+/// Labels for each row of the SIEM config form (in display order).
+const SIEM_FIELD_LABELS: [&str; 9] = [
+    "Splunk URL",
+    "Splunk Token",
+    "Splunk Enabled",
+    "ELK URL",
+    "ELK Index",
+    "ELK API Key",
+    "ELK Enabled",
+    "[ Save ]",
+    "[ Back ]",
+];
+
+/// Returns `true` when a row index corresponds to a secret field that
+/// should be masked outside of edit mode.
+fn is_siem_secret(index: usize) -> bool {
+    matches!(index, 1 | 5)
+}
+
+/// Returns `true` when a row index corresponds to a boolean field.
+fn is_siem_bool(index: usize) -> bool {
+    matches!(index, 2 | 6)
+}
+
+/// Draws the SIEM configuration form.
+fn draw_siem_config(
+    frame: &mut Frame,
+    area: Rect,
+    config: &serde_json::Value,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+) {
+    // Map row index -> JSON key for editable fields.
+    const KEYS: [&str; 7] = [
+        "splunk_url",
+        "splunk_token",
+        "splunk_enabled",
+        "elk_url",
+        "elk_index",
+        "elk_api_key",
+        "elk_enabled",
+    ];
+
+    let mut items: Vec<ListItem> = Vec::with_capacity(SIEM_FIELD_LABELS.len());
+    for (i, label) in SIEM_FIELD_LABELS.iter().enumerate() {
+        let line = if i < KEYS.len() {
+            let key = KEYS[i];
+            let value_display = if editing && i == selected {
+                // Show buffer with trailing cursor.
+                format!("[{buffer}_]")
+            } else if is_siem_bool(i) {
+                let b = config[key].as_bool().unwrap_or(false);
+                if b { "[x]".to_string() } else { "[ ]".to_string() }
+            } else if is_siem_secret(i) {
+                let v = config[key].as_str().unwrap_or("");
+                if v.is_empty() {
+                    "(empty)".to_string()
+                } else {
+                    "*****".to_string()
+                }
+            } else {
+                let v = config[key].as_str().unwrap_or("");
+                if v.is_empty() {
+                    "(empty)".to_string()
+                } else {
+                    v.to_string()
+                }
+            };
+            format!("{label}: {value_display}")
+        } else {
+            // Save / Back action rows.
+            (*label).to_string()
+        };
+        items.push(ListItem::new(Line::from(line)));
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" SIEM Config ")
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut state);
+
+    let hints = if editing {
+        "Type to edit | Enter: commit | Esc: cancel"
+    } else {
+        "Up/Down: navigate | Enter: edit/toggle | Esc: back"
+    };
+    draw_hints(frame, area, hints);
 }
 
 /// Draws a navigable menu list.

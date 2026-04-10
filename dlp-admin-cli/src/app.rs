@@ -101,6 +101,21 @@ pub enum Screen {
     /// Informational result screen (press Enter/Esc to dismiss).
     #[allow(dead_code)]
     ResultView { title: String, body: String },
+    /// SIEM connector configuration form.
+    ///
+    /// Navigable list of 9 rows (7 editable fields + Save + Back). When
+    /// `editing` is true, keystrokes append to `buffer`; Enter commits
+    /// the buffer into the selected field of `config`.
+    SiemConfig {
+        /// Currently loaded config as a JSON object.
+        config: serde_json::Value,
+        /// Index of the selected row (0..=8).
+        selected: usize,
+        /// Whether the selected text field is in edit mode.
+        editing: bool,
+        /// Buffered input while editing.
+        buffer: String,
+    },
 }
 
 // ---------------------------------------------------------------------------

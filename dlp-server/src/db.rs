@@ -125,6 +125,19 @@ impl Database {
                 value      TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS siem_config (
+                id              INTEGER PRIMARY KEY CHECK (id = 1),
+                splunk_url      TEXT NOT NULL DEFAULT '',
+                splunk_token    TEXT NOT NULL DEFAULT '',
+                splunk_enabled  INTEGER NOT NULL DEFAULT 0,
+                elk_url         TEXT NOT NULL DEFAULT '',
+                elk_index       TEXT NOT NULL DEFAULT '',
+                elk_api_key     TEXT NOT NULL DEFAULT '',
+                elk_enabled     INTEGER NOT NULL DEFAULT 0,
+                updated_at      TEXT NOT NULL DEFAULT ''
+            );
+            INSERT OR IGNORE INTO siem_config (id) VALUES (1);
             ",
         )
         .context("failed to initialize database tables")?;
@@ -168,6 +181,13 @@ mod tests {
         assert!(tables.contains(&"exceptions".to_string()));
         assert!(tables.contains(&"admin_users".to_string()));
         assert!(tables.contains(&"agent_credentials".to_string()));
+        assert!(tables.contains(&"siem_config".to_string()));
+
+        // Verify the seed row was inserted.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM siem_config", [], |r| r.get(0))
+            .expect("count siem_config rows");
+        assert_eq!(count, 1, "siem_config should have exactly one seed row");
     }
 
     #[test]

@@ -148,8 +148,9 @@ async fn main() -> anyhow::Result<()> {
     // Provision the admin user on first run.
     ensure_admin_user(&db, config.init_admin_password.as_deref())?;
 
-    // Initialise the SIEM relay connector (reads env vars for Splunk/ELK).
-    let siem = SiemConnector::from_env();
+    // Initialise the SIEM relay connector. Configuration is loaded on
+    // every relay call from the `siem_config` table (hot-reload).
+    let siem = SiemConnector::new(Arc::clone(&db));
 
     // Build shared application state.
     let state = Arc::new(AppState {
