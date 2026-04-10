@@ -114,6 +114,40 @@ pub struct SiemConfigPayload {
     pub elk_enabled: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Alert router config request / response types
+// ---------------------------------------------------------------------------
+
+/// Read/write payload for alert router configuration.
+///
+/// Represents the editable columns of the single row in the
+/// `alert_router_config` table (excluding `id` and `updated_at`). Both the
+/// `GET /admin/alert-config` response body and the `PUT /admin/alert-config`
+/// request body use this shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AlertRouterConfigPayload {
+    /// SMTP server hostname (empty string disables SMTP).
+    pub smtp_host: String,
+    /// SMTP server port.
+    pub smtp_port: u16,
+    /// SMTP username for authentication.
+    pub smtp_username: String,
+    /// SMTP password for authentication (plaintext — see TM-01).
+    pub smtp_password: String,
+    /// Sender email address.
+    pub smtp_from: String,
+    /// Recipient email addresses (comma-separated).
+    pub smtp_to: String,
+    /// Whether SMTP delivery is active.
+    pub smtp_enabled: bool,
+    /// Webhook endpoint URL (empty string disables webhook; must be https).
+    pub webhook_url: String,
+    /// Optional shared secret for HMAC signing (not used today — see deferred).
+    pub webhook_secret: String,
+    /// Whether webhook delivery is active.
+    pub webhook_enabled: bool,
+}
+
 /// Health/readiness probe response.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -121,6 +155,75 @@ pub struct HealthResponse {
     pub status: String,
     /// ISO 8601 timestamp.
     pub timestamp: String,
+}
+
+// ---------------------------------------------------------------------------
+// TM-02: Webhook URL validation (SSRF hardening)
+// ---------------------------------------------------------------------------
+
+/// Validates a webhook URL for SSRF hardening (TM-02).
+///
+/// Textual validation only — no DNS lookup. RFC1918 private ranges
+/// (10/8, 172.16/12, 192.168/16) are ALLOWED because on-prem webhooks
+/// to internal Slack/Teams/PagerDuty are a legitimate DLP use case.
+///
+/// # Rules
+///
+/// 1. Must parse as a URL.
+/// 2. Scheme must be `https`.
+/// 3. IPv4 host: reject loopback (127.0.0.0/8) and link-local (169.254.0.0/16).
+/// 4. IPv6 host: reject loopback (`::1`) and link-local (`fe80::/10`).
+/// 5. Domain hosts and public/RFC1918 IPs are accepted.
+///
+/// # Errors
+///
+/// Returns a human-readable reason string on rejection.
+///
+/// # Examples
+///
+/// ```ignore
+/// assert!(validate_webhook_url("https://hooks.example.com").is_ok());
+/// assert!(validate_webhook_url("http://example.com").is_err());
+/// assert!(validate_webhook_url("https://127.0.0.1").is_err());
+/// ```
+pub(crate) fn validate_webhook_url(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
+
+    if parsed.scheme() != "https" {
+        return Err("scheme must be https".to_string());
+    }
+
+    match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => {
+            if ip.is_loopback() {
+                return Err("loopback addresses not allowed".to_string());
+            }
+            if ip.is_link_local() {
+                // `is_link_local` covers 169.254.0.0/16 on stable Rust.
+                return Err("link-local addresses not allowed".to_string());
+            }
+            // RFC1918 (10/8, 172.16/12, 192.168/16) intentionally ALLOWED.
+            Ok(())
+        }
+        Some(url::Host::Ipv6(ip)) => {
+            if ip.is_loopback() {
+                return Err("loopback addresses not allowed".to_string());
+            }
+            // G3: Ipv6Addr::is_unicast_link_local is unstable on rustc 1.94,
+            // so do the fe80::/10 check manually: first 10 bits == 1111111010,
+            // i.e. first segment in 0xfe80..=0xfebf.
+            let first_segment = ip.segments()[0];
+            if (first_segment & 0xffc0) == 0xfe80 {
+                return Err("link-local addresses not allowed".to_string());
+            }
+            Ok(())
+        }
+        Some(url::Host::Domain(_)) => {
+            // Textual hostname — accept. No DNS lookup (TM-02 ratified).
+            Ok(())
+        }
+        None => Err("URL has no host".to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +264,8 @@ pub struct HealthResponse {
 /// - `PUT /auth/password` — change admin password
 /// - `GET /admin/siem-config` — get SIEM connector configuration
 /// - `PUT /admin/siem-config` — update SIEM connector configuration
+/// - `GET /admin/alert-config` — get alert router configuration
+/// - `PUT /admin/alert-config` — update alert router configuration
 pub fn admin_router(state: Arc<AppState>) -> Router {
     // Routes that do NOT require authentication.
     let public_routes = Router::new()
@@ -190,6 +295,8 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/auth/password", put(admin_auth::change_password))
         .route("/admin/siem-config", get(get_siem_config_handler))
         .route("/admin/siem-config", put(update_siem_config_handler))
+        .route("/admin/alert-config", get(get_alert_config_handler))
+        .route("/admin/alert-config", put(update_alert_config_handler))
         .layer(middleware::from_fn(admin_auth::require_auth));
 
     public_routes.merge(protected_routes).with_state(state)
@@ -602,6 +709,116 @@ async fn update_siem_config_handler(
     Ok(Json(payload))
 }
 
+// ---------------------------------------------------------------------------
+// Alert router config handlers
+// ---------------------------------------------------------------------------
+
+/// `GET /admin/alert-config` — returns the current alert router config.
+///
+/// Reads the single row from `alert_router_config` and returns it as a JSON
+/// [`AlertRouterConfigPayload`]. The row is guaranteed to exist because it
+/// is seeded during `Database::open`.
+async fn get_alert_config_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<AlertRouterConfigPayload>, AppError> {
+    let db = Arc::clone(&state.db);
+    let payload =
+        tokio::task::spawn_blocking(move || -> Result<AlertRouterConfigPayload, AppError> {
+            let conn = db.conn().lock();
+            let payload = conn.query_row(
+                "SELECT smtp_host, smtp_port, smtp_username, smtp_password, \
+                        smtp_from, smtp_to, smtp_enabled, \
+                        webhook_url, webhook_secret, webhook_enabled \
+                 FROM alert_router_config WHERE id = 1",
+                [],
+                |row| {
+                    let port_i64: i64 = row.get(1)?;
+                    let smtp_port = u16::try_from(port_i64).map_err(|_| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Integer,
+                            format!("smtp_port out of range: {port_i64}").into(),
+                        )
+                    })?;
+                    Ok(AlertRouterConfigPayload {
+                        smtp_host: row.get(0)?,
+                        smtp_port,
+                        smtp_username: row.get(2)?,
+                        smtp_password: row.get(3)?,
+                        smtp_from: row.get(4)?,
+                        smtp_to: row.get(5)?,
+                        smtp_enabled: row.get::<_, i64>(6)? != 0,
+                        webhook_url: row.get(7)?,
+                        webhook_secret: row.get(8)?,
+                        webhook_enabled: row.get::<_, i64>(9)? != 0,
+                    })
+                },
+            )?;
+            Ok(payload)
+        })
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(payload))
+}
+
+/// `PUT /admin/alert-config` — updates the alert router config.
+///
+/// Validates `webhook_url` (TM-02 SSRF hardening) before writing. Overwrites
+/// the single row in `alert_router_config` with the provided values and
+/// stamps `updated_at` with the current time. Returns the payload that was
+/// written so clients can refresh their local copy.
+///
+/// # Errors
+///
+/// Returns `AppError::BadRequest` if `webhook_url` fails validation.
+async fn update_alert_config_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AlertRouterConfigPayload>,
+) -> Result<Json<AlertRouterConfigPayload>, AppError> {
+    // TM-02: validate webhook_url BEFORE any DB write. Empty string is
+    // allowed (means webhook delivery is disabled).
+    if !payload.webhook_url.is_empty() {
+        validate_webhook_url(&payload.webhook_url)
+            .map_err(|reason| AppError::BadRequest(format!("webhook_url rejected: {reason}")))?;
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let p = payload.clone();
+    let db = Arc::clone(&state.db);
+
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let conn = db.conn().lock();
+        conn.execute(
+            "UPDATE alert_router_config SET \
+                smtp_host = ?1, smtp_port = ?2, smtp_username = ?3, \
+                smtp_password = ?4, smtp_from = ?5, smtp_to = ?6, \
+                smtp_enabled = ?7, webhook_url = ?8, webhook_secret = ?9, \
+                webhook_enabled = ?10, updated_at = ?11 \
+             WHERE id = 1",
+            rusqlite::params![
+                p.smtp_host,
+                p.smtp_port as i64,
+                p.smtp_username,
+                p.smtp_password,
+                p.smtp_from,
+                p.smtp_to,
+                p.smtp_enabled as i64,
+                p.webhook_url,
+                p.webhook_secret,
+                p.webhook_enabled as i64,
+                now,
+            ],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!("alert router config updated");
+    Ok(Json(payload))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,44 +907,207 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Wave 0 stub — implemented in Wave 3"]
     fn test_alert_router_config_payload_roundtrip() {
-        todo!("Wave 3");
+        let p = AlertRouterConfigPayload {
+            smtp_host: "smtp.example.com".to_string(),
+            smtp_port: 587,
+            smtp_username: "user".to_string(),
+            smtp_password: "pass".to_string(),
+            smtp_from: "dlp@example.com".to_string(),
+            smtp_to: "a@example.com, b@example.com".to_string(),
+            smtp_enabled: true,
+            webhook_url: "https://hooks.example.com/x".to_string(),
+            webhook_secret: "shh".to_string(),
+            webhook_enabled: false,
+        };
+        let json = serde_json::to_string(&p).expect("serialize");
+        let rt: AlertRouterConfigPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt, p);
     }
 
     #[test]
-    #[ignore = "Wave 0 stub — implemented in Wave 3"]
     fn test_validate_webhook_url() {
-        todo!("Wave 3 — 26-case table");
+        // TM-02 — 26-case table-driven test. Each row is (input, expected_ok).
+        // The Err branch uses `.is_err()` rather than matching the exact string
+        // so minor wording tweaks to the reason do not break the test; the
+        // per-category tests below assert the specific rejection reasons.
+        let cases: &[(&str, bool)] = &[
+            ("", false),                                     //  1 empty
+            ("http://example.com", false),                   //  2 http
+            ("ftp://example.com", false),                    //  3 ftp
+            ("file:///etc/passwd", false),                   //  4 file
+            ("not a url", false),                            //  5 parse fail
+            ("https://127.0.0.1", false),                    //  6 loopback
+            ("https://127.0.0.1:8443", false),               //  7 loopback + port
+            ("https://127.1.2.3", false),                    //  8 127/8 range
+            ("https://[::1]", false),                        //  9 v6 loopback
+            ("https://[::1]:8080", false),                   // 10 v6 loopback + port
+            ("https://169.254.169.254", false),              // 11 cloud metadata
+            ("https://169.254.1.1", false),                  // 12 link-local /16
+            ("https://[fe80::1]", false),                    // 13 v6 link-local
+            ("https://[fe80::dead:beef]", false),            // 14 v6 link-local
+            ("https://[febf::1]", false),                    // 15 v6 link-local upper edge
+            ("https://[fec0::1]", true),                     // 16 site-local (OK, not link-local)
+            ("https://10.0.0.1", true),                      // 17 RFC1918
+            ("https://10.255.255.255", true),                // 18 RFC1918 edge
+            ("https://172.16.5.5", true),                    // 19 RFC1918
+            ("https://172.31.255.255", true),                // 20 RFC1918 edge
+            ("https://192.168.1.1", true),                   // 21 RFC1918
+            ("https://8.8.8.8", true),                       // 22 public v4
+            ("https://example.com", true),                   // 23 public hostname
+            ("https://internal.corp.example.com", true),     // 24 internal hostname
+            ("https://example.com:8443/path?query=1", true), // 25 path + query
+            ("https://[2001:db8::1]", true),                 // 26 public v6
+        ];
+        for (i, (input, expected_ok)) in cases.iter().enumerate() {
+            let result = validate_webhook_url(input);
+            assert_eq!(
+                result.is_ok(),
+                *expected_ok,
+                "case {} ({input:?}): expected ok={}, got {:?}",
+                i + 1,
+                expected_ok,
+                result,
+            );
+        }
+
+        // Spot-check the rejection reasons for the four failure categories.
+        assert!(validate_webhook_url("http://example.com")
+            .unwrap_err()
+            .contains("https"));
+        assert!(validate_webhook_url("https://127.0.0.1")
+            .unwrap_err()
+            .contains("loopback"));
+        assert!(validate_webhook_url("https://169.254.169.254")
+            .unwrap_err()
+            .contains("link-local"));
+        assert!(validate_webhook_url("https://[fe80::1]")
+            .unwrap_err()
+            .contains("link-local"));
     }
 
     #[test]
-    #[ignore = "Wave 0 stub — implemented in Wave 3"]
     fn test_put_alert_config_rejects_http() {
-        todo!("Wave 3");
+        // Direct unit test of validate_webhook_url — the handler path is
+        // exercised end-to-end in the integration tests below.
+        let err = validate_webhook_url("http://example.com").unwrap_err();
+        assert!(err.contains("https"));
     }
 
     #[test]
-    #[ignore = "Wave 0 stub — implemented in Wave 3"]
     fn test_put_alert_config_rejects_loopback() {
-        todo!("Wave 3");
+        let err = validate_webhook_url("https://127.0.0.1/hook").unwrap_err();
+        assert!(err.contains("loopback"));
     }
 
     #[test]
-    #[ignore = "Wave 0 stub — implemented in Wave 3"]
     fn test_put_alert_config_accepts_rfc1918() {
-        todo!("Wave 3");
+        // RFC1918 MUST be accepted — on-prem webhooks are a legitimate use case.
+        validate_webhook_url("https://10.0.0.1/hook").expect("RFC1918 must be accepted");
+        validate_webhook_url("https://172.16.5.5/hook").expect("RFC1918 must be accepted");
+        validate_webhook_url("https://192.168.1.1/hook").expect("RFC1918 must be accepted");
     }
 
-    #[test]
-    #[ignore = "Wave 0 stub — implemented in Wave 3"]
-    fn test_get_alert_config_requires_auth() {
-        todo!("Wave 3");
+    #[tokio::test]
+    async fn test_get_alert_config_requires_auth() {
+        // Integration test at the handler level: a real router build that
+        // exercises the JWT middleware. We bind the full admin_router and send
+        // an unauthenticated GET to /admin/alert-config — expect 401.
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt; // for `oneshot`
+
+        // JWT secret must be set for the middleware to initialise. OnceLock
+        // silently ignores duplicate set calls, so this is safe across tests.
+        crate::admin_auth::set_jwt_secret(
+            "test-secret-phase4-alert-config-auth-32bytes-longenough".to_string(),
+        );
+        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let state = Arc::new(AppState { db, siem, alert });
+        let app = admin_router(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/alert-config")
+            .body(Body::empty())
+            .expect("build request");
+
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    #[test]
-    #[ignore = "Wave 0 stub — implemented in Wave 3"]
-    fn test_put_alert_config_roundtrip() {
-        todo!("Wave 3");
+    #[tokio::test]
+    async fn test_put_alert_config_roundtrip() {
+        // Full PUT -> GET round-trip via the router with a valid JWT.
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use jsonwebtoken::{encode, EncodingKey, Header};
+        use tower::ServiceExt;
+
+        // JWT secret — OnceLock ignores duplicate set calls. Use the SAME
+        // value the other test sets so both tests agree on the secret.
+        let secret = "test-secret-phase4-alert-config-auth-32bytes-longenough".to_string();
+        crate::admin_auth::set_jwt_secret(secret.clone());
+        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let state = Arc::new(AppState { db, siem, alert });
+        let app = admin_router(state);
+
+        // Mint a valid JWT inline. Claims struct is pub on admin_auth.
+        let claims = crate::admin_auth::Claims {
+            sub: "test-admin".to_string(),
+            exp: (Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
+            iss: "dlp-server".to_string(),
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .expect("encode JWT");
+
+        let payload = AlertRouterConfigPayload {
+            smtp_host: "smtp.internal.corp".to_string(),
+            smtp_port: 587,
+            smtp_username: "dlp-alerts".to_string(),
+            smtp_password: "t0p-secret".to_string(),
+            smtp_from: "dlp@internal.corp".to_string(),
+            smtp_to: "secops@internal.corp".to_string(),
+            smtp_enabled: true,
+            webhook_url: "https://hooks.internal.corp/dlp".to_string(),
+            webhook_secret: "shh".to_string(),
+            webhook_enabled: true,
+        };
+        let body = serde_json::to_string(&payload).expect("serialize");
+
+        let put_req = Request::builder()
+            .method("PUT")
+            .uri("/admin/alert-config")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .expect("build PUT request");
+
+        let put_resp = app.clone().oneshot(put_req).await.expect("PUT oneshot");
+        assert_eq!(put_resp.status(), StatusCode::OK);
+
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/admin/alert-config")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build GET request");
+
+        let get_resp = app.oneshot(get_req).await.expect("GET oneshot");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let bytes = to_bytes(get_resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body");
+        let rt: AlertRouterConfigPayload =
+            serde_json::from_slice(&bytes).expect("parse body");
+        assert_eq!(rt, payload);
     }
 }
