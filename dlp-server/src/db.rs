@@ -239,7 +239,10 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM alert_router_config", [], |r| r.get(0))
             .expect("count alert_router_config rows");
-        assert_eq!(count, 1, "alert_router_config must have exactly one seed row");
+        assert_eq!(
+            count, 1,
+            "alert_router_config must have exactly one seed row"
+        );
 
         // Defaults: both channels disabled.
         let (smtp_enabled, webhook_enabled): (i64, i64) = conn

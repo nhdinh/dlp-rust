@@ -1111,8 +1111,7 @@ mod tests {
         let bytes = to_bytes(get_resp.into_body(), 64 * 1024)
             .await
             .expect("read body");
-        let rt: AlertRouterConfigPayload =
-            serde_json::from_slice(&bytes).expect("parse body");
+        let rt: AlertRouterConfigPayload = serde_json::from_slice(&bytes).expect("parse body");
         assert_eq!(rt, payload);
     }
 }
