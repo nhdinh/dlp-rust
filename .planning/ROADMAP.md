@@ -9,11 +9,13 @@
 **UAT:** Copying `4111 1111 1111 1111` produces a new line in `C:\ProgramData\DLP\logs\audit.jsonl` within 2 seconds with `event_type=Alert`, `classification=T4`, `action_attempted=PASTE`. **Verified 2026-04-10.**
 **Commits:** `c038173`, `6244ac1`, `62be9ef`
 
-### Phase 1: Fix integration tests
+### Phase 1: Fix integration tests [COMPLETED]
 **Requirement:** R-06
-**Files:** `dlp-agent/tests/integration.rs`
+**Status:** Resolved — see `.planning/phases/01-fix-integration-tests/SUMMARY.md`
+**Files:** `dlp-agent/tests/integration.rs`, `dlp-agent/tests/comprehensive.rs`, `dlp-agent/Cargo.toml`
 **Description:** Update broken integration tests that reference removed dlp_server modules. Make `cargo test --workspace` compile cleanly.
-**UAT:** `cargo test --workspace` passes with zero compilation errors.
+**UAT:** `cargo test --workspace` passes with zero compilation errors. **Verified 2026-04-10** (364/364 tests passing across 15 binaries + doc tests).
+**Commits:** `8c62fec`, `5d60f6a`
 
 ### Phase 2: Require JWT_SECRET in production
 **Requirement:** R-08
