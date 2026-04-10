@@ -216,6 +216,21 @@ pub(crate) fn validate_webhook_url(url: &str) -> Result<(), String> {
             if (first_segment & 0xffc0) == 0xfe80 {
                 return Err("link-local addresses not allowed".to_string());
             }
+            // TM-02 hardening (BL-01 fix): IPv4-mapped IPv6 addresses
+            // (`::ffff:a.b.c.d`) route to the v4 stack on dual-stack hosts,
+            // so `[::ffff:127.0.0.1]` and `[::ffff:169.254.169.254]` would
+            // otherwise bypass the v4 loopback/link-local guards and let an
+            // attacker reach cloud metadata via the mapped form. Re-run the
+            // v4 blocklist against the unwrapped address. `to_ipv4_mapped`
+            // is stable since Rust 1.63.
+            if let Some(v4) = ip.to_ipv4_mapped() {
+                if v4.is_loopback() {
+                    return Err("loopback addresses not allowed (IPv4-mapped)".to_string());
+                }
+                if v4.is_link_local() {
+                    return Err("link-local addresses not allowed (IPv4-mapped)".to_string());
+                }
+            }
             Ok(())
         }
         Some(url::Host::Domain(_)) => {
@@ -927,10 +942,13 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url() {
-        // TM-02 — 26-case table-driven test. Each row is (input, expected_ok).
+        // TM-02 — 28-case table-driven test. Each row is (input, expected_ok).
         // The Err branch uses `.is_err()` rather than matching the exact string
         // so minor wording tweaks to the reason do not break the test; the
         // per-category tests below assert the specific rejection reasons.
+        // Cases 27-28 were added after code review BL-01 exposed an IPv4-mapped
+        // IPv6 bypass that let `[::ffff:127.0.0.1]` and `[::ffff:169.254.169.254]`
+        // pass the v6 guards.
         let cases: &[(&str, bool)] = &[
             ("", false),                                     //  1 empty
             ("http://example.com", false),                   //  2 http
@@ -958,6 +976,8 @@ mod tests {
             ("https://internal.corp.example.com", true),     // 24 internal hostname
             ("https://example.com:8443/path?query=1", true), // 25 path + query
             ("https://[2001:db8::1]", true),                 // 26 public v6
+            ("https://[::ffff:127.0.0.1]", false),           // 27 IPv4-mapped loopback (BL-01)
+            ("https://[::ffff:169.254.169.254]", false), // 28 IPv4-mapped cloud metadata (BL-01)
         ];
         for (i, (input, expected_ok)) in cases.iter().enumerate() {
             let result = validate_webhook_url(input);
