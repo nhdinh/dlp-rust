@@ -2,15 +2,38 @@
 status: verifying
 trigger: "clipboard-monitoring-no-alerts — copying sensitive content produces no audit event, agent tracing log is 0 bytes"
 created: 2026-04-10T00:00:00Z
-updated: 2026-04-10T16:00:00Z
+updated: 2026-04-10T16:50:00Z
 ---
 
 ## Current Focus
 
-hypothesis: H8-CONFIRMED — tracing_appender::non_blocking worker thread silently discards every write via the Err(_) => {} branch in worker.rs:81, producing a 0-byte log file while the subscriber appears installed and healthy
-test: Replace non_blocking with direct synchronous RollingFileAppender MakeWriter in both dlp-agent and dlp-user-ui; add debug_log probes around each init_logging step in service.rs
-expecting: After rebuild/restart, stop-debug.log shows "init_logging: try_init OK" AND dlp-agent.log.<date> has non-zero bytes with startup messages
-next_action: CHECKPOINT — user to rebuild release binaries, reinstall service, restart, copy credit card number, check logs
+hypothesis: H13-CONFIRMED — dlp-user-ui/src/ipc/pipe3.rs PIPE_NAME_DEFAULT is missing one backslash (`r"\.\pipe\..."` instead of `r"\\.\pipe\..."`), so CreateFileW fails with ERROR_PATH_NOT_FOUND (0x80070003). Phase 99 integration tests never caught this because all tests override via DLP_PIPE3_NAME env var.
+test: Fix the constant to `r"\\.\pipe\DLPEventUI2Agent"` to match pipe1/pipe2 naming (both use `r"\\.\pipe\..."`).
+expecting: After rebuild/restart, copying a credit card number produces a new line in audit.jsonl within 2 seconds with event_type=Alert, classification=T4, action_attempted=PASTE
+next_action: CHECKPOINT — user to kill orphan UI (PID 47680 — admin taskkill or reboot), reinstall service pointing at target\release, restart, copy credit card, verify audit.jsonl
+
+## H8 → Confirmed (logging bug — FIXED commit 6244ac1)
+
+- tracing_appender::non_blocking 0.2.4 swallows IO errors in its background worker via `Err(_) => {}` at worker.rs:81-84. Subscriber installs cleanly, but every write to the file is lost silently.
+- Fix: Replace non_blocking with synchronous RollingFileAppender as direct MakeWriter in both dlp-agent/src/service.rs::init_logging and dlp-user-ui/src/app.rs::init_logging. Added debug_log() probes so stop-debug.log records each init step.
+- Verified: After rebuild, stop-debug.log contains `init_logging: try_init OK — subscriber installed`; dlp-agent.log.2026-04-10 jumped to 9042 bytes with full INFO startup events; dlp-user-ui.log.2026-04-10 jumped to 3163 bytes.
+
+## H13 → Confirmed (pipe name bug — FIXED this round)
+
+- Working UI log after H8 fix revealed the real cause of "no alert in audit.jsonl":
+  `WARN dlp_user_ui::clipboard_monitor: failed to send clipboard alert to agent error=CreateFileW on Pipe 3 failed: The system cannot find the path specified. (0x80070003)`
+- UI classification works end-to-end: `INFO ... clipboard contains sensitive content session_id=1 classification="T4" text_length=19` appears immediately before the WARN.
+- Side-by-side compare in dlp-user-ui/src/ipc/:
+  - pipe1.rs: `r"\\.\pipe\DLPCommand"` ✓
+  - pipe2.rs: `r"\\.\pipe\DLPEventAgent2UI"` ✓
+  - pipe3.rs: `r"\.\pipe\DLPEventUI2Agent"` ✗ — one backslash missing
+- The agent-side Pipe 3 server uses the correct name (agent log: `Pipe 3 server starting pipe="\\.\pipe\DLPEventUI2Agent"`). Client was pointing at a nonexistent path.
+- Test gap: Phase 99 integration tests all override via `DLP_PIPE3_NAME` env var with a unique per-run name, so the default constant was never exercised in CI.
+- Fix applied: pipe3.rs line 1 (module doc comment) and line 21 (PIPE_NAME_DEFAULT) now use `r"\\.\pipe\DLPEventUI2Agent"`.
+
+## Environmental issue (not a code bug)
+
+- scripts/Manage-DlpAgentService.ps1 had an uncommitted local modification setting `$BinaryPath` default to `target\debug\dlp-agent.exe` for development. Reverting to HEAD (`target\release`) was correct. Kept as dev-time detail; nothing to commit.
 
 ## Symptoms
 

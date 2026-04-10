@@ -1,4 +1,4 @@
-//! Pipe 3 client — connects to `\.\pipe\DLPEventUI2Agent` (T-42).
+//! Pipe 3 client — connects to `\\.\pipe\DLPEventUI2Agent` (T-42).
 //!
 //! Sends UI-to-agent events: `UiReady`.
 
@@ -18,7 +18,7 @@ use super::messages::Pipe3UiMsg;
 ///
 /// Tests may override this via the `DLP_PIPE3_NAME` environment variable
 /// so they can point Pipe 3 at a mock named-pipe server on a unique name.
-const PIPE_NAME_DEFAULT: &str = r"\.\pipe\DLPEventUI2Agent";
+const PIPE_NAME_DEFAULT: &str = r"\\.\pipe\DLPEventUI2Agent";
 
 /// Resolves the Pipe 3 name, allowing tests to override via `DLP_PIPE3_NAME`.
 ///
