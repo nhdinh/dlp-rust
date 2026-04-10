@@ -12,8 +12,8 @@ use axum::Json;
 use dlp_common::AuditEvent;
 use serde::{Deserialize, Serialize};
 
-use crate::db::Database;
 use crate::AppError;
+use crate::AppState;
 
 // ---------------------------------------------------------------------------
 // Query / response types
@@ -62,7 +62,7 @@ pub struct EventCount {
 /// Returns `AppError::BadRequest` if the batch is empty.
 /// Returns `AppError::Database` on SQLite failures.
 pub async fn ingest_events(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Json(events): Json<Vec<AuditEvent>>,
 ) -> Result<StatusCode, AppError> {
     if events.is_empty() {
@@ -73,6 +73,10 @@ pub async fn ingest_events(
 
     let count = events.len();
 
+    // Clone events before moving into spawn_blocking so we can relay to SIEM after.
+    let relay_events = events.clone();
+
+    let db = Arc::clone(&state.db);
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let conn = db.conn().lock();
 
@@ -139,6 +143,15 @@ pub async fn ingest_events(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
+    // Best-effort SIEM relay — fire-and-forget in a background task
+    // so the HTTP response is not delayed by external SIEM latency.
+    let siem = state.siem.clone();
+    tokio::spawn(async move {
+        if let Err(e) = siem.relay_events(&relay_events).await {
+            tracing::warn!(error = %e, "SIEM relay failed (best-effort)");
+        }
+    });
+
     tracing::info!(count, "ingested audit events");
     Ok(StatusCode::CREATED)
 }
@@ -153,9 +166,10 @@ pub async fn ingest_events(
 ///
 /// Returns `AppError::Database` on SQLite failures.
 pub async fn query_events(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Query(q): Query<EventQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    let db = Arc::clone(&state.db);
     let rows = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
 
@@ -271,8 +285,9 @@ pub async fn query_events(
 ///
 /// Returns `AppError::Database` on SQLite failures.
 pub async fn get_event_count(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
 ) -> Result<Json<EventCount>, AppError> {
+    let db = Arc::clone(&state.db);
     let count = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
         conn.query_row(

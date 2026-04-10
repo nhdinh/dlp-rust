@@ -31,6 +31,8 @@ use dlp_server::admin_api;
 use dlp_server::admin_auth;
 use dlp_server::agent_registry;
 use dlp_server::db::Database;
+use dlp_server::siem_connector::SiemConnector;
+use dlp_server::AppState;
 
 /// Default bind address.
 const DEFAULT_BIND: &str = "127.0.0.1:9090";
@@ -146,12 +148,21 @@ async fn main() -> anyhow::Result<()> {
     // Provision the admin user on first run.
     ensure_admin_user(&db, config.init_admin_password.as_deref())?;
 
+    // Initialise the SIEM relay connector (reads env vars for Splunk/ELK).
+    let siem = SiemConnector::from_env();
+
+    // Build shared application state.
+    let state = Arc::new(AppState {
+        db,
+        siem,
+    });
+
     // Start the background heartbeat sweeper (marks agents offline
     // after 90 seconds of silence).
-    agent_registry::spawn_offline_sweeper(Arc::clone(&db));
+    agent_registry::spawn_offline_sweeper(Arc::clone(&state));
 
     // Build the HTTP router.
-    let app = admin_api::admin_router(Arc::clone(&db));
+    let app = admin_api::admin_router(Arc::clone(&state));
 
     // Bind and serve.
     let listener = TcpListener::bind(addr).await?;

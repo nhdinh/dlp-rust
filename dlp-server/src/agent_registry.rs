@@ -12,8 +12,8 @@ use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::db::Database;
 use crate::AppError;
+use crate::AppState;
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -74,7 +74,7 @@ pub struct AgentInfoResponse {
 /// Returns `AppError::BadRequest` if required fields are empty.
 /// Returns `AppError::Database` on SQLite failures.
 pub async fn register_agent(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<RegisterRequest>,
 ) -> Result<Json<AgentInfoResponse>, AppError> {
     if payload.agent_id.is_empty() {
@@ -92,6 +92,7 @@ pub async fn register_agent(
     let registered_at = now.clone();
 
     // Wrap synchronous SQLite access in spawn_blocking.
+    let db = Arc::clone(&state.db);
     let info = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let conn = db.conn().lock();
         conn.execute(
@@ -147,12 +148,13 @@ pub async fn register_agent(
 ///
 /// Returns `AppError::NotFound` if the agent is not registered.
 pub async fn heartbeat(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Path(agent_id): Path<String>,
     Json(_payload): Json<HeartbeatRequest>,
 ) -> Result<StatusCode, AppError> {
     let now = Utc::now().to_rfc3339();
     let id = agent_id.clone();
+    let db = Arc::clone(&state.db);
 
     let rows_updated = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
@@ -180,8 +182,9 @@ pub async fn heartbeat(
 ///
 /// Returns `AppError::Database` on SQLite failures.
 pub async fn list_agents(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<AgentInfoResponse>>, AppError> {
+    let db = Arc::clone(&state.db);
     let agents = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
         let mut stmt = conn.prepare(
@@ -220,10 +223,11 @@ pub async fn list_agents(
 ///
 /// Returns `AppError::NotFound` if the agent does not exist.
 pub async fn get_agent(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<AgentInfoResponse>, AppError> {
     let id = agent_id.clone();
+    let db = Arc::clone(&state.db);
 
     let agent = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
@@ -266,7 +270,7 @@ pub async fn get_agent(
 ///
 /// This task runs every 30 seconds and never returns under normal
 /// operation.
-pub fn spawn_offline_sweeper(db: Arc<Database>) {
+pub fn spawn_offline_sweeper(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_secs(30));
@@ -274,7 +278,7 @@ pub fn spawn_offline_sweeper(db: Arc<Database>) {
         loop {
             interval.tick().await;
 
-            let db = Arc::clone(&db);
+            let db = Arc::clone(&state.db);
             let result = tokio::task::spawn_blocking(move || {
                 let cutoff = (Utc::now()
                     - chrono::Duration::seconds(90))

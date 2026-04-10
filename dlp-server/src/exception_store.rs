@@ -12,8 +12,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::db::Database;
 use crate::AppError;
+use crate::AppState;
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -69,7 +69,7 @@ pub struct Exception {
 /// Returns `AppError::BadRequest` if required fields are empty.
 /// Returns `AppError::Database` on SQLite failures.
 pub async fn create_exception(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<CreateExceptionRequest>,
 ) -> Result<Json<Exception>, AppError> {
     if payload.policy_id.is_empty() || payload.user_sid.is_empty() {
@@ -97,6 +97,7 @@ pub async fn create_exception(
     };
 
     let exc = exception.clone();
+    let db = Arc::clone(&state.db);
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let conn = db.conn().lock();
         conn.execute(
@@ -130,8 +131,9 @@ pub async fn create_exception(
 ///
 /// Returns `AppError::Database` on SQLite failures.
 pub async fn list_exceptions(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<Exception>>, AppError> {
+    let db = Arc::clone(&state.db);
     let exceptions = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
         let mut stmt = conn.prepare(
@@ -170,10 +172,11 @@ pub async fn list_exceptions(
 ///
 /// Returns `AppError::NotFound` if the exception does not exist.
 pub async fn get_exception(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Path(exception_id): Path<String>,
 ) -> Result<Json<Exception>, AppError> {
     let id = exception_id.clone();
+    let db = Arc::clone(&state.db);
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();

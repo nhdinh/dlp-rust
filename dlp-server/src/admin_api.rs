@@ -17,9 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::admin_auth;
 use crate::agent_registry;
 use crate::audit_store;
-use crate::db::Database;
 use crate::exception_store;
 use crate::AppError;
+use crate::AppState;
 
 // ---------------------------------------------------------------------------
 // Agent credential types
@@ -132,7 +132,7 @@ pub struct HealthResponse {
 /// - `POST /exceptions` — create exception
 /// - `PUT /agent-credentials/auth-hash` — set agent auth hash
 /// - `PUT /auth/password` — change admin password
-pub fn admin_router(db: Arc<Database>) -> Router {
+pub fn admin_router(state: Arc<AppState>) -> Router {
     // Routes that do NOT require authentication.
     let public_routes = Router::new()
         .route("/health", get(health))
@@ -193,7 +193,7 @@ pub fn admin_router(db: Arc<Database>) -> Router {
 
     public_routes
         .merge(protected_routes)
-        .with_state(db)
+        .with_state(state)
 }
 
 // ---------------------------------------------------------------------------
@@ -210,9 +210,10 @@ async fn health() -> Json<HealthResponse> {
 
 /// `GET /ready` — readiness probe.
 async fn ready(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
 ) -> Result<Json<HealthResponse>, AppError> {
     // Verify the database is accessible.
+    let db = Arc::clone(&state.db);
     tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
         conn.execute_batch("SELECT 1")
@@ -232,8 +233,9 @@ async fn ready(
 
 /// `GET /policies` — list all policies.
 async fn list_policies(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<PolicyResponse>>, AppError> {
+    let db = Arc::clone(&state.db);
     let policies = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
         let mut stmt = conn.prepare(
@@ -272,10 +274,11 @@ async fn list_policies(
 
 /// `GET /policies/{id}` — get a single policy.
 async fn get_policy(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Path(policy_id): Path<String>,
 ) -> Result<Json<PolicyResponse>, AppError> {
     let id = policy_id.clone();
+    let db = Arc::clone(&state.db);
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
@@ -319,7 +322,7 @@ async fn get_policy(
 
 /// `POST /policies` — create a new policy.
 async fn create_policy(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<PolicyPayload>,
 ) -> Result<(StatusCode, Json<PolicyResponse>), AppError> {
     if payload.id.is_empty() || payload.name.is_empty() {
@@ -345,6 +348,7 @@ async fn create_policy(
     };
 
     let r = resp.clone();
+    let db = Arc::clone(&state.db);
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let conn = db.conn().lock();
         conn.execute(
@@ -374,7 +378,7 @@ async fn create_policy(
 
 /// `PUT /policies/{id}` — update an existing policy.
 async fn update_policy(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Path(policy_id): Path<String>,
     Json(payload): Json<PolicyPayload>,
 ) -> Result<Json<PolicyResponse>, AppError> {
@@ -382,6 +386,7 @@ async fn update_policy(
     let conditions_json =
         serde_json::to_string(&payload.conditions)?;
     let id = policy_id.clone();
+    let db = Arc::clone(&state.db);
 
     let resp = tokio::task::spawn_blocking(
         move || -> Result<PolicyResponse, AppError> {
@@ -441,10 +446,11 @@ async fn update_policy(
 
 /// `DELETE /policies/{id}` — delete a policy.
 async fn delete_policy(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Path(policy_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     let id = policy_id.clone();
+    let db = Arc::clone(&state.db);
 
     let rows = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
@@ -475,7 +481,7 @@ async fn delete_policy(
 /// Validates that the hash looks like a bcrypt string, then upserts into the
 /// `agent_credentials` table.
 async fn set_agent_auth_hash(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<SetAuthHashRequest>,
 ) -> Result<Json<AuthHashResponse>, AppError> {
     if !payload.hash.starts_with("$2") {
@@ -487,6 +493,7 @@ async fn set_agent_auth_hash(
     let now = Utc::now().to_rfc3339();
     let hash = payload.hash.clone();
     let ts = now.clone();
+    let db = Arc::clone(&state.db);
 
     tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
@@ -512,8 +519,9 @@ async fn set_agent_auth_hash(
 /// Returns 404 if no hash has been stored yet. Agents call this endpoint
 /// on startup and periodically to sync the password hash.
 async fn get_agent_auth_hash(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
 ) -> Result<Json<AuthHashResponse>, AppError> {
+    let db = Arc::clone(&state.db);
     let result = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
         conn.query_row(

@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
 use crate::AppError;
+use crate::AppState;
 
 /// Insecure fallback secret used only when `--dev` is active.
 const DEV_JWT_SECRET: &str = "dlp-server-dev-secret-change-me";
@@ -123,14 +124,14 @@ pub struct Claims {
 /// Returns `AppError::Unauthorized` if credentials are invalid.
 /// Returns `AppError::Database` on SQLite failures.
 pub async fn login(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     Json(creds): Json<LoginRequest>,
 ) -> Result<Json<TokenResponse>, AppError> {
     let username = creds.username.clone();
 
     // Fetch the stored password hash from SQLite.
     let hash: String = {
-        let db = Arc::clone(&db);
+        let db = Arc::clone(&state.db);
         let uname = username.clone();
         tokio::task::spawn_blocking(move || {
             let conn = db.conn().lock();
@@ -208,7 +209,7 @@ pub struct ChangePasswordRequest {
 ///
 /// Re-verifies the current password before accepting the change.
 pub async fn change_password(
-    State(db): State<Arc<Database>>,
+    State(state): State<Arc<AppState>>,
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     // Extract the username from the JWT token.
@@ -234,7 +235,7 @@ pub async fn change_password(
     }
 
     // Verify the current password.
-    let db2 = Arc::clone(&db);
+    let db2 = Arc::clone(&state.db);
     let uname = username.clone();
     let current_hash: String = tokio::task::spawn_blocking(move || {
         let conn = db2.conn().lock();
@@ -267,6 +268,7 @@ pub async fn change_password(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("bcrypt error: {e}")))?;
 
     let uname = username.clone();
+    let db = Arc::clone(&state.db);
     tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
         conn.execute(
