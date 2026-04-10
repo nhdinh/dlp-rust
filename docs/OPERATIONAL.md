@@ -153,23 +153,32 @@ Default: `https://localhost:9090`
 
 ### 3.2 Password-Protected Stop
 
-The dlp-admin password is a DLP-specific credential stored as a bcrypt hash in the Windows registry at `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`. It is NOT an Active Directory account.
+The dlp-admin password is a DLP-specific credential (NOT an Active Directory account). The bcrypt hash is managed centrally by `dlp-server` and synced to agents on startup. The local registry (`HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`) serves as an offline cache.
 
 #### Setting or Changing the Password
 
-Use `dlp-admin-cli.exe` to set or update the password. Run as Administrator (required to write to HKLM):
+Use `dlp-admin-cli.exe` to set or update the password. Run as Administrator:
 
 ```cmd
 C:\Program Files\DLP\dlp-admin-cli.exe set-password
 ```
 
-The tool prompts for the new password twice (with confirmation), hashes it with bcrypt (cost 12), and writes it to the registry. To verify the current password:
+The tool:
+
+1. Prompts for the new password twice (with confirmation).
+2. Hashes it with bcrypt (cost 12).
+3. Prompts for dlp-server admin credentials.
+4. Pushes the hash to `dlp-server` via `PUT /agent-credentials/auth-hash`.
+
+The CLI never writes to the local registry. Agents sync the hash from the server on startup and cache it locally. All connected agents will receive the updated hash on their next startup or sync cycle.
+
+To verify the current password against the server-stored hash:
 
 ```cmd
 C:\Program Files\DLP\dlp-admin-cli.exe verify-password
 ```
 
-> **Only administrators can run these commands** — they require write access to `HKLM\SOFTWARE\DLP`.
+> **These commands require a running dlp-server** and valid admin credentials on the server.
 
 #### Stopping the Service
 
@@ -461,7 +470,9 @@ Common causes:
 
 ### Password stop always fails
 
-- Verify `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash` is set (use `dlp-admin-cli` tool to configure).
+- Verify the password was set via `dlp-admin-cli set-password` and pushed to dlp-server.
+- Check that the agent synced the hash on startup (look for `"agent auth hash synced from server"` in tracing logs).
+- As a fallback, verify `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash` is set in the local registry.
 - Verify the bcrypt hash was set with cost factor 12.
 - Remove any leading/trailing whitespace in the registry value.
 - Check the Windows Event Log for `EVENT_DLP_ADMIN_STOP_FAILED` with the bcrypt comparison error.

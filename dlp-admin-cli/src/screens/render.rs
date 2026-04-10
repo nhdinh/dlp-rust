@@ -1,0 +1,350 @@
+//! Renders the current [`Screen`] to the terminal frame.
+
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Table, Wrap,
+};
+
+use crate::app::{App, Screen, StatusKind};
+
+/// Top-level draw function dispatched from the event loop.
+pub fn draw(app: &App, frame: &mut Frame) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(frame.area());
+
+    draw_screen(app, frame, chunks[0]);
+    draw_status_bar(app, frame, chunks[1]);
+}
+
+/// Renders the current screen into the main area.
+fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
+    match &app.screen {
+        Screen::MainMenu { selected } => {
+            draw_menu(
+                frame,
+                area,
+                "dlp-admin-cli",
+                &["Password Management", "Policy Management", "System", "Exit"],
+                *selected,
+            );
+        }
+        Screen::PasswordMenu { selected } => {
+            draw_menu(
+                frame,
+                area,
+                "Password Management",
+                &[
+                    "Change Admin Password",
+                    "Set Agent Password",
+                    "Verify Agent Password",
+                    "Back",
+                ],
+                *selected,
+            );
+        }
+        Screen::PolicyMenu { selected } => {
+            draw_menu(
+                frame,
+                area,
+                "Policy Management",
+                &[
+                    "List Policies",
+                    "Get Policy",
+                    "Create Policy",
+                    "Update Policy",
+                    "Delete Policy",
+                    "Back",
+                ],
+                *selected,
+            );
+        }
+        Screen::SystemMenu { selected } => {
+            draw_menu(
+                frame,
+                area,
+                "System",
+                &["Server Status", "Agent List", "Back"],
+                *selected,
+            );
+        }
+        Screen::PolicyList { policies, selected } => {
+            draw_policy_list(frame, area, policies, *selected);
+        }
+        Screen::PolicyDetail { policy } => {
+            draw_json_detail(frame, area, "Policy Detail", policy);
+        }
+        Screen::TextInput { prompt, input, .. } => {
+            draw_input(frame, area, prompt, input, false);
+        }
+        Screen::PasswordInput { prompt, input, .. } => {
+            draw_input(frame, area, prompt, input, true);
+        }
+        Screen::Confirm {
+            message,
+            yes_selected,
+            ..
+        } => {
+            draw_confirm(frame, area, message, *yes_selected);
+        }
+        Screen::ServerStatus { health, ready } => {
+            let text = format!("Health: {health}\nReady:  {ready}");
+            draw_result(frame, area, "Server Status", &text);
+        }
+        Screen::AgentList { agents, selected } => {
+            draw_agent_list(frame, area, agents, *selected);
+        }
+        Screen::ResultView { title, body } => {
+            draw_result(frame, area, title, body);
+        }
+    }
+}
+
+/// Draws a navigable menu list.
+fn draw_menu(frame: &mut Frame, area: Rect, title: &str, items: &[&str], selected: usize) {
+    let list_items: Vec<ListItem> = items
+        .iter()
+        .map(|s| ListItem::new(Line::from(*s)))
+        .collect();
+
+    let list = List::new(list_items)
+        .block(
+            Block::default()
+                .title(format!(" {title} "))
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut state);
+
+    draw_hints(frame, area, "Up/Down: navigate | Enter: select | Esc/Q: back");
+}
+
+/// Draws a text/password input box.
+fn draw_input(frame: &mut Frame, area: Rect, prompt: &str, input: &str, masked: bool) {
+    let display = if masked {
+        "*".repeat(input.len())
+    } else {
+        input.to_string()
+    };
+
+    // Show a cursor indicator.
+    let text = format!("{display}_");
+
+    let block = Block::default()
+        .title(format!(" {prompt} "))
+        .borders(Borders::ALL);
+    let paragraph = Paragraph::new(text).block(block);
+    frame.render_widget(paragraph, area);
+
+    draw_hints(frame, area, "Type to enter | Enter: confirm | Esc: cancel");
+}
+
+/// Draws a confirmation dialog.
+fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, yes_selected: bool) {
+    let yes_style = if yes_selected {
+        Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let no_style = if !yes_selected {
+        Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+
+    let lines = vec![
+        Line::from(message),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [ Yes ]  ", yes_style),
+            Span::raw("    "),
+            Span::styled("  [ No ]  ", no_style),
+        ]),
+    ];
+
+    let block = Block::default()
+        .title(" Confirm ")
+        .borders(Borders::ALL);
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
+
+    draw_hints(frame, area, "Left/Right: select | Enter: confirm | Esc: cancel");
+}
+
+/// Draws a scrollable policy table.
+fn draw_policy_list(
+    frame: &mut Frame,
+    area: Rect,
+    policies: &[serde_json::Value],
+    selected: usize,
+) {
+    let header = Row::new(vec!["ID", "Name", "Priority", "Enabled", "Version"])
+        .style(Style::default().add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = policies
+        .iter()
+        .map(|p| {
+            Row::new(vec![
+                p["id"].as_str().unwrap_or("-").to_string(),
+                p["name"].as_str().unwrap_or("-").to_string(),
+                p["priority"].to_string(),
+                p["enabled"].to_string(),
+                p["version"].to_string(),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(20),
+        Constraint::Percentage(30),
+        Constraint::Percentage(15),
+        Constraint::Percentage(15),
+        Constraint::Percentage(20),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .title(format!(" Policies ({}) ", policies.len()))
+                .borders(Borders::ALL),
+        )
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(table, area, &mut state);
+
+    draw_hints(frame, area, "Up/Down: navigate | Enter: view | Esc: back");
+}
+
+/// Draws a scrollable agent table.
+fn draw_agent_list(
+    frame: &mut Frame,
+    area: Rect,
+    agents: &[serde_json::Value],
+    selected: usize,
+) {
+    let header = Row::new(vec![
+        "Hostname", "IP", "Status", "Version", "Last Heartbeat",
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD))
+    .bottom_margin(1);
+
+    let rows: Vec<Row> = agents
+        .iter()
+        .map(|a| {
+            Row::new(vec![
+                a["hostname"].as_str().unwrap_or("-").to_string(),
+                a["ip"].as_str().unwrap_or("-").to_string(),
+                a["status"].as_str().unwrap_or("-").to_string(),
+                a["agent_version"].as_str().unwrap_or("-").to_string(),
+                a["last_heartbeat"].as_str().unwrap_or("-").to_string(),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(20),
+        Constraint::Percentage(15),
+        Constraint::Percentage(10),
+        Constraint::Percentage(10),
+        Constraint::Percentage(45),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .title(format!(" Agents ({}) ", agents.len()))
+                .borders(Borders::ALL),
+        )
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(table, area, &mut state);
+
+    draw_hints(frame, area, "Up/Down: navigate | Esc: back");
+}
+
+/// Draws a JSON detail view.
+fn draw_json_detail(frame: &mut Frame, area: Rect, title: &str, value: &serde_json::Value) {
+    let pretty = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+    draw_result(frame, area, title, &pretty);
+}
+
+/// Draws a read-only result / info screen.
+fn draw_result(frame: &mut Frame, area: Rect, title: &str, body: &str) {
+    let block = Block::default()
+        .title(format!(" {title} "))
+        .borders(Borders::ALL);
+    let paragraph = Paragraph::new(body.to_string())
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+
+    draw_hints(frame, area, "Enter/Esc: back");
+}
+
+/// Draws a hint line overlaid at the bottom of the given area.
+fn draw_hints(frame: &mut Frame, area: Rect, hints: &str) {
+    if area.height < 3 {
+        return;
+    }
+    let hint_area = Rect {
+        x: area.x + 1,
+        y: area.y + area.height - 1,
+        width: area.width.saturating_sub(2),
+        height: 1,
+    };
+    frame.render_widget(Clear, hint_area);
+    let line = Paragraph::new(
+        Line::from(hints).style(Style::default().fg(Color::DarkGray)),
+    );
+    frame.render_widget(line, hint_area);
+}
+
+/// Draws the status bar at the bottom of the screen.
+fn draw_status_bar(app: &App, frame: &mut Frame, area: Rect) {
+    let (text, style) = match &app.status {
+        Some((msg, StatusKind::Info)) => {
+            (msg.clone(), Style::default().fg(Color::Cyan))
+        }
+        Some((msg, StatusKind::Success)) => {
+            (msg.clone(), Style::default().fg(Color::Green))
+        }
+        Some((msg, StatusKind::Error)) => {
+            (msg.clone(), Style::default().fg(Color::Red))
+        }
+        None => (String::new(), Style::default()),
+    };
+    let paragraph = Paragraph::new(Line::from(text).style(style));
+    frame.render_widget(paragraph, area);
+}

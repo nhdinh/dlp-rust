@@ -47,7 +47,7 @@ The DLP system enforces five foundational security principles across all layers.
 | `dlp-user-ui` (iced subprocess) | Runs as the interactive logged-in user; no elevated privileges; SYSTEM-only named pipe ACLs prevent cross-session access | UI is a userland process; cannot perform privileged operations |
 | `dlp-server` | Runs as a dedicated AD service account (non-SYSTEM); LDAPS bind uses the AD service account exclusively for ABAC attribute lookups | Principle of least privilege: the server does not need SYSTEM |
 | AD service account (`CN=dlp-svc,...`) | Read-only LDAP queries to AD; used only by dlp-server for ABAC attribute lookups; no domain join or replication rights | Limits exposure if the service account is compromised |
-| `dlp-admin` (DLP credential) | Credential stored as bcrypt hash at `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`; verified by bcrypt comparison at service stop; not an AD account | Not stored in AD; no LDAPS verification |
+| `dlp-admin` (DLP credential) | Bcrypt hash managed centrally by dlp-server (`agent_credentials` table); agents sync on startup and cache locally at `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`; verified by bcrypt comparison at service stop; not an AD account | Not stored in AD; no LDAPS verification |
 
 **Audit evidence:** `F-ADM-06` (admin MFA), `N-SEC-03` (SYSTEM account), `N-SEC-11` (process DACL), `F-ADM-11` (secure service stop with password challenge).
 

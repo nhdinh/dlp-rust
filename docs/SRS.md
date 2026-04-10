@@ -195,7 +195,7 @@ Communication between Agent and DLP UI uses **3 Windows named pipes**.
 | F-ADM-09 | Admin shall trigger on-demand file scans for classification review                                                                                                                                          | May      |
 | F-ADM-10 | Admin shall review and approve or deny exception requests submitted by end users                                                                                                                            | Should   |
 | F-ADM-11 | Admin shall stop the dlp-agent via `sc stop dlp-agent` after entering the dlp-admin password in a UI dialog                                                                                                 | Must     |
-| F-ADM-12 | Admin shall set or change the dlp-admin password via `dlp-admin-cli.exe set-password`; the tool shall hash the password with bcrypt (cost 12) and store it in `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash` | Must     |
+| F-ADM-12 | Admin shall set or change the dlp-admin password via `dlp-admin-cli.exe set-password`; the tool shall hash the password with bcrypt (cost 12) and push the hash to dlp-server via `PUT /agent-credentials/auth-hash`; agents sync the hash from the server on startup and cache it locally in the registry for offline use | Must     |
 
 ### 3.2 Endpoint Agent (Windows Service)
 

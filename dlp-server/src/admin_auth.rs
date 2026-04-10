@@ -1,12 +1,16 @@
 //! Password + JWT authentication for admin users (P5-T03).
 //!
-//! Provides login (bcrypt verify + JWT issuance) and admin user creation.
+//! Provides login (bcrypt verify + JWT issuance) and admin user
+//! provisioning at startup.  There is no HTTP endpoint for creating
+//! admin users — the admin account is set up interactively when
+//! dlp-server first starts, or non-interactively via `--init-admin`.
+//!
 //! TOTP/MFA support is deferred to a future iteration.
 
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::{header, StatusCode};
+use axum::http::header;
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::Json;
@@ -48,15 +52,6 @@ pub struct TokenResponse {
     pub token: String,
     /// Token expiry as ISO 8601 timestamp.
     pub expires_at: String,
-}
-
-/// Payload for creating a new admin user.
-#[derive(Debug, Clone, Deserialize)]
-pub struct CreateAdminRequest {
-    /// Desired username.
-    pub username: String,
-    /// Plaintext password (will be bcrypt-hashed before storage).
-    pub password: String,
 }
 
 /// JWT claims embedded in every issued token.
@@ -149,55 +144,139 @@ pub async fn login(
     }))
 }
 
-/// `POST /auth/admin` — create a new admin user (first-run setup).
+// ---------------------------------------------------------------------------
+// Change password handler (JWT-protected)
+// ---------------------------------------------------------------------------
+
+/// Payload for changing the admin password.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChangePasswordRequest {
+    /// Current password (for re-verification).
+    pub current_password: String,
+    /// New password.
+    pub new_password: String,
+}
+
+/// `PUT /auth/password` — change the current admin's password (JWT required).
 ///
-/// The password is bcrypt-hashed before storage.
-///
-/// # Errors
-///
-/// Returns `AppError::BadRequest` if username/password are empty.
-/// Returns `AppError::Database` on SQLite failures.
-pub async fn create_admin(
+/// Re-verifies the current password before accepting the change.
+pub async fn change_password(
     State(db): State<Arc<Database>>,
-    Json(payload): Json<CreateAdminRequest>,
-) -> Result<StatusCode, AppError> {
-    if payload.username.is_empty() || payload.password.is_empty() {
-        return Err(AppError::BadRequest(
-            "username and password are required".to_string(),
-        ));
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Extract the username from the JWT token.
+    let auth_header = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?;
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?;
+    let claims = verify_jwt(token)?;
+    let username = claims.sub;
+
+    // Parse the body.
+    let body = axum::body::to_bytes(req.into_body(), 1024 * 64)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("failed to read body: {e}")))?;
+    let payload: ChangePasswordRequest = serde_json::from_slice(&body)?;
+
+    if payload.new_password.is_empty() {
+        return Err(AppError::BadRequest("new password cannot be empty".to_string()));
     }
 
-    // Hash the password (CPU-bound).
-    let password = payload.password.clone();
-    let hash = tokio::task::spawn_blocking(move || {
-        bcrypt::hash(password, bcrypt::DEFAULT_COST)
-    })
-    .await
-    .map_err(|e| {
-        AppError::Internal(anyhow::anyhow!("join error: {e}"))
-    })?
-    .map_err(|e| {
-        AppError::Internal(anyhow::anyhow!("bcrypt error: {e}"))
-    })?;
-
-    let username = payload.username.clone();
-    let now = Utc::now().to_rfc3339();
-
-    tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
-        conn.execute(
-            "INSERT INTO admin_users (username, password_hash, created_at) \
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![username, hash, now],
+    // Verify the current password.
+    let db2 = Arc::clone(&db);
+    let uname = username.clone();
+    let current_hash: String = tokio::task::spawn_blocking(move || {
+        let conn = db2.conn().lock();
+        conn.query_row(
+            "SELECT password_hash FROM admin_users WHERE username = ?1",
+            rusqlite::params![uname],
+            |row| row.get::<_, String>(0),
         )
     })
     .await
-    .map_err(|e| {
-        AppError::Internal(anyhow::anyhow!("join error: {e}"))
-    })??;
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?
+    .map_err(|_| AppError::Unauthorized("user not found".to_string()))?;
 
-    tracing::info!(user = %payload.username, "admin user created");
-    Ok(StatusCode::CREATED)
+    let current_pw = payload.current_password.clone();
+    let valid = tokio::task::spawn_blocking(move || {
+        bcrypt::verify(current_pw, &current_hash).unwrap_or(false)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?;
+
+    if !valid {
+        return Err(AppError::Unauthorized("current password is incorrect".to_string()));
+    }
+
+    // Hash the new password and update.
+    let new_pw = payload.new_password.clone();
+    let new_hash = tokio::task::spawn_blocking(move || bcrypt::hash(new_pw, 12))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("bcrypt error: {e}")))?;
+
+    let uname = username.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = db.conn().lock();
+        conn.execute(
+            "UPDATE admin_users SET password_hash = ?1 WHERE username = ?2",
+            rusqlite::params![new_hash, uname],
+        )
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(user = %username, "admin password changed");
+    Ok(Json(serde_json::json!({ "status": "password changed" })))
+}
+
+// ---------------------------------------------------------------------------
+// Admin user provisioning (startup-only, no HTTP endpoint)
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if at least one admin user exists in the database.
+///
+/// Called during server startup to decide whether to prompt for initial
+/// admin credentials.
+pub fn has_admin_users(db: &Database) -> anyhow::Result<bool> {
+    let conn = db.conn().lock();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM admin_users", [], |row| row.get(0))
+        .map_err(|e| anyhow::anyhow!("failed to query admin_users: {e}"))?;
+    Ok(count > 0)
+}
+
+/// Creates a new admin user with the given username and plaintext password.
+///
+/// The password is bcrypt-hashed (cost 12) before storage. This function
+/// is called during server startup — it is NOT exposed as an HTTP endpoint.
+///
+/// # Errors
+///
+/// Returns an error if bcrypt hashing or the database insert fails.
+pub fn create_admin_user(
+    db: &Database,
+    username: &str,
+    password: &str,
+) -> anyhow::Result<()> {
+    let hash = bcrypt::hash(password, 12)
+        .map_err(|e| anyhow::anyhow!("bcrypt hash failed: {e}"))?;
+    let now = Utc::now().to_rfc3339();
+
+    let conn = db.conn().lock();
+    conn.execute(
+        "INSERT INTO admin_users (username, password_hash, created_at) \
+         VALUES (?1, ?2, ?3)",
+        rusqlite::params![username, hash, now],
+    )
+    .map_err(|e| anyhow::anyhow!("failed to insert admin user: {e}"))?;
+
+    tracing::info!(user = %username, "admin user created");
+    Ok(())
 }
 
 /// Verifies a JWT token string and returns the decoded claims.

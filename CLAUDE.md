@@ -314,7 +314,7 @@ Only recommend pushing when the Quality Gate PASSES.
 ### 9.17 Before Committing
 
 - [ ] All tests pass (`cargo test`)
-- [ ] No compiler warnings (`cargo build`)
+- [ ] Build code & No compiler warnings (`cargo build --all`)
 - [ ] Clippy passes (`cargo clippy -- -D warnings`)
 - [ ] Code is formatted (`cargo fmt --check`)
 - [ ] Verify code (`sonar-scanner`)

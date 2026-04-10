@@ -6,7 +6,7 @@
 
 > **Terminology Note:** Several names in this project are easily confused. Read this before making changes:
 >
-> - **`dlp-admin`** — the DLP solution superuser credential. Stored as a bcrypt hash in `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`. NOT an AD account or Windows user account. NOT a crate name.
+> - **`dlp-admin`** — the DLP solution superuser credential. The bcrypt hash is managed centrally by `dlp-server` (set via `dlp-admin-cli set-password`). Agents sync the hash from the server on startup and cache it locally in `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash` for offline use. NOT an AD account or Windows user account. NOT a crate name.
 > - **`dlp-agent/`** — the Windows Service crate. Runs as SYSTEM account.
 > - **`dlp-user-ui/`** — the iced endpoint UI subprocess, a **separate crate** in the Cargo workspace (`dlp-user-ui/`). One instance per active user session; dlp-agent spawns a new instance for each session that connects via `CreateProcessAsUser`.
 > - **`dlp-server/`** — the central HTTP server crate (deferred to Phase 5).

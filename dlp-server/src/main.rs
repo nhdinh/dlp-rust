@@ -1,7 +1,8 @@
 //! `dlp-server` entry point.
 //!
-//! Initialises tracing, opens the SQLite database, builds the HTTP
-//! router, and serves with graceful shutdown on CTRL+C.
+//! Initialises tracing, opens the SQLite database, provisions the
+//! initial admin user if needed, builds the HTTP router, and serves
+//! with graceful shutdown on CTRL+C.
 //!
 //! ## Usage
 //!
@@ -9,11 +10,13 @@
 //! dlp-server.exe [OPTIONS]
 //!
 //! OPTIONS:
-//!   --bind <host:port>    Listen address (default: 127.0.0.1:9090)
-//!   --db <path>           SQLite database path (default: ./dlp-server.db)
-//!   --log-level <level>   Log level: trace, debug, info, warn, error
-//!                         (default: info)
-//!   --help                Show this help message
+//!   --bind <host:port>           Listen address (default: 127.0.0.1:9090)
+//!   --db <path>                  SQLite database path (default: ./dlp-server.db)
+//!   --log-level <level>          Log level: trace, debug, info, warn, error
+//!                                (default: info)
+//!   --init-admin <password>      Create the dlp-admin user non-interactively
+//!                                (for installer / scripted setup)
+//!   --help                       Show this help message
 //! ```
 
 use std::net::SocketAddr;
@@ -25,6 +28,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use dlp_server::admin_api;
+use dlp_server::admin_auth;
 use dlp_server::agent_registry;
 use dlp_server::db::Database;
 
@@ -40,6 +44,9 @@ struct Config {
     bind_addr: String,
     db_path: String,
     log_level: String,
+    /// Non-interactive admin password (from `--init-admin`).
+    /// When set, the admin user is created without prompting.
+    init_admin_password: Option<String>,
 }
 
 /// Parses CLI flags into a [`Config`].
@@ -64,6 +71,7 @@ fn parse_config() -> Config {
             .unwrap_or_else(|| DEFAULT_DB.to_string()),
         log_level: get_flag(&args, "--log-level")
             .unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string()),
+        init_admin_password: get_flag(&args, "--init-admin"),
     }
 }
 
@@ -83,15 +91,23 @@ USAGE:
     {name} [OPTIONS]
 
 OPTIONS:
-    --bind <host:port>    Listen address (default: {DEFAULT_BIND})
-    --db <path>           SQLite database path (default: {DEFAULT_DB})
-    --log-level <level>   Log level: trace, debug, info, warn, error
-                          (default: {DEFAULT_LOG_LEVEL})
-    --help                Show this help message
+    --bind <host:port>           Listen address (default: {DEFAULT_BIND})
+    --db <path>                  SQLite database path (default: {DEFAULT_DB})
+    --log-level <level>          Log level: trace, debug, info, warn, error
+                                 (default: {DEFAULT_LOG_LEVEL})
+    --init-admin <password>      Create dlp-admin user non-interactively
+                                 (for installer / scripted setup)
+    --help                       Show this help message
+
+FIRST RUN:
+    On first start, if no admin user exists in the database, the server
+    will prompt interactively for the dlp-admin password. For scripted
+    or installer-based setup, use --init-admin to skip the prompt.
 
 EXAMPLES:
     {name}
     {name} --bind 0.0.0.0:9090 --db /data/dlp.db
+    {name} --init-admin "my-secure-password"
     {name} --log-level debug
 "#
     );
@@ -114,6 +130,9 @@ async fn main() -> anyhow::Result<()> {
     let db = Arc::new(Database::open(&config.db_path)?);
     info!(path = %config.db_path, "database opened");
 
+    // Provision the admin user on first run.
+    ensure_admin_user(&db, config.init_admin_password.as_deref())?;
+
     // Start the background heartbeat sweeper (marks agents offline
     // after 90 seconds of silence).
     agent_registry::spawn_offline_sweeper(Arc::clone(&db));
@@ -131,6 +150,58 @@ async fn main() -> anyhow::Result<()> {
 
     info!("dlp-server shut down");
     Ok(())
+}
+
+/// Ensures at least one admin user exists in the database.
+///
+/// - If `init_password` is provided (`--init-admin`), creates the `dlp-admin`
+///   user non-interactively (for installer / scripted setup).
+/// - Otherwise, prompts interactively for the password on the terminal.
+/// - If an admin user already exists, this is a no-op.
+fn ensure_admin_user(
+    db: &Database,
+    init_password: Option<&str>,
+) -> anyhow::Result<()> {
+    if admin_auth::has_admin_users(db)? {
+        return Ok(());
+    }
+
+    info!("no admin user found — initial setup required");
+
+    let password = match init_password {
+        Some(pw) => pw.to_string(),
+        None => prompt_admin_password()?,
+    };
+
+    admin_auth::create_admin_user(db, "dlp-admin", &password)?;
+    println!("Admin user 'dlp-admin' created successfully.");
+    Ok(())
+}
+
+/// Interactively prompts for the initial admin password (with confirmation).
+fn prompt_admin_password() -> anyhow::Result<String> {
+    use std::io::Write;
+
+    println!("\n--- First-run setup: create dlp-admin account ---\n");
+
+    print!("New dlp-admin password: ");
+    std::io::stdout().flush()?;
+    let pw1 = rpassword::read_password()
+        .map_err(|e| anyhow::anyhow!("failed to read password: {e}"))?;
+    if pw1.is_empty() {
+        anyhow::bail!("password cannot be empty");
+    }
+
+    print!("Confirm dlp-admin password: ");
+    std::io::stdout().flush()?;
+    let pw2 = rpassword::read_password()
+        .map_err(|e| anyhow::anyhow!("failed to read password: {e}"))?;
+
+    if pw1 != pw2 {
+        anyhow::bail!("passwords do not match — aborting");
+    }
+
+    Ok(pw1)
 }
 
 /// Waits for a CTRL+C signal to initiate graceful shutdown.

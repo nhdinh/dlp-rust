@@ -42,17 +42,21 @@ pub fn run() -> iced::Result {
 ///
 /// Returns an error if the dialog or file write fails.
 pub fn run_stop_password(request_id: &str, response_path: &str) -> anyhow::Result<()> {
-    use ipc::messages::Pipe1UiMsg;
-
     // Show the password dialog (blocks until the user acts).
-    let result = dialogs::stop_password::show_password_dialog(request_id)?;
+    // We use the dialog but extract the plaintext password directly
+    // (no DPAPI), since the response file is only accessible by
+    // SYSTEM/Admins and DPAPI user-context keys are not readable
+    // by the SYSTEM service.
+    let password_text = dialogs::stop_password::show_password_dialog_plaintext(request_id)?;
 
-    // Write the response as JSON to the file the agent is polling.
-    let json = match result {
-        Pipe1UiMsg::PasswordSubmit { password, .. } => {
-            format!(r#"{{"result":"submit","password":"{}"}}"#, password)
+    let json = match password_text {
+        Some(pw) => {
+            // Base64-encode the UTF-8 password for safe JSON transport
+            // (avoids escaping issues with special characters).
+            let b64 = dialogs::stop_password::base64_encode(pw.as_bytes());
+            format!(r#"{{"result":"submit","password":"{b64}","encoding":"base64-utf8"}}"#)
         }
-        _ => r#"{"result":"cancel"}"#.to_string(),
+        None => r#"{"result":"cancel"}"#.to_string(),
     };
 
     std::fs::write(response_path, json)?;

@@ -298,11 +298,15 @@ pub fn register_usb_notifications(
 /// Destroys the window (which implicitly unregisters device notifications),
 /// waits for the notification thread to finish, and clears the global detector.
 #[cfg(windows)]
-pub fn unregister_usb_notifications(hwnd: HWND, thread: std::thread::JoinHandle<()>) {
-    let _ = unsafe { DestroyWindow(hwnd) };
-    let _ = thread.join();
+pub fn unregister_usb_notifications(hwnd: HWND, _thread: std::thread::JoinHandle<()>) {
+    // The USB notification thread runs a blocking GetMessageW loop.
+    // Cross-thread DestroyWindow and PostMessageW(WM_QUIT) are unreliable
+    // for message-only windows.  Since this is only called during service
+    // shutdown, we skip the join — the OS reclaims all resources (window,
+    // device notification handle, thread) when the process exits.
+    let _ = hwnd; // suppress unused warning
     *DRIVE_DETECTOR.lock() = None;
-    debug!("USB device notifications unregistered");
+    debug!("USB device notifications cleanup skipped (process exit imminent)");
 }
 
 /// Extracts the uppercase drive letter from a Windows path.

@@ -8,6 +8,10 @@
 //! ## Config file format
 //!
 //! ```toml
+//! # DLP Server URL (required for remote deployments).
+//! # If omitted, defaults to http://127.0.0.1:9090.
+//! server_url = 'http://10.0.1.5:9090'
+//!
 //! # Folders to monitor recursively.  Empty list = all drives A-Z.
 //! monitored_paths = [
 //!     'C:\Data\',
@@ -40,6 +44,13 @@ pub const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\DLP\agent-config.toml";
 /// - `excluded_paths`: empty (= only built-in exclusions apply)
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AgentConfig {
+    /// DLP Server URL for agent-to-server communication.
+    ///
+    /// When empty or omitted, the agent reads `DLP_SERVER_URL` env var,
+    /// then falls back to `http://127.0.0.1:9090`.
+    #[serde(default)]
+    pub server_url: Option<String>,
+
     /// Directories to watch recursively.
     ///
     /// When empty the agent monitors all mounted drives (A-Z).
@@ -80,31 +91,37 @@ impl AgentConfig {
             return Self::default();
         }
 
-        match std::fs::read_to_string(path) {
-            Ok(content) => match toml::from_str::<Self>(&content) {
-                Ok(config) => {
-                    info!(
-                        path = %path.display(),
-                        monitored = config.monitored_paths.len(),
-                        excluded = config.excluded_paths.len(),
-                        "agent config loaded"
-                    );
-                    config
-                }
-                Err(e) => {
-                    warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "failed to parse config — using defaults"
-                    );
-                    Self::default()
-                }
-            },
+        let raw = match std::fs::read_to_string(path) {
+            Ok(s) => s,
             Err(e) => {
                 warn!(
                     path = %path.display(),
                     error = %e,
                     "failed to read config — using defaults"
+                );
+                return Self::default();
+            }
+        };
+
+        // Strip UTF-8 BOM if present (PowerShell 5 writes one by default).
+        let content = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
+
+        match toml::from_str::<Self>(content) {
+            Ok(config) => {
+                info!(
+                    path = %path.display(),
+                    server_url = ?config.server_url,
+                    monitored = config.monitored_paths.len(),
+                    excluded = config.excluded_paths.len(),
+                    "agent config loaded"
+                );
+                config
+            }
+            Err(e) => {
+                warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "failed to parse config — using defaults"
                 );
                 Self::default()
             }
@@ -162,6 +179,28 @@ mod tests {
     }
 
     #[test]
+    fn test_deserialize_server_url() {
+        let toml_str = "server_url = 'http://10.0.1.5:9090'\n";
+        let config: AgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.server_url.as_deref(),
+            Some("http://10.0.1.5:9090")
+        );
+    }
+
+    #[test]
+    fn test_bom_stripped_before_parse() {
+        // Simulate a UTF-8 BOM prefix (PowerShell 5 writes this).
+        let toml_str = "\u{FEFF}server_url = 'http://10.0.1.5:9090'\n";
+        let content = toml_str.strip_prefix('\u{FEFF}').unwrap_or(toml_str);
+        let config: AgentConfig = toml::from_str(content).unwrap();
+        assert_eq!(
+            config.server_url.as_deref(),
+            Some("http://10.0.1.5:9090")
+        );
+    }
+
+    #[test]
     fn test_deserialize_empty_toml() {
         let config: AgentConfig = toml::from_str("").unwrap();
         assert!(config.monitored_paths.is_empty());
@@ -190,6 +229,7 @@ mod tests {
     #[test]
     fn test_resolve_watch_paths_configured() {
         let config = AgentConfig {
+            server_url: None,
             monitored_paths: vec![r"C:\Data\".to_string()],
             excluded_paths: Vec::new(),
             machine_name: None,

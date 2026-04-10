@@ -271,7 +271,7 @@ const B64: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Encodes raw bytes to a base64 string (no external dependency).
-fn base64_encode(input: &[u8]) -> String {
+pub fn base64_encode(input: &[u8]) -> String {
     let mut s = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -345,4 +345,42 @@ pub fn show_password_dialog(
     Ok(crate::ipc::messages::Pipe1UiMsg::PasswordCancel {
         request_id: request_id.to_owned(),
     })
+}
+
+/// Shows the password dialog and returns the plaintext password as a UTF-8 string.
+///
+/// Used by the file-based stop-password flow where DPAPI is not viable
+/// (the UI runs under the user context but the agent runs as SYSTEM).
+/// Returns `None` if the user cancelled or entered an empty password.
+pub fn show_password_dialog_plaintext(_request_id: &str) -> anyhow::Result<Option<String>> {
+    // Clear any stale captured password.
+    CAPTURED_PASSWORD.with(|cell| cell.borrow_mut().take());
+
+    let template = build_dlgtemplate(
+        "DLP Agent: Confirm Stop",
+        "Enter the DLP Admin password to stop the service:",
+    );
+
+    let result = unsafe {
+        DialogBoxIndirectParamW(
+            HMODULE(ptr::null_mut()),
+            template.as_ptr() as *const DLGTEMPLATE,
+            None,
+            Some(dlg_proc),
+            LPARAM(0),
+        )
+    };
+
+    if result == IDOK.0 as isize {
+        if let Some(password_wide) =
+            CAPTURED_PASSWORD.with(|cell| cell.borrow_mut().take())
+        {
+            if !password_wide.is_empty() {
+                let password = String::from_utf16_lossy(&password_wide);
+                return Ok(Some(password));
+            }
+        }
+    }
+
+    Ok(None)
 }

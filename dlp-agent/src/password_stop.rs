@@ -21,11 +21,18 @@
 //!
 //! ## Credential storage
 //!
-//! The bcrypt hash of the dlp-admin password is stored in the registry at:
-//! `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`
+//! The bcrypt hash of the dlp-admin password is managed centrally by
+//! dlp-server. On startup and periodically, the agent fetches the hash
+//! via `GET /agent-credentials/auth-hash` and caches it locally:
 //!
+//! - **In-memory**: the `AUTH_HASH` static (fastest, process lifetime).
+//! - **Registry**: `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash`
+//!   (offline fallback across restarts).
+//!
+//! If the server is unreachable, the agent falls back to the registry.
 //! The plaintext password is never stored.  Setting or changing the password
-//! requires write access to that registry key (Administrators).
+//! is done via `dlp-admin-cli set-password`, which pushes the hash to the
+//! server.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -64,8 +71,18 @@ static STOP_CONFIRMED: AtomicBool = AtomicBool::new(false);
 /// Number of failed attempts this stop cycle.
 static FAILED_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 
-/// Cached bcrypt hash of the dlp-admin password (read once from registry).
+/// Cached bcrypt hash of the dlp-admin password.
 static AUTH_HASH: Mutex<Option<String>> = Mutex::new(None);
+
+/// Global reference to the server client for on-demand hash fetching.
+static SERVER_CLIENT: Mutex<Option<crate::server_client::ServerClient>> = Mutex::new(None);
+
+/// Stores the server client so `get_auth_hash` can fetch on demand.
+///
+/// Called once during agent startup after the `ServerClient` is created.
+pub fn set_server_client(sc: crate::server_client::ServerClient) {
+    *SERVER_CLIENT.lock() = Some(sc);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -99,7 +116,7 @@ fn reset_stop_state() {
 ///
 /// Used to diagnose password-stop issues since the service runs in Session 0
 /// where tracing output is invisible.
-fn debug_log(msg: &str) {
+pub fn debug_log(msg: &str) {
     let _ = std::fs::create_dir_all(r"C:\ProgramData\DLP\logs");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -136,6 +153,10 @@ pub fn initiate_stop() {
     state.pending = true;
     state.attempts = 0;
     drop(state);
+
+    // Clear the cached hash so the next verification re-fetches the
+    // latest value from the server (handles late password setup).
+    *AUTH_HASH.lock() = None;
 
     let request_id = uuid::Uuid::new_v4().to_string();
     set_pending_request(&request_id);
@@ -216,13 +237,21 @@ fn handle_file_response(request_id: &str, data: &str) {
         result: String,
         #[serde(default)]
         password: Option<String>,
+        /// `"base64-utf8"` = plaintext password base64-encoded (no DPAPI).
+        /// `None` / absent = legacy DPAPI-wrapped blob.
+        #[serde(default)]
+        encoding: Option<String>,
     }
 
     match serde_json::from_str::<StopResponse>(data) {
         Ok(resp) if resp.result == "submit" => {
             if let Some(password) = resp.password {
-                debug_log("handle_file_response: PasswordSubmit received");
-                handle_password_submit(request_id, password);
+                let is_plaintext = resp.encoding.as_deref() == Some("base64-utf8");
+                debug_log(&format!(
+                    "handle_file_response: PasswordSubmit received (encoding={:?})",
+                    resp.encoding.as_deref().unwrap_or("dpapi")
+                ));
+                handle_password_submit(request_id, password, is_plaintext);
             } else {
                 debug_log("handle_file_response: submit with no password — treating as cancel");
                 handle_password_cancel(request_id);
@@ -389,7 +418,7 @@ pub fn handle_password_cancel(request_id: &str) {
 }
 
 /// Handles a `PASSWORD_SUBMIT` response from the UI.
-pub fn handle_password_submit(request_id: &str, password: String) {
+pub fn handle_password_submit(request_id: &str, password: String, is_plaintext: bool) {
     if !matches_pending_request(request_id) {
         warn!(request_id, "PASSWORD_SUBMIT: stale or unknown request_id");
         return;
@@ -397,15 +426,28 @@ pub fn handle_password_submit(request_id: &str, password: String) {
 
     let attempt = FAILED_ATTEMPTS.fetch_add(1, Ordering::AcqRel) + 1;
 
-    match verify_credentials(&password) {
+    debug_log(&format!("handle_password_submit: verifying (attempt {attempt})"));
+    let result = if is_plaintext {
+        verify_credentials_plaintext(&password)
+    } else {
+        verify_credentials_dpapi(&password)
+    };
+    match result {
         Ok(true) => {
+            debug_log("handle_password_submit: password CORRECT — confirming stop");
             info!("dlp-admin password verified — proceeding with stop");
-            STOP_CONFIRMED.store(true, Ordering::Release);
+            // Clear pending state but do NOT call reset_stop_state() —
+            // that would reset STOP_CONFIRMED back to false before the
+            // main loop polls it.
             clear_pending_request();
-            reset_stop_state();
+            FAILED_ATTEMPTS.store(0, Ordering::SeqCst);
+            STOP_CONFIRMED.store(true, Ordering::Release);
             confirm_stop();
         }
         Ok(false) => {
+            debug_log(&format!(
+                "handle_password_submit: password INCORRECT (attempt {attempt}/{MAX_ATTEMPTS})"
+            ));
             warn!(attempt, max = MAX_ATTEMPTS, "incorrect dlp-admin password");
             if attempt >= MAX_ATTEMPTS {
                 log_failure(attempt);
@@ -413,6 +455,7 @@ pub fn handle_password_submit(request_id: &str, password: String) {
             }
         }
         Err(e) => {
+            debug_log(&format!("handle_password_submit: ERROR: {e}"));
             error!(error = %e, "password verification failed");
             if attempt >= MAX_ATTEMPTS {
                 log_failure(attempt);
@@ -509,11 +552,17 @@ fn read_registry_string(subkey: &str, name: &str) -> Result<String> {
     }
 }
 
-/// Returns the bcrypt hash of the dlp-admin password from registry (cached after first call).
+/// Returns the bcrypt hash of the agent password.
 ///
-/// Returns an error if the hash is missing or unreadable.  The service
-/// cannot start if no hash is configured.
+/// Resolution order:
+/// 1. In-memory cache (fastest).
+/// 2. On-demand fetch from dlp-server (always up-to-date).
+/// 3. Local registry fallback (offline resilience).
+///
+/// The result is cached in memory so subsequent calls within the same
+/// stop cycle are fast.
 pub fn get_auth_hash() -> Result<String> {
+    // 1. Check in-memory cache.
     {
         let guard = AUTH_HASH.lock();
         if let Some(ref hash) = *guard {
@@ -521,21 +570,168 @@ pub fn get_auth_hash() -> Result<String> {
         }
     }
 
+    // 2. Try fetching from the server (on-demand, handles late password setup).
+    if let Some(hash) = try_fetch_hash_from_server() {
+        let mut guard = AUTH_HASH.lock();
+        *guard = Some(hash.clone());
+        // Best-effort: update the registry cache for offline use.
+        if let Err(e) = write_registry_auth_hash(&hash) {
+            warn!(error = %e, "failed to cache auth hash in local registry");
+        }
+        return Ok(hash);
+    }
+
+    // 3. Fall back to the local registry.
     let hash = read_registry_string(REG_KEY_PATH, "DLPAuthHash")
-        .context("dlp-admin password hash not found in registry. \
-                  Set HKLM\\SOFTWARE\\DLP\\Agent\\Credentials\\DLPAuthHash \
-                  to the bcrypt hash of the dlp-admin password (cost 12).")?;
+        .context("agent password hash not found. \
+                  Set it via dlp-admin-cli or ensure dlp-server is reachable.")?;
     let hash = hash.trim().to_string();
     if hash.is_empty() {
         anyhow::bail!(
-            "dlp-admin password hash is empty in registry. \
-             Set HKLM\\SOFTWARE\\DLP\\Agent\\Credentials\\DLPAuthHash \
-             to the bcrypt hash of the dlp-admin password (cost 12)."
+            "agent password hash is empty. \
+             Set it via dlp-admin-cli or ensure dlp-server is reachable."
         );
     }
     let mut guard = AUTH_HASH.lock();
     *guard = Some(hash.clone());
     Ok(hash)
+}
+
+/// Attempts a blocking fetch of the auth hash from dlp-server.
+///
+/// Returns `None` if the server is unreachable or no hash is stored.
+/// This is called synchronously so it builds a one-shot tokio runtime.
+fn try_fetch_hash_from_server() -> Option<String> {
+    let sc = {
+        let guard = SERVER_CLIENT.lock();
+        guard.clone()?
+    };
+
+    // Build a one-shot runtime for this blocking call.
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            warn!(error = %e, "failed to create runtime for hash fetch");
+            return None;
+        }
+    };
+
+    match rt.block_on(sc.fetch_auth_hash()) {
+        Ok(hash) => {
+            info!("fetched auth hash from server on demand");
+            Some(hash)
+        }
+        Err(e) => {
+            warn!(error = %e, "on-demand hash fetch from server failed");
+            None
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Server-managed auth hash sync
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Syncs the agent auth hash from dlp-server.
+///
+/// Fetches the bcrypt hash from `GET /agent-credentials/auth-hash`, then:
+/// - Stores it in the in-memory cache (`AUTH_HASH`).
+/// - Writes it to the local registry as an offline fallback.
+///
+/// If the server is unreachable or returns 404, falls back silently to
+/// whatever is in the registry.
+pub async fn sync_auth_hash_from_server(sc: &crate::server_client::ServerClient) {
+    match sc.fetch_auth_hash().await {
+        Ok(hash) => {
+            // Update the in-memory cache.
+            {
+                let mut guard = AUTH_HASH.lock();
+                *guard = Some(hash.clone());
+            }
+
+            // Best-effort: cache in local registry for offline use.
+            if let Err(e) = write_registry_auth_hash(&hash) {
+                warn!(error = %e, "failed to cache auth hash in local registry");
+            }
+
+            info!("agent auth hash synced from server");
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "could not fetch auth hash from server -- using local registry"
+            );
+        }
+    }
+}
+
+/// Writes the bcrypt hash to the local registry as a cached fallback.
+///
+/// Creates the registry key if it does not exist.
+fn write_registry_auth_hash(hash: &str) -> Result<()> {
+    use windows::Win32::System::Registry::{
+        RegCreateKeyExW, RegSetValueExW, KEY_WRITE, REG_OPTION_NON_VOLATILE,
+    };
+
+    unsafe {
+        let subkey_wide: Vec<u16> = REG_KEY_PATH
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let name_wide: Vec<u16> = "DLPAuthHash"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let value_wide: Vec<u16> = hash
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let value_bytes: &[u8] = std::slice::from_raw_parts(
+            value_wide.as_ptr().cast(),
+            value_wide.len() * 2,
+        );
+
+        let mut hkey = HKEY::default();
+        let result = RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR::from_raw(subkey_wide.as_ptr()),
+            0,
+            None,
+            REG_OPTION_NON_VOLATILE,
+            KEY_WRITE,
+            None,
+            &mut hkey,
+            None,
+        );
+        if result.is_err() {
+            return Err(anyhow!(
+                "RegCreateKeyExW failed for HKLM\\{}: {:?}",
+                REG_KEY_PATH,
+                result
+            ));
+        }
+
+        let result = RegSetValueExW(
+            hkey,
+            PCWSTR::from_raw(name_wide.as_ptr()),
+            0,
+            REG_SZ,
+            Some(value_bytes),
+        );
+        let _ = RegCloseKey(hkey);
+
+        if result.is_err() {
+            return Err(anyhow!(
+                "RegSetValueExW failed for DLPAuthHash: {:?}",
+                result
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -654,24 +850,78 @@ fn base64_decode(input: &str) -> anyhow::Result<Vec<u8>> {
 ///
 /// Returns `Ok(true)` on successful match, `Ok(false)` on wrong password,
 /// and `Err(...)` on a decoding, DPAPI, or bcrypt error.
-fn verify_credentials(password_b64: &str) -> Result<bool> {
-    // Step 1: Base64-decode the DPAPI blob.
-    let protected_bytes =
-        base64_decode(password_b64).context("base64 decode of DPAPI blob from UI")?;
+/// Verifies a plaintext password (base64-encoded UTF-8, no DPAPI).
+///
+/// Used by the file-based stop flow where the UI and agent run under
+/// different user contexts (user session vs SYSTEM).
+fn verify_credentials_plaintext(password_b64: &str) -> Result<bool> {
+    debug_log("verify_plaintext: step 1 — base64 decode");
+    let password_bytes = base64_decode(password_b64)
+        .context("base64 decode of plaintext password")?;
+    debug_log(&format!(
+        "verify_plaintext: step 1 OK — {} bytes",
+        password_bytes.len()
+    ));
 
-    // Step 2: DPAPI-unprotect to recover the raw password bytes.
-    let password_bytes = dpapi_unprotect(&protected_bytes).context("CryptUnprotectData failed")?;
-
-    // Step 3: Convert bytes to String (lossy conversion handles any encoding
-    // edge cases by replacing invalid sequences with U+FFFD).
     let password = String::from_utf8_lossy(&password_bytes).into_owned();
+    debug_log(&format!(
+        "verify_plaintext: step 2 — password length = {} chars",
+        password.len()
+    ));
 
-    // Step 4: bcrypt verification against the stored hash.
-    let stored_hash = get_auth_hash()?;
-    match bcrypt::verify(&password, &stored_hash) {
-        Ok(true) => Ok(true),
-        Ok(false) => Ok(false),
-        Err(e) => Err(anyhow::anyhow!("bcrypt verify error: {e}")),
+    bcrypt_verify_against_server(&password)
+}
+
+/// Verifies a DPAPI-wrapped password (legacy pipe-based flow).
+fn verify_credentials_dpapi(password_b64: &str) -> Result<bool> {
+    debug_log("verify_dpapi: step 1 — base64 decode");
+    let protected_bytes =
+        base64_decode(password_b64).context("base64 decode of DPAPI blob")?;
+
+    debug_log("verify_dpapi: step 2 — DPAPI unprotect");
+    let password_bytes = dpapi_unprotect(&protected_bytes)
+        .context("CryptUnprotectData failed")?;
+
+    let password = String::from_utf8_lossy(&password_bytes).into_owned();
+    debug_log(&format!(
+        "verify_dpapi: step 3 — password length = {} chars",
+        password.len()
+    ));
+
+    bcrypt_verify_against_server(&password)
+}
+
+/// Common bcrypt verification against the server-managed hash.
+fn bcrypt_verify_against_server(password: &str) -> Result<bool> {
+    debug_log("bcrypt_verify: fetching stored hash");
+    let stored_hash = match get_auth_hash() {
+        Ok(hash) => {
+            debug_log(&format!(
+                "bcrypt_verify: hash obtained ({}...)",
+                &hash[..hash.len().min(10)]
+            ));
+            hash
+        }
+        Err(e) => {
+            debug_log(&format!("bcrypt_verify: hash fetch FAILED — {e}"));
+            return Err(e);
+        }
+    };
+
+    debug_log("bcrypt_verify: comparing");
+    match bcrypt::verify(password, &stored_hash) {
+        Ok(true) => {
+            debug_log("bcrypt_verify: MATCH");
+            Ok(true)
+        }
+        Ok(false) => {
+            debug_log("bcrypt_verify: NO MATCH");
+            Ok(false)
+        }
+        Err(e) => {
+            debug_log(&format!("bcrypt_verify: FAILED — {e}"));
+            Err(anyhow::anyhow!("bcrypt verify error: {e}"))
+        }
     }
 }
 

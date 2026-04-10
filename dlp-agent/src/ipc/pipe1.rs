@@ -356,7 +356,8 @@ fn dispatch(msg: Pipe1UiMsg) -> Option<Vec<u8>> {
             password,
         } => {
             info!(request_id, "Pipe 1: password submitted");
-            crate::password_stop::handle_password_submit(&request_id, password);
+            // Pipe-based flow uses DPAPI-wrapped passwords.
+            crate::password_stop::handle_password_submit(&request_id, password, false);
             None
         }
         Pipe1UiMsg::PasswordCancel { request_id } => {

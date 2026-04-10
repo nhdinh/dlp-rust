@@ -119,6 +119,12 @@ impl Database {
                 password_hash TEXT NOT NULL,
                 created_at    TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS agent_credentials (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             ",
         )
         .context("failed to initialize database tables")?;
@@ -161,6 +167,7 @@ mod tests {
         assert!(tables.contains(&"policies".to_string()));
         assert!(tables.contains(&"exceptions".to_string()));
         assert!(tables.contains(&"admin_users".to_string()));
+        assert!(tables.contains(&"agent_credentials".to_string()));
     }
 
     #[test]

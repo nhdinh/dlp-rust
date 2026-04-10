@@ -166,19 +166,24 @@ pub fn run_service() -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_loop(&status_handle, machine_name))?;
 
+    // Shut down the tokio runtime immediately.  Background tasks (IPC pipe
+    // servers, session monitor) use blocking ReadFile calls that never
+    // return on their own.  Dropping the runtime without shutdown_timeout
+    // would hang forever waiting for those tasks.
+    rt.shutdown_timeout(Duration::from_secs(2));
+
     // ── Graceful shutdown of blocking threads ────────────────────────
+    crate::password_stop::debug_log("run_service: run_loop returned — shutting down subsystems");
     info!(service_name = SERVICE_NAME, "shutting down subsystems");
 
     // Unregister USB device notifications.
     if let Some((hwnd, thread)) = usb_cleanup {
+        crate::password_stop::debug_log("run_service: unregistering USB notifications");
         crate::detection::usb::unregister_usb_notifications(hwnd, thread);
+        crate::password_stop::debug_log("run_service: USB unregistered");
     }
 
-    // Signal the event loop to drain and exit.
-    // Drop the health monitor and session monitor handles — their threads
-    // drain and exit when the session monitor's internal shutdown is triggered.
-    // IPC servers are harder to stop (named pipes don't support clean shutdown);
-    // they will be terminated when the process exits.
+    crate::password_stop::debug_log("run_service: reporting STOPPED to SCM");
 
     // Report STOPPED.
     set_status(
@@ -188,6 +193,7 @@ pub fn run_service() -> Result<()> {
         Some(ServiceExitCode::Win32(0)),
     )?;
 
+    crate::password_stop::debug_log("run_service: STOPPED reported — exiting");
     info!(service_name = SERVICE_NAME, "service stopped");
     Ok(())
 }
@@ -224,8 +230,13 @@ async fn run_loop(
 
     let cache = Arc::new(crate::cache::Cache::new());
 
+    // ── Load agent config (needed for server_url before monitor setup) ───
+    let agent_config = crate::config::AgentConfig::load_default();
+
     // ── dlp-server client (best-effort -- server may not be running) ─────
-    let server_client = match crate::server_client::ServerClient::from_env() {
+    let server_client = match crate::server_client::ServerClient::from_env_with_config(
+        agent_config.server_url.as_deref(),
+    ) {
         Ok(sc) => {
             // Register with dlp-server. Errors are logged, not fatal.
             if let Err(e) = sc.register().await {
@@ -238,6 +249,12 @@ async fn run_loop(
             None
         }
     };
+
+    // ── Store server client for on-demand auth hash fetching ─────────────
+    if let Some(ref sc) = server_client {
+        crate::password_stop::set_server_client(sc.clone());
+        crate::password_stop::sync_auth_hash_from_server(sc).await;
+    }
 
     // ── Audit buffer for server relay ────────────────────────────────────
     let (audit_shutdown_tx, audit_shutdown_rx) =
@@ -268,8 +285,7 @@ async fn run_loop(
         offline_hb.heartbeat_loop(shutdown_rx).await;
     });
 
-    // ── Load agent config and start the file system monitor pipeline ──
-    let agent_config = crate::config::AgentConfig::load_default();
+    // ── Start the file system monitor pipeline ─────────────────────────
     let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
         .expect("file monitor initialisation always succeeds");
     let file_monitor_for_shutdown = file_monitor.clone();
@@ -340,12 +356,15 @@ async fn run_loop(
     let poll_interval = Duration::from_millis(500);
     let mut ticker = tokio::time::interval(poll_interval);
 
+    crate::password_stop::debug_log("run_loop: entering service control loop");
+
     loop {
         tokio::select! {
             biased;
 
             // Ctrl+C from console session.
             _ = tokio::signal::ctrl_c() => {
+                crate::password_stop::debug_log("run_loop: Ctrl+C received");
                 info!(service_name = SERVICE_NAME, "service stopping (Ctrl+C)");
                 break;
             }
@@ -353,6 +372,7 @@ async fn run_loop(
             // Poll every 500 ms for stop confirmation or revert.
             _ = ticker.tick() => {
                 if crate::password_stop::is_stop_confirmed() {
+                    crate::password_stop::debug_log("run_loop: STOP_CONFIRMED detected — breaking loop");
                     info!(service_name = SERVICE_NAME, "password verified — initiating shutdown");
                     set_status(
                         status_handle,
@@ -367,28 +387,35 @@ async fn run_loop(
     }
 
     // ── Graceful shutdown ──────────────────────────────────────────────────
+    crate::password_stop::debug_log("run_loop: starting graceful shutdown");
     info!(
         service_name = SERVICE_NAME,
         "shutting down enforcement subsystems"
     );
 
     // Stop the file monitor first so no new events arrive.
+    crate::password_stop::debug_log("run_loop: stopping file monitor");
     file_monitor_for_shutdown.stop();
     let _ = file_handle.await;
+    crate::password_stop::debug_log("run_loop: file monitor stopped");
 
     // Signal the event loop to drain and exit.
     drop(event_loop_handle);
+    crate::password_stop::debug_log("run_loop: event loop dropped");
 
     // Stop the heartbeat loop.
     let _ = shutdown_tx.send(true);
     let _ = _heartbeat_handle.await;
+    crate::password_stop::debug_log("run_loop: heartbeat stopped");
 
     // Stop the audit buffer flush task (final flush runs inside).
     let _ = audit_shutdown_tx.send(true);
     if let Some(h) = _audit_flush_handle {
         let _ = h.await;
     }
+    crate::password_stop::debug_log("run_loop: audit buffer stopped");
 
+    crate::password_stop::debug_log("run_loop: shutdown complete");
     info!(
         service_name = SERVICE_NAME,
         "enforcement subsystems stopped"
@@ -589,16 +616,50 @@ fn acquire_instance_mutex() {
 // Logging
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Log directory for the DLP Agent service.
+const LOG_DIR: &str = r"C:\ProgramData\DLP\logs";
+
+/// Initialises structured logging to both a rolling log file and stdout.
+///
+/// When running as a Windows Service, stdout is invisible — the log file
+/// at `C:\ProgramData\DLP\logs\dlp-agent.log.*` is the primary diagnostic
+/// output.  In console mode, both outputs are active.
 fn init_logging() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
     let filter = tracing_subscriber::EnvFilter::builder()
         .with_default_directive(Level::INFO.into())
         .from_env_lossy();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_span_events(FmtSpan::CLOSE)
-        .with_target(true)
-        .with_thread_ids(true)
+    // Ensure the log directory exists.
+    let _ = std::fs::create_dir_all(LOG_DIR);
+
+    // Rolling daily log file in C:\ProgramData\DLP\logs\.
+    let file_appender = tracing_appender::rolling::daily(LOG_DIR, "dlp-agent.log");
+    let (file_writer, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Leak the guard so the file writer stays alive for the process lifetime.
+    // This is intentional — the service runs until stopped; the guard must
+    // not be dropped or log writes will be lost.
+    std::mem::forget(_guard);
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_span_events(FmtSpan::CLOSE)
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_ansi(false),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_span_events(FmtSpan::CLOSE)
+                .with_target(true)
+                .with_thread_ids(true),
+        )
         .init();
 }
 
@@ -667,8 +728,13 @@ async fn async_run_console() -> Result<()> {
 
     let cache = Arc::new(crate::cache::Cache::new());
 
+    // ── Load agent config (needed for server_url before monitor setup) ───
+    let agent_config = crate::config::AgentConfig::load_default();
+
     // ── dlp-server client (best-effort) ──────────────────────────────────
-    let server_client = match crate::server_client::ServerClient::from_env() {
+    let server_client = match crate::server_client::ServerClient::from_env_with_config(
+        agent_config.server_url.as_deref(),
+    ) {
         Ok(sc) => {
             if let Err(e) = sc.register().await {
                 warn!(error = %e, "dlp-server registration failed (best-effort)");
@@ -680,6 +746,12 @@ async fn async_run_console() -> Result<()> {
             None
         }
     };
+
+    // ── Store server client for on-demand auth hash fetching ─────────────
+    if let Some(ref sc) = server_client {
+        crate::password_stop::set_server_client(sc.clone());
+        crate::password_stop::sync_auth_hash_from_server(sc).await;
+    }
 
     // ── Audit buffer for server relay ────────────────────────────────────
     let (audit_shutdown_tx, audit_shutdown_rx) =
@@ -710,8 +782,7 @@ async fn async_run_console() -> Result<()> {
         offline_hb.heartbeat_loop(shutdown_rx).await;
     });
 
-    // ── Load agent config and start file system monitor pipeline ──
-    let agent_config = crate::config::AgentConfig::load_default();
+    // ── Start file system monitor pipeline ─────────────────────────────
     let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
         .expect("file monitor must be constructable");
     let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);

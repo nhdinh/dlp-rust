@@ -91,20 +91,28 @@ pub struct ServerClient {
 }
 
 impl ServerClient {
-    /// Creates a new `ServerClient` from environment variables.
+    /// Creates a new `ServerClient` from an optional config URL,
+    /// environment variables, or the compiled default.
     ///
-    /// # Environment Variables
+    /// Resolution order for the server URL:
+    /// 1. `config_url` parameter (from `agent-config.toml`).
+    /// 2. `DLP_SERVER_URL` environment variable.
+    /// 3. Compiled default: `http://127.0.0.1:9090`.
     ///
-    /// - `DLP_SERVER_URL` -- base URL (default: `http://127.0.0.1:9090`)
-    /// - `DLP_AGENT_ID` -- agent identifier (default: machine hostname)
+    /// # Arguments
+    ///
+    /// * `config_url` -- optional URL from the agent config file.
     ///
     /// # Errors
     ///
     /// Returns `ServerClientError::Config` if the hostname cannot be resolved
     /// and no `DLP_AGENT_ID` is set.
-    pub fn from_env() -> Result<Self, ServerClientError> {
-        let base_url = std::env::var("DLP_SERVER_URL")
-            .unwrap_or_else(|_| DEFAULT_SERVER_URL.to_string());
+    pub fn from_env_with_config(config_url: Option<&str>) -> Result<Self, ServerClientError> {
+        let base_url = config_url
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| std::env::var("DLP_SERVER_URL").ok())
+            .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
 
         let hostname = hostname::get()
             .map(|h| h.to_string_lossy().into_owned())
@@ -132,6 +140,13 @@ impl ServerClient {
             agent_id,
             hostname,
         })
+    }
+
+    /// Creates a new `ServerClient` from environment variables only.
+    ///
+    /// Equivalent to `from_env_with_config(None)`.
+    pub fn from_env() -> Result<Self, ServerClientError> {
+        Self::from_env_with_config(None)
     }
 
     /// Returns the agent ID used by this client.
@@ -221,6 +236,39 @@ impl ServerClient {
 
         debug!(agent_id = %self.agent_id, "heartbeat sent");
         Ok(())
+    }
+
+    /// Fetches the agent auth hash from the dlp-server.
+    ///
+    /// Calls `GET /agent-credentials/auth-hash` and returns the bcrypt
+    /// hash string. Returns an error if the server is unreachable or no
+    /// hash has been stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerClientError::Http` on network failures.
+    /// Returns `ServerClientError::ServerError` on non-2xx responses (including 404).
+    pub async fn fetch_auth_hash(&self) -> Result<String, ServerClientError> {
+        let url = format!("{}/agent-credentials/auth-hash", self.base_url);
+
+        let resp = self.client.get(&url).send().await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
+            return Err(ServerClientError::ServerError { status, body });
+        }
+
+        #[derive(serde::Deserialize)]
+        struct HashResponse {
+            hash: String,
+        }
+        let body: HashResponse = resp.json().await?;
+        debug!("fetched auth hash from server");
+        Ok(body.hash)
     }
 
     /// Sends a batch of audit events to the dlp-server.
@@ -513,6 +561,13 @@ mod tests {
     async fn test_heartbeat_unreachable_server() {
         let client = unreachable_client();
         let result = client.send_heartbeat().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_auth_hash_unreachable_server() {
+        let client = unreachable_client();
+        let result = client.fetch_auth_hash().await;
         assert!(result.is_err());
     }
 }

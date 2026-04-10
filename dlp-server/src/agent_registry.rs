@@ -131,7 +131,13 @@ pub async fn register_agent(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    tracing::info!(agent_id = %info.agent_id, "agent registered");
+    tracing::info!(
+        agent_id = %info.agent_id,
+        hostname = %info.hostname,
+        ip = %info.ip,
+        agent_version = %info.agent_version,
+        "agent connected"
+    );
     Ok(Json(info))
 }
 

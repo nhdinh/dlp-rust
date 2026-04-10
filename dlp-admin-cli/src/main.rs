@@ -1,275 +1,139 @@
-//! `dlp-admin-cli.exe` — DLP system administration CLI.
+//! `dlp-admin-cli` — Interactive DLP system administration TUI.
 //!
-//! ## Security notes
+//! Connects to `dlp-server`, authenticates, and presents a navigable
+//! menu for managing policies, agent passwords, and system status.
 //!
-//! - `set-password` requires Administrator privileges (HKLM write).
-//! - Policy management commands require a configured DLP Server URL.
-//!
-//! ## Commands
+//! ## Usage
 //!
 //! ```text
-//! dlp-admin-cli.exe set-password                      Set/update dlp-admin password
-//! dlp-admin-cli.exe verify-password                   Verify password hash
-//! dlp-admin-cli.exe policy list                       List all policies
-//! dlp-admin-cli.exe policy get <id>                   Get a policy by ID
-//! dlp-admin-cli.exe policy create <file>              Create from JSON
-//! dlp-admin-cli.exe policy update <id> <file>         Update from JSON
-//! dlp-admin-cli.exe policy delete <id>                Delete a policy
-//! dlp-admin-cli.exe engine get-bind-addr              Show BIND_ADDR
-//! dlp-admin-cli.exe engine set-bind-addr <host:port>  Set BIND_ADDR
-//! dlp-admin-cli.exe status                            Check engine health
+//! dlp-admin-cli.exe [OPTIONS]
+//!
+//! OPTIONS:
+//!   --connect <host:port>    DLP Server address (auto-detected if omitted)
+//!   --help                   Show this help message
 //! ```
 
+mod app;
 mod client;
 mod engine;
-mod password;
-mod policy;
+mod event;
+mod login;
 mod registry;
-mod ui;
+mod screens;
+mod tui;
 
 use anyhow::Result;
-use std::env;
-use tracing::error;
-
-const DEFAULT_ENGINE_URL: &str = "http://127.0.0.1:9090";
 
 fn main() {
-    // Initialize tracing — log level controlled by RUST_LOG env var.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .init();
+    let args: Vec<String> = std::env::args().collect();
 
-    let args: Vec<String> = env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help(args.first().map(|s| s.as_str()).unwrap_or("dlp-admin-cli"));
+        return;
+    }
 
-    // Parse --connect <addr:port> from anywhere in the args and set it
-    // as DLP_SERVER_URL so resolve_engine_url() picks it up.
-    let args = extract_connect_flag(args);
+    // Parse --connect <host:port> and set DLP_SERVER_URL env var.
+    extract_connect_flag(&args);
 
-    let rc = run(&args);
-
-    if let Err(e) = rc {
-        error!("{e}");
+    if let Err(e) = run() {
+        eprintln!("Error: {e}");
         std::process::exit(1);
     }
 }
 
-/// Extracts `--connect <addr:port>` from the argument list.
-///
-/// If found, sets `DLP_SERVER_URL` so that
-/// [`engine::resolve_engine_url`] uses it as the highest-priority
-/// source.  Returns the remaining arguments with the flag removed.
-fn extract_connect_flag(mut args: Vec<String>) -> Vec<String> {
-    if let Some(pos) = args.iter().position(|a| a == "--connect") {
-        if let Some(addr) = args.get(pos + 1).cloned() {
-            // Normalise: if it looks like host:port, prepend http(s).
-            let url = if addr.starts_with("http://")
-                || addr.starts_with("https://")
-            {
-                addr
-            } else {
-                engine::addr_to_url(&addr)
-            };
-            env::set_var("DLP_SERVER_URL", &url);
-            // Remove --connect and the value from the arg list.
-            args.remove(pos + 1);
-            args.remove(pos);
-        }
-    }
-    args
+fn run() -> Result<()> {
+    // Defensive: ensure raw mode is off in case a previous run crashed.
+    let _ = crossterm::terminal::disable_raw_mode();
+
+    // Install a panic hook so a crash inside the TUI still restores
+    // the terminal (otherwise the user's shell becomes unusable).
+    tui::install_panic_hook();
+
+    // Build a tokio runtime (reused for all async calls).
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    // Pre-TUI: health check + login (line-based I/O).
+    let client = login::run(&rt)?;
+
+    // Enter the ratatui TUI.
+    let mut terminal = tui::setup()?;
+    let result = run_tui(&mut terminal, client, rt);
+
+    // Always restore the terminal, even on error.
+    tui::restore(&mut terminal)?;
+
+    result
 }
 
-fn run(args: &[String]) -> Result<()> {
-    match args.get(1).map(|s| s.as_str()) {
-        // ── Password management ──────────────────────────────────────────────
-        Some("set-password") => password::set_password(),
-        Some("verify-password") => password::verify_password(),
+/// Runs the main TUI event loop.
+fn run_tui(
+    terminal: &mut tui::Tui,
+    client: client::EngineClient,
+    rt: tokio::runtime::Runtime,
+) -> Result<()> {
+    let mut app = app::App::new(client, rt);
 
-        // ── Policy management ──────────────────────────────────────────────────
-        Some("policy") => match args.get(2).map(|s| s.as_str()) {
-            Some("list") => policy::list(),
-            Some("get") => {
-                let id = args.get(3).ok_or_else(|| {
-                    anyhow::anyhow!("Usage: dlp-admin-cli policy get <policy-id>")
-                })?;
-                policy::get(id)
-            }
-            Some("create") => {
-                let file = args.get(3).ok_or_else(|| {
-                    anyhow::anyhow!("Usage: dlp-admin-cli policy create <file.json>")
-                })?;
-                policy::create_from_file(file)
-            }
-            Some("update") => {
-                let id = args.get(3).ok_or_else(|| {
-                    anyhow::anyhow!("Usage: dlp-admin-cli policy update <policy-id> <file.json>")
-                })?;
-                let file = args.get(4).ok_or_else(|| {
-                    anyhow::anyhow!("Usage: dlp-admin-cli policy update <policy-id> <file.json>")
-                })?;
-                policy::update_from_file(id, file)
-            }
-            Some("delete") => {
-                let id = args.get(3).ok_or_else(|| {
-                    anyhow::anyhow!("Usage: dlp-admin-cli policy delete <policy-id>")
-                })?;
-                policy::delete(id)
-            }
-            Some(cmd) => {
-                anyhow::bail!(
-                    "Unknown policy subcommand: {cmd}\n\
-                     Valid: list, get, create, update, delete"
-                );
-            }
-            None => {
-                anyhow::bail!(
-                    "Usage: dlp-admin-cli policy <list|get|create|update|delete> [args]"
-                );
-            }
-        },
+    loop {
+        terminal.draw(|frame| screens::draw(&app, frame))?;
 
-        // ── Engine configuration ─────────────────────────────────────────────
-        Some("engine") => match args.get(2).map(|s| s.as_str()) {
-            Some("get-bind-addr") => engine::get_bind_addr(),
-            Some("set-bind-addr") => {
-                let addr = args.get(3).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Usage: dlp-admin-cli engine set-bind-addr <host:port>"
-                    )
-                })?;
-                engine::set_bind_addr(addr)
-            }
-            Some(cmd) => {
-                anyhow::bail!(
-                    "Unknown engine subcommand: {cmd}\n\
-                     Valid: get-bind-addr, set-bind-addr"
-                );
-            }
-            None => {
-                anyhow::bail!(
-                    "Usage: dlp-admin-cli engine <get-bind-addr|set-bind-addr> [args]"
-                );
-            }
-        },
-
-        // ── System status ─────────────────────────────────────────────────────
-        Some("status") => {
-            let url = engine::resolve_engine_url();
-            println!("Connecting to: {url}");
-            client::block_on(status(&url))
+        if let Some(evt) = event::poll()? {
+            screens::handle_event(&mut app, evt);
         }
 
-        // ── Interactive TUI ──────────────────────────────────────────────────
-        Some("interactive") | Some("ui") => {
-            ui::run();
-            Ok(())
+        if app.should_quit {
+            break;
         }
+    }
 
-        // ── Help ─────────────────────────────────────────────────────────────
-        _ => {
-            print_help(args.first().map(|s| s.as_str()).unwrap_or("dlp-admin-cli"));
-            Ok(())
+    Ok(())
+}
+
+/// Extracts `--connect <host:port>` from the argument list and sets
+/// `DLP_SERVER_URL` so that [`engine::resolve_engine_url`] picks it up.
+fn extract_connect_flag(args: &[String]) {
+    if let Some(pos) = args.iter().position(|a| a == "--connect") {
+        if let Some(addr) = args.get(pos + 1) {
+            let url = if addr.starts_with("http://") || addr.starts_with("https://") {
+                addr.clone()
+            } else {
+                engine::addr_to_url(addr)
+            };
+            std::env::set_var("DLP_SERVER_URL", &url);
         }
     }
 }
 
 fn print_help(name: &str) {
     eprintln!(
-        r#"dlp-admin-cli -- DLP system administration CLI
+        r#"dlp-admin-cli -- Interactive DLP administration TUI
 
 USAGE:
-    {name} <command> [arguments]
+    {name} [OPTIONS]
 
-PASSWORD MANAGEMENT:
-    {name} set-password                      Set or update the dlp-admin password
-    {name} verify-password                   Verify a password against the stored hash
+OPTIONS:
+    --connect <host:port>    DLP Server address (auto-detected if omitted)
+    --help                   Show this help message
 
-POLICY MANAGEMENT:
-    {name} policy list                       List all policies
-    {name} policy get <id>                   Get a policy by ID
-    {name} policy create <file.json>         Create a policy from JSON
-    {name} policy update <id> <file.json>    Update a policy from JSON
-    {name} policy delete <id>                Delete a policy
+The tool connects to dlp-server, authenticates with admin credentials,
+and presents a navigable menu for:
+  - Agent password management
+  - Policy CRUD operations
+  - System status and agent monitoring
 
-ENGINE CONFIGURATION:
-    {name} engine get-bind-addr              Show configured BIND_ADDR
-    {name} engine set-bind-addr <host:port>  Set BIND_ADDR (requires admin)
-
-SYSTEM:
-    {name} status                            Check DLP Server health
-    {name} interactive                       Interactive TUI (menu-driven)
-
-GLOBAL OPTIONS:
-    --connect <host:port>                    Connect to a specific engine address
+NAVIGATION:
+    Up/Down     Navigate menus
+    Enter       Select / confirm
+    Esc         Go back / cancel
+    Q           Quit (from main menu)
 
 CONNECTION AUTO-DETECTION:
-    The CLI automatically finds the DLP Server when running on the same
-    machine. Resolution order:
-      1. DLP_SERVER_URL env var (explicit override)
+    If --connect is not specified, the CLI auto-detects the server:
+      1. DLP_SERVER_URL env var
       2. BIND_ADDR from registry (HKLM\SOFTWARE\DLP\PolicyEngine)
       3. Probe local ports: 9090, 8443, 8080
-      4. Default: {DEFAULT_ENGINE_URL}
-
-ENVIRONMENT VARIABLES:
-    DLP_SERVER_URL          DLP Server URL (overrides auto-detection)
-    DLP_ENGINE_CERT_PATH    Path to client certificate (mTLS)
-    DLP_ENGINE_KEY_PATH     Path to client key (mTLS)
-    DLP_ENGINE_CA_PATH      Path to CA certificate (default: system trust store)
-    RUST_LOG                Tracing log level (default: info)
+      4. Default: http://127.0.0.1:9090
 "#
     );
-}
-
-// ─── Status command ───────────────────────────────────────────────────────────
-
-async fn status(base_url: &str) -> Result<()> {
-    use reqwest::Client;
-
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()?;
-
-    let health_url = format!("{}/health", base_url.trim_end_matches('/'));
-    let ready_url = format!("{}/ready", base_url.trim_end_matches('/'));
-
-    // Check /health
-    match client.get(&health_url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            println!("[OK]   DLP Server health: {}", health_url);
-        }
-        Ok(resp) => {
-            anyhow::bail!(
-                "[FAIL] DLP Server health returned {}: {}",
-                resp.status(),
-                health_url
-            );
-        }
-        Err(e) => {
-            anyhow::bail!(
-                "[FAIL] Cannot connect to DLP Server at {}: {e}",
-                health_url
-            );
-        }
-    }
-
-    // Check /ready
-    match client.get(&ready_url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            println!("[OK]   DLP Server ready:  {}", ready_url);
-        }
-        Ok(resp) => {
-            println!(
-                "[WARN] DLP Server not ready ({}): {}",
-                resp.status().as_u16(),
-                ready_url
-            );
-        }
-        Err(e) => {
-            println!("[WARN] DLP Server readiness check failed: {e}");
-        }
-    }
-
-    Ok(())
 }

@@ -43,11 +43,16 @@ param(
     [Parameter()]
     [string]$DisplayName = 'DLP Agent',
 
+    # DLP Server URL for agent-to-server communication.
+    # Written to agent-config.toml on Install so the service can reach the server.
+    [Parameter()]
+    [string]$ServerUrl,
+
     # How long (seconds) to wait for the service to fully start after a Start.
     [int]$StartTimeoutSeconds = 30,
 
     # How long (seconds) to wait for the service to stop cleanly.
-    # The password challenge adds up to 3 × 30 s of delay.
+    # The password challenge adds up to 3 x 30 s of delay.
     [int]$StopTimeoutSeconds = 120
 )
 
@@ -102,6 +107,36 @@ function Wait-ForServiceState {
     }
     Write-Status "Timeout waiting for service to reach $DesiredState (waited ${TimeoutSeconds}s)" -Level WARN
     return $false
+}
+
+# ─── Agent config file ────────────────────────────────────────────────────────
+
+$ConfigDir = "$env:ProgramData\DLP"
+$ConfigFile = "$ConfigDir\agent-config.toml"
+
+function Write-AgentConfig {
+    <# Writes or updates agent-config.toml with the server URL. #>
+    if (-not $ServerUrl) { return }
+
+    if (-not (Test-Path $ConfigDir)) {
+        New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
+        Write-Status "Created config directory: $ConfigDir" -Level INFO
+    }
+
+    # Read existing config or start fresh.
+    $content = if (Test-Path $ConfigFile) { Get-Content $ConfigFile -Raw } else { '' }
+
+    # Update or add server_url line.
+    if ($content -match '(?m)^server_url\s*=') {
+        $content = $content -replace "(?m)^server_url\s*=.*$", "server_url = '$ServerUrl'"
+    } else {
+        $content = "server_url = '$ServerUrl'`n$content"
+    }
+
+    # Use UTF8 without BOM — the toml crate cannot parse a BOM prefix.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($ConfigFile, $content.TrimEnd() + "`n", $utf8NoBom)
+    Write-Status "Agent config written: $ConfigFile (server_url = $ServerUrl)" -Level OK
 }
 
 # ─── sc.exe wrapper helpers ────────────────────────────────────────────────────
@@ -255,8 +290,9 @@ Write-Host ""
 
 switch ($Action) {
     'Install' {
-        # Full install: register + start
+        # Full install: write config + register + start
         if (-not (Test-BinaryExists)) { exit 1 }
+        Write-AgentConfig
         Remove-ServiceIfExists
         New-DlpAgentService
         Start-DlpAgentService

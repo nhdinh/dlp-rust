@@ -8,10 +8,15 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 
 /// The DLP Server HTTP client, built from environment variables.
+///
+/// Supports optional JWT authentication via [`set_token`](EngineClient::set_token).
+/// When a token is set, all requests include an `Authorization: Bearer <token>` header.
 #[derive(Clone)]
 pub struct EngineClient {
     inner: Client,
     base_url: String,
+    /// Optional JWT bearer token for authenticated endpoints.
+    token: Option<String>,
 }
 
 /// Helper: load a mTLS client identity from cert + key PEM files.
@@ -64,6 +69,7 @@ impl EngineClient {
         Ok(Self {
             inner: client,
             base_url,
+            token: None,
         })
     }
 
@@ -73,13 +79,119 @@ impl EngineClient {
         &self.base_url
     }
 
-    /// Sends a GET request and deserialises the JSON response.
-    pub async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
-        tracing::debug!(url);
+    /// Checks that the dlp-server is reachable by calling `GET /health`.
+    ///
+    /// Returns `Ok(())` if the server responds with a success status code.
+    /// Returns a descriptive error guiding the user to use `--connect` if
+    /// the server is unreachable.
+    pub async fn check_health(&self) -> Result<()> {
+        let url = self.build_url("health");
+        let result = self.inner.get(&url).send().await;
+        match result {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => {
+                anyhow::bail!(
+                    "dlp-server at {} returned {} on health check.\n\
+                     If the server is at a different address, use: \
+                     --connect <host:port>",
+                    self.base_url,
+                    resp.status()
+                );
+            }
+            Err(_) => {
+                anyhow::bail!(
+                    "Cannot reach dlp-server at {}.\n\
+                     Ensure the server is running, or specify the correct \
+                     address with: --connect <host:port>",
+                    self.base_url
+                );
+            }
+        }
+    }
+
+    /// Sets a JWT bearer token for authenticated requests.
+    ///
+    /// Once set, all subsequent HTTP calls include an
+    /// `Authorization: Bearer <token>` header.
+    #[allow(dead_code)]
+    pub fn set_token(&mut self, token: String) {
+        self.token = Some(token);
+    }
+
+    /// Logs in to the DLP Server with the given admin credentials and stores the JWT.
+    ///
+    /// Calls `POST /auth/login` and stores the returned token for subsequent
+    /// authenticated requests.
+    ///
+    /// # Arguments
+    ///
+    /// * `username` - Admin username.
+    /// * `password` - Admin plaintext password.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the login request fails or credentials are invalid.
+    pub async fn login(&mut self, username: &str, password: &str) -> Result<()> {
+        let url = format!(
+            "{}/{}",
+            self.base_url.trim_end_matches('/'),
+            "auth/login"
+        );
+        let payload = serde_json::json!({
+            "username": username,
+            "password": password,
+        });
         let resp = self
             .inner
-            .get(&url)
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .with_context(|| format!("POST {url} failed"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("login failed ({status}): {body}");
+        }
+        #[derive(serde::Deserialize)]
+        struct TokenResp {
+            token: String,
+        }
+        let body: TokenResp = resp
+            .json()
+            .await
+            .context("failed to parse login response")?;
+        self.token = Some(body.token);
+        Ok(())
+    }
+
+    /// Builds a request builder with the base URL and optional auth header.
+    fn build_url(&self, path: &str) -> String {
+        format!(
+            "{}/{}",
+            self.base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        )
+    }
+
+    /// Attaches the Bearer token to a request if one is set.
+    fn apply_auth(
+        &self,
+        builder: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
+        if let Some(ref token) = self.token {
+            builder.bearer_auth(token)
+        } else {
+            builder
+        }
+    }
+
+    /// Sends a GET request and deserialises the JSON response.
+    pub async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let url = self.build_url(path);
+        tracing::debug!(url);
+        let resp = self
+            .apply_auth(self.inner.get(&url))
             .send()
             .await
             .with_context(|| format!("GET {url} failed"))?;
@@ -101,12 +213,10 @@ impl EngineClient {
         path: &str,
         body: &B,
     ) -> Result<T> {
-        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+        let url = self.build_url(path);
         tracing::debug!(url);
         let resp = self
-            .inner
-            .post(&url)
-            .json(body)
+            .apply_auth(self.inner.post(&url).json(body))
             .send()
             .await
             .with_context(|| format!("POST {url} failed"))?;
@@ -128,12 +238,10 @@ impl EngineClient {
         path: &str,
         body: &B,
     ) -> Result<T> {
-        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+        let url = self.build_url(path);
         tracing::debug!(url);
         let resp = self
-            .inner
-            .put(&url)
-            .json(body)
+            .apply_auth(self.inner.put(&url).json(body))
             .send()
             .await
             .with_context(|| format!("PUT {url} failed"))?;
@@ -151,11 +259,10 @@ impl EngineClient {
 
     /// Sends a DELETE request.  Returns `Ok(())` on 204 No Content.
     pub async fn delete(&self, path: &str) -> Result<()> {
-        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+        let url = self.build_url(path);
         tracing::debug!(url);
         let resp = self
-            .inner
-            .delete(&url)
+            .apply_auth(self.inner.delete(&url))
             .send()
             .await
             .with_context(|| format!("DELETE {url} failed"))?;
@@ -168,12 +275,3 @@ impl EngineClient {
     }
 }
 
-/// Wrapper around `tokio::main`-style blocking runs so submodules don't each
-/// need `#[tokio::main]`.
-pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime")
-        .block_on(f)
-}

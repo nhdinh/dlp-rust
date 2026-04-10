@@ -22,6 +22,26 @@ use crate::exception_store;
 use crate::AppError;
 
 // ---------------------------------------------------------------------------
+// Agent credential types
+// ---------------------------------------------------------------------------
+
+/// Payload for setting the agent auth hash.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetAuthHashRequest {
+    /// The bcrypt hash string (must start with `$2`).
+    pub hash: String,
+}
+
+/// Response after setting or retrieving the agent auth hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthHashResponse {
+    /// The bcrypt hash.
+    pub hash: String,
+    /// ISO 8601 timestamp of last update.
+    pub updated_at: String,
+}
+
+// ---------------------------------------------------------------------------
 // Policy request / response types
 // ---------------------------------------------------------------------------
 
@@ -92,10 +112,10 @@ pub struct HealthResponse {
 /// - `GET /health` — health probe
 /// - `GET /ready` — readiness probe
 /// - `POST /auth/login` — admin login
-/// - `POST /auth/admin` — create admin user
 /// - `POST /agents/register` — agent self-registration
 /// - `POST /agents/:id/heartbeat` — agent heartbeat
 /// - `POST /audit/events` — event ingestion (agent-to-server)
+/// - `GET /agent-credentials/auth-hash` — fetch agent auth hash
 ///
 /// **Authenticated (JWT required):**
 /// - `GET /agents` — list agents
@@ -110,13 +130,14 @@ pub struct HealthResponse {
 /// - `GET /exceptions` — list exceptions
 /// - `GET /exceptions/:id` — get exception
 /// - `POST /exceptions` — create exception
+/// - `PUT /agent-credentials/auth-hash` — set agent auth hash
+/// - `PUT /auth/password` — change admin password
 pub fn admin_router(db: Arc<Database>) -> Router {
     // Routes that do NOT require authentication.
     let public_routes = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/auth/login", post(admin_auth::login))
-        .route("/auth/admin", post(admin_auth::create_admin))
         .route(
             "/agents/register",
             post(agent_registry::register_agent),
@@ -128,6 +149,10 @@ pub fn admin_router(db: Arc<Database>) -> Router {
         .route(
             "/audit/events",
             post(audit_store::ingest_events),
+        )
+        .route(
+            "/agent-credentials/auth-hash",
+            get(get_agent_auth_hash),
         );
 
     // Routes that require a valid JWT.
@@ -159,6 +184,11 @@ pub fn admin_router(db: Arc<Database>) -> Router {
             "/exceptions",
             post(exception_store::create_exception),
         )
+        .route(
+            "/agent-credentials/auth-hash",
+            put(set_agent_auth_hash),
+        )
+        .route("/auth/password", put(admin_auth::change_password))
         .layer(middleware::from_fn(admin_auth::require_auth));
 
     public_routes
@@ -436,6 +466,74 @@ async fn delete_policy(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ---------------------------------------------------------------------------
+// Agent credential handlers
+// ---------------------------------------------------------------------------
+
+/// `PUT /agent-credentials/auth-hash` — set the agent auth hash (JWT required).
+///
+/// Validates that the hash looks like a bcrypt string, then upserts into the
+/// `agent_credentials` table.
+async fn set_agent_auth_hash(
+    State(db): State<Arc<Database>>,
+    Json(payload): Json<SetAuthHashRequest>,
+) -> Result<Json<AuthHashResponse>, AppError> {
+    if !payload.hash.starts_with("$2") {
+        return Err(AppError::BadRequest(
+            "hash must be a bcrypt string (starts with $2)".to_string(),
+        ));
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let hash = payload.hash.clone();
+    let ts = now.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = db.conn().lock();
+        conn.execute(
+            "INSERT INTO agent_credentials (key, value, updated_at) \
+             VALUES ('DLPAuthHash', ?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = ?2",
+            rusqlite::params![hash, ts],
+        )
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!("agent auth hash updated");
+    Ok(Json(AuthHashResponse {
+        hash: payload.hash,
+        updated_at: now,
+    }))
+}
+
+/// `GET /agent-credentials/auth-hash` — fetch the agent auth hash (public).
+///
+/// Returns 404 if no hash has been stored yet. Agents call this endpoint
+/// on startup and periodically to sync the password hash.
+async fn get_agent_auth_hash(
+    State(db): State<Arc<Database>>,
+) -> Result<Json<AuthHashResponse>, AppError> {
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.conn().lock();
+        conn.query_row(
+            "SELECT value, updated_at FROM agent_credentials WHERE key = 'DLPAuthHash'",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?;
+
+    match result {
+        Ok((hash, updated_at)) => Ok(Json(AuthHashResponse { hash, updated_at })),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(AppError::NotFound(
+            "agent auth hash not set".to_string(),
+        )),
+        Err(e) => Err(AppError::Database(e)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +565,27 @@ mod tests {
         assert_eq!(p.id, "pol-001");
         assert_eq!(p.priority, 1);
         assert!(p.enabled);
+    }
+
+    #[test]
+    fn test_set_auth_hash_request_serde() {
+        let json = r#"{"hash":"$2b$12$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012"}"#;
+        let req: SetAuthHashRequest =
+            serde_json::from_str(json).expect("deserialize");
+        assert!(req.hash.starts_with("$2"));
+    }
+
+    #[test]
+    fn test_auth_hash_response_serde() {
+        let resp = AuthHashResponse {
+            hash: "$2b$12$test".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let json =
+            serde_json::to_string(&resp).expect("serialize");
+        let rt: AuthHashResponse =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt.hash, "$2b$12$test");
     }
 
     #[test]
