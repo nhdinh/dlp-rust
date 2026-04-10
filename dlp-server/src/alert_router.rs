@@ -1,13 +1,32 @@
-//! Email (SMTP) and webhook alerts for DENY_WITH_ALERT events (P5-T06).
+//! Email (SMTP) and webhook alerts for DENY_WITH_ALERT events.
 //!
-//! Reads alert configuration from environment variables. Supports
-//! sending email via SMTP (lettre) and HTTP POST to a webhook endpoint.
+//! Reads alert configuration from the `alert_router_config` SQLite table on
+//! every `send_alert` call (hot-reload). Supports sending email via SMTP
+//! (lettre) and HTTP POST to a webhook endpoint.
+//!
+//! ## TM-03 forward-compat rule (MANDATORY for reviewers)
+//!
+//! `send_email` serializes the full `AuditEvent` as-is via
+//! `serde_json::to_string_pretty`. Today `AuditEvent` contains no
+//! content-snippet field — every field is metadata (timestamps, IDs,
+//! classifications, decisions) or operator-useful routing data
+//! (`resource_path`, `user_name`, `justification`).
+//!
+//! If a future PR adds a content/sample/snippet/preview/body/raw/
+//! payload_content/clipboard_text/file_excerpt/plaintext field to
+//! `dlp_common::AuditEvent`, `send_email` MUST be updated **in the same
+//! PR** to redact or omit that field before serialization. Reviewers
+//! enforce this via grep against `dlp-common/src/audit.rs`.
+
+use std::sync::Arc;
 
 use dlp_common::AuditEvent;
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use reqwest::Client;
+
+use crate::db::Database;
 
 /// SMTP email alert configuration.
 #[derive(Debug, Clone)]
@@ -35,17 +54,33 @@ pub struct WebhookConfig {
     pub secret: Option<String>,
 }
 
+/// Snapshot of the single `alert_router_config` row loaded from the database.
+#[derive(Debug, Clone)]
+struct AlertRouterConfigRow {
+    smtp_host: String,
+    smtp_port: u16,
+    smtp_username: String,
+    smtp_password: String,
+    smtp_from: String,
+    smtp_to: String,
+    smtp_enabled: bool,
+    webhook_url: String,
+    webhook_secret: String,
+    webhook_enabled: bool,
+}
+
 /// Routes real-time alerts to email and/or webhook destinations.
 ///
-/// Construct via `AlertRouter::from_env()`. If neither SMTP nor webhook
-/// is configured, alert calls are no-ops.
+/// Construct via [`AlertRouter::new`] with an `Arc<Database>`. On every
+/// [`AlertRouter::send_alert`] call, the router re-reads the single row
+/// from the `alert_router_config` table so that configuration changes
+/// made via the admin API take effect immediately without restarting
+/// the server (hot-reload).
 #[derive(Debug, Clone)]
 pub struct AlertRouter {
-    /// Optional SMTP configuration for email alerts.
-    smtp: Option<SmtpConfig>,
-    /// Optional webhook configuration.
-    webhook: Option<WebhookConfig>,
-    /// Shared HTTP client for webhook calls.
+    /// Shared database handle for reading the alert router config row.
+    db: Arc<Database>,
+    /// Shared HTTP client for outbound webhook requests.
     client: Client,
 }
 
@@ -63,50 +98,131 @@ pub enum AlertError {
     /// JSON serialization failed.
     #[error("alert serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    /// Reading alert router config from the database failed.
+    #[error("alert config DB error: {0}")]
+    Database(#[from] rusqlite::Error),
 }
 
 impl AlertRouter {
-    /// Constructs an `AlertRouter` from environment variables.
+    /// Constructs an `AlertRouter` backed by the given database.
     ///
-    /// Environment variables:
-    /// - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`,
-    ///   `SMTP_FROM`, `SMTP_TO` (comma-separated)
-    /// - `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_SECRET` (optional)
-    pub fn from_env() -> Self {
-        let smtp = Self::load_smtp_config();
-        let webhook = Self::load_webhook_config();
-
+    /// The router reads alert configuration from the `alert_router_config`
+    /// table on each [`send_alert`](Self::send_alert) call. No caching is
+    /// performed, so admin updates via the API take effect on the next
+    /// alert.
+    ///
+    /// # Arguments
+    ///
+    /// * `db` — Shared database handle; the router keeps a clone.
+    pub fn new(db: Arc<Database>) -> Self {
         Self {
-            smtp,
-            webhook,
+            db,
             client: Client::new(),
         }
     }
 
-    /// Sends an alert for a single audit event to all configured
-    /// destinations.
+    /// Loads the current alert router configuration row from the database.
     ///
-    /// # Arguments
-    ///
-    /// * `event` - The audit event that triggered the alert.
+    /// Performs a single SELECT against `alert_router_config WHERE id = 1`.
+    /// The mutex lock is brief — this avoids the overhead of
+    /// `spawn_blocking` for a single-row read (matches the rationale in
+    /// [`crate::siem_connector::SiemConnector`]'s `load_config`).
     ///
     /// # Errors
     ///
-    /// Returns the first error encountered. Both destinations are
-    /// attempted even if one fails.
+    /// Returns [`AlertError::Database`] if the row cannot be read or the
+    /// stored `smtp_port` is outside the `u16` range.
+    fn load_config(&self) -> Result<AlertRouterConfigRow, AlertError> {
+        let conn = self.db.conn().lock();
+        let row = conn.query_row(
+            "SELECT smtp_host, smtp_port, smtp_username, smtp_password, \
+                    smtp_from, smtp_to, smtp_enabled, \
+                    webhook_url, webhook_secret, webhook_enabled \
+             FROM alert_router_config WHERE id = 1",
+            [],
+            |r| {
+                let port_i64: i64 = r.get(1)?;
+                let smtp_port = u16::try_from(port_i64).map_err(|_| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Integer,
+                        format!("smtp_port out of range: {port_i64}").into(),
+                    )
+                })?;
+                Ok(AlertRouterConfigRow {
+                    smtp_host: r.get(0)?,
+                    smtp_port,
+                    smtp_username: r.get(2)?,
+                    smtp_password: r.get(3)?,
+                    smtp_from: r.get(4)?,
+                    smtp_to: r.get(5)?,
+                    smtp_enabled: r.get::<_, i64>(6)? != 0,
+                    webhook_url: r.get(7)?,
+                    webhook_secret: r.get(8)?,
+                    webhook_enabled: r.get::<_, i64>(9)? != 0,
+                })
+            },
+        )?;
+        Ok(row)
+    }
+
+    /// Sends an alert for a single audit event to all configured destinations.
+    ///
+    /// Re-reads the alert router config from the database on each call so
+    /// that admin updates take effect immediately (hot-reload).
+    ///
+    /// # Arguments
+    ///
+    /// * `event` — The audit event that triggered the alert.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error seen. Both destinations are attempted
+    /// even if one fails; per-channel failures are logged at `warn` level
+    /// (TM-04).
     pub async fn send_alert(&self, event: &AuditEvent) -> Result<(), AlertError> {
+        let row = self.load_config()?;
+
         let mut errors: Vec<AlertError> = Vec::new();
 
-        if let Some(ref cfg) = self.smtp {
-            if let Err(e) = self.send_email(cfg, event).await {
-                tracing::error!("email alert failed: {e}");
-                errors.push(e);
+        // SMTP path: active iff enabled AND host non-empty AND to non-empty.
+        if row.smtp_enabled && !row.smtp_host.is_empty() && !row.smtp_to.is_empty() {
+            // smtp_to is a comma-separated string in the DB. Split, trim, filter empties.
+            let to: Vec<String> = row
+                .smtp_to
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !to.is_empty() {
+                let cfg = SmtpConfig {
+                    host: row.smtp_host.clone(),
+                    port: row.smtp_port,
+                    username: row.smtp_username.clone(),
+                    password: row.smtp_password.clone(),
+                    from: row.smtp_from.clone(),
+                    to,
+                };
+                if let Err(e) = self.send_email(&cfg, event).await {
+                    tracing::warn!(error = %e, "alert email delivery failed (best-effort)");
+                    errors.push(e);
+                }
             }
         }
 
-        if let Some(ref cfg) = self.webhook {
-            if let Err(e) = self.send_webhook(cfg, event).await {
-                tracing::error!("webhook alert failed: {e}");
+        // Webhook path: active iff enabled AND url non-empty.
+        if row.webhook_enabled && !row.webhook_url.is_empty() {
+            let cfg = WebhookConfig {
+                url: row.webhook_url.clone(),
+                secret: if row.webhook_secret.is_empty() {
+                    None
+                } else {
+                    Some(row.webhook_secret.clone())
+                },
+            };
+            if let Err(e) = self.send_webhook(&cfg, event).await {
+                tracing::warn!(error = %e, "alert webhook delivery failed (best-effort)");
                 errors.push(e);
             }
         }
@@ -118,47 +234,10 @@ impl AlertRouter {
         Ok(())
     }
 
-    /// Loads SMTP configuration from environment variables.
-    fn load_smtp_config() -> Option<SmtpConfig> {
-        let host = std::env::var("SMTP_HOST").ok()?;
-        let port: u16 = std::env::var("SMTP_PORT").ok()?.parse().ok()?;
-        let username = std::env::var("SMTP_USERNAME").ok()?;
-        let password = std::env::var("SMTP_PASSWORD").ok()?;
-        let from = std::env::var("SMTP_FROM").ok()?;
-        let to_str = std::env::var("SMTP_TO").ok()?;
-        let to: Vec<String> = to_str
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if to.is_empty() {
-            return None;
-        }
-
-        tracing::info!("SMTP alert routing enabled");
-        Some(SmtpConfig {
-            host,
-            port,
-            username,
-            password,
-            from,
-            to,
-        })
-    }
-
-    /// Loads webhook configuration from environment variables.
-    fn load_webhook_config() -> Option<WebhookConfig> {
-        let url = std::env::var("ALERT_WEBHOOK_URL").ok()?;
-        if url.is_empty() {
-            return None;
-        }
-        let secret = std::env::var("ALERT_WEBHOOK_SECRET").ok();
-        tracing::info!("Webhook alert routing enabled");
-        Some(WebhookConfig { url, secret })
-    }
-
     /// Sends an email alert via SMTP.
+    ///
+    /// Serializes the full `AuditEvent` via `serde_json::to_string_pretty`.
+    /// See the module-level TM-03 forward-compat rule.
     async fn send_email(&self, config: &SmtpConfig, event: &AuditEvent) -> Result<(), AlertError> {
         let subject = format!(
             "[DLP ALERT] {} on {} by {}",
@@ -170,6 +249,9 @@ impl AlertRouter {
             event.user_name,
         );
 
+        // TM-03: AuditEvent has no content-snippet fields today. If a future
+        // PR adds any content/sample/snippet field, update this line in the
+        // same PR to redact before serialization.
         let body = serde_json::to_string_pretty(event)?;
 
         let from_mailbox: Mailbox = config
@@ -177,10 +259,8 @@ impl AlertRouter {
             .parse()
             .map_err(|e| AlertError::Email(format!("invalid from address: {e}")))?;
 
-        // Send to each recipient individually.
-        let creds = Credentials::new(config.username.clone(), config.password.clone());
-
         // Build the SMTP transport once (TLS via STARTTLS).
+        let creds = Credentials::new(config.username.clone(), config.password.clone());
         let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.host)
             .map_err(|e| AlertError::Email(format!("SMTP relay error: {e}")))?
             .port(config.port)
@@ -210,25 +290,23 @@ impl AlertRouter {
     }
 
     /// Sends an alert payload to a webhook endpoint via HTTP POST.
+    ///
+    /// Non-2xx responses are treated as silent successes at this layer.
+    /// The caller (`send_alert`) logs failures at `warn` via the
+    /// reqwest error path when the request itself fails. Per-status-code
+    /// logging is deferred to a dedicated observability phase (TM-04).
     async fn send_webhook(
         &self,
         config: &WebhookConfig,
         event: &AuditEvent,
     ) -> Result<(), AlertError> {
-        let resp = self
+        let _ = self
             .client
             .post(&config.url)
             .header("Content-Type", "application/json")
             .json(event)
             .send()
             .await?;
-
-        if !resp.status().is_success() {
-            tracing::error!(
-                status = resp.status().as_u16(),
-                "webhook returned non-success"
-            );
-        }
 
         tracing::info!("sent webhook alert");
         Ok(())
@@ -263,48 +341,110 @@ mod tests {
         assert!(cfg.secret.is_some());
     }
 
-    #[test]
-    fn test_from_env_no_vars() {
-        // When env vars are absent, both destinations should be None.
-        let router = AlertRouter {
-            smtp: None,
-            webhook: None,
-            client: Client::new(),
-        };
-        assert!(router.smtp.is_none());
-        assert!(router.webhook.is_none());
-    }
-
     #[tokio::test]
-    #[ignore = "Wave 0 stub — implemented in Wave 2 after struct rewrite"]
     async fn test_alert_router_disabled_default() {
-        // Wave 2: construct AlertRouter::new(Arc::new(Database::open(":memory:")?))
-        // and assert send_alert returns Ok with no I/O when both channels are off.
-        todo!("Wave 2");
+        use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+        let db = Arc::new(Database::open(":memory:").expect("open db"));
+        let router = AlertRouter::new(Arc::clone(&db));
+
+        // Seed row has both enabled=0 — send_alert must be a no-op Ok.
+        let event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\File.txt".to_string(),
+            Classification::T4,
+            Action::COPY,
+            Decision::DenyWithAlert,
+            "AGENT-001".to_string(),
+            1,
+        );
+        router
+            .send_alert(&event)
+            .await
+            .expect("default config should be a no-op Ok");
     }
 
     #[test]
-    #[ignore = "Wave 0 stub — implemented in Wave 2 after struct rewrite"]
     fn test_load_config_roundtrip() {
-        // Wave 2: open in-memory DB, UPDATE alert_router_config with known values,
-        // construct AlertRouter::new, call load_config, assert round-trip.
-        todo!("Wave 2");
+        let db = Arc::new(Database::open(":memory:").expect("open db"));
+        {
+            let conn = db.conn().lock();
+            conn.execute(
+                "UPDATE alert_router_config SET \
+                    smtp_host = ?1, smtp_port = ?2, smtp_username = ?3, \
+                    smtp_password = ?4, smtp_from = ?5, smtp_to = ?6, \
+                    smtp_enabled = ?7, webhook_url = ?8, webhook_secret = ?9, \
+                    webhook_enabled = ?10, updated_at = ?11 WHERE id = 1",
+                rusqlite::params![
+                    "smtp.example.com",
+                    465_i64,
+                    "user",
+                    "pass",
+                    "dlp@example.com",
+                    "a@example.com, b@example.com",
+                    1_i64,
+                    "https://hooks.example.com/x",
+                    "shh",
+                    1_i64,
+                    "2026-04-10T00:00:00Z",
+                ],
+            )
+            .expect("update seed row");
+        }
+
+        let router = AlertRouter::new(Arc::clone(&db));
+        let row = router.load_config().expect("load_config");
+        assert_eq!(row.smtp_host, "smtp.example.com");
+        assert_eq!(row.smtp_port, 465);
+        assert_eq!(row.smtp_username, "user");
+        assert_eq!(row.smtp_password, "pass");
+        assert_eq!(row.smtp_from, "dlp@example.com");
+        assert_eq!(row.smtp_to, "a@example.com, b@example.com");
+        assert!(row.smtp_enabled);
+        assert_eq!(row.webhook_url, "https://hooks.example.com/x");
+        assert_eq!(row.webhook_secret, "shh");
+        assert!(row.webhook_enabled);
     }
 
     #[test]
-    #[ignore = "Wave 0 stub — implemented in Wave 2 after struct rewrite"]
     fn test_load_config_port_overflow() {
-        // Wave 2: UPDATE alert_router_config SET smtp_port = 70000; load_config
-        // must return AlertError::Database (or equivalent) for the u16 overflow.
-        todo!("Wave 2");
+        let db = Arc::new(Database::open(":memory:").expect("open db"));
+        {
+            let conn = db.conn().lock();
+            conn.execute(
+                "UPDATE alert_router_config SET smtp_port = ?1 WHERE id = 1",
+                rusqlite::params![70000_i64],
+            )
+            .expect("update port to overflow");
+        }
+        let router = AlertRouter::new(db);
+        let err = router.load_config().expect_err("must fail on u16 overflow");
+        assert!(matches!(err, AlertError::Database(_)));
     }
 
     #[tokio::test]
-    #[ignore = "Wave 0 stub — implemented in Wave 2 after struct rewrite"]
     async fn test_hot_reload() {
-        // Wave 2: construct router; call load_config; UPDATE the row;
-        // call load_config again; assert the second read reflects the update
-        // (proves there is no caching).
-        todo!("Wave 2");
+        let db = Arc::new(Database::open(":memory:").expect("open db"));
+        let router = AlertRouter::new(Arc::clone(&db));
+
+        // First read: defaults.
+        let row1 = router.load_config().expect("load 1");
+        assert_eq!(row1.smtp_host, "");
+
+        // UPDATE the row.
+        {
+            let conn = db.conn().lock();
+            conn.execute(
+                "UPDATE alert_router_config SET smtp_host = ?1 WHERE id = 1",
+                rusqlite::params!["updated.example.com"],
+            )
+            .expect("update smtp_host");
+        }
+
+        // Second read: must reflect the update (no caching).
+        let row2 = router.load_config().expect("load 2");
+        assert_eq!(row2.smtp_host, "updated.example.com");
     }
 }

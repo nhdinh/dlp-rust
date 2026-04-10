@@ -30,6 +30,7 @@ use tracing_subscriber::EnvFilter;
 use dlp_server::admin_api;
 use dlp_server::admin_auth;
 use dlp_server::agent_registry;
+use dlp_server::alert_router::AlertRouter;
 use dlp_server::db::Database;
 use dlp_server::siem_connector::SiemConnector;
 use dlp_server::AppState;
@@ -145,8 +146,12 @@ async fn main() -> anyhow::Result<()> {
     // every relay call from the `siem_config` table (hot-reload).
     let siem = SiemConnector::new(Arc::clone(&db));
 
+    // Initialise the alert router. Configuration is loaded on every
+    // send_alert call from the `alert_router_config` table (hot-reload).
+    let alert = AlertRouter::new(Arc::clone(&db));
+
     // Build shared application state.
-    let state = Arc::new(AppState { db, siem });
+    let state = Arc::new(AppState { db, siem, alert });
 
     // Start the background heartbeat sweeper (marks agents offline
     // after 90 seconds of silence).

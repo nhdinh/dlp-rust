@@ -21,14 +21,16 @@ use axum::response::{IntoResponse, Response};
 
 /// Shared application state passed to all HTTP handlers via axum's `State` extractor.
 ///
-/// Wraps the database and SIEM connector so handlers can access both
-/// through a single `Arc<AppState>`.
+/// Wraps the database, SIEM connector, and alert router so handlers can access
+/// them through a single `Arc<AppState>`.
 #[derive(Debug, Clone)]
 pub struct AppState {
     /// Shared database handle for SQLite operations.
     pub db: Arc<db::Database>,
     /// SIEM relay connector (Splunk HEC / ELK).
     pub siem: siem_connector::SiemConnector,
+    /// Alert router for DenyWithAlert email/webhook notifications.
+    pub alert: alert_router::AlertRouter,
 }
 
 /// Unified application error type returned by all HTTP handlers.
