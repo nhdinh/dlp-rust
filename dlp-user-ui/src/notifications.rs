@@ -13,10 +13,7 @@
 /// * `title` - The notification title displayed in bold
 /// * `body` - The notification body text
 pub fn show_toast(title: &str, body: &str) {
-    if let Err(e) =
-        winrt_notification::Toast::new(
-            winrt_notification::Toast::POWERSHELL_APP_ID,
-        )
+    if let Err(e) = winrt_notification::Toast::new(winrt_notification::Toast::POWERSHELL_APP_ID)
         .title(title)
         .text1(body)
         .show()

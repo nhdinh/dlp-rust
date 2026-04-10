@@ -78,9 +78,7 @@ pub async fn register_agent(
     Json(payload): Json<RegisterRequest>,
 ) -> Result<Json<AgentInfoResponse>, AppError> {
     if payload.agent_id.is_empty() {
-        return Err(AppError::BadRequest(
-            "agent_id is required".to_string(),
-        ));
+        return Err(AppError::BadRequest("agent_id is required".to_string()));
     }
 
     let now = Utc::now().to_rfc3339();
@@ -168,9 +166,9 @@ pub async fn heartbeat(
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     if rows_updated == 0 {
-        return Err(AppError::NotFound(
-            format!("agent {agent_id} not registered"),
-        ));
+        return Err(AppError::NotFound(format!(
+            "agent {agent_id} not registered"
+        )));
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -257,9 +255,7 @@ pub async fn get_agent(
     match agent {
         Ok(a) => Ok(Json(a)),
         Err(rusqlite::Error::QueryReturnedNoRows) => {
-            Err(AppError::NotFound(
-                format!("agent {agent_id} not found"),
-            ))
+            Err(AppError::NotFound(format!("agent {agent_id} not found")))
         }
         Err(e) => Err(AppError::Database(e)),
     }
@@ -272,17 +268,14 @@ pub async fn get_agent(
 /// operation.
 pub fn spawn_offline_sweeper(state: Arc<AppState>) {
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
 
         loop {
             interval.tick().await;
 
             let db = Arc::clone(&state.db);
             let result = tokio::task::spawn_blocking(move || {
-                let cutoff = (Utc::now()
-                    - chrono::Duration::seconds(90))
-                .to_rfc3339();
+                let cutoff = (Utc::now() - chrono::Duration::seconds(90)).to_rfc3339();
                 let conn = db.conn().lock();
                 conn.execute(
                     "UPDATE agents SET status = 'offline' \
@@ -295,10 +288,7 @@ pub fn spawn_offline_sweeper(state: Arc<AppState>) {
 
             match result {
                 Ok(Ok(count)) if count > 0 => {
-                    tracing::info!(
-                        count,
-                        "marked agents offline (stale heartbeat)"
-                    );
+                    tracing::info!(count, "marked agents offline (stale heartbeat)");
                 }
                 Ok(Err(e)) => {
                     tracing::error!("offline sweeper db error: {e}");
@@ -325,18 +315,16 @@ mod tests {
             os_version: "Windows 11".to_string(),
             agent_version: "0.1.0".to_string(),
         };
-        let json = serde_json::to_string(&req)
-            .expect("serialize");
-        let rt: RegisterRequest = serde_json::from_str(&json)
-            .expect("deserialize");
+        let json = serde_json::to_string(&req).expect("serialize");
+        let rt: RegisterRequest = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(req.agent_id, rt.agent_id);
     }
 
     #[test]
     fn test_heartbeat_request_default() {
         let json = "{}";
-        let req: HeartbeatRequest = serde_json::from_str(json)
-            .expect("deserialize empty heartbeat");
+        let req: HeartbeatRequest =
+            serde_json::from_str(json).expect("deserialize empty heartbeat");
         assert!(req.status.is_none());
     }
 }

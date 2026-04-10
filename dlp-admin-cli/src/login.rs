@@ -40,9 +40,7 @@ pub fn run(rt: &tokio::runtime::Runtime) -> Result<EngineClient> {
             Err(e) => {
                 eprintln!("Login failed: {e}");
                 if attempt < MAX_ATTEMPTS {
-                    eprintln!(
-                        "Attempt {attempt}/{MAX_ATTEMPTS}. Try again.\n"
-                    );
+                    eprintln!("Attempt {attempt}/{MAX_ATTEMPTS}. Try again.\n");
                 }
             }
         }

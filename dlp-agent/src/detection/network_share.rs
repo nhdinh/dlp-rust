@@ -215,7 +215,13 @@ impl SmbMonitor {
                     return;
                 }
             };
-            rt.block_on(poll_loop(whitelist, last_seen, &stop_flag_owned, event_tx, interval));
+            rt.block_on(poll_loop(
+                whitelist,
+                last_seen,
+                &stop_flag_owned,
+                event_tx,
+                interval,
+            ));
         });
     }
 
@@ -224,7 +230,8 @@ impl SmbMonitor {
     /// Safe to call from any thread.  The thread will exit within one poll
     /// interval after this is called.
     pub fn stop(&self) {
-        self.stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stop_flag
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         debug!("SMB monitor stop flag set");
     }
 }
@@ -253,13 +260,8 @@ async fn emit_connected_events(
         if matches_whitelist(unc_path, whitelist_snapshot) {
             continue;
         }
-        let server = extract_server_name(unc_path)
-            .unwrap_or_else(|| unc_path.clone());
-        let share_name = unc_path
-            .rsplit('\\')
-            .next()
-            .unwrap_or(unc_path)
-            .to_string();
+        let server = extract_server_name(unc_path).unwrap_or_else(|| unc_path.clone());
+        let share_name = unc_path.rsplit('\\').next().unwrap_or(unc_path).to_string();
         let event = SmbShareEvent::Connected {
             unc_path: unc_path.clone(),
             server,
@@ -352,8 +354,8 @@ async fn poll_loop(
 fn enumerate_connected_shares() -> HashSet<String> {
     use windows::Win32::Foundation::{HANDLE, WIN32_ERROR};
     use windows::Win32::NetworkManagement::WNet::{
-        NETRESOURCEW, RESOURCE_GLOBALNET, RESOURCEUSAGE_CONNECTABLE, RESOURCEUSAGE_CONTAINER,
-        RESOURCETYPE_ANY, WNetCloseEnum, WNetEnumResourceW, WNetOpenEnumW,
+        WNetCloseEnum, WNetEnumResourceW, WNetOpenEnumW, NETRESOURCEW, RESOURCETYPE_ANY,
+        RESOURCEUSAGE_CONNECTABLE, RESOURCEUSAGE_CONTAINER, RESOURCE_GLOBALNET,
     };
 
     const NO_ERROR: WIN32_ERROR = WIN32_ERROR(0);
@@ -425,9 +427,7 @@ fn enumerate_connected_shares() -> HashSet<String> {
         // SAFETY: buffer was allocated for `MAX_ENTRIES * entry_size` bytes and
         // entries_read <= MAX_ENTRIES.  NETRESOURCEW is #[repr(C)] so its layout
         // is deterministic.
-        let entry: &NETRESOURCEW = unsafe {
-            &*buffer.as_ptr().add(i * entry_size).cast()
-        };
+        let entry: &NETRESOURCEW = unsafe { &*buffer.as_ptr().add(i * entry_size).cast() };
 
         // lpRemoteName is null for some entries (e.g. domain containers).
         if entry.lpRemoteName.is_null() {

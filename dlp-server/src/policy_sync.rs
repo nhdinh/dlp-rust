@@ -49,19 +49,15 @@ impl PolicySyncer {
     /// Reads `DLP_SERVER_REPLICAS` as a comma-separated list of
     /// base URLs (e.g., `http://pe1:8080,http://pe2:8080`).
     pub fn from_env() -> Self {
-        let replicas: Vec<String> =
-            std::env::var("DLP_SERVER_REPLICAS")
-                .unwrap_or_default()
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+        let replicas: Vec<String> = std::env::var("DLP_SERVER_REPLICAS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
 
         if !replicas.is_empty() {
-            tracing::info!(
-                count = replicas.len(),
-                "policy sync replicas configured"
-            );
+            tracing::info!(count = replicas.len(), "policy sync replicas configured");
         }
 
         Self {
@@ -80,22 +76,13 @@ impl PolicySyncer {
     ///
     /// Returns the first error encountered. All replicas are attempted
     /// even if some fail.
-    pub async fn sync_policy(
-        &self,
-        policy: &Policy,
-    ) -> Result<(), SyncError> {
+    pub async fn sync_policy(&self, policy: &Policy) -> Result<(), SyncError> {
         let mut first_error: Option<SyncError> = None;
 
         for base_url in &self.replicas {
-            let url =
-                format!("{}/policies/{}", base_url, policy.id);
+            let url = format!("{}/policies/{}", base_url, policy.id);
 
-            let result = self
-                .client
-                .put(&url)
-                .json(policy)
-                .send()
-                .await;
+            let result = self.client.put(&url).json(policy).send().await;
 
             match result {
                 Ok(resp) if resp.status().is_success() => {
@@ -107,8 +94,7 @@ impl PolicySyncer {
                 }
                 Ok(resp) => {
                     let status = resp.status().as_u16();
-                    let body =
-                        resp.text().await.unwrap_or_default();
+                    let body = resp.text().await.unwrap_or_default();
                     let err = SyncError::ReplicaError {
                         url: url.clone(),
                         status,
@@ -147,17 +133,13 @@ impl PolicySyncer {
     /// # Errors
     ///
     /// Returns the first error encountered.
-    pub async fn delete_policy(
-        &self,
-        id: &str,
-    ) -> Result<(), SyncError> {
+    pub async fn delete_policy(&self, id: &str) -> Result<(), SyncError> {
         let mut first_error: Option<SyncError> = None;
 
         for base_url in &self.replicas {
             let url = format!("{}/policies/{}", base_url, id);
 
-            let result =
-                self.client.delete(&url).send().await;
+            let result = self.client.delete(&url).send().await;
 
             match result {
                 Ok(resp) if resp.status().is_success() => {
@@ -169,8 +151,7 @@ impl PolicySyncer {
                 }
                 Ok(resp) => {
                     let status = resp.status().as_u16();
-                    let body =
-                        resp.text().await.unwrap_or_default();
+                    let body = resp.text().await.unwrap_or_default();
                     let err = SyncError::ReplicaError {
                         url: url.clone(),
                         status,

@@ -1,12 +1,12 @@
 //! Renders the current [`Screen`] to the terminal frame.
 
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Table, Wrap,
 };
+use ratatui::Frame;
 
 use crate::app::{App, Screen, StatusKind};
 
@@ -165,7 +165,11 @@ fn draw_siem_config(
                 format!("[{buffer}_]")
             } else if is_siem_bool(i) {
                 let b = config[key].as_bool().unwrap_or(false);
-                if b { "[x]".to_string() } else { "[ ]".to_string() }
+                if b {
+                    "[x]".to_string()
+                } else {
+                    "[ ]".to_string()
+                }
             } else if is_siem_secret(i) {
                 let v = config[key].as_str().unwrap_or("");
                 if v.is_empty() {
@@ -240,7 +244,11 @@ fn draw_menu(frame: &mut Frame, area: Rect, title: &str, items: &[&str], selecte
     state.select(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
 
-    draw_hints(frame, area, "Up/Down: navigate | Enter: select | Esc/Q: back");
+    draw_hints(
+        frame,
+        area,
+        "Up/Down: navigate | Enter: select | Esc/Q: back",
+    );
 }
 
 /// Draws a text/password input box.
@@ -266,12 +274,18 @@ fn draw_input(frame: &mut Frame, area: Rect, prompt: &str, input: &str, masked: 
 /// Draws a confirmation dialog.
 fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, yes_selected: bool) {
     let yes_style = if yes_selected {
-        Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
     let no_style = if !yes_selected {
-        Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
@@ -286,13 +300,15 @@ fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, yes_selected: bool
         ]),
     ];
 
-    let block = Block::default()
-        .title(" Confirm ")
-        .borders(Borders::ALL);
+    let block = Block::default().title(" Confirm ").borders(Borders::ALL);
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
 
-    draw_hints(frame, area, "Left/Right: select | Enter: confirm | Esc: cancel");
+    draw_hints(
+        frame,
+        area,
+        "Left/Right: select | Enter: confirm | Esc: cancel",
+    );
 }
 
 /// Draws a scrollable policy table.
@@ -350,14 +366,13 @@ fn draw_policy_list(
 }
 
 /// Draws a scrollable agent table.
-fn draw_agent_list(
-    frame: &mut Frame,
-    area: Rect,
-    agents: &[serde_json::Value],
-    selected: usize,
-) {
+fn draw_agent_list(frame: &mut Frame, area: Rect, agents: &[serde_json::Value], selected: usize) {
     let header = Row::new(vec![
-        "Hostname", "IP", "Status", "Version", "Last Heartbeat",
+        "Hostname",
+        "IP",
+        "Status",
+        "Version",
+        "Last Heartbeat",
     ])
     .style(Style::default().add_modifier(Modifier::BOLD))
     .bottom_margin(1);
@@ -436,24 +451,16 @@ fn draw_hints(frame: &mut Frame, area: Rect, hints: &str) {
         height: 1,
     };
     frame.render_widget(Clear, hint_area);
-    let line = Paragraph::new(
-        Line::from(hints).style(Style::default().fg(Color::DarkGray)),
-    );
+    let line = Paragraph::new(Line::from(hints).style(Style::default().fg(Color::DarkGray)));
     frame.render_widget(line, hint_area);
 }
 
 /// Draws the status bar at the bottom of the screen.
 fn draw_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     let (text, style) = match &app.status {
-        Some((msg, StatusKind::Info)) => {
-            (msg.clone(), Style::default().fg(Color::Cyan))
-        }
-        Some((msg, StatusKind::Success)) => {
-            (msg.clone(), Style::default().fg(Color::Green))
-        }
-        Some((msg, StatusKind::Error)) => {
-            (msg.clone(), Style::default().fg(Color::Red))
-        }
+        Some((msg, StatusKind::Info)) => (msg.clone(), Style::default().fg(Color::Cyan)),
+        Some((msg, StatusKind::Success)) => (msg.clone(), Style::default().fg(Color::Green)),
+        Some((msg, StatusKind::Error)) => (msg.clone(), Style::default().fg(Color::Red)),
         None => (String::new(), Style::default()),
     };
     let paragraph = Paragraph::new(Line::from(text).style(style));

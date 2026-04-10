@@ -9,10 +9,8 @@
 //! reliable than building ACL entries manually.
 
 use windows::core::PCWSTR;
-use windows::Win32::Security::{
-    PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
-};
 use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
 /// SDDL string granting:
 /// - `(A;;GRGW;;;AU)` — Allow Generic Read + Generic Write to
@@ -22,8 +20,7 @@ use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSe
 ///
 /// This lets the interactive-user UI process connect to SYSTEM-owned
 /// pipes while preserving full control for SYSTEM and Administrators.
-const PIPE_SDDL: &str =
-    "D:(A;;GRGW;;;AU)(A;;GA;;;SY)(A;;GA;;;BA)\0";
+const PIPE_SDDL: &str = "D:(A;;GRGW;;;AU)(A;;GA;;;SY)(A;;GA;;;BA)\0";
 
 /// A self-contained pipe security context that owns the security
 /// descriptor buffer.
@@ -53,8 +50,7 @@ impl PipeSecurity {
     ///
     /// Returns an error if the SDDL conversion fails.
     pub fn new() -> anyhow::Result<Self> {
-        let sddl_wide: Vec<u16> =
-            PIPE_SDDL.encode_utf16().collect();
+        let sddl_wide: Vec<u16> = PIPE_SDDL.encode_utf16().collect();
 
         let mut sd_ptr = PSECURITY_DESCRIPTOR::default();
 
@@ -68,16 +64,11 @@ impl PipeSecurity {
                 &mut sd_ptr,
                 None,
             )
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "SDDL security descriptor creation failed: {e}"
-                )
-            })?;
+            .map_err(|e| anyhow::anyhow!("SDDL security descriptor creation failed: {e}"))?;
         }
 
         let sa = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>()
-                as u32,
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: sd_ptr.0,
             bInheritHandle: false.into(),
         };
@@ -100,11 +91,9 @@ impl Drop for PipeSecurity {
             // ConvertStringSecurityDescriptorToSecurityDescriptorW
             // via LocalAlloc.
             unsafe {
-                let _ = windows::Win32::Foundation::LocalFree(
-                    windows::Win32::Foundation::HLOCAL(
-                        self.sd_ptr.0,
-                    ),
-                );
+                let _ = windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
+                    self.sd_ptr.0,
+                ));
             }
         }
     }
@@ -117,10 +106,7 @@ mod tests {
     #[test]
     fn test_pipe_security_creates_successfully() {
         let sec = PipeSecurity::new();
-        assert!(
-            sec.is_ok(),
-            "PipeSecurity::new() should succeed"
-        );
+        assert!(sec.is_ok(), "PipeSecurity::new() should succeed");
     }
 
     #[test]

@@ -88,8 +88,8 @@ pub fn send_clipboard_alert(
         preview: preview.to_string(),
         text_length,
     };
-    let json = serde_json::to_vec(&msg)
-        .map_err(|e| anyhow::anyhow!("serialise ClipboardAlert: {}", e))?;
+    let json =
+        serde_json::to_vec(&msg).map_err(|e| anyhow::anyhow!("serialise ClipboardAlert: {}", e))?;
     write_frame(handle, &json)?;
     flush(handle)?;
 

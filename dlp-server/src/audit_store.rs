@@ -89,25 +89,22 @@ pub async fn ingest_events(
                 .as_str()
                 .unwrap_or_default()
                 .to_string();
-            let classification =
-                serde_json::to_value(event.classification)?
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string();
-            let action =
-                serde_json::to_value(event.action_attempted)?
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string();
+            let classification = serde_json::to_value(event.classification)?
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let action = serde_json::to_value(event.action_attempted)?
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
             let decision = serde_json::to_value(event.decision)?
                 .as_str()
                 .unwrap_or_default()
                 .to_string();
-            let access_ctx =
-                serde_json::to_value(event.access_context)?
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string();
+            let access_ctx = serde_json::to_value(event.access_context)?
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
 
             tx.execute(
                 "INSERT OR IGNORE INTO audit_events \
@@ -175,49 +172,30 @@ pub async fn query_events(
 
         // Build a dynamic WHERE clause from the provided filters.
         let mut conditions: Vec<String> = Vec::new();
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
         if let Some(ref v) = q.agent_id {
-            conditions.push(format!(
-                "agent_id = ?{}",
-                params.len() + 1
-            ));
+            conditions.push(format!("agent_id = ?{}", params.len() + 1));
             params.push(Box::new(v.clone()));
         }
         if let Some(ref v) = q.user_name {
-            conditions.push(format!(
-                "user_name = ?{}",
-                params.len() + 1
-            ));
+            conditions.push(format!("user_name = ?{}", params.len() + 1));
             params.push(Box::new(v.clone()));
         }
         if let Some(ref v) = q.classification {
-            conditions.push(format!(
-                "classification = ?{}",
-                params.len() + 1
-            ));
+            conditions.push(format!("classification = ?{}", params.len() + 1));
             params.push(Box::new(v.clone()));
         }
         if let Some(ref v) = q.event_type {
-            conditions.push(format!(
-                "event_type = ?{}",
-                params.len() + 1
-            ));
+            conditions.push(format!("event_type = ?{}", params.len() + 1));
             params.push(Box::new(v.clone()));
         }
         if let Some(ref v) = q.from {
-            conditions.push(format!(
-                "timestamp >= ?{}",
-                params.len() + 1
-            ));
+            conditions.push(format!("timestamp >= ?{}", params.len() + 1));
             params.push(Box::new(v.clone()));
         }
         if let Some(ref v) = q.to {
-            conditions.push(format!(
-                "timestamp <= ?{}",
-                params.len() + 1
-            ));
+            conditions.push(format!("timestamp <= ?{}", params.len() + 1));
             params.push(Box::new(v.clone()));
         }
 
@@ -290,11 +268,9 @@ pub async fn get_event_count(
     let db = Arc::clone(&state.db);
     let count = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
-        conn.query_row(
-            "SELECT COUNT(*) FROM audit_events",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
+        conn.query_row("SELECT COUNT(*) FROM audit_events", [], |row| {
+            row.get::<_, i64>(0)
+        })
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -309,8 +285,7 @@ mod tests {
     #[test]
     fn test_event_query_defaults() {
         let json = "{}";
-        let q: EventQuery =
-            serde_json::from_str(json).expect("deserialize");
+        let q: EventQuery = serde_json::from_str(json).expect("deserialize");
         assert!(q.agent_id.is_none());
         assert!(q.limit.is_none());
         assert!(q.offset.is_none());
@@ -319,10 +294,8 @@ mod tests {
     #[test]
     fn test_event_count_serde() {
         let ec = EventCount { count: 42 };
-        let json =
-            serde_json::to_string(&ec).expect("serialize");
-        let rt: EventCount =
-            serde_json::from_str(&json).expect("deserialize");
+        let json = serde_json::to_string(&ec).expect("serialize");
+        let rt: EventCount = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt.count, 42);
     }
 }

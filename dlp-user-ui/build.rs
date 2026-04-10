@@ -61,9 +61,7 @@ fn write_ico() {
     ico.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
     ico.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
     ico.extend_from_slice(&0u32.to_le_bytes()); // biCompression = BI_RGB
-    ico.extend_from_slice(
-        &((xor_size + and_size) as u32).to_le_bytes(),
-    ); // biSizeImage
+    ico.extend_from_slice(&((xor_size + and_size) as u32).to_le_bytes()); // biSizeImage
     ico.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
     ico.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
     ico.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed

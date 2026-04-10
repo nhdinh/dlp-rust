@@ -67,8 +67,7 @@ pub fn start_all() -> Result<()> {
         .context("failed to spawn Pipe 3 thread")?;
 
     // Wait for all three pipes to be created (up to 5 seconds).
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         {
             let flags = ready.lock();

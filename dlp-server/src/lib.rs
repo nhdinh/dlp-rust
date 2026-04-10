@@ -84,15 +84,9 @@ impl IntoResponse for AppError {
                 tracing::error!("internal error: {e}");
                 (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
             }
-            AppError::NotFound(_) => {
-                (StatusCode::NOT_FOUND, self.to_string())
-            }
-            AppError::BadRequest(_) => {
-                (StatusCode::BAD_REQUEST, self.to_string())
-            }
-            AppError::Unauthorized(_) => {
-                (StatusCode::UNAUTHORIZED, self.to_string())
-            }
+            AppError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
+            AppError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            AppError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, self.to_string()),
         };
 
         let body = serde_json::json!({ "error": message });

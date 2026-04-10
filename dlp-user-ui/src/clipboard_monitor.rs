@@ -53,9 +53,8 @@ fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
         AddClipboardFormatListener, RemoveClipboardFormatListener,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DispatchMessageW, RegisterClassW, TranslateMessage,
-        CW_USEDEFAULT, HMENU, MSG, WINDOW_EX_STYLE, WM_CLIPBOARDUPDATE,
-        WNDCLASSW, WS_OVERLAPPED,
+        CreateWindowExW, DispatchMessageW, RegisterClassW, TranslateMessage, CW_USEDEFAULT, HMENU,
+        MSG, WINDOW_EX_STYLE, WM_CLIPBOARDUPDATE, WNDCLASSW, WS_OVERLAPPED,
     };
 
     let class_name_str = "DLPClipboardMonitor\0";

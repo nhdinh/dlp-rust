@@ -32,8 +32,8 @@ impl Database {
     /// Returns an error if the file cannot be opened or table
     /// creation fails.
     pub fn open(path: &str) -> anyhow::Result<Self> {
-        let conn = Connection::open(path)
-            .with_context(|| format!("failed to open database at {path}"))?;
+        let conn =
+            Connection::open(path).with_context(|| format!("failed to open database at {path}"))?;
 
         // Enable WAL mode for better concurrent read performance.
         conn.execute_batch("PRAGMA journal_mode=WAL;")
@@ -159,8 +159,7 @@ mod tests {
 
     #[test]
     fn test_tables_created() {
-        let db = Database::open(":memory:")
-            .expect("open in-memory db");
+        let db = Database::open(":memory:").expect("open in-memory db");
         let conn = db.conn().lock();
 
         // Query sqlite_master for our expected tables.
@@ -193,8 +192,7 @@ mod tests {
     #[test]
     fn test_idempotent_init() {
         // Calling open twice on the same path should not fail.
-        let db = Database::open(":memory:")
-            .expect("first open");
+        let db = Database::open(":memory:").expect("first open");
         let result = db.init_tables();
         assert!(result.is_ok(), "re-init should be idempotent");
     }

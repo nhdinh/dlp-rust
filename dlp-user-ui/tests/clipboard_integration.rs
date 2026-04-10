@@ -86,10 +86,7 @@ fn start_mock_pipe_server() -> (String, Arc<Mutex<Vec<String>>>) {
 }
 
 /// The actual server loop — split out so we can use `?` for errors.
-fn run_mock_pipe_server(
-    name: &str,
-    messages: Arc<Mutex<Vec<String>>>,
-) -> anyhow::Result<()> {
+fn run_mock_pipe_server(name: &str, messages: Arc<Mutex<Vec<String>>>) -> anyhow::Result<()> {
     // Encode pipe name as UTF-16 NUL-terminated — Win32 wide-string form.
     let name_wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
 
@@ -100,11 +97,11 @@ fn run_mock_pipe_server(
             PCWSTR::from_raw(name_wide.as_ptr()),
             PIPE_ACCESS_INBOUND,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-            1,     // max instances
-            0,     // out buffer size (unused — inbound only)
-            65_536,// in buffer size
-            0,     // default timeout
-            None,  // default security attrs
+            1,      // max instances
+            0,      // out buffer size (unused — inbound only)
+            65_536, // in buffer size
+            0,      // default timeout
+            None,   // default security attrs
         )
     };
 
@@ -177,14 +174,8 @@ fn read_exact(pipe: HANDLE, buf: &mut [u8]) -> bool {
     while offset < buf.len() {
         let mut bytes_read = 0u32;
         // SAFETY: `pipe` is a valid handle; the sub-slice is in-bounds.
-        let result = unsafe {
-            ReadFile(
-                pipe,
-                Some(&mut buf[offset..]),
-                Some(&mut bytes_read),
-                None,
-            )
-        };
+        let result =
+            unsafe { ReadFile(pipe, Some(&mut buf[offset..]), Some(&mut bytes_read), None) };
         if result.is_err() || bytes_read == 0 {
             return false;
         }
@@ -254,10 +245,7 @@ fn clear_clipboard() {
 
 /// Waits up to `timeout` for at least one message to land in `messages`,
 /// then returns a clone of the buffer.
-fn wait_for_messages(
-    messages: &Arc<Mutex<Vec<String>>>,
-    timeout: Duration,
-) -> Vec<String> {
+fn wait_for_messages(messages: &Arc<Mutex<Vec<String>>>, timeout: Duration) -> Vec<String> {
     let deadline = Instant::now() + timeout;
     loop {
         {

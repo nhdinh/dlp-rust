@@ -76,14 +76,13 @@ pub fn resolve_engine_url() -> String {
 ///
 /// Uses `http://` for loopback addresses and `https://` for others.
 pub fn addr_to_url(addr: &str) -> String {
-    let scheme = if addr.starts_with("127.")
-        || addr.starts_with("localhost")
-        || addr.starts_with("0.0.0.0")
-    {
-        "http"
-    } else {
-        "https"
-    };
+    let scheme =
+        if addr.starts_with("127.") || addr.starts_with("localhost") || addr.starts_with("0.0.0.0")
+        {
+            "http"
+        } else {
+            "https"
+        };
     format!("{scheme}://{addr}")
 }
 

@@ -358,9 +358,7 @@ async fn evaluate_handler(
     }
 
     // pol-002: T3 + Unmanaged -> DENY
-    if classification == Classification::T3
-        && device_trust == dlp_common::DeviceTrust::Unmanaged
-    {
+    if classification == Classification::T3 && device_trust == dlp_common::DeviceTrust::Unmanaged {
         return axum::Json(EvaluateResponse {
             decision: Decision::DENY,
             matched_policy_id: Some("pol-002".to_string()),
@@ -445,7 +443,11 @@ async fn test_agent_cache_hit_real_engine() {
 
     let client = dlp_agent::engine_client::EngineClient::new(&base_url, false).unwrap();
     let cache = Arc::new(dlp_agent::cache::Cache::new());
-    let offline = Arc::new(dlp_agent::offline::OfflineManager::new(client, cache.clone(), None));
+    let offline = Arc::new(dlp_agent::offline::OfflineManager::new(
+        client,
+        cache.clone(),
+        None,
+    ));
 
     let req = EvaluateRequest {
         subject: dlp_common::Subject::default(),
@@ -945,7 +947,10 @@ async fn test_offline_manager_offline_on_unreachable() {
     let resp = offline.evaluate(&req).await;
     // T4 + cache miss → fail-closed DENY.
     assert!(resp.decision.is_denied());
-    assert!(!offline.is_online(), "manager should be offline after unreachable");
+    assert!(
+        !offline.is_online(),
+        "manager should be offline after unreachable"
+    );
 }
 
 /// Verifies that OfflineManager uses cached decisions when offline.
@@ -1087,7 +1092,10 @@ async fn test_audit_rotation_size_trigger() {
     // After many small events the size threshold should have triggered rotation.
     // The original file should exist, and a rotated file (audit.1.jsonl) may exist.
     let log_file = dir.path().join("audit.jsonl");
-    assert!(log_file.exists(), "audit log file should exist after writes");
+    assert!(
+        log_file.exists(),
+        "audit log file should exist after writes"
+    );
 
     // The rotated file may or may not exist depending on platform write buffering,
     // but the original file should still be appendable.
@@ -1106,7 +1114,12 @@ async fn test_audit_emitter_nested_dir_creation() {
     use dlp_agent::audit_emitter::AuditEmitter;
 
     let dir = tempfile::tempdir().unwrap();
-    let nested = dir.path().join("C").join("ProgramData").join("DLP").join("logs");
+    let nested = dir
+        .path()
+        .join("C")
+        .join("ProgramData")
+        .join("DLP")
+        .join("logs");
     let emitter = AuditEmitter::open(&nested, "audit.jsonl", 50 * 1024 * 1024);
 
     assert!(

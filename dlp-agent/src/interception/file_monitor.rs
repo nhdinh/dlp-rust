@@ -208,7 +208,8 @@ impl InterceptionEngine {
         tracing::info!(
             count = watch_paths.len(),
             custom_exclusions = self.config.excluded_paths.len(),
-            "file system watcher started ({})", mode
+            "file system watcher started ({})",
+            mode
         );
 
         loop {
@@ -237,11 +238,7 @@ impl InterceptionEngine {
     /// through the channel.
     ///
     /// Returns `false` if the stop flag is set (caller should exit the loop).
-    fn dispatch_event(
-        &self,
-        event: notify::Event,
-        tx: &mpsc::Sender<FileAction>,
-    ) -> bool {
+    fn dispatch_event(&self, event: notify::Event, tx: &mpsc::Sender<FileAction>) -> bool {
         for path_buf in &event.paths {
             let path = path_buf.to_string_lossy().to_string();
             let action = match event_kind_to_action(event.kind, path) {
@@ -286,10 +283,7 @@ impl Drop for InterceptionEngine {
 }
 
 /// Registers each path with the watcher, logging success or failure.
-fn register_watch_paths(
-    watcher: &mut notify::RecommendedWatcher,
-    paths: &[std::path::PathBuf],
-) {
+fn register_watch_paths(watcher: &mut notify::RecommendedWatcher, paths: &[std::path::PathBuf]) {
     use notify::{RecursiveMode, Watcher};
 
     for path in paths {
@@ -366,19 +360,28 @@ mod tests {
 
     #[test]
     fn test_excluded_windows_dir() {
-        assert!(is_excluded(r"C:\Windows\System32\config\SYSTEM.LOG2", NO_CUSTOM));
+        assert!(is_excluded(
+            r"C:\Windows\System32\config\SYSTEM.LOG2",
+            NO_CUSTOM
+        ));
         assert!(is_excluded(r"c:\windows\temp\somefile.tmp", NO_CUSTOM));
     }
 
     #[test]
     fn test_excluded_program_files() {
         assert!(is_excluded(r"C:\Program Files\SomeApp\data.bin", NO_CUSTOM));
-        assert!(is_excluded(r"C:\Program Files (x86)\App\file.dll", NO_CUSTOM));
+        assert!(is_excluded(
+            r"C:\Program Files (x86)\App\file.dll",
+            NO_CUSTOM
+        ));
     }
 
     #[test]
     fn test_excluded_programdata() {
-        assert!(is_excluded(r"C:\ProgramData\DLP\logs\audit.jsonl", NO_CUSTOM));
+        assert!(is_excluded(
+            r"C:\ProgramData\DLP\logs\audit.jsonl",
+            NO_CUSTOM
+        ));
     }
 
     #[test]
@@ -399,7 +402,10 @@ mod tests {
 
     #[test]
     fn test_not_excluded_user_documents() {
-        assert!(!is_excluded(r"C:\Users\jsmith\Documents\report.xlsx", NO_CUSTOM));
+        assert!(!is_excluded(
+            r"C:\Users\jsmith\Documents\report.xlsx",
+            NO_CUSTOM
+        ));
     }
 
     #[test]
@@ -414,7 +420,10 @@ mod tests {
 
     #[test]
     fn test_excluded_recycle_bin() {
-        assert!(is_excluded(r"C:\$Recycle.Bin\S-1-5-21\$RXXXX.txt", NO_CUSTOM));
+        assert!(is_excluded(
+            r"C:\$Recycle.Bin\S-1-5-21\$RXXXX.txt",
+            NO_CUSTOM
+        ));
     }
 
     // -- Custom exclusion tests -----------------------------------------------

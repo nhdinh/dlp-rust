@@ -167,64 +167,32 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/auth/login", post(admin_auth::login))
-        .route(
-            "/agents/register",
-            post(agent_registry::register_agent),
-        )
-        .route(
-            "/agents/{id}/heartbeat",
-            post(agent_registry::heartbeat),
-        )
-        .route(
-            "/audit/events",
-            post(audit_store::ingest_events),
-        )
-        .route(
-            "/agent-credentials/auth-hash",
-            get(get_agent_auth_hash),
-        );
+        .route("/agents/register", post(agent_registry::register_agent))
+        .route("/agents/{id}/heartbeat", post(agent_registry::heartbeat))
+        .route("/audit/events", post(audit_store::ingest_events))
+        .route("/agent-credentials/auth-hash", get(get_agent_auth_hash));
 
     // Routes that require a valid JWT.
     let protected_routes = Router::new()
         .route("/agents", get(agent_registry::list_agents))
         .route("/agents/{id}", get(agent_registry::get_agent))
-        .route(
-            "/audit/events",
-            get(audit_store::query_events),
-        )
-        .route(
-            "/audit/events/count",
-            get(audit_store::get_event_count),
-        )
+        .route("/audit/events", get(audit_store::query_events))
+        .route("/audit/events/count", get(audit_store::get_event_count))
         .route("/policies", get(list_policies))
         .route("/policies", post(create_policy))
         .route("/policies/{id}", get(get_policy))
         .route("/policies/{id}", put(update_policy))
         .route("/policies/{id}", delete(delete_policy))
-        .route(
-            "/exceptions",
-            get(exception_store::list_exceptions),
-        )
-        .route(
-            "/exceptions/{id}",
-            get(exception_store::get_exception),
-        )
-        .route(
-            "/exceptions",
-            post(exception_store::create_exception),
-        )
-        .route(
-            "/agent-credentials/auth-hash",
-            put(set_agent_auth_hash),
-        )
+        .route("/exceptions", get(exception_store::list_exceptions))
+        .route("/exceptions/{id}", get(exception_store::get_exception))
+        .route("/exceptions", post(exception_store::create_exception))
+        .route("/agent-credentials/auth-hash", put(set_agent_auth_hash))
         .route("/auth/password", put(admin_auth::change_password))
         .route("/admin/siem-config", get(get_siem_config_handler))
         .route("/admin/siem-config", put(update_siem_config_handler))
         .layer(middleware::from_fn(admin_auth::require_auth));
 
-    public_routes
-        .merge(protected_routes)
-        .with_state(state)
+    public_routes.merge(protected_routes).with_state(state)
 }
 
 // ---------------------------------------------------------------------------
@@ -240,9 +208,7 @@ async fn health() -> Json<HealthResponse> {
 }
 
 /// `GET /ready` — readiness probe.
-async fn ready(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<HealthResponse>, AppError> {
+async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<HealthResponse>, AppError> {
     // Verify the database is accessible.
     let db = Arc::clone(&state.db);
     tokio::task::spawn_blocking(move || {
@@ -279,8 +245,7 @@ async fn list_policies(
             .query_map([], |row| {
                 let conditions_str: String = row.get(4)?;
                 let conditions: serde_json::Value =
-                    serde_json::from_str(&conditions_str)
-                        .unwrap_or(serde_json::Value::Null);
+                    serde_json::from_str(&conditions_str).unwrap_or(serde_json::Value::Null);
                 Ok(PolicyResponse {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -321,8 +286,7 @@ async fn get_policy(
             |row| {
                 let conditions_str: String = row.get(4)?;
                 let conditions: serde_json::Value =
-                    serde_json::from_str(&conditions_str)
-                        .unwrap_or(serde_json::Value::Null);
+                    serde_json::from_str(&conditions_str).unwrap_or(serde_json::Value::Null);
                 Ok(PolicyResponse {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -343,9 +307,7 @@ async fn get_policy(
     match result {
         Ok(p) => Ok(Json(p)),
         Err(rusqlite::Error::QueryReturnedNoRows) => {
-            Err(AppError::NotFound(
-                format!("policy {policy_id} not found"),
-            ))
+            Err(AppError::NotFound(format!("policy {policy_id} not found")))
         }
         Err(e) => Err(AppError::Database(e)),
     }
@@ -357,14 +319,11 @@ async fn create_policy(
     Json(payload): Json<PolicyPayload>,
 ) -> Result<(StatusCode, Json<PolicyResponse>), AppError> {
     if payload.id.is_empty() || payload.name.is_empty() {
-        return Err(AppError::BadRequest(
-            "id and name are required".to_string(),
-        ));
+        return Err(AppError::BadRequest("id and name are required".to_string()));
     }
 
     let now = Utc::now().to_rfc3339();
-    let conditions_json =
-        serde_json::to_string(&payload.conditions)?;
+    let conditions_json = serde_json::to_string(&payload.conditions)?;
 
     let resp = PolicyResponse {
         id: payload.id.clone(),
@@ -414,60 +373,55 @@ async fn update_policy(
     Json(payload): Json<PolicyPayload>,
 ) -> Result<Json<PolicyResponse>, AppError> {
     let now = Utc::now().to_rfc3339();
-    let conditions_json =
-        serde_json::to_string(&payload.conditions)?;
+    let conditions_json = serde_json::to_string(&payload.conditions)?;
     let id = policy_id.clone();
     let db = Arc::clone(&state.db);
 
-    let resp = tokio::task::spawn_blocking(
-        move || -> Result<PolicyResponse, AppError> {
-            let conn = db.conn().lock();
+    let resp = tokio::task::spawn_blocking(move || -> Result<PolicyResponse, AppError> {
+        let conn = db.conn().lock();
 
-            // Increment the version number atomically.
-            let rows = conn.execute(
-                "UPDATE policies SET \
+        // Increment the version number atomically.
+        let rows = conn.execute(
+            "UPDATE policies SET \
                     name = ?1, description = ?2, priority = ?3, \
                     conditions = ?4, action = ?5, enabled = ?6, \
                     version = version + 1, updated_at = ?7 \
                  WHERE id = ?8",
-                rusqlite::params![
-                    payload.name,
-                    payload.description,
-                    payload.priority,
-                    conditions_json,
-                    payload.action,
-                    payload.enabled,
-                    now,
-                    id,
-                ],
-            )?;
-
-            if rows == 0 {
-                return Err(AppError::NotFound(
-                    format!("policy {id} not found"),
-                ));
-            }
-
-            // Read back the updated row for the version.
-            let version: i64 = conn.query_row(
-                "SELECT version FROM policies WHERE id = ?1",
-                rusqlite::params![id],
-                |row| row.get(0),
-            )?;
-
-            Ok(PolicyResponse {
+            rusqlite::params![
+                payload.name,
+                payload.description,
+                payload.priority,
+                conditions_json,
+                payload.action,
+                payload.enabled,
+                now,
                 id,
-                name: payload.name,
-                description: payload.description,
-                priority: payload.priority,
-                conditions: payload.conditions,
-                action: payload.action,
-                enabled: payload.enabled,
-                version,
-                updated_at: now,
-            })
-        },
-    )
+            ],
+        )?;
+
+        if rows == 0 {
+            return Err(AppError::NotFound(format!("policy {id} not found")));
+        }
+
+        // Read back the updated row for the version.
+        let version: i64 = conn.query_row(
+            "SELECT version FROM policies WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )?;
+
+        Ok(PolicyResponse {
+            id,
+            name: payload.name,
+            description: payload.description,
+            priority: payload.priority,
+            conditions: payload.conditions,
+            action: payload.action,
+            enabled: payload.enabled,
+            version,
+            updated_at: now,
+        })
+    })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
@@ -485,18 +439,13 @@ async fn delete_policy(
 
     let rows = tokio::task::spawn_blocking(move || {
         let conn = db.conn().lock();
-        conn.execute(
-            "DELETE FROM policies WHERE id = ?1",
-            rusqlite::params![id],
-        )
+        conn.execute("DELETE FROM policies WHERE id = ?1", rusqlite::params![id])
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     if rows == 0 {
-        return Err(AppError::NotFound(
-            format!("policy {policy_id} not found"),
-        ));
+        return Err(AppError::NotFound(format!("policy {policy_id} not found")));
     }
 
     tracing::info!(policy_id = %policy_id, "policy deleted");
@@ -566,9 +515,9 @@ async fn get_agent_auth_hash(
 
     match result {
         Ok((hash, updated_at)) => Ok(Json(AuthHashResponse { hash, updated_at })),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Err(AppError::NotFound(
-            "agent auth hash not set".to_string(),
-        )),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            Err(AppError::NotFound("agent auth hash not set".to_string()))
+        }
         Err(e) => Err(AppError::Database(e)),
     }
 }
@@ -663,8 +612,7 @@ mod tests {
             status: "ok".to_string(),
             timestamp: "2026-01-01T00:00:00Z".to_string(),
         };
-        let json =
-            serde_json::to_string(&resp).expect("serialize");
+        let json = serde_json::to_string(&resp).expect("serialize");
         assert!(json.contains("\"status\":\"ok\""));
     }
 
@@ -679,8 +627,7 @@ mod tests {
             "action": "DENY",
             "enabled": true
         }"#;
-        let p: PolicyPayload =
-            serde_json::from_str(json).expect("deserialize");
+        let p: PolicyPayload = serde_json::from_str(json).expect("deserialize");
         assert_eq!(p.id, "pol-001");
         assert_eq!(p.priority, 1);
         assert!(p.enabled);
@@ -689,8 +636,7 @@ mod tests {
     #[test]
     fn test_set_auth_hash_request_serde() {
         let json = r#"{"hash":"$2b$12$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012"}"#;
-        let req: SetAuthHashRequest =
-            serde_json::from_str(json).expect("deserialize");
+        let req: SetAuthHashRequest = serde_json::from_str(json).expect("deserialize");
         assert!(req.hash.starts_with("$2"));
     }
 
@@ -700,10 +646,8 @@ mod tests {
             hash: "$2b$12$test".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         };
-        let json =
-            serde_json::to_string(&resp).expect("serialize");
-        let rt: AuthHashResponse =
-            serde_json::from_str(&json).expect("deserialize");
+        let json = serde_json::to_string(&resp).expect("serialize");
+        let rt: AuthHashResponse = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt.hash, "$2b$12$test");
     }
 
@@ -719,8 +663,7 @@ mod tests {
             elk_enabled: false,
         };
         let json = serde_json::to_string(&p).expect("serialize");
-        let rt: SiemConfigPayload =
-            serde_json::from_str(&json).expect("deserialize");
+        let rt: SiemConfigPayload = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt.splunk_url, "https://splunk:8088");
         assert!(rt.splunk_enabled);
         assert!(!rt.elk_enabled);
@@ -740,10 +683,8 @@ mod tests {
             version: 1,
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         };
-        let json =
-            serde_json::to_string(&resp).expect("serialize");
-        let rt: PolicyResponse =
-            serde_json::from_str(&json).expect("deserialize");
+        let json = serde_json::to_string(&resp).expect("serialize");
+        let rt: PolicyResponse = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt.id, "pol-001");
         assert_eq!(rt.version, 1);
     }

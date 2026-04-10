@@ -3,11 +3,11 @@
 //! Used by [`engine::resolve_engine_url`](crate::engine) to read the
 //! server bind address from the registry for auto-detection.
 
+use windows::core::PCWSTR;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_SZ,
     REG_VALUE_TYPE,
 };
-use windows::core::PCWSTR;
 
 /// Reads a REG_SZ string value from `HKLM\{subkey}\{name}`.
 pub fn read_registry_string(subkey: &str, name: &str) -> anyhow::Result<String> {

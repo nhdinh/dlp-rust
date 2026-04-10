@@ -60,21 +60,14 @@ fn parse_config() -> Config {
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        print_help(
-            args.first()
-                .map(|s| s.as_str())
-                .unwrap_or("dlp-server"),
-        );
+        print_help(args.first().map(|s| s.as_str()).unwrap_or("dlp-server"));
         std::process::exit(0);
     }
 
     Config {
-        bind_addr: get_flag(&args, "--bind")
-            .unwrap_or_else(|| DEFAULT_BIND.to_string()),
-        db_path: get_flag(&args, "--db")
-            .unwrap_or_else(|| DEFAULT_DB.to_string()),
-        log_level: get_flag(&args, "--log-level")
-            .unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string()),
+        bind_addr: get_flag(&args, "--bind").unwrap_or_else(|| DEFAULT_BIND.to_string()),
+        db_path: get_flag(&args, "--db").unwrap_or_else(|| DEFAULT_DB.to_string()),
+        log_level: get_flag(&args, "--log-level").unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string()),
         init_admin_password: get_flag(&args, "--init-admin"),
         dev_mode: args.iter().any(|a| a == "--dev"),
     }
@@ -129,17 +122,17 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     // Resolve and store the JWT secret (must happen before serving requests).
-    let jwt_secret = admin_auth::resolve_jwt_secret(config.dev_mode)
-        .map_err(|msg| {
-            eprintln!("Error: {msg}");
-            anyhow::anyhow!("{msg}")
-        })?;
+    let jwt_secret = admin_auth::resolve_jwt_secret(config.dev_mode).map_err(|msg| {
+        eprintln!("Error: {msg}");
+        anyhow::anyhow!("{msg}")
+    })?;
     admin_auth::set_jwt_secret(jwt_secret);
 
     // Validate bind address.
-    let addr: SocketAddr = config.bind_addr.parse().with_context(
-        || format!("invalid bind address: '{}'", config.bind_addr),
-    )?;
+    let addr: SocketAddr = config
+        .bind_addr
+        .parse()
+        .with_context(|| format!("invalid bind address: '{}'", config.bind_addr))?;
 
     // Open (or create) the SQLite database.
     let db = Arc::new(Database::open(&config.db_path)?);
@@ -153,10 +146,7 @@ async fn main() -> anyhow::Result<()> {
     let siem = SiemConnector::new(Arc::clone(&db));
 
     // Build shared application state.
-    let state = Arc::new(AppState {
-        db,
-        siem,
-    });
+    let state = Arc::new(AppState { db, siem });
 
     // Start the background heartbeat sweeper (marks agents offline
     // after 90 seconds of silence).
@@ -183,10 +173,7 @@ async fn main() -> anyhow::Result<()> {
 ///   user non-interactively (for installer / scripted setup).
 /// - Otherwise, prompts interactively for the password on the terminal.
 /// - If an admin user already exists, this is a no-op.
-fn ensure_admin_user(
-    db: &Database,
-    init_password: Option<&str>,
-) -> anyhow::Result<()> {
+fn ensure_admin_user(db: &Database, init_password: Option<&str>) -> anyhow::Result<()> {
     if admin_auth::has_admin_users(db)? {
         return Ok(());
     }
@@ -211,16 +198,16 @@ fn prompt_admin_password() -> anyhow::Result<String> {
 
     print!("New dlp-admin password: ");
     std::io::stdout().flush()?;
-    let pw1 = rpassword::read_password()
-        .map_err(|e| anyhow::anyhow!("failed to read password: {e}"))?;
+    let pw1 =
+        rpassword::read_password().map_err(|e| anyhow::anyhow!("failed to read password: {e}"))?;
     if pw1.is_empty() {
         anyhow::bail!("password cannot be empty");
     }
 
     print!("Confirm dlp-admin password: ");
     std::io::stdout().flush()?;
-    let pw2 = rpassword::read_password()
-        .map_err(|e| anyhow::anyhow!("failed to read password: {e}"))?;
+    let pw2 =
+        rpassword::read_password().map_err(|e| anyhow::anyhow!("failed to read password: {e}"))?;
 
     if pw1 != pw2 {
         anyhow::bail!("passwords do not match — aborting");

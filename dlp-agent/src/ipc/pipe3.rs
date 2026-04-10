@@ -95,10 +95,7 @@ fn accept_loop(first_pipe: HANDLE) -> Result<()> {
         if let Err(e) = unsafe { ConnectNamedPipe(pipe, None) } {
             let win32_code = (e.code().0 as u32) & 0xFFFF;
             if win32_code != 535 {
-                warn!(
-                    win32_code,
-                    "ConnectNamedPipe failed — recycling pipe"
-                );
+                warn!(win32_code, "ConnectNamedPipe failed — recycling pipe");
                 unsafe {
                     let _ = CloseHandle(pipe);
                 }
@@ -116,8 +113,7 @@ fn accept_loop(first_pipe: HANDLE) -> Result<()> {
 /// Creates a new named pipe instance with a DACL that allows
 /// Authenticated Users (the interactive-user UI process) to connect.
 fn create_pipe() -> Result<HANDLE> {
-    let name_wide: Vec<u16> =
-        PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+    let name_wide: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
 
     let sec = super::pipe_security::PipeSecurity::new()
         .map_err(|e| anyhow::anyhow!("pipe security: {e}"))?;
@@ -222,13 +218,10 @@ fn route(msg: Pipe3UiMsg) {
                 tier,
                 dlp_common::Action::PASTE,
                 dlp_common::Decision::AllowWithLog,
-                std::env::var("DLP_AGENT_ID")
-                    .unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
+                std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
                 session_id,
             );
-            event = event.with_access_context(
-                dlp_common::AuditAccessContext::Local,
-            );
+            event = event.with_access_context(dlp_common::AuditAccessContext::Local);
             crate::audit_emitter::emit(&event).ok();
         }
     }

@@ -25,10 +25,9 @@ use std::ptr;
 use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DialogBoxIndirectParamW, EndDialog, GetDlgItem, GetWindowTextLengthW,
-    GetWindowTextW, DLGTEMPLATE, IDCANCEL, IDOK, WM_COMMAND, WM_INITDIALOG,
+    DialogBoxIndirectParamW, EndDialog, GetDlgItem, GetWindowTextLengthW, GetWindowTextW,
+    DLGTEMPLATE, IDCANCEL, IDOK, WM_COMMAND, WM_INITDIALOG,
 };
-
 
 /// Control ID for the password edit field.
 const IDC_PASSWORD: u16 = 100;
@@ -69,76 +68,76 @@ fn build_dlgtemplate(title: &str, prompt: &str) -> Vec<u8> {
     // | WS_SYSMENU (0x00080000) | DS_MODALFRAME (0x80) | DS_SETFONT (0x40)
     // | DS_CENTER (0x0800)
     push_u32(&mut t, 0x90C808C0);
-    push_u32(&mut t, 0);     // extended style
-    push_u16(&mut t, 4);     // number of controls
-    push_i16(&mut t, 0);     // x
-    push_i16(&mut t, 0);     // y
-    push_i16(&mut t, 240);   // cx (dialog units)
-    push_i16(&mut t, 90);    // cy (dialog units)
-    push_u16(&mut t, 0);     // menu (none)
-    push_u16(&mut t, 0);     // window class (default)
+    push_u32(&mut t, 0); // extended style
+    push_u16(&mut t, 4); // number of controls
+    push_i16(&mut t, 0); // x
+    push_i16(&mut t, 0); // y
+    push_i16(&mut t, 240); // cx (dialog units)
+    push_i16(&mut t, 90); // cy (dialog units)
+    push_u16(&mut t, 0); // menu (none)
+    push_u16(&mut t, 0); // window class (default)
     push_wstr(&mut t, title);
-    push_u16(&mut t, 9);     // font point size
+    push_u16(&mut t, 9); // font point size
     push_wstr(&mut t, "Segoe UI");
 
     // -- Item 1: Static prompt label --
     align4(&mut t);
     push_u32(&mut t, 0x50000000 | 0x0001); // WS_CHILD | WS_VISIBLE | SS_CENTER
-    push_u32(&mut t, 0);     // exstyle
-    push_i16(&mut t, 10);    // x
-    push_i16(&mut t, 10);    // y
-    push_i16(&mut t, 220);   // cx
-    push_i16(&mut t, 20);    // cy
+    push_u32(&mut t, 0); // exstyle
+    push_i16(&mut t, 10); // x
+    push_i16(&mut t, 10); // y
+    push_i16(&mut t, 220); // cx
+    push_i16(&mut t, 20); // cy
     push_u16(&mut t, 0xFFFF); // id (static -- don't care)
     push_u16(&mut t, 0xFFFF); // class atom prefix
     push_u16(&mut t, 0x0082); // STATIC class ordinal
     push_wstr(&mut t, prompt);
-    push_u16(&mut t, 0);     // extra count
+    push_u16(&mut t, 0); // extra count
 
     // -- Item 2: Password edit control --
     align4(&mut t);
     // WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_PASSWORD | ES_AUTOHSCROLL
     push_u32(&mut t, 0x50010000 | 0x00800000 | 0x00200000 | 0x20 | 0x80);
     push_u32(&mut t, 0x00000200); // WS_EX_CLIENTEDGE (sunken border)
-    push_i16(&mut t, 20);    // x
-    push_i16(&mut t, 34);    // y
-    push_i16(&mut t, 200);   // cx
-    push_i16(&mut t, 14);    // cy
+    push_i16(&mut t, 20); // x
+    push_i16(&mut t, 34); // y
+    push_i16(&mut t, 200); // cx
+    push_i16(&mut t, 14); // cy
     push_u16(&mut t, IDC_PASSWORD); // id = 100
     push_u16(&mut t, 0xFFFF); // class atom prefix
     push_u16(&mut t, 0x0081); // EDIT class ordinal
-    push_u16(&mut t, 0);     // title (empty)
-    push_u16(&mut t, 0);     // extra count
+    push_u16(&mut t, 0); // title (empty)
+    push_u16(&mut t, 0); // extra count
 
     // -- Item 3: OK button (IDOK = 1) --
     align4(&mut t);
     // WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON
     push_u32(&mut t, 0x50010000 | 0x0001);
-    push_u32(&mut t, 0);     // exstyle
-    push_i16(&mut t, 50);    // x
-    push_i16(&mut t, 60);    // y
-    push_i16(&mut t, 60);    // cx
-    push_i16(&mut t, 14);    // cy
+    push_u32(&mut t, 0); // exstyle
+    push_i16(&mut t, 50); // x
+    push_i16(&mut t, 60); // y
+    push_i16(&mut t, 60); // cx
+    push_i16(&mut t, 14); // cy
     push_u16(&mut t, IDOK.0 as u16); // id = 1
     push_u16(&mut t, 0xFFFF); // class atom prefix
     push_u16(&mut t, 0x0080); // BUTTON class ordinal
     push_wstr(&mut t, "OK");
-    push_u16(&mut t, 0);     // extra count
+    push_u16(&mut t, 0); // extra count
 
     // -- Item 4: Cancel button (IDCANCEL = 2) --
     align4(&mut t);
     // WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON
     push_u32(&mut t, 0x50010000);
-    push_u32(&mut t, 0);     // exstyle
-    push_i16(&mut t, 130);   // x
-    push_i16(&mut t, 60);    // y
-    push_i16(&mut t, 60);    // cx
-    push_i16(&mut t, 14);    // cy
+    push_u32(&mut t, 0); // exstyle
+    push_i16(&mut t, 130); // x
+    push_i16(&mut t, 60); // y
+    push_i16(&mut t, 60); // cx
+    push_i16(&mut t, 14); // cy
     push_u16(&mut t, IDCANCEL.0 as u16); // id = 2
     push_u16(&mut t, 0xFFFF); // class atom prefix
     push_u16(&mut t, 0x0080); // BUTTON class ordinal
     push_wstr(&mut t, "Cancel");
-    push_u16(&mut t, 0);     // extra count
+    push_u16(&mut t, 0); // extra count
 
     t
 }
@@ -199,12 +198,7 @@ unsafe fn capture_password_text(hwnd: HWND) {
 /// SAFETY: called by Windows on the thread that called
 /// `DialogBoxIndirectParamW`.  All window handles are valid for the
 /// duration of each message.
-unsafe extern "system" fn dlg_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    _lparam: LPARAM,
-) -> isize {
+unsafe extern "system" fn dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, _lparam: LPARAM) -> isize {
     match msg {
         WM_INITDIALOG => {
             // Focus the password edit control so the user can type immediately.
@@ -254,21 +248,25 @@ fn dpapi_protect(password: &[u16]) -> windows::core::Result<Vec<u8>> {
 
     unsafe {
         windows::Win32::Security::Cryptography::CryptProtectData(
-            &input, None, None, None, None, 0, &mut output,
+            &input,
+            None,
+            None,
+            None,
+            None,
+            0,
+            &mut output,
         )?;
-        let data =
-            std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
-        let _ = windows::Win32::Foundation::LocalFree(
-            windows::Win32::Foundation::HLOCAL(output.pbData as *mut _),
-        );
+        let data = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        let _ = windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
+            output.pbData as *mut _,
+        ));
         Ok(data)
     }
 }
 
 // ---------- Base64 ----------
 
-const B64: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Encodes raw bytes to a base64 string (no external dependency).
 pub fn base64_encode(input: &[u8]) -> String {
@@ -304,9 +302,7 @@ pub fn base64_encode(input: &[u8]) -> String {
 /// # Errors
 ///
 /// Returns an error if DPAPI encryption fails.
-pub fn show_password_dialog(
-    request_id: &str,
-) -> anyhow::Result<crate::ipc::messages::Pipe1UiMsg> {
+pub fn show_password_dialog(request_id: &str) -> anyhow::Result<crate::ipc::messages::Pipe1UiMsg> {
     // Clear any stale captured password from a previous invocation.
     CAPTURED_PASSWORD.with(|cell| cell.borrow_mut().take());
 
@@ -329,9 +325,7 @@ pub fn show_password_dialog(
 
     if result == IDOK.0 as isize {
         // Retrieve password captured during WM_COMMAND (before EndDialog).
-        if let Some(password_wide) =
-            CAPTURED_PASSWORD.with(|cell| cell.borrow_mut().take())
-        {
+        if let Some(password_wide) = CAPTURED_PASSWORD.with(|cell| cell.borrow_mut().take()) {
             if !password_wide.is_empty() {
                 let protected = dpapi_protect(&password_wide)?;
                 return Ok(crate::ipc::messages::Pipe1UiMsg::PasswordSubmit {
@@ -372,9 +366,7 @@ pub fn show_password_dialog_plaintext(_request_id: &str) -> anyhow::Result<Optio
     };
 
     if result == IDOK.0 as isize {
-        if let Some(password_wide) =
-            CAPTURED_PASSWORD.with(|cell| cell.borrow_mut().take())
-        {
+        if let Some(password_wide) = CAPTURED_PASSWORD.with(|cell| cell.borrow_mut().take()) {
             if !password_wide.is_empty() {
                 let password = String::from_utf16_lossy(&password_wide);
                 return Ok(Some(password));
