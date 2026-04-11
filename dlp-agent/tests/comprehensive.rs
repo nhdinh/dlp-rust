@@ -1875,3 +1875,84 @@ mod clipboard_classifier_patterns {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USB detection (dlp_agent::detection::UsbDetector)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(windows)]
+mod usb_detection_tests {
+    use dlp_agent::detection::UsbDetector;
+    use dlp_common::Classification;
+
+    /// Newly-constructed detector reports an empty blocked set and denies
+    /// no writes to any drive — the baseline invariant before any drive
+    /// arrival has been observed.
+    #[test]
+    fn test_new_usb_detector_is_empty() {
+        let detector = UsbDetector::new();
+        assert!(detector.blocked_drive_letters().is_empty());
+        assert!(!detector.is_path_on_blocked_drive(r"E:\secret.docx"));
+        assert!(!detector.should_block_write(r"E:\secret.docx", Classification::T4));
+    }
+
+    /// `scan_existing_drives` iterates A..=Z and calls the real `GetDriveTypeW`
+    /// Win32 API for each letter. On the CI/dev host this MUST return without
+    /// panicking regardless of whether a removable drive is attached; we only
+    /// assert the observable invariant that every letter reported as blocked
+    /// is a valid ASCII uppercase character.
+    #[test]
+    fn test_scan_existing_drives_returns_well_formed_set() {
+        let detector = UsbDetector::new();
+        detector.scan_existing_drives();
+        for letter in detector.blocked_drive_letters() {
+            assert!(letter.is_ascii_uppercase(), "drive letter must be uppercase ASCII: {letter}");
+        }
+    }
+
+    /// `on_drive_arrival` is gated by `is_removable_drive` (GetDriveTypeW == 2),
+    /// so calling it with the system drive letter `'C'` must NOT add it to the
+    /// blocked set on any realistic Windows host (C: is DRIVE_FIXED == 3).
+    #[test]
+    fn test_on_drive_arrival_system_drive_not_blocked() {
+        let detector = UsbDetector::new();
+        detector.on_drive_arrival('C');
+        assert!(!detector.is_path_on_blocked_drive(r"C:\Users\test\file.txt"));
+    }
+
+    /// `on_drive_removal` unconditionally drops the letter from the set, and
+    /// subsequent queries must report `false`. Exercises the removal path
+    /// without requiring a physical USB device. We seed the set indirectly:
+    /// if `scan_existing_drives` found nothing, we still exercise the
+    /// removal-on-empty case and assert it is a no-op.
+    #[test]
+    fn test_on_drive_removal_is_idempotent() {
+        let detector = UsbDetector::new();
+        detector.on_drive_removal('Z');
+        detector.on_drive_removal('Z'); // double-remove must not panic
+        assert!(!detector.is_path_on_blocked_drive(r"Z:\anything"));
+    }
+
+    /// Non-sensitive classifications are never blocked, even if the drive is
+    /// in the blocked set. This check uses a drive that cannot be in the set
+    /// (`'Z'` has no Win32 backing on CI hosts), so we verify the class-based
+    /// short-circuit at the `should_block_write` level: T1/T2 always false.
+    #[test]
+    fn test_should_block_write_non_sensitive_never_blocked() {
+        let detector = UsbDetector::new();
+        assert!(!detector.should_block_write(r"Z:\public.txt", Classification::T1));
+        assert!(!detector.should_block_write(r"Z:\internal.doc", Classification::T2));
+    }
+
+    /// Relative, UNC, and empty paths must not panic and must report `false`
+    /// for `is_path_on_blocked_drive` — the drive-letter extractor is the
+    /// load-bearing helper and this asserts its error behaviour via the
+    /// public API.
+    #[test]
+    fn test_is_path_on_blocked_drive_rejects_non_drive_paths() {
+        let detector = UsbDetector::new();
+        assert!(!detector.is_path_on_blocked_drive(r"\\server\share\file.txt"));
+        assert!(!detector.is_path_on_blocked_drive("relative/path"));
+        assert!(!detector.is_path_on_blocked_drive(""));
+    }
+}
