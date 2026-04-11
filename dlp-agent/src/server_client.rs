@@ -91,6 +91,22 @@ pub struct ServerClient {
 }
 
 impl ServerClient {
+    /// Normalises a server URL by prepending `http://` if the scheme is absent.
+    ///
+    /// Handles bare hostnames that users write in `agent-config.toml`:
+    /// `127.0.0.1:9090` → `http://127.0.0.1:9090`.
+    ///
+    /// `Manage-DlpAgentService.ps1` writes `server_url = '127.0.0.1:9090'`
+    /// without a scheme because it looks cleaner in TOML.  The agent must
+    /// accept both forms gracefully rather than silently failing.
+    fn normalize_url(url: &str) -> String {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            url.to_string()
+        } else {
+            format!("http://{url}")
+        }
+    }
+
     /// Creates a new `ServerClient` from an optional config URL,
     /// environment variables, or the compiled default.
     ///
@@ -108,11 +124,13 @@ impl ServerClient {
     /// Returns `ServerClientError::Config` if the hostname cannot be resolved
     /// and no `DLP_AGENT_ID` is set.
     pub fn from_env_with_config(config_url: Option<&str>) -> Result<Self, ServerClientError> {
-        let base_url = config_url
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .or_else(|| std::env::var("DLP_SERVER_URL").ok())
-            .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
+        let base_url = Self::normalize_url(
+            &config_url
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("DLP_SERVER_URL").ok())
+                .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string()),
+        );
 
         let hostname = hostname::get()
             .map(|h| h.to_string_lossy().into_owned())
@@ -468,6 +486,32 @@ mod tests {
     #[test]
     fn test_default_server_url_constant() {
         assert_eq!(DEFAULT_SERVER_URL, "http://127.0.0.1:9090");
+    }
+
+    #[test]
+    fn test_normalize_url() {
+        // Bare hostname (common in agent-config.toml) gets http:// prepended.
+        assert_eq!(
+            ServerClient::normalize_url("127.0.0.1:9090"),
+            "http://127.0.0.1:9090"
+        );
+        assert_eq!(
+            ServerClient::normalize_url("localhost:8080"),
+            "http://localhost:8080"
+        );
+        assert_eq!(
+            ServerClient::normalize_url("dlp-server.corp.internal:9090"),
+            "http://dlp-server.corp.internal:9090"
+        );
+        // Already has scheme — unchanged.
+        assert_eq!(
+            ServerClient::normalize_url("http://127.0.0.1:9090"),
+            "http://127.0.0.1:9090"
+        );
+        assert_eq!(
+            ServerClient::normalize_url("https://dlp-server.corp:9443"),
+            "https://dlp-server.corp:9443"
+        );
     }
 
     #[test]

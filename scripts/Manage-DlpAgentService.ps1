@@ -35,7 +35,7 @@ param(
 
     [Parameter()]
     # [string]$BinaryPath = "$env:ProgramFiles\DLP\dlp-agent.exe",
-    [string]$BinaryPath = "$PSScriptRoot\..\target\release\dlp-agent.exe",
+    [string]$BinaryPath = "$PSScriptRoot\..\target\debug\dlp-agent.exe",
 
     [Parameter()]
     [string]$ServiceName = 'dlp-agent',
@@ -126,11 +126,17 @@ function Write-AgentConfig {
     # Read existing config or start fresh.
     $content = if (Test-Path $ConfigFile) { Get-Content $ConfigFile -Raw } else { '' }
 
+    # Normalise the URL so it always has a scheme — `from_env_with_config`
+    # accepts bare hostnames (`127.0.0.1:9090`) but adding http:// explicitly
+    # avoids any ambiguity and matches DEFAULT_SERVER_URL format.
+    $url = if ($ServerUrl -match '^https?://') { $ServerUrl } else { "http://$ServerUrl" }
+
     # Update or add server_url line.
     if ($content -match '(?m)^server_url\s*=') {
-        $content = $content -replace "(?m)^server_url\s*=.*$", "server_url = '$ServerUrl'"
-    } else {
-        $content = "server_url = '$ServerUrl'`n$content"
+        $content = $content -replace "(?m)^server_url\s*=.*$", "server_url = '$url'"
+    }
+    else {
+        $content = "server_url = '$url'`n$content"
     }
 
     # Use UTF8 without BOM — the toml crate cannot parse a BOM prefix.
