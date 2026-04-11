@@ -51,8 +51,8 @@
 **Plans:** 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — Server-side: DB schema + AlertRouter rewrite + admin_api handlers + validate_webhook_url + audit_store fire-and-forget spawn
-- [ ] 04-02-PLAN.md — dlp-admin-cli TUI: Screen::AlertConfig variant + draw_alert_config + 5-item System menu + handle_alert_config dispatch
+- [x] 04-01-PLAN.md — Server-side: DB schema + AlertRouter rewrite + admin_api handlers + validate_webhook_url + audit_store fire-and-forget spawn
+- [x] 04-02-PLAN.md — dlp-admin-cli TUI: Screen::AlertConfig variant + draw_alert_config + 5-item System menu + handle_alert_config dispatch
 
 ### Phase 5: Wire policy sync for multi-replica
 **Requirement:** R-03

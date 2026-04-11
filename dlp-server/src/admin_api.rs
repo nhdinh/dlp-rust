@@ -324,6 +324,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/admin/siem-config", put(update_siem_config_handler))
         .route("/admin/alert-config", get(get_alert_config_handler))
         .route("/admin/alert-config", put(update_alert_config_handler))
+        .route("/admin/alert-config/test", post(test_alert_config_handler))
         .layer(middleware::from_fn(admin_auth::require_auth));
 
     public_routes.merge(protected_routes).with_state(state)
@@ -897,6 +898,30 @@ async fn update_alert_config_handler(
         masked_response.webhook_secret = ALERT_SECRET_MASK.to_string();
     }
     Ok(Json(masked_response))
+}
+
+/// `POST /admin/alert-config/test` — sends a test alert using the current
+/// configuration from the database.
+///
+/// Invokes `AlertRouter::send_test_alert()` which builds a synthetic audit
+/// event and delivers it via the configured SMTP and/or webhook channels.
+/// Used by the dlp-admin-cli "Test Connection" action so operators can
+/// verify their alert settings before relying on them.
+///
+/// # Errors
+///
+/// Returns `AppError::Internal` with the delivery error message if SMTP
+/// or webhook delivery fails.
+async fn test_alert_config_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    state
+        .alert
+        .send_test_alert()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("{e}")))?;
+
+    Ok(Json(serde_json::json!({ "status": "ok" })))
 }
 
 #[cfg(test)]

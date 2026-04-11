@@ -152,8 +152,8 @@ fn is_siem_bool(index: usize) -> bool {
 
 /// Labels for each row of the Alert Config form (in display order).
 ///
-/// 10 editable fields + Save + Back = 12 total rows.
-const ALERT_FIELD_LABELS: [&str; 12] = [
+/// 10 editable fields + Save + Test Connection + Back = 13 total rows.
+const ALERT_FIELD_LABELS: [&str; 13] = [
     "SMTP Host",
     "SMTP Port",
     "SMTP Username",
@@ -165,6 +165,7 @@ const ALERT_FIELD_LABELS: [&str; 12] = [
     "Webhook Secret",
     "Webhook Enabled",
     "[ Save ]",
+    "[ Test Connection ]",
     "[ Back ]",
 ];
 
@@ -274,7 +275,7 @@ fn draw_siem_config(
 /// * `frame` - ratatui frame to render into
 /// * `area` - screen area allocated to the form
 /// * `config` - current config payload as a JSON object (loaded from the server)
-/// * `selected` - index of the currently highlighted row (0..=11)
+/// * `selected` - index of the currently highlighted row (0..=12)
 /// * `editing` - `true` when the highlighted text/numeric field is in edit mode
 /// * `buffer` - edit buffer contents (only meaningful when `editing` is `true`)
 fn draw_alert_config(

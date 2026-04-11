@@ -796,10 +796,12 @@ const ALERT_KEYS: [&str; 10] = [
 
 /// Row index of the Save button.
 const ALERT_SAVE_ROW: usize = 10;
+/// Row index of the Test Connection button.
+const ALERT_TEST_ROW: usize = 11;
 /// Row index of the Back button.
-const ALERT_BACK_ROW: usize = 11;
-/// Total number of rows in the Alert config form (10 editable + Save + Back).
-const ALERT_ROW_COUNT: usize = 12;
+const ALERT_BACK_ROW: usize = 12;
+/// Total number of rows in the Alert config form (10 editable + Save + Test + Back).
+const ALERT_ROW_COUNT: usize = 13;
 
 /// Returns `true` if the row index is a bool (toggle) field.
 fn alert_is_bool(index: usize) -> bool {
@@ -849,6 +851,17 @@ fn action_save_alert_config(app: &mut App) {
             app.screen = Screen::SystemMenu { selected: 3 };
         }
         Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Sends a test alert using the current alert router configuration.
+fn action_test_alert_config(app: &mut App) {
+    match app.rt.block_on(
+        app.client
+            .post::<serde_json::Value, _>("admin/alert-config/test", &serde_json::json!({})),
+    ) {
+        Ok(_) => app.set_status("Test alert sent", StatusKind::Success),
+        Err(e) => app.set_status(format!("Test failed: {e}"), StatusKind::Error),
     }
 }
 
@@ -959,6 +972,8 @@ fn handle_alert_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
         KeyCode::Enter => {
             if selected == ALERT_SAVE_ROW {
                 action_save_alert_config(app);
+            } else if selected == ALERT_TEST_ROW {
+                action_test_alert_config(app);
             } else if selected == ALERT_BACK_ROW {
                 app.screen = Screen::SystemMenu { selected: 3 };
             } else if alert_is_bool(selected) {
@@ -1010,11 +1025,12 @@ mod tests {
 
     #[test]
     fn system_menu_has_alert_config() {
-        // Verify the Alert config constants are consistent with the 12-row form.
+        // Verify the Alert config constants are consistent with the 13-row form.
         assert_eq!(ALERT_KEYS.len(), 10, "10 editable fields");
         assert_eq!(ALERT_SAVE_ROW, 10);
-        assert_eq!(ALERT_BACK_ROW, 11);
-        assert_eq!(ALERT_ROW_COUNT, 12);
+        assert_eq!(ALERT_TEST_ROW, 11);
+        assert_eq!(ALERT_BACK_ROW, 12);
+        assert_eq!(ALERT_ROW_COUNT, 13);
 
         // Verify the bool rows map to the enabled columns.
         assert!(alert_is_bool(6)); // smtp_enabled

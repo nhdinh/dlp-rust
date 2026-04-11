@@ -5,6 +5,7 @@
     "code_review": true,
     "code_review_depth": "standard",
     "tests": true,
-    "docs_update": true
+    "docs_update": true,
+    "_auto_chain_active": false
   }
 }

@@ -246,6 +246,46 @@ impl AlertRouter {
         Ok(())
     }
 
+    /// Sends a test alert using the current configuration in the database.
+    ///
+    /// Builds a synthetic `AuditEvent` with type `TestAlert` and sends it
+    /// through the same delivery paths (`send_email` + `send_webhook`) as a
+    /// real `DenyWithAlert` event. Used by the admin CLI "Test Connection"
+    /// action to verify SMTP and webhook settings without triggering a real
+    /// policy violation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first delivery error encountered (SMTP or webhook).
+    /// Both channels are tried independently (best-effort per channel);
+    /// the first failure is returned after both channels have been attempted.
+    pub async fn send_test_alert(&self) -> Result<(), AlertError> {
+        let event = AuditEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: dlp_common::EventType::Alert,
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "dlp-admin".to_string(),
+            resource_path: "[DLP Test Connection]".to_string(),
+            classification: dlp_common::Classification::T4,
+            action_attempted: dlp_common::Action::COPY,
+            decision: dlp_common::Decision::DenyWithAlert,
+            policy_id: None,
+            policy_name: None,
+            agent_id: "dlp-server".to_string(),
+            session_id: 0,
+            device_trust: None,
+            network_location: None,
+            justification: Some("SMTP test connection verification".to_string()),
+            override_granted: false,
+            access_context: dlp_common::AuditAccessContext::Local,
+            correlation_id: Some(uuid::Uuid::new_v4().to_string()),
+            application_path: None,
+            application_hash: None,
+            resource_owner: None,
+        };
+        self.send_alert(&event).await
+    }
+
     /// Sends an email alert via SMTP.
     ///
     /// Serializes the full `AuditEvent` via `serde_json::to_string_pretty`.
