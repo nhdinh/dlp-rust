@@ -2069,3 +2069,125 @@ mod network_share_detection_tests {
         assert!(!monitor.is_whitelisted(r"\\nas01\data"));
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Clipboard content classifier (dlp_agent::clipboard::ContentClassifier)
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod clipboard_classifier_tests {
+    use dlp_agent::clipboard::ContentClassifier;
+    use dlp_common::Classification;
+
+    /// Canonical SSN pattern `XXX-XX-XXXX` trips the T4 rule.
+    #[test]
+    fn test_classify_text_t4_ssn_dashes() {
+        assert_eq!(
+            ContentClassifier::classify("Employee SSN: 123-45-6789 on file"),
+            Classification::T4,
+        );
+    }
+
+    /// SSN with space separators also trips T4 (per classifier regex).
+    #[test]
+    fn test_classify_text_t4_ssn_spaces() {
+        assert_eq!(
+            ContentClassifier::classify("SSN 123 45 6789"),
+            Classification::T4,
+        );
+    }
+
+    /// Formatted 16-digit credit card `XXXX XXXX XXXX XXXX` trips T4.
+    #[test]
+    fn test_classify_text_t4_credit_card_spaces() {
+        assert_eq!(
+            ContentClassifier::classify("Card: 4111 1111 1111 1111"),
+            Classification::T4,
+        );
+    }
+
+    /// Raw 16-digit sequence without separators also trips T4.
+    #[test]
+    fn test_classify_text_t4_credit_card_raw() {
+        assert_eq!(
+            ContentClassifier::classify("Card number 4111111111111111"),
+            Classification::T4,
+        );
+    }
+
+    /// `CONFIDENTIAL` (any case) triggers T3.
+    #[test]
+    fn test_classify_text_t3_confidential_keyword() {
+        assert_eq!(
+            ContentClassifier::classify("This document is CONFIDENTIAL"),
+            Classification::T3,
+        );
+    }
+
+    /// `secret` keyword (lowercase) triggers T3.
+    #[test]
+    fn test_classify_text_t3_secret_lowercase() {
+        assert_eq!(
+            ContentClassifier::classify("please keep this secret"),
+            Classification::T3,
+        );
+    }
+
+    /// `internal only` triggers T2.
+    #[test]
+    fn test_classify_text_t2_internal_only() {
+        assert_eq!(
+            ContentClassifier::classify("For internal only distribution"),
+            Classification::T2,
+        );
+    }
+
+    /// `do not distribute` triggers T2.
+    #[test]
+    fn test_classify_text_t2_do_not_distribute() {
+        assert_eq!(
+            ContentClassifier::classify("DO NOT DISTRIBUTE this memo"),
+            Classification::T2,
+        );
+    }
+
+    /// Ordinary prose with no patterns drops to T1.
+    #[test]
+    fn test_classify_text_public_plain_prose() {
+        assert_eq!(
+            ContentClassifier::classify("Hello world, this is a normal sentence."),
+            Classification::T1,
+        );
+    }
+
+    /// Empty string must NOT panic and must classify as T1.
+    #[test]
+    fn test_classify_text_empty_is_t1() {
+        assert_eq!(ContentClassifier::classify(""), Classification::T1);
+    }
+
+    /// A single ASCII space is still T1 (no match, no panic).
+    #[test]
+    fn test_classify_text_whitespace_is_t1() {
+        assert_eq!(ContentClassifier::classify(" \t\n"), Classification::T1);
+    }
+
+    /// Highest tier wins: SSN + `confidential` -> T4 (not T3).
+    #[test]
+    fn test_classify_text_highest_tier_wins_ssn_over_confidential() {
+        assert_eq!(
+            ContentClassifier::classify("Confidential SSN: 123-45-6789"),
+            Classification::T4,
+        );
+    }
+
+    /// Multibyte input with no sensitive patterns is T1 (exercises the
+    /// `chars().collect()` code path in the SSN/CC scanners).
+    // CLAUDE.md §9.2 exception: multibyte chars here test character-boundary correctness.
+    #[test]
+    fn test_classify_text_multibyte_safe() {
+        assert_eq!(
+            ContentClassifier::classify("\u{3053}\u{3093}\u{306B}\u{3061}\u{306F}\u{4E16}\u{754C} \u{2014} hello"),
+            Classification::T1,
+        );
+    }
+}
