@@ -1956,3 +1956,116 @@ mod usb_detection_tests {
         assert!(!detector.is_path_on_blocked_drive(""));
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Network share detection (dlp_agent::detection::{NetworkShareDetector, SmbMonitor, SmbShareEvent})
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod network_share_detection_tests {
+    use dlp_agent::detection::{NetworkShareDetector, SmbMonitor, SmbShareEvent};
+    use dlp_common::Classification;
+
+    /// `SmbShareEvent::Connected` preserves every field exactly as constructed —
+    /// no normalisation or mutation. The downstream alert path assumes the
+    /// UNC path is preserved verbatim.
+    #[test]
+    fn test_smb_share_event_connected_preserves_fields() {
+        let event = SmbShareEvent::Connected {
+            unc_path: r"\\server.corp.local\finance".to_string(),
+            server: "server.corp.local".to_string(),
+            share_name: "finance".to_string(),
+        };
+        match event {
+            SmbShareEvent::Connected { unc_path, server, share_name } => {
+                assert_eq!(unc_path, r"\\server.corp.local\finance");
+                assert_eq!(server, "server.corp.local");
+                assert_eq!(share_name, "finance");
+            }
+            other => panic!("expected Connected, got {other:?}"),
+        }
+    }
+
+    /// `SmbShareEvent::Disconnected` preserves the UNC path exactly.
+    #[test]
+    fn test_smb_share_event_disconnected_preserves_unc_path() {
+        let event = SmbShareEvent::Disconnected {
+            unc_path: r"\\nas01\archive".to_string(),
+        };
+        match event {
+            SmbShareEvent::Disconnected { unc_path } => {
+                assert_eq!(unc_path, r"\\nas01\archive");
+            }
+            other => panic!("expected Disconnected, got {other:?}"),
+        }
+    }
+
+    /// Exact prefix match: a whitelist entry of `\\server\share` matches
+    /// any path under that share but NOT a sibling share on the same server.
+    #[test]
+    fn test_whitelist_exact_prefix_match() {
+        let detector = NetworkShareDetector::with_whitelist(
+            vec![r"\\fs01\approved".to_string()],
+        );
+        assert!(detector.is_whitelisted(r"\\fs01\approved\report.xlsx"));
+        assert!(detector.is_whitelisted(r"\\FS01\APPROVED\other.docx")); // case-insensitive
+        assert!(!detector.is_whitelisted(r"\\fs01\other-share\file.xlsx"));
+    }
+
+    /// Server-level whitelist: adding only the bare server name allows every
+    /// share under that server (via the extracted-server-name fallback).
+    #[test]
+    fn test_whitelist_server_name_match() {
+        let detector = NetworkShareDetector::with_whitelist(
+            vec!["fileserver01.corp.local".to_string()],
+        );
+        assert!(detector.is_whitelisted(r"\\fileserver01.corp.local\any\path.txt"));
+        assert!(!detector.is_whitelisted(r"\\other.corp.local\share"));
+    }
+
+    /// Whitelist miss -> T3/T4 blocked, T1/T2 allowed. Combines the classification
+    /// short-circuit with the whitelist lookup.
+    #[test]
+    fn test_whitelist_miss_blocks_sensitive_allows_non_sensitive() {
+        let detector = NetworkShareDetector::with_whitelist(
+            vec!["allowed.corp.local".to_string()],
+        );
+        assert!(detector.should_block(r"\\evil.external\exfil", Classification::T4));
+        assert!(detector.should_block(r"\\evil.external\exfil", Classification::T3));
+        assert!(!detector.should_block(r"\\evil.external\public", Classification::T2));
+        assert!(!detector.should_block(r"\\evil.external\public", Classification::T1));
+    }
+
+    /// `replace_whitelist` atomically drops the old set. An entry that was
+    /// allowed before the replace MUST be blocked after it.
+    #[test]
+    fn test_replace_whitelist_drops_old_entries() {
+        let detector = NetworkShareDetector::with_whitelist(vec!["old.corp".to_string()]);
+        assert!(detector.is_whitelisted(r"\\old.corp\share"));
+        detector.replace_whitelist(vec!["new.corp".to_string()]);
+        assert!(!detector.is_whitelisted(r"\\old.corp\share"));
+        assert!(detector.is_whitelisted(r"\\new.corp\share"));
+    }
+
+    /// `SmbMonitor::stop` is safe to call before `run`, is idempotent, and
+    /// does not block. The monitor thread is never started in this test.
+    #[test]
+    fn test_smb_monitor_stop_without_run_is_noop() {
+        let monitor = SmbMonitor::new();
+        monitor.stop();
+        monitor.stop();
+        // If we get here without hanging, the test passes.
+    }
+
+    /// Whitelist mutations on `SmbMonitor` are visible immediately via
+    /// `is_whitelisted` -- exercises the `Arc<RwLock<_>>` storage shared
+    /// with the polling thread.
+    #[test]
+    fn test_smb_monitor_whitelist_mutations_visible() {
+        let monitor = SmbMonitor::new();
+        assert!(!monitor.is_whitelisted(r"\\nas01\data"));
+        monitor.add_to_whitelist("nas01");
+        assert!(monitor.is_whitelisted(r"\\nas01\data"));
+        monitor.remove_from_whitelist("nas01");
+        assert!(!monitor.is_whitelisted(r"\\nas01\data"));
+    }
+}
