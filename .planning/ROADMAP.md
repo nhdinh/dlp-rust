@@ -54,6 +54,16 @@ Plans:
 - [x] 04-01-PLAN.md — Server-side: DB schema + AlertRouter rewrite + admin_api handlers + validate_webhook_url + audit_store fire-and-forget spawn
 - [x] 04-02-PLAN.md — dlp-admin-cli TUI: Screen::AlertConfig variant + draw_alert_config + 5-item System menu + handle_alert_config dispatch
 
+### Phase 04.1: Full detection and intercept test suite (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 4
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 04.1 to break down)
+
 ### Phase 6: Wire config push for agent config distribution
 **Requirement:** R-04
 **Files:** `dlp-server/src/main.rs`, `dlp-server/src/config_push.rs`, `dlp-server/src/admin_api.rs`
