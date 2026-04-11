@@ -56,8 +56,8 @@ Plans:
 
 ### Phase 5: Wire policy sync for multi-replica
 **Requirement:** R-03
-**Files:** `dlp-server/src/main.rs`, `dlp-server/src/policy_sync.rs`, `dlp-server/src/admin_api.rs`
-**Description:** Initialize PolicySyncer from env vars. Call sync on policy create/update/delete.
+**Files:** `dlp-server/src/main.rs`, `dlp-server/src/policy_sync.rs`, `dlp-server/src/admin_api.rs`, `dlp-server/src/db.rs`
+**Description:** Rewrite `PolicySyncer` from env vars to a `policy_sync_config` DB table (single-row, hot-reload). Add `AppState.syncer` (or equivalent). Spawn fire-and-forget sync calls in `create_policy`, `update_policy`, and `delete_policy` handlers. Replica config via `GET/PUT /admin/policy-sync-config` (JWT protected). Mirrors Phase 3.1 / Phase 4 DB-backed operator config pattern.
 **UAT:** Policy changes propagate to peer servers listed in DLP_REPLICA_URLS.
 
 ### Phase 6: Wire config push for agent config distribution
