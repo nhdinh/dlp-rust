@@ -54,11 +54,11 @@ Plans:
 - [x] 04-01-PLAN.md — Server-side: DB schema + AlertRouter rewrite + admin_api handlers + validate_webhook_url + audit_store fire-and-forget spawn
 - [x] 04-02-PLAN.md — dlp-admin-cli TUI: Screen::AlertConfig variant + draw_alert_config + 5-item System menu + handle_alert_config dispatch
 
-### Phase 5: Wire policy sync for multi-replica
+### Phase 5: Policy Engine Separation
 **Requirement:** R-03
-**Files:** `dlp-server/src/main.rs`, `dlp-server/src/policy_sync.rs`, `dlp-server/src/admin_api.rs`, `dlp-server/src/db.rs`
-**Description:** Rewrite `PolicySyncer` from env vars to a `policy_sync_config` DB table (single-row, hot-reload). Add `AppState.syncer` (or equivalent). Spawn fire-and-forget sync calls in `create_policy`, `update_policy`, and `delete_policy` handlers. Replica config via `GET/PUT /admin/policy-sync-config` (JWT protected). Mirrors Phase 3.1 / Phase 4 DB-backed operator config pattern.
-**UAT:** Policy changes propagate to peer servers listed in DLP_REPLICA_URLS.
+**Files:** `dlp-policy-engine/` (new crate), `dlp-server/src/main.rs`, `dlp-server/src/lib.rs`, `dlp-server/src/admin_api.rs`, `dlp-server/src/db.rs`
+**Description:** Architectural split: introduce a new `dlp-policy-engine` binary as the single source of truth for policies and admin operations. `dlp-server` is refactored to an evaluation replica — no admin API, local policy cache populated on startup and kept current via push from engine. `PolicySyncer` moved to engine side. See `.planning/phases/05-wire-policy-sync-for-multi-replica/05-CONTEXT.md` for full architecture.
+**UAT:** Policy changes made via `dlp-policy-engine` admin API propagate to `dlp-server` replicas. `dlp-server` replicas evaluate `POST /audit/events` against local cached policies.
 
 ### Phase 6: Wire config push for agent config distribution
 **Requirement:** R-04

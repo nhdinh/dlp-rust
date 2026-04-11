@@ -1,51 +1,118 @@
-# Phase 5: Wire Policy Sync for Multi-Replica — Context
+# Phase 5: Policy Engine Separation — Context
 
 **Gathered:** 2026-04-11
 **Status:** Ready for planning
-**Source:** Discussion with user — single decision on replica config source.
+**Source:** Discussion — significant architectural pivot from symmetric peer model to separated policy engine.
 
 <domain>
 ## Phase Boundary
 
-Wire `PolicySyncer` into `dlp-server` startup and policy CRUD handlers so that
-creating, updating, or deleting a policy via the admin API pushes the change to all
-configured peer server replicas via HTTP PUT/DELETE on `PUT /policies/{id}` and
-`DELETE /policies/{id}`.
+Split `dlp-server` into two separate binaries to resolve consistency problems with the
+symmetric peer model (concurrent writes → divergent state, ordering conflicts).
+
+**`dlp-policy-engine`** — New binary. The single source of truth for all policies and
+admin operations.
+
+**`dlp-server`** — Refactored to be an evaluation replica only. No admin API.
+Serves agent register/heartbeat and audit ingestion, evaluates against a local policy
+cache, and does NOT own policy storage.
+
+Architecture:
+
+```
+dlp-policy-engine          dlp-server (replica)
+┌──────────────────┐       ┌─────────────────────┐
+│ policies DB      │       │ agent_registry DB   │
+│ siem_config DB   │       │ audit_store DB      │
+│ alert_config DB  │       │ policies cache (eval)│
+│ config_push DB   │       │                     │
+└────────┬─────────┘       └──────────┬──────────┘
+         │                             │
+         │  push (PUT/DELETE /policies)│
+         └──────────┐                 │
+                    │                 │
+                    ▼                 ▼
+            [replicas receive policy updates]
+```
 
 In scope:
-- New `policy_sync_config` DB table (mirror Phase 3.1 / Phase 4 pattern: single-row, CHECK id=1)
-- Rewrite `PolicySyncer` to hold `Arc<Database>` and load replica URLs from DB on every sync call (hot-reload, same pattern as `SiemConnector` / `AlertRouter`)
-- Add `AppState.syncer: PolicySyncer` field (or equivalent — planner decides whether to store in AppState or construct inline)
-- `PUT /policies/{id}` handler calls `syncer.sync_policy(policy)` — fire-and-forget or awaited, planner decides (see gray areas below)
-- `DELETE /policies/{id}` handler calls `syncer.delete_policy(id)` — same question
-- `POST /policies` handler calls `syncer.sync_policy(policy)` after DB insert
-- Configurable via `GET/PUT /admin/policy-sync-config` (JWT protected) — mirror Phase 4 TUI pattern if time permits; Phase 5 can ship server-side only with a future dlp-admin-cli screen
+- **`dlp-policy-engine` binary** — new `dlp-policy-engine/` crate in the Cargo workspace
+  - `src/main.rs` — server startup, CLI args (`--bind`, `--db`, `--log-level`)
+  - `src/lib.rs` — `AppState { db, siem, alert, policy_syncer }`
+  - Holds the policies DB + admin config DBs (SIEM, alerts, config_push)
+  - Admin API: policy CRUD (`GET/POST/PUT/DELETE /policies`), SIEM config, alert config, config push, agent auth hash
+  - On policy create/update/delete: push change to all known replicas via `PolicySyncer`
+  - No agent comms (register, heartbeat, audit ingest) — replicas handle that
+
+- **`dlp-server` refactor** — evaluation replica mode
+  - Remove admin API routes entirely (policy CRUD, SIEM config, alert config, config push)
+  - Add local `policies` table (writable, receives pushes from engine)
+  - Policy evaluation uses local `policies` table (same `POST /audit/events` handler unchanged)
+  - `GET /policies/{id}` returns from local cache (needed for eval consistency)
+  - On startup, fetch full policy list from engine via `GET /policies` and populate local cache
+  - `policy_cache_config` table: stores `engine_url` for the policy engine
+
+- **`PolicySyncer` rewrite** — moved to policy engine side only
+  - Owned by `dlp-policy-engine`
+  - Reads replica URLs from `replica_urls` DB table (single-row, hot-reload on every push)
+  - Pushes policy changes to all replicas after local DB write commits
+  - Fire-and-forget (`tokio::spawn`), warn on failure
+
+- **`policy_cache_config` table** — in dlp-server replica DB
+  - `id INTEGER PRIMARY KEY CHECK (id = 1)`, `engine_url TEXT NOT NULL DEFAULT ''`
+  - Set via new `PUT /admin/policy-engine-url` endpoint on the replica (JWT protected)
+  - `GET /admin/policy-engine-url` to read it back
+  - Replicas read this at startup to know where to sync from
+
+- **Startup sync** — replicas fetch full policy list from engine on startup
+  - `POST /audit/events` continues to evaluate locally (no engine dependency at eval time)
+  - Engine outage does not block evaluation; replicas use cached policies
 
 Out of scope:
-- Full dlp-admin-cli TUI screen for policy sync config (defer to Phase 5.x or Phase 6 companion)
-- Encryption of replica URLs stored in DB (same deferred key-management phase as other secrets)
-- Agent-side policy fetch / polling (Phase 6 handles agent config distribution)
+- Active-active / leader election (single policy engine is assumed; HA election is a future phase)
+- Replica-to-replica sync (engine is the only source of truth)
+- dlp-admin-cli changes (Phase 5 server-side only; TUI changes for new engine vs replica distinction deferred)
 
 </domain>
 
 <decisions>
 ## Implementation Decisions
 
-### Replica config source — DB-backed, not env vars
-- **D-01:** `PolicySyncer` reads replica URLs from a `policy_sync_config` SQLite table (single-row, CHECK id=1), not the `DLP_SERVER_REPLICAS` env var. Hot-reloads on every sync call — same pattern as Phase 3.1 (`siem_config`) and Phase 4 (`alert_router_config`).
-- **D-02:** The `policy_sync_config` table has two columns: `id INTEGER PRIMARY KEY CHECK (id = 1)` and `replica_urls TEXT NOT NULL DEFAULT ''` (comma-separated, same format `PolicySyncer::from_env()` already parses). Seed row via `INSERT OR IGNORE INTO policy_sync_config (id) VALUES (1)`.
-- **D-03:** Rewrite `PolicySyncer` from `from_env()` to `new(Arc<Database>)` + private `load_replicas()` helper. Delete `from_env()` and the existing unit tests that reference it.
-- **D-04:** Update ROADMAP.md Phase 5 description: replace "Initialize PolicySyncer from env vars" with "Initialize PolicySyncer from policy_sync_config DB table".
+### Architecture — separated policy engine binary
+- **D-01:** `dlp-policy-engine` is a separate Cargo workspace crate (`dlp-policy-engine/`). Not a feature flag or runtime mode of `dlp-server` — a separate binary with its own `main.rs` and `Cargo.toml`.
+- **D-02:** `dlp-server` becomes an evaluation replica only. It does NOT serve the admin API (no policy CRUD, no SIEM config, no alert config, no config push). All admin operations are exclusively on `dlp-policy-engine`.
+- **D-03:** `dlp-policy-engine` and `dlp-server` replicas do NOT share the same SQLite database file. Each has its own.
 
-### Partial failure handling — BEST-EFFORT, fire-and-forget spawn
-- **D-05:** Sync to replicas is fire-and-forget (`tokio::spawn`, NOT awaited). Policy CRUD handlers return success immediately after DB write. Replica failures are logged at `warn` level. The local DB write is authoritative — admin API responses are never blocked by replica availability.
-- **D-06:** The `sync_policy` / `delete_policy` futures are spawned in a background task inside each handler. Failures do not affect the HTTP response status.
+### dlp-policy-engine — scope
+- **D-04:** `dlp-policy-engine` holds: policies DB + all admin config (SIEM, alerts, config_push). It owns the SIEM relay and alert routing (same as current `dlp-server`). It does NOT handle agent register/heartbeat/audit-ingest — replicas do.
+- **D-05:** `dlp-policy-engine` has admin API routes: all policy CRUD, SIEM config, alert config, config push, agent auth hash, replica URL management (`GET/PUT /admin/replica-urls`). Mirrors what current `dlp-server` serves minus agent comms.
+- **D-06:** `PolicySyncer` lives in `dlp-policy-engine` only. Replicas do NOT have it. On policy create/update/delete, `dlp-policy-engine` pushes to all replicas via `PolicySyncer::sync_policy()` / `PolicySyncer::delete_policy()`.
 
-### Manual sync trigger — skip for Phase 5
-- **D-07:** No `POST /admin/policy-sync` endpoint in Phase 5. A future phase can add it if needed.
+### dlp-server replica — refactor
+- **D-07:** Remove from `dlp-server`: SIEM config routes (`GET/PUT /admin/siem-config`), alert config routes (`GET/PUT /admin/alert-config`, `POST /admin/alert-config/test`), config push routes, agent auth hash routes. These all move to `dlp-policy-engine`.
+- **D-08:** `dlp-server` keeps: health/ready probes, agent register/heartbeat, audit ingest, `GET /policies`, `GET /policies/{id}` (local cache), `GET /audit/events` (query from local audit store).
+- **D-09:** `dlp-server` adds a local `policies` table (same schema as engine's `policies` table). This is the evaluation cache. `POST /audit/events` evaluates against this local table.
+- **D-10:** `dlp-server` evaluates policy locally. No forwarding to engine on each event — replicas must have a current policy cache. Engine outage does NOT block evaluation.
+
+### Replica → engine sync (startup bootstrap)
+- **D-11:** On `dlp-server` replica startup: fetch all policies from `GET /policies` on the configured engine URL. Clear and repopulate the local `policies` table. This is a blocking startup step — replica does not begin serving requests until cache is populated or engine fetch fails gracefully.
+- **D-12:** Replicas read `engine_url` from their local `policy_cache_config` DB table (single-row, `CHECK (id = 1)`). DB-backed, not env var.
+
+### Push protocol
+- **D-13:** Engine pushes full policy JSON to replicas via `PUT /policies/{id}` (replica) and `DELETE /policies/{id}` (replica). Replicas accept these as writes to their local `policies` table. This is the same HTTP endpoint that currently exists in `admin_api.rs` — just restricted to replica-receiving role on `dlp-server`.
+
+### PolicySyncer — DB-backed config
+- **D-14:** `PolicySyncer` reads replica URLs from `replica_urls` DB table in `dlp-policy-engine`'s DB (single-row, CHECK id=1, `replica_urls TEXT NOT NULL DEFAULT ''`). Hot-reload on every push. Mirror Phase 3.1/4 pattern.
+- **D-15:** `PolicySyncer::from_env()` is deleted. Replaced by `PolicySyncer::new(Arc<Database>)` + private `load_replicas()`.
+
+### Admin API — replica URL management
+- **D-16:** `dlp-policy-engine` serves `GET/PUT /admin/replica-urls` (JWT protected). `replica_urls` DB table stores comma-separated replica base URLs. Mirrors Phase 3.1/4 config pattern.
+
+### Failure handling
+- **D-17:** Replica sync (fire-and-forget `tokio::spawn`). Policy engine admin API responses are NEVER blocked by replica availability. Failures logged at `warn`. Local DB write on engine is authoritative.
 
 ### Folded Todos
-None — no matching todos from cross_reference_todos.
+None.
 
 </decisions>
 
@@ -54,23 +121,31 @@ None — no matching todos from cross_reference_todos.
 
 **Downstream agents MUST read these before planning or implementing.**
 
-### Reference implementations — mirror these patterns
-- `.planning/phases/03.1-siem-config-in-db/PLAN.md` — structural template for DB-backed operator config with hot-reload
-- `.planning/phases/04-wire-alert-router-into-server/04-01-PLAN.md` — most recent server-side wiring plan (AlertRouter into AppState + ingest path)
-- `.planning/phases/04-wire-alert-router-into-server/04-CONTEXT.md` — DB schema pattern, hot-reload pattern, threat model decisions
+### Architecture decisions
+- `.planning/phases/05-wire-policy-sync-for-multi-replica/05-CONTEXT.md` (this file) — all Phase 5 decisions
+- `.planning/REQUIREMENTS.md` — R-03 is the requirement this phase addresses
 
-### Current code to modify
-- `dlp-server/src/policy_sync.rs` — rewrite `PolicySyncer` struct: add `db: Arc<Database>`, delete `from_env()`, add `load_replicas()`, update existing methods
-- `dlp-server/src/db.rs` — add `policy_sync_config` table schema + seed + table-creation test
-- `dlp-server/src/admin_api.rs` — add `sync_policy` background spawn in `create_policy` / `update_policy` / `delete_policy` handlers
-- `dlp-server/src/lib.rs` — add `PolicySyncer` construction to `AppState` OR construct inline in admin_api (planner decides wiring approach)
-- `dlp-server/src/main.rs` — construct `PolicySyncer::new(Arc::clone(&db))` and include in state if AppState field is added
-- `ROADMAP.md` — update Phase 5 description from "env vars" to "policy_sync_config DB table"
+### Reference implementations to mirror
+- `.planning/phases/03.1-siem-config-in-db/PLAN.md` — DB-backed operator config pattern
+- `.planning/phases/04-wire-alert-router-into-server/04-01-PLAN.md` — most recent server-side wiring plan
+- `dlp-server/src/policy_sync.rs` — existing `PolicySyncer` implementation (to be moved to `dlp-policy-engine`)
+- `dlp-server/src/admin_api.rs` — current admin API surface (split between engine and replica)
+- `dlp-server/src/lib.rs` — current `AppState` (engine adds `PolicySyncer`; replica drops admin routes)
+
+### Current code to modify / create
+- New `dlp-policy-engine/src/main.rs` — engine binary entry point
+- New `dlp-policy-engine/src/lib.rs` — engine library with `AppState { db, siem, alert, policy_syncer }`
+- New `dlp-policy-engine/Cargo.toml` — new workspace member
+- `dlp-server/src/lib.rs` — remove admin routes, add `policies` table, `policy_cache_config` table
+- `dlp-server/src/db.rs` — add `policies` table schema (if not exists), `policy_cache_config` schema
+- `dlp-server/src/admin_api.rs` — strip admin API routes, keep agent comms + local policy read
+- `dlp-server/src/main.rs` — add startup bootstrap: fetch policies from engine, populate local cache
+- `dlp-policy-engine/src/policy_sync.rs` — rewrite from `from_env()` to `new(Arc<Database>)`
+- `dlp-policy-engine/src/db.rs` — add `replica_urls` table schema + seed
 
 ### Project conventions
-- `CLAUDE.md` §9 — Rust Coding Standards. No `.unwrap()` in production paths, `thiserror` for errors, `tracing` for logs, 100-char lines, 4-space indent.
-- `.planning/REQUIREMENTS.md` — R-03 is the requirement this phase satisfies ("Policy changes propagate to peer servers listed in DLP_REPLICA_URLS").
-- `.planning/STATE.md` — "operator config in DB, not env vars" is an established project decision (Phases 3.1, 4).
+- `CLAUDE.md` §9 — Rust Coding Standards
+- `.planning/STATE.md` — "operator config in DB, not env vars" confirmed again
 
 </canonical_refs>
 
@@ -78,52 +153,56 @@ None — no matching todos from cross_reference_todos.
 ## Existing Code Insights
 
 ### Reusable Assets
-- `policy_sync.rs` already has `PolicySyncer` with `sync_policy(&Policy)` and `delete_policy(&str)` — implementation is complete, only wiring is missing
-- `SiemConnector::new(Arc<Database>)` + `load_config()` private helper — the exact pattern to mirror for `PolicySyncer`
-- `AlertRouter::new(Arc<Database>)` — most recent example of the DB-backed hot-reload pattern
+- `policy_sync.rs` existing implementation — moved to `dlp-policy-engine`, rewritten to DB-backed config
+- `SiemConnector::new(Arc<Database>)` / `AlertRouter::new(Arc<Database>)` — pattern to mirror in `dlp-policy-engine`
+- `POST /audit/events` handler in `dlp-server` — stays on replica, evaluates against local `policies` table unchanged
 
-### Established Patterns
-- Hot-reload on every call (not cached) — consistent with Phases 3.1 and 4
-- Fire-and-forget via `tokio::spawn` for async side-effects that must not block HTTP responses
-- Single-row DB table with `CHECK (id = 1)` + `INSERT OR IGNORE` seed row
-- `Arc<Database>` in struct, private loader method, `pub fn new(db: Arc<Database>)` constructor
-- `SyncError` enum already defined in `policy_sync.rs` with `Http` and `ReplicaError` variants — still usable after rewrite
+### What needs significant change
+- `dlp-server/src/main.rs` — currently builds admin router; needs refactor to evaluation-replica startup
+- `dlp-server/src/admin_api.rs` — most routes removed; a significant portion of the file is deleted
+- `dlp-server/src/lib.rs` — `AppState` shrinks; admin fields removed
+- New binary scaffolding for `dlp-policy-engine` — Cargo workspace entry, main.rs, lib.rs
 
 ### Integration Points
-- `create_policy` handler (line ~452 in `admin_api.rs`) — spawn sync after DB insert
-- `update_policy` handler (line ~505 in `admin_api.rs`) — spawn sync after DB update
-- `delete_policy` handler (line ~568 in `admin_api.rs`) — spawn sync after DB delete
-- `main.rs` line ~154 — `AppState` construction; `PolicySyncer` needs to be added here or constructed in admin_api
+- `dlp-policy-engine`: replica push on policy CRUD → `PUT /policies/{id}` on replica
+- `dlp-server` replica: `GET /policies/{id}` accepts engine push writes to local cache
+- `dlp-server` startup: `GET /policies` on engine → populate local `policies` table
 
 </code_context>
 
 <specifics>
 ## Specific Ideas
 
-- "Update ROADMAP to remove env vars. Use DB instead." — user's explicit directive from discuss phase
-- Fire-and-forget pattern matches existing Phase 4 alert routing and Phase 3 SIEM relay patterns
-- Planner should check whether to add `PolicySyncer` to `AppState` or construct it inline in the handlers — both are valid; recommend checking how `SiemConnector` / `AlertRouter` were wired and mirror that approach
+- "In case there many replicas of dlp-server, I think we need to separate the policy-engine again. So the policy-engine will be single-source-of-truth that manage all the policies."
+- All three recommended options confirmed by user: separate binary, evaluation replicas only, push from engine, separate DB files, policies only (not all admin config), writable policies table on replicas, DB-backed engine URL on replicas
+- Planner should handle the significant refactor of `dlp-server` — removing admin API routes is non-trivial; suggest a wave-based plan that deletes routes first, then adds replica-specific logic
 
 </specifics>
 
 <deferred>
 ## Deferred Ideas
 
-### PolicySyncConfig TUI screen
-- A dlp-admin-cli screen for managing replica URLs (mirrors Phase 4 "Alert Config" screen). Low priority for Phase 5 server-side work. Can be added as Phase 5.x or combined with Phase 6.
+### HA / leader election for policy engine
+- Single policy engine is a single point of failure in Phase 5. A future phase adds leader election (Raft or similar) or hot standby. Do NOT add in Phase 5.
 
-### Manual sync trigger endpoint
-- `POST /admin/policy-sync` to force a full re-sync of all policies to all replicas. Useful for recovering from network partitions. Skip for Phase 5 — DB config change propagation is implicit on next CRUD operation.
+### Replica-to-replica failover
+- If one replica goes down and comes back online, it fetches from engine on startup (D-11). If the engine goes down, replicas continue evaluating with stale cache. Future phase: staleness detection + forced re-fetch.
 
-### Encryption of replica_urls at rest
-- Same deferred key-management phase as other secret columns. Do NOT add encryption in Phase 5.
+### dlp-admin-cli changes
+- TUI needs to know whether it's connecting to a policy engine or a replica. Phase 5 server-side only; TUI changes deferred to Phase 5.x or combined with Phase 6.
+
+### Config push on replicas
+- `config_push` DB table and API currently live in `dlp-server`. Move to `dlp-policy-engine` alongside other admin config. Deferred to Phase 6 or Phase 5.x.
+
+### Encryption of replica_urls / engine_url at rest
+- Deferred key-management phase (same as other secret columns in Phase 3.1/4).
 
 ### Reviewed Todos (not folded)
-None — no todos matched Phase 5 scope.
+None.
 
 </deferred>
 
 ---
 
 *Phase: 05-wire-policy-sync-for-multi-replica*
-*Context gathered: 2026-04-11*
+*Context gathered: 2026-04-11 (architectural pivot from symmetric peer to separated policy engine)*
