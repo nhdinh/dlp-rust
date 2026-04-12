@@ -910,7 +910,6 @@ async fn test_offline_manager_carries_machine_name() {
             machine_name: Some("WORKSTATION-01".into()),
             current_user: Some("jsmith".into()),
         }),
-        ..Default::default()
     };
 
     let resp = offline.evaluate(&req).await;
@@ -1515,4 +1514,405 @@ fn make_request(classification: Classification) -> EvaluateRequest {
         action: Action::WRITE,
         ..Default::default()
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 3 — End-to-end pipeline tests (Phase 04.1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_file_write_to_sensitive_path_denied() {
+    use dlp_agent::audit_emitter::AuditEmitter;
+    use dlp_agent::engine_client::EngineClient;
+    use dlp_agent::interception::{FileAction, PolicyMapper};
+
+    // Mock engine returns DENY for every request.
+    let (addr, _handle) = start_mock_engine(Decision::DENY).await;
+    let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
+
+    // T4 file write (provisional classification derived from path).
+    let action = FileAction::Written {
+        path: r"C:\Restricted\q4-financials.xlsx".to_string(),
+        process_id: 1234,
+        related_process_id: 0,
+        byte_count: 2048,
+    };
+    let classification = PolicyMapper::provisional_classification(action.path());
+    assert_eq!(classification, Classification::T4);
+    let abac = PolicyMapper::action_for(&action);
+    assert_eq!(abac, Action::WRITE);
+
+    let request = EvaluateRequest {
+        subject: dlp_common::Subject {
+            user_sid: "S-1-5-21-E2E-DENY".to_string(),
+            user_name: "alice".to_string(),
+            groups: Vec::new(),
+            device_trust: dlp_common::DeviceTrust::Managed,
+            network_location: dlp_common::NetworkLocation::Corporate,
+        },
+        resource: dlp_common::Resource {
+            path: action.path().to_string(),
+            classification,
+        },
+        environment: dlp_common::Environment {
+            timestamp: chrono::Utc::now(),
+            session_id: 1,
+            access_context: dlp_common::AccessContext::Local,
+        },
+        action: abac_action_to_dlp(abac),
+        ..Default::default()
+    };
+
+    let response = client.evaluate(&request).await.unwrap();
+    assert!(
+        response.decision.is_denied(),
+        "T4 write to sensitive path must be denied"
+    );
+
+    // Emit a Block audit event and verify the JSONL entry.
+    let event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::Block,
+        "S-1-5-21-E2E-DENY".to_string(),
+        "alice".to_string(),
+        action.path().to_string(),
+        classification,
+        abac_action_to_dlp(abac),
+        response.decision,
+        "AGENT-E2E-01".to_string(),
+        1,
+    )
+    .with_policy("mock-pol-001".to_string(), "E2E deny".to_string());
+
+    emitter.emit(&event).unwrap();
+    let log = std::fs::read_to_string(emitter.log_path()).unwrap();
+    let parsed: dlp_common::AuditEvent = serde_json::from_str(log.trim()).unwrap();
+    assert_eq!(parsed.event_type, dlp_common::EventType::Block);
+    assert_eq!(parsed.decision, Decision::DENY);
+    assert_eq!(parsed.classification, Classification::T4);
+    assert_eq!(parsed.resource_path, r"C:\Restricted\q4-financials.xlsx");
+}
+
+#[tokio::test]
+async fn test_file_write_to_public_path_allowed() {
+    use dlp_agent::audit_emitter::AuditEmitter;
+    use dlp_agent::engine_client::EngineClient;
+    use dlp_agent::interception::{FileAction, PolicyMapper};
+
+    // Mock engine returns ALLOW.
+    let (addr, _handle) = start_mock_engine(Decision::ALLOW).await;
+    let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
+
+    // A path outside any sensitive prefix — T1.
+    let action = FileAction::Written {
+        path: r"C:\Users\bob\Documents\notes.txt".to_string(),
+        process_id: 4321,
+        related_process_id: 0,
+        byte_count: 128,
+    };
+    let classification = PolicyMapper::provisional_classification(action.path());
+    assert!(
+        matches!(classification, Classification::T1 | Classification::T2),
+        "public path must map to T1 or T2, got {classification:?}"
+    );
+    let abac = PolicyMapper::action_for(&action);
+
+    let request = EvaluateRequest {
+        subject: dlp_common::Subject {
+            user_sid: "S-1-5-21-E2E-ALLOW".to_string(),
+            user_name: "bob".to_string(),
+            groups: Vec::new(),
+            device_trust: dlp_common::DeviceTrust::Managed,
+            network_location: dlp_common::NetworkLocation::Corporate,
+        },
+        resource: dlp_common::Resource {
+            path: action.path().to_string(),
+            classification,
+        },
+        environment: dlp_common::Environment {
+            timestamp: chrono::Utc::now(),
+            session_id: 1,
+            access_context: dlp_common::AccessContext::Local,
+        },
+        action: abac_action_to_dlp(abac),
+        ..Default::default()
+    };
+
+    let response = client.evaluate(&request).await.unwrap();
+    assert_eq!(response.decision, Decision::ALLOW);
+
+    // Emit an Access audit event (the standard event type for allowed operations).
+    let event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::Access,
+        "S-1-5-21-E2E-ALLOW".to_string(),
+        "bob".to_string(),
+        action.path().to_string(),
+        classification,
+        abac_action_to_dlp(abac),
+        response.decision,
+        "AGENT-E2E-02".to_string(),
+        1,
+    );
+    emitter.emit(&event).unwrap();
+
+    let log = std::fs::read_to_string(emitter.log_path()).unwrap();
+    let parsed: dlp_common::AuditEvent = serde_json::from_str(log.trim()).unwrap();
+    assert_eq!(parsed.event_type, dlp_common::EventType::Access);
+    assert_eq!(parsed.decision, Decision::ALLOW);
+}
+
+#[tokio::test]
+async fn test_clipboard_paste_t4_content_denied_with_alert() {
+    use dlp_agent::audit_emitter::AuditEmitter;
+    use dlp_agent::clipboard::ContentClassifier;
+    use dlp_agent::engine_client::EngineClient;
+
+    // Mock engine returns DenyWithAlert for every request.
+    let (addr, _handle) = start_mock_engine(Decision::DenyWithAlert).await;
+    let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
+
+    // The clipboard text contains an SSN pattern — T4.
+    let clipboard_text = "Please review: employee SSN 123-45-6789 for payroll";
+    let classification = ContentClassifier::classify(clipboard_text);
+    assert_eq!(classification, Classification::T4);
+
+    // Build an EvaluateRequest for the paste action. We synthesise a
+    // pseudo-resource path for the clipboard so the request schema is
+    // satisfied.
+    let request = EvaluateRequest {
+        subject: dlp_common::Subject {
+            user_sid: "S-1-5-21-E2E-CLIP".to_string(),
+            user_name: "carol".to_string(),
+            groups: Vec::new(),
+            device_trust: dlp_common::DeviceTrust::Managed,
+            network_location: dlp_common::NetworkLocation::Corporate,
+        },
+        resource: dlp_common::Resource {
+            path: "clipboard://paste".to_string(),
+            classification,
+        },
+        environment: dlp_common::Environment {
+            timestamp: chrono::Utc::now(),
+            session_id: 1,
+            access_context: dlp_common::AccessContext::Local,
+        },
+        action: dlp_common::Action::PASTE,
+        ..Default::default()
+    };
+
+    let response = client.evaluate(&request).await.unwrap();
+    assert_eq!(response.decision, Decision::DenyWithAlert);
+    assert!(
+        response.decision.is_denied(),
+        "DenyWithAlert must count as denied"
+    );
+
+    // Emit an Alert audit event (event_type = Alert for DenyWithAlert).
+    let event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::Alert,
+        "S-1-5-21-E2E-CLIP".to_string(),
+        "carol".to_string(),
+        "clipboard://paste".to_string(),
+        classification,
+        dlp_common::Action::PASTE,
+        response.decision,
+        "AGENT-E2E-03".to_string(),
+        1,
+    )
+    .with_policy("mock-pol-001".to_string(), "SSN paste denied".to_string());
+    emitter.emit(&event).unwrap();
+
+    let log = std::fs::read_to_string(emitter.log_path()).unwrap();
+    let parsed: dlp_common::AuditEvent = serde_json::from_str(log.trim()).unwrap();
+    assert_eq!(parsed.event_type, dlp_common::EventType::Alert);
+    assert_eq!(parsed.decision, Decision::DenyWithAlert);
+    assert_eq!(parsed.classification, Classification::T4);
+}
+
+#[tokio::test]
+async fn test_smb_detection_triggers_policy_eval_and_audit() {
+    use dlp_agent::audit_emitter::AuditEmitter;
+    use dlp_agent::detection::SmbShareEvent;
+    use dlp_agent::engine_client::EngineClient;
+
+    // A new SMB share appears — the agent must evaluate it against the
+    // policy engine and emit an audit event. Mock engine returns DENY for
+    // the non-whitelisted share.
+    let (addr, _handle) = start_mock_engine(Decision::DENY).await;
+    let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
+
+    // Simulate a new SMB share detection event.
+    let event = SmbShareEvent::Connected {
+        unc_path: r"\\evil.external\exfil".to_string(),
+        server: "evil.external".to_string(),
+        share_name: "exfil".to_string(),
+    };
+
+    // Extract the path out of the event to feed the evaluator.
+    let (path, _server, _share) = match &event {
+        SmbShareEvent::Connected {
+            unc_path,
+            server,
+            share_name,
+        } => (unc_path.clone(), server.clone(), share_name.clone()),
+        _ => panic!("expected Connected variant"),
+    };
+
+    // Treat SMB destinations as T3 — SMB is a network data egress channel,
+    // so sensitive data leaving the host is at least Confidential.
+    let classification = Classification::T3;
+    let request = EvaluateRequest {
+        subject: dlp_common::Subject {
+            user_sid: "S-1-5-21-E2E-SMB".to_string(),
+            user_name: "dave".to_string(),
+            groups: Vec::new(),
+            device_trust: dlp_common::DeviceTrust::Managed,
+            network_location: dlp_common::NetworkLocation::Corporate,
+        },
+        resource: dlp_common::Resource {
+            path: path.clone(),
+            classification,
+        },
+        environment: dlp_common::Environment {
+            timestamp: chrono::Utc::now(),
+            session_id: 1,
+            // AccessContext::Smb models a remote SMB operation.
+            access_context: dlp_common::AccessContext::Smb,
+        },
+        action: dlp_common::Action::WRITE,
+        ..Default::default()
+    };
+
+    let response = client.evaluate(&request).await.unwrap();
+    assert!(
+        response.decision.is_denied(),
+        "non-whitelisted SMB share must be denied for T3 data"
+    );
+
+    let audit = dlp_common::AuditEvent::new(
+        dlp_common::EventType::Block,
+        "S-1-5-21-E2E-SMB".to_string(),
+        "dave".to_string(),
+        path.clone(),
+        classification,
+        dlp_common::Action::WRITE,
+        response.decision,
+        "AGENT-E2E-04".to_string(),
+        1,
+    )
+    .with_policy("mock-pol-001".to_string(), "SMB egress blocked".to_string());
+    emitter.emit(&audit).unwrap();
+
+    let log = std::fs::read_to_string(emitter.log_path()).unwrap();
+    let parsed: dlp_common::AuditEvent = serde_json::from_str(log.trim()).unwrap();
+    assert_eq!(parsed.resource_path, r"\\evil.external\exfil");
+    assert_eq!(parsed.decision, Decision::DENY);
+    assert_eq!(parsed.classification, Classification::T3);
+}
+
+#[tokio::test]
+async fn test_engine_unreachable_fails_closed_for_t4() {
+    use dlp_agent::cache::{fail_closed_response, Cache};
+    use dlp_agent::engine_client::EngineClient;
+    use dlp_agent::offline::OfflineManager;
+
+    // Point at a port where nothing is listening. `EngineClient::new`
+    // validates the URL but does not open a connection; the failure
+    // happens on `.evaluate()`.
+    let client = EngineClient::new("http://127.0.0.1:1", false).unwrap();
+    let cache = Arc::new(Cache::new());
+    let manager = OfflineManager::new(client, cache, None);
+
+    let request = EvaluateRequest {
+        subject: dlp_common::Subject {
+            user_sid: "S-1-5-21-E2E-FAIL".to_string(),
+            user_name: "eve".to_string(),
+            groups: Vec::new(),
+            device_trust: dlp_common::DeviceTrust::Managed,
+            network_location: dlp_common::NetworkLocation::Corporate,
+        },
+        resource: dlp_common::Resource {
+            path: r"C:\Restricted\top-secret.docx".to_string(),
+            classification: Classification::T4,
+        },
+        environment: dlp_common::Environment {
+            timestamp: chrono::Utc::now(),
+            session_id: 1,
+            access_context: dlp_common::AccessContext::Local,
+        },
+        action: dlp_common::Action::WRITE,
+        ..Default::default()
+    };
+
+    let response = manager.evaluate(&request).await;
+
+    // fail_closed_response(T4) is DENY — any T4 request with engine down
+    // and no cache hit MUST return DENY.
+    let expected = fail_closed_response(Classification::T4);
+    assert_eq!(response.decision, expected.decision);
+    assert!(
+        response.decision.is_denied(),
+        "T4 + engine-down MUST fail closed"
+    );
+}
+
+#[tokio::test]
+async fn test_engine_429_triggers_offline_manager_fallback() {
+    use axum::{http::StatusCode, routing::post, Router};
+    use dlp_agent::cache::{fail_closed_response, Cache};
+    use dlp_agent::engine_client::EngineClient;
+    use dlp_agent::offline::OfflineManager;
+    use tokio::net::TcpListener;
+
+    // Start an inline mock engine that unconditionally returns 429.
+    let app: Router = Router::new().route(
+        "/evaluate",
+        post(|| async { (StatusCode::TOO_MANY_REQUESTS, "rate limited") }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let _handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
+    let cache = Arc::new(Cache::new());
+    let manager = OfflineManager::new(client, cache, None);
+
+    // T4 request with no cache entry — OfflineManager falls through to
+    // fail_closed_response(T4) = DENY.
+    let request = EvaluateRequest {
+        subject: dlp_common::Subject {
+            user_sid: "S-1-5-21-E2E-429".to_string(),
+            user_name: "frank".to_string(),
+            groups: Vec::new(),
+            device_trust: dlp_common::DeviceTrust::Managed,
+            network_location: dlp_common::NetworkLocation::Corporate,
+        },
+        resource: dlp_common::Resource {
+            path: r"C:\Restricted\quarterly.xlsx".to_string(),
+            classification: Classification::T4,
+        },
+        environment: dlp_common::Environment {
+            timestamp: chrono::Utc::now(),
+            session_id: 1,
+            access_context: dlp_common::AccessContext::Local,
+        },
+        action: dlp_common::Action::WRITE,
+        ..Default::default()
+    };
+
+    let response = manager.evaluate(&request).await;
+    let expected = fail_closed_response(Classification::T4);
+    assert_eq!(
+        response.decision, expected.decision,
+        "429 + T4 + no cache hit must fail closed (DENY)",
+    );
 }
