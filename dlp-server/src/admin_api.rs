@@ -49,7 +49,7 @@ pub struct AuthHashResponse {
 // ---------------------------------------------------------------------------
 
 /// Payload for creating or updating a policy.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyPayload {
     /// Unique policy ID (provided by the caller on create).
     pub id: String,
@@ -300,23 +300,20 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/ready", get(ready))
         .route("/auth/login", post(admin_auth::login))
         .route("/agents/register", post(agent_registry::register_agent))
-        .route("/agents/{id}/heartbeat", post(agent_registry::heartbeat))
+        .route("/agents/:id/heartbeat", post(agent_registry::heartbeat))
         .route("/audit/events", post(audit_store::ingest_events))
         .route("/agent-credentials/auth-hash", get(get_agent_auth_hash));
 
     // Routes that require a valid JWT.
     let protected_routes = Router::new()
         .route("/agents", get(agent_registry::list_agents))
-        .route("/agents/{id}", get(agent_registry::get_agent))
+        .route("/agents/:id", get(agent_registry::get_agent))
         .route("/audit/events", get(audit_store::query_events))
         .route("/audit/events/count", get(audit_store::get_event_count))
-        .route("/policies", get(list_policies))
-        .route("/policies", post(create_policy))
-        .route("/policies/{id}", get(get_policy))
-        .route("/policies/{id}", put(update_policy))
-        .route("/policies/{id}", delete(delete_policy))
+        .route("/policies", get(list_policies).post(create_policy))
+        .route("/policies/:id", get(get_policy).put(update_policy).delete(delete_policy))
         .route("/exceptions", get(exception_store::list_exceptions))
-        .route("/exceptions/{id}", get(exception_store::get_exception))
+        .route("/exceptions/:id", get(exception_store::get_exception))
         .route("/exceptions", post(exception_store::create_exception))
         .route("/agent-credentials/auth-hash", put(set_agent_auth_hash))
         .route("/auth/password", put(admin_auth::change_password))
@@ -403,7 +400,7 @@ async fn list_policies(
     Ok(Json(policies))
 }
 
-/// `GET /policies/{id}` — get a single policy.
+/// `GET /policies/:id` — get a single policy.
 async fn get_policy(
     State(state): State<Arc<AppState>>,
     Path(policy_id): Path<String>,
@@ -501,7 +498,7 @@ async fn create_policy(
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
-/// `PUT /policies/{id}` — update an existing policy.
+/// `PUT /policies/:id` — update an existing policy.
 async fn update_policy(
     State(state): State<Arc<AppState>>,
     Path(policy_id): Path<String>,
@@ -564,7 +561,7 @@ async fn update_policy(
     Ok(Json(resp))
 }
 
-/// `DELETE /policies/{id}` — delete a policy.
+/// `DELETE /policies/:id` — delete a policy.
 async fn delete_policy(
     State(state): State<Arc<AppState>>,
     Path(policy_id): Path<String>,
@@ -1126,6 +1123,34 @@ mod tests {
     /// `admin_auth.rs`) so all cross-module tests converge on one secret.
     const TEST_JWT_SECRET: &str = "dlp-server-dev-secret-change-me";
 
+    /// Common test setup: initialise JWT secret, open a fresh in-memory
+    /// database, build the full `admin_router`, and return the router
+    /// ready for `oneshot` requests.
+    fn spawn_admin_app() -> axum::Router {
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let state = Arc::new(AppState { db, siem, alert });
+        admin_router(state)
+    }
+
+    /// Mints a valid admin JWT for the test secret.
+    fn mint_admin_jwt() -> String {
+        use jsonwebtoken::{encode, EncodingKey, Header};
+        let claims = crate::admin_auth::Claims {
+            sub: "test-admin".to_string(),
+            exp: (Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
+            iss: "dlp-server".to_string(),
+        };
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+        )
+        .expect("encode JWT")
+    }
+
     #[tokio::test]
     async fn test_get_alert_config_requires_auth() {
         // Integration test at the handler level: a real router build that
@@ -1332,5 +1357,780 @@ mod tests {
         assert_eq!(stored_webhook_secret, "hmac-key");
         assert_ne!(stored_smtp_password, ALERT_SECRET_MASK);
         assert_ne!(stored_webhook_secret, ALERT_SECRET_MASK);
+    }
+
+    // ── Temporary diagnostic: verify DB insert→select round-trip ────────────
+
+    #[tokio::test]
+    async fn test_db_insert_select_roundtrip_via_spawn_blocking() {
+        // This test verifies that spawn_blocking DB writes are visible to
+        // subsequent spawn_blocking reads on the same Arc<Database>.
+        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
+        let db2 = Arc::clone(&db);
+
+        tokio::task::spawn_blocking(move || {
+            let conn = db.conn().lock();
+            conn.execute(
+                "INSERT INTO policies (id, name, description, priority, conditions, \
+                 action, enabled, version, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
+                rusqlite::params![
+                    "diag-001",
+                    "Diag Test",
+                    None::<String>,
+                    1i64,
+                    "[]",
+                    "ALLOW",
+                    true,
+                    "2026-01-01T00:00:00Z"
+                ],
+            )
+        })
+        .await
+        .expect("join")
+        .expect("execute");
+
+        let count: i64 = tokio::task::spawn_blocking(move || {
+            let conn = db2.conn().lock();
+            conn.query_row(
+                "SELECT COUNT(*) FROM policies WHERE id = ?1",
+                rusqlite::params!["diag-001"],
+                |row| row.get(0),
+            )
+        })
+        .await
+        .expect("join")
+        .expect("query");
+
+        assert_eq!(
+            count, 1,
+            "INSERT must be visible to subsequent SELECT via same Arc<Database>"
+        );
+    }
+
+    // Verify POST via router → direct DB read round-trip.
+    #[tokio::test]
+    async fn test_router_post_then_direct_db_read() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
+        let db_read = Arc::clone(&db);
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let state = Arc::new(AppState { db, siem, alert });
+        let app = admin_router(state);
+        let token = mint_admin_jwt();
+
+        let payload = PolicyPayload {
+            id: "diag-router-001".to_string(),
+            name: "Diag Router Test".to_string(),
+            description: None,
+            priority: 1,
+            conditions: serde_json::json!([]),
+            action: "ALLOW".to_string(),
+            enabled: true,
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/policies")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Now directly read from the DB handle (not via router).
+        let count: i64 = tokio::task::spawn_blocking(move || {
+            let conn = db_read.conn().lock();
+            conn.query_row(
+                "SELECT COUNT(*) FROM policies WHERE id = ?1",
+                rusqlite::params!["diag-router-001"],
+                |row| row.get(0),
+            )
+        })
+        .await
+        .expect("join")
+        .expect("query");
+
+        assert_eq!(
+            count, 1,
+            "POST via router must persist to DB visible via direct read"
+        );
+    }
+
+    // Verify POST via router then GET-by-ID via router.
+    #[tokio::test]
+    async fn test_router_post_then_router_get_by_id() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        let payload = PolicyPayload {
+            id: "diag-getbyid-001".to_string(),
+            name: "Diag GetById".to_string(),
+            description: None,
+            priority: 1,
+            conditions: serde_json::json!([]),
+            action: "ALLOW".to_string(),
+            enabled: true,
+        };
+        let post_req = Request::builder()
+            .method("POST")
+            .uri("/policies")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .expect("build POST");
+        let post_resp = app.clone().oneshot(post_req).await.expect("oneshot POST");
+        eprintln!("POST status: {}", post_resp.status());
+        assert_eq!(post_resp.status(), StatusCode::CREATED);
+
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/policies/diag-getbyid-001")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let get_resp = app.oneshot(get_req).await.expect("oneshot GET");
+        let status = get_resp.status();
+        let bytes = to_bytes(get_resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body");
+        eprintln!(
+            "GET status: {}, body: {}",
+            status,
+            String::from_utf8_lossy(&bytes)
+        );
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "GET by ID must find the created policy"
+        );
+    }
+
+    // ── Task 04.1-02 / Task 1: Policy CRUD round-trip tests ──────────────────
+
+    #[tokio::test]
+    async fn test_create_policy_persists_and_get_returns_it() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        let payload = PolicyPayload {
+            id: "pol-create-01".to_string(),
+            name: "Restricted Write Block".to_string(),
+            description: Some("Blocks T4 writes to removable media".to_string()),
+            priority: 100,
+            conditions: serde_json::json!([{"attr":"classification","op":"eq","value":"T4"}]),
+            action: "DENY".to_string(),
+            enabled: true,
+        };
+        let body = serde_json::to_string(&payload).expect("serialize");
+
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/policies")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .expect("build POST");
+        let create_resp = app.clone().oneshot(create_req).await.expect("oneshot POST");
+        assert_eq!(create_resp.status(), StatusCode::CREATED);
+
+        let bytes = to_bytes(create_resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body");
+        let created: PolicyResponse = serde_json::from_slice(&bytes).expect("parse created policy");
+        assert_eq!(created.id, "pol-create-01");
+        assert_eq!(created.name, "Restricted Write Block");
+        assert_eq!(created.action, "DENY");
+        assert_eq!(created.version, 1);
+        assert!(created.enabled);
+
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/policies/pol-create-01")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let get_resp = app.oneshot(get_req).await.expect("oneshot GET");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let bytes = to_bytes(get_resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body");
+        let fetched: PolicyResponse = serde_json::from_slice(&bytes).expect("parse fetched policy");
+        assert_eq!(fetched.id, "pol-create-01");
+        assert_eq!(fetched.name, "Restricted Write Block");
+    }
+
+    #[tokio::test]
+    async fn test_create_policy_rejects_empty_id_or_name() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        // Empty id → 400.
+        let bad_id = PolicyPayload {
+            id: "".to_string(),
+            name: "Some name".to_string(),
+            description: None,
+            priority: 1,
+            conditions: serde_json::json!([]),
+            action: "ALLOW".to_string(),
+            enabled: true,
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/policies")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&bad_id).unwrap()))
+            .expect("build");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Empty name → 400.
+        let bad_name = PolicyPayload {
+            id: "pol-bad".to_string(),
+            name: "".to_string(),
+            description: None,
+            priority: 1,
+            conditions: serde_json::json!([]),
+            action: "ALLOW".to_string(),
+            enabled: true,
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/policies")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&bad_name).unwrap()))
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_update_policy_increments_version() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        // Seed
+        let initial = PolicyPayload {
+            id: "pol-update-01".to_string(),
+            name: "Initial".to_string(),
+            description: None,
+            priority: 50,
+            conditions: serde_json::json!([]),
+            action: "ALLOW".to_string(),
+            enabled: true,
+        };
+        let post_req = Request::builder()
+            .method("POST")
+            .uri("/policies")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&initial).unwrap()))
+            .expect("build");
+        let resp = app.clone().oneshot(post_req).await.expect("oneshot POST");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Update
+        let updated = PolicyPayload {
+            id: "pol-update-01".to_string(),
+            name: "Updated Name".to_string(),
+            description: Some("new desc".to_string()),
+            priority: 25,
+            conditions: serde_json::json!([{"attr":"tier","op":"eq","value":"T3"}]),
+            action: "DENY".to_string(),
+            enabled: false,
+        };
+        let put_req = Request::builder()
+            .method("PUT")
+            .uri("/policies/pol-update-01")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&updated).unwrap()))
+            .expect("build");
+        let put_resp = app.oneshot(put_req).await.expect("oneshot PUT");
+        assert_eq!(put_resp.status(), StatusCode::OK);
+
+        let bytes = to_bytes(put_resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body");
+        let rt: PolicyResponse = serde_json::from_slice(&bytes).expect("parse updated");
+        assert_eq!(rt.name, "Updated Name");
+        assert_eq!(rt.action, "DENY");
+        assert_eq!(rt.priority, 25);
+        assert!(!rt.enabled);
+        assert_eq!(
+            rt.version, 2,
+            "version must be incremented by update_policy"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_unknown_policy_returns_404() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        let payload = PolicyPayload {
+            id: "pol-does-not-exist".to_string(),
+            name: "x".to_string(),
+            description: None,
+            priority: 1,
+            conditions: serde_json::json!([]),
+            action: "ALLOW".to_string(),
+            enabled: true,
+        };
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/policies/pol-does-not-exist")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_delete_policy_removes_row_and_subsequent_delete_is_404() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        // Seed
+        let seed = PolicyPayload {
+            id: "pol-delete-01".to_string(),
+            name: "To Be Deleted".to_string(),
+            description: None,
+            priority: 1,
+            conditions: serde_json::json!([]),
+            action: "ALLOW".to_string(),
+            enabled: true,
+        };
+        let post_req = Request::builder()
+            .method("POST")
+            .uri("/policies")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&seed).unwrap()))
+            .expect("build");
+        let resp = app.clone().oneshot(post_req).await.expect("oneshot POST");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // First delete → 204
+        let del_req = Request::builder()
+            .method("DELETE")
+            .uri("/policies/pol-delete-01")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build");
+        let del_resp = app.clone().oneshot(del_req).await.expect("oneshot DELETE");
+        assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
+
+        // Second delete → 404
+        let del_req2 = Request::builder()
+            .method("DELETE")
+            .uri("/policies/pol-delete-01")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build");
+        let del_resp2 = app.oneshot(del_req2).await.expect("oneshot DELETE 2");
+        assert_eq!(del_resp2.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_list_policies_returns_seeded_rows() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        for i in 0..3 {
+            let payload = PolicyPayload {
+                id: format!("pol-list-{i:02}"),
+                name: format!("Policy {i}"),
+                description: None,
+                priority: i as u32,
+                conditions: serde_json::json!([]),
+                action: "ALLOW".to_string(),
+                enabled: true,
+            };
+            let req = Request::builder()
+                .method("POST")
+                .uri("/policies")
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_string(&payload).unwrap()))
+                .expect("build");
+            let resp = app.clone().oneshot(req).await.expect("oneshot POST");
+            assert_eq!(resp.status(), StatusCode::CREATED);
+        }
+
+        let list_req = Request::builder()
+            .method("GET")
+            .uri("/policies")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build");
+        let list_resp = app.oneshot(list_req).await.expect("oneshot GET");
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let bytes = to_bytes(list_resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body");
+        let policies: Vec<PolicyResponse> = serde_json::from_slice(&bytes).expect("parse list");
+        assert!(
+            policies.len() >= 3,
+            "expected at least 3 seeded policies, got {}",
+            policies.len()
+        );
+        let ids: std::collections::HashSet<_> = policies.iter().map(|p| p.id.clone()).collect();
+        assert!(ids.contains("pol-list-00"));
+        assert!(ids.contains("pol-list-01"));
+        assert!(ids.contains("pol-list-02"));
+    }
+
+    // ── Task 04.1-02 / Task 2: Audit event ingest and query round-trip tests ─
+
+    /// Build one audit event with the given agent id for seeding tests.
+    fn sample_audit_event(agent_id: &str, resource_path: &str) -> dlp_common::AuditEvent {
+        dlp_common::AuditEvent::new(
+            dlp_common::EventType::Block,
+            "S-1-5-21-TEST".to_string(),
+            "testuser".to_string(),
+            resource_path.to_string(),
+            dlp_common::Classification::T4,
+            dlp_common::Action::WRITE,
+            dlp_common::Decision::DENY,
+            agent_id.to_string(),
+            1,
+        )
+        .with_policy("pol-audit-test".to_string(), "Test block".to_string())
+    }
+
+    #[tokio::test]
+    async fn test_ingest_audit_events_round_trip_and_count() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        // POST /audit/events is UNAUTHENTICATED — no Bearer header needed.
+        let batch = vec![
+            sample_audit_event("AGENT-001", r"C:\Restricted\a.xlsx"),
+            sample_audit_event("AGENT-001", r"C:\Restricted\b.xlsx"),
+        ];
+        let body = serde_json::to_string(&batch).expect("serialize");
+        let ingest_req = Request::builder()
+            .method("POST")
+            .uri("/audit/events")
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .expect("build ingest");
+        let ingest_resp = app
+            .clone()
+            .oneshot(ingest_req)
+            .await
+            .expect("oneshot ingest");
+        assert_eq!(ingest_resp.status(), StatusCode::CREATED);
+
+        // GET /audit/events/count requires a JWT.
+        let count_req = Request::builder()
+            .method("GET")
+            .uri("/audit/events/count")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build count");
+        let count_resp = app.clone().oneshot(count_req).await.expect("oneshot count");
+        assert_eq!(count_resp.status(), StatusCode::OK);
+        let bytes = to_bytes(count_resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body");
+        let count: crate::audit_store::EventCount =
+            serde_json::from_slice(&bytes).expect("parse count");
+        assert!(
+            count.count >= 2,
+            "expected at least 2 audit events, got {}",
+            count.count
+        );
+
+        // GET /audit/events returns the seeded rows.
+        let query_req = Request::builder()
+            .method("GET")
+            .uri("/audit/events")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build query");
+        let query_resp = app.oneshot(query_req).await.expect("oneshot query");
+        assert_eq!(query_resp.status(), StatusCode::OK);
+        let bytes = to_bytes(query_resp.into_body(), 1024 * 1024)
+            .await
+            .expect("read body");
+        let events: Vec<dlp_common::AuditEvent> =
+            serde_json::from_slice(&bytes).expect("parse events");
+        assert!(
+            events.len() >= 2,
+            "expected at least 2 events returned, got {}",
+            events.len()
+        );
+        let agent_ids: std::collections::HashSet<_> =
+            events.iter().map(|e| e.agent_id.clone()).collect();
+        assert!(agent_ids.contains("AGENT-001"));
+    }
+
+    #[tokio::test]
+    async fn test_ingest_empty_batch_returns_400() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let empty: Vec<dlp_common::AuditEvent> = Vec::new();
+        let body = serde_json::to_string(&empty).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/audit/events")
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_ingest_malformed_json_returns_400() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/audit/events")
+            .header("Content-Type", "application/json")
+            .body(Body::from("{ this is not valid JSON ]"))
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        // axum 0.7's `Json` extractor maps a JSON parse failure to 422.
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn test_query_events_filters_by_agent_id() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        // Seed with two different agent ids.
+        let batch = vec![
+            sample_audit_event("AGENT-ALPHA", r"C:\x\one.xlsx"),
+            sample_audit_event("AGENT-BETA", r"C:\x\two.xlsx"),
+        ];
+        let body = serde_json::to_string(&batch).unwrap();
+        let ingest = Request::builder()
+            .method("POST")
+            .uri("/audit/events")
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .expect("build ingest");
+        let resp = app.clone().oneshot(ingest).await.expect("oneshot ingest");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Filter by agent_id = AGENT-ALPHA.
+        let q = Request::builder()
+            .method("GET")
+            .uri("/audit/events?agent_id=AGENT-ALPHA")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build query");
+        let qr = app.oneshot(q).await.expect("oneshot query");
+        assert_eq!(qr.status(), StatusCode::OK);
+        let bytes = to_bytes(qr.into_body(), 1024 * 1024)
+            .await
+            .expect("read body");
+        let events: Vec<dlp_common::AuditEvent> =
+            serde_json::from_slice(&bytes).expect("parse events");
+        assert!(
+            events.iter().all(|e| e.agent_id == "AGENT-ALPHA"),
+            "filter returned foreign agent_id"
+        );
+        assert!(events.iter().any(|e| e.agent_id == "AGENT-ALPHA"));
+    }
+
+    #[tokio::test]
+    async fn test_audit_event_deny_with_alert_roundtrip() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        // POST /audit/events is UNAUTHENTICATED — no Bearer header needed.
+        let event = dlp_common::AuditEvent::new(
+            dlp_common::EventType::Alert,
+            "S-1-5-21-TEST-ALERT".to_string(),
+            "alertuser".to_string(),
+            r"C:\Restricted\sensitive.docx".to_string(),
+            dlp_common::Classification::T4,
+            dlp_common::Action::WRITE,
+            dlp_common::Decision::DenyWithAlert,
+            "AGENT-ALERT-001".to_string(),
+            1,
+        )
+        .with_policy(
+            "pol-alert-test".to_string(),
+            "DenyWithAlert policy".to_string(),
+        );
+
+        let batch = vec![event];
+        let body = serde_json::to_string(&batch).expect("serialize");
+        let ingest_req = Request::builder()
+            .method("POST")
+            .uri("/audit/events")
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .expect("build ingest");
+        let ingest_resp = app
+            .clone()
+            .oneshot(ingest_req)
+            .await
+            .expect("oneshot ingest");
+        assert_eq!(ingest_resp.status(), StatusCode::CREATED);
+
+        // GET /audit/events requires a JWT. Retrieve and find our event.
+        let query_req = Request::builder()
+            .method("GET")
+            .uri("/audit/events")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build query");
+        let query_resp = app.oneshot(query_req).await.expect("oneshot query");
+        assert_eq!(query_resp.status(), StatusCode::OK);
+        let bytes = to_bytes(query_resp.into_body(), 1024 * 1024)
+            .await
+            .expect("read body");
+        let events: Vec<dlp_common::AuditEvent> =
+            serde_json::from_slice(&bytes).expect("parse events");
+        let found = events
+            .iter()
+            .find(|e| e.agent_id == "AGENT-ALERT-001")
+            .expect("DenyWithAlert event must be present after ingest");
+        assert_eq!(
+            found.decision,
+            dlp_common::Decision::DenyWithAlert,
+            "retrieved event must have decision == DenyWithAlert"
+        );
+    }
+
+    // ── Task 04.1-02 / Task 3: JWT auth-gate tests for protected policy routes
+
+    #[tokio::test]
+    async fn test_policies_get_without_token_returns_401() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/policies")
+            .body(Body::empty())
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_policies_post_with_invalid_token_returns_401() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let payload = PolicyPayload {
+            id: "pol-auth-01".to_string(),
+            name: "x".to_string(),
+            description: None,
+            priority: 1,
+            conditions: serde_json::json!([]),
+            action: "ALLOW".to_string(),
+            enabled: true,
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/policies")
+            .header("Authorization", "Bearer not-a-real-token")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_policies_get_with_valid_token_returns_200() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/policies")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_audit_query_without_token_returns_401() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/audit/events")
+            .body(Body::empty())
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }
