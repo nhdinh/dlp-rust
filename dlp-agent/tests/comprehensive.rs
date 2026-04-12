@@ -355,6 +355,8 @@ mod config_edge_cases {
             server_url: None,
             monitored_paths: vec![r"C:\Data\".to_string(), r"D:\Shares\".to_string()],
             excluded_paths: Vec::new(),
+            heartbeat_interval_secs: None,
+            offline_cache_enabled: None,
             machine_name: None,
         };
         let paths = config.resolve_watch_paths();
@@ -371,6 +373,8 @@ mod config_edge_cases {
             server_url: None,
             monitored_paths: vec![r"C:\Data\".to_string()],
             excluded_paths: vec![r"C:\Temp\".to_string()],
+            heartbeat_interval_secs: None,
+            offline_cache_enabled: None,
             machine_name: None,
         };
         let b = a.clone();

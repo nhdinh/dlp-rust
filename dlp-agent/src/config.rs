@@ -23,10 +23,17 @@
 //! excluded_paths = [
 //!     'C:\BuildOutput\',
 //! ]
+//!
+//! # Heartbeat interval in seconds (populated by server config push).
+//! heartbeat_interval_secs = 30
+//!
+//! # Whether offline event caching is enabled (populated by server config push).
+//! offline_cache_enabled = true
 //! ```
 
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -65,6 +72,16 @@ pub struct AgentConfig {
     /// relevant to DLP enforcement (e.g., build output, IDE caches).
     #[serde(default)]
     pub excluded_paths: Vec<String>,
+
+    /// Heartbeat interval in seconds. When `None`, the agent uses its
+    /// compiled default (30 seconds). Populated by server config push.
+    #[serde(default)]
+    pub heartbeat_interval_secs: Option<u64>,
+
+    /// Whether offline event caching is enabled. When `None`, defaults
+    /// to `true`. Populated by server config push.
+    #[serde(default)]
+    pub offline_cache_enabled: Option<bool>,
 
     /// Machine hostname, resolved once at startup.
     /// Not persisted to the config file.
@@ -131,6 +148,25 @@ impl AgentConfig {
     /// Loads configuration from the default path ([`DEFAULT_CONFIG_PATH`]).
     pub fn load_default() -> Self {
         Self::load(Path::new(DEFAULT_CONFIG_PATH))
+    }
+
+    /// Persists the current config to a TOML file.
+    ///
+    /// All fields (including `server_url` and server-pushed fields) are
+    /// written. `machine_name` is `#[serde(skip)]` and will not appear.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Destination path (typically [`DEFAULT_CONFIG_PATH`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if TOML serialization or file write fails.
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        let toml_str = toml::to_string(self).context("failed to serialize AgentConfig to TOML")?;
+        std::fs::write(path, toml_str)
+            .with_context(|| format!("failed to write config to {}", path.display()))?;
+        Ok(())
     }
 
     /// Returns the resolved list of paths to watch.
@@ -226,10 +262,90 @@ mod tests {
             server_url: None,
             monitored_paths: vec![r"C:\Data\".to_string()],
             excluded_paths: Vec::new(),
+            heartbeat_interval_secs: None,
+            offline_cache_enabled: None,
             machine_name: None,
         };
         let paths = config.resolve_watch_paths();
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0], PathBuf::from(r"C:\Data\"));
+    }
+
+    #[test]
+    fn test_agent_config_new_fields_default() {
+        let config = AgentConfig::default();
+        assert!(config.heartbeat_interval_secs.is_none());
+        assert!(config.offline_cache_enabled.is_none());
+    }
+
+    #[test]
+    fn test_agent_config_new_fields_deserialize() {
+        let toml_str = "heartbeat_interval_secs = 60\noffline_cache_enabled = false\n";
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(config.heartbeat_interval_secs, Some(60u64));
+        assert_eq!(config.offline_cache_enabled, Some(false));
+    }
+
+    #[test]
+    fn test_agent_config_save_roundtrip() {
+        // Write a fully-populated config to a temp file and load it back.
+        let original = AgentConfig {
+            server_url: Some("http://10.0.1.5:9090".to_string()),
+            monitored_paths: vec![r"C:\Data\".to_string()],
+            excluded_paths: vec![r"C:\Temp\".to_string()],
+            heartbeat_interval_secs: Some(45),
+            offline_cache_enabled: Some(true),
+            // machine_name is #[serde(skip)] — not written or loaded
+            machine_name: Some("MY-PC".to_string()),
+        };
+
+        let tmp_path = std::env::temp_dir().join("test_agent_config_save_roundtrip.toml");
+        original.save(&tmp_path).expect("save should succeed");
+
+        let loaded = AgentConfig::load(&tmp_path);
+        let _ = std::fs::remove_file(&tmp_path);
+
+        // machine_name is skip-serialized so it will be None after reload.
+        let expected = AgentConfig {
+            machine_name: None,
+            ..original
+        };
+        assert_eq!(loaded, expected);
+    }
+
+    #[test]
+    fn test_agent_config_save_preserves_server_url() {
+        let config = AgentConfig {
+            server_url: Some("http://10.0.1.5:9090".to_string()),
+            monitored_paths: Vec::new(),
+            excluded_paths: Vec::new(),
+            heartbeat_interval_secs: None,
+            offline_cache_enabled: None,
+            machine_name: None,
+        };
+
+        let tmp_path = std::env::temp_dir().join("test_agent_config_save_server_url.toml");
+        config.save(&tmp_path).expect("save should succeed");
+
+        let contents = std::fs::read_to_string(&tmp_path).expect("read back");
+        let _ = std::fs::remove_file(&tmp_path);
+
+        assert!(
+            contents.contains("server_url"),
+            "TOML must contain server_url; got:\n{contents}"
+        );
+        assert!(contents.contains("10.0.1.5"));
+    }
+
+    #[test]
+    fn test_agent_config_backwards_compatible() {
+        // A TOML without the new fields must still parse successfully.
+        let toml_str = r#"
+            monitored_paths = ['C:\Restricted\']
+        "#;
+        let config: AgentConfig = toml::from_str(toml_str).expect("backwards-compat parse");
+        assert_eq!(config.monitored_paths, vec![r"C:\Restricted\"]);
+        assert!(config.heartbeat_interval_secs.is_none());
+        assert!(config.offline_cache_enabled.is_none());
     }
 }
