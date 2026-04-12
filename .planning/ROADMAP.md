@@ -66,9 +66,16 @@ Plans:
 
 ### Phase 6: Wire config push for agent config distribution
 **Requirement:** R-04
-**Files:** `dlp-server/src/main.rs`, `dlp-server/src/config_push.rs`, `dlp-server/src/admin_api.rs`
-**Description:** Add admin API endpoint for pushing config updates. Agents poll for config changes on heartbeat.
-**UAT:** Admin can push updated monitored_paths via API; agent picks up changes.
+**Goal:** DB-backed admin API for agent config (monitored paths, heartbeat interval, offline cache) with per-agent override support; agents poll a dedicated endpoint and persist received config to TOML.
+**Files:** `dlp-server/src/config_push.rs` (DELETE), `dlp-server/src/lib.rs`, `dlp-server/src/db.rs`, `dlp-server/src/admin_api.rs`, `dlp-agent/src/config.rs`, `dlp-agent/src/server_client.rs`, `dlp-agent/src/service.rs`
+**Description:** Delete the non-viable server-push `config_push.rs` module. Add `global_agent_config` (single-row default) and `agent_config_overrides` (per-agent, FK to agents) DB tables. Expose JWT-protected admin CRUD endpoints and an unauthenticated `GET /agent-config/{id}` resolution endpoint (override-then-global fallback). Agent gains `heartbeat_interval_secs` and `offline_cache_enabled` fields, a `save()` method for TOML write-back, `fetch_agent_config()` on ServerClient, and an independent config poll loop in `run_loop`.
+**UAT:** Admin can push updated monitored_paths via API; agent picks up changes on next poll and persists to `agent-config.toml`.
+
+**Plans:** 2 plans
+
+Plans:
+- [ ] 06-01-PLAN.md — Server-side: delete config_push.rs, DB tables (global_agent_config + agent_config_overrides), AgentConfigPayload struct, 6 handlers, route wiring
+- [ ] 06-02-PLAN.md — Agent-side: AgentConfig new fields + save(), ServerClient::fetch_agent_config(), config poll loop in service.rs
 
 ### Phase 7: Active Directory LDAP integration
 **Requirement:** R-05
