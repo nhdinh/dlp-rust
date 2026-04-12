@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use dlp_common::AuditEvent;
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -67,6 +68,26 @@ pub enum ServerClientError {
     /// Environment configuration error.
     #[error("configuration error: {0}")]
     Config(String),
+}
+
+// ---------------------------------------------------------------------------
+// AgentConfigPayload
+// ---------------------------------------------------------------------------
+
+/// Agent configuration payload received from the server.
+///
+/// Matches the JSON shape returned by `GET /agent-config/{id}`.
+/// This is the agent-side mirror of `dlp_server::admin_api::AgentConfigPayload`.
+/// The two types are defined independently — no shared crate dependency needed;
+/// they communicate over HTTP/JSON.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentConfigPayload {
+    /// Directory paths the agent should monitor.
+    pub monitored_paths: Vec<String>,
+    /// Heartbeat interval in seconds.
+    pub heartbeat_interval_secs: u64,
+    /// Whether offline caching is active.
+    pub offline_cache_enabled: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +294,29 @@ impl ServerClient {
         let body: HashResponse = resp.json().await?;
         debug!("fetched auth hash from server");
         Ok(body.hash)
+    }
+
+    /// Fetches the resolved agent config from dlp-server.
+    ///
+    /// Calls `GET /agent-config/{agent_id}`. Returns the resolved payload
+    /// (per-agent override if set, global default otherwise).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerClientError::Http` if the server is unreachable.
+    /// Returns `ServerClientError::ServerError` on non-success status codes.
+    /// Callers should log the error and retain the current in-memory config.
+    pub async fn fetch_agent_config(&self) -> Result<AgentConfigPayload, ServerClientError> {
+        let url = format!("{}/agent-config/{}", self.base_url, self.agent_id);
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_else(|_| "<no body>".to_string());
+            return Err(ServerClientError::ServerError { status, body });
+        }
+        let payload: AgentConfigPayload = resp.json().await.map_err(ServerClientError::Http)?;
+        debug!(agent_id = %self.agent_id, "agent config fetched from server");
+        Ok(payload)
     }
 
     /// Sends a batch of audit events to the dlp-server.
@@ -585,5 +629,27 @@ mod tests {
         let client = unreachable_client();
         let result = client.fetch_auth_hash().await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_agent_config_payload_serde() {
+        let payload = AgentConfigPayload {
+            monitored_paths: vec![r"C:\Data\".to_string()],
+            heartbeat_interval_secs: 60,
+            offline_cache_enabled: false,
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt, payload);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_agent_config_unreachable() {
+        // Use a port on loopback that nothing listens on — fails fast without
+        // touching the network or process-wide env vars.
+        let sc = ServerClient::from_env_with_config(Some("http://127.0.0.1:19999"))
+            .expect("client creation");
+        let result = sc.fetch_agent_config().await;
+        assert!(result.is_err(), "unreachable server should return error");
     }
 }
