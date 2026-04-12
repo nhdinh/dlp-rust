@@ -200,6 +200,105 @@ pub fn run_service() -> Result<()> {
     Ok(())
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Config poll loop
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Periodically polls the server for updated agent config.
+///
+/// Runs on a separate timer independent of heartbeat. On each tick:
+/// 1. Fetch resolved config from `GET /agent-config/{agent_id}`.
+/// 2. Compare the three pushed fields against in-memory state.
+/// 3. If changed: update in-memory, write to TOML, log field names only.
+/// 4. Re-arm timer using the *previously applied* interval (not the new one)
+///    to prevent tight-loop on interval reduction.
+///
+/// `monitored_paths` changes are written to TOML but only take effect on
+/// restart — `InterceptionEngine` paths are fixed at construction time.
+/// `heartbeat_interval_secs` and `offline_cache_enabled` take effect
+/// immediately in-memory.
+async fn config_poll_loop(
+    server_client: crate::server_client::ServerClient,
+    config: Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    // Read the initial poll interval from config; default 30 s if not set.
+    let initial_interval = {
+        let cfg = config.lock();
+        cfg.heartbeat_interval_secs.unwrap_or(30)
+    };
+    let mut interval = tokio::time::interval(Duration::from_secs(initial_interval));
+    // Skip the first immediate tick — let the agent settle after startup.
+    interval.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {},
+            _ = shutdown_rx.changed() => {
+                info!("config poll loop shutting down");
+                return;
+            }
+        }
+
+        // Capture the current interval BEFORE applying any update.
+        // The timer re-arms with this value so a server-reduced interval
+        // does not cause a tight loop (T-06-08 DoS mitigation).
+        let current_interval = {
+            let cfg = config.lock();
+            cfg.heartbeat_interval_secs.unwrap_or(30)
+        };
+
+        let payload = match server_client.fetch_agent_config().await {
+            Ok(p) => p,
+            Err(e) => {
+                // Best-effort: log and retain current config on server error.
+                debug!(error = %e, "config poll failed — retaining current config");
+                continue;
+            }
+        };
+
+        // Diff: compare fetched payload against in-memory config.
+        let mut changed_fields: Vec<&str> = Vec::new();
+        {
+            let mut cfg = config.lock();
+
+            if cfg.monitored_paths != payload.monitored_paths {
+                changed_fields.push("monitored_paths");
+                cfg.monitored_paths = payload.monitored_paths.clone();
+            }
+            if cfg.heartbeat_interval_secs != Some(payload.heartbeat_interval_secs) {
+                changed_fields.push("heartbeat_interval_secs");
+                cfg.heartbeat_interval_secs = Some(payload.heartbeat_interval_secs);
+            }
+            if cfg.offline_cache_enabled != Some(payload.offline_cache_enabled) {
+                changed_fields.push("offline_cache_enabled");
+                cfg.offline_cache_enabled = Some(payload.offline_cache_enabled);
+            }
+
+            if !changed_fields.is_empty() {
+                // Log field names only — never log path values (T-06-09 info disclosure).
+                info!(
+                    fields = ?changed_fields,
+                    "agent config updated from server"
+                );
+                // Write back to TOML for persistence across restarts.
+                let config_path = std::path::Path::new(crate::config::DEFAULT_CONFIG_PATH);
+                if let Err(e) = cfg.save(config_path) {
+                    tracing::error!(
+                        error = %e,
+                        "failed to write updated config to TOML"
+                    );
+                }
+            }
+        }
+
+        // Re-arm the timer using the PREVIOUS interval, not the new one.
+        // The new interval takes effect after the *next* tick completes.
+        interval = tokio::time::interval(Duration::from_secs(current_interval));
+        interval.tick().await; // consume immediate first tick
+    }
+}
+
 /// The main service run loop.
 ///
 /// Runs the file system event loop and the service control loop.
@@ -272,6 +371,10 @@ async fn run_loop(
         None
     };
 
+    // ── Clone server client for config poll BEFORE it moves into offline_manager ──
+    // server_client is an Option<ServerClient>. ServerClient is Clone.
+    let server_client_for_config = server_client.clone();
+
     let mut offline_manager =
         crate::offline::OfflineManager::new(engine_client, cache, machine_name.clone());
     if let Some(sc) = server_client {
@@ -279,12 +382,30 @@ async fn run_loop(
     }
     let offline = Arc::new(offline_manager);
 
+    // ── Wrap agent_config in Arc<Mutex<>> for shared access ──────────────
+    // The config poll loop needs a shared mutable reference to apply server-pushed
+    // updates. InterceptionEngine gets a clone of the config at construction time
+    // (paths are fixed; live path hot-reload is out of scope for this phase).
+    let config_arc = Arc::new(parking_lot::Mutex::new(agent_config.clone()));
+
     // ── Start the Policy Engine heartbeat ─────────────────────────────────
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let offline_hb = offline.clone();
     let _heartbeat_handle = tokio::spawn(async move {
         offline_hb.heartbeat_loop(shutdown_rx).await;
     });
+
+    // ── Start the config poll loop ─────────────────────────────────────────
+    let (config_shutdown_tx, config_shutdown_rx) = tokio::sync::watch::channel(false);
+    let _config_poll_handle = if let Some(sc) = server_client_for_config {
+        let config_for_poll = Arc::clone(&config_arc);
+        Some(tokio::spawn(async move {
+            config_poll_loop(sc, config_for_poll, config_shutdown_rx).await;
+        }))
+    } else {
+        drop(config_shutdown_rx);
+        None
+    };
 
     // ── Start the file system monitor pipeline ─────────────────────────
     let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
@@ -398,6 +519,13 @@ async fn run_loop(
     let _ = shutdown_tx.send(true);
     let _ = _heartbeat_handle.await;
     crate::password_stop::debug_log("run_loop: heartbeat stopped");
+
+    // Stop the config poll loop.
+    let _ = config_shutdown_tx.send(true);
+    if let Some(h) = _config_poll_handle {
+        let _ = h.await;
+    }
+    crate::password_stop::debug_log("run_loop: config poll stopped");
 
     // Stop the audit buffer flush task (final flush runs inside).
     let _ = audit_shutdown_tx.send(true);

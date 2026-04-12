@@ -311,7 +311,10 @@ impl ServerClient {
         let resp = self.client.get(&url).send().await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| "<no body>".to_string());
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
             return Err(ServerClientError::ServerError { status, body });
         }
         let payload: AgentConfigPayload = resp.json().await.map_err(ServerClientError::Http)?;
