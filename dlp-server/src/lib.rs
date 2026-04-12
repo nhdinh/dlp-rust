@@ -8,7 +8,6 @@ pub mod admin_auth;
 pub mod agent_registry;
 pub mod alert_router;
 pub mod audit_store;
-pub mod config_push;
 pub mod db;
 pub mod exception_store;
 pub mod policy_sync;

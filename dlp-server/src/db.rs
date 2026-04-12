@@ -154,6 +154,30 @@ impl Database {
                 updated_at        TEXT NOT NULL DEFAULT ''
             );
             INSERT OR IGNORE INTO alert_router_config (id) VALUES (1);
+
+            -- global_agent_config: single-row default applied to all agents unless overridden.
+            -- Uses CHECK (id = 1) to enforce exactly one row, seeded below.
+            -- monitored_paths is stored as a JSON text array.
+            -- NOTE: agent_config_overrides has a FK to agents(agent_id) ON DELETE CASCADE,
+            -- but rusqlite does NOT enforce FK constraints unless PRAGMA foreign_keys = ON
+            -- is set per connection. The cascade is a safety net, not a correctness invariant.
+            CREATE TABLE IF NOT EXISTS global_agent_config (
+                id                      INTEGER PRIMARY KEY CHECK (id = 1),
+                monitored_paths         TEXT NOT NULL DEFAULT '[]',
+                heartbeat_interval_secs INTEGER NOT NULL DEFAULT 30,
+                offline_cache_enabled   INTEGER NOT NULL DEFAULT 1,
+                updated_at              TEXT NOT NULL DEFAULT ''
+            );
+            INSERT OR IGNORE INTO global_agent_config (id) VALUES (1);
+
+            CREATE TABLE IF NOT EXISTS agent_config_overrides (
+                agent_id                TEXT PRIMARY KEY
+                                        REFERENCES agents(agent_id) ON DELETE CASCADE,
+                monitored_paths         TEXT NOT NULL DEFAULT '[]',
+                heartbeat_interval_secs INTEGER NOT NULL DEFAULT 30,
+                offline_cache_enabled   INTEGER NOT NULL DEFAULT 1,
+                updated_at              TEXT NOT NULL DEFAULT ''
+            );
             ",
         )
         .context("failed to initialize database tables")?;
@@ -198,12 +222,47 @@ mod tests {
         assert!(tables.contains(&"agent_credentials".to_string()));
         assert!(tables.contains(&"siem_config".to_string()));
         assert!(tables.contains(&"alert_router_config".to_string()));
+        assert!(tables.contains(&"global_agent_config".to_string()));
+        assert!(tables.contains(&"agent_config_overrides".to_string()));
 
         // Verify the seed row was inserted.
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM siem_config", [], |r| r.get(0))
             .expect("count siem_config rows");
         assert_eq!(count, 1, "siem_config should have exactly one seed row");
+    }
+
+    #[test]
+    fn test_global_agent_config_seed_row() {
+        let db = Database::open(":memory:").expect("open in-memory db");
+        let conn = db.conn().lock();
+
+        // The seed row (id=1) must exist with expected defaults.
+        let (monitored_paths, heartbeat_interval_secs, offline_cache_enabled): (
+            String,
+            i64,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
+                 FROM global_agent_config WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("seed row must exist");
+
+        assert_eq!(
+            monitored_paths, "[]",
+            "default monitored_paths must be empty JSON array"
+        );
+        assert_eq!(
+            heartbeat_interval_secs, 30,
+            "default heartbeat_interval_secs must be 30"
+        );
+        assert_eq!(
+            offline_cache_enabled, 1,
+            "default offline_cache_enabled must be 1 (true)"
+        );
     }
 
     #[test]

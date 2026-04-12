@@ -160,6 +160,22 @@ pub struct AlertRouterConfigPayload {
     pub webhook_enabled: bool,
 }
 
+/// Read/write payload for agent configuration distribution.
+///
+/// Used by `GET/PUT /admin/agent-config` (global default) and
+/// `GET/PUT/DELETE /admin/agent-config/{agent_id}` (per-agent override).
+/// Also returned by the public `GET /agent-config/{id}` endpoint that
+/// agents poll for their resolved config.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentConfigPayload {
+    /// Directory paths the agent should monitor (empty = all drives).
+    pub monitored_paths: Vec<String>,
+    /// Heartbeat interval in seconds (minimum 10).
+    pub heartbeat_interval_secs: u64,
+    /// Whether offline caching is active.
+    pub offline_cache_enabled: bool,
+}
+
 /// Health/readiness probe response.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -2132,5 +2148,19 @@ mod tests {
             .expect("build");
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Task 06-01 / Task 1: AgentConfigPayload serde test ───────────────────
+
+    #[test]
+    fn test_agent_config_payload_serde() {
+        let payload = AgentConfigPayload {
+            monitored_paths: vec![r"C:\Data\".to_string()],
+            heartbeat_interval_secs: 60,
+            offline_cache_enabled: false,
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt, payload);
     }
 }
