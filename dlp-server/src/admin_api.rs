@@ -12,7 +12,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::middleware;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -309,6 +309,14 @@ pub(crate) fn validate_webhook_url(url: &str) -> Result<(), String> {
 /// - `PUT /admin/siem-config` — update SIEM connector configuration
 /// - `GET /admin/alert-config` — get alert router configuration
 /// - `PUT /admin/alert-config` — update alert router configuration
+/// - `GET /admin/agent-config` — get global agent config default
+/// - `PUT /admin/agent-config` — update global agent config default
+/// - `GET /admin/agent-config/:agent_id` — get per-agent config override
+/// - `PUT /admin/agent-config/:agent_id` — upsert per-agent config override
+/// - `DELETE /admin/agent-config/:agent_id` — remove per-agent config override
+///
+/// **Unauthenticated (additional):**
+/// - `GET /agent-config/:id` — resolved agent config (per-agent override or global fallback)
 pub fn admin_router(state: Arc<AppState>) -> Router {
     // Routes that do NOT require authentication.
     let public_routes = Router::new()
@@ -318,7 +326,8 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/agents/register", post(agent_registry::register_agent))
         .route("/agents/:id/heartbeat", post(agent_registry::heartbeat))
         .route("/audit/events", post(audit_store::ingest_events))
-        .route("/agent-credentials/auth-hash", get(get_agent_auth_hash));
+        .route("/agent-credentials/auth-hash", get(get_agent_auth_hash))
+        .route("/agent-config/:id", get(get_agent_config_for_agent));
 
     // Routes that require a valid JWT.
     let protected_routes = Router::new()
@@ -327,7 +336,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/audit/events", get(audit_store::query_events))
         .route("/audit/events/count", get(audit_store::get_event_count))
         .route("/policies", get(list_policies).post(create_policy))
-        .route("/policies/:id", get(get_policy).put(update_policy).delete(delete_policy))
+        .route(
+            "/policies/:id",
+            get(get_policy).put(update_policy).delete(delete_policy),
+        )
         .route("/exceptions", get(exception_store::list_exceptions))
         .route("/exceptions/:id", get(exception_store::get_exception))
         .route("/exceptions", post(exception_store::create_exception))
@@ -338,6 +350,16 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/admin/alert-config", get(get_alert_config_handler))
         .route("/admin/alert-config", put(update_alert_config_handler))
         .route("/admin/alert-config/test", post(test_alert_config_handler))
+        .route(
+            "/admin/agent-config",
+            get(get_global_agent_config_handler).put(update_global_agent_config_handler),
+        )
+        .route(
+            "/admin/agent-config/:agent_id",
+            get(get_agent_config_override_handler)
+                .put(update_agent_config_override_handler)
+                .delete(delete_agent_config_override_handler),
+        )
         .layer(middleware::from_fn(admin_auth::require_auth));
 
     public_routes.merge(protected_routes).with_state(state)
@@ -911,6 +933,256 @@ async fn update_alert_config_handler(
         masked_response.webhook_secret = ALERT_SECRET_MASK.to_string();
     }
     Ok(Json(masked_response))
+}
+
+// ---------------------------------------------------------------------------
+// Agent config handlers
+// ---------------------------------------------------------------------------
+
+/// Parses an agent config row from a `rusqlite::Row`.
+///
+/// Column order must be: monitored_paths (TEXT), heartbeat_interval_secs (INTEGER),
+/// offline_cache_enabled (INTEGER).
+///
+/// # Errors
+///
+/// Returns `rusqlite::Error::InvalidParameterName` if `monitored_paths` is not
+/// valid JSON — surfaces DB corruption rather than silently defaulting to empty.
+fn parse_agent_config_row(row: &rusqlite::Row) -> rusqlite::Result<AgentConfigPayload> {
+    let paths_json: String = row.get(0)?;
+    // Propagate JSON parse errors rather than silently defaulting —
+    // a corrupted DB row should surface as an error, not empty paths.
+    let monitored_paths: Vec<String> = serde_json::from_str(&paths_json)
+        .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+    // rusqlite stores INTEGER as i64; u64::try_from converts safely.
+    // Values outside [0, i64::MAX] fall back to the 30-second default.
+    let heartbeat_interval_secs = u64::try_from(row.get::<_, i64>(1)?).unwrap_or(30);
+    let offline_cache_enabled = row.get::<_, i64>(2)? != 0;
+    Ok(AgentConfigPayload {
+        monitored_paths,
+        heartbeat_interval_secs,
+        offline_cache_enabled,
+    })
+}
+
+/// `GET /agent-config/:id` — returns the resolved config for a specific agent.
+///
+/// Tries per-agent override first; falls back to global default if no override
+/// exists. This endpoint is intentionally unauthenticated — agents call it
+/// using their `agent_id` as identity, not admin JWT.
+async fn get_agent_config_for_agent(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<AgentConfigPayload>, AppError> {
+    let id = agent_id.clone();
+    let db = Arc::clone(&state.db);
+    let payload = tokio::task::spawn_blocking(move || -> Result<AgentConfigPayload, AppError> {
+        let conn = db.conn().lock();
+        // Try per-agent override first.
+        let result = conn.query_row(
+            "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
+             FROM agent_config_overrides WHERE agent_id = ?1",
+            rusqlite::params![id],
+            parse_agent_config_row,
+        );
+        match result {
+            Ok(p) => Ok(p),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                // Fall back to global default.
+                conn.query_row(
+                    "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
+                     FROM global_agent_config WHERE id = 1",
+                    [],
+                    parse_agent_config_row,
+                )
+                .map_err(AppError::Database)
+            }
+            Err(e) => Err(AppError::Database(e)),
+        }
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(payload))
+}
+
+/// `GET /admin/agent-config` — returns the current global agent config default.
+///
+/// Reads the single row from `global_agent_config` (guaranteed by seed) and
+/// returns it as a JSON [`AgentConfigPayload`].
+async fn get_global_agent_config_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<AgentConfigPayload>, AppError> {
+    let db = Arc::clone(&state.db);
+    let payload = tokio::task::spawn_blocking(move || {
+        let conn = db.conn().lock();
+        conn.query_row(
+            "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
+             FROM global_agent_config WHERE id = 1",
+            [],
+            parse_agent_config_row,
+        )
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(payload))
+}
+
+/// `PUT /admin/agent-config` — updates the global agent config default.
+///
+/// Validates that `heartbeat_interval_secs >= 10` before writing. Overwrites
+/// the single row in `global_agent_config` and stamps `updated_at`. Returns
+/// the payload that was written.
+///
+/// # Errors
+///
+/// Returns `AppError::BadRequest` if `heartbeat_interval_secs < 10`.
+async fn update_global_agent_config_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AgentConfigPayload>,
+) -> Result<Json<AgentConfigPayload>, AppError> {
+    if payload.heartbeat_interval_secs < 10 {
+        return Err(AppError::BadRequest(
+            "heartbeat_interval_secs must be >= 10".to_string(),
+        ));
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let p = payload.clone();
+    let db = Arc::clone(&state.db);
+    let paths_json = serde_json::to_string(&p.monitored_paths)?;
+
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let conn = db.conn().lock();
+        conn.execute(
+            "UPDATE global_agent_config SET \
+                monitored_paths = ?1, heartbeat_interval_secs = ?2, \
+                offline_cache_enabled = ?3, updated_at = ?4 \
+             WHERE id = 1",
+            rusqlite::params![
+                paths_json,
+                p.heartbeat_interval_secs as i64,
+                p.offline_cache_enabled as i64,
+                now,
+            ],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!("global agent config updated");
+    Ok(Json(payload))
+}
+
+/// `GET /admin/agent-config/:agent_id` — returns the per-agent config override.
+///
+/// Returns 404 if no override exists for the given `agent_id`.
+async fn get_agent_config_override_handler(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<AgentConfigPayload>, AppError> {
+    let id = agent_id.clone();
+    let db = Arc::clone(&state.db);
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.conn().lock();
+        conn.query_row(
+            "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
+             FROM agent_config_overrides WHERE agent_id = ?1",
+            rusqlite::params![id],
+            parse_agent_config_row,
+        )
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?;
+
+    match result {
+        Ok(p) => Ok(Json(p)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(AppError::NotFound(format!(
+            "no config override for agent {agent_id}"
+        ))),
+        Err(e) => Err(AppError::Database(e)),
+    }
+}
+
+/// `PUT /admin/agent-config/:agent_id` — upserts a per-agent config override.
+///
+/// Validates `heartbeat_interval_secs >= 10`. Uses `INSERT OR REPLACE` so the
+/// call is idempotent — a second PUT for the same `agent_id` updates the row.
+///
+/// # Errors
+///
+/// Returns `AppError::BadRequest` if `heartbeat_interval_secs < 10`.
+async fn update_agent_config_override_handler(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+    Json(payload): Json<AgentConfigPayload>,
+) -> Result<Json<AgentConfigPayload>, AppError> {
+    if payload.heartbeat_interval_secs < 10 {
+        return Err(AppError::BadRequest(
+            "heartbeat_interval_secs must be >= 10".to_string(),
+        ));
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let p = payload.clone();
+    let id = agent_id.clone();
+    let db = Arc::clone(&state.db);
+    let paths_json = serde_json::to_string(&p.monitored_paths)?;
+
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let conn = db.conn().lock();
+        conn.execute(
+            "INSERT OR REPLACE INTO agent_config_overrides \
+                (agent_id, monitored_paths, heartbeat_interval_secs, offline_cache_enabled, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                id,
+                paths_json,
+                p.heartbeat_interval_secs as i64,
+                p.offline_cache_enabled as i64,
+                now,
+            ],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(agent_id = %agent_id, "per-agent config override updated");
+    Ok(Json(payload))
+}
+
+/// `DELETE /admin/agent-config/:agent_id` — removes a per-agent config override.
+///
+/// After deletion the agent falls back to the global default on the next poll.
+/// Returns 204 No Content on success, 404 if no override row existed.
+async fn delete_agent_config_override_handler(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let id = agent_id.clone();
+    let db = Arc::clone(&state.db);
+
+    let rows = tokio::task::spawn_blocking(move || {
+        let conn = db.conn().lock();
+        conn.execute(
+            "DELETE FROM agent_config_overrides WHERE agent_id = ?1",
+            rusqlite::params![id],
+        )
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    if rows == 0 {
+        return Err(AppError::NotFound(format!(
+            "no config override for agent {agent_id}"
+        )));
+    }
+
+    tracing::info!(agent_id = %agent_id, "per-agent config override deleted");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /admin/alert-config/test` — sends a test alert using the current
@@ -2162,5 +2434,268 @@ mod tests {
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt, payload);
+    }
+
+    // ── Task 06-01 / Task 2: Agent config handler integration tests ───────────
+
+    /// Register a test agent directly in the DB so agent_config_overrides FK is satisfied.
+    fn seed_agent(db: &crate::db::Database, agent_id: &str) {
+        let conn = db.conn().lock();
+        conn.execute(
+            "INSERT OR IGNORE INTO agents \
+             (agent_id, hostname, ip, os_version, agent_version, last_heartbeat, status, registered_at) \
+             VALUES (?1, 'test-host', '127.0.0.1', 'Windows 10', '0.1.0', '2026-01-01T00:00:00Z', 'online', '2026-01-01T00:00:00Z')",
+            rusqlite::params![agent_id],
+        )
+        .expect("seed agent");
+    }
+
+    #[tokio::test]
+    async fn test_get_agent_config_falls_back_to_global() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
+        seed_agent(&db, "agent-fallback-01");
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let state = Arc::new(AppState { db, siem, alert });
+        let app = admin_router(state);
+
+        // No override set — should return global defaults.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/agent-config/agent-fallback-01")
+            .body(Body::empty())
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body");
+        let payload: AgentConfigPayload = serde_json::from_slice(&bytes).expect("parse");
+        assert_eq!(payload.monitored_paths, Vec::<String>::new());
+        assert_eq!(payload.heartbeat_interval_secs, 30);
+        assert!(payload.offline_cache_enabled);
+    }
+
+    #[tokio::test]
+    async fn test_put_global_agent_config() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        let new_config = AgentConfigPayload {
+            monitored_paths: vec![r"C:\Data\".to_string()],
+            heartbeat_interval_secs: 60,
+            offline_cache_enabled: true,
+        };
+
+        // PUT the new global config.
+        let put_req = Request::builder()
+            .method("PUT")
+            .uri("/admin/agent-config")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&new_config).expect("ser")))
+            .expect("build PUT");
+        let put_resp = app.clone().oneshot(put_req).await.expect("oneshot PUT");
+        assert_eq!(put_resp.status(), StatusCode::OK);
+
+        // GET must return the updated values.
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/admin/agent-config")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let get_resp = app.oneshot(get_req).await.expect("oneshot GET");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let bytes = to_bytes(get_resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body");
+        let fetched: AgentConfigPayload = serde_json::from_slice(&bytes).expect("parse");
+        assert_eq!(fetched.monitored_paths, vec![r"C:\Data\".to_string()]);
+        assert_eq!(fetched.heartbeat_interval_secs, 60);
+    }
+
+    #[tokio::test]
+    async fn test_put_global_config_rejects_low_interval() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        let bad_config = AgentConfigPayload {
+            monitored_paths: vec![],
+            heartbeat_interval_secs: 5,
+            offline_cache_enabled: true,
+        };
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/admin/agent-config")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&bad_config).expect("ser")))
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_put_agent_config_override() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
+        seed_agent(&db, "agent-override-01");
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let state = Arc::new(AppState { db, siem, alert });
+        let app = admin_router(state);
+        let token = mint_admin_jwt();
+
+        let override_config = AgentConfigPayload {
+            monitored_paths: vec![r"D:\Secret\".to_string()],
+            heartbeat_interval_secs: 15,
+            offline_cache_enabled: false,
+        };
+
+        // PUT per-agent override.
+        let put_req = Request::builder()
+            .method("PUT")
+            .uri("/admin/agent-config/agent-override-01")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&override_config).expect("ser"),
+            ))
+            .expect("build PUT");
+        let put_resp = app.clone().oneshot(put_req).await.expect("oneshot PUT");
+        assert_eq!(put_resp.status(), StatusCode::OK);
+
+        // Public GET /agent-config/{id} must return the override, not global.
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/agent-config/agent-override-01")
+            .body(Body::empty())
+            .expect("build GET");
+        let get_resp = app.oneshot(get_req).await.expect("oneshot GET");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let bytes = to_bytes(get_resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body");
+        let fetched: AgentConfigPayload = serde_json::from_slice(&bytes).expect("parse");
+        assert_eq!(fetched.monitored_paths, vec![r"D:\Secret\".to_string()]);
+        assert_eq!(fetched.heartbeat_interval_secs, 15);
+        assert!(!fetched.offline_cache_enabled);
+    }
+
+    #[tokio::test]
+    async fn test_delete_agent_config_override() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
+        seed_agent(&db, "agent-del-01");
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let state = Arc::new(AppState { db, siem, alert });
+        let app = admin_router(state);
+        let token = mint_admin_jwt();
+
+        // Seed an override first.
+        let override_config = AgentConfigPayload {
+            monitored_paths: vec![r"E:\Logs\".to_string()],
+            heartbeat_interval_secs: 20,
+            offline_cache_enabled: false,
+        };
+        let put_req = Request::builder()
+            .method("PUT")
+            .uri("/admin/agent-config/agent-del-01")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&override_config).expect("ser"),
+            ))
+            .expect("build PUT");
+        let put_resp = app.clone().oneshot(put_req).await.expect("oneshot PUT");
+        assert_eq!(put_resp.status(), StatusCode::OK);
+
+        // DELETE the override.
+        let del_req = Request::builder()
+            .method("DELETE")
+            .uri("/admin/agent-config/agent-del-01")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build DELETE");
+        let del_resp = app.clone().oneshot(del_req).await.expect("oneshot DELETE");
+        assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
+
+        // Public GET must now fall back to global default (heartbeat 30, empty paths).
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/agent-config/agent-del-01")
+            .body(Body::empty())
+            .expect("build GET");
+        let get_resp = app.oneshot(get_req).await.expect("oneshot GET");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let bytes = to_bytes(get_resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body");
+        let fetched: AgentConfigPayload = serde_json::from_slice(&bytes).expect("parse");
+        assert_eq!(fetched.heartbeat_interval_secs, 30);
+        assert_eq!(fetched.monitored_paths, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn test_get_agent_config_requires_no_auth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        // Public endpoint: no Authorization header required.
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/agent-config/any-agent-id")
+            .body(Body::empty())
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        // 200 OK (falls back to global default — agent_id not required to exist).
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_put_admin_agent_config_requires_jwt() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let config = AgentConfigPayload {
+            monitored_paths: vec![],
+            heartbeat_interval_secs: 30,
+            offline_cache_enabled: true,
+        };
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/admin/agent-config")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&config).expect("ser")))
+            .expect("build");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

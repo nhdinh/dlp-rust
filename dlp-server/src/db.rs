@@ -238,12 +238,8 @@ mod tests {
         let conn = db.conn().lock();
 
         // The seed row (id=1) must exist with expected defaults.
-        let (monitored_paths, heartbeat_interval_secs, offline_cache_enabled): (
-            String,
-            i64,
-            i64,
-        ) = conn
-            .query_row(
+        let (monitored_paths, heartbeat_interval_secs, offline_cache_enabled): (String, i64, i64) =
+            conn.query_row(
                 "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
                  FROM global_agent_config WHERE id = 1",
                 [],
