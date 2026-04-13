@@ -1,18 +1,19 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.2.0
-milestone_name: "### Phase 0.1: Fix clipboard monitoring runtime pipeline [COMPLETED]"
-status: Executing Phase 12
-last_updated: "2026-04-13T12:39:50.733Z"
-progress:
-  total_phases: 13
-  completed_phases: 3
-  total_plans: 7
-  completed_plans: 7
-  percent: 100
+milestone: v0.3.0
+milestone_name: Operational Hardening
+status: Milestone in progress
+last_updated: "2026-04-13T14:25:00.000Z"
 ---
 
 # STATE.md — Project Memory
+
+## Project Reference
+
+See: `.planning/PROJECT.md` (updated 2026-04-13)
+
+**Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
+**Current focus:** Planning next milestone (v0.3.0 — Operational Hardening)
 
 ## Decisions
 
@@ -26,14 +27,24 @@ progress:
 | 2026-04-10 | Skip USB thread join on shutdown | GetMessageW blocks forever; OS reclaims on process exit |
 | 2026-04-10 | Clipboard monitoring in UI process | SYSTEM session 0 cannot access user clipboard |
 | 2026-04-10 | classify_text in dlp-common | Shared classifier avoids duplication between agent and UI |
+| 2026-04-10 | Operator config in SQLite (not env vars) | Hot-reload + TUI-manageable + persistent |
+| 2026-04-11 | Axum .route() merges methods per-call only | Consolidate all verbs into one .route() call per path |
+| 2026-04-11 | Fire-and-forget for SIEM/alert relay | No HTTP-ingest latency impact |
+| 2026-04-12 | Agent config polling (not server push) | Agents are fire-and-forget; polling is more resilient |
+| 2026-04-13 | DB-backed config as the standard pattern | Established on Phase 3.1; Phases 4 and 6 followed automatically |
 
-## Known Issues
+## Known Issues (v0.2.0 — to address in v0.3.0)
 
-- `dlp-agent/tests/integration.rs` references removed `dlp_server` modules (pre-existing, needs update)
-- `policy_sync`, `config_push`, `alert_router`, `siem_connector` modules are implemented but not wired into server startup
-- No rate limiting on server endpoints
-- JWT secret has hardcoded dev fallback
-- Single SQLite Mutex (not connection-pooled)
+- R-05: AD LDAP not integrated — ABAC uses placeholder values for user groups
+- R-07: No rate limiting on server endpoints
+- R-09: Admin CRUD operations not persisted as audit events
+- R-10: Single SQLite Mutex<Connection> serializes concurrent requests
+- R-03: Policy Engine Separation deferred — architectural refactor needed
+- Phase 6 human UAT: live agent TOML write-back test not run
+- Phase 6 human UAT: zero-warning workspace build not verified
+- Phase 4 human UAT: live SMTP email delivery not tested
+- Phase 4 human UAT: live webhook POST not tested
+- Phase 4 human UAT: hot-reload verification through HTTP + TUI not run
 
 ## Patterns
 
@@ -41,3 +52,5 @@ progress:
 - Debug logging: password_stop::debug_log() writes to C:\ProgramData\DLP\logs\stop-debug.log
 - IPC: 3-pipe architecture (Pipe1 bidirectional, Pipe2 agent->UI, Pipe3 UI->agent)
 - Audit: JSONL append-only with size-based rotation
+- Operator config: SQLite single-row tables with CHECK constraints, hot-reload on every operation
+- Agent-server comms: JWT heartbeat, unauthenticated config poll endpoint
