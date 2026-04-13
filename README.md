@@ -70,3 +70,82 @@ Phase 1 through 5 are complete. All crates are implemented and tested.
 | 3     | File interception + integration tests                   | `dlp-agent`                                              |
 | 4     | Production hardening: MSI installer, security audit     | All                                                      |
 | 5     | Central management: audit store, SIEM, admin API        | `dlp-server`, `dlp-admin-cli`                            |
+
+---
+
+## Installation
+
+### Build from source
+
+Requires Rust 1.75+ and a Windows host with administrator privileges.
+
+```powershell
+# Clone and build the full workspace
+cargo build --release
+
+# Or install the admin CLI specifically
+cargo install --path dlp-admin-cli
+```
+
+### Production deployment
+
+Use the MSI installer from `installer/` to deploy `dlp-server` and `dlp-agent` as a Windows Service. The installer configures service accounts, auto-start behaviour, and initial DLP admin credentials.
+
+---
+
+## Quick Start
+
+1. **Build the project**
+
+   ```powershell
+   cargo build --release
+   ```
+
+2. **Start the central server**
+
+   ```powershell
+   .\scripts\Manage-DlpComponents.ps1 -Action Start -Component Server
+   ```
+
+3. **Register the endpoint agent**
+
+   ```powershell
+   .\scripts\Manage-DlpComponents.ps1 -Action Start -Component Agent
+   ```
+
+4. **Open the admin CLI**
+
+   ```powershell
+   .\target\release\dlp-admin-cli.exe
+   ```
+
+   Connect to the server, authenticate with your dlp-admin credentials, and begin managing policies and monitoring agent status.
+
+---
+
+## Usage Examples
+
+### Check component status
+
+```powershell
+.\scripts\Manage-DlpComponents.ps1 -Action Status -Component Both
+```
+
+```
+dlp-server : Running (PID 1234)
+dlp-agent  : Running (Service)
+```
+
+### View audit log via admin CLI
+
+From the admin CLI TUI, navigate to **Logs** to view the live stream of enforcement decisions. Each event shows the subject, resource, action, decision (ALLOW/DENY), and timestamp.
+
+### Manage policies via admin CLI
+
+From the admin CLI TUI, navigate to **Policies** to create, update, or delete ABAC rules. Policies are stored centrally on `dlp-server` and pushed to all registered agents on change.
+
+---
+
+## License
+
+Proprietary. All rights reserved. Internal use only.
