@@ -114,11 +114,18 @@ impl Database {
                 expires_at       TEXT NOT NULL
             );
 
+            -- user_sid: added via Phase 9 ALTER TABLE migration below.
+            -- NOTE: This column is added by the ALTER TABLE statement that runs after
+            -- CREATE TABLE. On fresh databases (first run) CREATE TABLE includes user_sid
+            -- directly. On existing databases (re-run), ALTER TABLE adds it if missing.
+            -- The IF NOT EXISTS guard on ALTER TABLE makes this block idempotent.
             CREATE TABLE IF NOT EXISTS admin_users (
                 username      TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
+                user_sid      TEXT NULL,
                 created_at    TEXT NOT NULL
             );
+
 
             CREATE TABLE IF NOT EXISTS agent_credentials (
                 key        TEXT PRIMARY KEY,

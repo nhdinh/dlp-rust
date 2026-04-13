@@ -15,6 +15,7 @@ pub mod siem_connector;
 
 use std::sync::Arc;
 
+use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
@@ -61,6 +62,20 @@ pub enum AppError {
     /// Authentication failed or token is invalid/expired.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+}
+
+/// Converts axum extract rejections into `AppError::BadRequest`.
+impl From<JsonRejection> for AppError {
+    fn from(e: JsonRejection) -> Self {
+        AppError::BadRequest(e.to_string())
+    }
+}
+
+/// Converts axum path extraction rejections into `AppError::BadRequest`.
+impl From<PathRejection> for AppError {
+    fn from(e: PathRejection) -> Self {
+        AppError::BadRequest(e.to_string())
+    }
 }
 
 /// Converts `AppError` into an axum HTTP response with a JSON body.

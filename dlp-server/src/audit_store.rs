@@ -48,6 +48,49 @@ pub struct EventCount {
 }
 
 // ---------------------------------------------------------------------------
+// Sync helper (for use inside spawn_blocking)
+// ---------------------------------------------------------------------------
+
+/// Synchronously stores audit events directly to the DB.
+///
+/// Used by admin audit handlers that run inside `spawn_blocking` — we cannot
+/// call the async `ingest_events` from within a blocking thread without
+/// deadlocking the async runtime.
+pub fn store_events_sync(conn: &rusqlite::Connection, events: &[AuditEvent]) -> Result<(), AppError> {
+    let mut stmt = conn.prepare(
+        "INSERT OR IGNORE INTO audit_events (timestamp, event_type, user_sid, user_name, \
+         resource_path, classification, action_attempted, decision, policy_id, policy_name, \
+         agent_id, session_id, access_context, correlation_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+    )?;
+    for event in events {
+        let event_type = serde_json::to_string(&event.event_type)?;
+        let classification = serde_json::to_string(&event.classification)?;
+        let action = serde_json::to_string(&event.action_attempted)?;
+        let decision = serde_json::to_string(&event.decision)?;
+        let access_ctx = serde_json::to_string(&event.access_context)?;
+
+        stmt.execute(rusqlite::params![
+            event.timestamp.to_rfc3339(),
+            event_type,
+            event.user_sid,
+            event.user_name,
+            event.resource_path,
+            classification,
+            action,
+            decision,
+            event.policy_id,
+            event.policy_name,
+            event.agent_id,
+            event.session_id,
+            access_ctx,
+            event.correlation_id,
+        ])?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -313,6 +356,7 @@ pub async fn get_event_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Database;
 
     #[test]
     fn test_event_query_defaults() {
@@ -329,5 +373,34 @@ mod tests {
         let json = serde_json::to_string(&ec).expect("serialize");
         let rt: EventCount = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt.count, 42);
+    }
+
+    #[test]
+    fn test_store_events_sync_admin_action() {
+        let db = Database::open(":memory:").expect("open in-memory db");
+        let event = dlp_common::AuditEvent::new(
+            dlp_common::EventType::AdminAction,
+            "".to_string(),
+            "admin".to_string(),
+            "policy:test-policy".to_string(),
+            dlp_common::Classification::T3,
+            dlp_common::Action::PolicyCreate,
+            dlp_common::Decision::ALLOW,
+            "server".to_string(),
+            0,
+        );
+        let conn = db.conn().lock();
+        store_events_sync(&conn, &[event]).expect("store event");
+
+        let (event_type, action, resource_path): (String, String, String) = conn
+            .query_row(
+                "SELECT event_type, action_attempted, resource_path FROM audit_events",
+                [],
+                |row: &rusqlite::Row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("query audit_events");
+        assert_eq!(event_type, "ADMIN_ACTION");
+        assert_eq!(action, "POLICY_CREATE");
+        assert_eq!(resource_path, "policy:test-policy");
     }
 }

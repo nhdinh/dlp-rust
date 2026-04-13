@@ -21,6 +21,14 @@ pub enum Action {
     MOVE,
     /// Paste from clipboard (copying text/data into an application).
     PASTE,
+    /// Admin created a new policy via the admin API.
+    PolicyCreate,
+    /// Admin updated an existing policy via the admin API.
+    PolicyUpdate,
+    /// Admin deleted a policy via the admin API.
+    PolicyDelete,
+    /// Admin changed own password via the admin API.
+    PasswordChange,
 }
 
 /// The access context describes how the file operation originated.

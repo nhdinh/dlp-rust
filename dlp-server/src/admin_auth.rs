@@ -18,9 +18,47 @@ use chrono::Utc;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
+use crate::audit_store;
 use crate::db::Database;
 use crate::AppError;
 use crate::AppState;
+use dlp_common;
+
+/// Axum extractor that yields the verified admin username.
+///
+/// The username is placed in request extensions by `require_auth` middleware
+/// after JWT verification succeeds. This extractor reads it back out.
+///
+/// # Errors
+///
+/// Returns `AppError::Unauthorized` if the request extensions are absent
+/// (i.e. the request did not pass through `require_auth`).
+#[derive(Clone)]
+pub struct AdminUsername(pub String);
+
+impl AdminUsername {
+    /// Extracts the verified admin username from the request headers.
+    ///
+    /// Called inline in handlers that consumed the request body as `Json`. Uses the
+    /// same JWT verification logic as `require_auth` middleware.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AppError::Unauthorized` if the token is missing, malformed, or invalid.
+    pub fn extract_from_headers(
+        headers: &axum::http::HeaderMap,
+    ) -> Result<String, AppError> {
+        let auth_header = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?;
+        let token = auth_header
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?;
+        let claims = verify_jwt(token)?;
+        Ok(claims.sub)
+    }
+}
 
 /// Insecure fallback secret used only when `--dev` is active.
 const DEV_JWT_SECRET: &str = "dlp-server-dev-secret-change-me";
@@ -268,6 +306,26 @@ pub async fn change_password(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
+    // Emit admin audit event after successful password update.
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username.clone(),
+        format!("password_change:{}", username),
+        dlp_common::Classification::T3,
+        dlp_common::Action::PasswordChange,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.conn().lock();
+        audit_store::store_events_sync(&conn, &[audit_event])
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
     tracing::info!(user = %username, "admin password changed");
     Ok(Json(serde_json::json!({ "status": "password changed" })))
 }
@@ -354,7 +412,10 @@ pub async fn require_auth(
         .strip_prefix("Bearer ")
         .ok_or_else(|| AppError::Unauthorized("invalid Authorization header format".to_string()))?;
 
-    verify_jwt(token)?;
+    let claims = verify_jwt(token)?;
+
+    let mut req = req;
+    req.extensions_mut().insert(claims.sub);
 
     Ok(next.run(req).await)
 }

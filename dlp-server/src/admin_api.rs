@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{FromRequest, FromRequestParts, Path, State};
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::routing::{get, post, put};
@@ -17,7 +17,7 @@ use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::admin_auth;
+use crate::admin_auth::{self, AdminUsername};
 use crate::agent_registry;
 use crate::audit_store;
 use crate::exception_store;
@@ -486,8 +486,10 @@ async fn get_policy(
 /// `POST /policies` — create a new policy.
 async fn create_policy(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<PolicyPayload>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<(StatusCode, Json<PolicyResponse>), AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+    let payload: Json<PolicyPayload> = Json::from_request(req, &state).await.map_err(AppError::from)?;
     if payload.id.is_empty() || payload.name.is_empty() {
         return Err(AppError::BadRequest("id and name are required".to_string()));
     }
@@ -532,6 +534,26 @@ async fn create_policy(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
+    // Emit admin audit event after DB commit.
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username,
+        format!("policy:{}", resp.id),
+        dlp_common::Classification::T3,
+        dlp_common::Action::PolicyCreate,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.conn().lock();
+        audit_store::store_events_sync(&conn, &[audit_event])
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
     tracing::info!(policy_id = %resp.id, "policy created");
     Ok((StatusCode::CREATED, Json(resp)))
 }
@@ -539,12 +561,31 @@ async fn create_policy(
 /// `PUT /policies/:id` — update an existing policy.
 async fn update_policy(
     State(state): State<Arc<AppState>>,
-    Path(policy_id): Path<String>,
-    Json(payload): Json<PolicyPayload>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<PolicyResponse>, AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+    let (mut parts, _body) = req.into_parts();
+    let policy_id = Path::<String>::from_request_parts(&mut parts, &state)
+        .await
+        .map_err(AppError::from)?
+        .0;
+    let payload = Json::<PolicyPayload>::from_request(
+        axum::http::Request::from_parts(parts, axum::body::Body::empty()),
+        &state,
+    )
+    .await
+    .map_err(AppError::from)?;
+
+    // Clone all fields needed inside spawn_blocking since Json derefs to &T (not owned).
     let now = Utc::now().to_rfc3339();
     let conditions_json = serde_json::to_string(&payload.conditions)?;
     let id = policy_id.clone();
+    let payload_name = payload.name.clone();
+    let payload_desc = payload.description.clone();
+    let payload_priority = payload.priority;
+    let payload_action = payload.action.clone();
+    let payload_enabled = payload.enabled;
+    let payload_conditions = payload.conditions.clone();
     let db = Arc::clone(&state.db);
 
     let resp = tokio::task::spawn_blocking(move || -> Result<PolicyResponse, AppError> {
@@ -558,12 +599,12 @@ async fn update_policy(
                     version = version + 1, updated_at = ?7 \
                  WHERE id = ?8",
             rusqlite::params![
-                payload.name,
-                payload.description,
-                payload.priority,
+                payload_name,
+                payload_desc,
+                payload_priority,
                 conditions_json,
-                payload.action,
-                payload.enabled,
+                payload_action,
+                payload_enabled,
                 now,
                 id,
             ],
@@ -582,15 +623,35 @@ async fn update_policy(
 
         Ok(PolicyResponse {
             id,
-            name: payload.name,
-            description: payload.description,
-            priority: payload.priority,
-            conditions: payload.conditions,
-            action: payload.action,
-            enabled: payload.enabled,
+            name: payload_name,
+            description: payload_desc,
+            priority: payload_priority,
+            conditions: payload_conditions,
+            action: payload_action,
+            enabled: payload_enabled,
             version,
             updated_at: now,
         })
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    // Emit admin audit event after DB commit.
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username,
+        format!("policy:{}", resp.id),
+        dlp_common::Classification::T3,
+        dlp_common::Action::PolicyUpdate,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.conn().lock();
+        audit_store::store_events_sync(&conn, &[audit_event])
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -602,8 +663,13 @@ async fn update_policy(
 /// `DELETE /policies/:id` — delete a policy.
 async fn delete_policy(
     State(state): State<Arc<AppState>>,
-    Path(policy_id): Path<String>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<StatusCode, AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+    let policy_id = Path::<String>::from_request(req, &state)
+        .await
+        .map_err(AppError::from)?
+        .0;
     let id = policy_id.clone();
     let db = Arc::clone(&state.db);
 
@@ -617,6 +683,26 @@ async fn delete_policy(
     if rows == 0 {
         return Err(AppError::NotFound(format!("policy {policy_id} not found")));
     }
+
+    // Emit admin audit event after DB commit.
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username,
+        format!("policy:{}", policy_id),
+        dlp_common::Classification::T3,
+        dlp_common::Action::PolicyDelete,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.conn().lock();
+        audit_store::store_events_sync(&conn, &[audit_event])
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     tracing::info!(policy_id = %policy_id, "policy deleted");
     Ok(StatusCode::NO_CONTENT)
