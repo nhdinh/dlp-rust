@@ -47,7 +47,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 #[derive(Debug, Default)]
 pub struct UsbDetector {
     /// Set of uppercase drive letters (e.g., `{'E', 'F'}`) for blocked USB volumes.
-    blocked_drives: RwLock<HashSet<char>>,
+    ///
+    /// Marked `pub` so that integration tests in `dlp-agent/tests/integration.rs`
+    /// can seed drives (bypasses `GetDriveTypeW` which is unavailable in CI).
+    /// Production code should use `on_drive_arrival` / `on_drive_removal` instead.
+    pub blocked_drives: RwLock<HashSet<char>>,
 }
 
 impl UsbDetector {
