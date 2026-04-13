@@ -107,3 +107,10 @@ Plans:
 **Files:** `dlp-policy-engine/` (new crate), `dlp-server/src/main.rs`, `dlp-server/src/lib.rs`, `dlp-server/src/admin_api.rs`, `dlp-server/src/db.rs`
 **Description:** Architectural split: introduce a new `dlp-policy-engine` binary as the single source of truth for policies and admin operations. `dlp-server` is refactored to an evaluation replica — no admin API, local policy cache populated on startup and kept current via push from engine. `PolicySyncer` moved to engine side. See `.planning/phases/05-wire-policy-sync-for-multi-replica/05-CONTEXT.md` for full architecture (planned separately before deferral).
 **UAT:** Policy changes made via `dlp-policy-engine` admin API propagate to `dlp-server` replicas. `dlp-server` replicas evaluate `POST /audit/events` against local cached policies.
+
+### Phase 12: Comprehensive DLP Test Suite [COMPLETED]
+**Status:** Resolved — see `.planning/phases/12-dlp-test-suite/VERIFICATION.md`
+**Files:** `dlp-agent/tests/comprehensive.rs`, `dlp-server/src/admin_api.rs`, `dlp-agent/tests/integration.rs`, `dlp-agent/src/detection/usb.rs`
+**Description:** Added comprehensive TC test coverage across all 28 test cases at agent and server level. Phase 12-01: 6 `mod` blocks (32 TC functions) in comprehensive.rs — file_ops_tc, email_alert_tc, cloud_tc, clipboard_tier_tc, print_tc, detective_tc. Phase 12-02: 6 server-side TC tests in admin_api.rs (TC-01/02/03/80 pass; TC-51/52 ignored). Phase 12-03: 5 E2E pipeline integration tests in integration.rs covering full intercept→classify→engine→audit→JSONL path (TC-11/14/21/72/81). `blocked_drives` in UsbDetector widened to `pub(crate)` for CI seeding.
+**Commits:** `578c8de`, `31f462f`, `6c69c0e`, `829aea4`, `9a2e2ba`
+**Code Review:** 4 findings (C-01 pre-existing, H-01/02/03 pre-existing)
