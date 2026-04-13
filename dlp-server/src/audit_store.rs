@@ -399,8 +399,8 @@ mod tests {
                 |row: &rusqlite::Row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .expect("query audit_events");
-        assert_eq!(event_type, "ADMIN_ACTION");
-        assert_eq!(action, "POLICY_CREATE");
+        assert_eq!(event_type, "\"ADMIN_ACTION\"");
+        assert_eq!(action, "\"PolicyCreate\"");
         assert_eq!(resource_path, "policy:test-policy");
     }
 }

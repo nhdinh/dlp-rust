@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{FromRequest, FromRequestParts, Path, State};
+use axum::extract::{FromRequest, Path, State};
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::routing::{get, post, put};
@@ -340,6 +340,9 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
             "/policies/:id",
             get(get_policy).put(update_policy).delete(delete_policy),
         )
+        // Policy CRUD under /admin/policies (Phase 9 requirement).
+        .route("/admin/policies", post(create_policy))
+        .route("/admin/policies/:id", put(update_policy).delete(delete_policy))
         .route("/exceptions", get(exception_store::list_exceptions))
         .route("/exceptions/:id", get(exception_store::get_exception))
         .route("/exceptions", post(exception_store::create_exception))
@@ -564,17 +567,22 @@ async fn update_policy(
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<PolicyResponse>, AppError> {
     let username = AdminUsername::extract_from_headers(req.headers())?;
-    let (mut parts, _body) = req.into_parts();
-    let policy_id = Path::<String>::from_request_parts(&mut parts, &state)
-        .await
-        .map_err(AppError::from)?
-        .0;
-    let payload = Json::<PolicyPayload>::from_request(
-        axum::http::Request::from_parts(parts, axum::body::Body::empty()),
-        &state,
-    )
-    .await
-    .map_err(AppError::from)?;
+
+    // Extract path param from URI. Supports both /policies/:id and /admin/policies/:id.
+    let path = req.uri().path();
+    let policy_id = if let Some(rest) = path.strip_prefix("/policies/") {
+        rest.to_string()
+    } else if let Some(rest) = path.strip_prefix("/admin/policies/") {
+        rest.to_string()
+    } else {
+        return Err(AppError::BadRequest("invalid policy path".to_string()));
+    };
+    if policy_id.is_empty() {
+        return Err(AppError::BadRequest("missing policy id in path".to_string()));
+    }
+
+    // Let Json consume the request body.
+    let payload: Json<PolicyPayload> = Json::from_request(req, &state).await.map_err(AppError::from)?;
 
     // Clone all fields needed inside spawn_blocking since Json derefs to &T (not owned).
     let now = Utc::now().to_rfc3339();
