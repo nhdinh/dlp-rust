@@ -2729,10 +2729,7 @@ mod tests {
             format!("AGENT-TC-{tc_id}"),
             1,
         )
-        .with_policy(
-            format!("pol-tc-{tc_id}"),
-            format!("TC-{tc_id} policy"),
-        );
+        .with_policy(format!("pol-tc-{tc_id}"), format!("TC-{tc_id} policy"));
 
         let body = serde_json::to_string(&vec![event]).map_err(|e| e.to_string())?;
         let req = Request::builder()
@@ -2743,10 +2740,7 @@ mod tests {
             .expect("build seed");
         let resp = app.clone().oneshot(req).await.map_err(|e| e.to_string())?;
         if resp.status() != StatusCode::CREATED {
-            return Err(format!(
-                "seed failed with status {:?}",
-                resp.status()
-            ));
+            return Err(format!("seed failed with status {:?}", resp.status()));
         }
         Ok(())
     }
@@ -2941,7 +2935,10 @@ mod tests {
             "AGENT-TC-80".to_string(),
             1,
         )
-        .with_policy("pol-tc-80".to_string(), "TC-80 detective policy".to_string());
+        .with_policy(
+            "pol-tc-80".to_string(),
+            "TC-80 detective policy".to_string(),
+        );
 
         let body = serde_json::to_string(&vec![access_event]).expect("serialize");
         let ingest_req = Request::builder()
@@ -2950,7 +2947,11 @@ mod tests {
             .header("Content-Type", "application/json")
             .body(Body::from(body))
             .expect("build ingest");
-        let ingest_resp = app.clone().oneshot(ingest_req).await.expect("oneshot ingest");
+        let ingest_resp = app
+            .clone()
+            .oneshot(ingest_req)
+            .await
+            .expect("oneshot ingest");
         assert_eq!(ingest_resp.status(), StatusCode::CREATED);
 
         let query_req = Request::builder()
