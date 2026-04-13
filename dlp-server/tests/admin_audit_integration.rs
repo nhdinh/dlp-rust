@@ -148,17 +148,18 @@ async fn test_policy_create_emits_admin_audit_event() {
         .expect("build request");
 
     let resp = app.oneshot(req).await.expect("oneshot");
-    if resp.status() != StatusCode::CREATED {
+    let status = resp.status();
+    if status != StatusCode::CREATED {
         let body = axum::body::to_bytes(resp.into_body(), 1024)
             .await
             .unwrap_or_default();
         eprintln!(
             "create failed: {} — {:?}",
-            resp.status(),
+            status,
             String::from_utf8_lossy(&body)
         );
     }
-    assert_eq!(resp.status(), StatusCode::CREATED, "create should return 201");
+    assert_eq!(status, StatusCode::CREATED, "create should return 201");
 
     assert_admin_audit_event(&db, "PolicyCreate", "policy:", "audit-admin");
 }
