@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-13 after v0.2.0 milestone*
+*Last updated: 2026-04-14 after Phase 09*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -16,7 +16,7 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 
 **v0.2.0 Feature Completion shipped** (2026-04-13). All five crates compile and test. 364+ tests pass. The system covers: file/USB/network-share interception, clipboard monitoring, JWT auth, SIEM relay (Splunk HEC + ELK), alert routing (email + webhook), DB-backed operator config, agent config polling, and comprehensive TC test coverage.
 
-**Next milestone: v0.3.0 — Operational Hardening** (AD LDAP, rate limiting, admin audit logging, SQLite pool, policy engine separation).
+**v0.3.0 — Operational Hardening in progress** (Phase 09 shipped — admin audit logging; remaining: AD LDAP, rate limiting, SQLite pool, policy engine separation).
 
 ## Architecture
 
@@ -39,6 +39,7 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 | SIEM/alert/config operator config in SQLite, not env vars | Hot-reload without restart; TUI manageable; persistent |
 | Agent config via TOML file at `C:\ProgramData\DLP\agent-config.toml` | Agents poll server and persist config to TOML |
 | `classify_text` in dlp-common | Shared classifier avoids duplication between agent and UI |
+| Admin audit events via `store_events_sync` inside `spawn_blocking` | Avoids async deadlock; `ingest_events` is async so cannot call from within `spawn_blocking` |
 
 ## Requirements
 
@@ -56,8 +57,11 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - [ ] R-03: Policy Engine Separation — architectural split into policy engine + evaluation replica
 - [ ] R-05: Active Directory LDAP integration — real ABAC attribute resolution from AD
 - [ ] R-07: Rate limiting middleware — brute-force protection, per-agent event limits
-- [ ] R-09: Admin operation audit logging — policy CRUD → audit_events with EventType::AdminAction
 - [ ] R-10: SQLite connection pool — replace Mutex<Connection> with r2d2 pool
+
+### Validated (v0.3.0)
+
+- ✓ R-09: Admin operation audit logging — policy CRUD + password changes → audit_events with EventType::AdminAction — Phase 09
 
 ### Out of Scope
 
