@@ -128,9 +128,9 @@ pub async fn ingest_events(
     // SiemConnector::relay_events and AlertRouter::send_alert signatures.
     let relay_events = events.clone();
 
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
 
         // Use a transaction for batch atomicity.
         let tx = conn.unchecked_transaction()?;
@@ -244,9 +244,9 @@ pub async fn query_events(
     State(state): State<Arc<AppState>>,
     Query(q): Query<EventQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let rows = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
 
         // Build a dynamic WHERE clause from the provided filters.
         let mut conditions: Vec<String> = Vec::new();
@@ -343,9 +343,9 @@ pub async fn query_events(
 pub async fn get_event_count(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<EventCount>, AppError> {
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let count = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.query_row("SELECT COUNT(*) FROM audit_events", [], |row| {
             row.get::<_, i64>(0)
         })
@@ -359,7 +359,6 @@ pub async fn get_event_count(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Database;
 
     #[test]
     fn test_event_query_defaults() {
@@ -380,7 +379,8 @@ mod tests {
 
     #[test]
     fn test_store_events_sync_admin_action() {
-        let db = Database::open(":memory:").expect("open in-memory db");
+        use crate::db;
+        let pool = db::new_pool(":memory:").expect("build pool");
         let event = dlp_common::AuditEvent::new(
             dlp_common::EventType::AdminAction,
             "".to_string(),
@@ -392,7 +392,7 @@ mod tests {
             "server".to_string(),
             0,
         );
-        let conn = db.conn().lock();
+        let conn = pool.get().expect("acquire connection");
         store_events_sync(&conn, &[event]).expect("store event");
 
         let (event_type, action, resource_path): (String, String, String) = conn
