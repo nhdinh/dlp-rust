@@ -162,6 +162,20 @@ impl Database {
             );
             INSERT OR IGNORE INTO alert_router_config (id) VALUES (1);
 
+            -- ldap_config: Active Directory connection configuration (Phase 7).
+            -- Single-row table enforced via CHECK (id = 1), seeded below.
+            -- vpn_subnets is a comma-separated list of CIDR ranges.
+            CREATE TABLE IF NOT EXISTS ldap_config (
+                id               INTEGER PRIMARY KEY CHECK (id = 1),
+                ldap_url         TEXT NOT NULL DEFAULT 'ldaps://dc.corp.internal:636',
+                base_dn          TEXT NOT NULL DEFAULT '',
+                require_tls      INTEGER NOT NULL DEFAULT 1,
+                cache_ttl_secs   INTEGER NOT NULL DEFAULT 300,
+                vpn_subnets      TEXT NOT NULL DEFAULT '',
+                updated_at       TEXT NOT NULL DEFAULT ''
+            );
+            INSERT OR IGNORE INTO ldap_config (id) VALUES (1);
+
             -- global_agent_config: single-row default applied to all agents unless overridden.
             -- Uses CHECK (id = 1) to enforce exactly one row, seeded below.
             -- monitored_paths is stored as a JSON text array.
@@ -229,6 +243,7 @@ mod tests {
         assert!(tables.contains(&"agent_credentials".to_string()));
         assert!(tables.contains(&"siem_config".to_string()));
         assert!(tables.contains(&"alert_router_config".to_string()));
+        assert!(tables.contains(&"ldap_config".to_string()));
         assert!(tables.contains(&"global_agent_config".to_string()));
         assert!(tables.contains(&"agent_config_overrides".to_string()));
 
