@@ -1,9 +1,9 @@
 ---
-status: testing
+status: complete
 phase: 01-fix-integration-tests
 source: [01-fix-integration-tests/SUMMARY.md]
 started: 2026-04-14T09:24:34Z
-updated: 2026-04-14T09:24:34Z
+updated: 2026-04-14T09:28:00Z
 ---
 
 ## Current Test
