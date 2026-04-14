@@ -27,6 +27,7 @@ use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+use dlp_common::ad_client::{AdClient, LdapConfig};
 use dlp_server::admin_api;
 use dlp_server::admin_auth;
 use dlp_server::agent_registry;
@@ -34,6 +35,34 @@ use dlp_server::alert_router::AlertRouter;
 use dlp_server::db::Database;
 use dlp_server::siem_connector::SiemConnector;
 use dlp_server::AppState;
+
+/// Loads the LDAP configuration from the SQLite database.
+///
+/// Returns `None` if the config cannot be read (DB not yet initialized).
+fn load_ldap_config(db: &Database) -> Option<LdapConfig> {
+    let conn = db.conn().lock();
+    conn.query_row(
+        "SELECT ldap_url, base_dn, require_tls, cache_ttl_secs, vpn_subnets \
+         FROM ldap_config WHERE id = 1",
+        [],
+        |row| {
+            let ldap_url: String = row.get::<_, String>(0)?;
+            let base_dn: String = row.get::<_, String>(1)?;
+            let require_tls: i64 = row.get::<_, i64>(2).unwrap_or(1);
+            let cache_ttl_secs: i64 = row.get::<_, i64>(3).unwrap_or(300);
+            let vpn_subnets: String = row.get::<_, String>(4).unwrap_or_default();
+            Ok(Some(LdapConfig {
+                ldap_url,
+                base_dn,
+                require_tls: require_tls != 0,
+                cache_ttl_secs: cache_ttl_secs as u64,
+                vpn_subnets,
+            }))
+        },
+    )
+    .ok()
+    .flatten()
+}
 
 /// Default bind address.
 const DEFAULT_BIND: &str = "127.0.0.1:9090";
@@ -150,8 +179,24 @@ async fn main() -> anyhow::Result<()> {
     // send_alert call from the `alert_router_config` table (hot-reload).
     let alert = AlertRouter::new(Arc::clone(&db));
 
+    // Attempt to construct the AD client from DB config.
+    // Fail-open: server starts even if AD is unreachable.
+    let ad_client = match load_ldap_config(&db) {
+        Some(config) => {
+            tracing::info!(ldap_url = %config.ldap_url, base_dn = %config.base_dn, "initializing AD client");
+            match AdClient::new(config).await {
+                Ok(client) => Some(client),
+                Err(e) => {
+                    tracing::warn!(error = %e, "AD client initialization failed — AD features disabled");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
     // Build shared application state.
-    let state = Arc::new(AppState { db, siem, alert });
+    let state = Arc::new(AppState { db, siem, alert, ad: ad_client });
 
     // Start the background heartbeat sweeper (marks agents offline
     // after 90 seconds of silence).

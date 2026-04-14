@@ -19,11 +19,13 @@ use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
+use dlp_common::AdClient;
+
 /// Shared application state passed to all HTTP handlers via axum's `State` extractor.
 ///
-/// Wraps the database, SIEM connector, and alert router so handlers can access
-/// them through a single `Arc<AppState>`.
-#[derive(Debug, Clone)]
+/// Wraps the database, SIEM connector, alert router, and AD client so handlers
+/// can access them through a single `Arc<AppState>`.
+#[derive(Clone)]
 pub struct AppState {
     /// Shared database handle for SQLite operations.
     pub db: Arc<db::Database>,
@@ -31,6 +33,20 @@ pub struct AppState {
     pub siem: siem_connector::SiemConnector,
     /// Alert router for DenyWithAlert email/webhook notifications.
     pub alert: alert_router::AlertRouter,
+    /// Active Directory LDAP client for group resolution and admin SID lookup.
+    /// None when AD is unreachable (fail-open at startup).
+    pub ad: Option<AdClient>,
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("db", &self.db)
+            .field("siem", &self.siem)
+            .field("alert", &self.alert)
+            .field("ad", &if self.ad.is_some() { "AdClient(...)" } else { "None" })
+            .finish()
+    }
 }
 
 /// Unified application error type returned by all HTTP handlers.
