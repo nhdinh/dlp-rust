@@ -95,9 +95,9 @@ pub async fn create_exception(
     };
 
     let exc = exception.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute(
             "INSERT INTO exceptions \
                 (id, policy_id, user_sid, approver, justification, \
@@ -131,9 +131,9 @@ pub async fn create_exception(
 pub async fn list_exceptions(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<Exception>>, AppError> {
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let exceptions = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         let mut stmt = conn.prepare(
             "SELECT id, policy_id, user_sid, approver, \
                     justification, duration_seconds, \
@@ -174,10 +174,10 @@ pub async fn get_exception(
     Path(exception_id): Path<String>,
 ) -> Result<Json<Exception>, AppError> {
     let id = exception_id.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
 
     let result = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.query_row(
             "SELECT id, policy_id, user_sid, approver, \
                     justification, duration_seconds, \
