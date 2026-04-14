@@ -27,8 +27,9 @@ Data exfiltration paths blocked include USB mass storage, SMB/FTP uploads, and c
 
 | Crate               | Role                                                      | Phase        |
 | ------------------- | --------------------------------------------------------- | ------------ |
+| `dlp-common/`       | Shared types, ABAC engine, AD/LDAP client, classification | 1+7          |
 | `dlp-server/`       | Central server: ABAC evaluator, audit store, agent registry, SIEM relay, admin API | 1+5 |
-| `dlp-agent/`        | Windows Service: file interception, policy enforcement    | 1            |
+| `dlp-agent/`        | Windows Service: file interception, policy enforcement, AD group resolution | 1+7          |
 | `dlp-user-ui/`      | iced subprocess: notifications, dialogs, clipboard, tray  | 1            |
 | `dlp-admin-cli/`    | Admin CLI: password management, policy CRUD, server status | 1            |
 
@@ -61,7 +62,7 @@ docs/
 
 ## Status
 
-Phase 1 through 5 are complete. All crates are implemented and tested.
+Phase 1 through 7 are complete. All crates are implemented and tested.
 
 | Phase | Focus                                                   | Crates                                                   |
 | ----- | ------------------------------------------------------- | -------------------------------------------------------- |
@@ -70,6 +71,8 @@ Phase 1 through 5 are complete. All crates are implemented and tested.
 | 3     | File interception + integration tests                   | `dlp-agent`                                              |
 | 4     | Production hardening: MSI installer, security audit     | All                                                      |
 | 5     | Central management: audit store, SIEM, admin API        | `dlp-server`, `dlp-admin-cli`                            |
+| 6     | Config push to agents                                   | `dlp-server`, `dlp-agent`                                |
+| 7     | Active Directory LDAP integration (machine-account Kerberos, group resolution, device trust, network location) | `dlp-common`, `dlp-server`, `dlp-agent` |
 
 ---
 

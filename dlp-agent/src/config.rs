@@ -83,6 +83,12 @@ pub struct AgentConfig {
     #[serde(default)]
     pub offline_cache_enabled: Option<bool>,
 
+    /// LDAP/AD configuration for group resolution. When `None`, AD features
+    /// are disabled (fallback to placeholder identity values). Populated by
+    /// server config push and persisted to the TOML config file.
+    #[serde(default)]
+    pub ldap_config: Option<crate::server_client::LdapConfigPayload>,
+
     /// Machine hostname, resolved once at startup.
     /// Not persisted to the config file.
     #[serde(skip)]
@@ -264,6 +270,7 @@ mod tests {
             excluded_paths: Vec::new(),
             heartbeat_interval_secs: None,
             offline_cache_enabled: None,
+            ldap_config: None,
             machine_name: None,
         };
         let paths = config.resolve_watch_paths();
@@ -295,6 +302,7 @@ mod tests {
             excluded_paths: vec![r"C:\Temp\".to_string()],
             heartbeat_interval_secs: Some(45),
             offline_cache_enabled: Some(true),
+            ldap_config: None,
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
         };
@@ -321,6 +329,7 @@ mod tests {
             excluded_paths: Vec::new(),
             heartbeat_interval_secs: None,
             offline_cache_enabled: None,
+            ldap_config: None,
             machine_name: None,
         };
 

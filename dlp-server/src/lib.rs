@@ -44,7 +44,14 @@ impl std::fmt::Debug for AppState {
             .field("db", &self.db)
             .field("siem", &self.siem)
             .field("alert", &self.alert)
-            .field("ad", &if self.ad.is_some() { "AdClient(...)" } else { "None" })
+            .field(
+                "ad",
+                &if self.ad.is_some() {
+                    "AdClient(...)"
+                } else {
+                    "None"
+                },
+            )
             .finish()
     }
 }

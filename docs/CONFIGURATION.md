@@ -58,7 +58,7 @@ On first start, if no admin user exists in the database, the server prompts inte
 
 ### SQLite configuration tables
 
-The server uses SQLite for all state. The database path is controlled by `--db` (or the default). Two tables hold operator configuration:
+The server uses SQLite for all state. The database path is controlled by `--db` (or the default). Four tables hold operator configuration:
 
 **`siem_config`** — SIEM relay settings. Single-row table (id=1).
 
@@ -107,6 +107,17 @@ The server uses SQLite for all state. The database path is controlled by `--db` 
 | `heartbeat_interval_secs` | INTEGER | Heartbeat interval in seconds |
 | `offline_cache_enabled` | INTEGER | Whether offline caching is enabled |
 | `updated_at` | TEXT | ISO 8601 timestamp |
+
+**`ldap_config`** — Active Directory connection settings. Single-row table (id=1). Managed via `GET /admin/ldap-config` and `PUT /admin/ldap-config`.
+
+| Column | Type | Default | Description |
+|--------|------|---------|-------------|
+| `ldap_url` | TEXT | `ldaps://dc.corp.internal:636` | LDAPS URL of a domain controller |
+| `base_dn` | TEXT | `''` | Base DN for LDAP searches |
+| `require_tls` | INTEGER | 1 | Require TLS (0 = allow startTLS on port 389) |
+| `cache_ttl_secs` | INTEGER | 300 | Group membership cache TTL (seconds, min 60) |
+| `vpn_subnets` | TEXT | `''` | Comma-separated VPN subnet CIDR ranges |
+| `updated_at` | TEXT | `''` | ISO 8601 timestamp of last update |
 
 > **VERIFY:** The default path `C:\ProgramData\DLP\` for agent config is a Windows-specific installation convention. Adjust for non-Windows deployments.
 
@@ -176,11 +187,12 @@ All fields are optional. If the file is missing or unparseable, the agent uses b
 
 ### Server-pushed configuration
 
-`dlp-server` can push three configuration fields to connected agents via `GET /agent-config/{agent_id}`:
+`dlp-server` can push four configuration fields to connected agents via `GET /agent-config/{agent_id}`:
 
 1. **`monitored_paths`** — written to TOML, takes effect on restart
 2. **`heartbeat_interval_secs`** — applied immediately in-memory
 3. **`offline_cache_enabled`** — applied immediately in-memory
+4. **`ldap_config`** — Active Directory connection settings (LDAP URL, base DN, TLS, cache TTL, VPN subnets); the agent constructs an AD client on config receipt
 
 The agent polls the server at the current heartbeat interval (initially 30 s) and applies changes without requiring a restart.
 

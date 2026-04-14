@@ -198,8 +198,35 @@ Single SQLite database (WAL mode) with one mutex-guarded `Connection`. Key table
 - `alert_router_config` — SMTP and Webhook alert configuration
 - `global_agent_config` — default per-agent settings (monitored paths, heartbeat interval)
 - `agent_config_overrides` — per-agent config overrides
+- `ldap_config` — Active Directory connection settings (URL, base DN, TLS, cache TTL, VPN subnets)
 
-### 4.5 Offline Mode (`dlp-agent::offline`)
+### 4.4 Database Schema (`dlp-server::db`)
+
+Single SQLite database (WAL mode) with one mutex-guarded `Connection`. Key tables:
+
+- `policies` — ABAC rules (priority, conditions JSON, action, version)
+- `exceptions` — time-limited user overrides with justification + approver
+- `agents` — endpoint registry (heartbeat, status)
+- `audit_events` — appended event log (correlation_id for SIEM deduplication)
+- `admin_users` — dlp-admin bcrypt hashes
+- `agent_credentials` — shared agent auth hash (bcrypt, synced to all agents)
+- `siem_config` — Splunk HEC and ELK endpoint configuration
+- `alert_router_config` — SMTP and Webhook alert configuration
+- `global_agent_config` — default per-agent settings (monitored paths, heartbeat interval)
+- `agent_config_overrides` — per-agent config overrides
+- `ldap_config` — Active Directory connection settings (URL, base DN, TLS, cache TTL, VPN subnets)
+
+### 4.5 Active Directory Client (`dlp-common::ad_client`)
+
+Async LDAP client wrapping `ldap3` with machine-account Kerberos authentication (GSSAPI — no stored credentials). Provides:
+
+- **`resolve_user_groups(username, sid)`** — queries `tokenGroups` for full transitive group membership closure; caches results by caller SID with configurable TTL
+- **`get_device_trust()`** — calls `NetGetJoinInformation` to detect domain join status; returns `Managed` / `Unmanaged` / `Unknown`
+- **`get_network_location(vpn_subnets)`** — calls `GetAdaptersAddresses` to enumerate local IPs; matches against VPN subnet list; returns `Corporate` / `Remote` / `Unknown`
+
+All three functions fail open (return safe defaults on error) so AD outages do not block legitimate work.
+
+### 4.6 Offline Mode (`dlp-agent::offline`)
 
 When the Policy Engine is unreachable, `OfflineManager` falls back to:
 
@@ -207,7 +234,7 @@ When the Policy Engine is unreachable, `OfflineManager` falls back to:
 2. Provisional classification (path prefix + 8 KB content scan)
 3. Fail-closed: T3/T4 resources default to `DENY` on cache miss; T1/T2 default to `ALLOW`
 
-### 4.6 IPC Protocol (three named pipes)
+### 4.7 IPC Protocol (three named pipes)
 
 | Pipe | Direction | Purpose |
 |---|---|---|
@@ -217,7 +244,7 @@ When the Policy Engine is unreachable, `OfflineManager` falls back to:
 
 `dlp-user-ui` also uses a file-based stop-password path to avoid deadlocking synchronous `ReadFile`/`WriteFile` on Pipe 1.
 
-### 4.7 User UI Screens (`dlp-admin-cli::screens`)
+### 4.8 User UI Screens (`dlp-admin-cli::screens`)
 
 The TUI uses a state-machine `Screen` enum. Key screens:
 
@@ -237,6 +264,8 @@ dlp-rust/
 ├── dlp-common/src/          # Zero-dependency pure type library.
 │   ├── abac.rs              # Core ABAC types (Subject, Resource, Policy,
 │   │                        #   EvaluateRequest/Response, Decision, etc.)
+│   ├── ad_client.rs         # Async LDAP client: Kerberos bind, group cache,
+│   │                        #   device trust, network location (Phase 7).
 │   ├── audit.rs             # AuditEvent schema and EventType enum.
 │   ├── classification.rs    # Four-tier Classification enum.
 │   ├── classifier.rs        # Content-based text classifier (SSN/CC/keyword).
@@ -244,10 +273,11 @@ dlp-rust/
 │
 ├── dlp-server/src/          # Central HTTP server.
 │   ├── main.rs              # CLI flag parsing, server bootstrap,
-│   │                        #   graceful shutdown, admin user provisioning.
-│   ├── lib.rs               # AppState (db + SIEM + AlertRouter) and AppError.
+│   │                        #   graceful shutdown, admin user provisioning,
+│   │                        #   AD client initialisation at startup.
+│   ├── lib.rs               # AppState (db + SIEM + AlertRouter + AdClient) and AppError.
 │   ├── admin_api.rs         # Full axum Router: policy CRUD, agent mgmt,
-│   │                        #   exception mgmt, SIEM/alert config, JWT auth.
+│   │                        #   exception mgmt, SIEM/alert/LDAP config, JWT auth.
 │   ├── admin_auth.rs        # JWT secret resolution, admin user creation,
 │   │                        #   password verification (bcrypt).
 │   ├── agent_registry.rs    # Agent registration, heartbeat, offline sweeper.
@@ -268,7 +298,8 @@ dlp-rust/
 │   │   ├── file_monitor.rs  # notify-based file watcher, FileAction events.
 │   │   └── policy_mapper.rs # FileAction → ABAC Action, provisional
 │   │                        #   classification (path + content scan).
-│   ├── identity.rs          # SMB impersonation token user resolution.
+│   ├── identity.rs          # SMB impersonation token user resolution;
+│   │                        #   to_subject_with_ad() for AD group/trust/location.
 │   ├── session_identity.rs  # Per-session identity map with path heuristic.
 │   ├── engine_client.rs     # HTTPS client to dlp-server /policies/evaluate.
 │   ├── cache.rs             # Policy decision LRU cache with TTL.

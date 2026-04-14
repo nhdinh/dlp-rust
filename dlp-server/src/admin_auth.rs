@@ -45,9 +45,7 @@ impl AdminUsername {
     /// # Errors
     ///
     /// Returns `AppError::Unauthorized` if the token is missing, malformed, or invalid.
-    pub fn extract_from_headers(
-        headers: &axum::http::HeaderMap,
-    ) -> Result<String, AppError> {
+    pub fn extract_from_headers(headers: &axum::http::HeaderMap) -> Result<String, AppError> {
         let auth_header = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())

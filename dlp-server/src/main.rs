@@ -196,7 +196,12 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Build shared application state.
-    let state = Arc::new(AppState { db, siem, alert, ad: ad_client });
+    let state = Arc::new(AppState {
+        db,
+        siem,
+        alert,
+        ad: ad_client,
+    });
 
     // Start the background heartbeat sweeper (marks agents offline
     // after 90 seconds of silence).

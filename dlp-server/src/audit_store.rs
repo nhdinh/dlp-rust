@@ -56,7 +56,10 @@ pub struct EventCount {
 /// Used by admin audit handlers that run inside `spawn_blocking` — we cannot
 /// call the async `ingest_events` from within a blocking thread without
 /// deadlocking the async runtime.
-pub fn store_events_sync(conn: &rusqlite::Connection, events: &[AuditEvent]) -> Result<(), AppError> {
+pub fn store_events_sync(
+    conn: &rusqlite::Connection,
+    events: &[AuditEvent],
+) -> Result<(), AppError> {
     let mut stmt = conn.prepare(
         "INSERT OR IGNORE INTO audit_events (timestamp, event_type, user_sid, user_name, \
          resource_path, classification, action_attempted, decision, policy_id, policy_name, \

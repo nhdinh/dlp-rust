@@ -18,7 +18,7 @@ use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use dlp_server::admin_api::{admin_router, PolicyPayload};
 use dlp_server::admin_auth::{set_jwt_secret, Claims};
-use dlp_server::{alert_router, siem_connector, AppState, db::Database};
+use dlp_server::{alert_router, db::Database, siem_connector, AppState};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use tower::ServiceExt;
 
@@ -37,7 +37,12 @@ fn test_app() -> (axum::Router, Arc<Database>) {
     let db = Arc::new(Database::open(":memory:").expect("open in-memory db"));
     let siem = siem_connector::SiemConnector::new(Arc::clone(&db));
     let alert = alert_router::AlertRouter::new(Arc::clone(&db));
-    let state = Arc::new(AppState { db: Arc::clone(&db), siem, alert });
+    let state = Arc::new(AppState {
+        db: Arc::clone(&db),
+        siem,
+        alert,
+        ad: None,
+    });
     (admin_router(state), db)
 }
 
@@ -98,7 +103,10 @@ fn assert_admin_audit_event(
         .expect("audit event must exist");
 
     // Note: enum variants are stored as JSON-quoted strings via serde_json.
-    assert_eq!(row.0, "\"ADMIN_ACTION\"", "event_type should be ADMIN_ACTION");
+    assert_eq!(
+        row.0, "\"ADMIN_ACTION\"",
+        "event_type should be ADMIN_ACTION"
+    );
     assert_eq!(
         row.1,
         format!("\"{action_attempted}\""),
@@ -295,10 +303,5 @@ async fn test_password_change_emits_admin_audit_event() {
         "password change should return 200"
     );
 
-    assert_admin_audit_event(
-        &db,
-        "PasswordChange",
-        "password_change:",
-        "audit-admin",
-    );
+    assert_admin_audit_event(&db, "PasswordChange", "password_change:", "audit-admin");
 }

@@ -32,6 +32,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::audit_emitter::{self, emit_audit, EmitContext};
+use crate::identity::WindowsIdentity;
 use crate::ipc::messages::Pipe1AgentMsg;
 use crate::ipc::pipe1;
 use crate::offline::OfflineManager;
@@ -52,11 +53,13 @@ use crate::session_identity::SessionIdentityMap;
 /// * `offline` — the shared offline manager (engine client + cache)
 /// * `ctx` — shared audit context (agent_id, session)
 /// * `session_map` — per-session identity map for resolving file owners
+/// * `ad_client` — optional AD client for group/trust/location resolution (None = fallback to placeholder)
 pub async fn run_event_loop(
     mut rx: mpsc::Receiver<FileAction>,
     offline: Arc<OfflineManager>,
     ctx: EmitContext,
     session_map: Arc<SessionIdentityMap>,
+    ad_client: Arc<Option<dlp_common::AdClient>>,
 ) {
     info!("interception event loop started");
 
@@ -82,14 +85,27 @@ pub async fn run_event_loop(
         let classification = PolicyMapper::provisional_classification(&path);
 
         // ── Build evaluation request ──────────────────────────────────────
-        let request = EvaluateRequest {
-            subject: Subject {
+        let subject = if let Some(ref client) = *ad_client {
+            let vpn_subnets = client.vpn_subnets_str();
+            let identity = WindowsIdentity {
+                sid: user_sid.clone(),
+                username: user_name.clone(),
+                primary_group: None,
+            };
+            identity.to_subject_with_ad(client, &vpn_subnets).await
+        } else {
+            // Fallback: placeholder values (no AD configured).
+            Subject {
                 user_sid: user_sid.clone(),
                 user_name: user_name.clone(),
                 groups: Vec::new(),
                 device_trust: dlp_common::DeviceTrust::Unknown,
                 network_location: dlp_common::NetworkLocation::Unknown,
-            },
+            }
+        };
+
+        let request = EvaluateRequest {
+            subject,
             resource: Resource {
                 path: path.clone(),
                 classification,

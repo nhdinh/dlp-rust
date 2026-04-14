@@ -274,6 +274,10 @@ async fn config_poll_loop(
                 changed_fields.push("offline_cache_enabled");
                 cfg.offline_cache_enabled = Some(payload.offline_cache_enabled);
             }
+            if cfg.ldap_config != payload.ldap_config {
+                changed_fields.push("ldap_config");
+                cfg.ldap_config = payload.ldap_config;
+            }
 
             if !changed_fields.is_empty() {
                 // Log field names only — never log path values (T-06-09 info disclosure).
@@ -333,6 +337,37 @@ async fn run_loop(
 
     // ── Load agent config (needed for server_url before monitor setup) ───
     let agent_config = crate::config::AgentConfig::load_default();
+
+    // ── AD client (best-effort — AD features disabled if config absent or init fails) ───
+    // Construct from pushed LDAP config embedded in agent_config (set by config poll loop).
+    // Stored in Arc<Option<AdClient>> so all interception threads share the same client.
+    let ad_client: Arc<Option<dlp_common::AdClient>> =
+        if let Some(ref ldap_config) = agent_config.ldap_config {
+            use dlp_common::ad_client::LdapConfig;
+            let config = LdapConfig {
+                ldap_url: ldap_config.ldap_url.clone(),
+                base_dn: ldap_config.base_dn.clone(),
+                require_tls: ldap_config.require_tls,
+                cache_ttl_secs: ldap_config.cache_ttl_secs,
+                vpn_subnets: ldap_config.vpn_subnets.clone(),
+            };
+            match dlp_common::AdClient::new(config).await {
+                Ok(client) => {
+                    tracing::info!("AD client initialised from pushed config");
+                    Arc::new(Some(client))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "AD client initialisation failed — AD features disabled for this session"
+                    );
+                    Arc::new(None)
+                }
+            }
+        } else {
+            tracing::debug!("No LDAP config in agent config — AD features disabled");
+            Arc::new(None)
+        };
 
     // ── dlp-server client (best-effort -- server may not be running) ─────
     let server_client = match crate::server_client::ServerClient::from_env_with_config(
@@ -446,8 +481,16 @@ async fn run_loop(
     let offline_ev = offline.clone();
     let ctx_ev = audit_ctx.clone();
     let session_map_ev = session_map.clone();
+    let ad_client_ev = ad_client.clone();
     let event_loop_handle = tokio::spawn(async move {
-        crate::interception::run_event_loop(action_rx, offline_ev, ctx_ev, session_map_ev).await;
+        crate::interception::run_event_loop(
+            action_rx,
+            offline_ev,
+            ctx_ev,
+            session_map_ev,
+            ad_client_ev,
+        )
+        .await;
     });
 
     // Spawn the file monitor — run() is blocking and must run on a dedicated thread
@@ -886,6 +929,35 @@ async fn async_run_console() -> Result<()> {
     // ── Load agent config (needed for server_url before monitor setup) ───
     let agent_config = crate::config::AgentConfig::load_default();
 
+    // ── AD client (best-effort — AD features disabled if config absent or init fails) ───
+    let ad_client: Arc<Option<dlp_common::AdClient>> =
+        if let Some(ref ldap_config) = agent_config.ldap_config {
+            use dlp_common::ad_client::LdapConfig;
+            let config = LdapConfig {
+                ldap_url: ldap_config.ldap_url.clone(),
+                base_dn: ldap_config.base_dn.clone(),
+                require_tls: ldap_config.require_tls,
+                cache_ttl_secs: ldap_config.cache_ttl_secs,
+                vpn_subnets: ldap_config.vpn_subnets.clone(),
+            };
+            match dlp_common::AdClient::new(config).await {
+                Ok(client) => {
+                    tracing::info!("AD client initialised from pushed config (console mode)");
+                    Arc::new(Some(client))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "AD client initialisation failed — AD features disabled for this session"
+                    );
+                    Arc::new(None)
+                }
+            }
+        } else {
+            tracing::debug!("No LDAP config in agent config — AD features disabled");
+            Arc::new(None)
+        };
+
     // ── dlp-server client (best-effort) ──────────────────────────────────
     let server_client = match crate::server_client::ServerClient::from_env_with_config(
         agent_config.server_url.as_deref(),
@@ -977,8 +1049,16 @@ async fn async_run_console() -> Result<()> {
     let offline_ev = offline.clone();
     let ctx_ev = audit_ctx.clone();
     let session_map_ev = session_map.clone();
+    let ad_client_ev = ad_client.clone();
     let event_loop_handle = tokio::spawn(async move {
-        crate::interception::run_event_loop(action_rx, offline_ev, ctx_ev, session_map_ev).await;
+        crate::interception::run_event_loop(
+            action_rx,
+            offline_ev,
+            ctx_ev,
+            session_map_ev,
+            ad_client_ev,
+        )
+        .await;
     });
 
     // File monitor runs on a blocking thread so it doesn't starve the Tokio executor.

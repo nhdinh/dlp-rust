@@ -365,7 +365,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         )
         // Policy CRUD under /admin/policies (Phase 9 requirement).
         .route("/admin/policies", post(create_policy))
-        .route("/admin/policies/:id", put(update_policy).delete(delete_policy))
+        .route(
+            "/admin/policies/:id",
+            put(update_policy).delete(delete_policy),
+        )
         .route("/exceptions", get(exception_store::list_exceptions))
         .route("/exceptions/:id", get(exception_store::get_exception))
         .route("/exceptions", post(exception_store::create_exception))
@@ -517,7 +520,9 @@ async fn create_policy(
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<(StatusCode, Json<PolicyResponse>), AppError> {
     let username = AdminUsername::extract_from_headers(req.headers())?;
-    let payload: Json<PolicyPayload> = Json::from_request(req, &state).await.map_err(AppError::from)?;
+    let payload: Json<PolicyPayload> = Json::from_request(req, &state)
+        .await
+        .map_err(AppError::from)?;
     if payload.id.is_empty() || payload.name.is_empty() {
         return Err(AppError::BadRequest("id and name are required".to_string()));
     }
@@ -603,11 +608,15 @@ async fn update_policy(
         return Err(AppError::BadRequest("invalid policy path".to_string()));
     };
     if policy_id.is_empty() {
-        return Err(AppError::BadRequest("missing policy id in path".to_string()));
+        return Err(AppError::BadRequest(
+            "missing policy id in path".to_string(),
+        ));
     }
 
     // Let Json consume the request body.
-    let payload: Json<PolicyPayload> = Json::from_request(req, &state).await.map_err(AppError::from)?;
+    let payload: Json<PolicyPayload> = Json::from_request(req, &state)
+        .await
+        .map_err(AppError::from)?;
 
     // Clone all fields needed inside spawn_blocking since Json derefs to &T (not owned).
     let now = Utc::now().to_rfc3339();
@@ -1625,7 +1634,12 @@ mod tests {
         let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
-        let state = Arc::new(AppState { db, siem, alert });
+        let state = Arc::new(AppState {
+            db,
+            siem,
+            alert,
+            ad: None,
+        });
         admin_router(state)
     }
 
@@ -1660,7 +1674,12 @@ mod tests {
         let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
-        let state = Arc::new(AppState { db, siem, alert });
+        let state = Arc::new(AppState {
+            db,
+            siem,
+            alert,
+            ad: None,
+        });
         let app = admin_router(state);
 
         let req = Request::builder()
@@ -1687,7 +1706,12 @@ mod tests {
         let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
-        let state = Arc::new(AppState { db, siem, alert });
+        let state = Arc::new(AppState {
+            db,
+            siem,
+            alert,
+            ad: None,
+        });
         let app = admin_router(state);
 
         // Mint a valid JWT inline. Claims struct is pub on admin_auth.
@@ -1771,6 +1795,7 @@ mod tests {
             db: Arc::clone(&db),
             siem,
             alert,
+            ad: None,
         });
         let app = admin_router(state);
 
@@ -1913,7 +1938,12 @@ mod tests {
         let db_read = Arc::clone(&db);
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
-        let state = Arc::new(AppState { db, siem, alert });
+        let state = Arc::new(AppState {
+            db,
+            siem,
+            alert,
+            ad: None,
+        });
         let app = admin_router(state);
         let token = mint_admin_jwt();
 
@@ -2667,7 +2697,12 @@ mod tests {
         seed_agent(&db, "agent-fallback-01");
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
-        let state = Arc::new(AppState { db, siem, alert });
+        let state = Arc::new(AppState {
+            db,
+            siem,
+            alert,
+            ad: None,
+        });
         let app = admin_router(state);
 
         // No override set — should return global defaults.
@@ -2766,7 +2801,12 @@ mod tests {
         seed_agent(&db, "agent-override-01");
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
-        let state = Arc::new(AppState { db, siem, alert });
+        let state = Arc::new(AppState {
+            db,
+            siem,
+            alert,
+            ad: None,
+        });
         let app = admin_router(state);
         let token = mint_admin_jwt();
 
@@ -2817,7 +2857,12 @@ mod tests {
         seed_agent(&db, "agent-del-01");
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
-        let state = Arc::new(AppState { db, siem, alert });
+        let state = Arc::new(AppState {
+            db,
+            siem,
+            alert,
+            ad: None,
+        });
         let app = admin_router(state);
         let token = mint_admin_jwt();
 

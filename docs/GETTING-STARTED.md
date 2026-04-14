@@ -93,3 +93,4 @@ Log in with the initial dlp-admin credentials set during first-run setup.
 - **TESTING.md** — running and writing tests
 - **CONFIGURATION.md** — full environment variable and config file reference
 - **docs/OPERATIONAL.md** — production runbook, service management, log locations
+- **docs/ARCHITECTURE.md** — system design, AD/LDAP integration, IPC protocol

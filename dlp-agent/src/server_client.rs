@@ -19,6 +19,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use dlp_common::ad_client::LdapConfig as AdLdapConfig;
 use dlp_common::AuditEvent;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -71,6 +72,40 @@ pub enum ServerClientError {
 }
 
 // ---------------------------------------------------------------------------
+// LdapConfigPayload
+// ---------------------------------------------------------------------------
+
+/// LDAP configuration pushed from the server to the agent.
+///
+/// A subset of [`AdLdapConfig`] — contains no credentials (machine-account
+/// Kerberos is used at runtime so no password needs to be stored or transmitted).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LdapConfigPayload {
+    /// LDAP URL — e.g. `"ldaps://dc.corp.internal:636"`.
+    pub ldap_url: String,
+    /// Base DN for LDAP searches — e.g. `"DC=corp,DC=internal"`.
+    pub base_dn: String,
+    /// When `true`, only LDAPS connections are permitted.
+    pub require_tls: bool,
+    /// Group membership cache TTL in seconds.
+    pub cache_ttl_secs: u64,
+    /// Comma-separated list of VPN CIDR ranges.
+    pub vpn_subnets: String,
+}
+
+impl From<AdLdapConfig> for LdapConfigPayload {
+    fn from(config: AdLdapConfig) -> Self {
+        Self {
+            ldap_url: config.ldap_url,
+            base_dn: config.base_dn,
+            require_tls: config.require_tls,
+            cache_ttl_secs: config.cache_ttl_secs,
+            vpn_subnets: config.vpn_subnets,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AgentConfigPayload
 // ---------------------------------------------------------------------------
 
@@ -88,6 +123,8 @@ pub struct AgentConfigPayload {
     pub heartbeat_interval_secs: u64,
     /// Whether offline caching is active.
     pub offline_cache_enabled: bool,
+    /// LDAP/AD configuration for group resolution (optional).
+    pub ldap_config: Option<LdapConfigPayload>,
 }
 
 // ---------------------------------------------------------------------------
@@ -640,10 +677,34 @@ mod tests {
             monitored_paths: vec![r"C:\Data\".to_string()],
             heartbeat_interval_secs: 60,
             offline_cache_enabled: false,
+            ldap_config: None,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt, payload);
+    }
+
+    #[test]
+    fn test_agent_config_payload_with_ldap_config() {
+        let ldap = LdapConfigPayload {
+            ldap_url: "ldaps://dc.corp.internal:636".to_string(),
+            base_dn: "DC=corp,DC=internal".to_string(),
+            require_tls: true,
+            cache_ttl_secs: 300,
+            vpn_subnets: "10.10.0.0/16".to_string(),
+        };
+        let payload = AgentConfigPayload {
+            monitored_paths: vec![r"C:\Data\".to_string()],
+            heartbeat_interval_secs: 60,
+            offline_cache_enabled: false,
+            ldap_config: Some(ldap),
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            rt.ldap_config.as_ref().map(|c| &c.ldap_url),
+            Some(&"ldaps://dc.corp.internal:636".to_string())
+        );
     }
 
     #[tokio::test]

@@ -52,8 +52,12 @@ fn parse_sid_bytes(bytes: &[u8]) -> Option<String> {
     let mut parts = vec![format!("S-1-{}", authority)];
     for i in 0..subauthority_count {
         let offset = 8 + i * 4;
-        let sub =
-            u32::from_le_bytes([bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]]);
+        let sub = u32::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ]);
         parts.push(format!("{}", sub));
     }
 
@@ -111,14 +115,14 @@ impl GroupCache {
     /// Inserts a new entry for `sid`.
     fn insert(&mut self, sid: String, groups: Vec<String>) {
         self.evict_expired();
-        self.entries.insert(sid, (groups, std::time::Instant::now()));
+        self.entries
+            .insert(sid, (groups, std::time::Instant::now()));
     }
 
     /// Removes all entries that have exceeded the TTL.
     fn evict_expired(&mut self) {
-        self.entries.retain(|_, (_, cached_at)| {
-            cached_at.elapsed().as_secs() < self.ttl_secs
-        });
+        self.entries
+            .retain(|_, (_, cached_at)| cached_at.elapsed().as_secs() < self.ttl_secs);
     }
 }
 
@@ -150,7 +154,10 @@ impl LdapConfig {
         if self.vpn_subnets.trim().is_empty() {
             return Ok(Vec::new());
         }
-        self.vpn_subnets.split(',').map(|s| s.trim().parse()).collect()
+        self.vpn_subnets
+            .split(',')
+            .map(|s| s.trim().parse())
+            .collect()
     }
 
     /// Returns the effective cache TTL clamped to [60, 3600].
@@ -242,6 +249,17 @@ impl AdClient {
         &self.vpn_subnets
     }
 
+    /// Returns the configured VPN subnets as a comma-separated string.
+    ///
+    /// Useful for passing to [`get_network_location`] without re-parsing.
+    pub fn vpn_subnets_str(&self) -> String {
+        self.vpn_subnets
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     /// Resolves the AD group SIDs (full transitive closure) for the given user.
     ///
     /// The result is cached by `caller_sid` for `cache_ttl_secs`. If the user
@@ -283,9 +301,14 @@ impl AdClient {
             }
         };
 
-        let groups: Vec<String> = all_sids.into_iter().filter(|sid| sid != caller_sid).collect();
+        let groups: Vec<String> = all_sids
+            .into_iter()
+            .filter(|sid| sid != caller_sid)
+            .collect();
 
-        self.cache.lock().insert(caller_sid.to_owned(), groups.clone());
+        self.cache
+            .lock()
+            .insert(caller_sid.to_owned(), groups.clone());
         Ok(groups)
     }
 
@@ -394,8 +417,9 @@ async fn ldap_connect(url: &str, require_tls: bool) -> Result<Ldap, AdClientErro
         url.to_owned()
     };
 
-    let (conn, ldap) =
-        LdapConnAsync::new(&url).await.map_err(|e| AdClientError::LdapConnect(e.to_string()))?;
+    let (conn, ldap) = LdapConnAsync::new(&url)
+        .await
+        .map_err(|e| AdClientError::LdapConnect(e.to_string()))?;
 
     ldap3::drive!(conn);
     Ok(ldap)
@@ -409,7 +433,12 @@ async fn do_resolve_groups(
 ) -> Result<Vec<String>, AdClientError> {
     let filter = format!("(sAMAccountName={})", ldap3::ldap_escape(username));
     let (rs, _result) = ldap
-        .search(base_dn, Scope::Subtree, &filter, vec!["distinguishedName", "tokenGroups"])
+        .search(
+            base_dn,
+            Scope::Subtree,
+            &filter,
+            vec!["distinguishedName", "tokenGroups"],
+        )
         .await
         .map_err(|e| AdClientError::LdapSearch(e.to_string()))?
         .success()
@@ -420,13 +449,20 @@ async fn do_resolve_groups(
     }
 
     let entry = SearchEntry::construct(rs.into_iter().next().expect("entry"));
-    let binary_sids = entry.bin_attrs.get("tokenGroups").cloned().unwrap_or_default();
+    let binary_sids = entry
+        .bin_attrs
+        .get("tokenGroups")
+        .cloned()
+        .unwrap_or_default();
 
     let mut sids = Vec::with_capacity(binary_sids.len());
     for sid_bytes in binary_sids {
         match parse_sid_bytes(&sid_bytes) {
             Some(sid) => sids.push(sid),
-            None => warn!(bytes_len = sid_bytes.len(), "skipping invalid SID bytes in tokenGroups"),
+            None => warn!(
+                bytes_len = sid_bytes.len(),
+                "skipping invalid SID bytes in tokenGroups"
+            ),
         }
     }
 
@@ -477,19 +513,18 @@ async fn do_resolve_sid(
 /// current join status without allocating memory.
 #[cfg(windows)]
 pub fn get_device_trust() -> crate::DeviceTrust {
+    use windows::core::PWSTR;
     use windows::Win32::NetworkManagement::NetManagement::{
         NetApiBufferFree, NetGetJoinInformation, NETSETUP_JOIN_STATUS,
     };
-    use windows::core::PWSTR;
 
     // SAFETY: NetGetJoinInformation is a read-only NetApi query.
     unsafe {
         let mut name_buf = PWSTR::null();
         let mut status = NETSETUP_JOIN_STATUS::default();
         NetGetJoinInformation(None, &mut name_buf, &mut status);
-        let is_domain_joined = !name_buf.is_null()
-            && status == NETSETUP_JOIN_STATUS(3); // NetSetupDomainName = 3
-        // Free the domain name buffer if one was allocated.
+        let is_domain_joined = !name_buf.is_null() && status == NETSETUP_JOIN_STATUS(3); // NetSetupDomainName = 3
+                                                                                         // Free the domain name buffer if one was allocated.
         if !name_buf.is_null() {
             let _ = NetApiBufferFree(Some(name_buf.as_ptr() as *const _));
         }
@@ -510,15 +545,31 @@ pub fn get_device_trust() -> crate::DeviceTrust {
 // network_location — Windows API
 // ---------------------------------------------------------------------------
 
+/// Parses a comma-separated string of CIDR ranges into a `Vec<IpNetwork>`.
+fn parse_vpn_subnet_str(subnets: &str) -> Vec<IpNetwork> {
+    subnets
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect()
+}
+
 /// Returns the network location based on the machine's current IP address and
 /// configured VPN subnets.
+///
+/// # Arguments
+///
+/// * `vpn_subnets` — comma-separated CIDR ranges (e.g. `"10.10.0.0/16,172.16.0.0/12"`)
 #[cfg(windows)]
-pub async fn get_network_location(vpn_subnets: &[IpNetwork]) -> crate::NetworkLocation {
+pub async fn get_network_location(vpn_subnets: &str) -> crate::NetworkLocation {
+    let vpn_cidrs = parse_vpn_subnet_str(vpn_subnets);
+
     let Some(local_ip) = find_local_ipv4().await else {
         return crate::NetworkLocation::Unknown;
     };
 
-    if vpn_subnets.iter().any(|cidr| cidr.contains(local_ip)) {
+    if vpn_cidrs.iter().any(|cidr| cidr.contains(local_ip)) {
         return crate::NetworkLocation::CorporateVpn;
     }
 
@@ -530,22 +581,24 @@ pub async fn get_network_location(vpn_subnets: &[IpNetwork]) -> crate::NetworkLo
 }
 
 #[cfg(not(windows))]
-pub async fn get_network_location(_vpn_subnets: &[IpNetwork]) -> crate::NetworkLocation {
+pub async fn get_network_location(_vpn_subnets: &str) -> crate::NetworkLocation {
     crate::NetworkLocation::Unknown
 }
 
 /// Finds the first routable (non-loopback, non-link-local, non-multicast) IPv4 address.
 #[cfg(windows)]
 async fn find_local_ipv4() -> Option<std::net::IpAddr> {
-    tokio::task::spawn_blocking(find_local_ipv4_sync).await.ok()?
+    tokio::task::spawn_blocking(find_local_ipv4_sync)
+        .await
+        .ok()?
 }
 
 #[cfg(windows)]
 fn find_local_ipv4_sync() -> Option<std::net::IpAddr> {
-    use windows::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
     use windows::Win32::NetworkManagement::IpHelper::{
         GetAdaptersAddresses, GAA_FLAG_INCLUDE_PREFIX, IP_ADAPTER_ADDRESSES_LH,
     };
+    use windows::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
 
     let family = AF_INET.0 as u32;
     let flags = GAA_FLAG_INCLUDE_PREFIX;
@@ -596,7 +649,9 @@ fn find_local_ipv4_sync() -> Option<std::net::IpAddr> {
 /// Returns the AD site name for this machine, or `None` if unavailable.
 #[cfg(windows)]
 async fn get_ad_site_name() -> Option<String> {
-    tokio::task::spawn_blocking(get_ad_site_name_sync).await.ok()?
+    tokio::task::spawn_blocking(get_ad_site_name_sync)
+        .await
+        .ok()?
 }
 
 #[cfg(windows)]
@@ -640,13 +695,13 @@ mod tests {
         // authority is 6-byte big-endian in bytes 2-7; subauthorities are
         // 4-byte little-endian u32 in bytes 8+.
         let bytes = [
-            1u8,   // revision
-            4,     // subauthority count
+            1u8, // revision
+            4,   // subauthority count
             0, 0, 0, 0, 0, 5, // bytes 2-7: authority = 5 (big-endian u48)
-            21, 0, 0, 0,                         // subauthority 1 = 21
-            0x15, 0xcd, 0x5b, 0x07,             // subauthority 2 = 123456789
-            0x15, 0xcd, 0x5b, 0x07,             // subauthority 3 = 123456789
-            0x15, 0xcd, 0x5b, 0x07,             // subauthority 4 = 123456789
+            21, 0, 0, 0, // subauthority 1 = 21
+            0x15, 0xcd, 0x5b, 0x07, // subauthority 2 = 123456789
+            0x15, 0xcd, 0x5b, 0x07, // subauthority 3 = 123456789
+            0x15, 0xcd, 0x5b, 0x07, // subauthority 4 = 123456789
         ];
 
         // MS-DTYP big-endian authority: bytes[2]<<40|...|bytes[7] = 5.
@@ -680,7 +735,10 @@ mod tests {
             "S-1-5-21-100".to_owned(),
         ];
 
-        let filtered: Vec<String> = all_sids.into_iter().filter(|sid| sid != caller_sid).collect();
+        let filtered: Vec<String> = all_sids
+            .into_iter()
+            .filter(|sid| sid != caller_sid)
+            .collect();
 
         assert_eq!(filtered, vec!["S-1-5-21-512", "S-1-5-21-513"]);
         assert!(!filtered.contains(&"S-1-5-21-100".to_owned()));
@@ -688,7 +746,10 @@ mod tests {
 
     #[test]
     fn test_group_cache_ttl_eviction() {
-        let mut cache = GroupCache { entries: HashMap::new(), ttl_secs: 5 };
+        let mut cache = GroupCache {
+            entries: HashMap::new(),
+            ttl_secs: 5,
+        };
 
         cache.insert("sid1".to_owned(), vec!["g1".to_owned()]);
         assert_eq!(cache.get("sid1"), Some(vec!["g1".to_owned()]));
@@ -697,7 +758,9 @@ mod tests {
         let past = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_secs(cache.ttl_secs + 1))
             .expect("checked_sub");
-        cache.entries.insert("sid2".to_owned(), (vec!["g2".to_owned()], past));
+        cache
+            .entries
+            .insert("sid2".to_owned(), (vec!["g2".to_owned()], past));
 
         cache.evict_expired();
         assert!(cache.get("sid1").is_some());
@@ -744,7 +807,10 @@ mod tests {
             cache_ttl_secs: 300,
             vpn_subnets: "".to_owned(),
         };
-        assert!(config.parse_vpn_subnets().expect("empty is valid").is_empty());
+        assert!(config
+            .parse_vpn_subnets()
+            .expect("empty is valid")
+            .is_empty());
     }
 
     #[test]
@@ -763,11 +829,14 @@ mod tests {
     async fn test_get_network_location_non_windows() {
         #[cfg(not(windows))]
         {
-            assert_eq!(get_network_location(&[]).await, crate::NetworkLocation::Unknown);
+            assert_eq!(
+                get_network_location("").await,
+                crate::NetworkLocation::Unknown
+            );
         }
         #[cfg(windows)]
         {
-            let _ = get_network_location(&[]).await;
+            let _ = get_network_location("").await;
         }
     }
 
@@ -781,10 +850,16 @@ mod tests {
             vpn_subnets: "".to_owned(),
         };
 
-        let below_min = LdapConfig { cache_ttl_secs: 10, ..base.clone() };
+        let below_min = LdapConfig {
+            cache_ttl_secs: 10,
+            ..base.clone()
+        };
         assert_eq!(below_min.effective_cache_ttl(), 60);
 
-        let above_max = LdapConfig { cache_ttl_secs: 9999, ..base.clone() };
+        let above_max = LdapConfig {
+            cache_ttl_secs: 9999,
+            ..base.clone()
+        };
         assert_eq!(above_max.effective_cache_ttl(), 3600);
 
         assert_eq!(base.effective_cache_ttl(), 300);

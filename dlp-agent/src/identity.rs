@@ -35,6 +35,7 @@ impl WindowsIdentity {
     /// Converts this identity into an ABAC [`Subject`].
     ///
     /// Groups are fetched via a separate AD lookup (not included here).
+    #[deprecated(since = "0.3.0", note = "Use to_subject_with_ad() instead")]
     pub fn to_subject(&self) -> Subject {
         Subject {
             user_sid: self.sid.clone(),
@@ -42,6 +43,54 @@ impl WindowsIdentity {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Unknown,
             network_location: dlp_common::NetworkLocation::Unknown,
+        }
+    }
+
+    /// Converts this identity into an ABAC [`Subject`] using Active Directory for attribute resolution.
+    ///
+    /// This replaces the placeholder values in [`to_subject`](Self::to_subject) with live AD data.
+    ///
+    /// # Arguments
+    ///
+    /// * `ad_client` — the AD client (constructed from pushed LDAP config)
+    /// * `vpn_subnets` — VPN subnet ranges from LDAP config (comma-separated CIDR string)
+    ///
+    /// # Fail-open behavior
+    ///
+    /// When AD is unreachable, groups fall back to `Vec::new()`, `device_trust` to
+    /// `Unmanaged`, and `network_location` to `Corporate`. This is intentional — blocking
+    /// legitimate work during AD outages is worse than allowing it with reduced enforcement.
+    pub async fn to_subject_with_ad(
+        &self,
+        ad_client: &dlp_common::ad_client::AdClient,
+        vpn_subnets: &str,
+    ) -> Subject {
+        // Resolve group membership via LDAP (fail-open: empty on error).
+        let groups = ad_client
+            .resolve_user_groups(&self.username, &self.sid)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    error = %e,
+                    sid = %self.sid,
+                    username = %self.username,
+                    "AD group lookup failed — using empty groups (fail-open)"
+                );
+                Vec::new()
+            });
+
+        // Resolve device trust via Windows API (local, no network dependency).
+        let device_trust = dlp_common::ad_client::get_device_trust();
+
+        // Resolve network location (AD site + VPN subnet check).
+        let network_location = dlp_common::ad_client::get_network_location(vpn_subnets).await;
+
+        Subject {
+            user_sid: self.sid.clone(),
+            user_name: self.username.clone(),
+            groups,
+            device_trust,
+            network_location,
         }
     }
 }
@@ -349,6 +398,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_windows_identity_to_subject() {
         let identity = WindowsIdentity {
             sid: "S-1-5-21-123".to_string(),
