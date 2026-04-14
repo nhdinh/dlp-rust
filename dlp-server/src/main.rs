@@ -32,15 +32,15 @@ use dlp_server::admin_api;
 use dlp_server::admin_auth;
 use dlp_server::agent_registry;
 use dlp_server::alert_router::AlertRouter;
-use dlp_server::db::Database;
+use dlp_server::db;
 use dlp_server::siem_connector::SiemConnector;
 use dlp_server::AppState;
 
 /// Loads the LDAP configuration from the SQLite database.
 ///
 /// Returns `None` if the config cannot be read (DB not yet initialized).
-fn load_ldap_config(db: &Database) -> Option<LdapConfig> {
-    let conn = db.conn().lock();
+fn load_ldap_config(pool: &db::Pool) -> Option<LdapConfig> {
+    let conn = pool.get().ok()?;
     conn.query_row(
         "SELECT ldap_url, base_dn, require_tls, cache_ttl_secs, vpn_subnets \
          FROM ldap_config WHERE id = 1",
@@ -164,24 +164,24 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .with_context(|| format!("invalid bind address: '{}'", config.bind_addr))?;
 
-    // Open (or create) the SQLite database.
-    let db = Arc::new(Database::open(&config.db_path)?);
-    info!(path = %config.db_path, "database opened");
+    // Open (or create) the SQLite database pool.
+    let pool = Arc::new(db::new_pool(&config.db_path)?);
+    info!(path = %config.db_path, "database pool opened");
 
     // Provision the admin user on first run.
-    ensure_admin_user(&db, config.init_admin_password.as_deref())?;
+    ensure_admin_user(&pool, config.init_admin_password.as_deref())?;
 
     // Initialise the SIEM relay connector. Configuration is loaded on
     // every relay call from the `siem_config` table (hot-reload).
-    let siem = SiemConnector::new(Arc::clone(&db));
+    let siem = SiemConnector::new(Arc::clone(&pool));
 
     // Initialise the alert router. Configuration is loaded on every
     // send_alert call from the `alert_router_config` table (hot-reload).
-    let alert = AlertRouter::new(Arc::clone(&db));
+    let alert = AlertRouter::new(Arc::clone(&pool));
 
     // Attempt to construct the AD client from DB config.
     // Fail-open: server starts even if AD is unreachable.
-    let ad_client = match load_ldap_config(&db) {
+    let ad_client = match load_ldap_config(&pool) {
         Some(config) => {
             tracing::info!(ldap_url = %config.ldap_url, base_dn = %config.base_dn, "initializing AD client");
             match AdClient::new(config).await {
@@ -197,7 +197,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build shared application state.
     let state = Arc::new(AppState {
-        db,
+        pool,
         siem,
         alert,
         ad: ad_client,
@@ -228,8 +228,8 @@ async fn main() -> anyhow::Result<()> {
 ///   user non-interactively (for installer / scripted setup).
 /// - Otherwise, prompts interactively for the password on the terminal.
 /// - If an admin user already exists, this is a no-op.
-fn ensure_admin_user(db: &Database, init_password: Option<&str>) -> anyhow::Result<()> {
-    if admin_auth::has_admin_users(db)? {
+fn ensure_admin_user(pool: &db::Pool, init_password: Option<&str>) -> anyhow::Result<()> {
+    if admin_auth::has_admin_users(pool)? {
         return Ok(());
     }
 
@@ -240,7 +240,7 @@ fn ensure_admin_user(db: &Database, init_password: Option<&str>) -> anyhow::Resu
         None => prompt_admin_password()?,
     };
 
-    admin_auth::create_admin_user(db, "dlp-admin", &password)?;
+    admin_auth::create_admin_user(pool, "dlp-admin", &password)?;
     println!("Admin user 'dlp-admin' created successfully.");
     Ok(())
 }
