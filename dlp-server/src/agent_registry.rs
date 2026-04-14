@@ -90,9 +90,9 @@ pub async fn register_agent(
     let registered_at = now.clone();
 
     // Wrap synchronous SQLite access in spawn_blocking.
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let info = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute(
             "INSERT INTO agents \
                 (agent_id, hostname, ip, os_version, agent_version, \
@@ -152,10 +152,10 @@ pub async fn heartbeat(
 ) -> Result<StatusCode, AppError> {
     let now = Utc::now().to_rfc3339();
     let id = agent_id.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
 
     let rows_updated = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute(
             "UPDATE agents SET last_heartbeat = ?1, status = 'online' \
              WHERE agent_id = ?2",
@@ -182,9 +182,9 @@ pub async fn heartbeat(
 pub async fn list_agents(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<AgentInfoResponse>>, AppError> {
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let agents = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         let mut stmt = conn.prepare(
             "SELECT agent_id, hostname, ip, os_version, \
                     agent_version, last_heartbeat, status, \
@@ -225,10 +225,10 @@ pub async fn get_agent(
     Path(agent_id): Path<String>,
 ) -> Result<Json<AgentInfoResponse>, AppError> {
     let id = agent_id.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
 
     let agent = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.query_row(
             "SELECT agent_id, hostname, ip, os_version, \
                     agent_version, last_heartbeat, status, \
@@ -273,10 +273,10 @@ pub fn spawn_offline_sweeper(state: Arc<AppState>) {
         loop {
             interval.tick().await;
 
-            let db = Arc::clone(&state.db);
+            let pool = Arc::clone(&state.pool);
             let result = tokio::task::spawn_blocking(move || {
                 let cutoff = (Utc::now() - chrono::Duration::seconds(90)).to_rfc3339();
-                let conn = db.conn().lock();
+                let conn = pool.get().map_err(AppError::from)?;
                 conn.execute(
                     "UPDATE agents SET status = 'offline' \
                      WHERE status = 'online' \
