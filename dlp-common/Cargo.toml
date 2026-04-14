@@ -12,6 +12,10 @@ serde_json = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+ldap3 = { workspace = true }
+ipnetwork = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

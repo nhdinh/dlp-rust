@@ -22,3 +22,4 @@ uuid = { version = "1", features = ["v4"] }
 bcrypt = "0.16"
 notify = "7"
 ldap3 = "0.11"
+ipnetwork = "0.20"
