@@ -60,6 +60,8 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Gdi",
     # clipboard/listener.rs: GetModuleHandleW
     "Win32_System_LibraryLoader",
+    # ad_client.rs: DsGetSiteNameW (AD site lookup)
+    "Win32_Networking_ActiveDirectory",
 ] }
 
 # Password hashing: bcrypt for dlp-admin stop-password verification
