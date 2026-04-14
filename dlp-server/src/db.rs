@@ -332,4 +332,46 @@ mod tests {
         assert_eq!(smtp_enabled, 0, "smtp_enabled default must be 0");
         assert_eq!(webhook_enabled, 0, "webhook_enabled default must be 0");
     }
+
+    #[test]
+    fn test_ldap_config_seed_row() {
+        let db = Database::open(":memory:").expect("open in-memory db");
+        let conn = db.conn().lock();
+
+        // Table must exist.
+        let tables: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master \
+                 WHERE type='table' AND name='ldap_config'",
+            )
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            tables.contains(&"ldap_config".to_string()),
+            "ldap_config table must exist after init"
+        );
+
+        // Seed row must exist.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ldap_config", [], |r| r.get(0))
+            .expect("count ldap_config rows");
+        assert_eq!(count, 1, "ldap_config must have exactly one seed row");
+
+        // Defaults: TLS required, 5-minute cache.
+        let (ldap_url, base_dn, require_tls, cache_ttl_secs): (String, String, i64, i64) = conn
+            .query_row(
+                "SELECT ldap_url, base_dn, require_tls, cache_ttl_secs \
+                 FROM ldap_config WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("read seed row");
+        assert_eq!(ldap_url, "ldaps://dc.corp.internal:636", "default ldap_url");
+        assert_eq!(require_tls, 1, "require_tls default must be 1");
+        assert_eq!(cache_ttl_secs, 300, "cache_ttl_secs default must be 300");
+        assert_eq!(base_dn, "", "default base_dn must be empty string");
+    }
 }
