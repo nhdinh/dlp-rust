@@ -23,12 +23,12 @@ use dlp_common::AdClient;
 
 /// Shared application state passed to all HTTP handlers via axum's `State` extractor.
 ///
-/// Wraps the database, SIEM connector, alert router, and AD client so handlers
-/// can access them through a single `Arc<AppState>`.
+/// Wraps the database connection pool, SIEM connector, alert router, and AD
+/// client so handlers can access them through a single `Arc<AppState>`.
 #[derive(Clone)]
 pub struct AppState {
-    /// Shared database handle for SQLite operations.
-    pub db: Arc<db::Database>,
+    /// Shared SQLite connection pool.
+    pub pool: db::Pool,
     /// SIEM relay connector (Splunk HEC / ELK).
     pub siem: siem_connector::SiemConnector,
     /// Alert router for DenyWithAlert email/webhook notifications.
@@ -41,7 +41,7 @@ pub struct AppState {
 impl std::fmt::Debug for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppState")
-            .field("db", &self.db)
+            .field("pool", &self.pool)
             .field("siem", &self.siem)
             .field("alert", &self.alert)
             .field(
@@ -130,5 +130,12 @@ impl IntoResponse for AppError {
 
         let body = serde_json::json!({ "error": message });
         (status, axum::Json(body)).into_response()
+    }
+}
+
+/// Maps pool acquisition errors to internal server errors.
+impl From<r2d2::PoolError> for AppError {
+    fn from(e: r2d2::PoolError) -> Self {
+        AppError::Internal(anyhow::anyhow!("pool error: {e}"))
     }
 }
