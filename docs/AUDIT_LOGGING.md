@@ -21,7 +21,7 @@ InterceptionEngine / ClipboardListener
         ▼
 run_event_loop / process_clipboard_text
         │
-        ├──► OfflineManager::evaluate (Policy Engine or cache)
+        ├──► OfflineManager::evaluate (dlp-server or cache)
         │
         ├──► AuditEmitter::emit  ──► C:\ProgramData\DLP\logs\audit.jsonl
         │                                  (50 MB per file, 9 generations)
