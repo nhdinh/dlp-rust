@@ -32,6 +32,11 @@ bcrypt = "0.16"
 # HTTP client (SIEM relay, policy sync, alerts)
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
+# LDAP client for Active Directory integration (Phase 7).
+# Only needed for AdClient construction in main.rs — admin_api and db
+# use only the serde payload types, not ldap3 directly.
+ldap3 = "0.11"
+
 # URL parsing (TM-02 webhook_url SSRF validation in admin_api)
 url = "2"
 
