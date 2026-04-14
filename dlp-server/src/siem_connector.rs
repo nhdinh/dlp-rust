@@ -11,8 +11,6 @@ use dlp_common::AuditEvent;
 use reqwest::Client;
 use serde::Serialize;
 
-use crate::db::Database;
-
 /// Splunk HTTP Event Collector configuration.
 #[derive(Debug, Clone)]
 pub struct SplunkConfig {
@@ -47,14 +45,14 @@ struct SiemConfigRow {
 
 /// SIEM relay that forwards audit events to Splunk and/or ELK.
 ///
-/// Construct via `SiemConnector::new(db)`. On every `relay_events` call,
+/// Construct via `SiemConnector::new(pool)`. On every `relay_events` call,
 /// the connector re-reads the single row from the `siem_config` table so
 /// that configuration changes made via the admin API take effect
 /// immediately without restarting the server.
 #[derive(Debug, Clone)]
 pub struct SiemConnector {
-    /// Shared database handle for reading the SIEM config row.
-    db: Arc<Database>,
+    /// Shared SQLite connection pool.
+    pool: Arc<db::Pool>,
     /// Shared HTTP client for outbound requests.
     client: Client,
 }
@@ -91,15 +89,22 @@ pub enum SiemError {
     },
 }
 
+/// Maps pool acquisition errors to database errors.
+impl From<r2d2::PoolError> for SiemError {
+    fn from(e: r2d2::PoolError) -> Self {
+        SiemError::Database(e.into())
+    }
+}
+
 impl SiemConnector {
-    /// Constructs a `SiemConnector` backed by the given database.
+    /// Constructs a `SiemConnector` backed by the given connection pool.
     ///
     /// The connector reads SIEM configuration from the `siem_config`
     /// table on each `relay_events` call. No caching is performed, so
     /// admin updates via the API take effect on the next relay.
-    pub fn new(db: Arc<Database>) -> Self {
+    pub fn new(pool: Arc<db::Pool>) -> Self {
         Self {
-            db,
+            pool,
             client: Client::new(),
         }
     }
@@ -110,7 +115,7 @@ impl SiemConnector {
     ///
     /// Returns [`SiemError::Database`] if the row cannot be read.
     fn load_config(&self) -> Result<SiemConfigRow, SiemError> {
-        let conn = self.db.conn().lock();
+        let conn = self.pool.get().map_err(SiemError::from)?;
         let row = conn.query_row(
             "SELECT splunk_url, splunk_token, splunk_enabled, \
                     elk_url, elk_index, elk_api_key, elk_enabled \
@@ -297,8 +302,9 @@ mod tests {
     fn test_new_with_in_memory_db() {
         // `SiemConnector::new` should succeed with a fresh in-memory DB
         // and the seed row inserted by `init_tables`.
-        let db = Arc::new(Database::open(":memory:").expect("open db"));
-        let connector = SiemConnector::new(Arc::clone(&db));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let connector = SiemConnector::new(Arc::clone(&pool));
         // Loading config from the seed row should yield disabled backends.
         let row = connector.load_config().expect("load config");
         assert!(!row.splunk_enabled);
@@ -309,8 +315,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_relay_events_empty_is_noop() {
-        let db = Arc::new(Database::open(":memory:").expect("open db"));
-        let connector = SiemConnector::new(db);
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let connector = SiemConnector::new(pool);
         // Empty slice must short-circuit before touching the DB/network.
         connector
             .relay_events(&[])
