@@ -160,6 +160,29 @@ pub struct AlertRouterConfigPayload {
     pub webhook_enabled: bool,
 }
 
+// ---------------------------------------------------------------------------
+// LDAP config request / response types
+// ---------------------------------------------------------------------------
+
+/// Read/write payload for LDAP / Active Directory connection configuration.
+///
+/// Represents the editable columns of the single row in the `ldap_config`
+/// table (excluding `id` and `updated_at`). Both the `GET /admin/ldap-config`
+/// response body and the `PUT /admin/ldap-config` request body use this shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LdapConfigPayload {
+    /// LDAP URL, e.g. `ldaps://dc.corp.internal:636`.
+    pub ldap_url: String,
+    /// Search base DN, e.g. `DC=corp,DC=internal`.
+    pub base_dn: String,
+    /// Whether LDAPS/TLS is required (plaintext connections rejected when true).
+    pub require_tls: bool,
+    /// Group membership cache TTL in seconds (min 60, max 3600, default 300).
+    pub cache_ttl_secs: u64,
+    /// Comma-separated VPN subnet CIDRs for location detection.
+    pub vpn_subnets: String,
+}
+
 /// Read/write payload for agent configuration distribution.
 ///
 /// Used by `GET/PUT /admin/agent-config` (global default) and
@@ -353,6 +376,8 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/admin/alert-config", get(get_alert_config_handler))
         .route("/admin/alert-config", put(update_alert_config_handler))
         .route("/admin/alert-config/test", post(test_alert_config_handler))
+        .route("/admin/ldap-config", get(get_ldap_config_handler))
+        .route("/admin/ldap-config", put(update_ldap_config_handler))
         .route(
             "/admin/agent-config",
             get(get_global_agent_config_handler).put(update_global_agent_config_handler),
@@ -1097,6 +1122,93 @@ async fn get_agent_config_for_agent(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
+    Ok(Json(payload))
+}
+
+// ---------------------------------------------------------------------------
+// LDAP config handlers
+// ---------------------------------------------------------------------------
+
+/// `GET /admin/ldap-config` — returns the current LDAP connection configuration.
+///
+/// Reads the single row from `ldap_config` and returns it as a JSON
+/// [`LdapConfigPayload`]. The row is guaranteed to exist because it is
+/// seeded during `Database::open`.
+async fn get_ldap_config_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<LdapConfigPayload>, AppError> {
+    let db = Arc::clone(&state.db);
+    let payload = tokio::task::spawn_blocking(move || {
+        let conn = db.conn().lock();
+        conn.query_row(
+            "SELECT ldap_url, base_dn, require_tls, cache_ttl_secs, vpn_subnets \
+             FROM ldap_config WHERE id = 1",
+            [],
+            |row| {
+                Ok(LdapConfigPayload {
+                    ldap_url: row.get(0)?,
+                    base_dn: row.get(1)?,
+                    require_tls: row.get::<_, i64>(2)? != 0,
+                    cache_ttl_secs: row.get::<_, i64>(3)? as u64,
+                    vpn_subnets: row.get(4)?,
+                })
+            },
+        )
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(payload))
+}
+
+/// `PUT /admin/ldap-config` — updates LDAP connection configuration.
+///
+/// Overwrites the single row in `ldap_config` with the provided values
+/// and stamps `updated_at` with the current time. Returns the payload
+/// that was written so clients can refresh their local copy.
+///
+/// Validates that `cache_ttl_secs` is in the range [60, 3600].
+async fn update_ldap_config_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<LdapConfigPayload>,
+) -> Result<Json<LdapConfigPayload>, AppError> {
+    if payload.cache_ttl_secs < 60 {
+        return Err(AppError::BadRequest(
+            "cache_ttl_secs must be at least 60".to_string(),
+        ));
+    }
+    if payload.cache_ttl_secs > 3600 {
+        return Err(AppError::BadRequest(
+            "cache_ttl_secs must be at most 3600".to_string(),
+        ));
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let p = payload.clone();
+    let db = Arc::clone(&state.db);
+
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let conn = db.conn().lock();
+        conn.execute(
+            "UPDATE ldap_config SET \
+                ldap_url = ?1, base_dn = ?2, require_tls = ?3, \
+                cache_ttl_secs = ?4, vpn_subnets = ?5, updated_at = ?6 \
+             WHERE id = 1",
+            rusqlite::params![
+                p.ldap_url,
+                p.base_dn,
+                p.require_tls as i64,
+                p.cache_ttl_secs as i64,
+                p.vpn_subnets,
+                now,
+            ],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!("LDAP config updated");
     Ok(Json(payload))
 }
 

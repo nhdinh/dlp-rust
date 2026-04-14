@@ -1,8 +1,8 @@
 //! Active Directory / LDAP client for ABAC attribute resolution (Phase 7).
 //!
 //! Full implementation delivered in Plan 01 of Phase 7. This stub provides
-//! enough types for `dlp-server` (Plan 02) to compile without depending on the
-//! ad_client logic itself.
+//! enough types for `dlp-server` (Plan 02) to compile without depending on
+//! the ad_client logic itself.
 
 use std::time::Duration;
 
@@ -134,8 +134,7 @@ impl AdClient {
     /// Does NOT connect immediately — connections are established lazily
     /// on first use.
     pub fn new(config: LdapConfig) -> Self {
-        let cache_ttl_secs = config.cache_ttl_secs.max(60).min(3600);
-        let _ = GroupCache::new(cache_ttl_secs);
+        let _ = GroupCache::new(config.cache_ttl_secs.max(60).min(3600));
         Self { config }
     }
 
