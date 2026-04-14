@@ -411,9 +411,9 @@ async fn health() -> Json<HealthResponse> {
 /// `GET /ready` — readiness probe.
 async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<HealthResponse>, AppError> {
     // Verify the database is accessible.
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute_batch("SELECT 1")
     })
     .await
@@ -433,9 +433,9 @@ async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<HealthResponse
 async fn list_policies(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<PolicyResponse>>, AppError> {
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let policies = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         let mut stmt = conn.prepare(
             "SELECT id, name, description, priority, conditions, \
                     action, enabled, version, updated_at \
@@ -475,10 +475,10 @@ async fn get_policy(
     Path(policy_id): Path<String>,
 ) -> Result<Json<PolicyResponse>, AppError> {
     let id = policy_id.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
 
     let result = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.query_row(
             "SELECT id, name, description, priority, conditions, \
                     action, enabled, version, updated_at \
@@ -543,9 +543,9 @@ async fn create_policy(
     };
 
     let r = resp.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute(
             "INSERT INTO policies \
                 (id, name, description, priority, conditions, \
@@ -579,9 +579,9 @@ async fn create_policy(
         "server".to_string(),
         0,
     );
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         audit_store::store_events_sync(&conn, &[audit_event])
     })
     .await
@@ -628,10 +628,10 @@ async fn update_policy(
     let payload_action = payload.action.clone();
     let payload_enabled = payload.enabled;
     let payload_conditions = payload.conditions.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
 
     let resp = tokio::task::spawn_blocking(move || -> Result<PolicyResponse, AppError> {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
 
         // Increment the version number atomically.
         let rows = conn.execute(
@@ -690,9 +690,9 @@ async fn update_policy(
         "server".to_string(),
         0,
     );
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         audit_store::store_events_sync(&conn, &[audit_event])
     })
     .await
@@ -713,10 +713,10 @@ async fn delete_policy(
         .map_err(AppError::from)?
         .0;
     let id = policy_id.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
 
     let rows = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute("DELETE FROM policies WHERE id = ?1", rusqlite::params![id])
     })
     .await
@@ -738,9 +738,9 @@ async fn delete_policy(
         "server".to_string(),
         0,
     );
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         audit_store::store_events_sync(&conn, &[audit_event])
     })
     .await
@@ -771,10 +771,10 @@ async fn set_agent_auth_hash(
     let now = Utc::now().to_rfc3339();
     let hash = payload.hash.clone();
     let ts = now.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
 
     tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute(
             "INSERT INTO agent_credentials (key, value, updated_at) \
              VALUES ('DLPAuthHash', ?1, ?2) \
@@ -799,9 +799,9 @@ async fn set_agent_auth_hash(
 async fn get_agent_auth_hash(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AuthHashResponse>, AppError> {
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let result = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.query_row(
             "SELECT value, updated_at FROM agent_credentials WHERE key = 'DLPAuthHash'",
             [],
@@ -828,13 +828,13 @@ async fn get_agent_auth_hash(
 ///
 /// Reads the single row from `siem_config` and returns it as a JSON
 /// [`SiemConfigPayload`]. The row is guaranteed to exist because it is
-/// seeded during `Database::open`.
+/// seeded during pool initialization.
 async fn get_siem_config_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SiemConfigPayload>, AppError> {
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let payload = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.query_row(
             "SELECT splunk_url, splunk_token, splunk_enabled, \
                     elk_url, elk_index, elk_api_key, elk_enabled \
@@ -870,10 +870,10 @@ async fn update_siem_config_handler(
 ) -> Result<Json<SiemConfigPayload>, AppError> {
     let now = Utc::now().to_rfc3339();
     let p = payload.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
 
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute(
             "UPDATE siem_config SET \
                 splunk_url = ?1, splunk_token = ?2, splunk_enabled = ?3, \
@@ -908,7 +908,7 @@ async fn update_siem_config_handler(
 ///
 /// Reads the single row from `alert_router_config` and returns it as a JSON
 /// [`AlertRouterConfigPayload`]. The row is guaranteed to exist because it
-/// is seeded during `Database::open`.
+/// is seeded during pool initialization.
 ///
 /// ME-01: `smtp_password` and `webhook_secret` are replaced with
 /// [`ALERT_SECRET_MASK`] in the response. Empty stored values are returned
@@ -918,10 +918,10 @@ async fn update_siem_config_handler(
 async fn get_alert_config_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AlertRouterConfigPayload>, AppError> {
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let payload =
         tokio::task::spawn_blocking(move || -> Result<AlertRouterConfigPayload, AppError> {
-            let conn = db.conn().lock();
+            let conn = pool.get().map_err(AppError::from)?;
             let payload = conn.query_row(
                 "SELECT smtp_host, smtp_port, smtp_username, smtp_password, \
                         smtp_from, smtp_to, smtp_enabled, \
@@ -996,7 +996,7 @@ async fn update_alert_config_handler(
 
     let now = Utc::now().to_rfc3339();
     let p = payload.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
 
     // ME-01: if the client echoed back the masked sentinel from a prior GET,
     // preserve the stored secret instead of overwriting the DB column with
@@ -1005,7 +1005,7 @@ async fn update_alert_config_handler(
     // a TOCTOU window and keeps the secret-preservation atomic.
     let response_payload = payload;
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
 
         // Resolve masked secrets against the currently stored row.
         let (stored_smtp_password, stored_webhook_secret): (String, String) = conn.query_row(
@@ -1103,9 +1103,9 @@ async fn get_agent_config_for_agent(
     Path(agent_id): Path<String>,
 ) -> Result<Json<AgentConfigPayload>, AppError> {
     let id = agent_id.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let payload = tokio::task::spawn_blocking(move || -> Result<AgentConfigPayload, AppError> {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         // Try per-agent override first.
         let result = conn.query_row(
             "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
@@ -1142,13 +1142,13 @@ async fn get_agent_config_for_agent(
 ///
 /// Reads the single row from `ldap_config` and returns it as a JSON
 /// [`LdapConfigPayload`]. The row is guaranteed to exist because it is
-/// seeded during `Database::open`.
+/// seeded during pool initialization.
 async fn get_ldap_config_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<LdapConfigPayload>, AppError> {
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let payload = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.query_row(
             "SELECT ldap_url, base_dn, require_tls, cache_ttl_secs, vpn_subnets \
              FROM ldap_config WHERE id = 1",
@@ -1194,10 +1194,10 @@ async fn update_ldap_config_handler(
 
     let now = Utc::now().to_rfc3339();
     let p = payload.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
 
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute(
             "UPDATE ldap_config SET \
                 ldap_url = ?1, base_dn = ?2, require_tls = ?3, \
@@ -1228,9 +1228,9 @@ async fn update_ldap_config_handler(
 async fn get_global_agent_config_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AgentConfigPayload>, AppError> {
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let payload = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.query_row(
             "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
              FROM global_agent_config WHERE id = 1",
@@ -1265,11 +1265,11 @@ async fn update_global_agent_config_handler(
 
     let now = Utc::now().to_rfc3339();
     let p = payload.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let paths_json = serde_json::to_string(&p.monitored_paths)?;
 
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute(
             "UPDATE global_agent_config SET \
                 monitored_paths = ?1, heartbeat_interval_secs = ?2, \
@@ -1299,9 +1299,9 @@ async fn get_agent_config_override_handler(
     Path(agent_id): Path<String>,
 ) -> Result<Json<AgentConfigPayload>, AppError> {
     let id = agent_id.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let result = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.query_row(
             "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
              FROM agent_config_overrides WHERE agent_id = ?1",
@@ -1343,11 +1343,11 @@ async fn update_agent_config_override_handler(
     let now = Utc::now().to_rfc3339();
     let p = payload.clone();
     let id = agent_id.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     let paths_json = serde_json::to_string(&p.monitored_paths)?;
 
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute(
             "INSERT OR REPLACE INTO agent_config_overrides \
                 (agent_id, monitored_paths, heartbeat_interval_secs, offline_cache_enabled, updated_at) \
@@ -1378,10 +1378,10 @@ async fn delete_agent_config_override_handler(
     Path(agent_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     let id = agent_id.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
 
     let rows = tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute(
             "DELETE FROM agent_config_overrides WHERE agent_id = ?1",
             rusqlite::params![id],
@@ -1631,11 +1631,12 @@ mod tests {
     /// ready for `oneshot` requests.
     fn spawn_admin_app() -> axum::Router {
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
-        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let state = Arc::new(AppState {
-            db,
+            pool,
             siem,
             alert,
             ad: None,
@@ -1671,11 +1672,12 @@ mod tests {
         // JWT secret must be set for the middleware to initialise. OnceLock
         // silently ignores duplicate set calls, so this is safe across tests.
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
-        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let state = Arc::new(AppState {
-            db,
+            pool,
             siem,
             alert,
             ad: None,
@@ -1703,11 +1705,12 @@ mod tests {
         // Use the shared constant so all cross-module tests agree on the
         // secret stored in the process-wide OnceLock.
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
-        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let state = Arc::new(AppState {
-            db,
+            pool,
             siem,
             alert,
             ad: None,
@@ -1788,11 +1791,12 @@ mod tests {
         use tower::ServiceExt;
 
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
-        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let state = Arc::new(AppState {
-            db: Arc::clone(&db),
+            pool: Arc::clone(&pool),
             siem,
             alert,
             ad: None,
@@ -1864,7 +1868,7 @@ mod tests {
 
         // Step 4: Read the DB directly — stored secrets MUST be the original
         // plaintext values, not the literal mask string.
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         let (stored_smtp_password, stored_webhook_secret): (String, String) = conn
             .query_row(
                 "SELECT smtp_password, webhook_secret FROM alert_router_config WHERE id = 1",
@@ -1883,15 +1887,15 @@ mod tests {
     #[tokio::test]
     async fn test_db_insert_select_roundtrip_via_spawn_blocking() {
         // This test verifies that spawn_blocking DB writes are visible to
-        // subsequent spawn_blocking reads on the same Arc<Database>.
-        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
-        let db2 = Arc::clone(&db);
+        // subsequent spawn_blocking reads on the same Arc<pool>.
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let pool2 = Arc::clone(&pool);
 
         tokio::task::spawn_blocking(move || {
-            let conn = db.conn().lock();
+            let conn = pool.get().map_err(AppError::from)?;
             conn.execute(
-                "INSERT INTO policies (id, name, description, priority, conditions, \
-                 action, enabled, version, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
+                "INSERT INTO policies (id, name, description, priority, conditions,                  action, enabled, version, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
                 rusqlite::params![
                     "diag-001",
                     "Diag Test",
@@ -1909,7 +1913,7 @@ mod tests {
         .expect("execute");
 
         let count: i64 = tokio::task::spawn_blocking(move || {
-            let conn = db2.conn().lock();
+            let conn = pool2.get().map_err(AppError::from)?;
             conn.query_row(
                 "SELECT COUNT(*) FROM policies WHERE id = ?1",
                 rusqlite::params!["diag-001"],
@@ -1922,9 +1926,10 @@ mod tests {
 
         assert_eq!(
             count, 1,
-            "INSERT must be visible to subsequent SELECT via same Arc<Database>"
+            "INSERT must be visible to subsequent SELECT via same Arc<pool>"
         );
     }
+
 
     // Verify POST via router → direct DB read round-trip.
     #[tokio::test]
@@ -1934,12 +1939,13 @@ mod tests {
         use tower::ServiceExt;
 
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
-        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
-        let db_read = Arc::clone(&db);
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let pool_read = Arc::clone(&pool);
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let state = Arc::new(AppState {
-            db,
+            pool,
             siem,
             alert,
             ad: None,
@@ -1966,9 +1972,9 @@ mod tests {
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::CREATED);
 
-        // Now directly read from the DB handle (not via router).
+        // Now directly read from the pool (not via router).
         let count: i64 = tokio::task::spawn_blocking(move || {
-            let conn = db_read.conn().lock();
+            let conn = pool_read.get().map_err(AppError::from)?;
             conn.query_row(
                 "SELECT COUNT(*) FROM policies WHERE id = ?1",
                 rusqlite::params!["diag-router-001"],
@@ -2675,8 +2681,8 @@ mod tests {
     // ── Task 06-01 / Task 2: Agent config handler integration tests ───────────
 
     /// Register a test agent directly in the DB so agent_config_overrides FK is satisfied.
-    fn seed_agent(db: &crate::db::Database, agent_id: &str) {
-        let conn = db.conn().lock();
+    fn seed_agent(pool: &crate::db::Pool, agent_id: &str) {
+        let conn = pool.get().expect("acquire connection");
         conn.execute(
             "INSERT OR IGNORE INTO agents \
              (agent_id, hostname, ip, os_version, agent_version, last_heartbeat, status, registered_at) \
@@ -2693,12 +2699,13 @@ mod tests {
         use tower::ServiceExt;
 
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
-        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
-        seed_agent(&db, "agent-fallback-01");
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        seed_agent(&pool, "agent-fallback-01");
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let state = Arc::new(AppState {
-            db,
+            pool,
             siem,
             alert,
             ad: None,
@@ -2797,12 +2804,13 @@ mod tests {
         use tower::ServiceExt;
 
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
-        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
-        seed_agent(&db, "agent-override-01");
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        seed_agent(&pool, "agent-override-01");
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let state = Arc::new(AppState {
-            db,
+            pool,
             siem,
             alert,
             ad: None,
@@ -2853,12 +2861,13 @@ mod tests {
         use tower::ServiceExt;
 
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
-        let db = Arc::new(crate::db::Database::open(":memory:").expect("open db"));
-        seed_agent(&db, "agent-del-01");
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&db));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&db));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        seed_agent(&pool, "agent-del-01");
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let state = Arc::new(AppState {
-            db,
+            pool,
             siem,
             alert,
             ad: None,
