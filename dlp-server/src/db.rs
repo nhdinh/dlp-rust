@@ -121,6 +121,18 @@ impl Database {
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS policies (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                description TEXT,
+                priority    INTEGER NOT NULL,
+                conditions  TEXT NOT NULL,
+                action      TEXT NOT NULL,
+                enabled     INTEGER NOT NULL DEFAULT 1,
+                version     INTEGER NOT NULL DEFAULT 1,
+                updated_at  TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS siem_config (
                 id              INTEGER PRIMARY KEY CHECK (id = 1),
                 splunk_url      TEXT NOT NULL DEFAULT '',
