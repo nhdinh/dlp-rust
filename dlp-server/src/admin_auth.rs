@@ -19,7 +19,6 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use serde::{Deserialize, Serialize};
 
 use crate::audit_store;
-use crate::db::Database;
 use crate::AppError;
 use crate::AppState;
 use dlp_common;
@@ -163,10 +162,10 @@ pub async fn login(
 
     // Fetch the stored password hash from SQLite.
     let hash: String = {
-        let db = Arc::clone(&state.db);
+        let pool = Arc::clone(&state.pool);
         let uname = username.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = db.conn().lock();
+            let conn = pool.get().map_err(AppError::from)?;
             conn.query_row(
                 "SELECT password_hash FROM admin_users \
                  WHERE username = ?1",
@@ -258,10 +257,10 @@ pub async fn change_password(
     }
 
     // Verify the current password.
-    let db2 = Arc::clone(&state.db);
+    let pool2 = Arc::clone(&state.pool);
     let uname = username.clone();
     let current_hash: String = tokio::task::spawn_blocking(move || {
-        let conn = db2.conn().lock();
+        let conn = pool2.get().map_err(AppError::from)?;
         conn.query_row(
             "SELECT password_hash FROM admin_users WHERE username = ?1",
             rusqlite::params![uname],
@@ -293,9 +292,9 @@ pub async fn change_password(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("bcrypt error: {e}")))?;
 
     let uname = username.clone();
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
+        let conn = pool.get().map_err(AppError::from)?;
         conn.execute(
             "UPDATE admin_users SET password_hash = ?1 WHERE username = ?2",
             rusqlite::params![new_hash, uname],
@@ -316,10 +315,10 @@ pub async fn change_password(
         "server".to_string(),
         0,
     );
-    let db = Arc::clone(&state.db);
+    let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || {
-        let conn = db.conn().lock();
-        audit_store::store_events_sync(&conn, &[audit_event])
+        let conn = pool.get().map_err(AppError::from)?;
+        audit_store::store_events_sync(&*conn, &[audit_event])
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -336,8 +335,8 @@ pub async fn change_password(
 ///
 /// Called during server startup to decide whether to prompt for initial
 /// admin credentials.
-pub fn has_admin_users(db: &Database) -> anyhow::Result<bool> {
-    let conn = db.conn().lock();
+pub fn has_admin_users(pool: &crate::db::Pool) -> anyhow::Result<bool> {
+    let conn = pool.get()?;
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM admin_users", [], |row| row.get(0))
         .map_err(|e| anyhow::anyhow!("failed to query admin_users: {e}"))?;
@@ -352,12 +351,12 @@ pub fn has_admin_users(db: &Database) -> anyhow::Result<bool> {
 /// # Errors
 ///
 /// Returns an error if bcrypt hashing or the database insert fails.
-pub fn create_admin_user(db: &Database, username: &str, password: &str) -> anyhow::Result<()> {
+pub fn create_admin_user(pool: &crate::db::Pool, username: &str, password: &str) -> anyhow::Result<()> {
     let hash =
         bcrypt::hash(password, 12).map_err(|e| anyhow::anyhow!("bcrypt hash failed: {e}"))?;
     let now = Utc::now().to_rfc3339();
 
-    let conn = db.conn().lock();
+    let conn = pool.get()?;
     conn.execute(
         "INSERT INTO admin_users (username, password_hash, created_at) \
          VALUES (?1, ?2, ?3)",
