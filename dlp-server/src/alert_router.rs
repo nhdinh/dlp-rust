@@ -26,8 +26,6 @@ use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use reqwest::Client;
 
-use crate::db::Database;
-
 /// SMTP email alert configuration.
 #[derive(Debug, Clone)]
 pub struct SmtpConfig {
@@ -71,15 +69,15 @@ struct AlertRouterConfigRow {
 
 /// Routes real-time alerts to email and/or webhook destinations.
 ///
-/// Construct via [`AlertRouter::new`] with an `Arc<Database>`. On every
+/// Construct via [`AlertRouter::new`] with an `Arc<db::Pool>`. On every
 /// [`AlertRouter::send_alert`] call, the router re-reads the single row
 /// from the `alert_router_config` table so that configuration changes
 /// made via the admin API take effect immediately without restarting
 /// the server (hot-reload).
 #[derive(Debug, Clone)]
 pub struct AlertRouter {
-    /// Shared database handle for reading the alert router config row.
-    db: Arc<Database>,
+    /// Shared SQLite connection pool.
+    pool: Arc<db::Pool>,
     /// Shared HTTP client for outbound webhook requests.
     client: Client,
 }
@@ -104,8 +102,15 @@ pub enum AlertError {
     Database(#[from] rusqlite::Error),
 }
 
+/// Maps pool acquisition errors to database errors.
+impl From<r2d2::PoolError> for AlertError {
+    fn from(e: r2d2::PoolError) -> Self {
+        AlertError::Database(e.into())
+    }
+}
+
 impl AlertRouter {
-    /// Constructs an `AlertRouter` backed by the given database.
+    /// Constructs an `AlertRouter` backed by the given connection pool.
     ///
     /// The router reads alert configuration from the `alert_router_config`
     /// table on each [`send_alert`](Self::send_alert) call. No caching is
@@ -114,8 +119,8 @@ impl AlertRouter {
     ///
     /// # Arguments
     ///
-    /// * `db` — Shared database handle; the router keeps a clone.
-    pub fn new(db: Arc<Database>) -> Self {
+    /// * `pool` — Shared connection pool; the router keeps a clone.
+    pub fn new(pool: Arc<db::Pool>) -> Self {
         // HI-01: fire-and-forget alert tasks must not pin memory indefinitely on
         // a hung/tarpit webhook endpoint. 5s connect + 10s total is tight enough
         // to cap worst-case task lifetime under DenyWithAlert bursts.
@@ -124,7 +129,7 @@ impl AlertRouter {
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("reqwest client build (static config)");
-        Self { db, client }
+        Self { pool, client }
     }
 
     /// Loads the current alert router configuration row from the database.
@@ -134,7 +139,7 @@ impl AlertRouter {
     /// `spawn_blocking` for a single-row read (matches the rationale in
     /// [`crate::siem_connector::SiemConnector`]'s `load_config`).
     ///
-    /// Note: this method calls `self.db.conn().lock()` directly instead of
+    /// Note: this method calls `self.pool.get()` directly instead of
     /// wrapping in `tokio::task::spawn_blocking` because it is a single-row
     /// SELECT on the fire-and-forget alert path. The admin PUT handler in
     /// `admin_api.rs::update_alert_config_handler` uses `spawn_blocking`
@@ -145,7 +150,7 @@ impl AlertRouter {
     /// Returns [`AlertError::Database`] if the row cannot be read or the
     /// stored `smtp_port` is outside the `u16` range.
     fn load_config(&self) -> Result<AlertRouterConfigRow, AlertError> {
-        let conn = self.db.conn().lock();
+        let conn = self.pool.get().map_err(AlertError::from)?;
         let row = conn.query_row(
             "SELECT smtp_host, smtp_port, smtp_username, smtp_password, \
                     smtp_from, smtp_to, smtp_enabled, \
@@ -439,8 +444,9 @@ mod tests {
     async fn test_alert_router_disabled_default() {
         use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
 
-        let db = Arc::new(Database::open(":memory:").expect("open db"));
-        let router = AlertRouter::new(Arc::clone(&db));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let router = AlertRouter::new(Arc::clone(&pool));
 
         // Seed row has both enabled=0 — send_alert must be a no-op Ok.
         let event = AuditEvent::new(
@@ -462,9 +468,10 @@ mod tests {
 
     #[test]
     fn test_load_config_roundtrip() {
-        let db = Arc::new(Database::open(":memory:").expect("open db"));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         {
-            let conn = db.conn().lock();
+            let conn = pool.get().expect("acquire connection");
             conn.execute(
                 "UPDATE alert_router_config SET \
                     smtp_host = ?1, smtp_port = ?2, smtp_username = ?3, \
@@ -488,7 +495,7 @@ mod tests {
             .expect("update seed row");
         }
 
-        let router = AlertRouter::new(Arc::clone(&db));
+        let router = AlertRouter::new(Arc::clone(&pool));
         let row = router.load_config().expect("load_config");
         assert_eq!(row.smtp_host, "smtp.example.com");
         assert_eq!(row.smtp_port, 465);
@@ -504,16 +511,17 @@ mod tests {
 
     #[test]
     fn test_load_config_port_overflow() {
-        let db = Arc::new(Database::open(":memory:").expect("open db"));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         {
-            let conn = db.conn().lock();
+            let conn = pool.get().expect("acquire connection");
             conn.execute(
                 "UPDATE alert_router_config SET smtp_port = ?1 WHERE id = 1",
                 rusqlite::params![70000_i64],
             )
             .expect("update port to overflow");
         }
-        let router = AlertRouter::new(db);
+        let router = AlertRouter::new(pool);
         let err = router.load_config().expect_err("must fail on u16 overflow");
         assert!(matches!(err, AlertError::Database(_)));
     }
@@ -528,8 +536,9 @@ mod tests {
         // like "not-an-email" fails `Mailbox::parse()` deterministically.
         use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
 
-        let db = Arc::new(Database::open(":memory:").expect("open db"));
-        let router = AlertRouter::new(db);
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let router = AlertRouter::new(pool);
 
         let cfg = SmtpConfig {
             host: "smtp.example.com".to_string(),
@@ -576,8 +585,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_hot_reload() {
-        let db = Arc::new(Database::open(":memory:").expect("open db"));
-        let router = AlertRouter::new(Arc::clone(&db));
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let router = AlertRouter::new(Arc::clone(&pool));
 
         // First read: defaults.
         let row1 = router.load_config().expect("load 1");
@@ -585,7 +595,7 @@ mod tests {
 
         // UPDATE the row.
         {
-            let conn = db.conn().lock();
+            let conn = pool.get().expect("acquire connection");
             conn.execute(
                 "UPDATE alert_router_config SET smtp_host = ?1 WHERE id = 1",
                 rusqlite::params!["updated.example.com"],
