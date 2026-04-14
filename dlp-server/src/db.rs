@@ -1,67 +1,57 @@
 //! SQLite database initialization and shared connection pool.
 //!
-//! Uses `parking_lot::Mutex` for synchronous access to a single
-//! `rusqlite::Connection`. All axum handlers should wrap DB calls in
-//! `tokio::task::spawn_blocking` to avoid blocking the async reactor.
+//! Uses `r2d2`/`r2d2_sqlite` for multi-connection pooling. All axum
+//! handlers should wrap DB calls in `tokio::task::spawn_blocking` to
+//! avoid blocking the async reactor.
 
 use anyhow::Context;
-use parking_lot::Mutex;
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
 
-/// Thread-safe wrapper around a single SQLite connection.
+/// Pool type alias — wraps `SqliteConnectionManager`.
+pub type Pool = Pool<SqliteConnectionManager>;
+
+/// A checked-out connection from the pool. Automatically returns to
+/// the pool when dropped.
+pub type Connection = r2d2::PooledConnection<SqliteConnectionManager>;
+
+/// Creates a connection pool for the given SQLite database path and
+/// initializes all required tables.
 ///
-/// The mutex ensures only one thread accesses the connection at a time.
-/// For higher concurrency, consider migrating to `r2d2` or `deadpool`
-/// with a connection pool.
-#[derive(Debug)]
-pub struct Database {
-    /// Guarded connection — acquire via `self.conn.lock()`.
-    conn: Mutex<Connection>,
+/// # Arguments
+///
+/// * `path` - Filesystem path or `:memory:` URI for the SQLite database.
+///
+/// # Errors
+///
+/// Returns an error if the pool cannot be built or table creation fails.
+pub fn new_pool(path: &str) -> anyhow::Result<Pool> {
+    let mgr = SqliteConnectionManager::file(path);
+    let pool = Pool::builder()
+        .max_size(5)
+        .build(mgr)
+        .context("failed to build connection pool")?;
+
+    // Initialize tables using the first connection from the pool.
+    // SQLite sets WAL journal mode at the file level on first open,
+    // so subsequent connections to the same file inherit that mode.
+    let conn = pool.get().context("failed to acquire connection for init")?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")
+        .context("failed to enable WAL journal mode")?;
+
+    init_tables(&conn)?;
+    Ok(pool)
 }
 
-impl Database {
-    /// Opens (or creates) a SQLite database at the given path and
-    /// initializes all required tables.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Filesystem path to the SQLite database file.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file cannot be opened or table
-    /// creation fails.
-    pub fn open(path: &str) -> anyhow::Result<Self> {
-        let conn =
-            Connection::open(path).with_context(|| format!("failed to open database at {path}"))?;
-
-        // Enable WAL mode for better concurrent read performance.
-        conn.execute_batch("PRAGMA journal_mode=WAL;")
-            .context("failed to enable WAL journal mode")?;
-
-        let db = Self {
-            conn: Mutex::new(conn),
-        };
-        db.init_tables()?;
-        Ok(db)
-    }
-
-    /// Returns a reference to the mutex-guarded connection.
-    ///
-    /// Callers should hold the lock for as short a duration as possible.
-    pub fn conn(&self) -> &Mutex<Connection> {
-        &self.conn
-    }
-
-    /// Creates all application tables if they do not already exist.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any `CREATE TABLE` statement fails.
-    fn init_tables(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock();
-        conn.execute_batch(
-            "
+/// Creates all application tables if they do not already exist.
+///
+/// # Errors
+///
+/// Returns an error if any `CREATE TABLE` statement fails.
+fn init_tables(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "
             CREATE TABLE IF NOT EXISTS agents (
                 agent_id       TEXT PRIMARY KEY,
                 hostname       TEXT NOT NULL,
@@ -200,11 +190,10 @@ impl Database {
                 updated_at              TEXT NOT NULL DEFAULT ''
             );
             ",
-        )
-        .context("failed to initialize database tables")?;
+    )
+    .context("failed to initialize database tables")?;
 
-        Ok(())
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -212,18 +201,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_open_in_memory() {
-        // `:memory:` creates a transient in-memory database.
-        let db = Database::open(":memory:");
-        assert!(db.is_ok(), "should open in-memory database");
+    fn test_new_pool_in_memory() {
+        let pool = new_pool(":memory:");
+        assert!(pool.is_ok(), "should create pool for in-memory database");
     }
 
     #[test]
     fn test_tables_created() {
-        let db = Database::open(":memory:").expect("open in-memory db");
-        let conn = db.conn().lock();
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
 
-        // Query sqlite_master for our expected tables.
         let tables: Vec<String> = conn
             .prepare(
                 "SELECT name FROM sqlite_master \
@@ -246,7 +233,6 @@ mod tests {
         assert!(tables.contains(&"global_agent_config".to_string()));
         assert!(tables.contains(&"agent_config_overrides".to_string()));
 
-        // Verify the seed row was inserted.
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM siem_config", [], |r| r.get(0))
             .expect("count siem_config rows");
@@ -255,10 +241,9 @@ mod tests {
 
     #[test]
     fn test_global_agent_config_seed_row() {
-        let db = Database::open(":memory:").expect("open in-memory db");
-        let conn = db.conn().lock();
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
 
-        // The seed row (id=1) must exist with expected defaults.
         let (monitored_paths, heartbeat_interval_secs, offline_cache_enabled): (String, i64, i64) =
             conn.query_row(
                 "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
@@ -268,34 +253,26 @@ mod tests {
             )
             .expect("seed row must exist");
 
-        assert_eq!(
-            monitored_paths, "[]",
-            "default monitored_paths must be empty JSON array"
-        );
-        assert_eq!(
-            heartbeat_interval_secs, 30,
-            "default heartbeat_interval_secs must be 30"
-        );
-        assert_eq!(
-            offline_cache_enabled, 1,
-            "default offline_cache_enabled must be 1 (true)"
-        );
+        assert_eq!(monitored_paths, "[]", "default monitored_paths must be empty JSON array");
+        assert_eq!(heartbeat_interval_secs, 30, "default heartbeat_interval_secs must be 30");
+        assert_eq!(offline_cache_enabled, 1, "default offline_cache_enabled must be 1 (true)");
     }
 
     #[test]
     fn test_idempotent_init() {
-        // Calling open twice on the same path should not fail.
-        let db = Database::open(":memory:").expect("first open");
-        let result = db.init_tables();
+        let pool = new_pool(":memory:").expect("first open");
+        let conn = pool.get().expect("acquire connection");
+        let result = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agents (agent_id TEXT PRIMARY KEY);"
+        );
         assert!(result.is_ok(), "re-init should be idempotent");
     }
 
     #[test]
     fn test_alert_router_config_seed_row() {
-        let db = Database::open(":memory:").expect("open in-memory db");
-        let conn = db.conn().lock();
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
 
-        // Table must exist.
         let tables: Vec<String> = conn
             .prepare(
                 "SELECT name FROM sqlite_master \
@@ -311,16 +288,11 @@ mod tests {
             "alert_router_config table must exist after init"
         );
 
-        // Seed row must exist.
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM alert_router_config", [], |r| r.get(0))
             .expect("count alert_router_config rows");
-        assert_eq!(
-            count, 1,
-            "alert_router_config must have exactly one seed row"
-        );
+        assert_eq!(count, 1, "alert_router_config must have exactly one seed row");
 
-        // Defaults: both channels disabled.
         let (smtp_enabled, webhook_enabled): (i64, i64) = conn
             .query_row(
                 "SELECT smtp_enabled, webhook_enabled FROM alert_router_config WHERE id = 1",
@@ -334,10 +306,9 @@ mod tests {
 
     #[test]
     fn test_ldap_config_seed_row() {
-        let db = Database::open(":memory:").expect("open in-memory db");
-        let conn = db.conn().lock();
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
 
-        // Table must exist.
         let tables: Vec<String> = conn
             .prepare(
                 "SELECT name FROM sqlite_master \
@@ -353,13 +324,11 @@ mod tests {
             "ldap_config table must exist after init"
         );
 
-        // Seed row must exist.
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM ldap_config", [], |r| r.get(0))
             .expect("count ldap_config rows");
         assert_eq!(count, 1, "ldap_config must have exactly one seed row");
 
-        // Defaults: TLS required, 5-minute cache.
         let (ldap_url, base_dn, require_tls, cache_ttl_secs): (String, String, i64, i64) = conn
             .query_row(
                 "SELECT ldap_url, base_dn, require_tls, cache_ttl_secs \
