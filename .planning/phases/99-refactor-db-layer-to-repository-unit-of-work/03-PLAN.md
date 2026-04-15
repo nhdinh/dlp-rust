@@ -1,3 +1,18 @@
+---
+wave: 3
+depends_on: ["01", "02"]
+files_modified:
+  - dlp-server/src/admin_api.rs
+  - dlp-server/src/db/repositories/policies.rs
+  - dlp-server/src/db/repositories/audit_events.rs
+  - dlp-server/src/db/repositories/credentials.rs
+  - dlp-server/src/db/repositories/siem_config.rs
+  - dlp-server/src/db/repositories/alert_router_config.rs
+  - dlp-server/src/db/repositories/agent_config.rs
+  - dlp-server/src/db/repositories/ldap_config.rs
+autonomous: true
+requirements: []
+---
 # Plan 03: Migrate admin_api.rs (26 Call Sites)
 
 **Phase:** 99 -- Refactor DB Layer to Repository + Unit of Work

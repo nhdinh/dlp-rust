@@ -1,3 +1,25 @@
+---
+wave: 1
+depends_on: []
+files_modified:
+  - dlp-server/src/db.rs
+  - dlp-server/src/db/mod.rs
+  - dlp-server/src/db/unit_of_work.rs
+  - dlp-server/src/db/repositories/mod.rs
+  - dlp-server/src/db/repositories/agents.rs
+  - dlp-server/src/db/repositories/policies.rs
+  - dlp-server/src/db/repositories/audit_events.rs
+  - dlp-server/src/db/repositories/exceptions.rs
+  - dlp-server/src/db/repositories/admin_users.rs
+  - dlp-server/src/db/repositories/ldap_config.rs
+  - dlp-server/src/db/repositories/siem_config.rs
+  - dlp-server/src/db/repositories/alert_router_config.rs
+  - dlp-server/src/db/repositories/agent_config.rs
+  - dlp-server/src/db/repositories/credentials.rs
+  - dlp-server/src/main.rs
+autonomous: true
+requirements: []
+---
 # Plan 01: Build db/ Submodule (Stubs, UnitOfWork, Pool Alias)
 
 **Phase:** 99 -- Refactor DB Layer to Repository + Unit of Work

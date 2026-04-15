@@ -1,3 +1,22 @@
+---
+wave: 2
+depends_on: ["01"]
+files_modified:
+  - dlp-server/src/siem_connector.rs
+  - dlp-server/src/alert_router.rs
+  - dlp-server/src/audit_store.rs
+  - dlp-server/src/exception_store.rs
+  - dlp-server/src/agent_registry.rs
+  - dlp-server/src/admin_auth.rs
+  - dlp-server/src/db/repositories/siem_config.rs
+  - dlp-server/src/db/repositories/alert_router_config.rs
+  - dlp-server/src/db/repositories/audit_events.rs
+  - dlp-server/src/db/repositories/exceptions.rs
+  - dlp-server/src/db/repositories/agents.rs
+  - dlp-server/src/db/repositories/admin_users.rs
+autonomous: true
+requirements: []
+---
 # Plan 02: Migrate Small Modules (23 Call Sites)
 
 **Phase:** 99 -- Refactor DB Layer to Repository + Unit of Work
