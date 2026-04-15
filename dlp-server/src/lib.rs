@@ -10,6 +10,8 @@ pub mod alert_router;
 pub mod audit_store;
 pub mod db;
 pub mod exception_store;
+pub mod policy_engine_error;
+pub mod policy_store;
 pub mod policy_sync;
 pub mod rate_limiter;
 pub mod siem_connector;
@@ -21,6 +23,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use dlp_common::AdClient;
+
+use crate::policy_engine_error::PolicyEngineError;
 
 /// Shared application state passed to all HTTP handlers via axum's `State` extractor.
 ///
@@ -138,5 +142,14 @@ impl IntoResponse for AppError {
 impl From<r2d2::Error> for AppError {
     fn from(e: r2d2::Error) -> Self {
         AppError::Internal(anyhow::anyhow!("pool error: {e}"))
+    }
+}
+
+/// Maps `PolicyEngineError::PolicyNotFound` to `AppError::NotFound`.
+impl From<PolicyEngineError> for AppError {
+    fn from(e: PolicyEngineError) -> Self {
+        match e {
+            PolicyEngineError::PolicyNotFound(id) => AppError::NotFound(id),
+        }
     }
 }
