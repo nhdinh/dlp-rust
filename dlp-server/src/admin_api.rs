@@ -578,8 +578,11 @@ async fn create_policy(
     );
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        audit_store::store_events_sync(&conn, &[audit_event])
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::from)?;
+        Ok(())
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -689,8 +692,11 @@ async fn update_policy(
     );
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        audit_store::store_events_sync(&conn, &[audit_event])
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::from)?;
+        Ok(())
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -739,8 +745,11 @@ async fn delete_policy(
     );
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        audit_store::store_events_sync(&conn, &[audit_event])
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::from)?;
+        Ok(())
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;

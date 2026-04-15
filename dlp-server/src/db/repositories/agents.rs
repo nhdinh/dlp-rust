@@ -106,4 +106,95 @@ impl AgentRepository {
         )?;
         Ok(())
     }
+
+    /// Returns a single agent by its `agent_id`.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - Connection pool to acquire a read connection from.
+    /// * `agent_id` - The agent UUID to look up.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error::QueryReturnedNoRows` if the agent is not found.
+    pub fn get_by_id(pool: &Pool, agent_id: &str) -> rusqlite::Result<AgentRow> {
+        let conn = pool.get().map_err(|e| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+        })?;
+        conn.query_row(
+            "SELECT agent_id, hostname, ip, os_version, agent_version, \
+             last_heartbeat, status, registered_at \
+             FROM agents WHERE agent_id = ?1",
+            params![agent_id],
+            |row| {
+                Ok(AgentRow {
+                    agent_id: row.get(0)?,
+                    hostname: row.get(1)?,
+                    ip: row.get(2)?,
+                    os_version: row.get(3)?,
+                    agent_version: row.get(4)?,
+                    last_heartbeat: row.get(5)?,
+                    status: row.get(6)?,
+                    registered_at: row.get(7)?,
+                })
+            },
+        )
+    }
+
+    /// Updates the last heartbeat timestamp and sets status to `"online"` for
+    /// the given agent.
+    ///
+    /// # Arguments
+    ///
+    /// * `uow` - Active unit of work to execute the write within.
+    /// * `agent_id` - Agent UUID to update.
+    /// * `heartbeat` - ISO-8601 timestamp for the heartbeat.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of rows affected (0 means the agent was not found).
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the statement fails.
+    pub fn update_heartbeat(
+        uow: &UnitOfWork<'_>,
+        agent_id: &str,
+        heartbeat: &str,
+    ) -> rusqlite::Result<usize> {
+        let rows = uow.tx.execute(
+            "UPDATE agents SET last_heartbeat = ?1, status = 'online' \
+             WHERE agent_id = ?2",
+            params![heartbeat, agent_id],
+        )?;
+        Ok(rows)
+    }
+
+    /// Marks all agents as `"offline"` whose last heartbeat is older than the
+    /// given cutoff timestamp.
+    ///
+    /// # Arguments
+    ///
+    /// * `uow` - Active unit of work to execute the write within.
+    /// * `cutoff` - ISO-8601 timestamp; agents with `last_heartbeat < cutoff`
+    ///   are marked offline.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of rows affected.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the statement fails.
+    pub fn mark_stale_offline(
+        uow: &UnitOfWork<'_>,
+        cutoff: &str,
+    ) -> rusqlite::Result<usize> {
+        let rows = uow.tx.execute(
+            "UPDATE agents SET status = 'offline' \
+             WHERE status = 'online' AND last_heartbeat < ?1",
+            params![cutoff],
+        )?;
+        Ok(rows)
+    }
 }

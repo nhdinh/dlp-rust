@@ -12,6 +12,9 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::db::repositories::ExceptionRepository;
+use crate::db::repositories::exceptions::ExceptionRow;
+use crate::db::UnitOfWork;
 use crate::AppError;
 use crate::AppState;
 
@@ -56,6 +59,23 @@ pub struct Exception {
 }
 
 // ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+fn exception_repo_row(e: &Exception) -> ExceptionRow {
+    ExceptionRow {
+        id: e.id.clone(),
+        policy_id: e.policy_id.clone(),
+        user_sid: e.user_sid.clone(),
+        approver: e.approver.clone(),
+        justification: e.justification.clone(),
+        duration_seconds: e.duration_seconds,
+        granted_at: e.granted_at.clone(),
+        expires_at: e.expires_at.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -97,23 +117,11 @@ pub async fn create_exception(
     let exc = exception.clone();
     let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.execute(
-            "INSERT INTO exceptions \
-                (id, policy_id, user_sid, approver, justification, \
-                 duration_seconds, granted_at, expires_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![
-                exc.id,
-                exc.policy_id,
-                exc.user_sid,
-                exc.approver,
-                exc.justification,
-                exc.duration_seconds,
-                exc.granted_at,
-                exc.expires_at,
-            ],
-        )?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+        ExceptionRepository::insert(&uow, &exception_repo_row(&exc))
+            .map_err(AppError::from)?;
+        uow.commit().map_err(AppError::from)?;
         Ok(())
     })
     .await
@@ -132,34 +140,26 @@ pub async fn list_exceptions(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<Exception>>, AppError> {
     let pool = Arc::clone(&state.pool);
-    let exceptions = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, policy_id, user_sid, approver, \
-                    justification, duration_seconds, \
-                    granted_at, expires_at \
-             FROM exceptions ORDER BY granted_at DESC",
-        )?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(Exception {
-                    id: row.get(0)?,
-                    policy_id: row.get(1)?,
-                    user_sid: row.get(2)?,
-                    approver: row.get(3)?,
-                    justification: row.get(4)?,
-                    duration_seconds: row.get(5)?,
-                    granted_at: row.get(6)?,
-                    expires_at: row.get(7)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok::<_, AppError>(rows)
+    let repo_rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let rows = ExceptionRepository::list(&pool).map_err(AppError::from)?;
+        Ok(rows)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    let exceptions: Vec<Exception> = repo_rows
+        .into_iter()
+        .map(|r| Exception {
+            id: r.id,
+            policy_id: r.policy_id,
+            user_sid: r.user_sid,
+            approver: r.approver,
+            justification: r.justification,
+            duration_seconds: r.duration_seconds,
+            granted_at: r.granted_at,
+            expires_at: r.expires_at,
+        })
+        .collect();
 
     Ok(Json(exceptions))
 }
@@ -177,28 +177,18 @@ pub async fn get_exception(
     let pool = Arc::clone(&state.pool);
 
     let result = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
-        let exc = conn.query_row(
-            "SELECT id, policy_id, user_sid, approver, \
-                    justification, duration_seconds, \
-                    granted_at, expires_at \
-             FROM exceptions WHERE id = ?1",
-            rusqlite::params![id],
-            |row| {
-                Ok(Exception {
-                    id: row.get(0)?,
-                    policy_id: row.get(1)?,
-                    user_sid: row.get(2)?,
-                    approver: row.get(3)?,
-                    justification: row.get(4)?,
-                    duration_seconds: row.get(5)?,
-                    granted_at: row.get(6)?,
-                    expires_at: row.get(7)?,
-                })
-            },
-        )
-        .map_err(AppError::from)?;
-        Ok(exc)
+        let repo_row = ExceptionRepository::get_by_id(&pool, &id)
+            .map_err(AppError::from)?;
+        Ok(Exception {
+            id: repo_row.id,
+            policy_id: repo_row.policy_id,
+            user_sid: repo_row.user_sid,
+            approver: repo_row.approver,
+            justification: repo_row.justification,
+            duration_seconds: repo_row.duration_seconds,
+            granted_at: repo_row.granted_at,
+            expires_at: repo_row.expires_at,
+        })
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?;

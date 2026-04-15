@@ -12,6 +12,9 @@ use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use crate::db::repositories::AgentRepository;
+use crate::db::repositories::agents::AgentRow;
+use crate::db::UnitOfWork;
 use crate::AppError;
 use crate::AppState;
 
@@ -91,53 +94,45 @@ pub async fn register_agent(
 
     // Wrap synchronous SQLite access in spawn_blocking.
     let pool = Arc::clone(&state.pool);
-    let info = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.execute(
-            "INSERT INTO agents \
-                (agent_id, hostname, ip, os_version, agent_version, \
-                 last_heartbeat, status, registered_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'online', ?7) \
-             ON CONFLICT(agent_id) DO UPDATE SET \
-                hostname = excluded.hostname, \
-                ip = excluded.ip, \
-                os_version = excluded.os_version, \
-                agent_version = excluded.agent_version, \
-                last_heartbeat = excluded.last_heartbeat, \
-                status = 'online'",
-            rusqlite::params![
-                agent_id,
-                hostname,
-                ip,
-                os_version,
-                agent_version,
-                registered_at,
-                registered_at,
-            ],
-        )?;
+    // Distinct clones for the closure (they move into spawn_blocking).
+    let agent_id_for_sb = agent_id.clone();
+    let hostname_for_sb = hostname.clone();
+    let ip_for_sb = ip.clone();
+    let os_version_for_sb = os_version.clone();
+    let agent_version_for_sb = agent_version.clone();
+    let registered_at_for_sb = registered_at.clone();
 
-        Ok(AgentInfoResponse {
-            agent_id,
-            hostname,
-            ip,
-            os_version,
-            agent_version,
-            last_heartbeat: registered_at.clone(),
+    tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let record = AgentRow {
+            agent_id: agent_id_for_sb,
+            hostname: hostname_for_sb,
+            ip: ip_for_sb,
+            os_version: os_version_for_sb,
+            agent_version: agent_version_for_sb,
+            last_heartbeat: registered_at_for_sb.clone(),
             status: "online".to_string(),
-            registered_at,
-        })
+            registered_at: registered_at_for_sb,
+        };
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+        AgentRepository::upsert(&uow, &record).map_err(AppError::from)?;
+        uow.commit().map_err(AppError::from)?;
+        Ok(())
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    tracing::info!(
-        agent_id = %info.agent_id,
-        hostname = %info.hostname,
-        ip = %info.ip,
-        agent_version = %info.agent_version,
-        "agent connected"
-    );
-    Ok(Json(info))
+    tracing::info!(agent_id = %agent_id, hostname = %hostname, ip = %ip, agent_version = %agent_version, "agent connected");
+    Ok(Json(AgentInfoResponse {
+        agent_id,
+        hostname,
+        ip,
+        os_version,
+        agent_version,
+        last_heartbeat: registered_at.clone(),
+        status: "online".to_string(),
+        registered_at,
+    }))
 }
 
 /// `POST /agents/{id}/heartbeat` — update last heartbeat, mark online.
@@ -155,12 +150,11 @@ pub async fn heartbeat(
     let pool = Arc::clone(&state.pool);
 
     let rows_updated = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
-        let rows = conn.execute(
-            "UPDATE agents SET last_heartbeat = ?1, status = 'online' \
-             WHERE agent_id = ?2",
-            rusqlite::params![now, id],
-        )?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+        let rows = AgentRepository::update_heartbeat(&uow, &id, &now)
+            .map_err(AppError::from)?;
+        uow.commit().map_err(AppError::from)?;
         Ok(rows)
     })
     .await
@@ -184,34 +178,26 @@ pub async fn list_agents(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<AgentInfoResponse>>, AppError> {
     let pool = Arc::clone(&state.pool);
-    let agents = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
-        let mut stmt = conn.prepare(
-            "SELECT agent_id, hostname, ip, os_version, \
-                    agent_version, last_heartbeat, status, \
-                    registered_at \
-             FROM agents ORDER BY hostname",
-        )?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(AgentInfoResponse {
-                    agent_id: row.get(0)?,
-                    hostname: row.get(1)?,
-                    ip: row.get(2)?,
-                    os_version: row.get(3)?,
-                    agent_version: row.get(4)?,
-                    last_heartbeat: row.get(5)?,
-                    status: row.get(6)?,
-                    registered_at: row.get(7)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok::<_, AppError>(rows)
+    let repo_rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let rows = AgentRepository::list(&pool).map_err(AppError::from)?;
+        Ok(rows)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    let agents: Vec<AgentInfoResponse> = repo_rows
+        .into_iter()
+        .map(|r| AgentInfoResponse {
+            agent_id: r.agent_id,
+            hostname: r.hostname,
+            ip: r.ip,
+            os_version: r.os_version,
+            agent_version: r.agent_version,
+            last_heartbeat: r.last_heartbeat,
+            status: r.status,
+            registered_at: r.registered_at,
+        })
+        .collect();
 
     Ok(Json(agents))
 }
@@ -229,28 +215,23 @@ pub async fn get_agent(
     let pool = Arc::clone(&state.pool);
 
     let agent = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
-        let row = conn.query_row(
-            "SELECT agent_id, hostname, ip, os_version, \
-                    agent_version, last_heartbeat, status, \
-                    registered_at \
-             FROM agents WHERE agent_id = ?1",
-            rusqlite::params![id],
-            |row| {
-                Ok(AgentInfoResponse {
-                    agent_id: row.get(0)?,
-                    hostname: row.get(1)?,
-                    ip: row.get(2)?,
-                    os_version: row.get(3)?,
-                    agent_version: row.get(4)?,
-                    last_heartbeat: row.get(5)?,
-                    status: row.get(6)?,
-                    registered_at: row.get(7)?,
-                })
-            },
-        )
-        .map_err(AppError::from)?;
-        Ok(row)
+        let repo_row = AgentRepository::get_by_id(&pool, &id)
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::NotFound(format!("agent {id} not registered"))
+                }
+                other => AppError::from(other),
+            })?;
+        Ok(AgentInfoResponse {
+            agent_id: repo_row.agent_id,
+            hostname: repo_row.hostname,
+            ip: repo_row.ip,
+            os_version: repo_row.os_version,
+            agent_version: repo_row.agent_version,
+            last_heartbeat: repo_row.last_heartbeat,
+            status: repo_row.status,
+            registered_at: repo_row.registered_at,
+        })
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?;
@@ -277,13 +258,11 @@ pub fn spawn_offline_sweeper(state: Arc<AppState>) {
             let pool = Arc::clone(&state.pool);
             let result = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
                 let cutoff = (Utc::now() - chrono::Duration::seconds(90)).to_rfc3339();
-                let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
-                let rows = conn.execute(
-                    "UPDATE agents SET status = 'offline' \
-                     WHERE status = 'online' \
-                       AND last_heartbeat < ?1",
-                    rusqlite::params![cutoff],
-                )?;
+                let mut conn = pool.get().map_err(AppError::from)?;
+                let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+                let rows = AgentRepository::mark_stale_offline(&uow, &cutoff)
+                    .map_err(AppError::from)?;
+                uow.commit().map_err(AppError::from)?;
                 Ok(rows)
             })
             .await;

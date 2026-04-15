@@ -12,8 +12,8 @@ use crate::db::{Pool, UnitOfWork};
 pub struct AlertRouterConfigRow {
     /// SMTP server hostname.
     pub smtp_host: String,
-    /// SMTP server port (default 587).
-    pub smtp_port: i64,
+    /// SMTP server port (converted to `u16`; errors on overflow).
+    pub smtp_port: u16,
     /// SMTP authentication username.
     pub smtp_username: String,
     /// SMTP authentication password.
@@ -22,13 +22,13 @@ pub struct AlertRouterConfigRow {
     pub smtp_from: String,
     /// Recipient email address.
     pub smtp_to: String,
-    /// Whether SMTP email alerts are enabled.
+    /// Whether SMTP email alerts are enabled (1 = true, 0 = false).
     pub smtp_enabled: i64,
     /// Webhook endpoint URL.
     pub webhook_url: String,
     /// HMAC secret for webhook request signing.
     pub webhook_secret: String,
-    /// Whether webhook alerts are enabled.
+    /// Whether webhook alerts are enabled (1 = true, 0 = false).
     pub webhook_enabled: i64,
     /// ISO-8601 timestamp of last configuration update.
     pub updated_at: String,
@@ -61,9 +61,17 @@ impl AlertRouterConfigRepository {
              FROM alert_router_config WHERE id = 1",
             [],
             |row| {
+                let smtp_port_i64: i64 = row.get(1)?;
+                let smtp_port = u16::try_from(smtp_port_i64).map_err(|_| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Integer,
+                        format!("smtp_port out of range: {smtp_port_i64}").into(),
+                    )
+                })?;
                 Ok(AlertRouterConfigRow {
                     smtp_host: row.get(0)?,
-                    smtp_port: row.get(1)?,
+                    smtp_port,
                     smtp_username: row.get(2)?,
                     smtp_password: row.get(3)?,
                     smtp_from: row.get(4)?,

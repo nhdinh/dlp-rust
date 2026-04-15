@@ -93,4 +93,38 @@ impl ExceptionRepository {
         )?;
         Ok(())
     }
+
+    /// Returns a single exception by its UUID.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - Connection pool to acquire a read connection from.
+    /// * `id` - Exception UUID to look up.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error::QueryReturnedNoRows` if the exception is not found.
+    pub fn get_by_id(pool: &Pool, id: &str) -> rusqlite::Result<ExceptionRow> {
+        let conn = pool.get().map_err(|e| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+        })?;
+        conn.query_row(
+            "SELECT id, policy_id, user_sid, approver, justification, \
+             duration_seconds, granted_at, expires_at \
+             FROM exceptions WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(ExceptionRow {
+                    id: row.get(0)?,
+                    policy_id: row.get(1)?,
+                    user_sid: row.get(2)?,
+                    approver: row.get(3)?,
+                    justification: row.get(4)?,
+                    duration_seconds: row.get(5)?,
+                    granted_at: row.get(6)?,
+                    expires_at: row.get(7)?,
+                })
+            },
+        )
+    }
 }

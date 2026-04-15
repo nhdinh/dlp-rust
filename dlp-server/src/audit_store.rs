@@ -12,6 +12,9 @@ use axum::Json;
 use dlp_common::AuditEvent;
 use serde::{Deserialize, Serialize};
 
+use crate::db::repositories::audit_events::{AuditEventFilter, AuditEventRepository};
+use crate::db::repositories::AuditEventRow;
+use crate::db::UnitOfWork;
 use crate::AppError;
 use crate::AppState;
 
@@ -51,45 +54,37 @@ pub struct EventCount {
 // Sync helper (for use inside spawn_blocking)
 // ---------------------------------------------------------------------------
 
-/// Synchronously stores audit events directly to the DB.
+/// Synchronously stores audit events directly to the DB via a UnitOfWork.
 ///
 /// Used by admin audit handlers that run inside `spawn_blocking` — we cannot
 /// call the async `ingest_events` from within a blocking thread without
-/// deadlocking the async runtime.
+/// deadlocking the async runtime. JSON serialization of enum fields stays here.
 pub fn store_events_sync(
-    conn: &rusqlite::Connection,
+    uow: &UnitOfWork<'_>,
     events: &[AuditEvent],
 ) -> Result<(), AppError> {
-    let mut stmt = conn.prepare(
-        "INSERT OR IGNORE INTO audit_events (timestamp, event_type, user_sid, user_name, \
-         resource_path, classification, action_attempted, decision, policy_id, policy_name, \
-         agent_id, session_id, access_context, correlation_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-    )?;
-    for event in events {
-        let event_type = serde_json::to_string(&event.event_type)?;
-        let classification = serde_json::to_string(&event.classification)?;
-        let action = serde_json::to_string(&event.action_attempted)?;
-        let decision = serde_json::to_string(&event.decision)?;
-        let access_ctx = serde_json::to_string(&event.access_context)?;
-
-        stmt.execute(rusqlite::params![
-            event.timestamp.to_rfc3339(),
-            event_type,
-            event.user_sid,
-            event.user_name,
-            event.resource_path,
-            classification,
-            action,
-            decision,
-            event.policy_id,
-            event.policy_name,
-            event.agent_id,
-            event.session_id,
-            access_ctx,
-            event.correlation_id,
-        ])?;
-    }
+    let rows: Vec<AuditEventRow> = events
+        .iter()
+        .map(|event| {
+            Ok(AuditEventRow {
+                timestamp: event.timestamp.to_rfc3339(),
+                event_type: serde_json::to_string(&event.event_type)?,
+                user_sid: event.user_sid.clone(),
+                user_name: event.user_name.clone(),
+                resource_path: event.resource_path.clone(),
+                classification: serde_json::to_string(&event.classification)?,
+                action_attempted: serde_json::to_string(&event.action_attempted)?,
+                decision: serde_json::to_string(&event.decision)?,
+                policy_id: event.policy_id.clone(),
+                policy_name: event.policy_name.clone(),
+                agent_id: event.agent_id.clone(),
+                session_id: event.session_id as i64,
+                access_context: serde_json::to_string(&event.access_context)?,
+                correlation_id: event.correlation_id.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, serde_json::Error>>()?;
+    AuditEventRepository::insert_batch(uow, &rows).map_err(AppError::from)?;
     Ok(())
 }
 
@@ -129,64 +124,52 @@ pub async fn ingest_events(
     let relay_events = events.clone();
 
     let pool = Arc::clone(&state.pool);
+    let events_for_repo = events.clone();
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
 
-        // Use a transaction for batch atomicity.
-        let tx = conn.unchecked_transaction()?;
+        // Pre-serialize enum fields into AuditEventRow structs.
+        let rows: Vec<AuditEventRow> = events_for_repo
+            .iter()
+            .map(|event| {
+                Ok(AuditEventRow {
+                    timestamp: event.timestamp.to_rfc3339(),
+                    event_type: serde_json::to_value(event.event_type)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    user_sid: event.user_sid.clone(),
+                    user_name: event.user_name.clone(),
+                    resource_path: event.resource_path.clone(),
+                    classification: serde_json::to_value(event.classification)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    action_attempted: serde_json::to_value(event.action_attempted)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    decision: serde_json::to_value(event.decision)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    policy_id: event.policy_id.clone(),
+                    policy_name: event.policy_name.clone(),
+                    agent_id: event.agent_id.clone(),
+                    session_id: event.session_id as i64,
+                    access_context: serde_json::to_value(event.access_context)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    correlation_id: event.correlation_id.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, serde_json::Error>>()
+            .map_err(AppError::from)?;
 
-        for event in &events {
-            // Serialize enum fields to their JSON string representations.
-            let event_type = serde_json::to_value(event.event_type)?
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            let classification = serde_json::to_value(event.classification)?
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            let action = serde_json::to_value(event.action_attempted)?
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            let decision = serde_json::to_value(event.decision)?
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            let access_ctx = serde_json::to_value(event.access_context)?
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-
-            tx.execute(
-                "INSERT OR IGNORE INTO audit_events \
-                    (timestamp, event_type, user_sid, user_name, \
-                     resource_path, classification, action_attempted, \
-                     decision, policy_id, policy_name, agent_id, \
-                     session_id, access_context, correlation_id) \
-                 VALUES \
-                    (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
-                     ?11, ?12, ?13, ?14)",
-                rusqlite::params![
-                    event.timestamp.to_rfc3339(),
-                    event_type,
-                    event.user_sid,
-                    event.user_name,
-                    event.resource_path,
-                    classification,
-                    action,
-                    decision,
-                    event.policy_id,
-                    event.policy_name,
-                    event.agent_id,
-                    event.session_id,
-                    access_ctx,
-                    event.correlation_id,
-                ],
-            )?;
-        }
-
-        tx.commit()?;
+        AuditEventRepository::insert_batch(&uow, &rows).map_err(AppError::from)?;
+        uow.commit().map_err(AppError::from)?;
         Ok(())
     })
     .await
@@ -245,89 +228,20 @@ pub async fn query_events(
     Query(q): Query<EventQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
     let pool = Arc::clone(&state.pool);
+    let filter = AuditEventFilter {
+        agent_id: q.agent_id,
+        user_name: q.user_name,
+        classification: q.classification,
+        event_type: q.event_type,
+        from: q.from,
+        to: q.to,
+        limit: q.limit,
+        offset: q.offset,
+    };
     let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
-
-        // Build a dynamic WHERE clause from the provided filters.
-        let mut conditions: Vec<String> = Vec::new();
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(ref v) = q.agent_id {
-            conditions.push(format!("agent_id = ?{}", params.len() + 1));
-            params.push(Box::new(v.clone()));
-        }
-        if let Some(ref v) = q.user_name {
-            conditions.push(format!("user_name = ?{}", params.len() + 1));
-            params.push(Box::new(v.clone()));
-        }
-        if let Some(ref v) = q.classification {
-            conditions.push(format!("classification = ?{}", params.len() + 1));
-            params.push(Box::new(v.clone()));
-        }
-        if let Some(ref v) = q.event_type {
-            conditions.push(format!("event_type = ?{}", params.len() + 1));
-            params.push(Box::new(v.clone()));
-        }
-        if let Some(ref v) = q.from {
-            conditions.push(format!("timestamp >= ?{}", params.len() + 1));
-            params.push(Box::new(v.clone()));
-        }
-        if let Some(ref v) = q.to {
-            conditions.push(format!("timestamp <= ?{}", params.len() + 1));
-            params.push(Box::new(v.clone()));
-        }
-
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
-
-        let limit = q.limit.unwrap_or(100);
-        let offset = q.offset.unwrap_or(0);
-
-        let sql = format!(
-            "SELECT id, timestamp, event_type, user_sid, user_name, \
-                    resource_path, classification, action_attempted, \
-                    decision, policy_id, policy_name, agent_id, \
-                    session_id, access_context, correlation_id \
-             FROM audit_events {where_clause} \
-             ORDER BY timestamp DESC \
-             LIMIT ?{} OFFSET ?{}",
-            params.len() + 1,
-            params.len() + 2,
-        );
-
-        params.push(Box::new(limit));
-        params.push(Box::new(offset));
-
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params.iter().map(|p| p.as_ref()).collect();
-
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(param_refs.as_slice(), |row| {
-                Ok(serde_json::json!({
-                    "id": row.get::<_, i64>(0)?,
-                    "timestamp": row.get::<_, String>(1)?,
-                    "event_type": row.get::<_, String>(2)?,
-                    "user_sid": row.get::<_, String>(3)?,
-                    "user_name": row.get::<_, String>(4)?,
-                    "resource_path": row.get::<_, String>(5)?,
-                    "classification": row.get::<_, String>(6)?,
-                    "action_attempted": row.get::<_, String>(7)?,
-                    "decision": row.get::<_, String>(8)?,
-                    "policy_id": row.get::<_, Option<String>>(9)?,
-                    "policy_name": row.get::<_, Option<String>>(10)?,
-                    "agent_id": row.get::<_, String>(11)?,
-                    "session_id": row.get::<_, i64>(12)?,
-                    "access_context": row.get::<_, String>(13)?,
-                    "correlation_id": row.get::<_, Option<String>>(14)?,
-                }))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok::<_, AppError>(rows)
+        let rows = AuditEventRepository::query(&pool, &filter)
+            .map_err(AppError::from)?;
+        Ok(rows)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -345,10 +259,7 @@ pub async fn get_event_count(
 ) -> Result<Json<EventCount>, AppError> {
     let pool = Arc::clone(&state.pool);
     let count = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
-        let n = conn.query_row("SELECT COUNT(*) FROM audit_events", [], |row| {
-            row.get::<_, i64>(0)
-        })?;
+        let n = AuditEventRepository::count(&pool).map_err(AppError::from)?;
         Ok(n)
     })
     .await
@@ -393,8 +304,10 @@ mod tests {
             "server".to_string(),
             0,
         );
-        let conn = pool.get().expect("acquire connection");
-        store_events_sync(&conn, &[event]).expect("store event");
+        let mut conn = pool.get().expect("acquire connection");
+        let uow = db::UnitOfWork::new(&mut *conn).expect("begin transaction");
+        store_events_sync(&uow, &[event]).expect("store event");
+        uow.commit().expect("commit");
 
         let (event_type, action, resource_path): (String, String, String) = conn
             .query_row(

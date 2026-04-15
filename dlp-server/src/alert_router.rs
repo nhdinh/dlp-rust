@@ -27,6 +27,7 @@ use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use reqwest::Client;
 
 use crate::db;
+use crate::db::repositories::AlertRouterConfigRepository;
 
 /// SMTP email alert configuration.
 #[derive(Debug, Clone)]
@@ -141,7 +142,7 @@ impl AlertRouter {
     /// `spawn_blocking` for a single-row read (matches the rationale in
     /// [`crate::siem_connector::SiemConnector`]'s `load_config`).
     ///
-    /// Note: this method calls `self.pool.get()` directly instead of
+    /// Note: this method calls the repository synchronously instead of
     /// wrapping in `tokio::task::spawn_blocking` because it is a single-row
     /// SELECT on the fire-and-forget alert path. The admin PUT handler in
     /// `admin_api.rs::update_alert_config_handler` uses `spawn_blocking`
@@ -152,37 +153,20 @@ impl AlertRouter {
     /// Returns [`AlertError::Database`] if the row cannot be read or the
     /// stored `smtp_port` is outside the `u16` range.
     fn load_config(&self) -> Result<AlertRouterConfigRow, AlertError> {
-        let conn = self.pool.get().map_err(AlertError::from)?;
-        let row = conn.query_row(
-            "SELECT smtp_host, smtp_port, smtp_username, smtp_password, \
-                    smtp_from, smtp_to, smtp_enabled, \
-                    webhook_url, webhook_secret, webhook_enabled \
-             FROM alert_router_config WHERE id = 1",
-            [],
-            |r| {
-                let port_i64: i64 = r.get(1)?;
-                let smtp_port = u16::try_from(port_i64).map_err(|_| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        1,
-                        rusqlite::types::Type::Integer,
-                        format!("smtp_port out of range: {port_i64}").into(),
-                    )
-                })?;
-                Ok(AlertRouterConfigRow {
-                    smtp_host: r.get(0)?,
-                    smtp_port,
-                    smtp_username: r.get(2)?,
-                    smtp_password: r.get(3)?,
-                    smtp_from: r.get(4)?,
-                    smtp_to: r.get(5)?,
-                    smtp_enabled: r.get::<_, i64>(6)? != 0,
-                    webhook_url: r.get(7)?,
-                    webhook_secret: r.get(8)?,
-                    webhook_enabled: r.get::<_, i64>(9)? != 0,
-                })
-            },
-        )?;
-        Ok(row)
+        let repo_row = AlertRouterConfigRepository::get(&self.pool)
+            .map_err(AlertError::from)?;
+        Ok(AlertRouterConfigRow {
+            smtp_host: repo_row.smtp_host,
+            smtp_port: repo_row.smtp_port,
+            smtp_username: repo_row.smtp_username,
+            smtp_password: repo_row.smtp_password,
+            smtp_from: repo_row.smtp_from,
+            smtp_to: repo_row.smtp_to,
+            smtp_enabled: repo_row.smtp_enabled != 0,
+            webhook_url: repo_row.webhook_url,
+            webhook_secret: repo_row.webhook_secret,
+            webhook_enabled: repo_row.webhook_enabled != 0,
+        })
     }
 
     /// Sends an alert for a single audit event to all configured destinations.

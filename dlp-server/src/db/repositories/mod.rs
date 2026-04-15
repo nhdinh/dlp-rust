@@ -18,7 +18,7 @@ pub use admin_users::AdminUserRepository;
 pub use agent_config::AgentConfigRepository;
 pub use agents::AgentRepository;
 pub use alert_router_config::AlertRouterConfigRepository;
-pub use audit_events::AuditEventRepository;
+pub use audit_events::{AuditEventRepository, AuditEventRow};
 pub use credentials::CredentialsRepository;
 pub use exceptions::ExceptionRepository;
 pub use ldap_config::LdapConfigRepository;

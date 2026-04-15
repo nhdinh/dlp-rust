@@ -12,6 +12,7 @@ use reqwest::Client;
 use serde::Serialize;
 
 use crate::db;
+use crate::db::repositories::SiemConfigRepository;
 
 /// Splunk HTTP Event Collector configuration.
 #[derive(Debug, Clone)]
@@ -117,25 +118,17 @@ impl SiemConnector {
     ///
     /// Returns [`SiemError::Database`] if the row cannot be read.
     fn load_config(&self) -> Result<SiemConfigRow, SiemError> {
-        let conn = self.pool.get().map_err(SiemError::from)?;
-        let row = conn.query_row(
-            "SELECT splunk_url, splunk_token, splunk_enabled, \
-                    elk_url, elk_index, elk_api_key, elk_enabled \
-             FROM siem_config WHERE id = 1",
-            [],
-            |r| {
-                Ok(SiemConfigRow {
-                    splunk_url: r.get(0)?,
-                    splunk_token: r.get(1)?,
-                    splunk_enabled: r.get::<_, i64>(2)? != 0,
-                    elk_url: r.get(3)?,
-                    elk_index: r.get(4)?,
-                    elk_api_key: r.get(5)?,
-                    elk_enabled: r.get::<_, i64>(6)? != 0,
-                })
-            },
-        )?;
-        Ok(row)
+        let repo_row = SiemConfigRepository::get(&self.pool)
+            .map_err(SiemError::from)?;
+        Ok(SiemConfigRow {
+            splunk_url: repo_row.splunk_url,
+            splunk_token: repo_row.splunk_token,
+            splunk_enabled: repo_row.splunk_enabled != 0,
+            elk_url: repo_row.elk_url,
+            elk_index: repo_row.elk_index,
+            elk_api_key: repo_row.elk_api_key,
+            elk_enabled: repo_row.elk_enabled != 0,
+        })
     }
 
     /// Relays a batch of audit events to all configured SIEM backends.

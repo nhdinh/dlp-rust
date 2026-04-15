@@ -19,6 +19,8 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use serde::{Deserialize, Serialize};
 
 use crate::audit_store;
+use crate::db::repositories::AdminUserRepository;
+use crate::db::UnitOfWork;
 use crate::AppError;
 use crate::AppState;
 use dlp_common;
@@ -165,14 +167,8 @@ pub async fn login(
         let pool = Arc::clone(&state.pool);
         let uname = username.clone();
         tokio::task::spawn_blocking(move || -> Result<String, AppError> {
-            let conn = pool.get().map_err(AppError::from)?;
-            let hash = conn.query_row(
-                "SELECT password_hash FROM admin_users \
-                 WHERE username = ?1",
-                rusqlite::params![uname],
-                |row| row.get::<_, String>(0),
-            )
-            .map_err(AppError::from)?;
+            let hash = AdminUserRepository::get_password_hash(&pool, &uname)
+                .map_err(AppError::from)?;
             Ok(hash)
         })
         .await
@@ -262,13 +258,8 @@ pub async fn change_password(
     let pool2 = Arc::clone(&state.pool);
     let uname = username.clone();
     let current_hash: String = tokio::task::spawn_blocking(move || -> Result<String, AppError> {
-        let conn = pool2.get().map_err(AppError::from)?;
-        let hash = conn.query_row(
-            "SELECT password_hash FROM admin_users WHERE username = ?1",
-            rusqlite::params![uname],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(AppError::from)?;
+        let hash = AdminUserRepository::get_password_hash(&pool2, &uname)
+            .map_err(AppError::from)?;
         Ok(hash)
     })
     .await
@@ -298,12 +289,11 @@ pub async fn change_password(
     let uname = username.clone();
     let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.execute(
-            "UPDATE admin_users SET password_hash = ?1 WHERE username = ?2",
-            rusqlite::params![new_hash, uname],
-        )
-        .map_err(AppError::from)?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+        AdminUserRepository::update_password_hash(&uow, &uname, &new_hash)
+            .map_err(AppError::from)?;
+        uow.commit().map_err(AppError::from)?;
         Ok(())
     })
     .await
@@ -322,9 +312,12 @@ pub async fn change_password(
         0,
     );
     let pool = Arc::clone(&state.pool);
-    tokio::task::spawn_blocking(move || {
-        let conn = pool.get().map_err(AppError::from)?;
-        audit_store::store_events_sync(&conn, &[audit_event])
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = crate::db::UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::from)?;
+        Ok(())
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -342,11 +335,8 @@ pub async fn change_password(
 /// Called during server startup to decide whether to prompt for initial
 /// admin credentials.
 pub fn has_admin_users(pool: &crate::db::Pool) -> anyhow::Result<bool> {
-    let conn = pool.get()?;
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM admin_users", [], |row| row.get(0))
-        .map_err(|e| anyhow::anyhow!("failed to query admin_users: {e}"))?;
-    Ok(count > 0)
+    AdminUserRepository::has_any(pool)
+        .map_err(|e| anyhow::anyhow!("failed to query admin_users: {e}"))
 }
 
 /// Creates a new admin user with the given username and plaintext password.
@@ -362,13 +352,13 @@ pub fn create_admin_user(pool: &crate::db::Pool, username: &str, password: &str)
         bcrypt::hash(password, 12).map_err(|e| anyhow::anyhow!("bcrypt hash failed: {e}"))?;
     let now = Utc::now().to_rfc3339();
 
-    let conn = pool.get()?;
-    conn.execute(
-        "INSERT INTO admin_users (username, password_hash, created_at) \
-         VALUES (?1, ?2, ?3)",
-        rusqlite::params![username, hash, now],
-    )
-    .map_err(|e| anyhow::anyhow!("failed to insert admin user: {e}"))?;
+    let mut conn = pool.get()?;
+    let uow = crate::db::UnitOfWork::new(&mut conn)
+        .map_err(|e| anyhow::anyhow!("transaction failed: {e}"))?;
+    AdminUserRepository::insert(&uow, username, &hash, &now)
+        .map_err(|e| anyhow::anyhow!("failed to insert admin user: {e}"))?;
+    uow.commit()
+        .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
 
     tracing::info!(user = %username, "admin user created");
     Ok(())

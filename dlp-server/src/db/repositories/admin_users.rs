@@ -105,4 +105,27 @@ impl AdminUserRepository {
         )?;
         Ok(())
     }
+
+    /// Updates the password hash for the given username.
+    ///
+    /// # Arguments
+    ///
+    /// * `uow` - Active unit of work to execute the write within.
+    /// * `username` - Username whose password hash is being updated.
+    /// * `new_hash` - New bcrypt password hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the update fails.
+    pub fn update_password_hash(
+        uow: &UnitOfWork<'_>,
+        username: &str,
+        new_hash: &str,
+    ) -> rusqlite::Result<()> {
+        uow.tx.execute(
+            "UPDATE admin_users SET password_hash = ?1 WHERE username = ?2",
+            params![new_hash, username],
+        )?;
+        Ok(())
+    }
 }
