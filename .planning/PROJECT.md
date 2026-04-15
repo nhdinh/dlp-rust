@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-14 after Phase 09*
+*Last updated: 2026-04-16 after Phase 11*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -16,7 +16,7 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 
 **v0.2.0 Feature Completion shipped** (2026-04-13). All five crates compile and test. 364+ tests pass. The system covers: file/USB/network-share interception, clipboard monitoring, JWT auth, SIEM relay (Splunk HEC + ELK), alert routing (email + webhook), DB-backed operator config, agent config polling, and comprehensive TC test coverage.
 
-**v0.3.0 — Operational Hardening in progress** (Phase 09 shipped — admin audit logging; remaining: AD LDAP, rate limiting, SQLite pool, policy engine separation).
+**v0.3.0 — Operational Hardening in progress** (Phase 11 shipped — policy engine separation; remaining: AD LDAP, rate limiting, SQLite pool).
 
 ## Architecture
 
@@ -54,7 +54,7 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 
 ### Active (planned for v0.3.0)
 
-- [ ] R-03: Policy Engine Separation — architectural split into policy engine + evaluation replica
+- [ ] R-03: Policy Engine Separation — architectural split into policy engine + evaluation replica — v0.3.0
 - [ ] R-05: Active Directory LDAP integration — real ABAC attribute resolution from AD
 - [ ] R-07: Rate limiting middleware — brute-force protection, per-agent event limits
 - [ ] R-10: SQLite connection pool — replace Mutex<Connection> with r2d2 pool
