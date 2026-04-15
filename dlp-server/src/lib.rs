@@ -11,6 +11,7 @@ pub mod audit_store;
 pub mod db;
 pub mod exception_store;
 pub mod policy_sync;
+pub mod rate_limiter;
 pub mod siem_connector;
 
 use std::sync::Arc;

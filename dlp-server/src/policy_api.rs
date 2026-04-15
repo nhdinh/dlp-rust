@@ -9,10 +9,10 @@
 //! | GET    | `/ready`                 | Readiness probe              |
 //! | GET    | `/policies`              | List all policies            |
 //! | POST   | `/policies`              | Create a new policy          |
-//! | GET    | `/policies/:id`          | Get a single policy          |
-//! | PUT    | `/policies/:id`          | Update an existing policy    |
-//! | DELETE | `/policies/:id`          | Delete a policy              |
-//! | GET    | `/policies/:id/versions` | Get version history (stub)   |
+//! | GET    | `/policies/{id}`          | Get a single policy          |
+//! | PUT    | `/policies/{id}`          | Update an existing policy    |
+//! | DELETE | `/policies/{id}`          | Delete a policy              |
+//! | GET    | `/policies/{id}/versions` | Get version history (stub)   |
 
 use std::sync::Arc;
 
@@ -40,13 +40,13 @@ pub fn router(store: Arc<PolicyStore>) -> Router<()> {
             get(list_policies).post(create_policy),
         )
         .route(
-            "/policies/:id",
+            "/policies/{id}",
             get(get_policy)
                 .put(update_policy)
                 .delete(delete_policy),
         )
         .route(
-            "/policies/:id/versions",
+            "/policies/{id}/versions",
             get(get_policy_versions),
         )
         .with_state(store)

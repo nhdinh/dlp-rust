@@ -27,6 +27,7 @@ use crate::db::repositories::{
     LdapConfigRepository, PolicyRepository, SiemConfigRepository,
 };
 use crate::exception_store;
+use crate::rate_limiter::{self, default_config, policy_config};
 use crate::AppError;
 use crate::AppState;
 
@@ -315,7 +316,7 @@ pub(crate) fn validate_webhook_url(url: &str) -> Result<(), String> {
 /// - `GET /ready` — readiness probe
 /// - `POST /auth/login` — admin login
 /// - `POST /agents/register` — agent self-registration
-/// - `POST /agents/:id/heartbeat` — agent heartbeat
+/// - `POST /agents/{id}/heartbeat` — agent heartbeat
 /// - `POST /audit/events` — event ingestion (agent-to-server)
 /// - `GET /agent-credentials/auth-hash` — fetch agent auth hash
 ///
@@ -348,35 +349,51 @@ pub(crate) fn validate_webhook_url(url: &str) -> Result<(), String> {
 /// - `GET /agent-config/:id` — resolved agent config (per-agent override or global fallback)
 pub fn admin_router(state: Arc<AppState>) -> Router {
     // Routes that do NOT require authentication.
+    // Each route that needs rate limiting gets its own GovernorLayer applied
+    // via `.route_layer()`. The key extractor (AgentIdOrIpKeyExtractor) keys
+    // by agent_id for /agents/* paths and by peer IP for all others.
     let public_routes = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
-        .route("/auth/login", post(admin_auth::login))
+        .route("/auth/login", post(admin_auth::login).route_layer(rate_limiter::strict_config()))
         .route("/agents/register", post(agent_registry::register_agent))
-        .route("/agents/:id/heartbeat", post(agent_registry::heartbeat))
-        .route("/audit/events", post(audit_store::ingest_events))
+        .route(
+            "/agents/{id}/heartbeat",
+            post(agent_registry::heartbeat).route_layer(rate_limiter::moderate_config()),
+        )
+        .route(
+            "/audit/events",
+            post(audit_store::ingest_events).route_layer(rate_limiter::per_agent_config()),
+        )
         .route("/agent-credentials/auth-hash", get(get_agent_auth_hash))
-        .route("/agent-config/:id", get(get_agent_config_for_agent));
+        .route("/agent-config/{id}", get(get_agent_config_for_agent));
 
     // Routes that require a valid JWT.
+    // Policy routes get a tighter limit (60/min) via `.route_layer()`.
+    // Remaining protected routes fall back to the default 100/min limit.
     let protected_routes = Router::new()
         .route("/agents", get(agent_registry::list_agents))
-        .route("/agents/:id", get(agent_registry::get_agent))
+        .route("/agents/{id}", get(agent_registry::get_agent))
         .route("/audit/events", get(audit_store::query_events))
         .route("/audit/events/count", get(audit_store::get_event_count))
-        .route("/policies", get(list_policies).post(create_policy))
+        .route("/policies", get(list_policies).post(create_policy).route_layer(policy_config()))
         .route(
-            "/policies/:id",
-            get(get_policy).put(update_policy).delete(delete_policy),
+            "/policies/{id}",
+            get(get_policy)
+                .put(update_policy)
+                .delete(delete_policy)
+                .route_layer(policy_config()),
         )
         // Policy CRUD under /admin/policies (Phase 9 requirement).
-        .route("/admin/policies", post(create_policy))
+        .route("/admin/policies", post(create_policy).route_layer(policy_config()))
         .route(
-            "/admin/policies/:id",
-            put(update_policy).delete(delete_policy),
+            "/admin/policies/{id}",
+            put(update_policy)
+                .delete(delete_policy)
+                .route_layer(policy_config()),
         )
         .route("/exceptions", get(exception_store::list_exceptions))
-        .route("/exceptions/:id", get(exception_store::get_exception))
+        .route("/exceptions/{id}", get(exception_store::get_exception))
         .route("/exceptions", post(exception_store::create_exception))
         .route("/agent-credentials/auth-hash", put(set_agent_auth_hash))
         .route("/auth/password", put(admin_auth::change_password))
@@ -392,11 +409,12 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
             get(get_global_agent_config_handler).put(update_global_agent_config_handler),
         )
         .route(
-            "/admin/agent-config/:agent_id",
+            "/admin/agent-config/{agent_id}",
             get(get_agent_config_override_handler)
                 .put(update_agent_config_override_handler)
                 .delete(delete_agent_config_override_handler),
         )
+        .route_layer(default_config())
         .layer(middleware::from_fn(admin_auth::require_auth));
 
     public_routes.merge(protected_routes).with_state(state)

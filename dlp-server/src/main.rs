@@ -201,7 +201,10 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     info!(%addr, "dlp-server listening");
 
-    axum::serve(listener, app)
+    // `into_make_service_with_connect_info` is required so that
+    // `AgentIdOrIpKeyExtractor` can read the peer's socket address for IP-based
+    // rate limiting on non-agent routes.
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 

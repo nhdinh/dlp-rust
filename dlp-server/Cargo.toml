@@ -11,7 +11,8 @@ description = "DLP central management and policy engine server — audit store, 
 dlp-common = { path = "../dlp-common" }
 
 # Web server
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.8", features = ["macros"] }
+axum-core = { version = "0.1", features = [] }
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["trace", "cors"] }
 
@@ -77,6 +78,10 @@ dashmap = "6"
 # Async utilities
 async-trait = "0.1"
 
+# Rate limiting
+governor = "0.10"
+tower_governor = "0.8"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
@@ -91,4 +96,4 @@ rpassword = "5"
 reqwest = { version = "0.12", features = ["json"], default-features = false }
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 tempfile = "3"
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.8", features = ["macros"] }
