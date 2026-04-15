@@ -64,6 +64,16 @@ Phase details for v0.2.0 are archived at `.planning/milestones/v0.2.0-ROADMAP.md
 
 </details>
 
+### Phase 99: Refactor DB layer to Repository + Unit of Work
+
+**Goal:** Migrate all 49 `pool.get()` + raw SQL call sites in dlp-server into typed Repository structs under `db/repositories/`. All writes go through `UnitOfWork<'conn>` (RAII transaction). Three migration waves: (1) build db/ submodule, (2) migrate small modules, (3) migrate admin_api.rs.
+**Requirements**: TBD
+**Depends on:** Phase 10
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 99 to break down)
+
 ---
 
 _Archived milestone details: `.planning/milestones/v0.2.0-ROADMAP.md`_
