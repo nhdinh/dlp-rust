@@ -68,9 +68,9 @@ impl PolicyRepository {
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
     pub fn list(pool: &Pool) -> rusqlite::Result<Vec<PolicyRow>> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let mut stmt = conn.prepare(
             "SELECT id, name, description, priority, conditions, action, \
              enabled, version, updated_at \
@@ -133,9 +133,9 @@ impl PolicyRepository {
     ///
     /// Returns `rusqlite::Error::QueryReturnedNoRows` if the policy does not exist.
     pub fn get_by_id(pool: &Pool, id: &str) -> rusqlite::Result<PolicyRow> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
             "SELECT id, name, description, priority, conditions, action, \
              enabled, version, updated_at \
@@ -229,6 +229,7 @@ impl PolicyRepository {
     ///
     /// Returns `rusqlite::Error` if the statement fails.
     pub fn delete(uow: &UnitOfWork<'_>, id: &str) -> rusqlite::Result<usize> {
-        uow.tx.execute("DELETE FROM policies WHERE id = ?1", params![id])
+        uow.tx
+            .execute("DELETE FROM policies WHERE id = ?1", params![id])
     }
 }

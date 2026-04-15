@@ -12,8 +12,8 @@ use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::db::repositories::AgentRepository;
 use crate::db::repositories::agents::AgentRow;
+use crate::db::repositories::AgentRepository;
 use crate::db::UnitOfWork;
 use crate::AppError;
 use crate::AppState;
@@ -152,8 +152,7 @@ pub async fn heartbeat(
     let rows_updated = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
-        let rows = AgentRepository::update_heartbeat(&uow, &id, &now)
-            .map_err(AppError::from)?;
+        let rows = AgentRepository::update_heartbeat(&uow, &id, &now).map_err(AppError::from)?;
         uow.commit().map_err(AppError::from)?;
         Ok(rows)
     })
@@ -215,13 +214,12 @@ pub async fn get_agent(
     let pool = Arc::clone(&state.pool);
 
     let agent = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let repo_row = AgentRepository::get_by_id(&pool, &id)
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    AppError::NotFound(format!("agent {id} not registered"))
-                }
-                other => AppError::from(other),
-            })?;
+        let repo_row = AgentRepository::get_by_id(&pool, &id).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("agent {id} not registered"))
+            }
+            other => AppError::from(other),
+        })?;
         Ok(AgentInfoResponse {
             agent_id: repo_row.agent_id,
             hostname: repo_row.hostname,
@@ -260,8 +258,8 @@ pub fn spawn_offline_sweeper(state: Arc<AppState>) {
                 let cutoff = (Utc::now() - chrono::Duration::seconds(90)).to_rfc3339();
                 let mut conn = pool.get().map_err(AppError::from)?;
                 let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
-                let rows = AgentRepository::mark_stale_offline(&uow, &cutoff)
-                    .map_err(AppError::from)?;
+                let rows =
+                    AgentRepository::mark_stale_offline(&uow, &cutoff).map_err(AppError::from)?;
                 uow.commit().map_err(AppError::from)?;
                 Ok(rows)
             })

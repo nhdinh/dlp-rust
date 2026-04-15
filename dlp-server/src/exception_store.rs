@@ -12,8 +12,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::db::repositories::ExceptionRepository;
 use crate::db::repositories::exceptions::ExceptionRow;
+use crate::db::repositories::ExceptionRepository;
 use crate::db::UnitOfWork;
 use crate::AppError;
 use crate::AppState;
@@ -119,8 +119,7 @@ pub async fn create_exception(
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
-        ExceptionRepository::insert(&uow, &exception_repo_row(&exc))
-            .map_err(AppError::from)?;
+        ExceptionRepository::insert(&uow, &exception_repo_row(&exc)).map_err(AppError::from)?;
         uow.commit().map_err(AppError::from)?;
         Ok(())
     })
@@ -177,8 +176,7 @@ pub async fn get_exception(
     let pool = Arc::clone(&state.pool);
 
     let result = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let repo_row = ExceptionRepository::get_by_id(&pool, &id)
-            .map_err(AppError::from)?;
+        let repo_row = ExceptionRepository::get_by_id(&pool, &id).map_err(AppError::from)?;
         Ok(Exception {
             id: repo_row.id,
             policy_id: repo_row.policy_id,

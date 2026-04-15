@@ -11,9 +11,7 @@
 
 use std::sync::Arc;
 
-use dlp_common::abac::{
-    Decision, EvaluateRequest, EvaluateResponse, Policy, PolicyCondition,
-};
+use dlp_common::abac::{Decision, EvaluateRequest, EvaluateResponse, Policy, PolicyCondition};
 use dlp_common::Classification;
 use parking_lot::RwLock;
 use tracing::{error, info, warn};
@@ -105,7 +103,11 @@ impl PolicyStore {
             if !policy.enabled {
                 continue;
             }
-            if policy.conditions.iter().all(|c| condition_matches(c, request)) {
+            if policy
+                .conditions
+                .iter()
+                .all(|c| condition_matches(c, request))
+            {
                 return EvaluateResponse {
                     decision: policy.action,
                     matched_policy_id: Some(policy.id.clone()),
@@ -152,7 +154,9 @@ impl PolicyStore {
 ///
 /// Handles the translation from DB `action` string (`"Allow"`, `"Deny"`, etc.)
 /// to the `Decision` enum.
-fn deserialize_policy_row(row: &crate::db::repositories::policies::PolicyRow) -> Result<Policy, serde_json::Error> {
+fn deserialize_policy_row(
+    row: &crate::db::repositories::policies::PolicyRow,
+) -> Result<Policy, serde_json::Error> {
     let conditions: Vec<PolicyCondition> = serde_json::from_str(&row.conditions)?;
     let action = match row.action.to_lowercase().as_str() {
         "allow" => Decision::ALLOW,
@@ -260,7 +264,10 @@ mod tests {
     /// Helper to build a PolicyStore with an empty in-memory cache.
     fn empty_store() -> PolicyStore {
         // `db::new_pool` is infallible for `:memory:`.
-        PolicyStore { cache: RwLock::new(Vec::new()), pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")) }
+        PolicyStore {
+            cache: RwLock::new(Vec::new()),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        }
     }
 
     #[test]
@@ -298,12 +305,18 @@ mod tests {
             name: "disabled policy".to_string(),
             description: None,
             priority: 1,
-            conditions: vec![PolicyCondition::Classification { op: "eq".to_string(), value: Classification::T3 }],
+            conditions: vec![PolicyCondition::Classification {
+                op: "eq".to_string(),
+                value: Classification::T3,
+            }],
             action: Decision::DENY,
             enabled: false,
             version: 1,
         };
-        let store = PolicyStore { cache: RwLock::new(vec![disabled]), pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")) };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![disabled]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
         let resp = store.evaluate(&make_request(Classification::T3));
         // Disabled policy should be skipped → falls through to default-deny (T3)
         assert_eq!(resp.decision, Decision::DENY);
@@ -312,16 +325,39 @@ mod tests {
     #[test]
     fn test_memberof_matches_in() {
         // "in" matches if ANY group equals target
-        assert!(memberof_matches("in", "S-1-5-21-123-512", &["S-1-5-21-123-512".to_string()]));
-        assert!(memberof_matches("in", "S-1-5-21-123-512", &["S-1-5-21-123-513".to_string(), "S-1-5-21-123-512".to_string()]));
-        assert!(!memberof_matches("in", "S-1-5-21-123-512", &["S-1-5-21-123-513".to_string()]));
+        assert!(memberof_matches(
+            "in",
+            "S-1-5-21-123-512",
+            &["S-1-5-21-123-512".to_string()]
+        ));
+        assert!(memberof_matches(
+            "in",
+            "S-1-5-21-123-512",
+            &[
+                "S-1-5-21-123-513".to_string(),
+                "S-1-5-21-123-512".to_string()
+            ]
+        ));
+        assert!(!memberof_matches(
+            "in",
+            "S-1-5-21-123-512",
+            &["S-1-5-21-123-513".to_string()]
+        ));
     }
 
     #[test]
     fn test_memberof_matches_not_in() {
         // "not_in" matches if NO group equals target
-        assert!(memberof_matches("not_in", "S-1-5-21-123-512", &["S-1-5-21-123-513".to_string()]));
-        assert!(!memberof_matches("not_in", "S-1-5-21-123-512", &["S-1-5-21-123-512".to_string()]));
+        assert!(memberof_matches(
+            "not_in",
+            "S-1-5-21-123-512",
+            &["S-1-5-21-123-513".to_string()]
+        ));
+        assert!(!memberof_matches(
+            "not_in",
+            "S-1-5-21-123-512",
+            &["S-1-5-21-123-512".to_string()]
+        ));
     }
 
     #[test]
@@ -340,7 +376,11 @@ mod tests {
     fn test_compare_op_in_not_applicable_to_scalars() {
         // "in"/"not_in" on scalar types (e.g. Classification) should return false
         assert!(!compare_op("in", &Classification::T3, &Classification::T3));
-        assert!(!compare_op("not_in", &Classification::T3, &Classification::T3));
+        assert!(!compare_op(
+            "not_in",
+            &Classification::T3,
+            &Classification::T3
+        ));
     }
 
     #[test]
@@ -351,7 +391,10 @@ mod tests {
             name: "low priority allow".to_string(),
             description: None,
             priority: 1,
-            conditions: vec![PolicyCondition::Classification { op: "eq".to_string(), value: Classification::T3 }],
+            conditions: vec![PolicyCondition::Classification {
+                op: "eq".to_string(),
+                value: Classification::T3,
+            }],
             action: Decision::ALLOW,
             enabled: true,
             version: 1,
@@ -361,12 +404,18 @@ mod tests {
             name: "high priority deny".to_string(),
             description: None,
             priority: 10,
-            conditions: vec![PolicyCondition::Classification { op: "eq".to_string(), value: Classification::T3 }],
+            conditions: vec![PolicyCondition::Classification {
+                op: "eq".to_string(),
+                value: Classification::T3,
+            }],
             action: Decision::DENY,
             enabled: true,
             version: 1,
         };
-        let store = PolicyStore { cache: RwLock::new(vec![p1, p2]), pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")) };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![p1, p2]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
         let resp = store.evaluate(&make_request(Classification::T3));
         assert_eq!(resp.decision, Decision::ALLOW);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("p1"));
@@ -382,7 +431,10 @@ mod tests {
                 name: "p1".to_string(),
                 description: None,
                 priority: 1,
-                conditions: vec![PolicyCondition::Classification { op: "eq".to_string(), value: Classification::T3 }],
+                conditions: vec![PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                }],
                 action: Decision::DENY,
                 enabled: true,
                 version: 1,
@@ -402,7 +454,10 @@ mod tests {
                 name: "p1".to_string(),
                 description: None,
                 priority: 1,
-                conditions: vec![PolicyCondition::Classification { op: "eq".to_string(), value: Classification::T3 }],
+                conditions: vec![PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                }],
                 action: Decision::DENY,
                 enabled: true,
                 version: 1,
@@ -423,7 +478,10 @@ mod tests {
                 name: "p1".to_string(),
                 description: None,
                 priority: 1,
-                conditions: vec![PolicyCondition::Classification { op: "neq".to_string(), value: Classification::T4 }],
+                conditions: vec![PolicyCondition::Classification {
+                    op: "neq".to_string(),
+                    value: Classification::T4,
+                }],
                 action: Decision::ALLOW,
                 enabled: true,
                 version: 1,
@@ -446,7 +504,10 @@ mod tests {
                 name: "p1".to_string(),
                 description: None,
                 priority: 1,
-                conditions: vec![PolicyCondition::MemberOf { op: "in".to_string(), group_sid: "S-1-5-21-123-512".to_string() }],
+                conditions: vec![PolicyCondition::MemberOf {
+                    op: "in".to_string(),
+                    group_sid: "S-1-5-21-123-512".to_string(),
+                }],
                 action: Decision::DENY,
                 enabled: true,
                 version: 1,
@@ -467,7 +528,10 @@ mod tests {
                 name: "p1".to_string(),
                 description: None,
                 priority: 1,
-                conditions: vec![PolicyCondition::MemberOf { op: "in".to_string(), group_sid: "S-1-5-21-999".to_string() }],
+                conditions: vec![PolicyCondition::MemberOf {
+                    op: "in".to_string(),
+                    group_sid: "S-1-5-21-999".to_string(),
+                }],
                 action: Decision::DENY,
                 enabled: true,
                 version: 1,
@@ -489,7 +553,10 @@ mod tests {
                 name: "p1".to_string(),
                 description: None,
                 priority: 1,
-                conditions: vec![PolicyCondition::MemberOf { op: "not_in".to_string(), group_sid: "S-1-5-21-512".to_string() }],
+                conditions: vec![PolicyCondition::MemberOf {
+                    op: "not_in".to_string(),
+                    group_sid: "S-1-5-21-512".to_string(),
+                }],
                 action: Decision::ALLOW,
                 enabled: true,
                 version: 1,
@@ -512,7 +579,10 @@ mod tests {
                 name: "p1".to_string(),
                 description: None,
                 priority: 1,
-                conditions: vec![PolicyCondition::DeviceTrust { op: "eq".to_string(), value: DeviceTrust::Managed }],
+                conditions: vec![PolicyCondition::DeviceTrust {
+                    op: "eq".to_string(),
+                    value: DeviceTrust::Managed,
+                }],
                 action: Decision::ALLOW,
                 enabled: true,
                 version: 1,
@@ -532,7 +602,10 @@ mod tests {
                 name: "p1".to_string(),
                 description: None,
                 priority: 1,
-                conditions: vec![PolicyCondition::NetworkLocation { op: "eq".to_string(), value: NetworkLocation::Corporate }],
+                conditions: vec![PolicyCondition::NetworkLocation {
+                    op: "eq".to_string(),
+                    value: NetworkLocation::Corporate,
+                }],
                 action: Decision::DENY,
                 enabled: true,
                 version: 1,
@@ -551,7 +624,10 @@ mod tests {
                 name: "p1".to_string(),
                 description: None,
                 priority: 1,
-                conditions: vec![PolicyCondition::AccessContext { op: "eq".to_string(), value: AccessContext::Smb }],
+                conditions: vec![PolicyCondition::AccessContext {
+                    op: "eq".to_string(),
+                    value: AccessContext::Smb,
+                }],
                 action: Decision::DENY,
                 enabled: true,
                 version: 1,
@@ -572,7 +648,10 @@ mod tests {
                 name: "p1".to_string(),
                 description: None,
                 priority: 1,
-                conditions: vec![PolicyCondition::Classification { op: "in".to_string(), value: Classification::T3 }],
+                conditions: vec![PolicyCondition::Classification {
+                    op: "in".to_string(),
+                    value: Classification::T3,
+                }],
                 action: Decision::DENY,
                 enabled: true,
                 version: 1,

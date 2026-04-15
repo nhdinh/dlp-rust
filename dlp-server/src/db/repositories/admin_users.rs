@@ -38,9 +38,9 @@ impl AdminUserRepository {
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
     pub fn get_password_hash(pool: &Pool, username: &str) -> rusqlite::Result<String> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
             "SELECT password_hash FROM admin_users WHERE username = ?1",
             params![username],
@@ -74,9 +74,9 @@ impl AdminUserRepository {
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
     pub fn count(pool: &Pool) -> rusqlite::Result<i64> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row("SELECT COUNT(*) FROM admin_users", [], |r| r.get(0))
     }
 

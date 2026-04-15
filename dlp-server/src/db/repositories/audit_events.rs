@@ -73,9 +73,9 @@ impl AuditEventRepository {
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
     pub fn count(pool: &Pool) -> rusqlite::Result<i64> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
     }
 
@@ -135,9 +135,9 @@ impl AuditEventRepository {
         pool: &Pool,
         filter: &AuditEventFilter,
     ) -> rusqlite::Result<Vec<serde_json::Value>> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
         let mut conditions: Vec<String> = Vec::new();
         let mut params_map: HashMap<usize, String> = HashMap::new();

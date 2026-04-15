@@ -8,8 +8,8 @@ use std::net::SocketAddr;
 
 use axum::body::Body;
 use axum::extract::Request;
-use http::{header::RETRY_AFTER, Response, StatusCode};
 use governor::middleware::NoOpMiddleware;
+use http::{header::RETRY_AFTER, Response, StatusCode};
 use tower_governor::{
     governor::GovernorConfigBuilder,
     key_extractor::{KeyExtractor, SmartIpKeyExtractor},
@@ -102,8 +102,7 @@ pub fn strict_config() -> GovernorLayer<SmartIpKeyExtractor, NoOpMiddleware, Bod
 }
 
 /// Moderate limit: 30 requests per 60 seconds. Used for `/agents/:id/heartbeat`.
-pub fn moderate_config(
-) -> GovernorLayer<AgentIdOrIpKeyExtractor, NoOpMiddleware, Body> {
+pub fn moderate_config() -> GovernorLayer<AgentIdOrIpKeyExtractor, NoOpMiddleware, Body> {
     GovernorLayer::new(
         GovernorConfigBuilder::default()
             .per_second(60)
@@ -116,8 +115,7 @@ pub fn moderate_config(
 }
 
 /// Per-agent limit: 200 requests per 60 seconds. Used for `/audit/events`.
-pub fn per_agent_config(
-) -> GovernorLayer<AgentIdOrIpKeyExtractor, NoOpMiddleware, Body> {
+pub fn per_agent_config() -> GovernorLayer<AgentIdOrIpKeyExtractor, NoOpMiddleware, Body> {
     GovernorLayer::new(
         GovernorConfigBuilder::default()
             .per_second(60)
@@ -130,8 +128,7 @@ pub fn per_agent_config(
 }
 
 /// Default limit: 100 requests per 60 seconds. Used for remaining admin routes.
-pub fn default_config(
-) -> GovernorLayer<AgentIdOrIpKeyExtractor, NoOpMiddleware, Body> {
+pub fn default_config() -> GovernorLayer<AgentIdOrIpKeyExtractor, NoOpMiddleware, Body> {
     GovernorLayer::new(
         GovernorConfigBuilder::default()
             .per_second(60)
@@ -144,8 +141,7 @@ pub fn default_config(
 }
 
 /// Policy route limit: 60 requests per 60 seconds. Used for policy CRUD.
-pub fn policy_config(
-) -> GovernorLayer<AgentIdOrIpKeyExtractor, NoOpMiddleware, Body> {
+pub fn policy_config() -> GovernorLayer<AgentIdOrIpKeyExtractor, NoOpMiddleware, Body> {
     GovernorLayer::new(
         GovernorConfigBuilder::default()
             .per_second(60)
@@ -172,9 +168,7 @@ mod tests {
             Some("my-agent-id".to_owned())
         );
         assert_eq!(
-            extract_agent_id_from_path(
-                "/agents/550e8400-e29b-41d4-a716-446655440000/events"
-            ),
+            extract_agent_id_from_path("/agents/550e8400-e29b-41d4-a716-446655440000/events"),
             Some("550e8400-e29b-41d4-a716-446655440000".to_owned())
         );
         assert_eq!(extract_agent_id_from_path("/policies"), None);

@@ -51,9 +51,9 @@ impl AlertRouterConfigRepository {
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
     pub fn get(pool: &Pool) -> rusqlite::Result<AlertRouterConfigRow> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
             "SELECT smtp_host, smtp_port, smtp_username, smtp_password, \
              smtp_from, smtp_to, smtp_enabled, webhook_url, webhook_secret, \

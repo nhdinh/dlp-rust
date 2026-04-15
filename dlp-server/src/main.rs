@@ -185,13 +185,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Load all policies into the in-memory cache.
     // Fails the server startup if the DB is corrupt or unreachable.
-    let policy_store = Arc::new(
-        PolicyStore::new(Arc::clone(&pool)).map_err(|e| {
-            eprintln!("Error: failed to load policies: {e}");
-            anyhow::anyhow!("policy store initialization failed: {e}")
-        })?,
+    let policy_store = Arc::new(PolicyStore::new(Arc::clone(&pool)).map_err(|e| {
+        eprintln!("Error: failed to load policies: {e}");
+        anyhow::anyhow!("policy store initialization failed: {e}")
+    })?);
+    info!(
+        count = policy_store.list_policies().len(),
+        "policy store loaded"
     );
-    info!(count = policy_store.list_policies().len(), "policy store loaded");
 
     // Build shared application state.
     let state = Arc::new(AppState {
@@ -230,9 +231,12 @@ async fn main() -> anyhow::Result<()> {
     // `into_make_service_with_connect_info` is required so that
     // `AgentIdOrIpKeyExtractor` can read the peer's socket address for IP-based
     // rate limiting on non-agent routes.
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     info!("dlp-server shut down");
     Ok(())

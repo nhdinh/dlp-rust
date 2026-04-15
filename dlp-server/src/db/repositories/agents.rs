@@ -45,9 +45,9 @@ impl AgentRepository {
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
     pub fn list(pool: &Pool) -> rusqlite::Result<Vec<AgentRow>> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let mut stmt = conn.prepare(
             "SELECT agent_id, hostname, ip, os_version, agent_version, \
              last_heartbeat, status, registered_at \
@@ -118,9 +118,9 @@ impl AgentRepository {
     ///
     /// Returns `rusqlite::Error::QueryReturnedNoRows` if the agent is not found.
     pub fn get_by_id(pool: &Pool, agent_id: &str) -> rusqlite::Result<AgentRow> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
             "SELECT agent_id, hostname, ip, os_version, agent_version, \
              last_heartbeat, status, registered_at \
@@ -186,10 +186,7 @@ impl AgentRepository {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if the statement fails.
-    pub fn mark_stale_offline(
-        uow: &UnitOfWork<'_>,
-        cutoff: &str,
-    ) -> rusqlite::Result<usize> {
+    pub fn mark_stale_offline(uow: &UnitOfWork<'_>, cutoff: &str) -> rusqlite::Result<usize> {
         let rows = uow.tx.execute(
             "UPDATE agents SET status = 'offline' \
              WHERE status = 'online' AND last_heartbeat < ?1",

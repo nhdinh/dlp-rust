@@ -41,9 +41,9 @@ impl ExceptionRepository {
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
     pub fn list(pool: &Pool) -> rusqlite::Result<Vec<ExceptionRow>> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let mut stmt = conn.prepare(
             "SELECT id, policy_id, user_sid, approver, justification, \
              duration_seconds, granted_at, expires_at \
@@ -105,9 +105,9 @@ impl ExceptionRepository {
     ///
     /// Returns `rusqlite::Error::QueryReturnedNoRows` if the exception is not found.
     pub fn get_by_id(pool: &Pool, id: &str) -> rusqlite::Result<ExceptionRow> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
             "SELECT id, policy_id, user_sid, approver, justification, \
              duration_seconds, granted_at, expires_at \

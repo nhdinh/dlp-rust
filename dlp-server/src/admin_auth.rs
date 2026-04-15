@@ -167,8 +167,8 @@ pub async fn login(
         let pool = Arc::clone(&state.pool);
         let uname = username.clone();
         tokio::task::spawn_blocking(move || -> Result<String, AppError> {
-            let hash = AdminUserRepository::get_password_hash(&pool, &uname)
-                .map_err(AppError::from)?;
+            let hash =
+                AdminUserRepository::get_password_hash(&pool, &uname).map_err(AppError::from)?;
             Ok(hash)
         })
         .await
@@ -258,8 +258,8 @@ pub async fn change_password(
     let pool2 = Arc::clone(&state.pool);
     let uname = username.clone();
     let current_hash: String = tokio::task::spawn_blocking(move || -> Result<String, AppError> {
-        let hash = AdminUserRepository::get_password_hash(&pool2, &uname)
-            .map_err(AppError::from)?;
+        let hash =
+            AdminUserRepository::get_password_hash(&pool2, &uname).map_err(AppError::from)?;
         Ok(hash)
     })
     .await
@@ -347,7 +347,11 @@ pub fn has_admin_users(pool: &crate::db::Pool) -> anyhow::Result<bool> {
 /// # Errors
 ///
 /// Returns an error if bcrypt hashing or the database insert fails.
-pub fn create_admin_user(pool: &crate::db::Pool, username: &str, password: &str) -> anyhow::Result<()> {
+pub fn create_admin_user(
+    pool: &crate::db::Pool,
+    username: &str,
+    password: &str,
+) -> anyhow::Result<()> {
     let hash =
         bcrypt::hash(password, 12).map_err(|e| anyhow::anyhow!("bcrypt hash failed: {e}"))?;
     let now = Utc::now().to_rfc3339();

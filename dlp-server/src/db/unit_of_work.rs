@@ -50,14 +50,14 @@ mod tests {
 
     #[test]
     fn test_uow_commit() {
-        let mut conn = rusqlite::Connection::open_in_memory()
-            .expect("open in-memory connection");
+        let mut conn = rusqlite::Connection::open_in_memory().expect("open in-memory connection");
         conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY);")
             .expect("create table");
 
         {
             let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
-            uow.tx.execute("INSERT INTO t (id) VALUES (1)", [])
+            uow.tx
+                .execute("INSERT INTO t (id) VALUES (1)", [])
                 .expect("insert");
             uow.commit().expect("commit");
         }
@@ -70,14 +70,14 @@ mod tests {
 
     #[test]
     fn test_uow_rollback_on_drop() {
-        let mut conn = rusqlite::Connection::open_in_memory()
-            .expect("open in-memory connection");
+        let mut conn = rusqlite::Connection::open_in_memory().expect("open in-memory connection");
         conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY);")
             .expect("create table");
 
         {
             let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
-            uow.tx.execute("INSERT INTO t (id) VALUES (1)", [])
+            uow.tx
+                .execute("INSERT INTO t (id) VALUES (1)", [])
                 .expect("insert");
             // uow is dropped here without commit -- should rollback
         }

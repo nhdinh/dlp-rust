@@ -59,10 +59,7 @@ pub struct EventCount {
 /// Used by admin audit handlers that run inside `spawn_blocking` — we cannot
 /// call the async `ingest_events` from within a blocking thread without
 /// deadlocking the async runtime. JSON serialization of enum fields stays here.
-pub fn store_events_sync(
-    uow: &UnitOfWork<'_>,
-    events: &[AuditEvent],
-) -> Result<(), AppError> {
+pub fn store_events_sync(uow: &UnitOfWork<'_>, events: &[AuditEvent]) -> Result<(), AppError> {
     let rows: Vec<AuditEventRow> = events
         .iter()
         .map(|event| {
@@ -239,8 +236,7 @@ pub async fn query_events(
         offset: q.offset,
     };
     let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let rows = AuditEventRepository::query(&pool, &filter)
-            .map_err(AppError::from)?;
+        let rows = AuditEventRepository::query(&pool, &filter).map_err(AppError::from)?;
         Ok(rows)
     })
     .await

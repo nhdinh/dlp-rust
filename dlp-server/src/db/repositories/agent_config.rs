@@ -54,9 +54,9 @@ impl AgentConfigRepository {
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
     pub fn get_global(pool: &Pool) -> rusqlite::Result<GlobalAgentConfigRow> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
             "SELECT monitored_paths, heartbeat_interval_secs, \
              offline_cache_enabled, updated_at \
@@ -113,9 +113,9 @@ impl AgentConfigRepository {
     ///
     /// Returns `rusqlite::Error::QueryReturnedNoRows` if no override exists.
     pub fn get_override(pool: &Pool, agent_id: &str) -> rusqlite::Result<AgentConfigOverrideRow> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
             "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
              FROM agent_config_overrides WHERE agent_id = ?1",

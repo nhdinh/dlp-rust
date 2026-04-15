@@ -15,7 +15,7 @@ pub mod policies;
 pub mod siem_config;
 
 pub use admin_users::AdminUserRepository;
-pub use agent_config::{AgentConfigRepository, AgentConfigOverrideRow, GlobalAgentConfigRow};
+pub use agent_config::{AgentConfigOverrideRow, AgentConfigRepository, GlobalAgentConfigRow};
 pub use agents::AgentRepository;
 pub use alert_router_config::{AlertRouterConfigRepository, AlertRouterConfigRow};
 pub use audit_events::{AuditEventRepository, AuditEventRow};

@@ -39,9 +39,8 @@ fn test_app() -> (axum::Router, Arc<db::Pool>) {
     let pool = Arc::new(db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
     let siem = siem_connector::SiemConnector::new(Arc::clone(&pool));
     let alert = alert_router::AlertRouter::new(Arc::clone(&pool));
-    let policy_store = Arc::new(
-        policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
-    );
+    let policy_store =
+        Arc::new(policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"));
     let state = Arc::new(AppState {
         pool: Arc::clone(&pool),
         policy_store,

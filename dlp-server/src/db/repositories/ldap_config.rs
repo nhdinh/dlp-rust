@@ -48,9 +48,9 @@ impl LdapConfigRepository {
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
     pub fn get(pool: &Pool) -> rusqlite::Result<LdapConfigRow> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
             "SELECT ldap_url, base_dn, require_tls, cache_ttl_secs, \
              vpn_subnets, updated_at \

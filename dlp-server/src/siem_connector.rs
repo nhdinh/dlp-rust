@@ -95,7 +95,9 @@ pub enum SiemError {
 /// Maps pool acquisition errors to database errors.
 impl From<r2d2::Error> for SiemError {
     fn from(e: r2d2::Error) -> Self {
-        SiemError::Database(rusqlite::Error::InvalidParameterName(format!("pool error: {e}")))
+        SiemError::Database(rusqlite::Error::InvalidParameterName(format!(
+            "pool error: {e}"
+        )))
     }
 }
 
@@ -118,8 +120,7 @@ impl SiemConnector {
     ///
     /// Returns [`SiemError::Database`] if the row cannot be read.
     fn load_config(&self) -> Result<SiemConfigRow, SiemError> {
-        let repo_row = SiemConfigRepository::get(&self.pool)
-            .map_err(SiemError::from)?;
+        let repo_row = SiemConfigRepository::get(&self.pool).map_err(SiemError::from)?;
         Ok(SiemConfigRow {
             splunk_url: repo_row.splunk_url,
             splunk_token: repo_row.splunk_token,

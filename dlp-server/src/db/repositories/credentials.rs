@@ -35,9 +35,9 @@ impl CredentialsRepository {
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
     pub fn get(pool: &Pool, key: &str) -> rusqlite::Result<CredentialRow> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
             "SELECT key, value, updated_at FROM agent_credentials WHERE key = ?1",
             params![key],

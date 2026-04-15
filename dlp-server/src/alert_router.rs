@@ -108,7 +108,9 @@ pub enum AlertError {
 /// Maps pool acquisition errors to database errors.
 impl From<r2d2::Error> for AlertError {
     fn from(e: r2d2::Error) -> Self {
-        AlertError::Database(rusqlite::Error::InvalidParameterName(format!("pool error: {e}")))
+        AlertError::Database(rusqlite::Error::InvalidParameterName(format!(
+            "pool error: {e}"
+        )))
     }
 }
 
@@ -153,8 +155,7 @@ impl AlertRouter {
     /// Returns [`AlertError::Database`] if the row cannot be read or the
     /// stored `smtp_port` is outside the `u16` range.
     fn load_config(&self) -> Result<AlertRouterConfigRow, AlertError> {
-        let repo_row = AlertRouterConfigRepository::get(&self.pool)
-            .map_err(AlertError::from)?;
+        let repo_row = AlertRouterConfigRepository::get(&self.pool).map_err(AlertError::from)?;
         Ok(AlertRouterConfigRow {
             smtp_host: repo_row.smtp_host,
             smtp_port: repo_row.smtp_port,

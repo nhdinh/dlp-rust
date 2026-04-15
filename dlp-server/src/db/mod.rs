@@ -41,7 +41,9 @@ pub fn new_pool(path: &str) -> anyhow::Result<Pool> {
     // Initialize tables using the first connection from the pool.
     // SQLite sets WAL journal mode at the file level on first open,
     // so subsequent connections to the same file inherit that mode.
-    let conn = pool.get().context("failed to acquire connection for init")?;
+    let conn = pool
+        .get()
+        .context("failed to acquire connection for init")?;
     conn.execute_batch("PRAGMA journal_mode=WAL;")
         .context("failed to enable WAL journal mode")?;
 
@@ -258,18 +260,26 @@ mod tests {
             )
             .expect("seed row must exist");
 
-        assert_eq!(monitored_paths, "[]", "default monitored_paths must be empty JSON array");
-        assert_eq!(heartbeat_interval_secs, 30, "default heartbeat_interval_secs must be 30");
-        assert_eq!(offline_cache_enabled, 1, "default offline_cache_enabled must be 1 (true)");
+        assert_eq!(
+            monitored_paths, "[]",
+            "default monitored_paths must be empty JSON array"
+        );
+        assert_eq!(
+            heartbeat_interval_secs, 30,
+            "default heartbeat_interval_secs must be 30"
+        );
+        assert_eq!(
+            offline_cache_enabled, 1,
+            "default offline_cache_enabled must be 1 (true)"
+        );
     }
 
     #[test]
     fn test_idempotent_init() {
         let pool = new_pool(":memory:").expect("first open");
         let conn = pool.get().expect("acquire connection");
-        let result = conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS agents (agent_id TEXT PRIMARY KEY);"
-        );
+        let result =
+            conn.execute_batch("CREATE TABLE IF NOT EXISTS agents (agent_id TEXT PRIMARY KEY);");
         assert!(result.is_ok(), "re-init should be idempotent");
     }
 
@@ -296,7 +306,10 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM alert_router_config", [], |r| r.get(0))
             .expect("count alert_router_config rows");
-        assert_eq!(count, 1, "alert_router_config must have exactly one seed row");
+        assert_eq!(
+            count, 1,
+            "alert_router_config must have exactly one seed row"
+        );
 
         let (smtp_enabled, webhook_enabled): (i64, i64) = conn
             .query_row(

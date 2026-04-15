@@ -45,9 +45,9 @@ impl SiemConfigRepository {
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
     pub fn get(pool: &Pool) -> rusqlite::Result<SiemConfigRow> {
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
             "SELECT splunk_url, splunk_token, splunk_enabled, \
              elk_url, elk_index, elk_api_key, elk_enabled, updated_at \
