@@ -26,6 +26,8 @@ use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use reqwest::Client;
 
+use crate::db;
+
 /// SMTP email alert configuration.
 #[derive(Debug, Clone)]
 pub struct SmtpConfig {
@@ -103,9 +105,9 @@ pub enum AlertError {
 }
 
 /// Maps pool acquisition errors to database errors.
-impl From<r2d2::PoolError> for AlertError {
-    fn from(e: r2d2::PoolError) -> Self {
-        AlertError::Database(e.into())
+impl From<r2d2::Error> for AlertError {
+    fn from(e: r2d2::Error) -> Self {
+        AlertError::Database(rusqlite::Error::InvalidParameterName(format!("pool error: {e}")))
     }
 }
 

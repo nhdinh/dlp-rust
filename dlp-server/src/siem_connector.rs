@@ -11,6 +11,8 @@ use dlp_common::AuditEvent;
 use reqwest::Client;
 use serde::Serialize;
 
+use crate::db;
+
 /// Splunk HTTP Event Collector configuration.
 #[derive(Debug, Clone)]
 pub struct SplunkConfig {
@@ -90,9 +92,9 @@ pub enum SiemError {
 }
 
 /// Maps pool acquisition errors to database errors.
-impl From<r2d2::PoolError> for SiemError {
-    fn from(e: r2d2::PoolError) -> Self {
-        SiemError::Database(e.into())
+impl From<r2d2::Error> for SiemError {
+    fn from(e: r2d2::Error) -> Self {
+        SiemError::Database(rusqlite::Error::InvalidParameterName(format!("pool error: {e}")))
     }
 }
 

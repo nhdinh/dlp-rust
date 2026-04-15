@@ -5,12 +5,12 @@
 //! avoid blocking the async reactor.
 
 use anyhow::Context;
-use r2d2::Pool;
+use r2d2::Pool as R2d2Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::Connection;
+use rusqlite::Connection as SqliteConn;
 
 /// Pool type alias — wraps `SqliteConnectionManager`.
-pub type Pool = Pool<SqliteConnectionManager>;
+pub type Pool = R2d2Pool<SqliteConnectionManager>;
 
 /// A checked-out connection from the pool. Automatically returns to
 /// the pool when dropped.
@@ -28,7 +28,7 @@ pub type Connection = r2d2::PooledConnection<SqliteConnectionManager>;
 /// Returns an error if the pool cannot be built or table creation fails.
 pub fn new_pool(path: &str) -> anyhow::Result<Pool> {
     let mgr = SqliteConnectionManager::file(path);
-    let pool = Pool::builder()
+    let pool = R2d2Pool::builder()
         .max_size(5)
         .build(mgr)
         .context("failed to build connection pool")?;
@@ -49,7 +49,7 @@ pub fn new_pool(path: &str) -> anyhow::Result<Pool> {
 /// # Errors
 ///
 /// Returns an error if any `CREATE TABLE` statement fails.
-fn init_tables(conn: &Connection) -> anyhow::Result<()> {
+fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
     conn.execute_batch(
         "
             CREATE TABLE IF NOT EXISTS agents (

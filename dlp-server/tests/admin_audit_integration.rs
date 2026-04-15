@@ -18,8 +18,9 @@ use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use dlp_server::admin_api::{admin_router, PolicyPayload};
 use dlp_server::admin_auth::{set_jwt_secret, Claims};
-use dlp_server::{alert_router, db::Database, siem_connector, AppState};
+use dlp_server::{alert_router, db, siem_connector, AppState};
 use jsonwebtoken::{encode, EncodingKey, Header};
+use tempfile::NamedTempFile;
 use tower::ServiceExt;
 
 /// Shared test JWT secret — must match what `set_jwt_secret` initialises.
@@ -32,25 +33,26 @@ const TEST_JWT_SECRET: &str = "dlp-server-dev-secret-change-me";
 /// Every test MUST call this (or `set_jwt_secret` before it) to ensure the
 /// process-level OnceLock is populated — otherwise JWT verification silently
 /// fails and all authenticated requests return 401.
-fn test_app() -> (axum::Router, Arc<Database>) {
+fn test_app() -> (axum::Router, Arc<db::Pool>) {
     set_jwt_secret(TEST_JWT_SECRET.to_string());
-    let db = Arc::new(Database::open(":memory:").expect("open in-memory db"));
-    let siem = siem_connector::SiemConnector::new(Arc::clone(&db));
-    let alert = alert_router::AlertRouter::new(Arc::clone(&db));
+    let tmp = NamedTempFile::new().expect("create temp db");
+    let pool = Arc::new(db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+    let siem = siem_connector::SiemConnector::new(Arc::clone(&pool));
+    let alert = alert_router::AlertRouter::new(Arc::clone(&pool));
     let state = Arc::new(AppState {
-        db: Arc::clone(&db),
+        pool: Arc::clone(&pool),
         siem,
         alert,
         ad: None,
     });
-    (admin_router(state), db)
+    (admin_router(state), pool)
 }
 
 /// Seeds a single admin user with a known bcrypt hash.
-fn seed_admin_user(db: &Database, username: &str, password_plain: &str) {
+fn seed_admin_user(pool: &db::Pool, username: &str, password_plain: &str) {
     let hash = bcrypt::hash(password_plain, 4).expect("bcrypt hash in tests");
     let now = Utc::now().to_rfc3339();
-    let conn = db.conn().lock();
+    let conn = pool.get().expect("acquire connection");
     conn.execute(
         "INSERT INTO admin_users (username, password_hash, created_at) VALUES (?1, ?2, ?3)",
         rusqlite::params![username, hash, now],
@@ -75,14 +77,14 @@ fn mint_jwt(username: &str) -> String {
 
 /// Checks the audit_events table and asserts the expected field values.
 fn assert_admin_audit_event(
-    db: &Database,
+    pool: &db::Pool,
     action_attempted: &str,
     resource_path_prefix: &str,
     user_name: &str,
 ) {
     // Enum variants are stored as JSON-quoted strings, so encode the expected value.
     let action_filter = format!("\"{action_attempted}\"");
-    let conn = db.conn().lock();
+    let conn = pool.get().expect("acquire connection");
     let row: (String, String, String, String, String, String) = conn
         .query_row(
             "SELECT event_type, action_attempted, resource_path, user_name, decision, agent_id \
@@ -130,8 +132,8 @@ fn assert_admin_audit_event(
 /// `POST /admin/policies` emits an AdminAction audit event.
 #[tokio::test]
 async fn test_policy_create_emits_admin_audit_event() {
-    let (app, db) = test_app();
-    seed_admin_user(&db, "audit-admin", "currentpass");
+    let (app, pool) = test_app();
+    seed_admin_user(&pool, "audit-admin", "currentpass");
 
     let jwt = mint_jwt("audit-admin");
     let policy_id = "test-policy-create-audit";
@@ -169,19 +171,19 @@ async fn test_policy_create_emits_admin_audit_event() {
     }
     assert_eq!(status, StatusCode::CREATED, "create should return 201");
 
-    assert_admin_audit_event(&db, "PolicyCreate", "policy:", "audit-admin");
+    assert_admin_audit_event(&pool, "PolicyCreate", "policy:", "audit-admin");
 }
 
 /// `PUT /admin/policies/{id}` emits an AdminAction audit event.
 #[tokio::test]
 async fn test_policy_update_emits_admin_audit_event() {
-    let (app, db) = test_app();
-    seed_admin_user(&db, "audit-admin", "currentpass");
+    let (app, pool) = test_app();
+    seed_admin_user(&pool, "audit-admin", "currentpass");
 
     // Seed a policy first so the update has something to hit.
     let policy_id = "test-policy-update-audit";
     {
-        let conn = db.conn().lock();
+        let conn = pool.get().expect("acquire connection");
         conn.execute(
             "INSERT INTO policies (id, name, description, priority, conditions, action, enabled, version, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -224,19 +226,19 @@ async fn test_policy_update_emits_admin_audit_event() {
     let resp = app.oneshot(req).await.expect("oneshot");
     assert_eq!(resp.status(), StatusCode::OK, "update should return 200");
 
-    assert_admin_audit_event(&db, "PolicyUpdate", "policy:", "audit-admin");
+    assert_admin_audit_event(&pool, "PolicyUpdate", "policy:", "audit-admin");
 }
 
 /// `DELETE /admin/policies/{id}` emits an AdminAction audit event.
 #[tokio::test]
 async fn test_policy_delete_emits_admin_audit_event() {
-    let (app, db) = test_app();
-    seed_admin_user(&db, "audit-admin", "currentpass");
+    let (app, pool) = test_app();
+    seed_admin_user(&pool, "audit-admin", "currentpass");
 
     // Seed a policy first so the delete has something to hit.
     let policy_id = "test-policy-delete-audit";
     {
-        let conn = db.conn().lock();
+        let conn = pool.get().expect("acquire connection");
         conn.execute(
             "INSERT INTO policies (id, name, description, priority, conditions, action, enabled, version, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -271,14 +273,14 @@ async fn test_policy_delete_emits_admin_audit_event() {
         "delete should return 204"
     );
 
-    assert_admin_audit_event(&db, "PolicyDelete", "policy:", "audit-admin");
+    assert_admin_audit_event(&pool, "PolicyDelete", "policy:", "audit-admin");
 }
 
 /// `PUT /auth/password` emits an AdminAction audit event after a successful change.
 #[tokio::test]
 async fn test_password_change_emits_admin_audit_event() {
-    let (app, db) = test_app();
-    seed_admin_user(&db, "audit-admin", "currentpass");
+    let (app, pool) = test_app();
+    seed_admin_user(&pool, "audit-admin", "currentpass");
 
     let jwt = mint_jwt("audit-admin");
 
@@ -303,5 +305,5 @@ async fn test_password_change_emits_admin_audit_event() {
         "password change should return 200"
     );
 
-    assert_admin_audit_event(&db, "PasswordChange", "password_change:", "audit-admin");
+    assert_admin_audit_event(&pool, "PasswordChange", "password_change:", "audit-admin");
 }

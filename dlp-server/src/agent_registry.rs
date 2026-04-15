@@ -154,13 +154,14 @@ pub async fn heartbeat(
     let id = agent_id.clone();
     let pool = Arc::clone(&state.pool);
 
-    let rows_updated = tokio::task::spawn_blocking(move || {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.execute(
+    let rows_updated = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
+        let rows = conn.execute(
             "UPDATE agents SET last_heartbeat = ?1, status = 'online' \
              WHERE agent_id = ?2",
             rusqlite::params![now, id],
-        )
+        )?;
+        Ok(rows)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -183,8 +184,8 @@ pub async fn list_agents(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<AgentInfoResponse>>, AppError> {
     let pool = Arc::clone(&state.pool);
-    let agents = tokio::task::spawn_blocking(move || {
-        let conn = pool.get().map_err(AppError::from)?;
+    let agents = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
         let mut stmt = conn.prepare(
             "SELECT agent_id, hostname, ip, os_version, \
                     agent_version, last_heartbeat, status, \
@@ -207,7 +208,7 @@ pub async fn list_agents(
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok::<_, rusqlite::Error>(rows)
+        Ok::<_, AppError>(rows)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -227,9 +228,9 @@ pub async fn get_agent(
     let id = agent_id.clone();
     let pool = Arc::clone(&state.pool);
 
-    let agent = tokio::task::spawn_blocking(move || {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.query_row(
+    let agent = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
+        let row = conn.query_row(
             "SELECT agent_id, hostname, ip, os_version, \
                     agent_version, last_heartbeat, status, \
                     registered_at \
@@ -248,16 +249,16 @@ pub async fn get_agent(
                 })
             },
         )
+        .map_err(AppError::from)?;
+        Ok(row)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?;
 
     match agent {
         Ok(a) => Ok(Json(a)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            Err(AppError::NotFound(format!("agent {agent_id} not found")))
-        }
-        Err(e) => Err(AppError::Database(e)),
+        Err(AppError::NotFound(msg)) => Err(AppError::NotFound(msg)),
+        Err(e) => Err(e),
     }
 }
 
@@ -274,15 +275,16 @@ pub fn spawn_offline_sweeper(state: Arc<AppState>) {
             interval.tick().await;
 
             let pool = Arc::clone(&state.pool);
-            let result = tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
                 let cutoff = (Utc::now() - chrono::Duration::seconds(90)).to_rfc3339();
-                let conn = pool.get().map_err(AppError::from)?;
-                conn.execute(
+                let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
+                let rows = conn.execute(
                     "UPDATE agents SET status = 'offline' \
                      WHERE status = 'online' \
                        AND last_heartbeat < ?1",
                     rusqlite::params![cutoff],
-                )
+                )?;
+                Ok(rows)
             })
             .await;
 

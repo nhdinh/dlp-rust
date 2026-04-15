@@ -245,8 +245,8 @@ pub async fn query_events(
     Query(q): Query<EventQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
     let pool = Arc::clone(&state.pool);
-    let rows = tokio::task::spawn_blocking(move || {
-        let conn = pool.get().map_err(AppError::from)?;
+    let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
 
         // Build a dynamic WHERE clause from the provided filters.
         let mut conditions: Vec<String> = Vec::new();
@@ -327,7 +327,7 @@ pub async fn query_events(
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok::<_, rusqlite::Error>(rows)
+        Ok::<_, AppError>(rows)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -344,11 +344,12 @@ pub async fn get_event_count(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<EventCount>, AppError> {
     let pool = Arc::clone(&state.pool);
-    let count = tokio::task::spawn_blocking(move || {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.query_row("SELECT COUNT(*) FROM audit_events", [], |row| {
+    let count = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
+        let n = conn.query_row("SELECT COUNT(*) FROM audit_events", [], |row| {
             row.get::<_, i64>(0)
-        })
+        })?;
+        Ok(n)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;

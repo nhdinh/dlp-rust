@@ -164,14 +164,16 @@ pub async fn login(
     let hash: String = {
         let pool = Arc::clone(&state.pool);
         let uname = username.clone();
-        tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || -> Result<String, AppError> {
             let conn = pool.get().map_err(AppError::from)?;
-            conn.query_row(
+            let hash = conn.query_row(
                 "SELECT password_hash FROM admin_users \
                  WHERE username = ?1",
                 rusqlite::params![uname],
                 |row| row.get::<_, String>(0),
             )
+            .map_err(AppError::from)?;
+            Ok(hash)
         })
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?
@@ -259,13 +261,15 @@ pub async fn change_password(
     // Verify the current password.
     let pool2 = Arc::clone(&state.pool);
     let uname = username.clone();
-    let current_hash: String = tokio::task::spawn_blocking(move || {
+    let current_hash: String = tokio::task::spawn_blocking(move || -> Result<String, AppError> {
         let conn = pool2.get().map_err(AppError::from)?;
-        conn.query_row(
+        let hash = conn.query_row(
             "SELECT password_hash FROM admin_users WHERE username = ?1",
             rusqlite::params![uname],
             |row| row.get::<_, String>(0),
         )
+        .map_err(AppError::from)?;
+        Ok(hash)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?
@@ -293,12 +297,14 @@ pub async fn change_password(
 
     let uname = username.clone();
     let pool = Arc::clone(&state.pool);
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let conn = pool.get().map_err(AppError::from)?;
         conn.execute(
             "UPDATE admin_users SET password_hash = ?1 WHERE username = ?2",
             rusqlite::params![new_hash, uname],
         )
+        .map_err(AppError::from)?;
+        Ok(())
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -318,7 +324,7 @@ pub async fn change_password(
     let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(AppError::from)?;
-        audit_store::store_events_sync(&*conn, &[audit_event])
+        audit_store::store_events_sync(&conn, &[audit_event])
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;

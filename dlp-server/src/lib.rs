@@ -27,8 +27,8 @@ use dlp_common::AdClient;
 /// client so handlers can access them through a single `Arc<AppState>`.
 #[derive(Clone)]
 pub struct AppState {
-    /// Shared SQLite connection pool.
-    pub pool: db::Pool,
+    /// Shared SQLite connection pool (Arc so AppState is Clone).
+    pub pool: Arc<db::Pool>,
     /// SIEM relay connector (Splunk HEC / ELK).
     pub siem: siem_connector::SiemConnector,
     /// Alert router for DenyWithAlert email/webhook notifications.
@@ -134,8 +134,8 @@ impl IntoResponse for AppError {
 }
 
 /// Maps pool acquisition errors to internal server errors.
-impl From<r2d2::PoolError> for AppError {
-    fn from(e: r2d2::PoolError) -> Self {
+impl From<r2d2::Error> for AppError {
+    fn from(e: r2d2::Error) -> Self {
         AppError::Internal(anyhow::anyhow!("pool error: {e}"))
     }
 }

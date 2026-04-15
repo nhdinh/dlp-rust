@@ -9,8 +9,9 @@ use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use dlp_server::admin_api::{admin_router, LdapConfigPayload};
 use dlp_server::admin_auth::{set_jwt_secret, Claims};
-use dlp_server::{alert_router, db::Database, siem_connector, AppState};
+use dlp_server::{alert_router, db, siem_connector, AppState};
 use jsonwebtoken::{encode, EncodingKey, Header};
+use tempfile::NamedTempFile;
 use tower::ServiceExt;
 
 /// Shared test JWT secret — must match what `set_jwt_secret` initialises.
@@ -19,11 +20,12 @@ const TEST_JWT_SECRET: &str = "dlp-server-dev-secret-change-me";
 /// Builds a test router backed by a fresh in-memory database.
 fn test_app() -> axum::Router {
     set_jwt_secret(TEST_JWT_SECRET.to_string());
-    let db = Arc::new(Database::open(":memory:").expect("open in-memory db"));
-    let siem = siem_connector::SiemConnector::new(Arc::clone(&db));
-    let alert = alert_router::AlertRouter::new(Arc::clone(&db));
+    let tmp = NamedTempFile::new().expect("create temp db");
+    let pool = Arc::new(db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+    let siem = siem_connector::SiemConnector::new(Arc::clone(&pool));
+    let alert = alert_router::AlertRouter::new(Arc::clone(&pool));
     let state = Arc::new(AppState {
-        db,
+        pool: Arc::clone(&pool),
         siem,
         alert,
         ad: None,

@@ -132,7 +132,7 @@ pub async fn list_exceptions(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<Exception>>, AppError> {
     let pool = Arc::clone(&state.pool);
-    let exceptions = tokio::task::spawn_blocking(move || {
+    let exceptions = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let conn = pool.get().map_err(AppError::from)?;
         let mut stmt = conn.prepare(
             "SELECT id, policy_id, user_sid, approver, \
@@ -156,7 +156,7 @@ pub async fn list_exceptions(
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok::<_, rusqlite::Error>(rows)
+        Ok::<_, AppError>(rows)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -176,9 +176,9 @@ pub async fn get_exception(
     let id = exception_id.clone();
     let pool = Arc::clone(&state.pool);
 
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.query_row(
+    let result = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let conn = pool.get().map_err(|e: r2d2::Error| AppError::from(e))?;
+        let exc = conn.query_row(
             "SELECT id, policy_id, user_sid, approver, \
                     justification, duration_seconds, \
                     granted_at, expires_at \
@@ -197,16 +197,18 @@ pub async fn get_exception(
                 })
             },
         )
+        .map_err(AppError::from)?;
+        Ok(exc)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?;
 
     match result {
         Ok(exc) => Ok(Json(exc)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Err(AppError::NotFound(format!(
+        Err(AppError::NotFound(_)) => Err(AppError::NotFound(format!(
             "exception {exception_id} not found"
         ))),
-        Err(e) => Err(AppError::Database(e)),
+        Err(e) => Err(e),
     }
 }
 
