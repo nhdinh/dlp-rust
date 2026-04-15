@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v0.3.0
 milestone_name: Operational Hardening
 status: Executing Phase 11
-last_updated: "2026-04-15T18:47:26.491Z"
+last_updated: "2026-04-15T19:01:00Z"
 progress:
   total_phases: 6
   completed_phases: 1
-  total_plans: 5
-  completed_plans: 5
+  total_plans: 6
+  completed_plans: 6
   percent: 100
 ---
 
@@ -42,6 +42,9 @@ See: `.planning/PROJECT.md` (updated 2026-04-13)
 | 2026-04-16 | Classification from dlp_common root | dlp_common::abac does not re-export Classification; must use root path |
 | 2026-04-16 | Test helpers inside #[cfg(test)] module | Keeps public lib API clean, avoids dead_code in lib binary |
 | 2026-04-16 | POLICY_REFRESH_INTERVAL_SECS #[allow(dead_code)] | Wave 2 wires background refresh task; suppress until then |
+| 2026-04-15 | Background cache refresh: tokio interval loop | POLICY_REFRESH_INTERVAL_SECS exported as pub; avoids hardcoding magic number in main.rs |
+| 2026-04-15 | Startup failure on policy cache load error | Server does not start silently with empty cache; explicit map_err |
+| 2026-04-15 | Arc<PolicyStore> in AppState | pool and policy_store are both Arc<_> so AppState remains Clone for axum |
 
 ## Known Issues (v0.2.0 — to address in v0.3.0)
 
