@@ -25,6 +25,7 @@ use axum::response::{IntoResponse, Response};
 use dlp_common::AdClient;
 
 use crate::policy_engine_error::PolicyEngineError;
+use crate::policy_store::PolicyStore;
 
 /// Shared application state passed to all HTTP handlers via axum's `State` extractor.
 ///
@@ -34,6 +35,8 @@ use crate::policy_engine_error::PolicyEngineError;
 pub struct AppState {
     /// Shared SQLite connection pool (Arc so AppState is Clone).
     pub pool: Arc<db::Pool>,
+    /// Policy evaluation cache — loaded at startup, kept fresh by a background task.
+    pub policy_store: Arc<PolicyStore>,
     /// SIEM relay connector (Splunk HEC / ELK).
     pub siem: siem_connector::SiemConnector,
     /// Alert router for DenyWithAlert email/webhook notifications.
@@ -47,6 +50,7 @@ impl std::fmt::Debug for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppState")
             .field("pool", &self.pool)
+            .field("policy_store", &"PolicyStore(...)")
             .field("siem", &self.siem)
             .field("alert", &self.alert)
             .field(
