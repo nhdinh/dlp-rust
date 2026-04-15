@@ -121,6 +121,71 @@ All unit tests that use `Database::open(":memory:")` continue to work — the po
 wraps the same `SqliteConnectionManager::file` / `:memory:` URI. Test helper
 functions (`seed_agent`, etc.) get `&Pool` instead of `&Database`.
 
+### H — Batch Execution Semantics (Documented Post-Execution)
+
+**`execute_batch()` without explicit BEGIN/COMMIT (DDL/PRAGMA only):**
+Used in `init_tables()` — a single string of 10+ `CREATE TABLE IF NOT EXISTS` +
+`INSERT OR IGNORE` statements executed via `conn.execute_batch()`.
+
+Behavior: SQLite auto-commits each statement individually (no wrapping transaction).
+If statement N fails, statements 1..N-1 are already committed to disk.
+
+This is safe **only** because DDL (`CREATE TABLE IF NOT EXISTS`, `INSERT OR IGNORE`)
+is idempotent — re-running on next startup recovers any partial state. This pattern
+is NOT acceptable for DML batches (INSERT/UPDATE/DELETE of application data).
+
+**`unchecked_transaction()` for DML batches:**
+Used in `audit_store.rs` — N audit events inserted in a loop under a single
+`rusqlite::Transaction`. Any `?` failure propagates out without calling `.commit()`;
+the transaction auto-rolls back when it drops out of scope. Result: all-or-nothing
+atomicity for every batch of audit events.
+
+**Rule:** `execute_batch()` is permitted only for DDL and PRAGMA. All DML batches
+MUST use `unchecked_transaction()` (or an explicit `BEGIN`/`COMMIT`/`ROLLBACK`).
+
+### I — Future Architecture: Repository + Unit of Work Pattern
+
+**Decision:** The DB layer should adopt Repository + Unit of Work as its canonical
+pattern. This is NOT implemented in Phase 10 — it is a locked architectural intent
+for a dedicated future refactor phase.
+
+**Repository:** Each entity (`agents`, `policies`, `audit_events`, `exceptions`,
+`admin_users`, `ldap_config`, `siem_config`, `alert_router_config`,
+`agent_config_overrides`, `global_agent_config`) gets a repository struct with typed
+methods — no naked `conn.execute()` calls scattered across handlers.
+
+**Unit of Work:** A `UnitOfWork` struct holds a `rusqlite::Transaction`. Repositories
+that need to write accept `&UnitOfWork`. Calling `uow.commit()` commits all writes
+atomically. Dropping `uow` without committing auto-rolls back (RAII safety).
+
+**Scope split:**
+- **Writes (INSERT/UPDATE/DELETE):** Must go through `UnitOfWork`. No naked `conn.execute()`.
+- **Reads (SELECT):** Use a plain `pool.get()` connection via repository methods. No UoW overhead.
+
+**Location:** `dlp-server/src/db/` submodule. No new workspace crate.
+
+```
+dlp-server/src/db/
+    mod.rs           — Pool type, new_pool(), WAL init
+    repositories/
+        mod.rs
+        agents.rs
+        policies.rs
+        audit_events.rs
+        exceptions.rs
+        admin_users.rs
+        ldap_config.rs
+        siem_config.rs
+        alert_router_config.rs
+        agent_config.rs
+    unit_of_work.rs  — UnitOfWork<'conn> + commit/rollback
+```
+
+**Downstream agents note:** This pattern change requires updating all 50+ call sites
+in `admin_api.rs`, `admin_auth.rs`, `agent_registry.rs`, `alert_router.rs`,
+`audit_store.rs`, `exception_store.rs`, `siem_connector.rs`. Plan as a standalone
+phase — do not mix with other feature work.
+
 </decisions>
 
 <canonical_refs>
@@ -238,6 +303,8 @@ initialization logic. The module stays; the `Mutex<Connection>` wrapper goes.
 - Async pool (deadpool) — future consideration if async DB operations are added
 - Configurable pool size via env var — only if 5 proves insufficient in production
 - Pool size tuning via profiling — premature without load testing data
+- **Repository + Unit of Work refactor** — locked architectural intent (Decision I above);
+  planned as a dedicated future phase targeting all 50+ call sites across dlp-server.
 
 </deferred>
 
@@ -245,3 +312,4 @@ initialization logic. The module stays; the `Mutex<Connection>` wrapper goes.
 
 *Phase: 10-sqlite-connection-pool*
 *Context gathered: 2026-04-14 via /gsd-discuss-phase*
+*Updated: 2026-04-15 — added batch execution semantics (H) and Repository+UoW architectural intent (I)*
