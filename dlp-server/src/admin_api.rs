@@ -17,6 +17,7 @@ use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use dlp_common::abac::{EvaluateRequest, EvaluateResponse};
 use crate::admin_auth::{self, AdminUsername};
 use crate::agent_registry;
 use crate::audit_store;
@@ -30,6 +31,42 @@ use crate::exception_store;
 use crate::rate_limiter::{self, default_config, policy_config};
 use crate::AppError;
 use crate::AppState;
+use tracing::info;
+
+// ---------------------------------------------------------------------------
+// Evaluation endpoint
+// ---------------------------------------------------------------------------
+
+/// Evaluates an ABAC access request against the loaded policy set.
+///
+/// `POST /evaluate` — intentionally unauthenticated.
+/// Agent identity is established by `AgentInfo` in the request body.
+async fn evaluate_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<EvaluateRequest>,
+) -> Result<Json<EvaluateResponse>, AppError> {
+    let agent_id = request
+        .agent
+        .as_ref()
+        .map(|a| {
+            format!(
+                "{}\\{}",
+                a.machine_name.as_deref().unwrap_or("unknown"),
+                a.current_user.as_deref().unwrap_or("unknown"),
+            )
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    info!(
+        agent_id = %agent_id,
+        resource_classification = ?request.resource.classification,
+        "policy evaluation request"
+    );
+
+    // NOTE: evaluate() is synchronous — no .await here.
+    let response = state.policy_store.evaluate(&request);
+    Ok(Json(response))
+}
 
 // ---------------------------------------------------------------------------
 // Agent credential types
@@ -355,6 +392,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
     let public_routes = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
+        .route("/evaluate", post(evaluate_handler))
         .route("/auth/login", post(admin_auth::login).route_layer(rate_limiter::strict_config()))
         .route("/agents/register", post(agent_registry::register_agent))
         .route(
@@ -569,6 +607,9 @@ async fn create_policy(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
+    // Invalidate the policy cache so the next evaluation sees the new policy.
+    state.policy_store.invalidate();
+
     // Emit admin audit event after DB commit.
     let audit_event = dlp_common::AuditEvent::new(
         dlp_common::EventType::AdminAction,
@@ -676,6 +717,9 @@ async fn update_policy(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
+    // Invalidate the policy cache so the next evaluation sees the updated policy.
+    state.policy_store.invalidate();
+
     // Emit admin audit event after DB commit.
     let audit_event = dlp_common::AuditEvent::new(
         dlp_common::EventType::AdminAction,
@@ -725,6 +769,9 @@ async fn delete_policy(
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    // Invalidate the policy cache so the next evaluation sees the deleted policy.
+    state.policy_store.invalidate();
 
     if rows == 0 {
         return Err(AppError::NotFound(format!("policy {policy_id} not found")));
