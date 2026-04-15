@@ -33,35 +33,22 @@ use dlp_server::admin_auth;
 use dlp_server::agent_registry;
 use dlp_server::alert_router::AlertRouter;
 use dlp_server::db;
+use dlp_server::db::repositories::LdapConfigRepository;
 use dlp_server::siem_connector::SiemConnector;
 use dlp_server::AppState;
 
-/// Loads the LDAP configuration from the SQLite database.
+/// Loads the LDAP configuration from the SQLite database via `LdapConfigRepository`.
 ///
-/// Returns `None` if the config cannot be read (DB not yet initialized).
+/// Returns `None` if the config cannot be read (DB not yet initialized or row missing).
 fn load_ldap_config(pool: &db::Pool) -> Option<LdapConfig> {
-    let conn = pool.get().ok()?;
-    conn.query_row(
-        "SELECT ldap_url, base_dn, require_tls, cache_ttl_secs, vpn_subnets \
-         FROM ldap_config WHERE id = 1",
-        [],
-        |row| {
-            let ldap_url: String = row.get::<_, String>(0)?;
-            let base_dn: String = row.get::<_, String>(1)?;
-            let require_tls: i64 = row.get::<_, i64>(2).unwrap_or(1);
-            let cache_ttl_secs: i64 = row.get::<_, i64>(3).unwrap_or(300);
-            let vpn_subnets: String = row.get::<_, String>(4).unwrap_or_default();
-            Ok(Some(LdapConfig {
-                ldap_url,
-                base_dn,
-                require_tls: require_tls != 0,
-                cache_ttl_secs: cache_ttl_secs as u64,
-                vpn_subnets,
-            }))
-        },
-    )
-    .ok()
-    .flatten()
+    let row = LdapConfigRepository::get(pool).ok()?;
+    Some(LdapConfig {
+        ldap_url: row.ldap_url,
+        base_dn: row.base_dn,
+        require_tls: row.require_tls,
+        cache_ttl_secs: row.cache_ttl_secs,
+        vpn_subnets: row.vpn_subnets,
+    })
 }
 
 /// Default bind address.
