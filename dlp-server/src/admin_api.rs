@@ -21,6 +21,11 @@ use crate::admin_auth::{self, AdminUsername};
 use crate::agent_registry;
 use crate::audit_store;
 use crate::db;
+use crate::db::repositories;
+use crate::db::repositories::{
+    AgentConfigRepository, AlertRouterConfigRepository, CredentialsRepository,
+    LdapConfigRepository, PolicyRepository, SiemConfigRepository,
+};
 use crate::exception_store;
 use crate::AppError;
 use crate::AppState;
@@ -435,39 +440,33 @@ async fn list_policies(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<PolicyResponse>>, AppError> {
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
-    let policies = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, name, description, priority, conditions, \
-                    action, enabled, version, updated_at \
-             FROM policies ORDER BY priority ASC",
-        )?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                let conditions_str: String = row.get(4)?;
+    let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let db_rows = PolicyRepository::list(&pool).map_err(AppError::Database)?;
+        let policies: Vec<PolicyResponse> = db_rows
+            .into_iter()
+            .map(|r| {
                 let conditions: serde_json::Value =
-                    serde_json::from_str(&conditions_str).unwrap_or(serde_json::Value::Null);
-                Ok(PolicyResponse {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    priority: row.get(3)?,
+                    serde_json::from_str(&r.conditions).unwrap_or(serde_json::Value::Null);
+                PolicyResponse {
+                    id: r.id,
+                    name: r.name,
+                    description: r.description,
+                    priority: u32::try_from(r.priority)
+                        .unwrap_or(r.priority as u32),
                     conditions,
-                    action: row.get(5)?,
-                    enabled: row.get::<_, bool>(6)?,
-                    version: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(rows)
+                    action: r.action,
+                    enabled: r.enabled != 0,
+                    version: r.version,
+                    updated_at: r.updated_at,
+                }
+            })
+            .collect();
+        Ok(policies)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    Ok(Json(policies))
+    Ok(Json(rows))
 }
 
 /// `GET /policies/:id` — get a single policy.
@@ -479,31 +478,20 @@ async fn get_policy(
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
 
     let p = tokio::task::spawn_blocking(move || -> Result<PolicyResponse, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        let p = conn.query_row(
-            "SELECT id, name, description, priority, conditions, \
-                    action, enabled, version, updated_at \
-             FROM policies WHERE id = ?1",
-            rusqlite::params![id],
-            |row| {
-                let conditions_str: String = row.get(4)?;
-                let conditions: serde_json::Value =
-                    serde_json::from_str(&conditions_str).unwrap_or(serde_json::Value::Null);
-                Ok(PolicyResponse {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    priority: row.get(3)?,
-                    conditions,
-                    action: row.get(5)?,
-                    enabled: row.get::<_, bool>(6)?,
-                    version: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            },
-        )
-        .map_err(AppError::from)?;
-        Ok(p)
+        let r = PolicyRepository::get_by_id(&pool, &id).map_err(AppError::Database)?;
+        let conditions: serde_json::Value =
+            serde_json::from_str(&r.conditions).unwrap_or(serde_json::Value::Null);
+        Ok(PolicyResponse {
+            id: r.id,
+            name: r.name,
+            description: r.description,
+            priority: u32::try_from(r.priority).unwrap_or(r.priority as u32),
+            conditions,
+            action: r.action,
+            enabled: r.enabled != 0,
+            version: r.version,
+            updated_at: r.updated_at,
+        })
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -539,26 +527,25 @@ async fn create_policy(
         updated_at: now.clone(),
     };
 
+    // Persist the new policy via repository + UnitOfWork.
     let r = resp.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.execute(
-            "INSERT INTO policies \
-                (id, name, description, priority, conditions, \
-                 action, enabled, version, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
-            rusqlite::params![
-                r.id,
-                r.name,
-                r.description,
-                r.priority,
-                conditions_json,
-                r.action,
-                r.enabled,
-                r.updated_at,
-            ],
-        )?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let record = repositories::PolicyRow {
+            id: r.id.clone(),
+            name: r.name.clone(),
+            description: r.description.clone(),
+            priority: i64::from(r.priority),
+            conditions: conditions_json.clone(),
+            action: r.action.clone(),
+            enabled: if r.enabled { 1 } else { 0 },
+            version: r.version,
+            updated_at: r.updated_at.clone(),
+        };
+        PolicyRepository::insert(&uow, &record).map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
     .await
@@ -579,9 +566,9 @@ async fn create_policy(
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
         audit_store::store_events_sync(&uow, &[audit_event])?;
-        uow.commit().map_err(AppError::from)?;
+        uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
     .await
@@ -624,53 +611,46 @@ async fn update_policy(
     let id = policy_id.clone();
     let payload_name = payload.name.clone();
     let payload_desc = payload.description.clone();
-    let payload_priority = payload.priority;
+    let payload_priority = i64::from(payload.priority);
     let payload_action = payload.action.clone();
-    let payload_enabled = payload.enabled;
+    let payload_enabled = if payload.enabled { 1 } else { 0 };
     let payload_conditions = payload.conditions.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
 
     let resp = tokio::task::spawn_blocking(move || -> Result<PolicyResponse, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
 
-        // Increment the version number atomically.
-        let rows = conn.execute(
-            "UPDATE policies SET \
-                    name = ?1, description = ?2, priority = ?3, \
-                    conditions = ?4, action = ?5, enabled = ?6, \
-                    version = version + 1, updated_at = ?7 \
-                 WHERE id = ?8",
-            rusqlite::params![
-                payload_name,
-                payload_desc,
-                payload_priority,
-                conditions_json,
-                payload_action,
-                payload_enabled,
-                now,
-                id,
-            ],
-        )?;
+        let row = repositories::PolicyUpdateRow {
+            name: &payload_name,
+            description: payload_desc.as_deref(),
+            priority: payload_priority,
+            conditions: &conditions_json,
+            action: &payload_action,
+            enabled: payload_enabled,
+            updated_at: &now,
+            id: &id,
+        };
+        let rows = PolicyRepository::update(&uow, &row)
+            .map_err(AppError::Database)?;
 
         if rows == 0 {
             return Err(AppError::NotFound(format!("policy {id} not found")));
         }
 
-        // Read back the updated row for the version.
-        let version: i64 = conn.query_row(
-            "SELECT version FROM policies WHERE id = ?1",
-            rusqlite::params![id],
-            |row| row.get(0),
-        )?;
+        let version = PolicyRepository::get_version(&uow, &id)
+            .map_err(AppError::Database)?;
+
+        uow.commit().map_err(AppError::Database)?;
 
         Ok(PolicyResponse {
             id,
             name: payload_name,
             description: payload_desc,
-            priority: payload_priority,
+            priority: u32::try_from(payload_priority).unwrap_or(payload_priority as u32),
             conditions: payload_conditions,
             action: payload_action,
-            enabled: payload_enabled,
+            enabled: payload_enabled != 0,
             version,
             updated_at: now,
         })
@@ -693,9 +673,9 @@ async fn update_policy(
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
         audit_store::store_events_sync(&uow, &[audit_event])?;
-        uow.commit().map_err(AppError::from)?;
+        uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
     .await
@@ -719,9 +699,10 @@ async fn delete_policy(
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
 
     let rows = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        let rows = conn.execute("DELETE FROM policies WHERE id = ?1", rusqlite::params![id])
-            .map_err(AppError::from)?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let rows = PolicyRepository::delete(&uow, &id).map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
         Ok(rows)
     })
     .await
@@ -746,9 +727,9 @@ async fn delete_policy(
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
         audit_store::store_events_sync(&uow, &[audit_event])?;
-        uow.commit().map_err(AppError::from)?;
+        uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
     .await
@@ -782,13 +763,11 @@ async fn set_agent_auth_hash(
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
 
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.execute(
-            "INSERT INTO agent_credentials (key, value, updated_at) \
-             VALUES ('DLPAuthHash', ?1, ?2) \
-             ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = ?2",
-            rusqlite::params![hash, ts],
-        ).map_err(AppError::from)?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        CredentialsRepository::upsert(&uow, "DLPAuthHash", &hash, &ts)
+            .map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
     .await
@@ -810,13 +789,9 @@ async fn get_agent_auth_hash(
 ) -> Result<Json<AuthHashResponse>, AppError> {
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
     let (hash, updated_at) = tokio::task::spawn_blocking(move || -> Result<(String, String), AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        let (hash, updated_at) = conn.query_row(
-            "SELECT value, updated_at FROM agent_credentials WHERE key = 'DLPAuthHash'",
-            [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        ).map_err(AppError::from)?;
-        Ok((hash, updated_at))
+        let row = CredentialsRepository::get(&pool, "DLPAuthHash")
+            .map_err(AppError::Database)?;
+        Ok((row.value, row.updated_at))
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -837,31 +812,21 @@ async fn get_siem_config_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SiemConfigPayload>, AppError> {
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
-    let payload = tokio::task::spawn_blocking(move || -> Result<SiemConfigPayload, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        let p = conn.query_row(
-            "SELECT splunk_url, splunk_token, splunk_enabled, \
-                    elk_url, elk_index, elk_api_key, elk_enabled \
-             FROM siem_config WHERE id = 1",
-            [],
-            |row| {
-                Ok(SiemConfigPayload {
-                    splunk_url: row.get(0)?,
-                    splunk_token: row.get(1)?,
-                    splunk_enabled: row.get::<_, i64>(2)? != 0,
-                    elk_url: row.get(3)?,
-                    elk_index: row.get(4)?,
-                    elk_api_key: row.get(5)?,
-                    elk_enabled: row.get::<_, i64>(6)? != 0,
-                })
-            },
-        ).map_err(AppError::from)?;
-        Ok(p)
+    let row = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        SiemConfigRepository::get(&pool).map_err(AppError::Database)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    Ok(Json(payload))
+    Ok(Json(SiemConfigPayload {
+        splunk_url: row.splunk_url,
+        splunk_token: row.splunk_token,
+        splunk_enabled: row.splunk_enabled != 0,
+        elk_url: row.elk_url,
+        elk_index: row.elk_index,
+        elk_api_key: row.elk_api_key,
+        elk_enabled: row.elk_enabled != 0,
+    }))
 }
 
 /// `PUT /admin/siem-config` — updates the SIEM connector config.
@@ -878,24 +843,20 @@ async fn update_siem_config_handler(
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
 
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.execute(
-            "UPDATE siem_config SET \
-                splunk_url = ?1, splunk_token = ?2, splunk_enabled = ?3, \
-                elk_url = ?4, elk_index = ?5, elk_api_key = ?6, \
-                elk_enabled = ?7, updated_at = ?8 \
-             WHERE id = 1",
-            rusqlite::params![
-                p.splunk_url,
-                p.splunk_token,
-                p.splunk_enabled as i64,
-                p.elk_url,
-                p.elk_index,
-                p.elk_api_key,
-                p.elk_enabled as i64,
-                now,
-            ],
-        )?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let record = repositories::SiemConfigRow {
+            splunk_url: p.splunk_url.clone(),
+            splunk_token: p.splunk_token.clone(),
+            splunk_enabled: if p.splunk_enabled { 1 } else { 0 },
+            elk_url: p.elk_url.clone(),
+            elk_index: p.elk_index.clone(),
+            elk_api_key: p.elk_api_key.clone(),
+            elk_enabled: if p.elk_enabled { 1 } else { 0 },
+            updated_at: now,
+        };
+        SiemConfigRepository::update(&uow, &record).map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
     .await
@@ -924,58 +885,38 @@ async fn get_alert_config_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AlertRouterConfigPayload>, AppError> {
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
-    let payload =
-        tokio::task::spawn_blocking(move || -> Result<AlertRouterConfigPayload, AppError> {
-            let conn = pool.get().map_err(AppError::from)?;
-            let payload = conn.query_row(
-                "SELECT smtp_host, smtp_port, smtp_username, smtp_password, \
-                        smtp_from, smtp_to, smtp_enabled, \
-                        webhook_url, webhook_secret, webhook_enabled \
-                 FROM alert_router_config WHERE id = 1",
-                [],
-                |row| {
-                    let port_i64: i64 = row.get(1)?;
-                    let smtp_port = u16::try_from(port_i64).map_err(|_| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            1,
-                            rusqlite::types::Type::Integer,
-                            format!("smtp_port out of range: {port_i64}").into(),
-                        )
-                    })?;
-                    let smtp_password_stored: String = row.get(3)?;
-                    let webhook_secret_stored: String = row.get(8)?;
-                    // ME-01: Never return plaintext credentials on GET. Empty
-                    // stays empty so the TUI can render "not configured".
-                    let smtp_password_out = if smtp_password_stored.is_empty() {
-                        String::new()
-                    } else {
-                        ALERT_SECRET_MASK.to_string()
-                    };
-                    let webhook_secret_out = if webhook_secret_stored.is_empty() {
-                        String::new()
-                    } else {
-                        ALERT_SECRET_MASK.to_string()
-                    };
-                    Ok(AlertRouterConfigPayload {
-                        smtp_host: row.get(0)?,
-                        smtp_port,
-                        smtp_username: row.get(2)?,
-                        smtp_password: smtp_password_out,
-                        smtp_from: row.get(4)?,
-                        smtp_to: row.get(5)?,
-                        smtp_enabled: row.get::<_, i64>(6)? != 0,
-                        webhook_url: row.get(7)?,
-                        webhook_secret: webhook_secret_out,
-                        webhook_enabled: row.get::<_, i64>(9)? != 0,
-                    })
-                },
-            )?;
-            Ok(payload)
+    let row =
+        tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+            AlertRouterConfigRepository::get(&pool).map_err(AppError::Database)
         })
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    Ok(Json(payload))
+    // ME-01: Never return plaintext credentials on GET. Empty stays empty
+    // so the TUI can render "not configured".
+    let smtp_password_out = if row.smtp_password.is_empty() {
+        String::new()
+    } else {
+        ALERT_SECRET_MASK.to_string()
+    };
+    let webhook_secret_out = if row.webhook_secret.is_empty() {
+        String::new()
+    } else {
+        ALERT_SECRET_MASK.to_string()
+    };
+
+    Ok(Json(AlertRouterConfigPayload {
+        smtp_host: row.smtp_host,
+        smtp_port: row.smtp_port,
+        smtp_username: row.smtp_username,
+        smtp_password: smtp_password_out,
+        smtp_from: row.smtp_from,
+        smtp_to: row.smtp_to,
+        smtp_enabled: row.smtp_enabled != 0,
+        webhook_url: row.webhook_url,
+        webhook_secret: webhook_secret_out,
+        webhook_enabled: row.webhook_enabled != 0,
+    }))
 }
 
 /// `PUT /admin/alert-config` — updates the alert router config.
@@ -984,6 +925,9 @@ async fn get_alert_config_handler(
 /// the single row in `alert_router_config` with the provided values and
 /// stamps `updated_at` with the current time. Returns the payload that was
 /// written so clients can refresh their local copy.
+///
+/// ME-01: both the SELECT (secret mask resolution) and UPDATE share a single
+/// `UnitOfWork`, preventing any TOCTOU window between reading and writing.
 ///
 /// # Errors
 ///
@@ -1003,54 +947,42 @@ async fn update_alert_config_handler(
     let p = payload.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
 
-    // ME-01: if the client echoed back the masked sentinel from a prior GET,
-    // preserve the stored secret instead of overwriting the DB column with
-    // the literal mask string. Performed inside the spawn_blocking closure
-    // so the read and write share the same mutex acquisition — this avoids
-    // a TOCTOU window and keeps the secret-preservation atomic.
-    let response_payload = payload;
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
 
-        // Resolve masked secrets against the currently stored row.
-        let (stored_smtp_password, stored_webhook_secret): (String, String) = conn.query_row(
-            "SELECT smtp_password, webhook_secret \
-                 FROM alert_router_config WHERE id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+        // ME-01: Read secrets within the same transaction to prevent TOCTOU.
+        let (stored_smtp_password, stored_webhook_secret) =
+            AlertRouterConfigRepository::get_secrets(&uow)
+                .map_err(AppError::Database)?;
+
         let smtp_password_to_write = if p.smtp_password == ALERT_SECRET_MASK {
             stored_smtp_password
         } else {
-            p.smtp_password
+            p.smtp_password.clone()
         };
         let webhook_secret_to_write = if p.webhook_secret == ALERT_SECRET_MASK {
             stored_webhook_secret
         } else {
-            p.webhook_secret
+            p.webhook_secret.clone()
         };
 
-        conn.execute(
-            "UPDATE alert_router_config SET \
-                smtp_host = ?1, smtp_port = ?2, smtp_username = ?3, \
-                smtp_password = ?4, smtp_from = ?5, smtp_to = ?6, \
-                smtp_enabled = ?7, webhook_url = ?8, webhook_secret = ?9, \
-                webhook_enabled = ?10, updated_at = ?11 \
-             WHERE id = 1",
-            rusqlite::params![
-                p.smtp_host,
-                p.smtp_port as i64,
-                p.smtp_username,
-                smtp_password_to_write,
-                p.smtp_from,
-                p.smtp_to,
-                p.smtp_enabled as i64,
-                p.webhook_url,
-                webhook_secret_to_write,
-                p.webhook_enabled as i64,
-                now,
-            ],
-        )?;
+        let record = repositories::AlertRouterConfigRow {
+            smtp_host: p.smtp_host.clone(),
+            smtp_port: p.smtp_port,
+            smtp_username: p.smtp_username.clone(),
+            smtp_password: smtp_password_to_write,
+            smtp_from: p.smtp_from.clone(),
+            smtp_to: p.smtp_to.clone(),
+            smtp_enabled: if p.smtp_enabled { 1 } else { 0 },
+            webhook_url: p.webhook_url.clone(),
+            webhook_secret: webhook_secret_to_write,
+            webhook_enabled: if p.webhook_enabled { 1 } else { 0 },
+            updated_at: now,
+        };
+        AlertRouterConfigRepository::update(&uow, &record)
+            .map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
     .await
@@ -1058,7 +990,7 @@ async fn update_alert_config_handler(
 
     tracing::info!("alert router config updated");
     // Re-mask the response so the secret never reappears on the wire.
-    let mut masked_response = response_payload;
+    let mut masked_response = payload;
     if !masked_response.smtp_password.is_empty() {
         masked_response.smtp_password = ALERT_SECRET_MASK.to_string();
     }
@@ -1072,31 +1004,7 @@ async fn update_alert_config_handler(
 // Agent config handlers
 // ---------------------------------------------------------------------------
 
-/// Parses an agent config row from a `rusqlite::Row`.
-///
-/// Column order must be: monitored_paths (TEXT), heartbeat_interval_secs (INTEGER),
-/// offline_cache_enabled (INTEGER).
-///
-/// # Errors
-///
-/// Returns `rusqlite::Error::InvalidParameterName` if `monitored_paths` is not
-/// valid JSON — surfaces DB corruption rather than silently defaulting to empty.
-fn parse_agent_config_row(row: &rusqlite::Row) -> rusqlite::Result<AgentConfigPayload> {
-    let paths_json: String = row.get(0)?;
-    // Propagate JSON parse errors rather than silently defaulting —
-    // a corrupted DB row should surface as an error, not empty paths.
-    let monitored_paths: Vec<String> = serde_json::from_str(&paths_json)
-        .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
-    // rusqlite stores INTEGER as i64; u64::try_from converts safely.
-    // Values outside [0, i64::MAX] fall back to the 30-second default.
-    let heartbeat_interval_secs = u64::try_from(row.get::<_, i64>(1)?).unwrap_or(30);
-    let offline_cache_enabled = row.get::<_, i64>(2)? != 0;
-    Ok(AgentConfigPayload {
-        monitored_paths,
-        heartbeat_interval_secs,
-        offline_cache_enabled,
-    })
-}
+
 
 /// `GET /agent-config/:id` — returns the resolved config for a specific agent.
 ///
@@ -1110,25 +1018,26 @@ async fn get_agent_config_for_agent(
     let id = agent_id.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
     let payload = tokio::task::spawn_blocking(move || -> Result<AgentConfigPayload, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        // Try per-agent override first.
-        let result = conn.query_row(
-            "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
-             FROM agent_config_overrides WHERE agent_id = ?1",
-            rusqlite::params![id],
-            parse_agent_config_row,
-        );
-        match result {
-            Ok(p) => Ok(p),
+        // Try per-agent override first via repository.
+        match AgentConfigRepository::get_override(&pool, &id) {
+            Ok(row) => Ok(AgentConfigPayload {
+                monitored_paths: serde_json::from_str(&row.monitored_paths)
+                    .unwrap_or_default(),
+                heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs)
+                    .unwrap_or(30),
+                offline_cache_enabled: row.offline_cache_enabled != 0,
+            }),
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // Fall back to global default.
-                conn.query_row(
-                    "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
-                     FROM global_agent_config WHERE id = 1",
-                    [],
-                    parse_agent_config_row,
-                )
-                .map_err(AppError::Database)
+                let row = AgentConfigRepository::get_global(&pool)
+                    .map_err(AppError::Database)?;
+                Ok(AgentConfigPayload {
+                    monitored_paths: serde_json::from_str(&row.monitored_paths)
+                        .unwrap_or_default(),
+                    heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs)
+                        .unwrap_or(30),
+                    offline_cache_enabled: row.offline_cache_enabled != 0,
+                })
             }
             Err(e) => Err(AppError::Database(e)),
         }
@@ -1152,28 +1061,19 @@ async fn get_ldap_config_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<LdapConfigPayload>, AppError> {
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
-    let payload = tokio::task::spawn_blocking(move || -> Result<LdapConfigPayload, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        let p = conn.query_row(
-            "SELECT ldap_url, base_dn, require_tls, cache_ttl_secs, vpn_subnets \
-             FROM ldap_config WHERE id = 1",
-            [],
-            |row| {
-                Ok(LdapConfigPayload {
-                    ldap_url: row.get(0)?,
-                    base_dn: row.get(1)?,
-                    require_tls: row.get::<_, i64>(2)? != 0,
-                    cache_ttl_secs: row.get::<_, i64>(3)? as u64,
-                    vpn_subnets: row.get(4)?,
-                })
-            },
-        ).map_err(AppError::from)?;
-        Ok(p)
+    let row = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        LdapConfigRepository::get(&pool).map_err(AppError::Database)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    Ok(Json(payload))
+    Ok(Json(LdapConfigPayload {
+        ldap_url: row.ldap_url,
+        base_dn: row.base_dn,
+        require_tls: row.require_tls,
+        cache_ttl_secs: row.cache_ttl_secs,
+        vpn_subnets: row.vpn_subnets,
+    }))
 }
 
 /// `PUT /admin/ldap-config` — updates LDAP connection configuration.
@@ -1203,21 +1103,18 @@ async fn update_ldap_config_handler(
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
 
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.execute(
-            "UPDATE ldap_config SET \
-                ldap_url = ?1, base_dn = ?2, require_tls = ?3, \
-                cache_ttl_secs = ?4, vpn_subnets = ?5, updated_at = ?6 \
-             WHERE id = 1",
-            rusqlite::params![
-                p.ldap_url,
-                p.base_dn,
-                p.require_tls as i64,
-                p.cache_ttl_secs as i64,
-                p.vpn_subnets,
-                now,
-            ],
-        )?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let record = repositories::LdapConfigRow {
+            ldap_url: p.ldap_url.clone(),
+            base_dn: p.base_dn.clone(),
+            require_tls: p.require_tls,
+            cache_ttl_secs: p.cache_ttl_secs,
+            vpn_subnets: p.vpn_subnets.clone(),
+            updated_at: now,
+        };
+        LdapConfigRepository::update(&uow, &record).map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
     .await
@@ -1235,20 +1132,17 @@ async fn get_global_agent_config_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AgentConfigPayload>, AppError> {
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
-    let payload = tokio::task::spawn_blocking(move || -> Result<AgentConfigPayload, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        let p = conn.query_row(
-            "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
-             FROM global_agent_config WHERE id = 1",
-            [],
-            parse_agent_config_row,
-        ).map_err(AppError::from)?;
-        Ok(p)
+    let row = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        AgentConfigRepository::get_global(&pool).map_err(AppError::Database)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    Ok(Json(payload))
+    Ok(Json(AgentConfigPayload {
+        monitored_paths: serde_json::from_str(&row.monitored_paths).unwrap_or_default(),
+        heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs).unwrap_or(30),
+        offline_cache_enabled: row.offline_cache_enabled != 0,
+    }))
 }
 
 /// `PUT /admin/agent-config` — updates the global agent config default.
@@ -1273,22 +1167,22 @@ async fn update_global_agent_config_handler(
     let now = Utc::now().to_rfc3339();
     let p = payload.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
-    let paths_json = serde_json::to_string(&p.monitored_paths)?;
 
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.execute(
-            "UPDATE global_agent_config SET \
-                monitored_paths = ?1, heartbeat_interval_secs = ?2, \
-                offline_cache_enabled = ?3, updated_at = ?4 \
-             WHERE id = 1",
-            rusqlite::params![
-                paths_json,
-                p.heartbeat_interval_secs as i64,
-                p.offline_cache_enabled as i64,
-                now,
-            ],
-        )?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let paths_json = serde_json::to_string(&p.monitored_paths)
+            .map_err(AppError::from)?;
+        let record = repositories::GlobalAgentConfigRow {
+            monitored_paths: paths_json,
+            heartbeat_interval_secs: i64::try_from(p.heartbeat_interval_secs)
+                .unwrap_or(30),
+            offline_cache_enabled: if p.offline_cache_enabled { 1 } else { 0 },
+            updated_at: now,
+        };
+        AgentConfigRepository::update_global(&uow, &record)
+            .map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
     .await
@@ -1307,20 +1201,17 @@ async fn get_agent_config_override_handler(
 ) -> Result<Json<AgentConfigPayload>, AppError> {
     let id = agent_id.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
-    let p = tokio::task::spawn_blocking(move || -> Result<AgentConfigPayload, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        let p = conn.query_row(
-            "SELECT monitored_paths, heartbeat_interval_secs, offline_cache_enabled \
-             FROM agent_config_overrides WHERE agent_id = ?1",
-            rusqlite::params![id],
-            parse_agent_config_row,
-        ).map_err(AppError::from)?;
-        Ok(p)
+    let row = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        AgentConfigRepository::get_override(&pool, &id).map_err(AppError::Database)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    Ok(Json(p))
+    Ok(Json(AgentConfigPayload {
+        monitored_paths: serde_json::from_str(&row.monitored_paths).unwrap_or_default(),
+        heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs).unwrap_or(30),
+        offline_cache_enabled: row.offline_cache_enabled != 0,
+    }))
 }
 
 /// `PUT /admin/agent-config/:agent_id` — upserts a per-agent config override.
@@ -1346,22 +1237,22 @@ async fn update_agent_config_override_handler(
     let p = payload.clone();
     let id = agent_id.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
-    let paths_json = serde_json::to_string(&p.monitored_paths)?;
 
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        conn.execute(
-            "INSERT OR REPLACE INTO agent_config_overrides \
-                (agent_id, monitored_paths, heartbeat_interval_secs, offline_cache_enabled, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![
-                id,
-                paths_json,
-                p.heartbeat_interval_secs as i64,
-                p.offline_cache_enabled as i64,
-                now,
-            ],
-        )?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let paths_json = serde_json::to_string(&p.monitored_paths)
+            .map_err(AppError::from)?;
+        AgentConfigRepository::upsert_override(
+            &uow,
+            &id,
+            &paths_json,
+            i64::try_from(p.heartbeat_interval_secs).unwrap_or(30),
+            if p.offline_cache_enabled { 1 } else { 0 },
+            &now,
+        )
+        .map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
     .await
@@ -1383,11 +1274,11 @@ async fn delete_agent_config_override_handler(
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
 
     let rows = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
-        let conn = pool.get().map_err(AppError::from)?;
-        let rows = conn.execute(
-            "DELETE FROM agent_config_overrides WHERE agent_id = ?1",
-            rusqlite::params![id],
-        ).map_err(AppError::from)?;
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let rows = AgentConfigRepository::delete_override(&uow, &id)
+            .map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
         Ok(rows)
     })
     .await

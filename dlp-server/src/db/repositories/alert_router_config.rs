@@ -119,4 +119,26 @@ impl AlertRouterConfigRepository {
         )?;
         Ok(())
     }
+
+    /// Returns the plaintext `smtp_password` and `webhook_secret` values
+    /// from the current alert router config row.
+    ///
+    /// Used by `update_alert_config_handler` to resolve masked sentinels
+    /// before writing. Reads from the transaction so the read and write
+    /// are atomic (no TOCTOU window).
+    ///
+    /// # Arguments
+    ///
+    /// * `uow` - Active unit of work to read from (provides the transaction).
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if the query fails.
+    pub fn get_secrets(uow: &UnitOfWork<'_>) -> rusqlite::Result<(String, String)> {
+        uow.tx.query_row(
+            "SELECT smtp_password, webhook_secret FROM alert_router_config WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+    }
 }

@@ -15,12 +15,12 @@ pub mod policies;
 pub mod siem_config;
 
 pub use admin_users::AdminUserRepository;
-pub use agent_config::AgentConfigRepository;
+pub use agent_config::{AgentConfigRepository, AgentConfigOverrideRow, GlobalAgentConfigRow};
 pub use agents::AgentRepository;
-pub use alert_router_config::AlertRouterConfigRepository;
+pub use alert_router_config::{AlertRouterConfigRepository, AlertRouterConfigRow};
 pub use audit_events::{AuditEventRepository, AuditEventRow};
 pub use credentials::CredentialsRepository;
 pub use exceptions::ExceptionRepository;
-pub use ldap_config::LdapConfigRepository;
-pub use policies::PolicyRepository;
-pub use siem_config::SiemConfigRepository;
+pub use ldap_config::{LdapConfigRepository, LdapConfigRow};
+pub use policies::{PolicyRepository, PolicyRow, PolicyUpdateRow};
+pub use siem_config::{SiemConfigRepository, SiemConfigRow};
