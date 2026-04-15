@@ -9,7 +9,7 @@ use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use dlp_server::admin_api::{admin_router, LdapConfigPayload};
 use dlp_server::admin_auth::{set_jwt_secret, Claims};
-use dlp_server::{alert_router, db, siem_connector, AppState};
+use dlp_server::{alert_router, db, policy_store, siem_connector, AppState};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use tempfile::NamedTempFile;
 use tower::ServiceExt;
@@ -24,8 +24,12 @@ fn test_app() -> axum::Router {
     let pool = Arc::new(db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
     let siem = siem_connector::SiemConnector::new(Arc::clone(&pool));
     let alert = alert_router::AlertRouter::new(Arc::clone(&pool));
+    let policy_store = Arc::new(
+        policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
+    );
     let state = Arc::new(AppState {
         pool: Arc::clone(&pool),
+        policy_store,
         siem,
         alert,
         ad: None,

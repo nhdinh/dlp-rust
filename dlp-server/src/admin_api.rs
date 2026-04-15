@@ -1547,8 +1547,13 @@ mod tests {
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
+                .expect("policy store"),
+        );
         let state = Arc::new(AppState {
             pool,
+            policy_store,
             siem,
             alert,
             ad: None,
@@ -1588,8 +1593,13 @@ mod tests {
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
+                .expect("policy store"),
+        );
         let state = Arc::new(AppState {
             pool,
+            policy_store,
             siem,
             alert,
             ad: None,
@@ -1621,8 +1631,13 @@ mod tests {
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
+                .expect("policy store"),
+        );
         let state = Arc::new(AppState {
             pool,
+            policy_store,
             siem,
             alert,
             ad: None,
@@ -1707,8 +1722,13 @@ mod tests {
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
+                .expect("policy store"),
+        );
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
+            policy_store,
             siem,
             alert,
             ad: None,
@@ -1858,8 +1878,13 @@ mod tests {
         let pool_read = Arc::clone(&pool);
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
+                .expect("policy store"),
+        );
         let state = Arc::new(AppState {
             pool,
+            policy_store,
             siem,
             alert,
             ad: None,
@@ -2615,8 +2640,13 @@ mod tests {
         seed_agent(&pool, "agent-fallback-01");
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
+                .expect("policy store"),
+        );
         let state = Arc::new(AppState {
             pool,
+            policy_store,
             siem,
             alert,
             ad: None,
@@ -2720,8 +2750,13 @@ mod tests {
         seed_agent(&pool, "agent-override-01");
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
+                .expect("policy store"),
+        );
         let state = Arc::new(AppState {
             pool,
+            policy_store,
             siem,
             alert,
             ad: None,
@@ -2777,8 +2812,13 @@ mod tests {
         seed_agent(&pool, "agent-del-01");
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
+                .expect("policy store"),
+        );
         let state = Arc::new(AppState {
             pool,
+            policy_store,
             siem,
             alert,
             ad: None,
