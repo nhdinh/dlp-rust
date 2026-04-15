@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v0.3.0
 milestone_name: Operational Hardening
-status: Discussed Phase 11
-last_updated: "2026-04-16T00:07:00Z"
+status: Executing Phase 11
+last_updated: "2026-04-15T18:47:26.491Z"
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 5
-  completed_plans: 4
-  percent: 80
+  completed_plans: 5
+  percent: 100
 ---
 
 # STATE.md — Project Memory
@@ -19,7 +19,7 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-13)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** Phase 99 — refactor-db-layer-to-repository-unit-of-work
+**Current focus:** Phase 11 — policy-engine-separation
 
 ## Decisions
 
@@ -38,6 +38,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-13)
 | 2026-04-11 | Fire-and-forget for SIEM/alert relay | No HTTP-ingest latency impact |
 | 2026-04-12 | Agent config polling (not server push) | Agents are fire-and-forget; polling is more resilient |
 | 2026-04-13 | DB-backed config as the standard pattern | Established on Phase 3.1; Phases 4 and 6 followed automatically |
+| 2026-04-16 | PolicyStore uses parking_lot::RwLock | Faster uncontended read path vs std::sync::RwLock |
+| 2026-04-16 | Classification from dlp_common root | dlp_common::abac does not re-export Classification; must use root path |
+| 2026-04-16 | Test helpers inside #[cfg(test)] module | Keeps public lib API clean, avoids dead_code in lib binary |
+| 2026-04-16 | POLICY_REFRESH_INTERVAL_SECS #[allow(dead_code)] | Wave 2 wires background refresh task; suppress until then |
 
 ## Known Issues (v0.2.0 — to address in v0.3.0)
 
@@ -45,7 +49,7 @@ See: `.planning/PROJECT.md` (updated 2026-04-13)
 - R-07: No rate limiting on server endpoints
 - R-09: Admin CRUD operations not persisted as audit events
 - R-10: Single SQLite Mutex<Connection> serializes concurrent requests
-- R-03: Policy Engine Separation deferred — architectural refactor needed
+- R-03: Policy Engine Separation in progress — PolicyStore + PolicyEngineError created (wave 1/5 complete)
 - Phase 6 human UAT: live agent TOML write-back test not run
 - Phase 6 human UAT: zero-warning workspace build not verified
 - Phase 4 human UAT: live SMTP email delivery not tested
