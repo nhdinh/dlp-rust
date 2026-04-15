@@ -34,6 +34,7 @@ use dlp_server::agent_registry;
 use dlp_server::alert_router::AlertRouter;
 use dlp_server::db;
 use dlp_server::db::repositories::LdapConfigRepository;
+use dlp_server::policy_store::PolicyStore;
 use dlp_server::siem_connector::SiemConnector;
 use dlp_server::AppState;
 
@@ -182,9 +183,20 @@ async fn main() -> anyhow::Result<()> {
         None => None,
     };
 
+    // Load all policies into the in-memory cache.
+    // Fails the server startup if the DB is corrupt or unreachable.
+    let policy_store = Arc::new(
+        PolicyStore::new(Arc::clone(&pool)).map_err(|e| {
+            eprintln!("Error: failed to load policies: {e}");
+            anyhow::anyhow!("policy store initialization failed: {e}")
+        })?,
+    );
+    info!(count = policy_store.list_policies().len(), "policy store loaded");
+
     // Build shared application state.
     let state = Arc::new(AppState {
         pool,
+        policy_store,
         siem,
         alert,
         ad: ad_client,
@@ -193,6 +205,20 @@ async fn main() -> anyhow::Result<()> {
     // Start the background heartbeat sweeper (marks agents offline
     // after 90 seconds of silence).
     agent_registry::spawn_offline_sweeper(Arc::clone(&state));
+
+    // Background task: reload the policy cache every 5 minutes.
+    // Refresh failures are logged but do not crash the server — stale cache is used
+    // until the next interval.
+    let refresh_store = Arc::clone(&state.policy_store);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+            dlp_server::policy_store::POLICY_REFRESH_INTERVAL_SECS,
+        ));
+        loop {
+            interval.tick().await;
+            refresh_store.refresh();
+        }
+    });
 
     // Build the HTTP router.
     let app = admin_api::admin_router(Arc::clone(&state));

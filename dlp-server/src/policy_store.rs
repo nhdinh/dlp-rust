@@ -23,10 +23,7 @@ use crate::db::Pool;
 use crate::policy_engine_error::PolicyEngineError;
 
 /// Background cache refresh interval (5 minutes).
-///
-/// Used by the background refresh task (future wave — suppress warning until wired).
-#[allow(dead_code)]
-const POLICY_REFRESH_INTERVAL_SECS: u64 = 300;
+pub const POLICY_REFRESH_INTERVAL_SECS: u64 = 300;
 
 /// The policy evaluation store.
 ///
@@ -373,5 +370,285 @@ mod tests {
         let resp = store.evaluate(&make_request(Classification::T3));
         assert_eq!(resp.decision, Decision::ALLOW);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("p1"));
+    }
+
+    // ---- Classification condition matching ----
+
+    #[test]
+    fn test_classification_eq_match() {
+        let store = PolicyStore {
+            cache: RwLock::new(vec![Policy {
+                id: "p1".to_string(),
+                name: "p1".to_string(),
+                description: None,
+                priority: 1,
+                conditions: vec![PolicyCondition::Classification { op: "eq".to_string(), value: Classification::T3 }],
+                action: Decision::DENY,
+                enabled: true,
+                version: 1,
+            }]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let resp = store.evaluate(&make_request(Classification::T3));
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn test_classification_eq_no_match() {
+        let store = PolicyStore {
+            cache: RwLock::new(vec![Policy {
+                id: "p1".to_string(),
+                name: "p1".to_string(),
+                description: None,
+                priority: 1,
+                conditions: vec![PolicyCondition::Classification { op: "eq".to_string(), value: Classification::T3 }],
+                action: Decision::DENY,
+                enabled: true,
+                version: 1,
+            }]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // T1 request does NOT match T3 policy → default-allow (T1)
+        let resp = store.evaluate(&make_request(Classification::T1));
+        assert_eq!(resp.decision, Decision::ALLOW);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    #[test]
+    fn test_classification_neq_match() {
+        let store = PolicyStore {
+            cache: RwLock::new(vec![Policy {
+                id: "p1".to_string(),
+                name: "p1".to_string(),
+                description: None,
+                priority: 1,
+                conditions: vec![PolicyCondition::Classification { op: "neq".to_string(), value: Classification::T4 }],
+                action: Decision::ALLOW,
+                enabled: true,
+                version: 1,
+            }]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // T1 is not T4 → policy matches
+        let resp = store.evaluate(&make_request(Classification::T1));
+        assert_eq!(resp.decision, Decision::ALLOW);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("p1"));
+    }
+
+    // ---- MemberOf condition matching ----
+
+    #[test]
+    fn test_memberof_in_match() {
+        let store = PolicyStore {
+            cache: RwLock::new(vec![Policy {
+                id: "p1".to_string(),
+                name: "p1".to_string(),
+                description: None,
+                priority: 1,
+                conditions: vec![PolicyCondition::MemberOf { op: "in".to_string(), group_sid: "S-1-5-21-123-512".to_string() }],
+                action: Decision::DENY,
+                enabled: true,
+                version: 1,
+            }]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let request = make_request(Classification::T3);
+        let resp = store.evaluate(&request);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn test_memberof_in_no_match() {
+        let store = PolicyStore {
+            cache: RwLock::new(vec![Policy {
+                id: "p1".to_string(),
+                name: "p1".to_string(),
+                description: None,
+                priority: 1,
+                conditions: vec![PolicyCondition::MemberOf { op: "in".to_string(), group_sid: "S-1-5-21-999".to_string() }],
+                action: Decision::DENY,
+                enabled: true,
+                version: 1,
+            }]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let request = make_request(Classification::T3);
+        let resp = store.evaluate(&request);
+        // No matching policy, T3 → default-deny
+        assert_eq!(resp.decision, Decision::DENY);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    #[test]
+    fn test_memberof_not_in_match() {
+        let store = PolicyStore {
+            cache: RwLock::new(vec![Policy {
+                id: "p1".to_string(),
+                name: "p1".to_string(),
+                description: None,
+                priority: 1,
+                conditions: vec![PolicyCondition::MemberOf { op: "not_in".to_string(), group_sid: "S-1-5-21-512".to_string() }],
+                action: Decision::ALLOW,
+                enabled: true,
+                version: 1,
+            }]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // Subject groups do NOT include S-1-5-21-512 → policy matches
+        let request = make_request(Classification::T2);
+        let resp = store.evaluate(&request);
+        assert_eq!(resp.decision, Decision::ALLOW);
+    }
+
+    // ---- DeviceTrust / NetworkLocation / AccessContext conditions ----
+
+    #[test]
+    fn test_device_trust_match() {
+        let store = PolicyStore {
+            cache: RwLock::new(vec![Policy {
+                id: "p1".to_string(),
+                name: "p1".to_string(),
+                description: None,
+                priority: 1,
+                conditions: vec![PolicyCondition::DeviceTrust { op: "eq".to_string(), value: DeviceTrust::Managed }],
+                action: Decision::ALLOW,
+                enabled: true,
+                version: 1,
+            }]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let resp = store.evaluate(&make_request(Classification::T2));
+        assert_eq!(resp.decision, Decision::ALLOW);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn test_network_location_match() {
+        let store = PolicyStore {
+            cache: RwLock::new(vec![Policy {
+                id: "p1".to_string(),
+                name: "p1".to_string(),
+                description: None,
+                priority: 1,
+                conditions: vec![PolicyCondition::NetworkLocation { op: "eq".to_string(), value: NetworkLocation::Corporate }],
+                action: Decision::DENY,
+                enabled: true,
+                version: 1,
+            }]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let resp = store.evaluate(&make_request(Classification::T3));
+        assert_eq!(resp.decision, Decision::DENY);
+    }
+
+    #[test]
+    fn test_access_context_match() {
+        let store = PolicyStore {
+            cache: RwLock::new(vec![Policy {
+                id: "p1".to_string(),
+                name: "p1".to_string(),
+                description: None,
+                priority: 1,
+                conditions: vec![PolicyCondition::AccessContext { op: "eq".to_string(), value: AccessContext::Smb }],
+                action: Decision::DENY,
+                enabled: true,
+                version: 1,
+            }]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let resp = store.evaluate(&make_request(Classification::T3));
+        assert_eq!(resp.decision, Decision::DENY);
+    }
+
+    // ---- "in"/"not_in" on scalar conditions returns false ----
+
+    #[test]
+    fn test_in_op_on_classification_is_false() {
+        let store = PolicyStore {
+            cache: RwLock::new(vec![Policy {
+                id: "p1".to_string(),
+                name: "p1".to_string(),
+                description: None,
+                priority: 1,
+                conditions: vec![PolicyCondition::Classification { op: "in".to_string(), value: Classification::T3 }],
+                action: Decision::DENY,
+                enabled: true,
+                version: 1,
+            }]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let resp = store.evaluate(&make_request(Classification::T3));
+        // "in" on Classification is not applicable → policy does not match → default-deny (T3)
+        assert_eq!(resp.decision, Decision::DENY);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    // ---- refresh / invalidate reloads cache from DB ----
+
+    #[test]
+    fn test_invalidate_reloads_cache() {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        let store = PolicyStore::new(Arc::clone(&pool)).unwrap();
+        assert_eq!(store.list_policies().len(), 0);
+
+        // Insert a policy directly into the DB then invalidate.
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO policies (id, name, priority, conditions, action, enabled, version, updated_at) \
+                 VALUES ('initial', 'initial', 1, '[]', 'Allow', 1, 1, '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+        store.invalidate();
+        assert_eq!(store.list_policies().len(), 1);
+
+        // Insert another policy then invalidate.
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO policies (id, name, priority, conditions, action, enabled, version, updated_at) \
+                 VALUES ('second', 'second', 2, '[]', 'Deny', 1, 1, '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+        store.invalidate();
+        assert_eq!(store.list_policies().len(), 2);
+    }
+
+    #[test]
+    fn test_refresh_reloads_cache() {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        let store = PolicyStore::new(Arc::clone(&pool)).unwrap();
+        assert_eq!(store.list_policies().len(), 0);
+
+        // Insert policies directly into the DB then refresh.
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO policies (id, name, priority, conditions, action, enabled, version, updated_at) \
+                 VALUES ('first', 'first', 1, '[]', 'Allow', 1, 1, '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+        store.refresh();
+        assert_eq!(store.list_policies().len(), 1);
+
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO policies (id, name, priority, conditions, action, enabled, version, updated_at) \
+                 VALUES ('second', 'second', 2, '[]', 'Deny', 1, 1, '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+        store.refresh();
+        assert_eq!(store.list_policies().len(), 2);
     }
 }
