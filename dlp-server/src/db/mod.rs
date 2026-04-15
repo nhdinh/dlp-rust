@@ -4,6 +4,11 @@
 //! handlers should wrap DB calls in `tokio::task::spawn_blocking` to
 //! avoid blocking the async reactor.
 
+pub mod repositories;
+pub mod unit_of_work;
+
+pub use unit_of_work::UnitOfWork;
+
 use anyhow::Context;
 use r2d2::Pool as R2d2Pool;
 use r2d2_sqlite::SqliteConnectionManager;
