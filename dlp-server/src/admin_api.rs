@@ -17,7 +17,6 @@ use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use dlp_common::abac::{EvaluateRequest, EvaluateResponse};
 use crate::admin_auth::{self, AdminUsername};
 use crate::agent_registry;
 use crate::audit_store;
@@ -31,6 +30,7 @@ use crate::exception_store;
 use crate::rate_limiter::{self, default_config, policy_config};
 use crate::AppError;
 use crate::AppState;
+use dlp_common::abac::{EvaluateRequest, EvaluateResponse};
 use tracing::info;
 
 // ---------------------------------------------------------------------------
@@ -393,7 +393,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/evaluate", post(evaluate_handler))
-        .route("/auth/login", post(admin_auth::login).route_layer(rate_limiter::strict_config()))
+        .route(
+            "/auth/login",
+            post(admin_auth::login).route_layer(rate_limiter::strict_config()),
+        )
         .route("/agents/register", post(agent_registry::register_agent))
         .route(
             "/agents/{id}/heartbeat",
@@ -414,7 +417,12 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/agents/{id}", get(agent_registry::get_agent))
         .route("/audit/events", get(audit_store::query_events))
         .route("/audit/events/count", get(audit_store::get_event_count))
-        .route("/policies", get(list_policies).post(create_policy).route_layer(policy_config()))
+        .route(
+            "/policies",
+            get(list_policies)
+                .post(create_policy)
+                .route_layer(policy_config()),
+        )
         .route(
             "/policies/{id}",
             get(get_policy)
@@ -423,7 +431,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
                 .route_layer(policy_config()),
         )
         // Policy CRUD under /admin/policies (Phase 9 requirement).
-        .route("/admin/policies", post(create_policy).route_layer(policy_config()))
+        .route(
+            "/admin/policies",
+            post(create_policy).route_layer(policy_config()),
+        )
         .route(
             "/admin/policies/{id}",
             put(update_policy)
@@ -507,8 +518,7 @@ async fn list_policies(
                     id: r.id,
                     name: r.name,
                     description: r.description,
-                    priority: u32::try_from(r.priority)
-                        .unwrap_or(r.priority as u32),
+                    priority: u32::try_from(r.priority).unwrap_or(r.priority as u32),
                     conditions,
                     action: r.action,
                     enabled: r.enabled != 0,
@@ -690,15 +700,13 @@ async fn update_policy(
             updated_at: &now,
             id: &id,
         };
-        let rows = PolicyRepository::update(&uow, &row)
-            .map_err(AppError::Database)?;
+        let rows = PolicyRepository::update(&uow, &row).map_err(AppError::Database)?;
 
         if rows == 0 {
             return Err(AppError::NotFound(format!("policy {id} not found")));
         }
 
-        let version = PolicyRepository::get_version(&uow, &id)
-            .map_err(AppError::Database)?;
+        let version = PolicyRepository::get_version(&uow, &id).map_err(AppError::Database)?;
 
         uow.commit().map_err(AppError::Database)?;
 
@@ -853,13 +861,14 @@ async fn get_agent_auth_hash(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AuthHashResponse>, AppError> {
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
-    let (hash, updated_at) = tokio::task::spawn_blocking(move || -> Result<(String, String), AppError> {
-        let row = CredentialsRepository::get(&pool, "DLPAuthHash")
-            .map_err(AppError::Database)?;
-        Ok((row.value, row.updated_at))
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    let (hash, updated_at) =
+        tokio::task::spawn_blocking(move || -> Result<(String, String), AppError> {
+            let row =
+                CredentialsRepository::get(&pool, "DLPAuthHash").map_err(AppError::Database)?;
+            Ok((row.value, row.updated_at))
+        })
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     Ok(Json(AuthHashResponse { hash, updated_at }))
 }
@@ -950,12 +959,11 @@ async fn get_alert_config_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AlertRouterConfigPayload>, AppError> {
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
-    let row =
-        tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-            AlertRouterConfigRepository::get(&pool).map_err(AppError::Database)
-        })
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    let row = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        AlertRouterConfigRepository::get(&pool).map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     // ME-01: Never return plaintext credentials on GET. Empty stays empty
     // so the TUI can render "not configured".
@@ -1018,8 +1026,7 @@ async fn update_alert_config_handler(
 
         // ME-01: Read secrets within the same transaction to prevent TOCTOU.
         let (stored_smtp_password, stored_webhook_secret) =
-            AlertRouterConfigRepository::get_secrets(&uow)
-                .map_err(AppError::Database)?;
+            AlertRouterConfigRepository::get_secrets(&uow).map_err(AppError::Database)?;
 
         let smtp_password_to_write = if p.smtp_password == ALERT_SECRET_MASK {
             stored_smtp_password
@@ -1045,8 +1052,7 @@ async fn update_alert_config_handler(
             webhook_enabled: if p.webhook_enabled { 1 } else { 0 },
             updated_at: now,
         };
-        AlertRouterConfigRepository::update(&uow, &record)
-            .map_err(AppError::Database)?;
+        AlertRouterConfigRepository::update(&uow, &record).map_err(AppError::Database)?;
         uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
@@ -1069,8 +1075,6 @@ async fn update_alert_config_handler(
 // Agent config handlers
 // ---------------------------------------------------------------------------
 
-
-
 /// `GET /agent-config/:id` — returns the resolved config for a specific agent.
 ///
 /// Tries per-agent override first; falls back to global default if no override
@@ -1086,19 +1090,15 @@ async fn get_agent_config_for_agent(
         // Try per-agent override first via repository.
         match AgentConfigRepository::get_override(&pool, &id) {
             Ok(row) => Ok(AgentConfigPayload {
-                monitored_paths: serde_json::from_str(&row.monitored_paths)
-                    .unwrap_or_default(),
-                heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs)
-                    .unwrap_or(30),
+                monitored_paths: serde_json::from_str(&row.monitored_paths).unwrap_or_default(),
+                heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs).unwrap_or(30),
                 offline_cache_enabled: row.offline_cache_enabled != 0,
             }),
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // Fall back to global default.
-                let row = AgentConfigRepository::get_global(&pool)
-                    .map_err(AppError::Database)?;
+                let row = AgentConfigRepository::get_global(&pool).map_err(AppError::Database)?;
                 Ok(AgentConfigPayload {
-                    monitored_paths: serde_json::from_str(&row.monitored_paths)
-                        .unwrap_or_default(),
+                    monitored_paths: serde_json::from_str(&row.monitored_paths).unwrap_or_default(),
                     heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs)
                         .unwrap_or(30),
                     offline_cache_enabled: row.offline_cache_enabled != 0,
@@ -1236,17 +1236,14 @@ async fn update_global_agent_config_handler(
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        let paths_json = serde_json::to_string(&p.monitored_paths)
-            .map_err(AppError::from)?;
+        let paths_json = serde_json::to_string(&p.monitored_paths).map_err(AppError::from)?;
         let record = repositories::GlobalAgentConfigRow {
             monitored_paths: paths_json,
-            heartbeat_interval_secs: i64::try_from(p.heartbeat_interval_secs)
-                .unwrap_or(30),
+            heartbeat_interval_secs: i64::try_from(p.heartbeat_interval_secs).unwrap_or(30),
             offline_cache_enabled: if p.offline_cache_enabled { 1 } else { 0 },
             updated_at: now,
         };
-        AgentConfigRepository::update_global(&uow, &record)
-            .map_err(AppError::Database)?;
+        AgentConfigRepository::update_global(&uow, &record).map_err(AppError::Database)?;
         uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
@@ -1306,8 +1303,7 @@ async fn update_agent_config_override_handler(
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        let paths_json = serde_json::to_string(&p.monitored_paths)
-            .map_err(AppError::from)?;
+        let paths_json = serde_json::to_string(&p.monitored_paths).map_err(AppError::from)?;
         AgentConfigRepository::upsert_override(
             &uow,
             &id,
@@ -1341,8 +1337,7 @@ async fn delete_agent_config_override_handler(
     let rows = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        let rows = AgentConfigRepository::delete_override(&uow, &id)
-            .map_err(AppError::Database)?;
+        let rows = AgentConfigRepository::delete_override(&uow, &id).map_err(AppError::Database)?;
         uow.commit().map_err(AppError::Database)?;
         Ok(rows)
     })
@@ -1595,8 +1590,7 @@ mod tests {
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let policy_store = Arc::new(
-            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
-                .expect("policy store"),
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
@@ -1641,8 +1635,7 @@ mod tests {
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let policy_store = Arc::new(
-            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
-                .expect("policy store"),
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
@@ -1679,8 +1672,7 @@ mod tests {
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let policy_store = Arc::new(
-            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
-                .expect("policy store"),
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
@@ -1770,8 +1762,7 @@ mod tests {
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let policy_store = Arc::new(
-            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
-                .expect("policy store"),
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
@@ -1911,7 +1902,6 @@ mod tests {
         );
     }
 
-
     // Verify POST via router → direct DB read round-trip.
     #[tokio::test]
     async fn test_router_post_then_direct_db_read() {
@@ -1926,8 +1916,7 @@ mod tests {
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let policy_store = Arc::new(
-            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
-                .expect("policy store"),
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
@@ -2688,8 +2677,7 @@ mod tests {
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let policy_store = Arc::new(
-            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
-                .expect("policy store"),
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
@@ -2798,8 +2786,7 @@ mod tests {
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let policy_store = Arc::new(
-            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
-                .expect("policy store"),
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
@@ -2860,8 +2847,7 @@ mod tests {
         let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
         let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
         let policy_store = Arc::new(
-            crate::policy_store::PolicyStore::new(Arc::clone(&pool))
-                .expect("policy store"),
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
@@ -3236,5 +3222,218 @@ mod tests {
         assert_eq!(access.classification, dlp_common::Classification::T3);
         assert_eq!(access.decision, dlp_common::Decision::ALLOW);
         // No block occurred — key difference from TC-02.
+    }
+
+    // ── Task 4.2: POST /evaluate endpoint integration tests ──────────────────
+
+    /// POST /evaluate with a T3 classification and no matching policy → default-deny.
+    #[tokio::test]
+    async fn test_evaluate_returns_decision() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("build policy store"),
+        );
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let state = Arc::new(AppState {
+            pool,
+            policy_store,
+            siem,
+            alert,
+            ad: None,
+        });
+        let app = admin_router(state);
+
+        // T3 with no policies → tiered default-deny (T3 → DENY).
+        let request_body = serde_json::json!({
+            "subject": {
+                "user_sid": "S-1-5-21-1",
+                "user_name": "testuser",
+                "groups": [],
+                "device_trust": "Unknown",
+                "network_location": "Unknown"
+            },
+            "resource": {
+                "path": r"C:\test\confidential.txt",
+                "classification": "T3"
+            },
+            "environment": {
+                "timestamp": "2026-04-16T00:00:00Z",
+                "session_id": 1,
+                "access_context": "local"
+            },
+            "action": "READ"
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(&request_body).unwrap()))
+            .expect("build request");
+
+        let resp = app.oneshot(req).await.expect("send request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let body_val: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body_val["decision"], "DENY");
+        assert!(body_val["matched_policy_id"].is_null());
+    }
+
+    /// POST /evaluate with a T1 classification and no matching policy → default-allow.
+    #[tokio::test]
+    async fn test_evaluate_returns_allow_for_t1() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("build policy store"),
+        );
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let state = Arc::new(AppState {
+            pool,
+            policy_store,
+            siem,
+            alert,
+            ad: None,
+        });
+        let app = admin_router(state);
+
+        // T1 with no policies → default-allow (T1 → ALLOW).
+        let request_body = serde_json::json!({
+            "subject": {
+                "user_sid": "S-1-5-21-1",
+                "user_name": "testuser",
+                "groups": [],
+                "device_trust": "Unknown",
+                "network_location": "Unknown"
+            },
+            "resource": {
+                "path": r"C:\test\public.txt",
+                "classification": "T1"
+            },
+            "environment": {
+                "timestamp": "2026-04-16T00:00:00Z",
+                "session_id": 1,
+                "access_context": "local"
+            },
+            "action": "READ"
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(&request_body).unwrap()))
+            .expect("build request");
+
+        let resp = app.oneshot(req).await.expect("send request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let body_val: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body_val["decision"], "ALLOW");
+    }
+
+    /// POST /evaluate returns ALLOW for T2 (no policy), then DENY after a T2-deny policy is created.
+    /// This verifies that `create_policy` calls `policy_store.invalidate()`.
+    #[tokio::test]
+    async fn test_evaluate_invalidation_on_policy_create() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("build policy store"),
+        );
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let state = Arc::new(AppState {
+            pool: Arc::clone(&pool),
+            policy_store: Arc::clone(&policy_store),
+            siem,
+            alert,
+            ad: None,
+        });
+        let app = admin_router(state);
+
+        // 1. Evaluate T2 with empty store → default-allow (T2).
+        let request_body = serde_json::json!({
+            "subject": {
+                "user_sid": "S-1-5-21-1",
+                "user_name": "testuser",
+                "groups": [],
+                "device_trust": "Unknown",
+                "network_location": "Unknown"
+            },
+            "resource": {
+                "path": r"C:\test\internal.txt",
+                "classification": "T2"
+            },
+            "environment": {
+                "timestamp": "2026-04-16T00:00:00Z",
+                "session_id": 1,
+                "access_context": "local"
+            },
+            "action": "READ"
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(&request_body).unwrap()))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("send request");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // 2. Create a policy that DENYs T2.
+        let policy_body = serde_json::json!({
+            "id": "deny-t2",
+            "name": "Deny T2",
+            "priority": 1,
+            "conditions": [
+                { "attribute": "classification", "op": "eq", "value": "T2" }
+            ],
+            "action": "DENY",
+            "enabled": true
+        });
+        let admin_token = mint_admin_jwt();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/policies")
+            .header(http::header::AUTHORIZATION, format!("Bearer {admin_token}"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(&policy_body).unwrap()))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("send request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // 3. Evaluate T2 again → cache was invalidated, policy now matches → DENY.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/evaluate")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(&request_body).unwrap()))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("send request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let body_val: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body_val["decision"], "DENY");
+        assert_eq!(body_val["matched_policy_id"], "deny-t2");
     }
 }
