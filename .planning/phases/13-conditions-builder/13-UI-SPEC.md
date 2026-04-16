@@ -102,6 +102,10 @@ Step 1: Attribute > Step 2: Operator > Step 3: Value
 
 ## Spacing Scale
 
+> ratatui TUI: character-cell grid — 1 cell is the minimum indivisible unit; the standard
+> pixel-based 4px grid convention does not apply to this medium. All tokens are multiples
+> of the terminal cell unit.
+
 Terminal cell-based spacing -- 1 unit = 1 character cell.
 
 | Token | Value | Usage |
@@ -113,7 +117,7 @@ Terminal cell-based spacing -- 1 unit = 1 character cell.
 | xl | 12 cells | Modal box horizontal margin from screen edge |
 | 2xl | 16 cells | Modal box vertical margin from screen edge |
 
-No exceptions.
+**Exceptions:** TUI character-cell grid — pixel-based 4px grid convention does not apply. xs=1 and sm=2 are idiomatic ratatui values (highlight_symbol '> ' is 2 cells; 1-cell gap is minimum inline spacing).
 
 ---
 
@@ -138,6 +142,9 @@ ratatui renders with the terminal's default monospace font. No font size overrid
 ## Color
 
 All values are `ratatui::style::Color` enum variants.
+
+**TUI color hierarchy (60/30/10 intent):**
+Dominant: `Color::White` (default text, majority of cells); Secondary: `Color::DarkGray` (muted text, hints, empty states); Accent: `Color::Cyan` (selection highlight — reserved for active list item only); Semantic: `Color::Green` (confirm), `Color::Red` (destructive/error).
 
 | Role | Value | Usage |
 |------|-------|-------|
@@ -462,9 +469,9 @@ Codebase scan confirmed no such branch exists yet -- this is the contract for th
 
 - [ ] Dimension 1 Copywriting: PASS (all 18 elements defined in Copywriting Contract)
 - [ ] Dimension 2 Visuals: PASS (ASCII layout diagram, component inventory, breadcrumb states)
-- [ ] Dimension 3 Color: PASS (`Color::` enum values, existing TUI style preserved: Black+Cyan+BOLD)
+- [ ] Dimension 3 Color: PASS (`Color::` enum values, existing TUI style preserved: Black+Cyan+BOLD; 60/30/10 hierarchy declared)
 - [ ] Dimension 4 Typography: PASS (terminal default, `Modifier::BOLD` emphasis, cell-based spacing)
-- [ ] Dimension 5 Spacing: PASS (cell-based 1/2/4/8/12/16 scale, 22-row fixed modal, 6-row pending list)
+- [ ] Dimension 5 Spacing: PASS (cell-based 1/2/4/8/12/16 scale; TUI medium exception documented — pixel-based 4px grid does not apply)
 - [ ] Dimension 6 Registry Safety: PASS (no external registries -- TUI)
 
 **Approval:** pending
