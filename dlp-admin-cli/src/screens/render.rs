@@ -158,7 +158,12 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
 // ---------------------------------------------------------------------------
 
 /// Step 3 value labels for Classification (per D-11).
-const CLASSIFICATION_VALUES: [&str; 4] = ["T1: Public", "T2: Internal", "T3: Confidential", "T4: Restricted"];
+const CLASSIFICATION_VALUES: [&str; 4] = [
+    "T1: Public",
+    "T2: Internal",
+    "T3: Confidential",
+    "T4: Restricted",
+];
 
 /// Step 3 value labels for DeviceTrust (per D-13).
 const DEVICE_TRUST_VALUES: [&str; 4] = ["Managed", "Unmanaged", "Compliant", "Unknown"];
@@ -177,7 +182,9 @@ const OPERATOR_EQ: [(&str, bool); 1] = [("eq", true)];
 /// Current step is White+BOLD; completed steps are DarkGray.
 fn build_breadcrumb(step: u8) -> Line<'static> {
     let completed = Style::default().fg(Color::DarkGray);
-    let current = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+    let current = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
     let sep = Style::default().fg(Color::DarkGray);
 
     let s1 = if step == 1 { current } else { completed };
@@ -214,7 +221,10 @@ fn step_label(step: u8, selected_attribute: Option<&ConditionAttribute>) -> Line
 }
 
 /// Returns the list items for the step picker at the given step.
-fn picker_items(step: u8, selected_attribute: Option<&ConditionAttribute>) -> Vec<ListItem<'static>> {
+fn picker_items(
+    step: u8,
+    selected_attribute: Option<&ConditionAttribute>,
+) -> Vec<ListItem<'static>> {
     match step {
         1 => ATTRIBUTES
             .iter()
@@ -403,8 +413,7 @@ fn draw_conditions_builder(
     frame.render_widget(Paragraph::new(label), picker_chunks[0]);
 
     // Step 3 MemberOf: text input instead of a selection list (per D-12).
-    let is_member_of_step3 =
-        step == 3 && selected_attribute == Some(&ConditionAttribute::MemberOf);
+    let is_member_of_step3 = step == 3 && selected_attribute == Some(&ConditionAttribute::MemberOf);
 
     if is_member_of_step3 {
         // Free-text input for the AD group SID; trailing `_` acts as a cursor.

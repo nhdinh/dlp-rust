@@ -27,9 +27,14 @@ pub enum StatusKind {
 #[derive(Debug, Clone)]
 pub enum InputPurpose {
     GetPolicyById,
+    /// Legacy file-path import path; superseded by the structured PolicyCreate
+    /// form in Phase 14. Retained for Phase 17 (import/export).
+    #[allow(dead_code)]
     CreatePolicyFromFile,
     UpdatePolicyId,
-    UpdatePolicyFile { id: String },
+    UpdatePolicyFile {
+        id: String,
+    },
     DeletePolicyId,
 }
 
@@ -106,7 +111,8 @@ impl ConditionAttribute {
 pub enum CallerScreen {
     /// Opened from the policy creation flow.
     PolicyCreate,
-    /// Opened from the policy edit flow.
+    /// Opened from the policy edit flow (Phase 15).
+    #[allow(dead_code)]
     PolicyEdit,
 }
 
@@ -125,7 +131,8 @@ pub struct PolicyFormState {
     pub priority: String,
     /// Index into the action options list (ALLOW/DENY/AllowWithLog/DenyWithAlert).
     pub action: usize,
-    /// Whether the policy is enabled.
+    /// Whether the policy is enabled (used by Phase 15 policy edit form).
+    #[allow(dead_code)]
     pub enabled: bool,
     /// Accumulated conditions from the conditions builder.
     pub conditions: Vec<dlp_common::abac::PolicyCondition>,

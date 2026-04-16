@@ -1063,7 +1063,9 @@ fn handle_policy_create(app: &mut App, key: KeyEvent) {
     // Phase 1: read-only borrow to extract guard fields.
     // This must be a separate block so the borrow ends before any &mut call.
     let (selected, editing) = match &app.screen {
-        Screen::PolicyCreate { selected, editing, .. } => (*selected, *editing),
+        Screen::PolicyCreate {
+            selected, editing, ..
+        } => (*selected, *editing),
         _ => return,
     };
 
@@ -1094,10 +1096,18 @@ fn handle_policy_create_editing(app: &mut App, key: KeyEvent, _selected: usize) 
             // Commit the buffer into the relevant form field.
             // Two-phase borrow: extract selected+buffer first, then mutate.
             let (selected, buf) = match &app.screen {
-                Screen::PolicyCreate { selected, buffer, .. } => (*selected, buffer.clone()),
+                Screen::PolicyCreate {
+                    selected, buffer, ..
+                } => (*selected, buffer.clone()),
                 _ => return,
             };
-            if let Screen::PolicyCreate { form, buffer, editing, .. } = &mut app.screen {
+            if let Screen::PolicyCreate {
+                form,
+                buffer,
+                editing,
+                ..
+            } = &mut app.screen
+            {
                 match selected {
                     POLICY_NAME_ROW => form.name = buf.trim().to_string(),
                     POLICY_DESC_ROW => form.description = buf.trim().to_string(),
@@ -1110,7 +1120,10 @@ fn handle_policy_create_editing(app: &mut App, key: KeyEvent, _selected: usize) 
         }
         KeyCode::Esc => {
             // Cancel edit; restore field to pre-edit value (do NOT discard form).
-            if let Screen::PolicyCreate { buffer, editing, .. } = &mut app.screen {
+            if let Screen::PolicyCreate {
+                buffer, editing, ..
+            } = &mut app.screen
+            {
                 buffer.clear();
                 *editing = false;
             }
@@ -1173,7 +1186,13 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
             }
             _ => {
                 // Text field rows: enter edit mode pre-filled with current value.
-                if let Screen::PolicyCreate { form, editing, buffer, .. } = &mut app.screen {
+                if let Screen::PolicyCreate {
+                    form,
+                    editing,
+                    buffer,
+                    ..
+                } = &mut app.screen
+                {
                     let pre_fill = match selected {
                         POLICY_NAME_ROW => form.name.clone(),
                         POLICY_DESC_ROW => form.description.clone(),
@@ -1200,7 +1219,10 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
 fn action_submit_policy(app: &mut App, form: PolicyFormState) {
     // Inline validation before any network call.
     if form.name.trim().is_empty() {
-        if let Screen::PolicyCreate { validation_error, .. } = &mut app.screen {
+        if let Screen::PolicyCreate {
+            validation_error, ..
+        } = &mut app.screen
+        {
             *validation_error = Some("Name is required.".to_string());
         }
         return;
@@ -1208,7 +1230,10 @@ fn action_submit_policy(app: &mut App, form: PolicyFormState) {
     let priority = match form.priority.trim().parse::<u32>() {
         Ok(p) => p,
         Err(_) => {
-            if let Screen::PolicyCreate { validation_error, .. } = &mut app.screen {
+            if let Screen::PolicyCreate {
+                validation_error, ..
+            } = &mut app.screen
+            {
                 *validation_error =
                     Some("Priority must be a valid integer (0 or greater).".to_string());
             }
@@ -1234,10 +1259,10 @@ fn action_submit_policy(app: &mut App, form: PolicyFormState) {
         "enabled": true,
     });
 
-    match app
-        .rt
-        .block_on(app.client.post::<serde_json::Value, _>("admin/policies", &payload))
-    {
+    match app.rt.block_on(
+        app.client
+            .post::<serde_json::Value, _>("admin/policies", &payload),
+    ) {
         Ok(_) => {
             app.set_status("Policy created", StatusKind::Success);
             // Navigate to policy list (action_list_policies navigates + sets status).
@@ -1245,7 +1270,10 @@ fn action_submit_policy(app: &mut App, form: PolicyFormState) {
         }
         Err(e) => {
             // Display error inline; keep form on screen so user can correct.
-            if let Screen::PolicyCreate { validation_error, .. } = &mut app.screen {
+            if let Screen::PolicyCreate {
+                validation_error, ..
+            } = &mut app.screen
+            {
                 *validation_error = Some(format!("{e}"));
             }
         }
@@ -1471,9 +1499,12 @@ fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
             // Per D-06: Esc from pending focus closes the modal.
             // Dispatch back to the caller screen, restoring form state.
             let (caller, pending, form_snapshot) = match &app.screen {
-                Screen::ConditionsBuilder { caller, pending, form_snapshot, .. } => {
-                    (*caller, pending.clone(), form_snapshot.clone())
-                }
+                Screen::ConditionsBuilder {
+                    caller,
+                    pending,
+                    form_snapshot,
+                    ..
+                } => (*caller, pending.clone(), form_snapshot.clone()),
                 _ => return,
             };
             match caller {
@@ -1545,9 +1576,12 @@ fn handle_conditions_step1(app: &mut App, key: KeyEvent) {
             // Per D-18: Esc at Step 1 closes the modal.
             // Dispatch back to the caller screen, restoring form state.
             let (caller, pending, form_snapshot) = match &app.screen {
-                Screen::ConditionsBuilder { caller, pending, form_snapshot, .. } => {
-                    (*caller, pending.clone(), form_snapshot.clone())
-                }
+                Screen::ConditionsBuilder {
+                    caller,
+                    pending,
+                    form_snapshot,
+                    ..
+                } => (*caller, pending.clone(), form_snapshot.clone()),
                 _ => return,
             };
             match caller {
@@ -1971,5 +2005,214 @@ mod tests {
         assert_eq!(value_count_for(ConditionAttribute::DeviceTrust), 4);
         assert_eq!(value_count_for(ConditionAttribute::NetworkLocation), 4);
         assert_eq!(value_count_for(ConditionAttribute::AccessContext), 2);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Helper: minimal App for unit tests (no server connection required).
+    // ---------------------------------------------------------------------------
+
+    fn make_test_app(screen: Screen) -> crate::app::App {
+        let client = crate::client::EngineClient::for_test();
+        // Single-threaded runtime is sufficient for tests that only hit the
+        // validation path (which returns before any async call).
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime build must succeed");
+        let mut app = crate::app::App::new(client, rt);
+        // Override the default MainMenu screen with the one needed by the test.
+        app.screen = screen;
+        app
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 14 tests: wire format, validation, CallerScreen dispatch.
+    // ---------------------------------------------------------------------------
+
+    /// Verifies that ACTION_OPTIONS contains the exact wire strings required by
+    /// the server's `deserialize_policy_row` function (case-insensitive match).
+    /// Catches the DenyWithLog vs DenyWithAlert naming pitfall (Pitfall 1).
+    #[test]
+    fn action_options_wire_format() {
+        assert_eq!(ACTION_OPTIONS[0], "ALLOW");
+        assert_eq!(ACTION_OPTIONS[1], "DENY");
+        assert_eq!(ACTION_OPTIONS[2], "AllowWithLog");
+        assert_eq!(ACTION_OPTIONS[3], "DenyWithAlert");
+        assert_eq!(ACTION_OPTIONS.len(), 4);
+    }
+
+    /// Verifies that submitting a form with a whitespace-only name sets an
+    /// inline validation error and does NOT navigate away from PolicyCreate.
+    #[test]
+    fn validate_policy_form_empty_name() {
+        // Arrange: PolicyCreate screen with name = "  " (whitespace only).
+        let form = PolicyFormState {
+            name: "  ".to_string(),
+            priority: "10".to_string(),
+            ..Default::default()
+        };
+        let screen = Screen::PolicyCreate {
+            form: form.clone(),
+            selected: POLICY_SUBMIT_ROW,
+            editing: false,
+            buffer: String::new(),
+            validation_error: None,
+        };
+        let mut app = make_test_app(screen);
+
+        // Act: call action_submit_policy directly (validation runs before HTTP).
+        action_submit_policy(&mut app, form);
+
+        // Assert: screen is still PolicyCreate with the error set.
+        match &app.screen {
+            Screen::PolicyCreate {
+                validation_error, ..
+            } => {
+                assert_eq!(
+                    validation_error.as_deref(),
+                    Some("Name is required."),
+                    "expected inline validation error for empty name"
+                );
+            }
+            other => panic!("expected Screen::PolicyCreate, got {other:?}"),
+        }
+    }
+
+    /// Verifies that a non-numeric priority string sets an inline validation
+    /// error and does NOT make a network call.
+    #[test]
+    fn validate_policy_priority_non_numeric() {
+        // Arrange: valid name, non-numeric priority.
+        let form = PolicyFormState {
+            name: "Test".to_string(),
+            priority: "abc".to_string(),
+            ..Default::default()
+        };
+        let screen = Screen::PolicyCreate {
+            form: form.clone(),
+            selected: POLICY_SUBMIT_ROW,
+            editing: false,
+            buffer: String::new(),
+            validation_error: None,
+        };
+        let mut app = make_test_app(screen);
+
+        // Act.
+        action_submit_policy(&mut app, form);
+
+        // Assert.
+        match &app.screen {
+            Screen::PolicyCreate {
+                validation_error, ..
+            } => {
+                assert_eq!(
+                    validation_error.as_deref(),
+                    Some("Priority must be a valid integer (0 or greater)."),
+                    "expected inline validation error for non-numeric priority"
+                );
+            }
+            other => panic!("expected Screen::PolicyCreate, got {other:?}"),
+        }
+    }
+
+    /// Verifies that a negative priority string (e.g. "-5") fails u32 parsing
+    /// and sets the same validation error message as non-numeric input.
+    #[test]
+    fn validate_policy_priority_negative() {
+        // Arrange: valid name, negative priority.
+        let form = PolicyFormState {
+            name: "Test".to_string(),
+            priority: "-5".to_string(),
+            ..Default::default()
+        };
+        let screen = Screen::PolicyCreate {
+            form: form.clone(),
+            selected: POLICY_SUBMIT_ROW,
+            editing: false,
+            buffer: String::new(),
+            validation_error: None,
+        };
+        let mut app = make_test_app(screen);
+
+        // Act.
+        action_submit_policy(&mut app, form);
+
+        // Assert: "-5" fails u32 parse, same error message as non-numeric.
+        match &app.screen {
+            Screen::PolicyCreate {
+                validation_error, ..
+            } => {
+                assert_eq!(
+                    validation_error.as_deref(),
+                    Some("Priority must be a valid integer (0 or greater)."),
+                    "negative priority must fail u32 parse"
+                );
+            }
+            other => panic!("expected Screen::PolicyCreate, got {other:?}"),
+        }
+    }
+
+    /// Verifies that pressing Esc in ConditionsBuilder (Step 1) with
+    /// CallerScreen::PolicyCreate restores the PolicyCreate screen, including
+    /// the form_snapshot fields and the pending conditions.
+    #[test]
+    fn conditions_builder_esc_restores_form() {
+        use dlp_common::abac::PolicyCondition;
+        use dlp_common::Classification;
+
+        // Arrange: ConditionsBuilder with a pending condition and a form_snapshot.
+        let pending_condition = PolicyCondition::Classification {
+            op: "eq".to_string(),
+            value: Classification::T3,
+        };
+        let form_snapshot = PolicyFormState {
+            name: "MyPolicy".to_string(),
+            priority: "10".to_string(),
+            conditions: vec![], // conditions travel via pending, not snapshot
+            ..Default::default()
+        };
+        let mut picker_state = ratatui::widgets::ListState::default();
+        picker_state.select(Some(0));
+        let screen = Screen::ConditionsBuilder {
+            step: 1,
+            selected_attribute: None,
+            selected_operator: None,
+            pending: vec![pending_condition.clone()],
+            buffer: String::new(),
+            pending_focused: false,
+            pending_state: ratatui::widgets::ListState::default(),
+            picker_state,
+            caller: CallerScreen::PolicyCreate,
+            form_snapshot: form_snapshot.clone(),
+        };
+        let mut app = make_test_app(screen);
+
+        // Act: simulate Esc at Step 1 by calling handle_conditions_step1 directly.
+        let esc_key = KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
+        handle_conditions_step1(&mut app, esc_key);
+
+        // Assert: screen is PolicyCreate with form_snapshot fields and pending conditions.
+        match &app.screen {
+            Screen::PolicyCreate { form, selected, .. } => {
+                assert_eq!(
+                    form.name, "MyPolicy",
+                    "name must be restored from form_snapshot"
+                );
+                assert_eq!(
+                    form.priority, "10",
+                    "priority must be restored from form_snapshot"
+                );
+                assert_eq!(
+                    form.conditions.len(),
+                    1,
+                    "pending condition must be written back"
+                );
+                assert_eq!(
+                    *selected, POLICY_ADD_CONDITIONS_ROW,
+                    "cursor must land on Add Conditions row"
+                );
+            }
+            other => panic!("expected Screen::PolicyCreate, got {other:?}"),
+        }
     }
 }

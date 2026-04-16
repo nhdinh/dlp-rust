@@ -109,6 +109,23 @@ impl EngineClient {
         }
     }
 
+    /// Constructs a minimal `EngineClient` for unit tests.
+    ///
+    /// Points to a non-routable address so no actual network traffic is
+    /// produced; only the validation paths (which return before any HTTP
+    /// call) are exercised in tests.
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        let inner = Client::builder()
+            .build()
+            .expect("test client build must succeed");
+        Self {
+            inner,
+            base_url: "http://127.0.0.1:0".to_string(),
+            token: None,
+        }
+    }
+
     /// Sets a JWT bearer token for authenticated requests.
     ///
     /// Once set, all subsequent HTTP calls include an
