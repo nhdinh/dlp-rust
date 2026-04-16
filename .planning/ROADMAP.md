@@ -69,10 +69,12 @@ Phase details for v0.2.0 are archived at `.planning/milestones/v0.2.0-ROADMAP.md
 **Goal:** Migrate all 49 `pool.get()` + raw SQL call sites in dlp-server into typed Repository structs under `db/repositories/`. All writes go through `UnitOfWork<'conn>` (RAII transaction). Three migration waves: (1) build db/ submodule, (2) migrate small modules, (3) migrate admin_api.rs.
 **Requirements**: TBD
 **Depends on:** Phase 10
-**Plans:** 4/0 plans complete
+**Plans:** 3/3 complete
 
 Plans:
-- [x] TBD (run /gsd-plan-phase 99 to break down) (completed 2026-04-15)
+- [x] Plan 01 — Wave 1: Build db/ submodule (completed 2026-04-15)
+- [x] Plan 02 — Wave 2: Migrate 23 call sites in 6 small handlers (completed 2026-04-15)
+- [x] Plan 03 — Wave 3: Migrate admin_api.rs (completed 2026-04-15)
 
 ---
 
