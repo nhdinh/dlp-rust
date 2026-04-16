@@ -84,6 +84,9 @@ pub const ATTRIBUTES: [ConditionAttribute; 5] = [
 
 impl ConditionAttribute {
     /// Human-readable label for display in the step picker.
+    ///
+    /// Called by the render function in Plan 02 (`draw_conditions_builder`).
+    #[allow(dead_code)] // Used by Plan 02 render.rs draw_conditions_builder.
     pub fn label(self) -> &'static str {
         match self {
             Self::Classification => "Classification",
@@ -100,6 +103,7 @@ impl ConditionAttribute {
 /// Used by the Esc-at-Step-1 handler to reconstruct the parent screen
 /// when closing the modal. Variants will be consumed by Phases 14 and 15.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Variants consumed by Phase 14 (PolicyCreate) and Phase 15 (PolicyEdit).
 pub enum CallerScreen {
     /// Opened from the policy creation flow.
     PolicyCreate,
@@ -113,6 +117,7 @@ pub enum CallerScreen {
 /// Using a single struct avoids borrow-split when the conditions
 /// builder modal writes into the conditions list.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // Fields consumed by Phase 14 (create form) and Phase 15 (edit form).
 pub struct PolicyFormState {
     /// Policy name (required).
     pub name: String,
@@ -220,6 +225,8 @@ pub enum Screen {
     /// 3-step sequential picker: Attribute -> Operator -> Value.
     /// Completed conditions accumulate in `pending` and are returned
     /// to the caller via `PolicyFormState`.
+    // Constructed by Phase 14 (PolicyCreate) and Phase 15 (PolicyEdit).
+    #[allow(dead_code)]
     ConditionsBuilder {
         /// Current step: 1, 2, or 3.
         step: u8,

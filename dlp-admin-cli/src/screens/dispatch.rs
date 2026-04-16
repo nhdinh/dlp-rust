@@ -2,7 +2,10 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
-use crate::app::{App, ConfirmPurpose, InputPurpose, PasswordPurpose, Screen, StatusKind};
+use crate::app::{
+    App, ConditionAttribute, ConfirmPurpose, InputPurpose, PasswordPurpose, Screen, StatusKind,
+    ATTRIBUTES,
+};
 use crate::event::AppEvent;
 
 /// Routes an event to the handler for the current screen.
@@ -24,6 +27,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::Confirm { .. } => handle_confirm(app, key),
         Screen::SiemConfig { .. } => handle_siem_config(app, key),
         Screen::AlertConfig { .. } => handle_alert_config(app, key),
+        Screen::ConditionsBuilder { .. } => handle_conditions_builder(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -1019,6 +1023,511 @@ fn handle_alert_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Conditions builder
+// ---------------------------------------------------------------------------
+
+/// Returns the operators available for the given attribute.
+///
+/// Tuple: `(operator_name, is_enforced)`. Currently all attributes have only
+/// `"eq"` as an enforced operator; additional operators are reserved for v0.5.0.
+fn operators_for(attr: ConditionAttribute) -> &'static [(&'static str, bool)] {
+    match attr {
+        ConditionAttribute::Classification => &[("eq", true)],
+        ConditionAttribute::MemberOf => &[("eq", true)],
+        ConditionAttribute::DeviceTrust => &[("eq", true)],
+        ConditionAttribute::NetworkLocation => &[("eq", true)],
+        ConditionAttribute::AccessContext => &[("eq", true)],
+    }
+}
+
+/// Returns the number of value options for Step 3 per attribute.
+///
+/// Used to bound navigation and for `ListState` range checks.
+/// `MemberOf` returns 0 because it uses free-text input, not a select list.
+fn value_count_for(attr: ConditionAttribute) -> usize {
+    match attr {
+        ConditionAttribute::Classification => 4,  // T1, T2, T3, T4
+        ConditionAttribute::MemberOf => 0,        // text input, not a list
+        ConditionAttribute::DeviceTrust => 4,     // Managed, Unmanaged, Compliant, Unknown
+        ConditionAttribute::NetworkLocation => 4, // Corporate, CorporateVpn, Guest, Unknown
+        ConditionAttribute::AccessContext => 2,   // Local, Smb
+    }
+}
+
+/// Constructs a `PolicyCondition` from the selected attribute, operator, picker index, and buffer.
+///
+/// Returns `None` if the picker index is out of range or the MemberOf buffer is empty.
+///
+/// # Field name note
+///
+/// `MemberOf` uses `group_sid: String`, NOT `value`. All other variants use `value`.
+fn build_condition(
+    attr: ConditionAttribute,
+    op: &str,
+    picker_selected: usize,
+    buffer: &str,
+) -> Option<dlp_common::abac::PolicyCondition> {
+    use dlp_common::abac::{AccessContext, DeviceTrust, NetworkLocation, PolicyCondition};
+    // Classification is at dlp_common root, NOT dlp_common::abac (see abac.rs line 222).
+    use dlp_common::Classification;
+
+    let op = op.to_string();
+    Some(match attr {
+        ConditionAttribute::Classification => {
+            let value = match picker_selected {
+                0 => Classification::T1,
+                1 => Classification::T2,
+                2 => Classification::T3,
+                3 => Classification::T4,
+                _ => return None,
+            };
+            PolicyCondition::Classification { op, value }
+        }
+        ConditionAttribute::MemberOf => {
+            // CRITICAL: MemberOf uses group_sid, NOT value (abac.rs line 226).
+            if buffer.trim().is_empty() {
+                return None;
+            }
+            PolicyCondition::MemberOf {
+                op,
+                group_sid: buffer.trim().to_string(),
+            }
+        }
+        ConditionAttribute::DeviceTrust => {
+            let value = match picker_selected {
+                0 => DeviceTrust::Managed,
+                1 => DeviceTrust::Unmanaged,
+                2 => DeviceTrust::Compliant,
+                3 => DeviceTrust::Unknown,
+                _ => return None,
+            };
+            PolicyCondition::DeviceTrust { op, value }
+        }
+        ConditionAttribute::NetworkLocation => {
+            let value = match picker_selected {
+                0 => NetworkLocation::Corporate,
+                1 => NetworkLocation::CorporateVpn,
+                2 => NetworkLocation::Guest,
+                3 => NetworkLocation::Unknown,
+                _ => return None,
+            };
+            PolicyCondition::NetworkLocation { op, value }
+        }
+        ConditionAttribute::AccessContext => {
+            let value = match picker_selected {
+                0 => AccessContext::Local,
+                1 => AccessContext::Smb,
+                _ => return None,
+            };
+            PolicyCondition::AccessContext { op, value }
+        }
+    })
+}
+
+/// Returns a human-readable display string for a `PolicyCondition`.
+///
+/// Used by the pending conditions list in the modal overlay.
+/// `Classification` uses `Display` (label); others use `Debug` format.
+// Called by Plan 02 render.rs draw_conditions_builder.
+#[allow(dead_code)]
+pub fn condition_display(cond: &dlp_common::abac::PolicyCondition) -> String {
+    use dlp_common::abac::PolicyCondition;
+    match cond {
+        PolicyCondition::Classification { op, value } => format!("Classification {op} {value}"),
+        PolicyCondition::MemberOf { op, group_sid } => format!("MemberOf {op} {group_sid}"),
+        PolicyCondition::DeviceTrust { op, value } => format!("DeviceTrust {op} {value:?}"),
+        PolicyCondition::NetworkLocation { op, value } => {
+            format!("NetworkLocation {op} {value:?}")
+        }
+        PolicyCondition::AccessContext { op, value } => format!("AccessContext {op} {value:?}"),
+    }
+}
+
+/// Handles key events for the conditions builder modal overlay.
+///
+/// Uses the two-phase read-then-mutate pattern: read scalar flags with a shared
+/// borrow first, then mutate with `if let Screen::ConditionsBuilder { .. } = &mut app.screen`.
+fn handle_conditions_builder(app: &mut App, key: KeyEvent) {
+    // Phase 1: read scalar state with a shared borrow to avoid borrow conflicts.
+    let (step, pending_focused, selected_attribute, selected_operator, pending_len) =
+        match &app.screen {
+            Screen::ConditionsBuilder {
+                step,
+                pending_focused,
+                selected_attribute,
+                selected_operator,
+                pending,
+                ..
+            } => (
+                *step,
+                *pending_focused,
+                *selected_attribute,
+                selected_operator.clone(),
+                pending.len(),
+            ),
+            _ => return,
+        };
+
+    // Tab toggles focus between the pending list and the picker — handled before routing.
+    if key.code == KeyCode::Tab {
+        if let Screen::ConditionsBuilder {
+            pending_focused, ..
+        } = &mut app.screen
+        {
+            *pending_focused = !*pending_focused;
+        }
+        return;
+    }
+
+    // Phase 2: route based on focus and step.
+    if pending_focused {
+        handle_conditions_pending(app, key, pending_len);
+    } else {
+        match step {
+            1 => handle_conditions_step1(app, key),
+            2 => handle_conditions_step2(app, key, selected_attribute),
+            3 => {
+                handle_conditions_step3(app, key, selected_attribute, selected_operator.as_deref())
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Handles key events when the pending conditions list has focus.
+fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if pending_len > 0 {
+                if let Screen::ConditionsBuilder { pending_state, .. } = &mut app.screen {
+                    let current = pending_state.selected().unwrap_or(0);
+                    let new_idx = match key.code {
+                        KeyCode::Up => {
+                            if current == 0 {
+                                pending_len - 1
+                            } else {
+                                current - 1
+                            }
+                        }
+                        KeyCode::Down => (current + 1) % pending_len,
+                        _ => current,
+                    };
+                    pending_state.select(Some(new_idx));
+                }
+            }
+        }
+        // 'd', 'D', or Delete removes the selected condition (per D-07).
+        KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete => {
+            if let Screen::ConditionsBuilder {
+                pending,
+                pending_state,
+                ..
+            } = &mut app.screen
+            {
+                if let Some(idx) = pending_state.selected() {
+                    if idx < pending.len() {
+                        pending.remove(idx);
+                        // Adjust selection so it stays in range after removal.
+                        if pending.is_empty() {
+                            pending_state.select(None);
+                        } else if idx >= pending.len() {
+                            pending_state.select(Some(pending.len() - 1));
+                        }
+                    }
+                }
+            }
+        }
+        KeyCode::Esc => {
+            // Per D-06: Esc from pending focus closes the modal.
+            // Placeholder: return to PolicyMenu. Phase 14/15 will use CallerScreen.
+            app.screen = Screen::PolicyMenu { selected: 0 };
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events at Step 1: attribute selection.
+fn handle_conditions_step1(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
+                let current = picker_state.selected().unwrap_or(0);
+                let new_idx = match key.code {
+                    KeyCode::Up => {
+                        if current == 0 {
+                            ATTRIBUTES.len() - 1
+                        } else {
+                            current - 1
+                        }
+                    }
+                    KeyCode::Down => (current + 1) % ATTRIBUTES.len(),
+                    _ => current,
+                };
+                picker_state.select(Some(new_idx));
+            }
+        }
+        KeyCode::Enter => {
+            // Advance to Step 2 with the selected attribute (per D-17).
+            if let Screen::ConditionsBuilder {
+                step,
+                selected_attribute,
+                picker_state,
+                ..
+            } = &mut app.screen
+            {
+                let idx = picker_state.selected().unwrap_or(0);
+                *selected_attribute = Some(ATTRIBUTES[idx]);
+                *step = 2;
+                // Reset picker to top for the new step's list (Pitfall 4).
+                picker_state.select(Some(0));
+            }
+        }
+        KeyCode::Esc => {
+            // Per D-18: Esc at Step 1 closes the modal.
+            // Placeholder: return to PolicyMenu. Phase 14/15 will use CallerScreen.
+            app.screen = Screen::PolicyMenu { selected: 0 };
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events at Step 2: operator selection.
+fn handle_conditions_step2(
+    app: &mut App,
+    key: KeyEvent,
+    selected_attribute: Option<ConditionAttribute>,
+) {
+    let attr = match selected_attribute {
+        Some(a) => a,
+        None => return,
+    };
+    let ops = operators_for(attr);
+
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
+                let current = picker_state.selected().unwrap_or(0);
+                let new_idx = match key.code {
+                    KeyCode::Up => {
+                        if current == 0 {
+                            ops.len() - 1
+                        } else {
+                            current - 1
+                        }
+                    }
+                    KeyCode::Down => (current + 1) % ops.len(),
+                    _ => current,
+                };
+                picker_state.select(Some(new_idx));
+            }
+        }
+        KeyCode::Enter => {
+            // Advance to Step 3 with the selected operator (per D-17).
+            if let Screen::ConditionsBuilder {
+                step,
+                selected_operator,
+                picker_state,
+                buffer,
+                ..
+            } = &mut app.screen
+            {
+                let idx = picker_state.selected().unwrap_or(0);
+                *selected_operator = Some(ops[idx].0.to_string());
+                *step = 3;
+                // Clear any leftover MemberOf input from a previous iteration.
+                buffer.clear();
+                // Reset picker to top for Step 3 list (Pitfall 4).
+                picker_state.select(Some(0));
+            }
+        }
+        KeyCode::Esc => {
+            // Per D-18: Esc at Step 2 goes back to Step 1.
+            if let Screen::ConditionsBuilder {
+                step,
+                selected_attribute,
+                selected_operator,
+                picker_state,
+                ..
+            } = &mut app.screen
+            {
+                *step = 1;
+                *selected_attribute = None;
+                *selected_operator = None;
+                picker_state.select(Some(0));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events at Step 3: value selection or text input.
+///
+/// Routes to the text-input path for `MemberOf` (free-text AD group SID)
+/// or the list-select path for all other attributes.
+fn handle_conditions_step3(
+    app: &mut App,
+    key: KeyEvent,
+    selected_attribute: Option<ConditionAttribute>,
+    selected_operator: Option<&str>,
+) {
+    let attr = match selected_attribute {
+        Some(a) => a,
+        None => return,
+    };
+    let op = match selected_operator {
+        Some(o) => o,
+        None => return,
+    };
+
+    if attr == ConditionAttribute::MemberOf {
+        handle_conditions_step3_text(app, key, attr, op);
+    } else {
+        handle_conditions_step3_select(app, key, attr, op);
+    }
+}
+
+/// Handles Step 3 for MemberOf: free-text input for the AD group SID.
+fn handle_conditions_step3_text(app: &mut App, key: KeyEvent, attr: ConditionAttribute, op: &str) {
+    match key.code {
+        KeyCode::Char(c) => {
+            if let Screen::ConditionsBuilder { buffer, .. } = &mut app.screen {
+                buffer.push(c);
+            }
+        }
+        KeyCode::Backspace => {
+            if let Screen::ConditionsBuilder { buffer, .. } = &mut app.screen {
+                buffer.pop();
+            }
+        }
+        KeyCode::Enter => {
+            // Snapshot the buffer with a shared borrow before taking &mut.
+            let buffer_snapshot = match &app.screen {
+                Screen::ConditionsBuilder { buffer, .. } => buffer.clone(),
+                _ => return,
+            };
+            match build_condition(attr, op, 0, &buffer_snapshot) {
+                Some(cond) => {
+                    if let Screen::ConditionsBuilder {
+                        pending,
+                        pending_state,
+                        step,
+                        selected_attribute,
+                        selected_operator,
+                        buffer,
+                        picker_state,
+                        ..
+                    } = &mut app.screen
+                    {
+                        pending.push(cond);
+                        // Select the newly added condition in the pending list.
+                        pending_state.select(Some(pending.len() - 1));
+                        // Reset to Step 1 for the next condition (per D-05, Pitfall 4).
+                        *step = 1;
+                        *selected_attribute = None;
+                        *selected_operator = None;
+                        buffer.clear();
+                        picker_state.select(Some(0));
+                    }
+                }
+                None => {
+                    app.set_status("AD group SID cannot be empty", StatusKind::Error);
+                }
+            }
+        }
+        KeyCode::Esc => {
+            // Per D-18: Esc at Step 3 goes back to Step 2.
+            if let Screen::ConditionsBuilder {
+                step,
+                selected_operator,
+                buffer,
+                picker_state,
+                ..
+            } = &mut app.screen
+            {
+                *step = 2;
+                *selected_operator = None;
+                buffer.clear();
+                picker_state.select(Some(0));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles Step 3 for select-based attributes (Classification, DeviceTrust, etc.).
+fn handle_conditions_step3_select(
+    app: &mut App,
+    key: KeyEvent,
+    attr: ConditionAttribute,
+    op: &str,
+) {
+    let count = value_count_for(attr);
+
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
+                let current = picker_state.selected().unwrap_or(0);
+                let new_idx = match key.code {
+                    KeyCode::Up => {
+                        if current == 0 {
+                            count - 1
+                        } else {
+                            current - 1
+                        }
+                    }
+                    KeyCode::Down => (current + 1) % count,
+                    _ => current,
+                };
+                picker_state.select(Some(new_idx));
+            }
+        }
+        KeyCode::Enter => {
+            let picker_idx = match &app.screen {
+                Screen::ConditionsBuilder { picker_state, .. } => {
+                    picker_state.selected().unwrap_or(0)
+                }
+                _ => return,
+            };
+            if let Some(cond) = build_condition(attr, op, picker_idx, "") {
+                if let Screen::ConditionsBuilder {
+                    pending,
+                    pending_state,
+                    step,
+                    selected_attribute,
+                    selected_operator,
+                    picker_state,
+                    ..
+                } = &mut app.screen
+                {
+                    pending.push(cond);
+                    pending_state.select(Some(pending.len() - 1));
+                    // Reset to Step 1 for the next condition (per D-05, Pitfall 4).
+                    *step = 1;
+                    *selected_attribute = None;
+                    *selected_operator = None;
+                    picker_state.select(Some(0));
+                }
+            }
+        }
+        KeyCode::Esc => {
+            // Per D-18: Esc at Step 3 goes back to Step 2.
+            if let Screen::ConditionsBuilder {
+                step,
+                selected_operator,
+                picker_state,
+                ..
+            } = &mut app.screen
+            {
+                *step = 2;
+                *selected_operator = None;
+                picker_state.select(Some(0));
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1051,5 +1560,129 @@ mod tests {
         assert_eq!(ALERT_KEYS[7], "webhook_url");
         assert_eq!(ALERT_KEYS[8], "webhook_secret");
         assert_eq!(ALERT_KEYS[9], "webhook_enabled");
+    }
+
+    #[test]
+    fn build_condition_classification_t3() {
+        let cond = build_condition(ConditionAttribute::Classification, "eq", 2, "");
+        assert!(cond.is_some());
+        let json = serde_json::to_string(&cond.unwrap()).expect("serialize");
+        assert!(json.contains("\"attribute\":\"classification\""));
+        assert!(json.contains("\"op\":\"eq\""));
+        assert!(json.contains("\"value\":\"T3\""));
+    }
+
+    #[test]
+    fn build_condition_member_of_group_sid() {
+        let cond = build_condition(ConditionAttribute::MemberOf, "eq", 0, "S-1-5-21-123");
+        assert!(cond.is_some());
+        let json = serde_json::to_string(&cond.unwrap()).expect("serialize");
+        assert!(json.contains("\"group_sid\":\"S-1-5-21-123\""));
+        // Must NOT contain a bare "value" field.
+        assert!(!json.contains("\"value\""));
+    }
+
+    #[test]
+    fn build_condition_member_of_empty_buffer_returns_none() {
+        let cond = build_condition(ConditionAttribute::MemberOf, "eq", 0, "  ");
+        assert!(cond.is_none());
+    }
+
+    #[test]
+    fn build_condition_device_trust_all_variants() {
+        for (idx, expected) in [
+            (0, "Managed"),
+            (1, "Unmanaged"),
+            (2, "Compliant"),
+            (3, "Unknown"),
+        ] {
+            let cond = build_condition(ConditionAttribute::DeviceTrust, "eq", idx, "")
+                .expect("should build");
+            let json = serde_json::to_string(&cond).expect("serialize");
+            assert!(
+                json.contains(&format!("\"value\":\"{expected}\"")),
+                "idx={idx}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_condition_network_location_all_variants() {
+        for (idx, expected) in [
+            (0, "Corporate"),
+            (1, "CorporateVpn"),
+            (2, "Guest"),
+            (3, "Unknown"),
+        ] {
+            let cond = build_condition(ConditionAttribute::NetworkLocation, "eq", idx, "")
+                .expect("should build");
+            let json = serde_json::to_string(&cond).expect("serialize");
+            assert!(
+                json.contains(&format!("\"value\":\"{expected}\"")),
+                "idx={idx}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_condition_access_context_all_variants() {
+        for (idx, expected) in [(0, "local"), (1, "smb")] {
+            let cond = build_condition(ConditionAttribute::AccessContext, "eq", idx, "")
+                .expect("should build");
+            let json = serde_json::to_string(&cond).expect("serialize");
+            assert!(
+                json.contains(&format!("\"value\":\"{expected}\"")),
+                "idx={idx}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_condition_out_of_range_returns_none() {
+        assert!(build_condition(ConditionAttribute::Classification, "eq", 5, "").is_none());
+        assert!(build_condition(ConditionAttribute::AccessContext, "eq", 2, "").is_none());
+    }
+
+    #[test]
+    fn operators_for_all_attributes_have_eq() {
+        for attr in ATTRIBUTES {
+            let ops = operators_for(attr);
+            assert!(!ops.is_empty(), "operators_for({attr:?}) must not be empty");
+            assert_eq!(ops[0].0, "eq", "first operator must be eq for {attr:?}");
+            assert!(ops[0].1, "eq must be enforced for {attr:?}");
+        }
+    }
+
+    #[test]
+    fn condition_display_classification() {
+        use dlp_common::abac::PolicyCondition;
+        use dlp_common::Classification;
+        let cond = PolicyCondition::Classification {
+            op: "eq".to_string(),
+            value: Classification::T3,
+        };
+        let display = condition_display(&cond);
+        // Classification implements Display as "Confidential".
+        assert_eq!(display, "Classification eq Confidential");
+    }
+
+    #[test]
+    fn condition_display_member_of() {
+        use dlp_common::abac::PolicyCondition;
+        let cond = PolicyCondition::MemberOf {
+            op: "eq".to_string(),
+            group_sid: "S-1-5-21-123".to_string(),
+        };
+        let display = condition_display(&cond);
+        assert_eq!(display, "MemberOf eq S-1-5-21-123");
+    }
+
+    #[test]
+    fn value_count_for_all_attributes() {
+        assert_eq!(value_count_for(ConditionAttribute::Classification), 4);
+        assert_eq!(value_count_for(ConditionAttribute::MemberOf), 0);
+        assert_eq!(value_count_for(ConditionAttribute::DeviceTrust), 4);
+        assert_eq!(value_count_for(ConditionAttribute::NetworkLocation), 4);
+        assert_eq!(value_count_for(ConditionAttribute::AccessContext), 2);
     }
 }
