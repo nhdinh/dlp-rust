@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-16 after Phase 11*
+*Last updated: 2026-04-16 after v0.3.0 shipped*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -16,7 +16,7 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 
 **v0.2.0 Feature Completion shipped** (2026-04-13). All five crates compile and test. 364+ tests pass. The system covers: file/USB/network-share interception, clipboard monitoring, JWT auth, SIEM relay (Splunk HEC + ELK), alert routing (email + webhook), DB-backed operator config, agent config polling, and comprehensive TC test coverage.
 
-**v0.3.0 — Operational Hardening in progress** (Phase 11 shipped — policy engine separation; remaining: AD LDAP, rate limiting, SQLite pool).
+**v0.3.0 Operational Hardening shipped** (2026-04-16). Five phases delivered: AD LDAP integration (R-05), rate limiting middleware (R-07), admin audit logging (R-09), SQLite connection pool (R-10), and Policy Engine Separation with cache invalidation (R-03). All 10 requirements validated. Phase 99 (Repository + Unit of Work) completed concurrently.
 
 ## Architecture
 
@@ -52,16 +52,17 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - ✓ R-08: JWT_SECRET required in production — `--dev` flag for dev only — v0.2.0
 - ✓ R-12: Comprehensive DLP test suite — 32 agent TCs + 15 server TCs + 6 E2E TCs — v0.2.0
 
-### Active (planned for v0.3.0)
+### Validated (shipped in v0.3.0)
 
-- [ ] R-03: Policy Engine Separation — architectural split into policy engine + evaluation replica — v0.3.0
-- [ ] R-05: Active Directory LDAP integration — real ABAC attribute resolution from AD
-- [ ] R-07: Rate limiting middleware — brute-force protection, per-agent event limits
-- [ ] R-10: SQLite connection pool — replace Mutex<Connection> with r2d2 pool
+- ✓ R-03: Policy Engine Separation — PolicyStore + cache invalidation + background refresh — v0.3.0
+- ✓ R-05: Active Directory LDAP integration — real ABAC attribute resolution from AD — v0.3.0
+- ✓ R-07: Rate limiting middleware — brute-force protection, per-agent event limits — v0.3.0
+- ✓ R-09: Admin operation audit logging — policy CRUD + password changes → audit_events with EventType::AdminAction — v0.3.0
+- ✓ R-10: SQLite connection pool — r2d2 pool, 220 workspace tests pass — v0.3.0
 
-### Validated (v0.3.0)
+### Active (planned for v0.4.0)
 
-- ✓ R-09: Admin operation audit logging — policy CRUD + password changes → audit_events with EventType::AdminAction — Phase 09
+- [ ] TBD — use `/gsd-new-milestone` to define next milestone
 
 ### Out of Scope
 
@@ -72,13 +73,13 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 
 ## Context
 
-**v0.2.0 timeline:** 2026-04-10 to 2026-04-13 (~4 days)
-**v0.2.0 phases shipped:** 9 (0.1, 1, 2, 3, 3.1, 4, 04.1, 6, 12)
-**v0.2.0 plans shipped:** 14 plans across 9 phases
+**v0.3.0 timeline:** 2026-04-14 to 2026-04-16 (~3 days)
+**v0.3.0 phases shipped:** 6 (7, 8, 9, 10, 11, 99)
+**v0.3.0 plans shipped:** 11 plans across 5 phases + 3 plans for Phase 99
 **Deferred to v0.3.0:** 5 requirements (R-03/05/07/09/10)
-**Commits since 2026-04-10:** ~70 commits, 63 files changed, ~15K LOC
+**Commits since 2026-04-10:** ~90 commits, 63 files changed, ~15K LOC
 
-**Key decisions made during v0.2.0:**
+**Key decisions made during v0.3.0:**
 - Operator config (SIEM, alerts, agent config) lives in SQLite, not env vars — hot-reload + TUI manageable
 - `AppState { db, siem }` is the canonical axum state for dlp-server handlers
 - Phase 04.1 (test suite) was inserted mid-sprint as urgent work — three-wave TDD approach (unit → server → E2E)
