@@ -39,7 +39,7 @@ _Archived milestone details: `.planning/milestones/v0.2.0-ROADMAP.md` and `.plan
 
 | Phase | Name | Goal | Requirements | Plans | Status |
 |-------|------|------|--------------|-------|--------|
-| 13 | Conditions Builder | 3-step sequential picker for building typed condition lists | POLICY-05 | — | Not Started |
+| 13 | Conditions Builder | 3-step sequential picker for building typed condition lists | POLICY-05 | 2 plans | Planning Complete |
 | 14 | Policy Create | Multi-field create form with conditions attached | POLICY-02 | — | Not Started |
 | 15 | Policy Edit + Delete | Load, edit, and delete existing policies from the TUI | POLICY-03, POLICY-04 | — | Not Started |
 | 16 | Policy List + Simulate | Scrollable policy table and evaluate-request simulation form | POLICY-01, POLICY-06 | — | Not Started |
@@ -48,6 +48,9 @@ _Archived milestone details: `.planning/milestones/v0.2.0-ROADMAP.md` and `.plan
 **Phase 13: Conditions Builder**
 Goal: Provide a 3-step sequential picker for building typed PolicyCondition lists without any raw JSON entry.
 Requirements: POLICY-05
+Plans:
+- [ ] 13-01-PLAN.md — Data model types (ConditionAttribute, CallerScreen, PolicyFormState, Screen::ConditionsBuilder) and dispatch handler with helpers and unit tests
+- [ ] 13-02-PLAN.md — Render function (draw_conditions_builder modal overlay) and human visual verification
 Success criteria:
 1. Step 1 renders a selectable list of 5 attributes (Classification, MemberOf, DeviceTrust, NetworkLocation, AccessContext) and advances to Step 2 on Enter.
 2. Step 2 renders only operators valid for the selected attribute; selecting one advances to Step 3.
