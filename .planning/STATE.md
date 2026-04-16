@@ -1,25 +1,32 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.3.0
-milestone_name: Operational Hardening
-status: Ready to plan
-last_updated: "2026-04-16T00:48:26.981Z"
+milestone: v0.4.0
+milestone_name: Policy Authoring
+status: Defining requirements
+last_updated: "2026-04-16"
 progress:
-  total_phases: 6
-  completed_phases: 1
-  total_plans: 5
-  completed_plans: 8
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # STATE.md — Project Memory
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-04-13)
+See: `.planning/PROJECT.md` (updated 2026-04-16)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** Phase 07 — AD LDAP integration (Plans 01, 02 complete; Plans 03–05 already done)
+**Current focus:** v0.4.0 — Policy Authoring (requirements and roadmap in progress)
+
+## Current Position
+
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-16 — Milestone v0.4.0 started
 
 ## Decisions
 
@@ -41,29 +48,14 @@ See: `.planning/PROJECT.md` (updated 2026-04-13)
 | 2026-04-16 | PolicyStore uses parking_lot::RwLock | Faster uncontended read path vs std::sync::RwLock |
 | 2026-04-16 | Classification from dlp_common root | dlp_common::abac does not re-export Classification; must use root path |
 | 2026-04-16 | Test helpers inside #[cfg(test)] module | Keeps public lib API clean, avoids dead_code in lib binary |
-| 2026-04-16 | POLICY_REFRESH_INTERVAL_SECS #[allow(dead_code)] | Wave 2 wires background refresh task; suppress until then |
 | 2026-04-16 | Wave 3: evaluate_handler in public_routes | POST /evaluate is unauthenticated; agent identity from AgentInfo body per 11-CONTEXT.md § Q1 |
-| 2026-04-16 | Wave 4: Task 4.1 already complete | wave 3 propagated AppState change to all test helpers; no additional code needed |
-| 2026-04-16 | Wave 4: EvaluateRequest requires Environment.timestamp | DateTime<Utc> field has no default; test fixtures must include full environment object |
-| 2026-04-16 | Wave 3: invalidate() outside spawn_blocking | In-memory Vec swap is microseconds; no async context needed |
-| 2026-04-15 | Background cache refresh: tokio interval loop | POLICY_REFRESH_INTERVAL_SECS exported as pub; avoids hardcoding magic number in main.rs |
-| 2026-04-15 | Startup failure on policy cache load error | Server does not start silently with empty cache; explicit map_err |
-| 2026-04-15 | Arc<PolicyStore> in AppState | pool and policy_store are both Arc<_> so AppState remains Clone for axum |
 | 2026-04-16 | AD client channel-based async | AdClient spawns background Tokio task owning LDAP connection; mpsc + oneshot serializes LDAP ops cleanly |
 | 2026-04-16 | AD fail-open: empty groups on error | Never block operations due to AD unavailability; warn-level log + empty vector |
 | 2026-04-16 | Machine account Kerberos TGT bind | CN={COMPUTERNAME}$,CN=Computers,{base_dn} with empty password — no stored credentials |
 | 2026-04-16 | Group cache keyed by caller_sid | SID is universally available; username used for sAMAccountName LDAP filter (no DN needed) |
-| 2026-04-16 | NetGetJoinInformation for device_trust | NETSETUP_JOIN_STATUS(3) == NetSetupDomainName check; more reliable than NetIsPartOfDomain |
-| 2026-04-16 | Manual binary SID parse per MS-DTYP §2.4.2 | Zero unsafe blocks; revision byte + subauthority count + authority + subauthorities |
-| 2026-04-16 | Duplicate windows deps key fix | Merged two [target.'cfg(windows)'.dependencies] keys into one in dlp-common/Cargo.toml |
 
-## Known Issues (v0.2.0 — to address in v0.3.0)
+## Known Issues (carry-forward from v0.3.0)
 
-- [Resolved] R-05: AD LDAP not integrated — AdClient implemented in dlp-common; Phase 7 Plan 1 complete
-- R-07: No rate limiting on server endpoints
-- R-09: Admin CRUD operations not persisted as audit events
-- R-10: Single SQLite Mutex<Connection> serializes concurrent requests
-- R-03: Policy Engine Separation in progress — PolicyStore + PolicyEngineError created (wave 1/5 complete)
 - Phase 6 human UAT: live agent TOML write-back test not run
 - Phase 6 human UAT: zero-warning workspace build not verified
 - Phase 4 human UAT: live SMTP email delivery not tested
@@ -78,9 +70,12 @@ See: `.planning/PROJECT.md` (updated 2026-04-13)
 - Audit: JSONL append-only with size-based rotation
 - Operator config: SQLite single-row tables with CHECK constraints, hot-reload on every operation
 - Agent-server comms: JWT heartbeat, unauthenticated config poll endpoint
+- Policy conditions: JSON array of typed PolicyCondition variants (Classification, MemberOf, DeviceTrust, NetworkLocation, AccessContext)
+- TUI screens: ratatui + crossterm; generic get::<serde_json::Value> HTTP client pattern (not typed client methods)
 
 ## Accumulated Context
 
 ### Roadmap Evolution
 
 - Phase 99 added: Refactor DB layer to Repository + Unit of Work
+- v0.4.0: Policy Authoring — admin API already complete; milestone is 100% dlp-admin-cli TUI work + thin server-side import/export endpoint

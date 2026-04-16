@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-16 after v0.3.0 shipped*
+*Last updated: 2026-04-16 — v0.4.0 started*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -12,11 +12,23 @@ Enterprise-grade Data Loss Prevention system that enforces ABAC-based access pol
 
 Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
 
+## Current Milestone: v0.4.0 Policy Authoring
+
+**Goal:** Give admins a full TUI-based policy lifecycle — create, edit, simulate, and import/export — without touching raw SQLite.
+
+**Target features:**
+- TUI policy list, detail, create, and edit screens in dlp-admin-cli wired to existing /admin/policies CRUD API
+- Structured conditions builder — pick attribute/operator/value, generates PolicyCondition JSON; no raw JSON entry
+- Policy simulate / dry-run — fill EvaluateRequest form in TUI, call POST /evaluate, display decision + matched policy
+- Policy import / export — serialize policy set to TOML/JSON file, import from file
+
 ## Current State
 
 **v0.2.0 Feature Completion shipped** (2026-04-13). All five crates compile and test. 364+ tests pass. The system covers: file/USB/network-share interception, clipboard monitoring, JWT auth, SIEM relay (Splunk HEC + ELK), alert routing (email + webhook), DB-backed operator config, agent config polling, and comprehensive TC test coverage.
 
 **v0.3.0 Operational Hardening shipped** (2026-04-16). Five phases delivered: AD LDAP integration (R-05), rate limiting middleware (R-07), admin audit logging (R-09), SQLite connection pool (R-10), and Policy Engine Separation with cache invalidation (R-03). All 10 requirements validated. Phase 99 (Repository + Unit of Work) completed concurrently.
+
+**v0.4.0 Policy Authoring in progress** (started 2026-04-16). Defining requirements and roadmap.
 
 ## Architecture
 
@@ -60,9 +72,16 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - ✓ R-09: Admin operation audit logging — policy CRUD + password changes → audit_events with EventType::AdminAction — v0.3.0
 - ✓ R-10: SQLite connection pool — r2d2 pool, 220 workspace tests pass — v0.3.0
 
-### Active (planned for v0.4.0)
+### Active (v0.4.0)
 
-- [ ] TBD — use `/gsd-new-milestone` to define next milestone
+- [ ] POLICY-01: Admin can list all policies with name, priority, action, and enabled state
+- [ ] POLICY-02: Admin can create a new policy with name, description, priority, action, and one or more typed conditions
+- [ ] POLICY-03: Admin can edit an existing policy's name, description, priority, action, enabled flag, and conditions
+- [ ] POLICY-04: Admin can delete a policy with a confirmation prompt
+- [ ] POLICY-05: Admin can build policy conditions using a structured picker (attribute → operator → value) — no raw JSON
+- [ ] POLICY-06: Admin can simulate a policy decision by filling an EvaluateRequest form and viewing the decision + matched policy
+- [ ] POLICY-07: Admin can export the full policy set to a TOML or JSON file
+- [ ] POLICY-08: Admin can import policies from a TOML or JSON file, with conflict detection
 
 ### Out of Scope
 
@@ -70,6 +89,24 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - macOS/Linux agent — NTFS enforcement requires Windows
 - Cloud-native policy engine — on-prem DLP with enterprise AD dependency
 - File encryption at rest — NTFS ACLs provide access control
+- Raw JSON conditions editing — replaced by structured conditions builder
+
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd-transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd-complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
 
 ## Context
 
@@ -88,8 +125,8 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 ## Tech Stack
 
 - **Runtime:** tokio async, Windows Service API
-- **HTTP:** axum 0.7 (server), reqwest (client)
-- **DB:** SQLite via rusqlite (single Mutex<Connection> — pool in v0.3.0)
+- **HTTP:** axum 0.8 (server), reqwest (client)
+- **DB:** SQLite via rusqlite + r2d2 pool
 - **TUI:** ratatui + crossterm
 - **GUI:** iced (tiny-skia renderer)
 - **Auth:** bcrypt + JWT (jsonwebtoken)
