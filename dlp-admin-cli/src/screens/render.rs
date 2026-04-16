@@ -123,6 +123,13 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         } => {
             draw_alert_config(frame, area, config, *selected, *editing, buffer);
         }
+        // Plan 02 will replace this stub with the full draw_conditions_builder implementation.
+        Screen::ConditionsBuilder { .. } => {
+            let block = ratatui::widgets::Block::default()
+                .title(" Conditions Builder ")
+                .borders(ratatui::widgets::Borders::ALL);
+            frame.render_widget(block, area);
+        }
     }
 }
 

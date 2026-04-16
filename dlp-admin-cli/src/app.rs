@@ -51,6 +51,84 @@ pub enum PasswordPurpose {
 }
 
 // ---------------------------------------------------------------------------
+// Conditions builder supporting types
+// ---------------------------------------------------------------------------
+
+/// The five ABAC condition attributes available in the conditions builder.
+///
+/// Used across Step 1 display, Step 2 operator lookup, Step 3 value-picker
+/// branching, and `PolicyCondition` construction. A dedicated enum avoids
+/// repeated string comparisons and enables exhaustive matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConditionAttribute {
+    /// Data classification tier (T1-T4).
+    Classification,
+    /// Active Directory group membership (by SID).
+    MemberOf,
+    /// Device trust level (Managed, Unmanaged, Compliant, Unknown).
+    DeviceTrust,
+    /// Network location (Corporate, CorporateVpn, Guest, Unknown).
+    NetworkLocation,
+    /// Access context (Local or SMB).
+    AccessContext,
+}
+
+/// All condition attributes in display order (Step 1 list).
+pub const ATTRIBUTES: [ConditionAttribute; 5] = [
+    ConditionAttribute::Classification,
+    ConditionAttribute::MemberOf,
+    ConditionAttribute::DeviceTrust,
+    ConditionAttribute::NetworkLocation,
+    ConditionAttribute::AccessContext,
+];
+
+impl ConditionAttribute {
+    /// Human-readable label for display in the step picker.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Classification => "Classification",
+            Self::MemberOf => "MemberOf",
+            Self::DeviceTrust => "DeviceTrust",
+            Self::NetworkLocation => "NetworkLocation",
+            Self::AccessContext => "AccessContext",
+        }
+    }
+}
+
+/// Identifies which parent screen opened the conditions builder modal.
+///
+/// Used by the Esc-at-Step-1 handler to reconstruct the parent screen
+/// when closing the modal. Variants will be consumed by Phases 14 and 15.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallerScreen {
+    /// Opened from the policy creation flow.
+    PolicyCreate,
+    /// Opened from the policy edit flow.
+    PolicyEdit,
+}
+
+/// All state for the Policy Create / Edit form.
+///
+/// Holds form fields and the accumulated conditions list.
+/// Using a single struct avoids borrow-split when the conditions
+/// builder modal writes into the conditions list.
+#[derive(Debug, Clone, Default)]
+pub struct PolicyFormState {
+    /// Policy name (required).
+    pub name: String,
+    /// Policy description (optional).
+    pub description: String,
+    /// Priority as string for text input (parsed to u32 on submit).
+    pub priority: String,
+    /// Index into the action options list (ALLOW/DENY/AllowWithLog/DenyWithLog).
+    pub action: usize,
+    /// Whether the policy is enabled.
+    pub enabled: bool,
+    /// Accumulated conditions from the conditions builder.
+    pub conditions: Vec<dlp_common::abac::PolicyCondition>,
+}
+
+// ---------------------------------------------------------------------------
 // Screen enum
 // ---------------------------------------------------------------------------
 
@@ -136,6 +214,31 @@ pub enum Screen {
         editing: bool,
         /// Buffered input while editing.
         buffer: String,
+    },
+    /// Conditions Builder modal overlay.
+    ///
+    /// 3-step sequential picker: Attribute -> Operator -> Value.
+    /// Completed conditions accumulate in `pending` and are returned
+    /// to the caller via `PolicyFormState`.
+    ConditionsBuilder {
+        /// Current step: 1, 2, or 3.
+        step: u8,
+        /// The attribute selected in Step 1 (None until Step 1 completed).
+        selected_attribute: Option<ConditionAttribute>,
+        /// The operator selected in Step 2 (None until Step 2 completed).
+        selected_operator: Option<String>,
+        /// Conditions already added this session.
+        pending: Vec<dlp_common::abac::PolicyCondition>,
+        /// For MemberOf Step 3 only: buffered text input.
+        buffer: String,
+        /// Whether the pending list area has focus (vs. the step picker).
+        pending_focused: bool,
+        /// ListState for the pending conditions list.
+        pending_state: ratatui::widgets::ListState,
+        /// ListState for the step picker (step-appropriate options).
+        picker_state: ratatui::widgets::ListState,
+        /// Which screen opened this modal (for Esc-at-Step-1 return).
+        caller: CallerScreen,
     },
 }
 
