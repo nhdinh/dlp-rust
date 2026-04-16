@@ -103,7 +103,6 @@ impl ConditionAttribute {
 /// Used by the Esc-at-Step-1 handler to reconstruct the parent screen
 /// when closing the modal. Variants will be consumed by Phases 14 and 15.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Variants consumed by Phase 14 (PolicyCreate) and Phase 15 (PolicyEdit).
 pub enum CallerScreen {
     /// Opened from the policy creation flow.
     PolicyCreate,
@@ -117,7 +116,6 @@ pub enum CallerScreen {
 /// Using a single struct avoids borrow-split when the conditions
 /// builder modal writes into the conditions list.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)] // Fields consumed by Phase 14 (create form) and Phase 15 (edit form).
 pub struct PolicyFormState {
     /// Policy name (required).
     pub name: String,
@@ -125,13 +123,20 @@ pub struct PolicyFormState {
     pub description: String,
     /// Priority as string for text input (parsed to u32 on submit).
     pub priority: String,
-    /// Index into the action options list (ALLOW/DENY/AllowWithLog/DenyWithLog).
+    /// Index into the action options list (ALLOW/DENY/AllowWithLog/DenyWithAlert).
     pub action: usize,
     /// Whether the policy is enabled.
     pub enabled: bool,
     /// Accumulated conditions from the conditions builder.
     pub conditions: Vec<dlp_common::abac::PolicyCondition>,
 }
+
+/// Fixed action options for the policy create / edit form.
+///
+/// Indices match `PolicyFormState.action`. The wire strings are sent verbatim
+/// in the POST body; the server's `deserialize_policy_row` accepts them
+/// case-insensitively.
+pub const ACTION_OPTIONS: [&str; 4] = ["ALLOW", "DENY", "AllowWithLog", "DenyWithAlert"];
 
 // ---------------------------------------------------------------------------
 // Screen enum
@@ -226,7 +231,6 @@ pub enum Screen {
     /// Completed conditions accumulate in `pending` and are returned
     /// to the caller via `PolicyFormState`.
     // Constructed by Phase 14 (PolicyCreate) and Phase 15 (PolicyEdit).
-    #[allow(dead_code)]
     ConditionsBuilder {
         /// Current step: 1, 2, or 3.
         step: u8,
@@ -246,6 +250,31 @@ pub enum Screen {
         picker_state: ratatui::widgets::ListState,
         /// Which screen opened this modal (for Esc-at-Step-1 return).
         caller: CallerScreen,
+        /// Snapshot of the caller's form state, restored when the modal closes.
+        form_snapshot: PolicyFormState,
+    },
+    /// Policy creation multi-field form.
+    ///
+    /// Row layout (selected index -> field):
+    ///   0: Name         (text, required)
+    ///   1: Description  (text, optional)
+    ///   2: Priority     (text, parsed as u32 at submit)
+    ///   3: Action       (select index into ACTION_OPTIONS)
+    ///   4: [Add Conditions]
+    ///   5: Conditions display (read-only summary)
+    ///   6: [Submit]
+    PolicyCreate {
+        /// All form field values and accumulated conditions.
+        form: PolicyFormState,
+        /// Index of the currently highlighted row (0..=6).
+        selected: usize,
+        /// Whether the selected text field is in edit mode.
+        editing: bool,
+        /// Text buffer for the active text field (Name, Description, Priority).
+        buffer: String,
+        /// Inline validation error displayed below the Submit row.
+        /// Cleared on Esc or successful submission.
+        validation_error: Option<String>,
     },
 }
 

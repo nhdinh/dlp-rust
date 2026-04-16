@@ -148,6 +148,8 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 picker_state,
             );
         }
+        // Plan 14-02 (render) will implement draw_policy_create.
+        Screen::PolicyCreate { .. } => {}
     }
 }
 

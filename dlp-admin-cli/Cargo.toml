@@ -27,6 +27,9 @@ tracing-appender = "0.2"
 # Shared types from dlp-common
 dlp-common = { path = "../dlp-common" }
 
+# UUID v4 generation for caller-supplied policy IDs (POST /admin/policies requires non-empty id).
+uuid = { version = "1", features = ["v4"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_System_Registry",
