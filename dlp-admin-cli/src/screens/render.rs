@@ -755,36 +755,42 @@ fn draw_policy_create(
         let line = match i {
             0 => {
                 // Name (text, required)
-                let val = if editing && selected == 0 {
-                    format!("{label}:              [{buffer}_]")
+                if editing && selected == 0 {
+                    Line::from(format!("{label}:              [{buffer}_]"))
                 } else if form.name.is_empty() {
-                    format!("{label}:              (empty)")
+                    Line::from(vec![
+                        Span::raw(format!("{label}:              ")),
+                        Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
+                    ])
                 } else {
-                    format!("{label}:              {}", form.name)
-                };
-                Line::from(val)
+                    Line::from(format!("{label}:              {}", form.name))
+                }
             }
             1 => {
                 // Description (text, optional)
-                let val = if editing && selected == 1 {
-                    format!("{label}:       [{buffer}_]")
+                if editing && selected == 1 {
+                    Line::from(format!("{label}:       [{buffer}_]"))
                 } else if form.description.is_empty() {
-                    format!("{label}:       (empty)")
+                    Line::from(vec![
+                        Span::raw(format!("{label}:       ")),
+                        Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
+                    ])
                 } else {
-                    format!("{label}:       {}", form.description)
-                };
-                Line::from(val)
+                    Line::from(format!("{label}:       {}", form.description))
+                }
             }
             2 => {
                 // Priority (numeric text)
-                let val = if editing && selected == 2 {
-                    format!("{label}:          [{buffer}_]")
+                if editing && selected == 2 {
+                    Line::from(format!("{label}:          [{buffer}_]"))
                 } else if form.priority.is_empty() {
-                    format!("{label}:          (empty)")
+                    Line::from(vec![
+                        Span::raw(format!("{label}:          ")),
+                        Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
+                    ])
                 } else {
-                    format!("{label}:          {}", form.priority)
-                };
-                Line::from(val)
+                    Line::from(format!("{label}:          {}", form.priority))
+                }
             }
             3 => {
                 // Action (select index — cycles on Enter, no edit mode)
