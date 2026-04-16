@@ -3,8 +3,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use crate::app::{
-    App, ConditionAttribute, ConfirmPurpose, InputPurpose, PasswordPurpose, Screen, StatusKind,
-    ATTRIBUTES,
+    App, CallerScreen, ConditionAttribute, ConfirmPurpose, InputPurpose, PasswordPurpose,
+    PolicyFormState, Screen, StatusKind, ACTION_OPTIONS, ATTRIBUTES,
 };
 use crate::event::AppEvent;
 
@@ -28,6 +28,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::SiemConfig { .. } => handle_siem_config(app, key),
         Screen::AlertConfig { .. } => handle_alert_config(app, key),
         Screen::ConditionsBuilder { .. } => handle_conditions_builder(app, key),
+        Screen::PolicyCreate { .. } => handle_policy_create(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -137,10 +138,12 @@ fn handle_policy_menu(app: &mut App, key: KeyEvent) {
                 };
             }
             2 => {
-                app.screen = Screen::TextInput {
-                    prompt: "JSON file path".to_string(),
-                    input: String::new(),
-                    purpose: InputPurpose::CreatePolicyFromFile,
+                app.screen = Screen::PolicyCreate {
+                    form: PolicyFormState::default(),
+                    selected: 0,
+                    editing: false,
+                    buffer: String::new(),
+                    validation_error: None,
                 };
             }
             3 => {
@@ -174,7 +177,8 @@ fn handle_policy_menu(app: &mut App, key: KeyEvent) {
                 pending_focused: false,
                 pending_state: ratatui::widgets::ListState::default(),
                 picker_state,
-                caller: crate::app::CallerScreen::PolicyCreate,
+                caller: CallerScreen::PolicyCreate,
+                form_snapshot: PolicyFormState::default(),
             };
         }
         _ => {}
@@ -823,6 +827,17 @@ const ALERT_BACK_ROW: usize = 12;
 /// Total number of rows in the Alert config form (10 editable + Save + Test + Back).
 const ALERT_ROW_COUNT: usize = 13;
 
+/// Row indices for the PolicyCreate form.
+const POLICY_NAME_ROW: usize = 0;
+const POLICY_DESC_ROW: usize = 1;
+const POLICY_PRIORITY_ROW: usize = 2;
+const POLICY_ACTION_ROW: usize = 3;
+const POLICY_ADD_CONDITIONS_ROW: usize = 4;
+const POLICY_CONDITIONS_DISPLAY_ROW: usize = 5;
+const POLICY_SUBMIT_ROW: usize = 6;
+/// Total rows in the form (0..=6).
+const POLICY_ROW_COUNT: usize = 7;
+
 /// Returns `true` if the row index is a bool (toggle) field.
 fn alert_is_bool(index: usize) -> bool {
     matches!(index, 6 | 9) // smtp_enabled, webhook_enabled
@@ -1036,6 +1051,204 @@ fn handle_alert_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
             app.screen = Screen::SystemMenu { selected: 3 };
         }
         _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Policy create form
+// ---------------------------------------------------------------------------
+
+/// Handles key events for the Policy Create form.
+fn handle_policy_create(app: &mut App, key: KeyEvent) {
+    // Phase 1: read-only borrow to extract guard fields.
+    // This must be a separate block so the borrow ends before any &mut call.
+    let (selected, editing) = match &app.screen {
+        Screen::PolicyCreate { selected, editing, .. } => (*selected, *editing),
+        _ => return,
+    };
+
+    if editing {
+        handle_policy_create_editing(app, key, selected);
+    } else {
+        handle_policy_create_nav(app, key, selected);
+    }
+}
+
+/// Handles key events while editing a text field in the Policy Create form.
+///
+/// Text field rows: 0 (Name), 1 (Description), 2 (Priority).
+/// Enter commits the buffer to the form field; Esc cancels without discarding the form.
+fn handle_policy_create_editing(app: &mut App, key: KeyEvent, _selected: usize) {
+    match key.code {
+        KeyCode::Char(c) => {
+            if let Screen::PolicyCreate { buffer, .. } = &mut app.screen {
+                buffer.push(c);
+            }
+        }
+        KeyCode::Backspace => {
+            if let Screen::PolicyCreate { buffer, .. } = &mut app.screen {
+                buffer.pop();
+            }
+        }
+        KeyCode::Enter => {
+            // Commit the buffer into the relevant form field.
+            // Two-phase borrow: extract selected+buffer first, then mutate.
+            let (selected, buf) = match &app.screen {
+                Screen::PolicyCreate { selected, buffer, .. } => (*selected, buffer.clone()),
+                _ => return,
+            };
+            if let Screen::PolicyCreate { form, buffer, editing, .. } = &mut app.screen {
+                match selected {
+                    POLICY_NAME_ROW => form.name = buf.trim().to_string(),
+                    POLICY_DESC_ROW => form.description = buf.trim().to_string(),
+                    POLICY_PRIORITY_ROW => form.priority = buf.trim().to_string(),
+                    _ => {}
+                }
+                buffer.clear();
+                *editing = false;
+            }
+        }
+        KeyCode::Esc => {
+            // Cancel edit; restore field to pre-edit value (do NOT discard form).
+            if let Screen::PolicyCreate { buffer, editing, .. } = &mut app.screen {
+                buffer.clear();
+                *editing = false;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events while navigating the Policy Create form.
+fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::PolicyCreate { selected: sel, .. } = &mut app.screen {
+                nav(sel, POLICY_ROW_COUNT, key.code);
+            }
+        }
+        KeyCode::Enter => match selected {
+            POLICY_SUBMIT_ROW => {
+                // Two-phase borrow: clone form before calling action (Pitfall 5).
+                let form = match &app.screen {
+                    Screen::PolicyCreate { form, .. } => form.clone(),
+                    _ => return,
+                };
+                action_submit_policy(app, form);
+            }
+            POLICY_ADD_CONDITIONS_ROW => {
+                // Transition to ConditionsBuilder, carrying form_snapshot.
+                let form = match &app.screen {
+                    Screen::PolicyCreate { form, .. } => form.clone(),
+                    _ => return,
+                };
+                let mut picker_state = ratatui::widgets::ListState::default();
+                picker_state.select(Some(0));
+                app.screen = Screen::ConditionsBuilder {
+                    step: 1,
+                    selected_attribute: None,
+                    selected_operator: None,
+                    // Pre-populate pending with any conditions already added.
+                    pending: form.conditions.clone(),
+                    buffer: String::new(),
+                    pending_focused: false,
+                    pending_state: ratatui::widgets::ListState::default(),
+                    picker_state,
+                    caller: CallerScreen::PolicyCreate,
+                    // conditions field is empty in snapshot — live conditions travel via pending.
+                    form_snapshot: PolicyFormState {
+                        conditions: vec![],
+                        ..form
+                    },
+                };
+            }
+            POLICY_ACTION_ROW => {
+                // Cycle the action index (wraps at end of ACTION_OPTIONS).
+                if let Screen::PolicyCreate { form, .. } = &mut app.screen {
+                    form.action = (form.action + 1) % ACTION_OPTIONS.len();
+                }
+            }
+            POLICY_CONDITIONS_DISPLAY_ROW => {
+                // Read-only row; Enter does nothing.
+            }
+            _ => {
+                // Text field rows: enter edit mode pre-filled with current value.
+                if let Screen::PolicyCreate { form, editing, buffer, .. } = &mut app.screen {
+                    let pre_fill = match selected {
+                        POLICY_NAME_ROW => form.name.clone(),
+                        POLICY_DESC_ROW => form.description.clone(),
+                        POLICY_PRIORITY_ROW => form.priority.clone(),
+                        _ => String::new(),
+                    };
+                    *buffer = pre_fill;
+                    *editing = true;
+                }
+            }
+        },
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.screen = Screen::PolicyMenu { selected: 0 };
+        }
+        _ => {}
+    }
+}
+
+/// Validates the form, builds the POST payload, and sends it to the server.
+///
+/// On success: navigates to PolicyList.
+/// On validation failure: sets `validation_error` inline and returns early.
+/// On server error: sets `validation_error` to the error message inline.
+fn action_submit_policy(app: &mut App, form: PolicyFormState) {
+    // Inline validation before any network call.
+    if form.name.trim().is_empty() {
+        if let Screen::PolicyCreate { validation_error, .. } = &mut app.screen {
+            *validation_error = Some("Name is required.".to_string());
+        }
+        return;
+    }
+    let priority = match form.priority.trim().parse::<u32>() {
+        Ok(p) => p,
+        Err(_) => {
+            if let Screen::PolicyCreate { validation_error, .. } = &mut app.screen {
+                *validation_error =
+                    Some("Priority must be a valid integer (0 or greater).".to_string());
+            }
+            return;
+        }
+    };
+
+    let action_str = ACTION_OPTIONS[form.action].to_string();
+    let conditions_json =
+        serde_json::to_value(&form.conditions).unwrap_or(serde_json::Value::Array(vec![]));
+
+    let payload = serde_json::json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "name": form.name.trim(),
+        "description": if form.description.trim().is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(form.description.trim().to_string())
+        },
+        "priority": priority,
+        "conditions": conditions_json,
+        "action": action_str,
+        "enabled": true,
+    });
+
+    match app
+        .rt
+        .block_on(app.client.post::<serde_json::Value, _>("admin/policies", &payload))
+    {
+        Ok(_) => {
+            app.set_status("Policy created", StatusKind::Success);
+            // Navigate to policy list (action_list_policies navigates + sets status).
+            action_list_policies(app);
+        }
+        Err(e) => {
+            // Display error inline; keep form on screen so user can correct.
+            if let Screen::PolicyCreate { validation_error, .. } = &mut app.screen {
+                *validation_error = Some(format!("{e}"));
+            }
+        }
     }
 }
 
@@ -1256,8 +1469,31 @@ fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
         }
         KeyCode::Esc => {
             // Per D-06: Esc from pending focus closes the modal.
-            // Placeholder: return to PolicyMenu. Phase 14/15 will use CallerScreen.
-            app.screen = Screen::PolicyMenu { selected: 0 };
+            // Dispatch back to the caller screen, restoring form state.
+            let (caller, pending, form_snapshot) = match &app.screen {
+                Screen::ConditionsBuilder { caller, pending, form_snapshot, .. } => {
+                    (*caller, pending.clone(), form_snapshot.clone())
+                }
+                _ => return,
+            };
+            match caller {
+                CallerScreen::PolicyCreate => {
+                    app.screen = Screen::PolicyCreate {
+                        form: PolicyFormState {
+                            conditions: pending,
+                            ..form_snapshot
+                        },
+                        selected: POLICY_ADD_CONDITIONS_ROW,
+                        editing: false,
+                        buffer: String::new(),
+                        validation_error: None,
+                    };
+                }
+                CallerScreen::PolicyEdit => {
+                    // Phase 15 handles this.
+                    app.screen = Screen::PolicyMenu { selected: 0 };
+                }
+            }
         }
         _ => {}
     }
@@ -1307,8 +1543,31 @@ fn handle_conditions_step1(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Esc => {
             // Per D-18: Esc at Step 1 closes the modal.
-            // Placeholder: return to PolicyMenu. Phase 14/15 will use CallerScreen.
-            app.screen = Screen::PolicyMenu { selected: 0 };
+            // Dispatch back to the caller screen, restoring form state.
+            let (caller, pending, form_snapshot) = match &app.screen {
+                Screen::ConditionsBuilder { caller, pending, form_snapshot, .. } => {
+                    (*caller, pending.clone(), form_snapshot.clone())
+                }
+                _ => return,
+            };
+            match caller {
+                CallerScreen::PolicyCreate => {
+                    app.screen = Screen::PolicyCreate {
+                        form: PolicyFormState {
+                            conditions: pending,
+                            ..form_snapshot
+                        },
+                        selected: POLICY_ADD_CONDITIONS_ROW,
+                        editing: false,
+                        buffer: String::new(),
+                        validation_error: None,
+                    };
+                }
+                CallerScreen::PolicyEdit => {
+                    // Phase 15 handles this.
+                    app.screen = Screen::PolicyMenu { selected: 0 };
+                }
+            }
         }
         _ => {}
     }
