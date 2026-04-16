@@ -49,7 +49,7 @@ _Archived milestone details: `.planning/milestones/v0.2.0-ROADMAP.md` and `.plan
 Goal: Provide a 3-step sequential picker for building typed PolicyCondition lists without any raw JSON entry.
 Requirements: POLICY-05
 Plans:
-- [ ] 13-01-PLAN.md — Data model types (ConditionAttribute, CallerScreen, PolicyFormState, Screen::ConditionsBuilder) and dispatch handler with helpers and unit tests
+- [x] 13-01-PLAN.md — Data model types (ConditionAttribute, CallerScreen, PolicyFormState, Screen::ConditionsBuilder) and dispatch handler with helpers and unit tests
 - [ ] 13-02-PLAN.md — Render function (draw_conditions_builder modal overlay) and human visual verification
 Success criteria:
 1. Step 1 renders a selectable list of 5 attributes (Classification, MemberOf, DeviceTrust, NetworkLocation, AccessContext) and advances to Step 2 on Enter.
