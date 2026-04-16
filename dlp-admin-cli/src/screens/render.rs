@@ -8,7 +8,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::app::{App, ConditionAttribute, Screen, StatusKind, ATTRIBUTES};
+use crate::app::{App, ConditionAttribute, Screen, StatusKind, ACTION_OPTIONS, ATTRIBUTES};
 use crate::screens::dispatch::condition_display;
 
 /// Top-level draw function dispatched from the event loop.
@@ -148,8 +148,23 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 picker_state,
             );
         }
-        // Plan 14-02 (render) will implement draw_policy_create.
-        Screen::PolicyCreate { .. } => {}
+        Screen::PolicyCreate {
+            form,
+            selected,
+            editing,
+            buffer,
+            validation_error,
+        } => {
+            draw_policy_create(
+                frame,
+                area,
+                form,
+                *selected,
+                *editing,
+                buffer,
+                validation_error.as_deref(),
+            );
+        }
     }
 }
 
@@ -518,6 +533,17 @@ fn is_alert_numeric(index: usize) -> bool {
     matches!(index, 1) // smtp_port
 }
 
+/// Display labels for each row in the PolicyCreate form (7 rows, indices 0-6).
+const POLICY_FIELD_LABELS: [&str; 7] = [
+    "Name",
+    "Description",
+    "Priority",
+    "Action",
+    "[Add Conditions]",
+    "Conditions",
+    "[Submit]",
+];
+
 /// Draws the SIEM configuration form.
 fn draw_siem_config(
     frame: &mut Frame,
@@ -698,6 +724,148 @@ fn draw_alert_config(
         "Type to edit | Enter: commit | Esc: cancel"
     } else {
         "Up/Down: navigate | Enter: edit/toggle | Esc: back"
+    };
+    draw_hints(frame, area, hints);
+}
+
+/// Draws the Policy Create multi-field form.
+///
+/// # Arguments
+///
+/// * `frame` - ratatui frame
+/// * `area` - screen area allocated to the form
+/// * `form` - current form state (fields + conditions)
+/// * `selected` - index of the highlighted row (0..=6)
+/// * `editing` - true when a text field is in edit mode
+/// * `buffer` - text input buffer (only meaningful when `editing` is true)
+/// * `validation_error` - inline error shown below Submit row, or None
+fn draw_policy_create(
+    frame: &mut Frame,
+    area: Rect,
+    form: &crate::app::PolicyFormState,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+    validation_error: Option<&str>,
+) {
+    // Build 7 ListItems — one per row.
+    let mut items: Vec<ListItem> = Vec::with_capacity(POLICY_FIELD_LABELS.len());
+
+    for (i, label) in POLICY_FIELD_LABELS.iter().enumerate() {
+        let line = match i {
+            0 => {
+                // Name (text, required)
+                let val = if editing && selected == 0 {
+                    format!("{label}:              [{buffer}_]")
+                } else if form.name.is_empty() {
+                    format!("{label}:              (empty)")
+                } else {
+                    format!("{label}:              {}", form.name)
+                };
+                Line::from(val)
+            }
+            1 => {
+                // Description (text, optional)
+                let val = if editing && selected == 1 {
+                    format!("{label}:       [{buffer}_]")
+                } else if form.description.is_empty() {
+                    format!("{label}:       (empty)")
+                } else {
+                    format!("{label}:       {}", form.description)
+                };
+                Line::from(val)
+            }
+            2 => {
+                // Priority (numeric text)
+                let val = if editing && selected == 2 {
+                    format!("{label}:          [{buffer}_]")
+                } else if form.priority.is_empty() {
+                    format!("{label}:          (empty)")
+                } else {
+                    format!("{label}:          {}", form.priority)
+                };
+                Line::from(val)
+            }
+            3 => {
+                // Action (select index — cycles on Enter, no edit mode)
+                let action_label = ACTION_OPTIONS[form.action];
+                Line::from(format!("{label}:            {action_label}"))
+            }
+            4 => {
+                // [Add Conditions] action row
+                Line::from(format!("  {label}"))
+            }
+            5 => {
+                // Conditions summary (read-only)
+                let n = form.conditions.len();
+                if n == 0 {
+                    // DarkGray empty state (per D-18)
+                    Line::from(vec![
+                        Span::raw(format!("{label} ({n}):    ")),
+                        Span::styled("No conditions added.", Style::default().fg(Color::DarkGray)),
+                    ])
+                } else {
+                    // Comma-separated summary of conditions
+                    let summary = form
+                        .conditions
+                        .iter()
+                        .map(condition_display)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Line::from(vec![
+                        Span::raw(format!("{n} condition(s):    ")),
+                        Span::styled(summary, Style::default().fg(Color::DarkGray)),
+                    ])
+                }
+            }
+            6 => {
+                // [Submit] action row
+                Line::from(format!("  {label}"))
+            }
+            _ => Line::from(""),
+        };
+        items.push(ListItem::new(line));
+    }
+
+    // Render list with same highlight style used by all existing TUI screens.
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Create Policy ")
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut state);
+
+    // Validation error overlay below the Submit row (not a list item).
+    if let Some(err) = validation_error {
+        // Position: bottom-2 row (above hints bar at bottom-1).
+        if area.height >= 4 {
+            let err_area = Rect {
+                x: area.x + 2,
+                y: area.y + area.height - 2,
+                width: area.width.saturating_sub(4),
+                height: 1,
+            };
+            let err_para = Paragraph::new(err).style(Style::default().fg(Color::Red));
+            frame.render_widget(err_para, err_area);
+        }
+    }
+
+    // Key hints bar (contextual based on editing mode).
+    let hints = if editing {
+        "Type to edit | Enter: commit | Esc: cancel"
+    } else {
+        "Up/Down: navigate | Enter: edit/toggle/open | Esc: back"
     };
     draw_hints(frame, area, hints);
 }
