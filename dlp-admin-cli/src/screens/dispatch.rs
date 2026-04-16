@@ -161,6 +161,22 @@ fn handle_policy_menu(app: &mut App, key: KeyEvent) {
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 1 },
+        // TODO(phase-14): remove temporary test entry point
+        KeyCode::Char('c') => {
+            let mut picker_state = ratatui::widgets::ListState::default();
+            picker_state.select(Some(0));
+            app.screen = Screen::ConditionsBuilder {
+                step: 1,
+                selected_attribute: None,
+                selected_operator: None,
+                pending: vec![],
+                buffer: String::new(),
+                pending_focused: false,
+                pending_state: ratatui::widgets::ListState::default(),
+                picker_state,
+                caller: crate::app::CallerScreen::PolicyCreate,
+            };
+        }
         _ => {}
     }
 }

@@ -8,7 +8,8 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::app::{App, Screen, StatusKind};
+use crate::app::{App, ConditionAttribute, Screen, StatusKind, ATTRIBUTES};
+use crate::screens::dispatch::condition_display;
 
 /// Top-level draw function dispatched from the event loop.
 pub fn draw(app: &App, frame: &mut Frame) {
@@ -123,14 +124,327 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         } => {
             draw_alert_config(frame, area, config, *selected, *editing, buffer);
         }
-        // Plan 02 will replace this stub with the full draw_conditions_builder implementation.
-        Screen::ConditionsBuilder { .. } => {
-            let block = ratatui::widgets::Block::default()
-                .title(" Conditions Builder ")
-                .borders(ratatui::widgets::Borders::ALL);
-            frame.render_widget(block, area);
+        Screen::ConditionsBuilder {
+            step,
+            selected_attribute,
+            selected_operator,
+            pending,
+            buffer,
+            pending_focused,
+            pending_state,
+            picker_state,
+            ..
+        } => {
+            draw_conditions_builder(
+                frame,
+                area,
+                *step,
+                selected_attribute.as_ref(),
+                selected_operator.as_deref(),
+                pending,
+                buffer,
+                *pending_focused,
+                pending_state,
+                picker_state,
+            );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Conditions builder helpers and render function
+// ---------------------------------------------------------------------------
+
+/// Step 3 value labels for Classification (per D-11).
+const CLASSIFICATION_VALUES: [&str; 4] = ["T1: Public", "T2: Internal", "T3: Confidential", "T4: Restricted"];
+
+/// Step 3 value labels for DeviceTrust (per D-13).
+const DEVICE_TRUST_VALUES: [&str; 4] = ["Managed", "Unmanaged", "Compliant", "Unknown"];
+
+/// Step 3 value labels for NetworkLocation (per D-14).
+const NETWORK_LOCATION_VALUES: [&str; 4] = ["Corporate", "CorporateVpn", "Guest", "Unknown"];
+
+/// Step 3 value labels for AccessContext (per D-15).
+const ACCESS_CONTEXT_VALUES: [&str; 2] = ["Local", "Smb"];
+
+/// Step 2 operator labels for all attributes (only `eq` is enforced today).
+const OPERATOR_EQ: [(&str, bool); 1] = [("eq", true)];
+
+/// Builds the step breadcrumb line with mixed styles.
+///
+/// Current step is White+BOLD; completed steps are DarkGray.
+fn build_breadcrumb(step: u8) -> Line<'static> {
+    let completed = Style::default().fg(Color::DarkGray);
+    let current = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+    let sep = Style::default().fg(Color::DarkGray);
+
+    let s1 = if step == 1 { current } else { completed };
+    let s2 = if step == 2 { current } else { completed };
+    let s3 = if step == 3 { current } else { completed };
+
+    Line::from(vec![
+        Span::styled("Step 1: Attribute", s1),
+        Span::styled(" > ", sep),
+        Span::styled("Step 2: Operator", s2),
+        Span::styled(" > ", sep),
+        Span::styled("Step 3: Value", s3),
+    ])
+}
+
+/// Returns the step indicator label shown above the picker list.
+fn step_label(step: u8, selected_attribute: Option<&ConditionAttribute>) -> Line<'static> {
+    let attr_name = selected_attribute.map(|a| a.label()).unwrap_or("");
+    match step {
+        1 => Line::styled(
+            "Step 1: Attribute",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        2 => Line::styled(
+            format!("Step 2: Operator  [{attr_name}]"),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        3 => Line::styled(
+            format!("Step 3 of 3 -- Value  [{attr_name}]"),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        _ => Line::raw(""),
+    }
+}
+
+/// Returns the list items for the step picker at the given step.
+fn picker_items(step: u8, selected_attribute: Option<&ConditionAttribute>) -> Vec<ListItem<'static>> {
+    match step {
+        1 => ATTRIBUTES
+            .iter()
+            .map(|a| ListItem::new(a.label().to_string()))
+            .collect(),
+        2 => OPERATOR_EQ
+            .iter()
+            .map(|(op, enforced)| {
+                if *enforced {
+                    ListItem::new(op.to_string())
+                } else {
+                    ListItem::new(Line::from(vec![
+                        Span::raw(op.to_string()),
+                        Span::styled("  (not enforced)", Style::default().fg(Color::DarkGray)),
+                    ]))
+                }
+            })
+            .collect(),
+        3 => {
+            let attr = match selected_attribute {
+                Some(a) => a,
+                None => return vec![],
+            };
+            match attr {
+                ConditionAttribute::Classification => CLASSIFICATION_VALUES
+                    .iter()
+                    .map(|v| ListItem::new(v.to_string()))
+                    .collect(),
+                ConditionAttribute::MemberOf => vec![], // text input, not a list
+                ConditionAttribute::DeviceTrust => DEVICE_TRUST_VALUES
+                    .iter()
+                    .map(|v| ListItem::new(v.to_string()))
+                    .collect(),
+                ConditionAttribute::NetworkLocation => NETWORK_LOCATION_VALUES
+                    .iter()
+                    .map(|v| ListItem::new(v.to_string()))
+                    .collect(),
+                ConditionAttribute::AccessContext => ACCESS_CONTEXT_VALUES
+                    .iter()
+                    .map(|v| ListItem::new(v.to_string()))
+                    .collect(),
+            }
+        }
+        _ => vec![],
+    }
+}
+
+/// Renders the conditions builder modal overlay.
+///
+/// Draws a centered 60%-width, 22-row modal with:
+/// - Breadcrumb header (2 rows)
+/// - Pending conditions list (6 rows, scrollable)
+/// - Divider (1 row)
+/// - Step picker (remaining rows)
+/// - Hints bar (1 row, inside modal bottom)
+///
+/// # Arguments
+///
+/// * `frame` - ratatui frame to render into
+/// * `area` - full terminal area (modal is centered within this)
+/// * `step` - current step number (1, 2, or 3)
+/// * `selected_attribute` - attribute chosen in Step 1 (None until completed)
+/// * `selected_operator` - operator chosen in Step 2 (None until completed)
+/// * `pending` - conditions already added this session
+/// * `buffer` - text buffer for MemberOf Step 3 free-text input
+/// * `pending_focused` - true when the pending list has keyboard focus
+/// * `pending_state` - scroll position for the pending list
+/// * `picker_state` - scroll position for the step picker list
+#[allow(clippy::too_many_arguments)]
+fn draw_conditions_builder(
+    frame: &mut Frame,
+    area: Rect,
+    step: u8,
+    selected_attribute: Option<&ConditionAttribute>,
+    // Operator is resolved for future steps; accepted here for completeness.
+    _selected_operator: Option<&str>,
+    pending: &[dlp_common::abac::PolicyCondition],
+    buffer: &str,
+    pending_focused: bool,
+    pending_state: &ListState,
+    picker_state: &ListState,
+) {
+    // Full-frame Clear to overlay parent content (matches draw_hints pattern).
+    frame.render_widget(Clear, area);
+
+    // Center a 60%-width, 22-row modal box.
+    let modal_width = area.width * 60 / 100;
+    let modal_height = 22_u16.min(area.height);
+    let modal_x = area.x + (area.width.saturating_sub(modal_width)) / 2;
+    let modal_y = area.y + (area.height.saturating_sub(modal_height)) / 2;
+    let modal_area = Rect {
+        x: modal_x,
+        y: modal_y,
+        width: modal_width,
+        height: modal_height,
+    };
+
+    let modal_block = Block::default()
+        .title(" Conditions Builder ")
+        .borders(Borders::ALL);
+    // CRITICAL: compute inner BEFORE rendering; inner() borrows &self so must be
+    // called before the block is moved into render_widget (Pitfall 3 from PATTERNS.md).
+    let inner = modal_block.inner(modal_area);
+    frame.render_widget(modal_block, modal_area);
+
+    // Split interior into sub-areas per UI-SPEC area allocations.
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // header / breadcrumb
+            Constraint::Length(6), // pending list
+            Constraint::Length(1), // divider
+            Constraint::Min(0),    // step picker (fills remaining)
+        ])
+        .split(inner);
+
+    let header_area = chunks[0];
+    let pending_area = chunks[1];
+    let divider_area = chunks[2];
+    let picker_area = chunks[3];
+
+    // --- Header: breadcrumb ---
+    let breadcrumb = build_breadcrumb(step);
+    frame.render_widget(Paragraph::new(breadcrumb), header_area);
+
+    // --- Divider ---
+    let divider = Paragraph::new(Line::styled(
+        "-".repeat(inner.width as usize),
+        Style::default().fg(Color::DarkGray),
+    ));
+    frame.render_widget(divider, divider_area);
+
+    // --- Pending conditions list ---
+    if pending.is_empty() {
+        // Per D-19: empty state placeholder in DarkGray.
+        let empty = Paragraph::new(Line::from(
+            "No conditions added. Use the picker below to add conditions.",
+        ))
+        .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(empty, pending_area);
+    } else {
+        let pending_highlight = if pending_focused {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let items: Vec<ListItem> = pending
+            .iter()
+            .map(|c| {
+                let display = condition_display(c);
+                ListItem::new(Line::from(vec![
+                    Span::raw(display),
+                    Span::styled("  [d]", Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect();
+
+        let pending_list = List::new(items)
+            .block(
+                Block::default()
+                    .title(" Pending Conditions ")
+                    .borders(Borders::ALL),
+            )
+            .highlight_style(pending_highlight)
+            .highlight_symbol("> ");
+
+        // Clone ListState into a mutable local; render path must not mutate the
+        // canonical state stored in the Screen variant (read-only borrow in draw_screen).
+        let mut ps = pending_state.clone();
+        frame.render_stateful_widget(pending_list, pending_area, &mut ps);
+    }
+
+    // --- Step picker ---
+    // Split picker area: step label (1 row) + options list (remaining).
+    let picker_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(picker_area);
+
+    let label = step_label(step, selected_attribute);
+    frame.render_widget(Paragraph::new(label), picker_chunks[0]);
+
+    // Step 3 MemberOf: text input instead of a selection list (per D-12).
+    let is_member_of_step3 =
+        step == 3 && selected_attribute == Some(&ConditionAttribute::MemberOf);
+
+    if is_member_of_step3 {
+        // Free-text input for the AD group SID; trailing `_` acts as a cursor.
+        let input_display = format!("[{buffer}_]");
+        let input_paragraph = Paragraph::new(input_display).block(
+            Block::default()
+                .title(" AD Group SID ")
+                .borders(Borders::ALL),
+        );
+        frame.render_widget(input_paragraph, picker_chunks[1]);
+    } else {
+        let items = picker_items(step, selected_attribute);
+        if !items.is_empty() {
+            let picker_highlight = if pending_focused {
+                // Picker is not focused; show selection in plain White.
+                Style::default().fg(Color::White)
+            } else {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            };
+
+            let picker_list = List::new(items)
+                .highlight_style(picker_highlight)
+                .highlight_symbol("> ");
+
+            // Clone picker ListState for the same reason as pending_state above.
+            let mut pk = picker_state.clone();
+            frame.render_stateful_widget(picker_list, picker_chunks[1], &mut pk);
+        }
+    }
+
+    // --- Hints bar (inside modal bottom, NOT at terminal bottom) ---
+    // Pass modal_area so draw_hints computes y = modal_area.y + modal_area.height - 1.
+    let hints = if pending_focused {
+        "Up/Down Navigate  d: Delete  Tab: Switch to Picker  Esc: Close"
+    } else if is_member_of_step3 {
+        "Type SID  Enter: Add  Esc: Back  Tab: Switch to Pending"
+    } else {
+        "Up/Down Navigate  Enter: Select  Esc: Back/Close  Tab: Switch to Pending"
+    };
+    draw_hints(frame, modal_area, hints);
 }
 
 /// Labels for each row of the SIEM config form (in display order).
