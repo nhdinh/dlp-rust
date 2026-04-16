@@ -17,7 +17,7 @@
 | 4 | Wire alert router into server | v0.2.0 | 2/2 | Complete | 2026-04-11 |
 | 04.1 | Full detection and intercept test suite | v0.2.0 | 3/3 | Complete | 2026-04-11 |
 | 6 | Wire config push for agent config distribution | v0.2.0 | 2/2 | Complete | 2026-04-12 |
-| 7 | Active Directory LDAP integration | v0.3.0 | 0/0 | Not started | — |
+| 7 | Active Directory LDAP integration | v0.3.0 | 1/1 | In Progress | — |
 | 8 | Rate limiting middleware | v0.3.0 | 0/0 | Not started | — |
 | 9 | Admin operation audit logging | v0.3.0 | 0/0 | Not started | — |
 | 10 | SQLite connection pool | v0.3.0 | 0/0 | Not started | — |
