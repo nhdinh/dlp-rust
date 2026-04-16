@@ -40,7 +40,7 @@ _Archived milestone details: `.planning/milestones/v0.2.0-ROADMAP.md` and `.plan
 | Phase | Name | Goal | Requirements | Plans | Status |
 |-------|------|------|--------------|-------|--------|
 | 13 | Conditions Builder | 3-step sequential picker for building typed condition lists | POLICY-05 | 2 plans | Planning Complete |
-| 14 | Policy Create | Multi-field create form with conditions attached | POLICY-02 | — | Not Started |
+| 14 | Policy Create | Multi-field create form with conditions attached | POLICY-02 | 2 plans | Planning Complete |
 | 15 | Policy Edit + Delete | Load, edit, and delete existing policies from the TUI | POLICY-03, POLICY-04 | — | Not Started |
 | 16 | Policy List + Simulate | Scrollable policy table and evaluate-request simulation form | POLICY-01, POLICY-06 | — | Not Started |
 | 17 | Import + Export | JSON file-based batch import and full-policy-set export | POLICY-07, POLICY-08 | — | Not Started |
@@ -62,8 +62,11 @@ Success criteria:
 **Phase 14: Policy Create**
 Goal: Multi-field form that creates a new policy with an attached condition list via the conditions builder.
 Requirements: POLICY-02
+Plans:
+- [ ] 14-01-PLAN.md — State model (Screen::PolicyCreate, ACTION_OPTIONS, form_snapshot), dispatch handler (handle_policy_create, action_submit_policy, CallerScreen Esc fix), and unit tests
+- [ ] 14-02-PLAN.md — Render function (draw_policy_create) and human visual verification
 Success criteria:
-1. Form renders fields: name (required text), description (optional text), priority (required numeric), action (select: ALLOW / DENY / AllowWithLog / DenyWithLog).
+1. Form renders fields: name (required text), description (optional text), priority (required numeric), action (select: ALLOW / DENY / AllowWithLog / DenyWithAlert).
 2. A "Add Conditions" button/key opens the Phase 13 conditions builder; the resulting condition list is displayed below the button.
 3. Submit validates that name is non-empty and priority is a valid integer; shows inline validation errors on failure.
 4. Submit sends POST /admin/policies with a JSON body matching the server schema; on success, PolicyStore cache is invalidated and the user is returned to the policy list.
