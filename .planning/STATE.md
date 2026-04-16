@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v0.4.0
 milestone_name: Policy Authoring
-status: Defining requirements
+status: Planning
 last_updated: "2026-04-16"
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -19,14 +19,14 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-16)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** v0.4.0 — Policy Authoring (requirements and roadmap in progress)
+**Current focus:** v0.4.0 — Policy Authoring (roadmap written; planning phases)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 13 (Conditions Builder) — Not Started
 Plan: —
-Status: Defining requirements
-Last activity: 2026-04-16 — Milestone v0.4.0 started
+Status: Planning
+Last activity: 2026-04-16 — Milestone v0.4.0 roadmap created (5 phases: 13–17)
 
 ## Decisions
 
@@ -53,6 +53,9 @@ Last activity: 2026-04-16 — Milestone v0.4.0 started
 | 2026-04-16 | AD fail-open: empty groups on error | Never block operations due to AD unavailability; warn-level log + empty vector |
 | 2026-04-16 | Machine account Kerberos TGT bind | CN={COMPUTERNAME}$,CN=Computers,{base_dn} with empty password — no stored credentials |
 | 2026-04-16 | Group cache keyed by caller_sid | SID is universally available; username used for sAMAccountName LDAP filter (no DN needed) |
+| 2026-04-16 | TOML export blocked | toml crate incompatible with #[serde(tag = "attribute")] PolicyCondition; JSON only for v0.4.0 |
+| 2026-04-16 | Conditions builder: PolicyFormState struct | Eliminates borrow-split issues when returning Vec<PolicyCondition> to caller form |
+| 2026-04-16 | Import: GET existing IDs before POST/PUT | Detects conflicts without overwriting untracked policies |
 
 ## Known Issues (carry-forward from v0.3.0)
 
@@ -72,6 +75,7 @@ Last activity: 2026-04-16 — Milestone v0.4.0 started
 - Agent-server comms: JWT heartbeat, unauthenticated config poll endpoint
 - Policy conditions: JSON array of typed PolicyCondition variants (Classification, MemberOf, DeviceTrust, NetworkLocation, AccessContext)
 - TUI screens: ratatui + crossterm; generic get::<serde_json::Value> HTTP client pattern (not typed client methods)
+- Policy forms: PolicyFormState struct holds all form fields + conditions list to avoid borrow-split at submit time
 
 ## Accumulated Context
 
@@ -79,3 +83,13 @@ Last activity: 2026-04-16 — Milestone v0.4.0 started
 
 - Phase 99 added: Refactor DB layer to Repository + Unit of Work
 - v0.4.0: Policy Authoring — admin API already complete; milestone is 100% dlp-admin-cli TUI work + thin server-side import/export endpoint
+
+### v0.4.0 Phase Summary
+
+| Phase | Name | Depends |
+|-------|------|---------|
+| 13 | Conditions Builder | None (foundational) |
+| 14 | Policy Create | Phase 13 |
+| 15 | Policy Edit + Delete | Phase 14 |
+| 16 | Policy List + Simulate | Phase 13 (parallel-capable with 14/15) |
+| 17 | Import + Export | Phase 14 + Phase 15 |
