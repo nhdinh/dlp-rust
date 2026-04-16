@@ -339,10 +339,11 @@ fn draw_conditions_builder(
     frame.render_widget(Paragraph::new(breadcrumb), header_area);
 
     // --- Divider ---
-    let divider = Paragraph::new(Line::styled(
-        "-".repeat(inner.width as usize),
-        Style::default().fg(Color::DarkGray),
-    ));
+    // Use a Block with only a top border so ratatui draws the separator line
+    // without allocating a String on every render tick.
+    let divider = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(Color::DarkGray));
     frame.render_widget(divider, divider_area);
 
     // --- Pending conditions list ---
