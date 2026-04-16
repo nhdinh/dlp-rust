@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-16 — v0.4.0 started*
+*Last updated: 2026-04-16 — Phase 13 complete*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -78,7 +78,7 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - [ ] POLICY-02: Admin can create a new policy with name, description, priority, action, and one or more typed conditions
 - [ ] POLICY-03: Admin can edit an existing policy's name, description, priority, action, enabled flag, and conditions
 - [ ] POLICY-04: Admin can delete a policy with a confirmation prompt
-- [ ] POLICY-05: Admin can build policy conditions using a structured picker (attribute → operator → value) — no raw JSON
+- ✓ POLICY-05: Admin can build policy conditions using a structured picker (attribute → operator → value) — no raw JSON — Validated in Phase 13
 - [ ] POLICY-06: Admin can simulate a policy decision by filling an EvaluateRequest form and viewing the decision + matched policy
 - [ ] POLICY-07: Admin can export the full policy set to a TOML or JSON file
 - [ ] POLICY-08: Admin can import policies from a TOML or JSON file, with conflict detection
