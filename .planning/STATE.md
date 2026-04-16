@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v0.3.0
 milestone_name: Operational Hardening
 status: Ready to plan
-last_updated: "2026-04-15T19:26:13.663Z"
+last_updated: "2026-04-16T00:46:02.479Z"
 progress:
   total_phases: 6
   completed_phases: 1
@@ -19,7 +19,7 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-13)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** Phase 11 — policy-engine-separation
+**Current focus:** Phase 07 — AD LDAP integration (Plan 01 complete)
 
 ## Decisions
 
@@ -49,10 +49,17 @@ See: `.planning/PROJECT.md` (updated 2026-04-13)
 | 2026-04-15 | Background cache refresh: tokio interval loop | POLICY_REFRESH_INTERVAL_SECS exported as pub; avoids hardcoding magic number in main.rs |
 | 2026-04-15 | Startup failure on policy cache load error | Server does not start silently with empty cache; explicit map_err |
 | 2026-04-15 | Arc<PolicyStore> in AppState | pool and policy_store are both Arc<_> so AppState remains Clone for axum |
+| 2026-04-16 | AD client channel-based async | AdClient spawns background Tokio task owning LDAP connection; mpsc + oneshot serializes LDAP ops cleanly |
+| 2026-04-16 | AD fail-open: empty groups on error | Never block operations due to AD unavailability; warn-level log + empty vector |
+| 2026-04-16 | Machine account Kerberos TGT bind | CN={COMPUTERNAME}$,CN=Computers,{base_dn} with empty password — no stored credentials |
+| 2026-04-16 | Group cache keyed by caller_sid | SID is universally available; username used for sAMAccountName LDAP filter (no DN needed) |
+| 2026-04-16 | NetGetJoinInformation for device_trust | NETSETUP_JOIN_STATUS(3) == NetSetupDomainName check; more reliable than NetIsPartOfDomain |
+| 2026-04-16 | Manual binary SID parse per MS-DTYP §2.4.2 | Zero unsafe blocks; revision byte + subauthority count + authority + subauthorities |
+| 2026-04-16 | Duplicate windows deps key fix | Merged two [target.'cfg(windows)'.dependencies] keys into one in dlp-common/Cargo.toml |
 
 ## Known Issues (v0.2.0 — to address in v0.3.0)
 
-- R-05: AD LDAP not integrated — ABAC uses placeholder values for user groups
+- [Resolved] R-05: AD LDAP not integrated — AdClient implemented in dlp-common; Phase 7 Plan 1 complete
 - R-07: No rate limiting on server endpoints
 - R-09: Admin CRUD operations not persisted as audit events
 - R-10: Single SQLite Mutex<Connection> serializes concurrent requests
