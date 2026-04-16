@@ -1293,7 +1293,13 @@ fn handle_conditions_step1(app: &mut App, key: KeyEvent) {
             } = &mut app.screen
             {
                 let idx = picker_state.selected().unwrap_or(0);
-                *selected_attribute = Some(ATTRIBUTES[idx]);
+                // Bounds-checked: ATTRIBUTES.get returns None for out-of-range idx,
+                // falling back to Classification so Step 2 always has a valid attribute.
+                let attr = ATTRIBUTES
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(ConditionAttribute::Classification);
+                *selected_attribute = Some(attr);
                 *step = 2;
                 // Reset picker to top for the new step's list (Pitfall 4).
                 picker_state.select(Some(0));
@@ -1324,6 +1330,9 @@ fn handle_conditions_step2(
         KeyCode::Up | KeyCode::Down => {
             if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
                 let current = picker_state.selected().unwrap_or(0);
+                if ops.is_empty() {
+                    return;
+                }
                 let new_idx = match key.code {
                     KeyCode::Up => {
                         if current == 0 {
@@ -1482,6 +1491,9 @@ fn handle_conditions_step3_select(
 
     match key.code {
         KeyCode::Up | KeyCode::Down => {
+            if count == 0 {
+                return;
+            }
             if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
                 let current = picker_state.selected().unwrap_or(0);
                 let new_idx = match key.code {
