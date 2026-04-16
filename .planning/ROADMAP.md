@@ -50,7 +50,7 @@ Goal: Provide a 3-step sequential picker for building typed PolicyCondition list
 Requirements: POLICY-05
 Plans:
 - [x] 13-01-PLAN.md — Data model types (ConditionAttribute, CallerScreen, PolicyFormState, Screen::ConditionsBuilder) and dispatch handler with helpers and unit tests
-- [ ] 13-02-PLAN.md — Render function (draw_conditions_builder modal overlay) and human visual verification
+- [x] 13-02-PLAN.md — Render function (draw_conditions_builder modal overlay) and human visual verification
 Success criteria:
 1. Step 1 renders a selectable list of 5 attributes (Classification, MemberOf, DeviceTrust, NetworkLocation, AccessContext) and advances to Step 2 on Enter.
 2. Step 2 renders only operators valid for the selected attribute; selecting one advances to Step 3.
