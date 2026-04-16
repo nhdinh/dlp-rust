@@ -21,7 +21,7 @@
 | 8 | Rate limiting middleware | v0.3.0 | 0/0 | Not started | — |
 | 9 | Admin operation audit logging | v0.3.0 | 0/0 | Not started | — |
 | 10 | SQLite connection pool | v0.3.0 | 0/0 | Not started | — |
-| 11 | Policy Engine Separation | v0.3.0 | 3/6 | Executing (wave 3 done) | 2026-04-16 |
+| 11 | Policy Engine Separation | v0.3.0 | 4/4 | Complete | 2026-04-16 |
 | 12 | Comprehensive DLP Test Suite | v0.2.0 | 3/3 | Complete | 2026-04-13 |
 
 ## v0.3.0 — Operational Hardening (Planned)
