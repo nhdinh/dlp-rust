@@ -19,7 +19,7 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-13)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** Phase 07 — AD LDAP integration (Plans 01, 02, 03 complete)
+**Current focus:** Phase 07 — AD LDAP integration (Plans 01, 02 complete; Plans 03–05 already done)
 
 ## Decisions
 
