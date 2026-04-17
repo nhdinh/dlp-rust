@@ -1247,8 +1247,10 @@ fn action_submit_policy(app: &mut App, form: PolicyFormState) {
             .post::<serde_json::Value, _>("admin/policies", &payload),
     ) {
         Ok(_) => {
-            app.set_status("Policy created", StatusKind::Success);
-            // Navigate to policy list (action_list_policies navigates + sets status).
+            // Navigate to policy list; action_list_policies sets the final
+            // status message ("Loaded N policies") after the list fetch.
+            // Setting a "Policy created" status here would be immediately
+            // overwritten by action_list_policies, so we rely on that message.
             action_list_policies(app);
         }
         Err(e) => {
