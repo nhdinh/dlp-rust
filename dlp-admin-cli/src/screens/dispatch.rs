@@ -29,6 +29,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::AlertConfig { .. } => handle_alert_config(app, key),
         Screen::ConditionsBuilder { .. } => handle_conditions_builder(app, key),
         Screen::PolicyCreate { .. } => handle_policy_create(app, key),
+        Screen::PolicyEdit { .. } => handle_policy_edit(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -345,17 +346,23 @@ fn handle_confirm(app: &mut App, key: KeyEvent) {
     };
     match key.code {
         KeyCode::Left | KeyCode::Right => *yes_selected = !*yes_selected,
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            *yes_selected = true;
+            let ConfirmPurpose::DeletePolicy { id } = &purpose;
+            action_delete_policy(app, id);
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            // Cancel: stay on PolicyList (D-17).
+            action_list_policies(app);
+        }
         KeyCode::Enter => {
             if *yes_selected {
                 match purpose {
                     ConfirmPurpose::DeletePolicy { id } => action_delete_policy(app, &id),
                 }
             } else {
-                app.screen = Screen::PolicyMenu { selected: 0 };
+                action_list_policies(app);
             }
-        }
-        KeyCode::Esc => {
-            app.screen = Screen::PolicyMenu { selected: 0 };
         }
         _ => {}
     }
@@ -403,6 +410,24 @@ fn handle_policy_list(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Esc => {
             app.screen = Screen::PolicyMenu { selected: 0 };
+        }
+        KeyCode::Char('e') => {
+            if let Some(policy) = policies.get(*selected) {
+                let id = policy["id"].as_str().unwrap_or_default().to_string();
+                let name = policy["name"].as_str().unwrap_or("<unnamed>").to_string();
+                action_load_policy_for_edit(app, &id, &name);
+            }
+        }
+        KeyCode::Char('d') => {
+            if let Some(policy) = policies.get(*selected) {
+                let id = policy["id"].as_str().unwrap_or_default().to_string();
+                let name = policy["name"].as_str().unwrap_or("<unnamed>").to_string();
+                app.screen = Screen::Confirm {
+                    message: format!("Delete policy '{name}'? [y/n]"),
+                    yes_selected: false,
+                    purpose: ConfirmPurpose::DeletePolicy { id },
+                };
+            }
         }
         _ => {}
     }
@@ -506,11 +531,12 @@ fn action_delete_policy(app: &mut App, id: &str) {
     match app.rt.block_on(app.client.delete(&path)) {
         Ok(()) => {
             app.set_status(format!("Policy '{id}' deleted"), StatusKind::Success);
-            app.screen = Screen::PolicyMenu { selected: 4 };
+            // Reload the policy list (D-16).
+            action_list_policies(app);
         }
         Err(e) => {
             app.set_status(format!("Failed: {e}"), StatusKind::Error);
-            app.screen = Screen::PolicyMenu { selected: 4 };
+            // Stay on PolicyList (D-17) — do NOT navigate to PolicyMenu.
         }
     }
 }
@@ -810,16 +836,21 @@ const ALERT_BACK_ROW: usize = 12;
 /// Total number of rows in the Alert config form (10 editable + Save + Test + Back).
 const ALERT_ROW_COUNT: usize = 13;
 
-/// Row indices for the PolicyCreate form.
+/// Row indices for the PolicyCreate/PolicyEdit form (Phase 15: 8 rows).
 const POLICY_NAME_ROW: usize = 0;
 const POLICY_DESC_ROW: usize = 1;
 const POLICY_PRIORITY_ROW: usize = 2;
 const POLICY_ACTION_ROW: usize = 3;
-const POLICY_ADD_CONDITIONS_ROW: usize = 4;
-const POLICY_CONDITIONS_DISPLAY_ROW: usize = 5;
-const POLICY_SUBMIT_ROW: usize = 6;
-/// Total rows in the form (0..=6).
-const POLICY_ROW_COUNT: usize = 7;
+/// Row index of the Enabled toggle (Phase 15: row 4 in both Create and Edit).
+const POLICY_ENABLED_ROW: usize = 4;
+/// Row index of the [Add Conditions] action row.
+const POLICY_ADD_CONDITIONS_ROW: usize = 5;
+/// Row index of the Conditions summary display row.
+const POLICY_CONDITIONS_DISPLAY_ROW: usize = 6;
+/// Row index of the [Save] / [Submit] action row.
+const POLICY_SAVE_ROW: usize = 7;
+/// Total rows in the PolicyCreate/PolicyEdit form (0..=7).
+const POLICY_ROW_COUNT: usize = 8;
 
 /// Returns `true` if the row index is a bool (toggle) field.
 fn alert_is_bool(index: usize) -> bool {
@@ -1124,13 +1155,19 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
             }
         }
         KeyCode::Enter => match selected {
-            POLICY_SUBMIT_ROW => {
+            POLICY_SAVE_ROW => {
                 // Two-phase borrow: clone form before calling action (Pitfall 5).
                 let form = match &app.screen {
                     Screen::PolicyCreate { form, .. } => form.clone(),
                     _ => return,
                 };
                 action_submit_policy(app, form);
+            }
+            POLICY_ENABLED_ROW => {
+                // Toggle the enabled bool (no edit mode, no buffer).
+                if let Screen::PolicyCreate { form, .. } = &mut app.screen {
+                    form.enabled = !form.enabled;
+                }
             }
             POLICY_ADD_CONDITIONS_ROW => {
                 // Transition to ConditionsBuilder, carrying form_snapshot.
@@ -1170,10 +1207,8 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
             _ => {
                 // Text field rows: enter edit mode pre-filled with current value.
                 // Guard against out-of-bounds `selected` values — only rows 0..=2
-                // are editable text fields. Any other index is a no-op. This
-                // protects against future changes to POLICY_ROW_COUNT that
-                // don't update the outer match arms above.
-                if selected > POLICY_PRIORITY_ROW {
+                // are editable text fields. Any other index is a no-op.
+                if selected > 2 {
                     return;
                 }
                 if let Screen::PolicyCreate {
@@ -1260,7 +1295,7 @@ fn action_submit_policy(app: &mut App, form: PolicyFormState) {
         "priority": priority,
         "conditions": conditions_json,
         "action": action_str,
-        "enabled": true,
+        "enabled": form.enabled,
     });
 
     match app.rt.block_on(
@@ -1277,6 +1312,294 @@ fn action_submit_policy(app: &mut App, form: PolicyFormState) {
         Err(e) => {
             // Display error inline; keep form on screen so user can correct.
             if let Screen::PolicyCreate {
+                validation_error, ..
+            } = &mut app.screen
+            {
+                *validation_error = Some(format!("{e}"));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Policy edit form
+// ---------------------------------------------------------------------------
+
+/// Loads an existing policy via GET /admin/policies/{id} and opens the edit form.
+fn action_load_policy_for_edit(app: &mut App, id: &str, _name: &str) {
+    let path = format!("policies/{id}");
+    match app.rt.block_on(app.client.get::<serde_json::Value>(&path)) {
+        Ok(policy) => {
+            // Map `action` JSON to an ACTION_OPTIONS index (case-insensitive).
+            let action_str = policy["action"].as_str().unwrap_or("ALLOW");
+            let action_idx = ACTION_OPTIONS
+                .iter()
+                .position(|opt| opt.eq_ignore_ascii_case(action_str))
+                .unwrap_or(0);
+            if action_idx == 0 && !ACTION_OPTIONS[0].eq_ignore_ascii_case(action_str) {
+                app.set_status(
+                    format!("Warning: unknown action '{action_str}', defaulted to ALLOW"),
+                    StatusKind::Error,
+                );
+            }
+
+            // Deserialize conditions from the JSON policy.
+            let conditions: Vec<dlp_common::abac::PolicyCondition> = policy["conditions"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let form = PolicyFormState {
+                name: policy["name"].as_str().unwrap_or("").to_string(),
+                description: policy["description"].as_str().unwrap_or("").to_string(),
+                priority: policy["priority"]
+                    .as_i64()
+                    .map(|n| n.to_string())
+                    .unwrap_or_default(),
+                action: action_idx,
+                enabled: policy["enabled"].as_bool().unwrap_or(true),
+                conditions,
+                id: id.to_string(),
+            };
+
+            app.screen = Screen::PolicyEdit {
+                id: id.to_string(),
+                form,
+                selected: 0,
+                editing: false,
+                buffer: String::new(),
+                validation_error: None,
+            };
+        }
+        Err(e) => {
+            app.set_status(format!("Failed to load policy: {e}"), StatusKind::Error);
+            // Stay on PolicyList rather than navigating away.
+        }
+    }
+}
+
+/// Handles key events for the Policy Edit form.
+fn handle_policy_edit(app: &mut App, key: KeyEvent) {
+    let (selected, editing) = match &app.screen {
+        Screen::PolicyEdit {
+            selected, editing, ..
+        } => (*selected, *editing),
+        _ => return,
+    };
+
+    if editing {
+        handle_policy_edit_editing(app, key, selected);
+    } else {
+        handle_policy_edit_nav(app, key, selected);
+    }
+}
+
+/// Handles key events while editing a text field in the Policy Edit form.
+fn handle_policy_edit_editing(app: &mut App, key: KeyEvent, _selected: usize) {
+    match key.code {
+        KeyCode::Char(c) => {
+            if let Screen::PolicyEdit { buffer, .. } = &mut app.screen {
+                buffer.push(c);
+            }
+        }
+        KeyCode::Backspace => {
+            if let Screen::PolicyEdit { buffer, .. } = &mut app.screen {
+                buffer.pop();
+            }
+        }
+        KeyCode::Enter => {
+            let (selected, buf) = match &app.screen {
+                Screen::PolicyEdit {
+                    selected, buffer, ..
+                } => (*selected, buffer.clone()),
+                _ => return,
+            };
+            if let Screen::PolicyEdit {
+                form,
+                buffer,
+                editing,
+                ..
+            } = &mut app.screen
+            {
+                match selected {
+                    POLICY_NAME_ROW => form.name = buf.trim().to_string(),
+                    POLICY_DESC_ROW => form.description = buf.trim().to_string(),
+                    POLICY_PRIORITY_ROW => form.priority = buf.trim().to_string(),
+                    _ => {}
+                }
+                buffer.clear();
+                *editing = false;
+            }
+        }
+        KeyCode::Esc => {
+            if let Screen::PolicyEdit {
+                buffer, editing, ..
+            } = &mut app.screen
+            {
+                buffer.clear();
+                *editing = false;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events while navigating the Policy Edit form.
+fn handle_policy_edit_nav(app: &mut App, key: KeyEvent, selected: usize) {
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::PolicyEdit { selected: sel, .. } = &mut app.screen {
+                nav(sel, POLICY_ROW_COUNT, key.code);
+            }
+        }
+        KeyCode::Enter => match selected {
+            POLICY_SAVE_ROW => {
+                let form = match &app.screen {
+                    Screen::PolicyEdit { form, .. } => form.clone(),
+                    _ => return,
+                };
+                action_submit_policy_update(app, &form.id.clone(), form);
+            }
+            POLICY_ENABLED_ROW => {
+                if let Screen::PolicyEdit { form, .. } = &mut app.screen {
+                    form.enabled = !form.enabled;
+                }
+            }
+            POLICY_ACTION_ROW => {
+                if let Screen::PolicyEdit { form, .. } = &mut app.screen {
+                    form.action = (form.action + 1) % ACTION_OPTIONS.len();
+                }
+            }
+            POLICY_ADD_CONDITIONS_ROW => {
+                let form = match &app.screen {
+                    Screen::PolicyEdit { form, .. } => form.clone(),
+                    _ => return,
+                };
+                let mut picker_state = ratatui::widgets::ListState::default();
+                picker_state.select(Some(0));
+                app.screen = Screen::ConditionsBuilder {
+                    step: 1,
+                    selected_attribute: None,
+                    selected_operator: None,
+                    pending: form.conditions.clone(),
+                    buffer: String::new(),
+                    pending_focused: false,
+                    pending_state: ratatui::widgets::ListState::default(),
+                    picker_state,
+                    caller: CallerScreen::PolicyEdit,
+                    form_snapshot: PolicyFormState {
+                        conditions: vec![],
+                        ..form
+                    },
+                };
+            }
+            POLICY_CONDITIONS_DISPLAY_ROW => {
+                // Read-only row; Enter does nothing.
+            }
+            _ => {
+                if selected > 2 {
+                    return;
+                }
+                if let Screen::PolicyEdit {
+                    form,
+                    editing,
+                    buffer,
+                    ..
+                } = &mut app.screen
+                {
+                    let pre_fill = match selected {
+                        POLICY_NAME_ROW => form.name.clone(),
+                        POLICY_DESC_ROW => form.description.clone(),
+                        POLICY_PRIORITY_ROW => form.priority.clone(),
+                        _ => return,
+                    };
+                    *buffer = pre_fill;
+                    *editing = true;
+                }
+            }
+        },
+        KeyCode::Esc | KeyCode::Char('q') => {
+            action_list_policies(app);
+        }
+        _ => {}
+    }
+}
+
+/// Validates the form, builds the PUT payload, and sends it to the server.
+///
+/// On success: navigates to PolicyList with a success status.
+/// On validation failure: sets `validation_error` inline and stays on PolicyEdit.
+/// On server error: sets `validation_error` inline and stays on PolicyEdit.
+fn action_submit_policy_update(app: &mut App, id: &str, form: PolicyFormState) {
+    // Inline validation before any network call.
+    if form.name.trim().is_empty() {
+        if let Screen::PolicyEdit {
+            validation_error, ..
+        } = &mut app.screen
+        {
+            *validation_error = Some("Name is required.".to_string());
+        }
+        return;
+    }
+    let priority = match form.priority.trim().parse::<u32>() {
+        Ok(p) => p,
+        Err(_) => {
+            if let Screen::PolicyEdit {
+                validation_error, ..
+            } = &mut app.screen
+            {
+                *validation_error =
+                    Some("Priority must be a valid integer (0 or greater).".to_string());
+            }
+            return;
+        }
+    };
+
+    let action_str = ACTION_OPTIONS[form.action].to_string();
+    let conditions_json = match serde_json::to_value(&form.conditions) {
+        Ok(v) => v,
+        Err(e) => {
+            if let Screen::PolicyEdit {
+                validation_error, ..
+            } = &mut app.screen
+            {
+                *validation_error = Some(format!("Failed to serialize conditions: {e}"));
+            }
+            return;
+        }
+    };
+
+    let payload = serde_json::json!({
+        "id": id,
+        "name": form.name.trim(),
+        "description": if form.description.trim().is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(form.description.trim().to_string())
+        },
+        "priority": priority,
+        "conditions": conditions_json,
+        "action": action_str,
+        "enabled": form.enabled,
+    });
+
+    match app.rt.block_on(
+        app.client
+            .put::<serde_json::Value, _>(&format!("admin/policies/{id}"), &payload),
+    ) {
+        Ok(_) => {
+            app.set_status(
+                format!("Policy '{}' updated", form.name.trim()),
+                StatusKind::Success,
+            );
+            action_list_policies(app);
+        }
+        Err(e) => {
+            if let Screen::PolicyEdit {
                 validation_error, ..
             } = &mut app.screen
             {
@@ -1527,8 +1850,18 @@ fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
                     };
                 }
                 CallerScreen::PolicyEdit => {
-                    // Phase 15 handles this.
-                    app.screen = Screen::PolicyMenu { selected: 0 };
+                    let id = form_snapshot.id.clone();
+                    app.screen = Screen::PolicyEdit {
+                        form: PolicyFormState {
+                            conditions: pending,
+                            ..form_snapshot
+                        },
+                        id,
+                        selected: POLICY_ADD_CONDITIONS_ROW,
+                        editing: false,
+                        buffer: String::new(),
+                        validation_error: None,
+                    };
                 }
             }
         }
@@ -1604,8 +1937,18 @@ fn handle_conditions_step1(app: &mut App, key: KeyEvent) {
                     };
                 }
                 CallerScreen::PolicyEdit => {
-                    // Phase 15 handles this.
-                    app.screen = Screen::PolicyMenu { selected: 0 };
+                    let id = form_snapshot.id.clone();
+                    app.screen = Screen::PolicyEdit {
+                        form: PolicyFormState {
+                            conditions: pending,
+                            ..form_snapshot
+                        },
+                        id,
+                        selected: POLICY_ADD_CONDITIONS_ROW,
+                        editing: false,
+                        buffer: String::new(),
+                        validation_error: None,
+                    };
                 }
             }
         }
@@ -2067,7 +2410,7 @@ mod tests {
         };
         let screen = Screen::PolicyCreate {
             form: form.clone(),
-            selected: POLICY_SUBMIT_ROW,
+            selected: POLICY_SAVE_ROW,
             editing: false,
             buffer: String::new(),
             validation_error: None,
@@ -2104,7 +2447,7 @@ mod tests {
         };
         let screen = Screen::PolicyCreate {
             form: form.clone(),
-            selected: POLICY_SUBMIT_ROW,
+            selected: POLICY_SAVE_ROW,
             editing: false,
             buffer: String::new(),
             validation_error: None,
@@ -2141,7 +2484,7 @@ mod tests {
         };
         let screen = Screen::PolicyCreate {
             form: form.clone(),
-            selected: POLICY_SUBMIT_ROW,
+            selected: POLICY_SAVE_ROW,
             editing: false,
             buffer: String::new(),
             validation_error: None,
