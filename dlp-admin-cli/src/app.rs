@@ -106,13 +106,12 @@ impl ConditionAttribute {
 /// Identifies which parent screen opened the conditions builder modal.
 ///
 /// Used by the Esc-at-Step-1 handler to reconstruct the parent screen
-/// when closing the modal. Variants will be consumed by Phases 14 and 15.
+/// when closing the modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerScreen {
     /// Opened from the policy creation flow.
     PolicyCreate,
     /// Opened from the policy edit flow (Phase 15).
-    #[allow(dead_code)]
     PolicyEdit,
 }
 
@@ -132,10 +131,12 @@ pub struct PolicyFormState {
     /// Index into the action options list (ALLOW/DENY/AllowWithLog/DenyWithAlert).
     pub action: usize,
     /// Whether the policy is enabled (used by Phase 15 policy edit form).
-    #[allow(dead_code)]
     pub enabled: bool,
     /// Accumulated conditions from the conditions builder.
     pub conditions: Vec<dlp_common::abac::PolicyCondition>,
+    /// Server-side policy ID. Empty for new policies; populated for existing ones
+    /// so it can be preserved through the ConditionsBuilder modal round-trip.
+    pub id: String,
 }
 
 /// Fixed action options for the policy create / edit form.
@@ -267,19 +268,47 @@ pub enum Screen {
     ///   1: Description  (text, optional)
     ///   2: Priority     (text, parsed as u32 at submit)
     ///   3: Action       (select index into ACTION_OPTIONS)
-    ///   4: [Add Conditions]
-    ///   5: Conditions display (read-only summary)
-    ///   6: [Submit]
+    ///   4: Enabled      (bool toggle — Enter toggles, no edit mode)
+    ///   5: [Add Conditions]
+    ///   6: Conditions display (read-only summary)
+    ///   7: [Submit]
     PolicyCreate {
         /// All form field values and accumulated conditions.
         form: PolicyFormState,
-        /// Index of the currently highlighted row (0..=6).
+        /// Index of the currently highlighted row (0..=7).
         selected: usize,
         /// Whether the selected text field is in edit mode.
         editing: bool,
         /// Text buffer for the active text field (Name, Description, Priority).
         buffer: String,
         /// Inline validation error displayed below the Submit row.
+        /// Cleared on Esc or successful submission.
+        validation_error: Option<String>,
+    },
+    /// Policy edit multi-field form.
+    ///
+    /// Row layout (selected index -> field):
+    ///   0: Name         (text, required)
+    ///   1: Description  (text, optional)
+    ///   2: Priority     (text, parsed as u32 at submit)
+    ///   3: Action       (select index into ACTION_OPTIONS)
+    ///   4: Enabled      (bool toggle — Enter toggles, no edit mode)
+    ///   5: [Add Conditions]
+    ///   6: Conditions display (read-only summary)
+    ///   7: [Save]
+    PolicyEdit {
+        /// Server-side policy ID; used for PUT URL path only — NOT rendered on form.
+        #[allow(dead_code)]
+        id: String,
+        /// All form field values and conditions, pre-populated from GET response.
+        form: PolicyFormState,
+        /// Index of the currently highlighted row (0..=7).
+        selected: usize,
+        /// Whether the selected text field is in edit mode.
+        editing: bool,
+        /// Text buffer for the active text field (Name, Description, Priority).
+        buffer: String,
+        /// Inline validation error displayed below the [Save] row.
         /// Cleared on Esc or successful submission.
         validation_error: Option<String>,
     },
