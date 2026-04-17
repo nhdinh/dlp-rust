@@ -896,7 +896,7 @@ fn draw_policy_create(
     let hints = if editing {
         "Type to edit | Enter: commit | Esc: cancel"
     } else {
-        "Up/Down: navigate | Enter: edit/toggle/open | Esc: back"
+        "Up/Down: navigate | Enter: select/toggle | Esc: back"
     };
     draw_hints(frame, area, hints);
 }
@@ -1040,7 +1040,7 @@ fn draw_policy_edit(
     let hints = if editing {
         "Type to edit | Enter: commit | Esc: cancel"
     } else {
-        "Up/Down: navigate | Enter: edit/toggle/open | Esc: back"
+        "Up/Down: navigate | Enter: select/toggle | Esc: back"
     };
     draw_hints(frame, area, hints);
 }
@@ -1187,7 +1187,7 @@ fn draw_policy_list(
     draw_hints(
         frame,
         area,
-        "n: new | e: edit | d: delete | Enter: view | Esc: back",
+        "e: edit | d: delete | Enter: view | Esc: back",
     );
 }
 
