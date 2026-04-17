@@ -1225,8 +1225,20 @@ fn action_submit_policy(app: &mut App, form: PolicyFormState) {
     };
 
     let action_str = ACTION_OPTIONS[form.action].to_string();
-    let conditions_json =
-        serde_json::to_value(&form.conditions).unwrap_or(serde_json::Value::Array(vec![]));
+    // Serialize conditions; propagate any error inline rather than silently
+    // replacing with an empty array, which could submit an allow-all policy.
+    let conditions_json = match serde_json::to_value(&form.conditions) {
+        Ok(v) => v,
+        Err(e) => {
+            if let Screen::PolicyCreate {
+                validation_error, ..
+            } = &mut app.screen
+            {
+                *validation_error = Some(format!("Failed to serialize conditions: {e}"));
+            }
+            return;
+        }
+    };
 
     let payload = serde_json::json!({
         "id": uuid::Uuid::new_v4().to_string(),
