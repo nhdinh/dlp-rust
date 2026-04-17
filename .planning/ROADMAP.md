@@ -63,8 +63,8 @@ Success criteria:
 Goal: Multi-field form that creates a new policy with an attached condition list via the conditions builder.
 Requirements: POLICY-02
 Plans:
-- [ ] 14-01-PLAN.md — State model (Screen::PolicyCreate, ACTION_OPTIONS, form_snapshot), dispatch handler (handle_policy_create, action_submit_policy, CallerScreen Esc fix), and unit tests
-- [ ] 14-02-PLAN.md — Render function (draw_policy_create) and human visual verification
+- [x] 14-01-PLAN.md — State model (Screen::PolicyCreate, ACTION_OPTIONS, form_snapshot), dispatch handler (handle_policy_create, action_submit_policy, CallerScreen Esc fix), and unit tests
+- [x] 14-02-PLAN.md — Render function (draw_policy_create) and human visual verification
 Success criteria:
 1. Form renders fields: name (required text), description (optional text), priority (required numeric), action (select: ALLOW / DENY / AllowWithLog / DenyWithAlert).
 2. A "Add Conditions" button/key opens the Phase 13 conditions builder; the resulting condition list is displayed below the button.
