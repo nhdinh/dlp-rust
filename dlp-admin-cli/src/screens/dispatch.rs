@@ -1169,6 +1169,13 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
             }
             _ => {
                 // Text field rows: enter edit mode pre-filled with current value.
+                // Guard against out-of-bounds `selected` values — only rows 0..=2
+                // are editable text fields. Any other index is a no-op. This
+                // protects against future changes to POLICY_ROW_COUNT that
+                // don't update the outer match arms above.
+                if selected > POLICY_PRIORITY_ROW {
+                    return;
+                }
                 if let Screen::PolicyCreate {
                     form,
                     editing,
@@ -1180,7 +1187,9 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
                         POLICY_NAME_ROW => form.name.clone(),
                         POLICY_DESC_ROW => form.description.clone(),
                         POLICY_PRIORITY_ROW => form.priority.clone(),
-                        _ => String::new(),
+                        // Unreachable given the `selected > POLICY_PRIORITY_ROW`
+                        // guard above, but Rust requires an exhaustive match.
+                        _ => return,
                     };
                     *buffer = pre_fill;
                     *editing = true;
