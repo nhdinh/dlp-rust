@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-16 — Phase 13 complete*
+*Last updated: 2026-04-17 — Phase 14 complete*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -75,7 +75,7 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 ### Active (v0.4.0)
 
 - [ ] POLICY-01: Admin can list all policies with name, priority, action, and enabled state
-- [ ] POLICY-02: Admin can create a new policy with name, description, priority, action, and one or more typed conditions
+- ✓ POLICY-02: Admin can create a new policy with name, description, priority, action, and one or more typed conditions — Validated in Phase 14
 - [ ] POLICY-03: Admin can edit an existing policy's name, description, priority, action, enabled flag, and conditions
 - [ ] POLICY-04: Admin can delete a policy with a confirmation prompt
 - ✓ POLICY-05: Admin can build policy conditions using a structured picker (attribute → operator → value) — no raw JSON — Validated in Phase 13
