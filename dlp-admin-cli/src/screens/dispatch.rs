@@ -1657,7 +1657,15 @@ fn handle_conditions_step2(
             } = &mut app.screen
             {
                 let idx = picker_state.selected().unwrap_or(0);
-                *selected_operator = Some(ops[idx].0.to_string());
+                // Use `.get(idx)` rather than direct indexing: picker state
+                // could be desynchronized from `ops` (e.g. stale state after
+                // navigating away and back). A panic here would crash the
+                // TUI, so out-of-range selection silently aborts the advance.
+                let op_name = match ops.get(idx) {
+                    Some((name, _)) => name.to_string(),
+                    None => return,
+                };
+                *selected_operator = Some(op_name);
                 *step = 3;
                 // Clear any leftover MemberOf input from a previous iteration.
                 buffer.clear();
