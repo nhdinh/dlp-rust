@@ -165,6 +165,25 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 validation_error.as_deref(),
             );
         }
+        Screen::PolicyEdit {
+            id: _,
+            form,
+            selected,
+            editing,
+            buffer,
+            validation_error,
+        } => {
+            draw_policy_edit(
+                frame,
+                area,
+                &form.name,
+                form,
+                *selected,
+                *editing,
+                buffer,
+                validation_error.as_deref(),
+            );
+        }
     }
 }
 
@@ -533,12 +552,13 @@ fn is_alert_numeric(index: usize) -> bool {
     matches!(index, 1) // smtp_port
 }
 
-/// Display labels for each row in the PolicyCreate form (7 rows, indices 0-6).
-const POLICY_FIELD_LABELS: [&str; 7] = [
+/// Display labels for each row in the PolicyCreate/PolicyEdit form (8 rows, indices 0-7).
+const POLICY_FIELD_LABELS: [&str; 8] = [
     "Name",
     "Description",
     "Priority",
     "Action",
+    "Enabled",
     "[Add Conditions]",
     "Conditions",
     "[Submit]",
@@ -735,7 +755,7 @@ fn draw_alert_config(
 /// * `frame` - ratatui frame
 /// * `area` - screen area allocated to the form
 /// * `form` - current form state (fields + conditions)
-/// * `selected` - index of the highlighted row (0..=6)
+/// * `selected` - index of the highlighted row (0..=7)
 /// * `editing` - true when a text field is in edit mode
 /// * `buffer` - text input buffer (only meaningful when `editing` is true)
 /// * `validation_error` - inline error shown below Submit row, or None
@@ -748,7 +768,7 @@ fn draw_policy_create(
     buffer: &str,
     validation_error: Option<&str>,
 ) {
-    // Build 7 ListItems — one per row.
+    // Build 8 ListItems — one per row.
     let mut items: Vec<ListItem> = Vec::with_capacity(POLICY_FIELD_LABELS.len());
 
     for (i, label) in POLICY_FIELD_LABELS.iter().enumerate() {
@@ -798,10 +818,15 @@ fn draw_policy_create(
                 Line::from(format!("{label}:            {action_label}"))
             }
             4 => {
+                // Enabled (bool toggle — Enter toggles, no edit mode)
+                let enabled_val = if form.enabled { "Yes" } else { "No" };
+                Line::from(format!("{label}:              {enabled_val}"))
+            }
+            5 => {
                 // [Add Conditions] action row
                 Line::from(format!("  {label}"))
             }
-            5 => {
+            6 => {
                 // Conditions summary (read-only)
                 let n = form.conditions.len();
                 if n == 0 {
@@ -824,7 +849,7 @@ fn draw_policy_create(
                     ])
                 }
             }
-            6 => {
+            7 => {
                 // [Submit] action row
                 Line::from(format!("  {label}"))
             }
@@ -868,6 +893,150 @@ fn draw_policy_create(
     }
 
     // Key hints bar (contextual based on editing mode).
+    let hints = if editing {
+        "Type to edit | Enter: commit | Esc: cancel"
+    } else {
+        "Up/Down: navigate | Enter: edit/toggle/open | Esc: back"
+    };
+    draw_hints(frame, area, hints);
+}
+
+/// Draws the Policy Edit multi-field form.
+///
+/// Identical to `draw_policy_create` except for the block title and the final
+/// action row label ("[Save]" instead of "[Submit]").
+///
+/// # Arguments
+///
+/// * `frame` - ratatui frame
+/// * `area` - screen area allocated to the form
+/// * `policy_name` - current policy name for the block title
+/// * `form` - current form state (fields + conditions, pre-populated from GET)
+/// * `selected` - index of the highlighted row (0..=7)
+/// * `editing` - true when a text field is in edit mode
+/// * `buffer` - text input buffer (only meaningful when `editing` is true)
+/// * `validation_error` - inline error shown below Save row, or None
+#[allow(clippy::too_many_arguments)]
+fn draw_policy_edit(
+    frame: &mut Frame,
+    area: Rect,
+    policy_name: &str,
+    form: &crate::app::PolicyFormState,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+    validation_error: Option<&str>,
+) {
+    // Build 8 ListItems — one per row.
+    let mut items: Vec<ListItem> = Vec::with_capacity(8);
+
+    for (i, label) in POLICY_FIELD_LABELS.iter().enumerate() {
+        let line = match i {
+            0 => {
+                if editing && selected == 0 {
+                    Line::from(format!("{label}:              [{buffer}_]"))
+                } else if form.name.is_empty() {
+                    Line::from(vec![
+                        Span::raw(format!("{label}:              ")),
+                        Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
+                    ])
+                } else {
+                    Line::from(format!("{label}:              {}", form.name))
+                }
+            }
+            1 => {
+                if editing && selected == 1 {
+                    Line::from(format!("{label}:       [{buffer}_]"))
+                } else if form.description.is_empty() {
+                    Line::from(vec![
+                        Span::raw(format!("{label}:       ")),
+                        Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
+                    ])
+                } else {
+                    Line::from(format!("{label}:       {}", form.description))
+                }
+            }
+            2 => {
+                if editing && selected == 2 {
+                    Line::from(format!("{label}:          [{buffer}_]"))
+                } else if form.priority.is_empty() {
+                    Line::from(vec![
+                        Span::raw(format!("{label}:          ")),
+                        Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
+                    ])
+                } else {
+                    Line::from(format!("{label}:          {}", form.priority))
+                }
+            }
+            3 => {
+                let action_label = ACTION_OPTIONS[form.action];
+                Line::from(format!("{label}:            {action_label}"))
+            }
+            4 => {
+                let enabled_val = if form.enabled { "Yes" } else { "No" };
+                Line::from(format!("{label}:              {enabled_val}"))
+            }
+            5 => Line::from(format!("  {label}")),
+            6 => {
+                let n = form.conditions.len();
+                if n == 0 {
+                    Line::from(vec![
+                        Span::raw(format!("{label} ({n}):    ")),
+                        Span::styled("No conditions added.", Style::default().fg(Color::DarkGray)),
+                    ])
+                } else {
+                    let summary = form
+                        .conditions
+                        .iter()
+                        .map(condition_display)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Line::from(vec![
+                        Span::raw(format!("{n} condition(s):    ")),
+                        Span::styled(summary, Style::default().fg(Color::DarkGray)),
+                    ])
+                }
+            }
+            7 => {
+                // [Save] — hardcoded label (UI-SPEC D-03).
+                Line::from("  [Save]")
+            }
+            _ => Line::from(""),
+        };
+        items.push(ListItem::new(line));
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(format!(" Edit Policy: {policy_name} "))
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut state);
+
+    if let Some(err) = validation_error {
+        if area.height >= 4 {
+            let err_area = Rect {
+                x: area.x + 2,
+                y: area.y + area.height - 2,
+                width: area.width.saturating_sub(4),
+                height: 1,
+            };
+            let err_para = Paragraph::new(err).style(Style::default().fg(Color::Red));
+            frame.render_widget(err_para, err_area);
+        }
+    }
+
     let hints = if editing {
         "Type to edit | Enter: commit | Esc: cancel"
     } else {
@@ -961,11 +1130,7 @@ fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, yes_selected: bool
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
 
-    draw_hints(
-        frame,
-        area,
-        "Left/Right: select | Enter: confirm | Esc: cancel",
-    );
+    draw_hints(frame, area, "Left/Right/y: confirm | n/Esc: cancel");
 }
 
 /// Draws a scrollable policy table.
@@ -1019,7 +1184,11 @@ fn draw_policy_list(
     state.select(Some(selected));
     frame.render_stateful_widget(table, area, &mut state);
 
-    draw_hints(frame, area, "Up/Down: navigate | Enter: view | Esc: back");
+    draw_hints(
+        frame,
+        area,
+        "n: new | e: edit | d: delete | Enter: view | Esc: back",
+    );
 }
 
 /// Draws a scrollable agent table.
