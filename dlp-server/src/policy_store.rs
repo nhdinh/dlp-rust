@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use dlp_common::abac::{Decision, EvaluateRequest, EvaluateResponse, Policy, PolicyCondition};
+use dlp_common::abac::{Decision, EvaluateRequest, EvaluateResponse, Policy, PolicyCondition, PolicyMode};
 use dlp_common::Classification;
 use parking_lot::RwLock;
 use tracing::{error, info, warn};
@@ -22,6 +22,15 @@ use crate::policy_engine_error::PolicyEngineError;
 
 /// Background cache refresh interval (5 minutes).
 pub const POLICY_REFRESH_INTERVAL_SECS: u64 = 300;
+
+/// Converts a `PolicyMode` to its DB string representation.
+pub(crate) const fn mode_str(mode: PolicyMode) -> &'static str {
+    match mode {
+        PolicyMode::ALL => "ALL",
+        PolicyMode::ANY => "ANY",
+        PolicyMode::NONE => "NONE",
+    }
+}
 
 /// The policy evaluation store.
 ///
@@ -153,7 +162,7 @@ impl PolicyStore {
 /// Deserializes a `PolicyRow` into a `Policy`.
 ///
 /// Handles the translation from DB `action` string (`"Allow"`, `"Deny"`, etc.)
-/// to the `Decision` enum.
+/// to the `Decision` enum, and from the `mode` column to `PolicyMode`.
 fn deserialize_policy_row(
     row: &crate::db::repositories::policies::PolicyRow,
 ) -> Result<Policy, serde_json::Error> {
@@ -165,6 +174,12 @@ fn deserialize_policy_row(
         "deny_with_alert" | "denywithalert" => Decision::DenyWithAlert,
         _ => Decision::DENY,
     };
+    let mode = match row.mode.as_str() {
+        "ALL" => PolicyMode::ALL,
+        "ANY" => PolicyMode::ANY,
+        "NONE" => PolicyMode::NONE,
+        _ => PolicyMode::ALL,
+    };
     Ok(Policy {
         id: row.id.clone(),
         name: row.name.clone(),
@@ -173,6 +188,7 @@ fn deserialize_policy_row(
         conditions,
         action,
         enabled: row.enabled != 0,
+        mode,
         version: row.version as u64,
     })
 }
