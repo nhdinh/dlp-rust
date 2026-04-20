@@ -4,7 +4,7 @@ milestone: v0.3.0
 milestone_name: — Operational Hardening
 status: executing
 last_updated: "2026-04-20T00:00:00.000Z"
-last_activity: 2026-04-20 -- Phase 16 complete
+last_activity: 2026-04-20 -- Phase 17 started
 progress:
   total_phases: 4
   completed_phases: 4
@@ -25,9 +25,9 @@ See: `.planning/PROJECT.md` (updated 2026-04-16)
 ## Current Position
 
 Phase: 17
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-04-20 -- Phase 16 complete
+Plan: 17-01 (Wave 1 of 2)
+Status: Executing
+Last activity: 2026-04-20 -- Phase 17 started
 
 ## Decisions
 
