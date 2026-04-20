@@ -23,6 +23,8 @@ pub struct PolicyRow {
     pub action: String,
     /// Whether the policy is active (1) or disabled (0).
     pub enabled: i64,
+    /// Boolean composition mode for the conditions list.
+    pub mode: String,
     /// Version counter incremented on each update.
     pub version: i64,
     /// ISO-8601 timestamp of last update.
@@ -48,6 +50,8 @@ pub struct PolicyUpdateRow<'a> {
     pub action: &'a str,
     /// New enabled flag (1 = true, 0 = false).
     pub enabled: i64,
+    /// New boolean composition mode.
+    pub mode: &'a str,
     /// New ISO-8601 timestamp.
     pub updated_at: &'a str,
     /// Unique policy identifier of the row to update.
@@ -73,7 +77,7 @@ impl PolicyRepository {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let mut stmt = conn.prepare(
             "SELECT id, name, description, priority, conditions, action, \
-             enabled, version, updated_at \
+             enabled, mode, version, updated_at \
              FROM policies ORDER BY priority ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -85,8 +89,9 @@ impl PolicyRepository {
                 conditions: row.get(4)?,
                 action: row.get(5)?,
                 enabled: row.get(6)?,
-                version: row.get(7)?,
-                updated_at: row.get(8)?,
+                mode: row.get(7)?,
+                version: row.get(8)?,
+                updated_at: row.get(9)?,
             })
         })?;
         rows.collect()
@@ -105,8 +110,8 @@ impl PolicyRepository {
     pub fn insert(uow: &UnitOfWork<'_>, record: &PolicyRow) -> rusqlite::Result<()> {
         uow.tx.execute(
             "INSERT INTO policies (id, name, description, priority, conditions, \
-             action, enabled, version, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             action, enabled, mode, version, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 record.id,
                 record.name,
@@ -115,6 +120,7 @@ impl PolicyRepository {
                 record.conditions,
                 record.action,
                 record.enabled,
+                record.mode,
                 record.version,
                 record.updated_at,
             ],
@@ -138,7 +144,7 @@ impl PolicyRepository {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
             "SELECT id, name, description, priority, conditions, action, \
-             enabled, version, updated_at \
+             enabled, mode, version, updated_at \
              FROM policies WHERE id = ?1",
             params![id],
             |row| {
@@ -150,8 +156,9 @@ impl PolicyRepository {
                     conditions: row.get(4)?,
                     action: row.get(5)?,
                     enabled: row.get(6)?,
-                    version: row.get(7)?,
-                    updated_at: row.get(8)?,
+                    mode: row.get(7)?,
+                    version: row.get(8)?,
+                    updated_at: row.get(9)?,
                 })
             },
         )
@@ -178,8 +185,8 @@ impl PolicyRepository {
             "UPDATE policies SET \
                     name = ?1, description = ?2, priority = ?3, \
                     conditions = ?4, action = ?5, enabled = ?6, \
-                    version = version + 1, updated_at = ?7 \
-             WHERE id = ?8",
+                    mode = ?7, version = version + 1, updated_at = ?8 \
+             WHERE id = ?9",
             params![
                 row.name,
                 row.description,
@@ -187,6 +194,7 @@ impl PolicyRepository {
                 row.conditions,
                 row.action,
                 row.enabled,
+                row.mode,
                 row.updated_at,
                 row.id,
             ],
