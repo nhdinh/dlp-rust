@@ -112,11 +112,21 @@ impl PolicyStore {
             if !policy.enabled {
                 continue;
             }
-            if policy
-                .conditions
-                .iter()
-                .all(|c| condition_matches(c, request))
-            {
+            let conditions_match = match policy.mode {
+                PolicyMode::ALL => policy
+                    .conditions
+                    .iter()
+                    .all(|c| condition_matches(c, request)),
+                PolicyMode::ANY => policy
+                    .conditions
+                    .iter()
+                    .any(|c| condition_matches(c, request)),
+                PolicyMode::NONE => !policy
+                    .conditions
+                    .iter()
+                    .any(|c| condition_matches(c, request)),
+            };
+            if conditions_match {
                 return EvaluateResponse {
                     decision: policy.action,
                     matched_policy_id: Some(policy.id.clone()),
@@ -149,7 +159,7 @@ impl PolicyStore {
             match deserialize_policy_row(&row) {
                 Ok(p) => policies.push(p),
                 Err(e) => {
-                    warn!(policy_id = %row.id, error = %e, "skipped policy with malformed conditions");
+                    warn!(policy_id = %row.id, error = %e, "skipped policy with malformed conditions or mode");
                 }
             }
         }
@@ -178,7 +188,11 @@ fn deserialize_policy_row(
         "ALL" => PolicyMode::ALL,
         "ANY" => PolicyMode::ANY,
         "NONE" => PolicyMode::NONE,
-        _ => PolicyMode::ALL,
+        other => {
+            return Err(serde::de::Error::custom(format!(
+                "invalid policy mode: {other}"
+            )));
+        }
     };
     Ok(Policy {
         id: row.id.clone(),
