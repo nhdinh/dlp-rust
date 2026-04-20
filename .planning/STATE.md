@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v0.5.0
 milestone_name: — Boolean Logic
-status: ready_to_execute
-last_updated: "2026-04-21T00:15:00+07:00"
-last_activity: 2026-04-21 -- Phase 19 planned (2 plans, 2 waves) — ready for /gsd-execute-phase 19
+status: phase_complete
+last_updated: "2026-04-21T20:34:04+07:00"
+last_activity: 2026-04-21 -- Phase 20 complete (2 plans, 2 waves) — UAT deferred, ready for /gsd-plan-phase 21
 progress:
   total_phases: 4
   completed_phases: 2
@@ -24,11 +24,11 @@ See: `.planning/PROJECT.md` (updated 2026-04-20)
 
 ## Current Position
 
-Phase: 20 — Operator Expansion
-Plan: 2 plans (Wave 1: evaluator operators, Wave 2: TUI operator picker)
-Status: Ready to execute
+Phase: 21 — In-Place Condition Editing
+Plan: not yet planned
+Status: Phase 20 complete; UAT deferred
 Resume: None
-Last activity: 2026-04-21 -- Phase 20 planned (2 plans, 2 waves); verified — ready for /gsd-execute-phase 20
+Last activity: 2026-04-21 -- Phase 20 executed and verified (2/2 plans); UAT deferred; ready for /gsd-plan-phase 21
 
 ## Decisions
 
