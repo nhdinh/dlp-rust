@@ -871,21 +871,44 @@ const ALERT_BACK_ROW: usize = 12;
 /// Total number of rows in the Alert config form (10 editable + Save + Test + Back).
 const ALERT_ROW_COUNT: usize = 13;
 
-/// Row indices for the PolicyCreate/PolicyEdit form (Phase 15: 8 rows).
+/// Row indices for the PolicyCreate/PolicyEdit form (Phase 19: 9 rows).
 const POLICY_NAME_ROW: usize = 0;
 const POLICY_DESC_ROW: usize = 1;
 const POLICY_PRIORITY_ROW: usize = 2;
 const POLICY_ACTION_ROW: usize = 3;
-/// Row index of the Enabled toggle (Phase 15: row 4 in both Create and Edit).
+/// Row index of the Enabled toggle.
 const POLICY_ENABLED_ROW: usize = 4;
+/// Row index of the Mode cycler (ALL / ANY / NONE), cycles on Enter or Space.
+const POLICY_MODE_ROW: usize = 5;
 /// Row index of the [Add Conditions] action row.
-const POLICY_ADD_CONDITIONS_ROW: usize = 5;
+const POLICY_ADD_CONDITIONS_ROW: usize = 6;
 /// Row index of the Conditions summary display row.
-const POLICY_CONDITIONS_DISPLAY_ROW: usize = 6;
+const POLICY_CONDITIONS_DISPLAY_ROW: usize = 7;
 /// Row index of the [Save] / [Submit] action row.
-const POLICY_SAVE_ROW: usize = 7;
-/// Total rows in the PolicyCreate/PolicyEdit form (0..=7).
-const POLICY_ROW_COUNT: usize = 8;
+const POLICY_SAVE_ROW: usize = 8;
+/// Total rows in the PolicyCreate/PolicyEdit form (0..=8).
+const POLICY_ROW_COUNT: usize = 9;
+
+/// Cycles a `PolicyMode` to the next variant: ALL -> ANY -> NONE -> ALL.
+///
+/// Matches the `Action` enum cycler pattern (see `POLICY_ACTION_ROW` arm). `PolicyMode`
+/// is `Copy`, so the argument is taken by value and a new value is returned.
+///
+/// # Arguments
+///
+/// * `mode` - current mode
+///
+/// # Returns
+///
+/// The next mode in the cycle.
+fn cycle_mode(mode: dlp_common::abac::PolicyMode) -> dlp_common::abac::PolicyMode {
+    use dlp_common::abac::PolicyMode;
+    match mode {
+        PolicyMode::ALL => PolicyMode::ANY,
+        PolicyMode::ANY => PolicyMode::NONE,
+        PolicyMode::NONE => PolicyMode::ALL,
+    }
+}
 
 /// Returns `true` if the row index is a bool (toggle) field.
 fn alert_is_bool(index: usize) -> bool {
@@ -1204,6 +1227,12 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
                     form.enabled = !form.enabled;
                 }
             }
+            POLICY_MODE_ROW => {
+                // Cycle the boolean mode (ALL -> ANY -> NONE -> ALL).
+                if let Screen::PolicyCreate { form, .. } = &mut app.screen {
+                    form.mode = cycle_mode(form.mode);
+                }
+            }
             POLICY_ADD_CONDITIONS_ROW => {
                 // Transition to ConditionsBuilder, carrying form_snapshot.
                 let form = match &app.screen {
@@ -1243,7 +1272,7 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 // Text field rows: enter edit mode pre-filled with current value.
                 // Guard against out-of-bounds `selected` values — only rows 0..=2
                 // are editable text fields. Any other index is a no-op.
-                if selected > 2 {
+                if selected > POLICY_PRIORITY_ROW {
                     return;
                 }
                 if let Screen::PolicyCreate {
@@ -1266,6 +1295,12 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 }
             }
         },
+        KeyCode::Char(' ') if selected == POLICY_MODE_ROW => {
+            // Same cycle-on-activate UX as Enter for the Mode row.
+            if let Screen::PolicyCreate { form, .. } = &mut app.screen {
+                form.mode = cycle_mode(form.mode);
+            }
+        }
         KeyCode::Esc | KeyCode::Char('q') => {
             app.screen = Screen::PolicyMenu { selected: 0 };
         }
@@ -1524,6 +1559,11 @@ fn handle_policy_edit_nav(app: &mut App, key: KeyEvent, selected: usize) {
                     form.enabled = !form.enabled;
                 }
             }
+            POLICY_MODE_ROW => {
+                if let Screen::PolicyEdit { form, .. } = &mut app.screen {
+                    form.mode = cycle_mode(form.mode);
+                }
+            }
             POLICY_ACTION_ROW => {
                 if let Screen::PolicyEdit { form, .. } = &mut app.screen {
                     form.action = (form.action + 1) % ACTION_OPTIONS.len();
@@ -1556,7 +1596,7 @@ fn handle_policy_edit_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 // Read-only row; Enter does nothing.
             }
             _ => {
-                if selected > 2 {
+                if selected > POLICY_PRIORITY_ROW {
                     return;
                 }
                 if let Screen::PolicyEdit {
@@ -1577,6 +1617,11 @@ fn handle_policy_edit_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 }
             }
         },
+        KeyCode::Char(' ') if selected == POLICY_MODE_ROW => {
+            if let Screen::PolicyEdit { form, .. } = &mut app.screen {
+                form.mode = cycle_mode(form.mode);
+            }
+        }
         KeyCode::Esc | KeyCode::Char('q') => {
             action_list_policies(app);
         }
