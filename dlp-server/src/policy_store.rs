@@ -217,7 +217,7 @@ fn deserialize_policy_row(
 fn condition_matches(condition: &PolicyCondition, request: &EvaluateRequest) -> bool {
     match condition {
         PolicyCondition::Classification { op, value } => {
-            compare_op(op, &request.resource.classification, value)
+            compare_op_classification(op, &request.resource.classification, value)
         }
         PolicyCondition::MemberOf { op, group_sid } => {
             memberof_matches(op, group_sid, &request.subject.groups)
@@ -248,11 +248,37 @@ fn compare_op<T: PartialEq>(op: &str, actual: &T, expected: &T) -> bool {
     }
 }
 
+/// Specialised Classification comparison for ordinal operators `gt`/`lt`.
+///
+/// Separate from the generic `compare_op` because ordinal semantics (T1 < T2 < T3 < T4)
+/// differ from a simple `PartialEq` check. Uses `classification_ord` to map tiers to
+/// numbers so that `T3 gt T2` evaluates as `3 > 2 == true`.
+///
+/// # Arguments
+///
+/// * `op` - Operator string: `"eq"`, `"neq"`, `"gt"`, or `"lt"`
+/// * `actual` - The classification of the resource being evaluated
+/// * `expected` - The classification value in the policy condition
+///
+/// # Returns
+///
+/// `true` if the comparison holds, `false` otherwise (including unknown operators)
+fn compare_op_classification(op: &str, actual: &Classification, expected: &Classification) -> bool {
+    match op {
+        "eq" => actual == expected,
+        "neq" => actual != expected,
+        "gt" => classification_ord(actual) > classification_ord(expected),
+        "lt" => classification_ord(actual) < classification_ord(expected),
+        _ => false,
+    }
+}
+
 /// Evaluates a MemberOf condition against the subject's group SID list.
 ///
 /// - `"in"`: matches if ANY group SID in `subject_groups` equals `group_sid`
 /// - `"not_in"`: matches if NO group SID in `subject_groups` equals `group_sid`
-/// - `"eq"` / `"neq"`: delegates to `compare_op` (single-value semantics)
+/// - `"eq"` / `"neq"`: scalar semantics (treat groups as single-element check)
+/// - `"contains"`: case-sensitive substring match on the full SID string (per D-05)
 fn memberof_matches(op: &str, target_sid: &str, subject_groups: &[String]) -> bool {
     match op {
         "in" => subject_groups.iter().any(|sid| sid == target_sid),
@@ -260,7 +286,32 @@ fn memberof_matches(op: &str, target_sid: &str, subject_groups: &[String]) -> bo
         // Fall back to scalar semantics for eq/neq (treat as single-element list).
         "eq" => subject_groups.iter().any(|sid| sid == target_sid),
         "neq" => subject_groups.iter().all(|sid| sid != target_sid),
+        // Case-sensitive substring match on the full SID string (per D-05).
+        "contains" => subject_groups.iter().any(|sid| sid.contains(target_sid)),
         _ => false,
+    }
+}
+
+/// Maps a Classification tier to its ordinal position (1–4).
+///
+/// T1 = 1 (lowest sensitivity), T4 = 4 (highest sensitivity).
+/// Used only for `gt`/`lt` comparisons in `compare_op_classification`.
+/// Lives here rather than on `Classification` itself to avoid coupling risk
+/// from the shared dlp-common enum deriving `PartialOrd` (per D-03).
+///
+/// # Arguments
+///
+/// * `c` - A reference to a `Classification` variant
+///
+/// # Returns
+///
+/// The ordinal tier number: T1 → 1, T2 → 2, T3 → 3, T4 → 4
+fn classification_ord(c: &Classification) -> u8 {
+    match c {
+        Classification::T1 => 1,
+        Classification::T2 => 2,
+        Classification::T3 => 3,
+        Classification::T4 => 4,
     }
 }
 
@@ -413,6 +464,142 @@ mod tests {
             "not_in",
             &Classification::T3,
             &Classification::T3
+        ));
+    }
+
+    // --- Phase 20: new operator tests ---
+
+    #[test]
+    fn test_compare_op_classification_gt() {
+        // T3 > T2 is true (ordinal: 3 > 2)
+        assert!(compare_op_classification(
+            "gt",
+            &Classification::T3,
+            &Classification::T2
+        ));
+        // T4 > T1 is true (ordinal: 4 > 1)
+        assert!(compare_op_classification(
+            "gt",
+            &Classification::T4,
+            &Classification::T1
+        ));
+        // T1 > T4 is false (ordinal: 1 > 4 is false — highest boundary, per D-01)
+        assert!(!compare_op_classification(
+            "gt",
+            &Classification::T1,
+            &Classification::T4
+        ));
+        // T3 > T3 is false (same tier)
+        assert!(!compare_op_classification(
+            "gt",
+            &Classification::T3,
+            &Classification::T3
+        ));
+    }
+
+    #[test]
+    fn test_compare_op_classification_lt() {
+        // T1 < T2 is true (ordinal: 1 < 2)
+        assert!(compare_op_classification(
+            "lt",
+            &Classification::T1,
+            &Classification::T2
+        ));
+        // T2 < T4 is true (ordinal: 2 < 4)
+        assert!(compare_op_classification(
+            "lt",
+            &Classification::T2,
+            &Classification::T4
+        ));
+        // T4 < T1 is false (ordinal: 4 < 1 is false — highest boundary, per D-01)
+        assert!(!compare_op_classification(
+            "lt",
+            &Classification::T4,
+            &Classification::T1
+        ));
+        // T2 < T2 is false (same tier)
+        assert!(!compare_op_classification(
+            "lt",
+            &Classification::T2,
+            &Classification::T2
+        ));
+    }
+
+    #[test]
+    fn test_compare_op_classification_boundary() {
+        // Per D-01: T1 is lowest, T4 is highest. These are the boundary assertions.
+        assert!(!compare_op_classification(
+            "gt",
+            &Classification::T1,
+            &Classification::T4
+        ));
+        assert!(compare_op_classification(
+            "gt",
+            &Classification::T4,
+            &Classification::T1
+        ));
+        assert!(!compare_op_classification(
+            "lt",
+            &Classification::T4,
+            &Classification::T1
+        ));
+        assert!(compare_op_classification(
+            "lt",
+            &Classification::T1,
+            &Classification::T4
+        ));
+    }
+
+    #[test]
+    fn test_memberof_matches_contains() {
+        // Substring anywhere in the SID matches (case-sensitive, per D-05).
+        assert!(memberof_matches(
+            "contains",
+            "S-1-5-21-123",
+            &[
+                "S-1-5-21-123-512".to_string(),
+                "S-1-5-21-123-513".to_string()
+            ]
+        ));
+        // Partial prefix also matches.
+        assert!(memberof_matches(
+            "contains",
+            "512",
+            &["S-1-5-21-123-512".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_memberof_matches_contains_no_match() {
+        // Substring absent from all SIDs returns false.
+        assert!(!memberof_matches(
+            "contains",
+            "S-1-5-21-999",
+            &[
+                "S-1-5-21-123-512".to_string(),
+                "S-1-5-21-123-513".to_string()
+            ]
+        ));
+        // Case-sensitive: lowercase does NOT match uppercase SID prefix.
+        assert!(!memberof_matches(
+            "contains",
+            "s-1-5-21-123",
+            &["S-1-5-21-123-512".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_memberof_matches_neq() {
+        // "neq" for MemberOf: matches if NO group equals target.
+        assert!(memberof_matches(
+            "neq",
+            "S-1-5-21-123-512",
+            &["S-1-5-21-123-513".to_string()]
+        ));
+        assert!(!memberof_matches(
+            "neq",
+            "S-1-5-21-123-512",
+            &["S-1-5-21-123-512".to_string()]
         ));
     }
 
