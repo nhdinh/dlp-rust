@@ -779,4 +779,336 @@ mod tests {
         store.refresh();
         assert_eq!(store.list_policies().len(), 2);
     }
+
+    // ---- Boolean mode tests (POLICY-12) ----
+
+    #[test]
+    fn test_evaluate_all_mode_all_conditions_match() {
+        let policy = Policy {
+            id: "mode-all".to_string(),
+            name: "mode all".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+                PolicyCondition::DeviceTrust {
+                    op: "eq".to_string(),
+                    value: DeviceTrust::Managed,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let resp = store.evaluate(&make_request(Classification::T3));
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("mode-all"));
+    }
+
+    #[test]
+    fn test_evaluate_all_mode_one_condition_misses() {
+        let policy = Policy {
+            id: "mode-all".to_string(),
+            name: "mode all".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+                PolicyCondition::DeviceTrust {
+                    op: "eq".to_string(),
+                    value: DeviceTrust::Managed,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // T1 + Managed → Classification misses → falls through to default-allow (T1)
+        let resp = store.evaluate(&make_request(Classification::T1));
+        assert_eq!(resp.decision, Decision::ALLOW);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_any_mode_one_condition_matches() {
+        let policy = Policy {
+            id: "mode-any".to_string(),
+            name: "mode any".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+                PolicyCondition::DeviceTrust {
+                    op: "eq".to_string(),
+                    value: DeviceTrust::Managed,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ANY,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // T1 + Managed → Classification misses but DeviceTrust matches → policy hits
+        let resp = store.evaluate(&make_request(Classification::T1));
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("mode-any"));
+    }
+
+    #[test]
+    fn test_evaluate_any_mode_no_condition_matches() {
+        let policy = Policy {
+            id: "mode-any".to_string(),
+            name: "mode any".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+                PolicyCondition::DeviceTrust {
+                    op: "eq".to_string(),
+                    value: DeviceTrust::Unmanaged,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ANY,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // T1 + Managed (subject default) → neither condition matches → default-allow (T1)
+        let resp = store.evaluate(&make_request(Classification::T1));
+        assert_eq!(resp.decision, Decision::ALLOW);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_none_mode_no_condition_matches() {
+        let policy = Policy {
+            id: "mode-none".to_string(),
+            name: "mode none".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+                PolicyCondition::DeviceTrust {
+                    op: "eq".to_string(),
+                    value: DeviceTrust::Unmanaged,
+                },
+            ],
+            action: Decision::ALLOW,
+            enabled: true,
+            mode: PolicyMode::NONE,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // T1 + Managed (subject) → neither condition matches → policy hits
+        let resp = store.evaluate(&make_request(Classification::T1));
+        assert_eq!(resp.decision, Decision::ALLOW);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("mode-none"));
+    }
+
+    #[test]
+    fn test_evaluate_none_mode_one_condition_matches() {
+        let policy = Policy {
+            id: "mode-none".to_string(),
+            name: "mode none".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+                PolicyCondition::DeviceTrust {
+                    op: "eq".to_string(),
+                    value: DeviceTrust::Unmanaged,
+                },
+            ],
+            action: Decision::ALLOW,
+            enabled: true,
+            mode: PolicyMode::NONE,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // T3 + Managed → Classification matches → policy misses → default-deny (T3)
+        let resp = store.evaluate(&make_request(Classification::T3));
+        assert_eq!(resp.decision, Decision::DENY);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    // ---- Empty-conditions edge cases (D-13) ----
+
+    #[test]
+    fn test_evaluate_empty_conditions_all_mode_matches() {
+        // ALL + []: vacuous truth — matches unconditionally.
+        let policy = Policy {
+            id: "empty-all".to_string(),
+            name: "empty all".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let resp = store.evaluate(&make_request(Classification::T1));
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("empty-all"));
+    }
+
+    #[test]
+    fn test_evaluate_empty_conditions_any_mode_does_not_match() {
+        // ANY + []: zero conditions can ever be satisfied → never matches.
+        let policy = Policy {
+            id: "empty-any".to_string(),
+            name: "empty any".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ANY,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // Falls through to default-deny (T4)
+        let resp = store.evaluate(&make_request(Classification::T4));
+        assert_eq!(resp.decision, Decision::DENY);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_empty_conditions_none_mode_matches() {
+        // NONE + []: zero conditions are satisfied (vacuously true) → matches unconditionally.
+        let policy = Policy {
+            id: "empty-none".to_string(),
+            name: "empty none".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![],
+            action: Decision::ALLOW,
+            enabled: true,
+            mode: PolicyMode::NONE,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let resp = store.evaluate(&make_request(Classification::T1));
+        assert_eq!(resp.decision, Decision::ALLOW);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("empty-none"));
+    }
+
+    // ---- Legacy v0.4.0 payload parity (D-25) ----
+
+    #[test]
+    fn test_legacy_v040_policy_without_mode_behaves_like_all() {
+        // POLICY-12: A v0.4.0-shaped Policy (mode field defaulted via Default)
+        // produces the same EvaluateResponse as an explicit PolicyMode::ALL policy.
+        let conditions = vec![
+            PolicyCondition::Classification {
+                op: "eq".to_string(),
+                value: Classification::T3,
+            },
+            PolicyCondition::DeviceTrust {
+                op: "eq".to_string(),
+                value: DeviceTrust::Managed,
+            },
+            PolicyCondition::NetworkLocation {
+                op: "eq".to_string(),
+                value: NetworkLocation::Corporate,
+            },
+        ];
+
+        let policy_v040 = Policy {
+            id: "v040-policy".to_string(),
+            name: "v0.4.0 policy".to_string(),
+            description: None,
+            priority: 1,
+            conditions: conditions.clone(),
+            action: Decision::DENY,
+            enabled: true,
+            version: 1,
+            // mode field defaulted — Policy::default() gives PolicyMode::ALL
+            ..Default::default()
+        };
+
+        let policy_explicit_all = Policy {
+            id: "explicit-all".to_string(),
+            name: "explicit all".to_string(),
+            description: None,
+            priority: 1,
+            conditions,
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+
+        let store_v040 = PolicyStore {
+            cache: RwLock::new(vec![policy_v040]),
+            pool: Arc::clone(&pool),
+        };
+        let store_explicit = PolicyStore {
+            cache: RwLock::new(vec![policy_explicit_all]),
+            pool: Arc::clone(&pool),
+        };
+
+        let req = make_request(Classification::T3);
+        let resp_v040 = store_v040.evaluate(&req);
+        let resp_explicit = store_explicit.evaluate(&req);
+
+        assert_eq!(resp_v040.decision, resp_explicit.decision);
+        // matched_policy_id differs by id but both must be Some(_)
+        assert!(resp_v040.matched_policy_id.is_some());
+        assert!(resp_explicit.matched_policy_id.is_some());
+    }
 }

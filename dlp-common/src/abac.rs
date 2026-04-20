@@ -263,7 +263,7 @@ pub enum PolicyMode {
 }
 
 /// An ABAC policy rule.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Policy {
     /// Unique identifier for this policy version.
     pub id: String,
