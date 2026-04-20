@@ -3008,7 +3008,7 @@ fn action_import_policies(app: &mut App) {
         }
     };
 
-    let imported: Vec<serde_json::Value> = match serde_json::from_str(&json_str) {
+    let imported: Vec<crate::app::PolicyResponse> = match serde_json::from_str(&json_str) {
         Ok(v) => v,
         Err(e) => {
             app.set_status(format!("Failed to parse JSON file: {e}"), StatusKind::Error);
@@ -3027,15 +3027,7 @@ fn action_import_policies(app: &mut App) {
                 .iter()
                 .filter_map(|p| p["id"].as_str().map(String::from))
                 .collect();
-            let conflict = imported
-                .iter()
-                .filter(|p| {
-                    p["id"]
-                        .as_str()
-                        .map(|id| ids.contains(&id.to_string()))
-                        .unwrap_or(false)
-                })
-                .count();
+            let conflict = imported.iter().filter(|p| ids.contains(&p.id)).count();
             let non_conflict = imported.len() - conflict;
             (ids, conflict, non_conflict)
         }
@@ -3066,61 +3058,135 @@ fn action_import_policies(app: &mut App) {
 /// Handles key events for the `Screen::ImportConfirm` variant.
 ///
 /// Navigation: Up/Down cycles only between rows 3 ([Confirm]) and 4 ([Cancel]).
-/// Enter on row 3 -> execute import.
+/// Enter on row 3 -> execute import (POST new policies, PUT conflicting policies).
 /// Enter on row 4 / Esc -> return to PolicyMenu.
+///
+/// Import execution (per Phase 17 D-09, D-11, D-17, D-18, D-19):
+/// - POST non-conflicting policies (IDs not on server).
+/// - PUT conflicting policies (IDs already on server).
+/// - Abort on first failure with per-policy error message.
+/// - Transitions to ImportState::Success { created, updated } on success,
+///   ImportState::Error(msg) on failure.
 fn handle_import_confirm(app: &mut App, key: KeyEvent) {
-    let state = match &mut app.screen {
-        Screen::ImportConfirm { state, .. } => state,
+    use crate::app::{PolicyPayload, PolicyResponse};
+
+    let caller = match &app.screen {
+        Screen::ImportConfirm { caller, .. } => *caller,
         _ => return,
     };
 
-    // If import is in-progress, success, or error -- only Esc/Enter to dismiss is allowed.
-    match state {
-        ImportState::InProgress | ImportState::Success { .. } | ImportState::Error(_) => {
-            match key.code {
-                KeyCode::Enter | KeyCode::Esc => {
-                    app.screen = Screen::PolicyMenu { selected: 0 };
-                }
-                _ => {}
-            }
-            return;
+    // Outside Pending, only Enter/Esc dismiss the screen.
+    if !matches!(
+        app.screen,
+        Screen::ImportConfirm {
+            state: ImportState::Pending,
+            ..
         }
-        ImportState::Pending => {}
+    ) {
+        if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+            let return_to = match caller {
+                ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
+            };
+            app.screen = return_to;
+        }
+        return;
     }
 
     match key.code {
         KeyCode::Up | KeyCode::Down => {
-            // Only rows 3 ([Confirm]) and 4 ([Cancel]) are actionable.
             if let Screen::ImportConfirm { selected, .. } = &mut app.screen {
                 *selected = if *selected == 3 { 4 } else { 3 };
             }
         }
-        KeyCode::Enter => {
-            if let Screen::ImportConfirm {
-                selected,
-                state,
-                caller,
-                ..
-            } = &mut app.screen
-            {
-                if *selected == 3 {
-                    // [Confirm] pressed -- transition to InProgress (Wave 2 implements actual execution).
-                    *state = ImportState::InProgress;
-                } else {
-                    // [Cancel] pressed.
-                    let return_to = match caller {
-                        ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
-                    };
-                    app.screen = return_to;
-                }
-            }
-        }
         KeyCode::Esc => {
-            if let Screen::ImportConfirm { caller, .. } = &mut app.screen {
+            let return_to = match caller {
+                ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
+            };
+            app.screen = return_to;
+        }
+        KeyCode::Enter => {
+            // Determine which button is active.
+            let selected = match &app.screen {
+                Screen::ImportConfirm { selected, .. } => *selected,
+                _ => return,
+            };
+
+            if selected != 3 {
+                // [Cancel] pressed.
                 let return_to = match caller {
                     ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
                 };
                 app.screen = return_to;
+                return;
+            }
+
+            // [Confirm] pressed — extract execution state.
+            let (policies, existing_ids): (Vec<PolicyResponse>, Vec<String>) = match &app.screen {
+                Screen::ImportConfirm {
+                    policies,
+                    existing_ids,
+                    ..
+                } => (policies.clone(), existing_ids.clone()),
+                _ => return,
+            };
+
+            // Transition to InProgress immediately so UI reflects working state.
+            if let Screen::ImportConfirm { state, .. } = &mut app.screen {
+                *state = ImportState::InProgress;
+            }
+
+            // Partition into POST (new) and PUT (existing) using O(1) HashSet lookup.
+            let existing_set: std::collections::HashSet<String> =
+                existing_ids.into_iter().collect();
+            let (to_create, to_update): (Vec<PolicyResponse>, Vec<PolicyResponse>) = policies
+                .into_iter()
+                .partition(|p| !existing_set.contains(&p.id));
+
+            let mut created = 0usize;
+            let mut updated = 0usize;
+
+            // POST non-conflicting policies.
+            for policy in to_create {
+                let name = policy.name.clone();
+                let payload: PolicyPayload = policy.into();
+                let result = app.rt.block_on(
+                    app.client
+                        .post::<serde_json::Value, _>("admin/policies", &payload),
+                );
+                match result {
+                    Ok(_) => created += 1,
+                    Err(e) => {
+                        if let Screen::ImportConfirm { state, .. } = &mut app.screen {
+                            *state = ImportState::Error(format!("Failed on policy '{name}': {e}"));
+                        }
+                        return;
+                    }
+                }
+            }
+
+            // PUT conflicting policies.
+            for policy in to_update {
+                let name = policy.name.clone();
+                let id = policy.id.clone();
+                let payload: PolicyPayload = policy.into();
+                let path = format!("admin/policies/{id}");
+                let result = app
+                    .rt
+                    .block_on(app.client.put::<serde_json::Value, _>(&path, &payload));
+                match result {
+                    Ok(_) => updated += 1,
+                    Err(e) => {
+                        if let Screen::ImportConfirm { state, .. } = &mut app.screen {
+                            *state = ImportState::Error(format!("Failed on policy '{name}': {e}"));
+                        }
+                        return;
+                    }
+                }
+            }
+
+            // All succeeded — invalidate cache and show summary.
+            if let Screen::ImportConfirm { state, .. } = &mut app.screen {
+                *state = ImportState::Success { created, updated };
             }
         }
         _ => {}
