@@ -29,6 +29,9 @@ tracing-appender = "0.2"
 # Shared types from dlp-common
 dlp-common = { path = "../dlp-common" }
 
+# Native file dialogs (Windows)
+rfd = "0.14"
+
 # UUID v4 generation for caller-supplied policy IDs (POST /admin/policies requires non-empty id).
 uuid = { version = "1", features = ["v4"] }
 
