@@ -48,6 +48,7 @@ pub fn new_pool(path: &str) -> anyhow::Result<Pool> {
         .context("failed to enable WAL journal mode")?;
 
     init_tables(&conn)?;
+    run_migrations(&conn)?;
     Ok(pool)
 }
 
@@ -126,6 +127,7 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 conditions  TEXT NOT NULL,
                 action      TEXT NOT NULL,
                 enabled     INTEGER NOT NULL DEFAULT 1,
+                mode        TEXT NOT NULL DEFAULT 'ALL',
                 version     INTEGER NOT NULL DEFAULT 1,
                 updated_at  TEXT NOT NULL
             );
@@ -200,6 +202,26 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
     )
     .context("failed to initialize database tables")?;
 
+    Ok(())
+}
+
+/// Runs database migrations for existing installations.
+///
+/// Adds the `mode` column to the `policies` table if it does not already exist.
+/// Idempotent — safe to call on every startup; no-op if column already exists.
+pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
+    let result = conn.execute(
+        "ALTER TABLE policies ADD COLUMN mode TEXT NOT NULL DEFAULT 'ALL'",
+        [],
+    );
+    if let Err(e) = result {
+        let msg = e.to_string();
+        if msg.contains("duplicate column name: mode") {
+            // Column already exists — nothing to do.
+        } else {
+            return Err(e).context("running migration: add mode column to policies");
+        }
+    }
     Ok(())
 }
 
