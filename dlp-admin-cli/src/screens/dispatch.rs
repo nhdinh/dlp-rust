@@ -2914,11 +2914,11 @@ mod tests {
 /// Opens a native save dialog and writes the full policy set as JSON.
 ///
 /// D-03 / D-04 / D-05 from Phase 17 context.
-/// Uses `GET /admin/policies` -> `serde_json::to_string_pretty` -> `rfd::FileDialog::save_file`.
+/// Uses `GET /policies` -> `serde_json::to_string_pretty` -> `rfd::FileDialog::save_file`.
 fn action_export_policies(app: &mut App) {
     let policies_result = app
         .rt
-        .block_on(app.client.get::<Vec<serde_json::Value>>("admin/policies"));
+        .block_on(app.client.get::<Vec<serde_json::Value>>("policies"));
 
     let policies = match policies_result {
         Ok(p) => p,
@@ -3019,7 +3019,7 @@ fn action_import_policies(app: &mut App) {
     // Fetch existing IDs for conflict detection (authenticated endpoint).
     let existing_result = app
         .rt
-        .block_on(app.client.get::<Vec<serde_json::Value>>("admin/policies"));
+        .block_on(app.client.get::<Vec<serde_json::Value>>("policies"));
 
     let (existing_ids, conflicting_count, non_conflicting_count) = match existing_result {
         Ok(existing) => {
