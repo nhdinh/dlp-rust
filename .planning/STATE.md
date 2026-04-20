@@ -25,10 +25,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-20)
 ## Current Position
 
 Phase: 20 — Operator Expansion
-Plan: (not yet planned)
-Status: Ready to plan
+Plan: 2 plans (Wave 1: evaluator operators, Wave 2: TUI operator picker)
+Status: Ready to execute
 Resume: None
-Last activity: 2026-04-21 -- Phase 19 complete (POLICY-09 closed); Phase 20 context gathered; ready for /gsd-plan-phase 20
+Last activity: 2026-04-21 -- Phase 20 planned (2 plans, 2 waves); verified — ready for /gsd-execute-phase 20
 
 ## Decisions
 
