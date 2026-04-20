@@ -3,9 +3,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use crate::app::{
-    App, CallerScreen, ConditionAttribute, ConfirmPurpose, InputPurpose, PasswordPurpose,
-    PolicyFormState, Screen, SimulateCaller, SimulateFormState, SimulateOutcome, StatusKind,
-    ACTION_OPTIONS, ATTRIBUTES,
+    App, CallerScreen, ConditionAttribute, ConfirmPurpose, ImportCaller, ImportState, InputPurpose,
+    PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState, SimulateOutcome,
+    StatusKind, ACTION_OPTIONS, ATTRIBUTES,
 };
 use crate::event::AppEvent;
 
@@ -32,6 +32,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::PolicyCreate { .. } => handle_policy_create(app, key),
         Screen::PolicyEdit { .. } => handle_policy_edit(app, key),
         Screen::PolicySimulate { .. } => handle_policy_simulate(app, key),
+        Screen::ImportConfirm { .. } => handle_import_confirm(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -131,7 +132,7 @@ fn handle_policy_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        KeyCode::Up | KeyCode::Down => nav(selected, 7, key.code),
+        KeyCode::Up | KeyCode::Down => nav(selected, 9, key.code),
         KeyCode::Enter => match *selected {
             0 => action_list_policies(app),
             1 => {
@@ -165,7 +166,9 @@ fn handle_policy_menu(app: &mut App, key: KeyEvent) {
                 };
             }
             5 => action_open_simulate(app, SimulateCaller::PolicyMenu),
-            6 => app.screen = Screen::MainMenu { selected: 1 },
+            6 => action_import_policies(app),
+            7 => action_export_policies(app),
+            8 => app.screen = Screen::MainMenu { selected: 1 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 1 },
@@ -2901,5 +2904,225 @@ mod tests {
             }
             other => panic!("expected Screen::PolicyCreate, got {other:?}"),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Import / Export actions
+// ---------------------------------------------------------------------------
+
+/// Opens a native save dialog and writes the full policy set as JSON.
+///
+/// D-03 / D-04 / D-05 from Phase 17 context.
+/// Uses `GET /admin/policies` -> `serde_json::to_string_pretty` -> `rfd::FileDialog::save_file`.
+fn action_export_policies(app: &mut App) {
+    let policies_result = app
+        .rt
+        .block_on(app.client.get::<Vec<serde_json::Value>>("admin/policies"));
+
+    let policies = match policies_result {
+        Ok(p) => p,
+        Err(e) => {
+            app.set_status(format!("Failed to fetch policies: {e}"), StatusKind::Error);
+            return;
+        }
+    };
+
+    let json = match serde_json::to_string_pretty(&policies) {
+        Ok(j) => j,
+        Err(e) => {
+            app.set_status(
+                format!("Failed to serialize policies: {e}"),
+                StatusKind::Error,
+            );
+            return;
+        }
+    };
+
+    // Build default filename: policies-export-{YYYY-MM-DD}.json
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let default_name = format!("policies-export-{today}.json");
+
+    let save_path = rfd::FileDialog::new()
+        .set_title("Export Policies")
+        .add_filter("JSON Files", &["json"])
+        .set_file_name(&default_name)
+        .save_file();
+
+    let file_path = match save_path {
+        Some(p) => p,
+        None => {
+            // User cancelled -- no error, just return to PolicyMenu.
+            return;
+        }
+    };
+
+    // Write in a blocking task to avoid blocking the async runtime.
+    let write_result = std::fs::write(&file_path, json);
+
+    match write_result {
+        Ok(()) => {
+            app.set_status(
+                format!(
+                    "Exported {} policies to {}",
+                    policies.len(),
+                    file_path.display()
+                ),
+                StatusKind::Success,
+            );
+        }
+        Err(e) => {
+            app.set_status(format!("Failed to write file: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+/// Opens a file-open dialog, parses the selected JSON, and transitions to
+/// `Screen::ImportConfirm` for conflict review.
+///
+/// D-07 / D-08 / D-09 / D-13 from Phase 17 context.
+fn action_import_policies(app: &mut App) {
+    let file_path = rfd::FileDialog::new()
+        .set_title("Import Policies")
+        .add_filter("JSON Files", &["json"])
+        .pick_file();
+
+    let file_path = match file_path {
+        Some(p) => p,
+        None => {
+            // User cancelled -- no error, just return to PolicyMenu.
+            return;
+        }
+    };
+
+    // Read and parse JSON in a blocking task.
+    let read_result = std::fs::read_to_string(&file_path);
+    let json_str = match read_result {
+        Ok(s) => s,
+        Err(e) => {
+            app.set_status(
+                format!("Failed to read file {}: {e}", file_path.display()),
+                StatusKind::Error,
+            );
+            return;
+        }
+    };
+
+    let imported: Vec<serde_json::Value> = match serde_json::from_str(&json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            app.set_status(format!("Failed to parse JSON file: {e}"), StatusKind::Error);
+            return;
+        }
+    };
+
+    // Fetch existing IDs for conflict detection (authenticated endpoint).
+    let existing_result = app
+        .rt
+        .block_on(app.client.get::<Vec<serde_json::Value>>("admin/policies"));
+
+    let (existing_ids, conflicting_count, non_conflicting_count) = match existing_result {
+        Ok(existing) => {
+            let ids: Vec<String> = existing
+                .iter()
+                .filter_map(|p| p["id"].as_str().map(String::from))
+                .collect();
+            let conflict = imported
+                .iter()
+                .filter(|p| {
+                    p["id"]
+                        .as_str()
+                        .map(|id| ids.contains(&id.to_string()))
+                        .unwrap_or(false)
+                })
+                .count();
+            let non_conflict = imported.len() - conflict;
+            (ids, conflict, non_conflict)
+        }
+        Err(e) => {
+            app.set_status(
+                format!("Could not fetch current policies: {e}"),
+                StatusKind::Error,
+            );
+            return;
+        }
+    };
+
+    app.screen = Screen::ImportConfirm {
+        policies: imported,
+        existing_ids,
+        conflicting_count,
+        non_conflicting_count,
+        selected: 3, // Start on [Confirm] row
+        state: ImportState::Pending,
+        caller: ImportCaller::PolicyMenu,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// ImportConfirm screen handler
+// ---------------------------------------------------------------------------
+
+/// Handles key events for the `Screen::ImportConfirm` variant.
+///
+/// Navigation: Up/Down cycles only between rows 3 ([Confirm]) and 4 ([Cancel]).
+/// Enter on row 3 -> execute import.
+/// Enter on row 4 / Esc -> return to PolicyMenu.
+fn handle_import_confirm(app: &mut App, key: KeyEvent) {
+    let state = match &mut app.screen {
+        Screen::ImportConfirm { state, .. } => state,
+        _ => return,
+    };
+
+    // If import is in-progress, success, or error -- only Esc/Enter to dismiss is allowed.
+    match state {
+        ImportState::InProgress | ImportState::Success { .. } | ImportState::Error(_) => {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    app.screen = Screen::PolicyMenu { selected: 0 };
+                }
+                _ => {}
+            }
+            return;
+        }
+        ImportState::Pending => {}
+    }
+
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            // Only rows 3 ([Confirm]) and 4 ([Cancel]) are actionable.
+            if let Screen::ImportConfirm { selected, .. } = &mut app.screen {
+                *selected = if *selected == 3 { 4 } else { 3 };
+            }
+        }
+        KeyCode::Enter => {
+            if let Screen::ImportConfirm {
+                selected,
+                state,
+                caller,
+                ..
+            } = &mut app.screen
+            {
+                if *selected == 3 {
+                    // [Confirm] pressed -- transition to InProgress (Wave 2 implements actual execution).
+                    *state = ImportState::InProgress;
+                } else {
+                    // [Cancel] pressed.
+                    let return_to = match caller {
+                        ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
+                    };
+                    app.screen = return_to;
+                }
+            }
+        }
+        KeyCode::Esc => {
+            if let Screen::ImportConfirm { caller, .. } = &mut app.screen {
+                let return_to = match caller {
+                    ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
+                };
+                app.screen = return_to;
+            }
+        }
+        _ => {}
     }
 }

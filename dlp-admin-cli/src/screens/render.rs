@@ -9,7 +9,7 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::app::{
-    App, ConditionAttribute, Screen, SimulateFormState, SimulateOutcome, StatusKind,
+    App, ConditionAttribute, ImportState, Screen, SimulateFormState, SimulateOutcome, StatusKind,
     ACTION_OPTIONS, ATTRIBUTES, SIMULATE_ACCESS_CONTEXT_OPTIONS, SIMULATE_ACTION_OPTIONS,
     SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
     SIMULATE_NETWORK_LOCATION_OPTIONS,
@@ -71,6 +71,8 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                     "Update Policy",
                     "Delete Policy",
                     "Simulate Policy",
+                    "Import Policies...",
+                    "Export Policies...",
                     "Back",
                 ],
                 *selected,
@@ -205,6 +207,24 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             ..
         } => {
             draw_policy_simulate(frame, area, form, *selected, *editing, buffer, result);
+        }
+        Screen::ImportConfirm {
+            policies,
+            conflicting_count,
+            non_conflicting_count,
+            selected,
+            state,
+            ..
+        } => {
+            draw_import_confirm(
+                frame,
+                area,
+                policies.len(),
+                *conflicting_count,
+                *non_conflicting_count,
+                *selected,
+                state,
+            );
         }
     }
 }
@@ -1453,6 +1473,168 @@ fn draw_policy_simulate(
         "Type to edit | Enter: commit | Esc: cancel"
     } else {
         "Up/Down: navigate | Enter: select/cycle | Esc: back"
+    };
+    draw_hints(frame, area, hints);
+}
+
+/// Draws the import-confirmation screen.
+///
+/// Row layout (render list indices 0..=4):
+///   0: "Import {N} policies?"              (informational, bold header, skip-nav)
+///   1: "{conflicting_count} will overwrite" (informational, dark gray, skip-nav)
+///   2: "{non_conflicting_count} will be created" (informational, dark gray, skip-nav)
+///   3: [Confirm]   (Enter to proceed)      (actionable, green when selected)
+///   4: [Cancel]    (Esc to abort)           (actionable, red when selected)
+///
+/// Additionally, shows the ImportState block below the list:
+///   - InProgress: "Importing..." with a spinner line
+///   - Success: "Imported {created} new, {updated} updated" in green
+///   - Error: error message in red
+fn draw_import_confirm(
+    frame: &mut Frame,
+    area: Rect,
+    total: usize,
+    conflicting_count: usize,
+    non_conflicting_count: usize,
+    selected: usize,
+    state: &ImportState,
+) {
+    // Build the 5-row list (indices 0..=4).
+    let items: Vec<ListItem> = vec![
+        // Row 0: Header (informational, rendered in bold).
+        ListItem::new(Line::from(vec![Span::styled(
+            format!("Import {total} policies?"),
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::White),
+        )])),
+        // Row 1: Conflicting count (informational).
+        ListItem::new(Line::from(vec![Span::styled(
+            format!("  {conflicting_count} will overwrite existing entries"),
+            Style::default().fg(Color::DarkGray),
+        )])),
+        // Row 2: Non-conflicting count (informational).
+        ListItem::new(Line::from(vec![Span::styled(
+            format!("  {non_conflicting_count} will be created as new"),
+            Style::default().fg(Color::DarkGray),
+        )])),
+        // Row 3: [Confirm] button.
+        {
+            let is_selected = selected == 3;
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled("  [ Confirm ]  ", style),
+                Span::raw("   (Enter to proceed)"),
+            ]))
+        },
+        // Row 4: [Cancel] button.
+        {
+            let is_selected = selected == 4;
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled("  [ Cancel ]  ", style),
+                Span::raw("   (Esc to abort)"),
+            ]))
+        },
+    ];
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Import Policies ")
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    // Render list with cursor on the Confirm row (index 3) even though
+    // rows 0-2 are informational (skip-nav pattern).
+    let mut list_state = ListState::default();
+    list_state.select(Some(3));
+    frame.render_stateful_widget(list, area, &mut list_state);
+
+    // Render the ImportState block below the list.
+    const STATE_HEIGHT: u16 = 4;
+    if area.height > STATE_HEIGHT + 2 {
+        let state_area = Rect {
+            x: area.x + 2,
+            y: area
+                .y
+                .saturating_add(area.height)
+                .saturating_sub(STATE_HEIGHT + 1),
+            width: area.width.saturating_sub(4),
+            height: STATE_HEIGHT,
+        };
+
+        match state {
+            ImportState::Pending => {
+                // No state block when pending -- confirmation prompt is sufficient.
+            }
+            ImportState::InProgress => {
+                let block = Block::default()
+                    .title(" Working ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow));
+                let text = Paragraph::new("Importing policies...")
+                    .style(Style::default().fg(Color::Yellow));
+                frame.render_widget(text.block(block), state_area);
+            }
+            ImportState::Success { created, updated } => {
+                let block = Block::default()
+                    .title(" Import Complete ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Green));
+                let line = Line::from(format!(
+                    "Imported {} policies ({} new, {} updated).",
+                    created + updated,
+                    created,
+                    updated
+                ));
+                frame.render_widget(
+                    Paragraph::new(line)
+                        .style(Style::default().fg(Color::Green))
+                        .block(block),
+                    state_area,
+                );
+            }
+            ImportState::Error(msg) => {
+                let block = Block::default()
+                    .title(" Import Failed ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red));
+                frame.render_widget(
+                    Paragraph::new(msg.as_str())
+                        .style(Style::default().fg(Color::Red))
+                        .block(block),
+                    state_area,
+                );
+            }
+        }
+    }
+
+    // Hints bar: only shows action hints when state is Pending.
+    let hints = match state {
+        ImportState::Pending => "Up/Down: navigate | Enter: confirm | Esc: cancel",
+        _ => "Enter/Esc: dismiss",
     };
     draw_hints(frame, area, hints);
 }
