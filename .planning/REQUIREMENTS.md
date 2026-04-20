@@ -49,14 +49,24 @@ delete-and-recreate gap left by Phase 13.
   for the attribute chosen in step 1. The ABAC evaluator honors the new
   operators. Existing `eq`-only conditions keep working unchanged.
 
-## Traceability (filled by roadmap)
+## Traceability
 
 | REQ-ID | Requirement | Phase | Status |
 |--------|-------------|-------|--------|
-| POLICY-09 | Top-level boolean mode (ALL/ANY/NONE) | TBD | Active |
-| POLICY-10 | In-place condition editing | TBD | Active |
-| POLICY-11 | Attribute-type-aware operator expansion | TBD | Active |
-| POLICY-12 | v0.4.0 policy backward compatibility (default mode = ALL) | TBD | Active |
+| POLICY-09 | Top-level boolean mode (ALL/ANY/NONE) | Phase 19 | Active |
+| POLICY-10 | In-place condition editing | Phase 21 | Active |
+| POLICY-11 | Attribute-type-aware operator expansion | Phase 20 | Active |
+| POLICY-12 | v0.4.0 policy backward compatibility (default mode = ALL) | Phase 18 | Active |
+
+**Note on Phase 18 / Phase 19 split for POLICY-09:** Phase 18 lays the
+server-side foundation (`mode` column with `'ALL'` default, `mode` field
+on `PolicyPayload`/`PolicyResponse` with serde default, evaluator switch
+on mode). That foundation is the *capability* delivered as POLICY-12
+(backward compatibility). Phase 19 then surfaces the picker in the TUI
+and proves the import/export round-trip — the user-facing acceptance
+bar that completes POLICY-09. POLICY-09's Phase 19 mapping reflects
+"the phase that completes the user-visible contract", consistent with
+the v0.4.0 convention (e.g., POLICY-05 mapped to Phase 13).
 
 ## Future Requirements (Deferred)
 

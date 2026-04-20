@@ -2,11 +2,11 @@
 gsd_state_version: 1.0
 milestone: v0.5.0
 milestone_name: — Boolean Logic
-status: defining_requirements
-last_updated: "2026-04-20T10:40:00Z"
-last_activity: 2026-04-20 -- v0.5.0 started (defining requirements)
+status: roadmap_complete
+last_updated: "2026-04-20T11:30:00Z"
+last_activity: 2026-04-20 -- v0.5.0 roadmap written; ready to plan Phase 18
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -17,17 +17,17 @@ progress:
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-04-16)
+See: `.planning/PROJECT.md` (updated 2026-04-20)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** v0.5.0 Boolean Logic — flat boolean mode (ALL/ANY/NONE) per policy, in-place condition editing, expanded ABAC operators (`gt`, `lt`, `ne`, `contains`). Defining requirements.
+**Current focus:** v0.5.0 Boolean Logic — flat boolean mode (ALL/ANY/NONE) per policy, in-place condition editing, expanded ABAC operators (`gt`, `lt`, `ne`, `contains`). Roadmap written; Phase 18 ready to plan.
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 18 — Boolean Mode Engine + Wire Format
 Plan: —
-Status: Defining requirements
-Last activity: 2026-04-20 -- v0.5.0 Boolean Logic milestone started
+Status: Roadmap complete; Phase 18 ready to plan
+Last activity: 2026-04-20 -- v0.5.0 roadmap written (4 phases, all 4 requirements mapped)
 
 ## Decisions
 
@@ -62,6 +62,8 @@ Last activity: 2026-04-20 -- v0.5.0 Boolean Logic milestone started
 | 2026-04-20 | GET admin routes asymmetry | Only /policies (no /admin/policies) serves GET; /admin/policies is POST/PUT/DELETE only (Phase 9 legacy) |
 | 2026-04-20 | Import/export typed via PolicyResponse/PolicyPayload | From<PolicyResponse> for PolicyPayload drops version/updated_at for wire POST/PUT; unit-tested roundtrip |
 | 2026-04-20 | Skip-nav in ImportConfirm | Informational rows (header + diff counts) are non-selectable; Up/Down cycles only Confirm/Cancel |
+| 2026-04-20 | v0.5.0 phase split: engine before TUI | Phase 18 ships server-side mode + backward-compat default (POLICY-12) so the TUI work in Phase 19 lands against an already-mode-aware server (POLICY-09 user-facing completion) |
+| 2026-04-20 | Boolean mode is flat top-level only | No nested expression trees in v0.5.0; rule-builder UX and wire-format simplicity. Users needing AND-of-ORs author two policies and use priority ordering |
 
 ## Known Issues (carry-forward)
 
@@ -78,6 +80,9 @@ Last activity: 2026-04-20 -- v0.5.0 Boolean Logic milestone started
 | seed | SEED-001: Application-aware DLP | dormant |
 | seed | SEED-002: Protected Clipboard browser boundary | dormant |
 | seed | SEED-003: USB Device-Identity-Aware Whitelist | dormant |
+| server | POLICY-F4: TOML export format | deferred to v0.5.x Server Hardening |
+| server | POLICY-F5: Batch import endpoint | deferred to v0.5.x Server Hardening |
+| server | POLICY-F6: Typed Decision action field | deferred to v0.5.x Server Hardening |
 
 ## Patterns
 
@@ -92,6 +97,8 @@ Last activity: 2026-04-20 -- v0.5.0 Boolean Logic milestone started
 - Policy forms: PolicyFormState struct holds all form fields + conditions list to avoid borrow-split at submit time
 - Import/export: typed Vec<PolicyResponse> for file shape; From<PolicyResponse> for PolicyPayload for wire format
 - Skip-nav lists: informational rows in ratatui List render but are excluded from Up/Down navigation (e.g., ImportConfirm rows 0-2)
+- DB schema migrations: column adds via ALTER TABLE in dlp-server::db::open with NOT NULL DEFAULT for backward compat (no formal migration framework)
+- PolicyStore evaluate() stays sync on hot path; cache invalidation fires on every policy mutation
 
 ## Accumulated Context
 
@@ -100,3 +107,11 @@ Last activity: 2026-04-20 -- v0.5.0 Boolean Logic milestone started
 - v0.2.0 Feature Completion (2026-04-13) — phases 0.1–12
 - v0.3.0 Operational Hardening (2026-04-16) — phases 7–11 + 99
 - v0.4.0 Policy Authoring (2026-04-20) — phases 13–17; POLICY-01..08 all delivered
+
+### Active Milestone
+
+- v0.5.0 Boolean Logic — phases 18–21; POLICY-09..12 (4 requirements, all mapped)
+  - Phase 18: Boolean Mode Engine + Wire Format → POLICY-12
+  - Phase 19: Boolean Mode in TUI + Import/Export → POLICY-09
+  - Phase 20: Operator Expansion → POLICY-11
+  - Phase 21: In-Place Condition Editing → POLICY-10
