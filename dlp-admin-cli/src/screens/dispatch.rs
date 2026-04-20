@@ -8,6 +8,7 @@ use crate::app::{
     StatusKind, ACTION_OPTIONS, ATTRIBUTES,
 };
 use crate::event::AppEvent;
+use dlp_common::abac::PolicyMode;
 
 /// Routes an event to the handler for the current screen.
 pub fn handle_event(app: &mut App, event: AppEvent) {
@@ -1272,6 +1273,19 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
     }
 }
 
+/// Maps a `PolicyMode` to its wire-format string. The server accepts the
+/// verbatim variant names `"ALL"` / `"ANY"` / `"NONE"` per Phase 18 D-02.
+///
+/// Mirrors the `mode_str` helper in `dlp-server/src/policy_store.rs` §29 —
+/// duplicated here because that helper is `pub(crate)` to its server crate.
+fn policy_mode_to_wire(mode: PolicyMode) -> &'static str {
+    match mode {
+        PolicyMode::ALL => "ALL",
+        PolicyMode::ANY => "ANY",
+        PolicyMode::NONE => "NONE",
+    }
+}
+
 /// Validates the form, builds the POST payload, and sends it to the server.
 ///
 /// On success: navigates to PolicyList.
@@ -1330,6 +1344,7 @@ fn action_submit_policy(app: &mut App, form: PolicyFormState) {
         "conditions": conditions_json,
         "action": action_str,
         "enabled": form.enabled,
+        "mode": policy_mode_to_wire(form.mode),
     });
 
     match app.rt.block_on(
@@ -1397,6 +1412,12 @@ fn action_load_policy_for_edit(app: &mut App, id: &str, _name: &str) {
                 action: action_idx,
                 enabled: policy["enabled"].as_bool().unwrap_or(true),
                 conditions,
+                mode: match policy["mode"].as_str() {
+                    Some("ALL") => PolicyMode::ALL,
+                    Some("ANY") => PolicyMode::ANY,
+                    Some("NONE") => PolicyMode::NONE,
+                    _ => PolicyMode::ALL,
+                },
                 id: id.to_string(),
             };
 
@@ -1619,6 +1640,7 @@ fn action_submit_policy_update(app: &mut App, id: &str, form: PolicyFormState) {
         "conditions": conditions_json,
         "action": action_str,
         "enabled": form.enabled,
+        "mode": policy_mode_to_wire(form.mode),
     });
 
     match app.rt.block_on(
