@@ -246,6 +246,22 @@ pub enum PolicyCondition {
     },
 }
 
+/// The boolean composition mode for a policy's condition list.
+///
+/// - `ALL`: every condition must match (implicit v0.4.0 behavior).
+/// - `ANY`: at least one condition must match.
+/// - `NONE`: no condition may match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PolicyMode {
+    /// Every condition must match.
+    #[default]
+    ALL,
+    /// At least one condition must match.
+    ANY,
+    /// No condition may match.
+    NONE,
+}
+
 /// An ABAC policy rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
