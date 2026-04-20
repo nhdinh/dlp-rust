@@ -1481,6 +1481,7 @@ mod tests {
             conditions: serde_json::json!([]),
             action: "ALLOW".to_string(),
             enabled: true,
+            mode: PolicyMode::ALL,
             version: 1,
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         };
@@ -1961,6 +1962,7 @@ mod tests {
             conditions: serde_json::json!([]),
             action: "ALLOW".to_string(),
             enabled: true,
+            mode: PolicyMode::ALL,
         };
         let req = Request::builder()
             .method("POST")
@@ -2006,6 +2008,7 @@ mod tests {
             conditions: serde_json::json!([]),
             action: "ALLOW".to_string(),
             enabled: true,
+            mode: PolicyMode::ALL,
         };
         let post_req = Request::builder()
             .method("POST")
@@ -2060,6 +2063,7 @@ mod tests {
             conditions: serde_json::json!([{"attr":"classification","op":"eq","value":"T4"}]),
             action: "DENY".to_string(),
             enabled: true,
+            mode: PolicyMode::ALL,
         };
         let body = serde_json::to_string(&payload).expect("serialize");
 
@@ -2117,6 +2121,7 @@ mod tests {
             conditions: serde_json::json!([]),
             action: "ALLOW".to_string(),
             enabled: true,
+            mode: PolicyMode::ALL,
         };
         let req = Request::builder()
             .method("POST")
@@ -2137,6 +2142,7 @@ mod tests {
             conditions: serde_json::json!([]),
             action: "ALLOW".to_string(),
             enabled: true,
+            mode: PolicyMode::ALL,
         };
         let req = Request::builder()
             .method("POST")
@@ -2167,6 +2173,7 @@ mod tests {
             conditions: serde_json::json!([]),
             action: "ALLOW".to_string(),
             enabled: true,
+            mode: PolicyMode::ALL,
         };
         let post_req = Request::builder()
             .method("POST")
@@ -2187,6 +2194,7 @@ mod tests {
             conditions: serde_json::json!([{"attr":"tier","op":"eq","value":"T3"}]),
             action: "DENY".to_string(),
             enabled: false,
+            mode: PolicyMode::ALL,
         };
         let put_req = Request::builder()
             .method("PUT")
@@ -2229,6 +2237,7 @@ mod tests {
             conditions: serde_json::json!([]),
             action: "ALLOW".to_string(),
             enabled: true,
+            mode: PolicyMode::ALL,
         };
         let req = Request::builder()
             .method("PUT")
@@ -2259,6 +2268,7 @@ mod tests {
             conditions: serde_json::json!([]),
             action: "ALLOW".to_string(),
             enabled: true,
+            mode: PolicyMode::ALL,
         };
         let post_req = Request::builder()
             .method("POST")
@@ -2309,6 +2319,7 @@ mod tests {
                 conditions: serde_json::json!([]),
                 action: "ALLOW".to_string(),
                 enabled: true,
+                mode: PolicyMode::ALL,
             };
             let req = Request::builder()
                 .method("POST")
@@ -2615,6 +2626,7 @@ mod tests {
             conditions: serde_json::json!([]),
             action: "ALLOW".to_string(),
             enabled: true,
+            mode: PolicyMode::ALL,
         };
         let req = Request::builder()
             .method("POST")
