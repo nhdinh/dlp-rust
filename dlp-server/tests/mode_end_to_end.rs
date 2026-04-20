@@ -166,7 +166,11 @@ async fn test_mode_all_matches_when_all_conditions_hit() {
         .oneshot(build_create_policy_request(&jwt, &payload))
         .await
         .expect("oneshot create");
-    assert_eq!(resp.status(), StatusCode::CREATED, "policy create should return 201");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "policy create should return 201"
+    );
 
     // Both conditions match: classification=T3 AND access_context=local.
     let eval = evaluate_body("T3", "local");
@@ -176,7 +180,10 @@ async fn test_mode_all_matches_when_all_conditions_hit() {
         .expect("oneshot evaluate");
     assert_eq!(resp.status(), StatusCode::OK);
     let body = read_body_as_json(resp).await;
-    assert_eq!(body["decision"], "DENY", "ALL mode should fire when all conditions match");
+    assert_eq!(
+        body["decision"], "DENY",
+        "ALL mode should fire when all conditions match"
+    );
     assert_eq!(body["matched_policy_id"], "policy-all");
 }
 
@@ -209,7 +216,11 @@ async fn test_mode_any_matches_when_one_condition_hits() {
         .oneshot(build_create_policy_request(&jwt, &payload))
         .await
         .expect("oneshot create");
-    assert_eq!(resp.status(), StatusCode::CREATED, "policy create should return 201");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "policy create should return 201"
+    );
 
     // Only the FIRST condition matches: classification=T3 but access_context=local (not smb).
     let eval = evaluate_body("T3", "local");
@@ -255,7 +266,11 @@ async fn test_mode_none_matches_when_no_conditions_hit() {
         .oneshot(build_create_policy_request(&jwt, &payload))
         .await
         .expect("oneshot create");
-    assert_eq!(resp.status(), StatusCode::CREATED, "policy create should return 201");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "policy create should return 201"
+    );
 
     // Neither condition matches: classification=T1 (not T4) and access_context=local (not smb).
     let eval = evaluate_body("T1", "local");
