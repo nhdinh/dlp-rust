@@ -613,22 +613,25 @@ The following are directly applicable to Phase 19 code:
 
 **Three claims remain [ASSUMED]. All are low-risk presentation/idiom choices, not architectural or compliance decisions. No user confirmation needed before proceeding.**
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should the form-submit JSON payloads be refactored to `PolicyPayload` struct + `serde_json::to_value(&payload)?`, or just add a `"mode": "ANY"` string to the existing `json!()` macro?**
    - What we know: `PolicyPayload` struct already exists (app.rs §262-270) and gains `mode` field in D-05. The macro approach works but risks typo drift.
    - What's unclear: Whether the original author deliberately used the macro for readability.
    - Recommendation: Refactor to struct + `to_value()`. Test coverage proves correctness either way; struct approach auto-inherits `PolicyMode`'s `Serialize` impl and is one less place to sync.
+   - RESOLVED: Plan 01 Task 2 adopts the minimal-diff `json!()` macro approach (adds `"mode": policy_mode_to_wire(form.mode)` to both POST §1321 and PUT §1610). Both approaches deliver the decision per CONTEXT.md Claude's Discretion; the minimal-diff option ships in Phase 19. Typed-struct refactor remains available as a future polish.
 
 2. **Should the Validation Architecture section's "Test Framework" row be rustc's `cargo test` (unit + integration in one invocation) or split into `cargo test --lib` + `cargo test --test mode_end_to_end`?**
    - What we know: Phase 18 SUMMARY uses `cargo test --lib --all` and `cargo test -p dlp-server --tests` as two separate gates.
    - What's unclear: Whether Phase 19's Nyquist sampling prefers a single quick command.
    - Recommendation: Mirror Phase 18 — `cargo test --lib --all` per task commit (fast, <30s), `cargo test -p dlp-server --tests` per wave merge (includes integration tests, ~60s+).
+   - RESOLVED: VALIDATION.md codifies split sampling — `cargo check --workspace` per task commit, `cargo test --workspace` per wave, `cargo fmt --check` + `cargo clippy -- -D warnings` pre-verify. Matches Phase 18 precedent.
 
 3. **Does the TUI's current `action_load_policy_for_edit` (dispatch.rs §1363) tolerate a `"mode"` key missing from the GET response?**
    - What we know: The function reads fields with `.as_str().unwrap_or("")` and `.as_bool().unwrap_or(true)` patterns — i.e., it does untyped JSON navigation, not typed deserialize. Adding a mode pre-fill via `policy["mode"].as_str().and_then(|s| match s { "ALL" => Some(PolicyMode::ALL), ... })` with default `PolicyMode::ALL` is the safe pattern.
    - What's unclear: Nothing — this is a straightforward addition.
    - Recommendation: Add a `mode_from_json(v: &serde_json::Value) -> PolicyMode` helper in `app.rs` or inline in `action_load_policy_for_edit`.
+   - RESOLVED: Plan 01 Task 2 Change 5 inlines the match with `_ => PolicyMode::ALL` fallback directly in `action_load_policy_for_edit`. No helper factored out; tolerant of missing mode per D-11.
 
 ## Environment Availability
 
