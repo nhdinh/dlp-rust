@@ -279,6 +279,9 @@ pub struct Policy {
     pub action: Decision,
     /// Whether this policy is currently active.
     pub enabled: bool,
+    /// Boolean composition mode for the conditions list.
+    #[serde(default)]
+    pub mode: PolicyMode,
     /// Monotonically increasing version number.
     pub version: u64,
 }
