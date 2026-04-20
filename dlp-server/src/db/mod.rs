@@ -382,4 +382,78 @@ mod tests {
         assert_eq!(cache_ttl_secs, 300, "cache_ttl_secs default must be 300");
         assert_eq!(base_dn, "", "default base_dn must be empty string");
     }
+
+    #[test]
+    fn test_migration_add_mode_column() {
+        // Simulates the v0.4.0 → v0.5.0 upgrade path: an existing DB without
+        // the `mode` column gets it added by `run_migrations` (called inside
+        // `new_pool`), and pre-existing rows pick up the SQL DEFAULT 'ALL'.
+        // Idempotency: re-running run_migrations is a no-op.
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db file");
+        let path = tmp.path().to_str().expect("temp path utf8");
+
+        // Step 1: stand up the v0.4.0 schema directly (no `mode` column) and
+        // seed one row.
+        {
+            let conn = rusqlite::Connection::open(path).expect("open temp db");
+            conn.execute_batch(
+                "CREATE TABLE policies (
+                    id          TEXT PRIMARY KEY,
+                    name        TEXT NOT NULL,
+                    description TEXT,
+                    priority    INTEGER NOT NULL,
+                    conditions  TEXT NOT NULL,
+                    action      TEXT NOT NULL,
+                    enabled     INTEGER NOT NULL DEFAULT 1,
+                    version     INTEGER NOT NULL DEFAULT 1,
+                    updated_at  TEXT NOT NULL
+                );
+                INSERT INTO policies
+                    (id, name, priority, conditions, action, enabled, version, updated_at)
+                VALUES
+                    ('existing-policy', 'existing', 1, '[]', 'Allow', 1, 1, '2026-01-01T00:00:00Z');",
+            )
+            .expect("create v0.4.0 schema");
+        }
+
+        // Step 2: open via new_pool — triggers init_tables (no-op, IF NOT EXISTS)
+        // followed by run_migrations (adds the column).
+        let pool = new_pool(path).expect("open pool with migrations");
+        let conn = pool.get().expect("acquire connection");
+
+        // Step 3: confirm the `mode` column now exists.
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(policies)")
+            .expect("prepare pragma")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query pragma")
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            columns.contains(&"mode".to_string()),
+            "mode column must exist after migration; saw {columns:?}"
+        );
+
+        // Step 4: pre-existing row picks up SQL DEFAULT 'ALL'.
+        let mode: String = conn
+            .query_row(
+                "SELECT mode FROM policies WHERE id = 'existing-policy'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read mode column from pre-existing row");
+        assert_eq!(mode, "ALL", "pre-existing rows must default to 'ALL' mode");
+
+        // Step 5: idempotency — re-running migrations must not error.
+        run_migrations(&conn).expect("second run must not error");
+
+        let mode2: String = conn
+            .query_row(
+                "SELECT mode FROM policies WHERE id = 'existing-policy'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("re-read mode column");
+        assert_eq!(mode2, "ALL", "mode must persist after re-run");
+    }
 }

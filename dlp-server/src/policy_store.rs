@@ -11,7 +11,9 @@
 
 use std::sync::Arc;
 
-use dlp_common::abac::{Decision, EvaluateRequest, EvaluateResponse, Policy, PolicyCondition, PolicyMode};
+use dlp_common::abac::{
+    Decision, EvaluateRequest, EvaluateResponse, Policy, PolicyCondition, PolicyMode,
+};
 use dlp_common::Classification;
 use parking_lot::RwLock;
 use tracing::{error, info, warn};
@@ -715,7 +717,9 @@ mod tests {
         // Using :memory: would isolate connections — each get() sees an empty DB,
         // causing invalidate() to silently reload zero policies (false-positive pass).
         let tmp = tempfile::NamedTempFile::new().expect("create temp db");
-        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("pool from temp file"));
+        let pool = Arc::new(
+            crate::db::new_pool(tmp.path().to_str().unwrap()).expect("pool from temp file"),
+        );
         let store = PolicyStore::new(Arc::clone(&pool)).unwrap();
         assert_eq!(store.list_policies().len(), 0);
 
@@ -750,7 +754,9 @@ mod tests {
     fn test_refresh_reloads_cache() {
         // NamedTempFile-backed pool — same rationale as test_invalidate_reloads_cache.
         let tmp = tempfile::NamedTempFile::new().expect("create temp db");
-        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("pool from temp file"));
+        let pool = Arc::new(
+            crate::db::new_pool(tmp.path().to_str().unwrap()).expect("pool from temp file"),
+        );
         let store = PolicyStore::new(Arc::clone(&pool)).unwrap();
         assert_eq!(store.list_policies().len(), 0);
 
