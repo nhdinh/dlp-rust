@@ -3473,4 +3473,82 @@ mod tests {
         assert_eq!(body_val["decision"], "DENY");
         assert_eq!(body_val["matched_policy_id"], "deny-t2");
     }
+
+    // ---- Wire format round-trip tests for `mode` (POLICY-12) ----
+
+    #[test]
+    fn test_policy_payload_deserializes_without_mode_as_all() {
+        // POLICY-12: JSON without "mode" key defaults to PolicyMode::ALL.
+        let json = r#"{
+            "id": "test-1",
+            "name": "test policy",
+            "description": null,
+            "priority": 1,
+            "conditions": [],
+            "action": "Allow",
+            "enabled": true
+        }"#;
+        let payload: PolicyPayload = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(payload.mode, PolicyMode::ALL);
+    }
+
+    #[test]
+    fn test_policy_payload_json_with_mode_any_roundtrip() {
+        let payload = PolicyPayload {
+            id: "test-any".to_string(),
+            name: "any mode policy".to_string(),
+            description: None,
+            priority: 2,
+            conditions: serde_json::json!([]),
+            action: "Deny".to_string(),
+            enabled: true,
+            mode: PolicyMode::ANY,
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        assert!(
+            json.contains(r#""mode":"ANY""#),
+            "serialized JSON must contain \"mode\":\"ANY\""
+        );
+        let round_trip: PolicyPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_trip.mode, PolicyMode::ANY);
+    }
+
+    #[test]
+    fn test_policy_response_deserializes_without_mode_as_all() {
+        // PolicyResponse without "mode" key defaults to PolicyMode::ALL.
+        let json = r#"{
+            "id": "test-2",
+            "name": "test response",
+            "description": null,
+            "priority": 1,
+            "conditions": [],
+            "action": "Allow",
+            "enabled": true,
+            "version": 1,
+            "updated_at": "2026-04-20T00:00:00Z"
+        }"#;
+        let resp: PolicyResponse = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(resp.mode, PolicyMode::ALL);
+    }
+
+    #[test]
+    fn test_policy_payload_none_mode_roundtrip() {
+        let payload = PolicyPayload {
+            id: "test-none".to_string(),
+            name: "none mode policy".to_string(),
+            description: None,
+            priority: 3,
+            conditions: serde_json::json!([]),
+            action: "Allow".to_string(),
+            enabled: true,
+            mode: PolicyMode::NONE,
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        assert!(
+            json.contains(r#""mode":"NONE""#),
+            "serialized JSON must contain \"mode\":\"NONE\""
+        );
+        let round_trip: PolicyPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_trip.mode, PolicyMode::NONE);
+    }
 }
