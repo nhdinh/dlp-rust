@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.4.0
-milestone_name: — Policy Authoring
-status: shipped
-last_updated: "2026-04-20T09:55:00Z"
-last_activity: 2026-04-20 -- v0.4.0 shipped
+milestone: v0.5.0
+milestone_name: — Boolean Logic
+status: defining_requirements
+last_updated: "2026-04-20T10:40:00Z"
+last_activity: 2026-04-20 -- v0.5.0 started (defining requirements)
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 9
-  completed_plans: 9
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # STATE.md — Project Memory
@@ -20,13 +20,14 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-16)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** v0.4.0 shipped 2026-04-20; next milestone not yet started. Run `/gsd-new-milestone` to begin planning.
+**Current focus:** v0.5.0 Boolean Logic — flat boolean mode (ALL/ANY/NONE) per policy, in-place condition editing, expanded ABAC operators (`gt`, `lt`, `ne`, `contains`). Defining requirements.
 
 ## Current Position
 
-Phase: — (between milestones)
-Status: Idle
-Last activity: 2026-04-20 -- v0.4.0 Policy Authoring shipped
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-20 -- v0.5.0 Boolean Logic milestone started
 
 ## Decisions
 

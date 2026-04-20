@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-20 — v0.4.0 Policy Authoring milestone shipped*
+*Last updated: 2026-04-20 — v0.5.0 Boolean Logic milestone started*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -20,14 +20,26 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 
 **v0.4.0 Policy Authoring shipped** (2026-04-20). Five phases delivered — Conditions Builder (13), Policy Create (14), Policy Edit + Delete (15), Policy List + Simulate (16), and Import + Export (17). All 8 POLICY requirements validated. The admin TUI now covers the complete policy lifecycle without any raw JSON editing.
 
-## Next Milestone
+## Current Milestone: v0.5.0 Boolean Logic
 
-No milestone currently active. Likely candidates:
+**Goal:** Upgrade the ABAC policy engine and admin TUI from implicit-AND-over-typed-conditions to flat boolean composition with expanded per-attribute operators, and close the delete-and-recreate gap left by Phase 13.
 
-- **v0.5.0 Boolean Logic:** AND/OR/NOT between policy conditions, in-place condition editing, expanded operators (`gt`, `lt`, `ne`, `contains`) once the ABAC engine supports them (POLICY-F1..F3).
-- **v0.5.x Server Hardening:** batch import endpoint to reduce cache invalidations, typed `Decision` action field, TOML export unblock (POLICY-F4..F6).
+**Target features:**
+- Flat top-level boolean mode per policy — ALL (AND) / ANY (OR) / NONE (NOT) across the condition list (POLICY-F1)
+- In-place condition editing in the builder — re-open an existing pending condition, mutate, save without delete-and-recreate (POLICY-F2)
+- Expanded per-attribute operators — `gt`, `lt`, `ne`, `contains` in addition to `eq`, driven by attribute type (POLICY-F3)
 
-Run `/gsd-new-milestone` to begin scoping.
+**Engine scope:** Both ABAC engine AND admin TUI. Server evaluator gains boolean mode + new operators; TUI authors them; end-to-end integration tests cover wire-format round-trip.
+
+**Explicitly out of scope:**
+- Nested expression trees — flat-only for this milestone
+- Application-aware DLP (SEED-001) — stays dormant; mismatch with boolean-logic focus
+- Server hardening items POLICY-F4..F6 (TOML export, batch import, typed Decision) — deferred to a later v0.5.x
+
+## Deferred (future milestones)
+
+- **v0.5.x Server Hardening:** batch import endpoint to reduce cache invalidations, typed `Decision` action field, TOML export unblock (POLICY-F4..F6)
+- **Application-aware DLP (SEED-001):** source/destination app identity as ABAC attribute — revisit in a dedicated endpoint-hardening milestone
 
 ## Architecture
 
@@ -82,9 +94,11 @@ Run `/gsd-new-milestone` to begin scoping.
 - ✓ POLICY-07: Admin can export the full policy set to a JSON file — v0.4.0 (Phase 17). TOML deferred as POLICY-F4.
 - ✓ POLICY-08: Admin can import policies from a JSON file with conflict detection — v0.4.0 (Phase 17)
 
-### Active (next milestone)
+### Active (v0.5.0 Boolean Logic)
 
-No active requirements. Candidates for the next milestone live in the "Deferred" notes at the end of `.planning/milestones/v0.4.0-REQUIREMENTS.md` (POLICY-F1..F6).
+- [ ] POLICY-09 (formerly POLICY-F1): Admin can choose a top-level boolean mode (ALL / ANY / NONE) per policy; evaluator honors the mode across the condition list
+- [ ] POLICY-10 (formerly POLICY-F2): Admin can edit an existing condition in-place in the conditions builder without deleting and recreating it
+- [ ] POLICY-11 (formerly POLICY-F3): Admin can pick expanded operators (`gt`, `lt`, `ne`, `contains`) where the attribute type permits; evaluator honors them
 
 ### Out of Scope
 
