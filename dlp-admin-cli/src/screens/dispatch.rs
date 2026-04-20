@@ -2013,17 +2013,21 @@ fn handle_simulate_nav(app: &mut App, key: KeyEvent, selected: usize) {
 // Conditions builder
 // ---------------------------------------------------------------------------
 
-/// Returns the operators available for the given attribute.
+/// Returns the operator list (wire string + enforcement flag) valid for the given attribute.
 ///
-/// Tuple: `(operator_name, is_enforced)`. Currently all attributes have only
-/// `"eq"` as an enforced operator; additional operators are reserved for v0.5.0.
-fn operators_for(attr: ConditionAttribute) -> &'static [(&'static str, bool)] {
+/// Per D-08: DeviceTrust, NetworkLocation, AccessContext get `neq` added.
+/// Per D-10: each attribute's list is fixed; the Step 2 picker auto-sizes to the count.
+/// Display labels are: "equals" (eq), "not equals" (neq), "greater than" (gt),
+/// "less than" (lt), "contains" (contains).
+pub(crate) fn operators_for(attr: ConditionAttribute) -> &'static [(&'static str, bool)] {
     match attr {
-        ConditionAttribute::Classification => &[("eq", true)],
-        ConditionAttribute::MemberOf => &[("eq", true)],
-        ConditionAttribute::DeviceTrust => &[("eq", true)],
-        ConditionAttribute::NetworkLocation => &[("eq", true)],
-        ConditionAttribute::AccessContext => &[("eq", true)],
+        ConditionAttribute::Classification => {
+            &[("eq", true), ("neq", true), ("gt", true), ("lt", true)]
+        }
+        ConditionAttribute::MemberOf => &[("eq", true), ("neq", true), ("contains", true)],
+        ConditionAttribute::DeviceTrust => &[("eq", true), ("neq", true)],
+        ConditionAttribute::NetworkLocation => &[("eq", true), ("neq", true)],
+        ConditionAttribute::AccessContext => &[("eq", true), ("neq", true)],
     }
 }
 
@@ -2294,6 +2298,7 @@ fn handle_conditions_step1(app: &mut App, key: KeyEvent) {
             if let Screen::ConditionsBuilder {
                 step,
                 selected_attribute,
+                selected_operator,
                 picker_state,
                 ..
             } = &mut app.screen
@@ -2306,6 +2311,14 @@ fn handle_conditions_step1(app: &mut App, key: KeyEvent) {
                     .copied()
                     .unwrap_or(ConditionAttribute::Classification);
                 *selected_attribute = Some(attr);
+                // SC-1: clear a stale operator when it is not valid for the new attribute.
+                // In normal navigation the operator is already None here (Esc from Step 2
+                // always clears it), but this guard is an explicit safety net per ROADMAP SC-1.
+                if let Some(prev_op) = selected_operator.as_deref() {
+                    if !operators_for(attr).iter().any(|(op, _)| *op == prev_op) {
+                        *selected_operator = None;
+                    }
+                }
                 *step = 2;
                 // Reset picker to top for the new step's list (Pitfall 4).
                 picker_state.select(Some(0));
@@ -2742,6 +2755,93 @@ mod tests {
         let display = condition_display(&cond);
         // Classification implements Display as "Confidential".
         assert_eq!(display, "Classification eq Confidential");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 20 operator regression tests.
+    // ---------------------------------------------------------------------------
+
+    #[cfg(test)]
+    mod operator_tests {
+        use super::*;
+
+        #[test]
+        fn test_operators_for_classification() {
+            let ops = operators_for(ConditionAttribute::Classification);
+            assert_eq!(ops.len(), 4);
+            let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+            assert!(wire.contains(&"eq"));
+            assert!(wire.contains(&"neq"));
+            assert!(wire.contains(&"gt"));
+            assert!(wire.contains(&"lt"));
+        }
+
+        #[test]
+        fn test_operators_for_memberof() {
+            let ops = operators_for(ConditionAttribute::MemberOf);
+            assert_eq!(ops.len(), 3);
+            let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+            assert!(wire.contains(&"eq"));
+            assert!(wire.contains(&"neq"));
+            assert!(wire.contains(&"contains"));
+        }
+
+        #[test]
+        fn test_operators_for_device_trust() {
+            let ops = operators_for(ConditionAttribute::DeviceTrust);
+            assert_eq!(ops.len(), 2);
+            let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+            assert!(wire.contains(&"eq"));
+            assert!(wire.contains(&"neq"));
+        }
+
+        #[test]
+        fn test_operators_for_network_location() {
+            let ops = operators_for(ConditionAttribute::NetworkLocation);
+            assert_eq!(ops.len(), 2);
+        }
+
+        #[test]
+        fn test_operators_for_access_context() {
+            let ops = operators_for(ConditionAttribute::AccessContext);
+            assert_eq!(ops.len(), 2);
+        }
+
+        #[test]
+        fn test_condition_display_with_gt_lt() {
+            // Regression guard: condition_display renders {op} {value} verbatim,
+            // so "gt" and "lt" operators must appear unchanged in the display string.
+            use dlp_common::abac::PolicyCondition;
+            use dlp_common::Classification;
+
+            let cond_gt = PolicyCondition::Classification {
+                op: "gt".to_string(),
+                value: Classification::T3,
+            };
+            let display_gt = condition_display(&cond_gt);
+            assert!(
+                display_gt.contains("gt"),
+                "expected 'gt' in display: {display_gt}"
+            );
+            assert!(
+                display_gt.contains("Confidential"),
+                "expected 'Confidential' in display: {display_gt}"
+            );
+
+            let cond_lt = PolicyCondition::Classification {
+                op: "lt".to_string(),
+                value: Classification::T2,
+            };
+            let display_lt = condition_display(&cond_lt);
+            assert!(
+                display_lt.contains("lt"),
+                "expected 'lt' in display: {display_lt}"
+            );
+            assert!(
+                display_lt.contains("Internal"),
+                "expected 'Internal' in display: {display_lt}"
+            );
+        }
     }
 
     #[test]

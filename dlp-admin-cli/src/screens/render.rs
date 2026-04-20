@@ -15,6 +15,7 @@ use crate::app::{
     SIMULATE_NETWORK_LOCATION_OPTIONS,
 };
 use crate::screens::dispatch::condition_display;
+use crate::screens::dispatch::operators_for;
 use dlp_common::abac::PolicyMode;
 
 /// Top-level draw function dispatched from the event loop.
@@ -251,8 +252,26 @@ const NETWORK_LOCATION_VALUES: [&str; 4] = ["Corporate", "CorporateVpn", "Guest"
 /// Step 3 value labels for AccessContext (per D-15).
 const ACCESS_CONTEXT_VALUES: [&str; 2] = ["Local", "Smb"];
 
-/// Step 2 operator labels for all attributes (only `eq` is enforced today).
-const OPERATOR_EQ: [(&str, bool); 1] = [("eq", true)];
+/// Step 2 operator list — driven by the attribute chosen in Step 1.
+///
+/// The list is built by calling `operators_for`, which returns the correct
+/// operators for the attribute. Enforced operators are shown verbatim;
+/// advisory-only operators are annotated "(not enforced)".
+fn pick_operators(attr: ConditionAttribute) -> Vec<ListItem<'static>> {
+    operators_for(attr)
+        .iter()
+        .map(|(op, enforced)| {
+            if *enforced {
+                ListItem::new(op.to_string())
+            } else {
+                ListItem::new(Line::from(vec![
+                    Span::raw(op.to_string()),
+                    Span::styled("  (not enforced)", Style::default().fg(Color::DarkGray)),
+                ]))
+            }
+        })
+        .collect()
+}
 
 /// Builds the step breadcrumb line with mixed styles.
 ///
@@ -307,19 +326,13 @@ fn picker_items(
             .iter()
             .map(|a| ListItem::new(a.label().to_string()))
             .collect(),
-        2 => OPERATOR_EQ
-            .iter()
-            .map(|(op, enforced)| {
-                if *enforced {
-                    ListItem::new(op.to_string())
-                } else {
-                    ListItem::new(Line::from(vec![
-                        Span::raw(op.to_string()),
-                        Span::styled("  (not enforced)", Style::default().fg(Color::DarkGray)),
-                    ]))
-                }
-            })
-            .collect(),
+        2 => {
+            let attr = match selected_attribute {
+                Some(a) => a,
+                None => return vec![],
+            };
+            pick_operators(*attr)
+        }
         3 => {
             let attr = match selected_attribute {
                 Some(a) => a,
@@ -497,7 +510,7 @@ fn draw_conditions_builder(
         let input_display = format!("[{buffer}_]");
         let input_paragraph = Paragraph::new(input_display).block(
             Block::default()
-                .title(" AD Group SID ")
+                .title(" AD Group SID (partial match) ")
                 .borders(Borders::ALL),
         );
         frame.render_widget(input_paragraph, picker_chunks[1]);
