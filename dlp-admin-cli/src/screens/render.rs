@@ -15,6 +15,7 @@ use crate::app::{
     SIMULATE_NETWORK_LOCATION_OPTIONS,
 };
 use crate::screens::dispatch::condition_display;
+use dlp_common::abac::PolicyMode;
 
 /// Top-level draw function dispatched from the event loop.
 pub fn draw(app: &App, frame: &mut Frame) {
@@ -594,13 +595,14 @@ fn is_alert_numeric(index: usize) -> bool {
     matches!(index, 1) // smtp_port
 }
 
-/// Display labels for each row in the PolicyCreate/PolicyEdit form (8 rows, indices 0-7).
-const POLICY_FIELD_LABELS: [&str; 8] = [
+/// Display labels for each row in the PolicyCreate/PolicyEdit form (9 rows, indices 0-8).
+const POLICY_FIELD_LABELS: [&str; 9] = [
     "Name",
     "Description",
     "Priority",
     "Action",
     "Enabled",
+    "Mode",
     "[Add Conditions]",
     "Conditions",
     "[Submit]",
@@ -865,10 +867,19 @@ fn draw_policy_create(
                 Line::from(format!("{label}:              {enabled_val}"))
             }
             5 => {
+                // Mode (select enum — cycles on Enter/Space, no edit mode).
+                let mode_label = match form.mode {
+                    PolicyMode::ALL => "ALL",
+                    PolicyMode::ANY => "ANY",
+                    PolicyMode::NONE => "NONE",
+                };
+                Line::from(format!("{label}:              {mode_label}"))
+            }
+            6 => {
                 // [Add Conditions] action row
                 Line::from(format!("  {label}"))
             }
-            6 => {
+            7 => {
                 // Conditions summary (read-only)
                 let n = form.conditions.len();
                 if n == 0 {
@@ -891,7 +902,7 @@ fn draw_policy_create(
                     ])
                 }
             }
-            7 => {
+            8 => {
                 // [Submit] action row
                 Line::from(format!("  {label}"))
             }
@@ -918,6 +929,31 @@ fn draw_policy_create(
     let mut state = ListState::default();
     state.select(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
+
+    // Empty-conditions mode advisory (Phase 19 D-04). Shown in the same
+    // bottom-2 row slot as the validation_error overlay (see below); errors
+    // take priority, so this block is gated on `validation_error.is_none()`.
+    if validation_error.is_none()
+        && form.mode != PolicyMode::ALL
+        && form.conditions.is_empty()
+        && area.height >= 4
+    {
+        let hint = match form.mode {
+            PolicyMode::ANY => "Note: mode=ANY with no conditions will never match.",
+            PolicyMode::NONE => "Note: mode=NONE with no conditions matches every request.",
+            // Unreachable given the `form.mode != PolicyMode::ALL` guard above,
+            // but Rust requires an exhaustive match on the three-variant enum.
+            PolicyMode::ALL => "",
+        };
+        let hint_area = Rect {
+            x: area.x + 2,
+            y: area.y + area.height - 2,
+            width: area.width.saturating_sub(4),
+            height: 1,
+        };
+        let hint_para = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(hint_para, hint_area);
+    }
 
     // Validation error overlay below the Submit row (not a list item).
     if let Some(err) = validation_error {
@@ -969,8 +1005,8 @@ fn draw_policy_edit(
     buffer: &str,
     validation_error: Option<&str>,
 ) {
-    // Build 8 ListItems — one per row.
-    let mut items: Vec<ListItem> = Vec::with_capacity(8);
+    // Build 9 ListItems — one per row (Phase 19: 9 rows).
+    let mut items: Vec<ListItem> = Vec::with_capacity(POLICY_FIELD_LABELS.len());
 
     for (i, label) in POLICY_FIELD_LABELS.iter().enumerate() {
         let line = match i {
@@ -1018,8 +1054,17 @@ fn draw_policy_edit(
                 let enabled_val = if form.enabled { "Yes" } else { "No" };
                 Line::from(format!("{label}:              {enabled_val}"))
             }
-            5 => Line::from(format!("  {label}")),
-            6 => {
+            5 => {
+                // Mode (select enum — cycles on Enter/Space, no edit mode).
+                let mode_label = match form.mode {
+                    PolicyMode::ALL => "ALL",
+                    PolicyMode::ANY => "ANY",
+                    PolicyMode::NONE => "NONE",
+                };
+                Line::from(format!("{label}:              {mode_label}"))
+            }
+            6 => Line::from(format!("  {label}")),
+            7 => {
                 let n = form.conditions.len();
                 if n == 0 {
                     Line::from(vec![
@@ -1039,7 +1084,7 @@ fn draw_policy_edit(
                     ])
                 }
             }
-            7 => {
+            8 => {
                 // [Save] — hardcoded label (UI-SPEC D-03).
                 Line::from("  [Save]")
             }
@@ -1065,6 +1110,31 @@ fn draw_policy_edit(
     let mut state = ListState::default();
     state.select(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
+
+    // Empty-conditions mode advisory (Phase 19 D-04). Shown in the same
+    // bottom-2 row slot as the validation_error overlay (see below); errors
+    // take priority, so this block is gated on `validation_error.is_none()`.
+    if validation_error.is_none()
+        && form.mode != PolicyMode::ALL
+        && form.conditions.is_empty()
+        && area.height >= 4
+    {
+        let hint = match form.mode {
+            PolicyMode::ANY => "Note: mode=ANY with no conditions will never match.",
+            PolicyMode::NONE => "Note: mode=NONE with no conditions matches every request.",
+            // Unreachable given the `form.mode != PolicyMode::ALL` guard above,
+            // but Rust requires an exhaustive match on the three-variant enum.
+            PolicyMode::ALL => "",
+        };
+        let hint_area = Rect {
+            x: area.x + 2,
+            y: area.y + area.height - 2,
+            width: area.width.saturating_sub(4),
+            height: 1,
+        };
+        let hint_para = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(hint_para, hint_area);
+    }
 
     if let Some(err) = validation_error {
         if area.height >= 4 {
