@@ -7,10 +7,10 @@ last_updated: "2026-04-21T00:15:00+07:00"
 last_activity: 2026-04-21 -- Phase 19 planned (2 plans, 2 waves) — ready for /gsd-execute-phase 19
 progress:
   total_phases: 4
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 4
-  completed_plans: 2
-  percent: 25
+  completed_plans: 4
+  percent: 50
 ---
 
 # STATE.md — Project Memory
@@ -24,11 +24,11 @@ See: `.planning/PROJECT.md` (updated 2026-04-20)
 
 ## Current Position
 
-Phase: 19 — Boolean Mode in TUI + Import/Export
-Plan: 19-01 (Wave 1) + 19-02 (Wave 2)
-Status: Planned; ready to execute
-Resume: `.planning/phases/19-boolean-mode-tui-import-export/19-01-wire-format-and-submit-fix-PLAN.md`
-Last activity: 2026-04-21 -- Phase 19 planned (2 plans, verification passed); ready for `/gsd-execute-phase 19`
+Phase: 20 — Operator Expansion
+Plan: (not yet planned)
+Status: Ready to plan
+Resume: None
+Last activity: 2026-04-21 -- Phase 19 complete (POLICY-09 closed, 2/2 plans delivered); advancing to Phase 20
 
 ## Decisions
 
@@ -65,6 +65,9 @@ Last activity: 2026-04-21 -- Phase 19 planned (2 plans, verification passed); re
 | 2026-04-20 | Skip-nav in ImportConfirm | Informational rows (header + diff counts) are non-selectable; Up/Down cycles only Confirm/Cancel |
 | 2026-04-20 | v0.5.0 phase split: engine before TUI | Phase 18 ships server-side mode + backward-compat default (POLICY-12) so the TUI work in Phase 19 lands against an already-mode-aware server (POLICY-09 user-facing completion) |
 | 2026-04-20 | Boolean mode is flat top-level only | No nested expression trees in v0.5.0; rule-builder UX and wire-format simplicity. Users needing AND-of-ORs author two policies and use priority ordering |
+| 2026-04-21 | PolicyMode::ALL arm in footer advisory is exhaustive-but-unreachable | Outer guard `form.mode != PolicyMode::ALL` makes the ALL arm dead code; Rust requires exhaustive match on three-variant enum; empty string renders nothing |
+| 2026-04-21 | Integration test conditions JSON uses snake_case attribute tags | `PolicyCondition` has `#[serde(tag = "attribute", rename_all = "snake_case")]`; AccessContext variant serializes as "access_context" not "accesscontext" |
+| 2026-04-21 | CARGO_TARGET_DIR=target-test workaround for locked dlp-server.exe | Elevated dlp-server process holds target/debug/dlp-server.exe; alternate target dir lets cargo compile test binary without touching locked file |
 
 ## Known Issues (carry-forward)
 
