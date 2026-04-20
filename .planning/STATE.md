@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.3.0
 milestone_name: — Operational Hardening
 status: executing
-last_updated: "2026-04-17T07:56:53.795Z"
-last_activity: 2026-04-17
+last_updated: "2026-04-20T00:00:00.000Z"
+last_activity: 2026-04-20 -- Phase 16 complete
 progress:
   total_phases: 4
-  completed_phases: 3
-  total_plans: 5
-  completed_plans: 5
+  completed_phases: 4
+  total_plans: 9
+  completed_plans: 9
   percent: 100
 ---
 
@@ -20,14 +20,14 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-16)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** Phase 15 — policy-edit-delete
+**Current focus:** Phase 17 — policy import/export (planned)
 
 ## Current Position
 
-Phase: 15
+Phase: 17
 Plan: Not started
-Status: Executing Phase 15
-Last activity: 2026-04-17
+Status: Ready to plan
+Last activity: 2026-04-20 -- Phase 16 complete
 
 ## Decisions
 
@@ -57,6 +57,8 @@ Last activity: 2026-04-17
 | 2026-04-16 | TOML export blocked | toml crate incompatible with #[serde(tag = "attribute")] PolicyCondition; JSON only for v0.4.0 |
 | 2026-04-16 | Conditions builder: PolicyFormState struct | Eliminates borrow-split issues when returning Vec<PolicyCondition> to caller form |
 | 2026-04-16 | Import: GET existing IDs before POST/PUT | Detects conflicts without overwriting untracked policies |
+| 2026-04-20 | DeviceTrust/NetworkLocation not Copy | Use .cloned() on Option<&T> rather than .copied() when indexing into simulate form arrays |
+| 2026-04-20 | chrono = "0.4" explicit dep | dlp-admin-cli uses it for EvaluateRequest timestamp; not a transitive dep of dlp-common |
 
 ## Known Issues (carry-forward from v0.3.0)
 
