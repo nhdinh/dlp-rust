@@ -1,13 +1,13 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.3.0
-milestone_name: — Operational Hardening
-status: executing
-last_updated: "2026-04-20T00:00:00.000Z"
-last_activity: 2026-04-20 -- Phase 17 started
+milestone: v0.4.0
+milestone_name: — Policy Authoring
+status: shipped
+last_updated: "2026-04-20T09:55:00Z"
+last_activity: 2026-04-20 -- v0.4.0 shipped
 progress:
-  total_phases: 4
-  completed_phases: 4
+  total_phases: 5
+  completed_phases: 5
   total_plans: 9
   completed_plans: 9
   percent: 100
@@ -20,14 +20,13 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-16)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** Phase 17 — policy import/export (planned)
+**Current focus:** v0.4.0 shipped 2026-04-20; next milestone not yet started. Run `/gsd-new-milestone` to begin planning.
 
 ## Current Position
 
-Phase: 17
-Plan: 17-01 (Wave 1 of 2)
-Status: Executing
-Last activity: 2026-04-20 -- Phase 17 started
+Phase: — (between milestones)
+Status: Idle
+Last activity: 2026-04-20 -- v0.4.0 Policy Authoring shipped
 
 ## Decisions
 
@@ -59,14 +58,25 @@ Last activity: 2026-04-20 -- Phase 17 started
 | 2026-04-16 | Import: GET existing IDs before POST/PUT | Detects conflicts without overwriting untracked policies |
 | 2026-04-20 | DeviceTrust/NetworkLocation not Copy | Use .cloned() on Option<&T> rather than .copied() when indexing into simulate form arrays |
 | 2026-04-20 | chrono = "0.4" explicit dep | dlp-admin-cli uses it for EvaluateRequest timestamp; not a transitive dep of dlp-common |
+| 2026-04-20 | GET admin routes asymmetry | Only /policies (no /admin/policies) serves GET; /admin/policies is POST/PUT/DELETE only (Phase 9 legacy) |
+| 2026-04-20 | Import/export typed via PolicyResponse/PolicyPayload | From<PolicyResponse> for PolicyPayload drops version/updated_at for wire POST/PUT; unit-tested roundtrip |
+| 2026-04-20 | Skip-nav in ImportConfirm | Informational rows (header + diff counts) are non-selectable; Up/Down cycles only Confirm/Cancel |
 
-## Known Issues (carry-forward from v0.3.0)
+## Known Issues (carry-forward)
 
 - Phase 6 human UAT: live agent TOML write-back test not run
 - Phase 6 human UAT: zero-warning workspace build not verified
 - Phase 4 human UAT: live SMTP email delivery not tested
 - Phase 4 human UAT: live webhook POST not tested
 - Phase 4 human UAT: hot-reload verification through HTTP + TUI not run
+
+## Deferred Items (from v0.4.0 close)
+
+| Category | Item | Status |
+|----------|------|--------|
+| seed | SEED-001: Application-aware DLP | dormant |
+| seed | SEED-002: Protected Clipboard browser boundary | dormant |
+| seed | SEED-003: USB Device-Identity-Aware Whitelist | dormant |
 
 ## Patterns
 
@@ -79,20 +89,13 @@ Last activity: 2026-04-20 -- Phase 17 started
 - Policy conditions: JSON array of typed PolicyCondition variants (Classification, MemberOf, DeviceTrust, NetworkLocation, AccessContext)
 - TUI screens: ratatui + crossterm; generic get::<serde_json::Value> HTTP client pattern (not typed client methods)
 - Policy forms: PolicyFormState struct holds all form fields + conditions list to avoid borrow-split at submit time
+- Import/export: typed Vec<PolicyResponse> for file shape; From<PolicyResponse> for PolicyPayload for wire format
+- Skip-nav lists: informational rows in ratatui List render but are excluded from Up/Down navigation (e.g., ImportConfirm rows 0-2)
 
 ## Accumulated Context
 
-### Roadmap Evolution
+### Milestones Shipped
 
-- Phase 99 added: Refactor DB layer to Repository + Unit of Work
-- v0.4.0: Policy Authoring — admin API already complete; milestone is 100% dlp-admin-cli TUI work + thin server-side import/export endpoint
-
-### v0.4.0 Phase Summary
-
-| Phase | Name | Depends |
-|-------|------|---------|
-| 13 | Conditions Builder | None (foundational) |
-| 14 | Policy Create | Phase 13 |
-| 15 | Policy Edit + Delete | Phase 14 |
-| 16 | Policy List + Simulate | Phase 13 (parallel-capable with 14/15) |
-| 17 | Import + Export | Phase 14 + Phase 15 |
+- v0.2.0 Feature Completion (2026-04-13) — phases 0.1–12
+- v0.3.0 Operational Hardening (2026-04-16) — phases 7–11 + 99
+- v0.4.0 Policy Authoring (2026-04-20) — phases 13–17; POLICY-01..08 all delivered

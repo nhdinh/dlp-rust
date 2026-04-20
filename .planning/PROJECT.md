@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-17 — Phase 14 complete*
+*Last updated: 2026-04-20 — v0.4.0 Policy Authoring milestone shipped*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -12,23 +12,22 @@ Enterprise-grade Data Loss Prevention system that enforces ABAC-based access pol
 
 Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
 
-## Current Milestone: v0.4.0 Policy Authoring
-
-**Goal:** Give admins a full TUI-based policy lifecycle — create, edit, simulate, and import/export — without touching raw SQLite.
-
-**Target features:**
-- TUI policy list, detail, create, and edit screens in dlp-admin-cli wired to existing /admin/policies CRUD API
-- Structured conditions builder — pick attribute/operator/value, generates PolicyCondition JSON; no raw JSON entry
-- Policy simulate / dry-run — fill EvaluateRequest form in TUI, call POST /evaluate, display decision + matched policy
-- Policy import / export — serialize policy set to TOML/JSON file, import from file
-
 ## Current State
 
 **v0.2.0 Feature Completion shipped** (2026-04-13). All five crates compile and test. 364+ tests pass. The system covers: file/USB/network-share interception, clipboard monitoring, JWT auth, SIEM relay (Splunk HEC + ELK), alert routing (email + webhook), DB-backed operator config, agent config polling, and comprehensive TC test coverage.
 
 **v0.3.0 Operational Hardening shipped** (2026-04-16). Five phases delivered: AD LDAP integration (R-05), rate limiting middleware (R-07), admin audit logging (R-09), SQLite connection pool (R-10), and Policy Engine Separation with cache invalidation (R-03). All 10 requirements validated. Phase 99 (Repository + Unit of Work) completed concurrently.
 
-**v0.4.0 Policy Authoring in progress** (started 2026-04-16). Defining requirements and roadmap.
+**v0.4.0 Policy Authoring shipped** (2026-04-20). Five phases delivered — Conditions Builder (13), Policy Create (14), Policy Edit + Delete (15), Policy List + Simulate (16), and Import + Export (17). All 8 POLICY requirements validated. The admin TUI now covers the complete policy lifecycle without any raw JSON editing.
+
+## Next Milestone
+
+No milestone currently active. Likely candidates:
+
+- **v0.5.0 Boolean Logic:** AND/OR/NOT between policy conditions, in-place condition editing, expanded operators (`gt`, `lt`, `ne`, `contains`) once the ABAC engine supports them (POLICY-F1..F3).
+- **v0.5.x Server Hardening:** batch import endpoint to reduce cache invalidations, typed `Decision` action field, TOML export unblock (POLICY-F4..F6).
+
+Run `/gsd-new-milestone` to begin scoping.
 
 ## Architecture
 
@@ -72,16 +71,20 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - ✓ R-09: Admin operation audit logging — policy CRUD + password changes → audit_events with EventType::AdminAction — v0.3.0
 - ✓ R-10: SQLite connection pool — r2d2 pool, 220 workspace tests pass — v0.3.0
 
-### Active (v0.4.0)
+### Validated (shipped in v0.4.0)
 
-- [ ] POLICY-01: Admin can list all policies with name, priority, action, and enabled state
-- ✓ POLICY-02: Admin can create a new policy with name, description, priority, action, and one or more typed conditions — Validated in Phase 14
-- [ ] POLICY-03: Admin can edit an existing policy's name, description, priority, action, enabled flag, and conditions
-- [ ] POLICY-04: Admin can delete a policy with a confirmation prompt
-- ✓ POLICY-05: Admin can build policy conditions using a structured picker (attribute → operator → value) — no raw JSON — Validated in Phase 13
-- [ ] POLICY-06: Admin can simulate a policy decision by filling an EvaluateRequest form and viewing the decision + matched policy
-- [ ] POLICY-07: Admin can export the full policy set to a TOML or JSON file
-- [ ] POLICY-08: Admin can import policies from a TOML or JSON file, with conflict detection
+- ✓ POLICY-01: Admin can list all policies with name, priority, action, and enabled state — v0.4.0 (Phase 16)
+- ✓ POLICY-02: Admin can create a new policy with name, description, priority, action, and one or more typed conditions — v0.4.0 (Phase 14)
+- ✓ POLICY-03: Admin can edit an existing policy's name, description, priority, action, enabled flag, and conditions — v0.4.0 (Phase 15)
+- ✓ POLICY-04: Admin can delete a policy with a confirmation prompt — v0.4.0 (Phase 15)
+- ✓ POLICY-05: Admin can build policy conditions using a structured picker (attribute → operator → value) — no raw JSON — v0.4.0 (Phase 13)
+- ✓ POLICY-06: Admin can simulate a policy decision by filling an EvaluateRequest form and viewing the decision + matched policy — v0.4.0 (Phase 16)
+- ✓ POLICY-07: Admin can export the full policy set to a JSON file — v0.4.0 (Phase 17). TOML deferred as POLICY-F4.
+- ✓ POLICY-08: Admin can import policies from a JSON file with conflict detection — v0.4.0 (Phase 17)
+
+### Active (next milestone)
+
+No active requirements. Candidates for the next milestone live in the "Deferred" notes at the end of `.planning/milestones/v0.4.0-REQUIREMENTS.md` (POLICY-F1..F6).
 
 ### Out of Scope
 

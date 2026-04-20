@@ -41,3 +41,27 @@
 **All 5 deferred v0.2.0 requirements validated:** R-03, R-05, R-07, R-09, R-10
 
 ---
+
+## v0.4.0 Policy Authoring (Shipped: 2026-04-20)
+
+**Phases completed:** 5 | **Plans:** 9 | **Days:** ~4
+
+**Key accomplishments:**
+
+- **Conditions builder** — 3-step sequential picker (attribute → operator → value) replaces raw JSON. 5 attributes, typed value pickers, delete-and-recreate for in-place edit (Phase 13).
+- **Policy Create form** — multi-field typed form with inline validation, composable with conditions builder, submits to POST /admin/policies and invalidates PolicyStore cache (Phase 14).
+- **Policy Edit + Delete** — load existing policies via GET /admin/policies/{id}, edit in-place, delete with `d`-key confirmation, PUT/DELETE with cache invalidation (Phase 15).
+- **Policy List + Simulate** — scrollable sorted table with `n`/`e`/`d` inline actions, standalone evaluate-request simulate form calling POST /evaluate (Phase 16).
+- **Import + Export** — native Windows file dialogs (rfd 0.14), export pretty-printed JSON with dated filename, import with typed `PolicyResponse` parsing + conflict diff + POST/PUT abort-on-error (Phase 17).
+- **All 8 POLICY requirements delivered (POLICY-01..08)** — admin no longer touches raw JSON or SQL for any policy operation.
+
+**Known deferred items at close:** 3 dormant seeds (SEED-001, 002, 003 — application-aware DLP, protected clipboard browser boundary, USB device-identity whitelist). Tracked in STATE.md "Deferred Items".
+
+**Issues resolved during milestone:**
+- Phase 16 UAT: PolicySimulate Esc bug cleared the edit buffer (commit e1afee3)
+- Phase 17 UAT: GET /admin/policies returned 405 Method Not Allowed; routed GETs to /policies (commit 7dda578)
+
+**Issues deferred (to v0.5.0+):** POLICY-F1..F6 — AND/OR/NOT boolean logic, in-place condition editing, expanded operators, TOML export unblock, batch import endpoint, typed Decision action field.
+
+---
+
