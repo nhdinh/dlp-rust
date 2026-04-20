@@ -28,7 +28,19 @@ use crate::db::repositories::{
 };
 use crate::exception_store;
 use crate::rate_limiter::{self, default_config, policy_config};
+use crate::policy_store::mode_str;
 use crate::AppError;
+use dlp_common::abac::PolicyMode;
+
+/// Parses a `PolicyMode` from its DB string representation.
+fn mode_from_str(s: &str) -> PolicyMode {
+    match s {
+        "ALL" => PolicyMode::ALL,
+        "ANY" => PolicyMode::ANY,
+        "NONE" => PolicyMode::NONE,
+        _ => PolicyMode::ALL,
+    }
+}
 use crate::AppState;
 use dlp_common::abac::{EvaluateRequest, EvaluateResponse};
 use tracing::info;
@@ -109,6 +121,9 @@ pub struct PolicyPayload {
     pub action: String,
     /// Whether the policy is enabled.
     pub enabled: bool,
+    /// Boolean composition mode for the conditions list.
+    #[serde(default)]
+    pub mode: PolicyMode,
 }
 
 /// Policy record returned by the API.
@@ -128,6 +143,9 @@ pub struct PolicyResponse {
     pub action: String,
     /// Whether the policy is active.
     pub enabled: bool,
+    /// Boolean composition mode for the conditions list.
+    #[serde(default)]
+    pub mode: PolicyMode,
     /// Monotonic version number.
     pub version: i64,
     /// ISO 8601 timestamp of last update.
@@ -522,6 +540,7 @@ async fn list_policies(
                     conditions,
                     action: r.action,
                     enabled: r.enabled != 0,
+                    mode: mode_from_str(&r.mode),
                     version: r.version,
                     updated_at: r.updated_at,
                 }
@@ -555,6 +574,7 @@ async fn get_policy(
             conditions,
             action: r.action,
             enabled: r.enabled != 0,
+            mode: mode_from_str(&r.mode),
             version: r.version,
             updated_at: r.updated_at,
         })
@@ -589,6 +609,7 @@ async fn create_policy(
         conditions: payload.conditions.clone(),
         action: payload.action.clone(),
         enabled: payload.enabled,
+        mode: payload.mode,
         version: 1,
         updated_at: now.clone(),
     };
@@ -607,6 +628,7 @@ async fn create_policy(
             conditions: conditions_json.clone(),
             action: r.action.clone(),
             enabled: if r.enabled { 1 } else { 0 },
+            mode: mode_str(r.mode).to_string(),
             version: r.version,
             updated_at: r.updated_at.clone(),
         };
@@ -683,6 +705,7 @@ async fn update_policy(
     let payload_priority = i64::from(payload.priority);
     let payload_action = payload.action.clone();
     let payload_enabled = if payload.enabled { 1 } else { 0 };
+    let payload_mode = payload.mode;
     let payload_conditions = payload.conditions.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
 
@@ -697,6 +720,7 @@ async fn update_policy(
             conditions: &conditions_json,
             action: &payload_action,
             enabled: payload_enabled,
+            mode: mode_str(payload_mode),
             updated_at: &now,
             id: &id,
         };
@@ -718,6 +742,7 @@ async fn update_policy(
             conditions: payload_conditions,
             action: payload_action,
             enabled: payload_enabled != 0,
+            mode: payload_mode,
             version,
             updated_at: now,
         })
