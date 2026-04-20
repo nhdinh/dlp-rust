@@ -301,7 +301,7 @@ mod tests {
             0,
         );
         let mut conn = pool.get().expect("acquire connection");
-        let uow = db::UnitOfWork::new(&mut *conn).expect("begin transaction");
+        let uow = db::UnitOfWork::new(&mut conn).expect("begin transaction");
         store_events_sync(&uow, &[event]).expect("store event");
         uow.commit().expect("commit");
 
