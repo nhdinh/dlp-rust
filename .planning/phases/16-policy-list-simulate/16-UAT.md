@@ -8,7 +8,7 @@ updated: 2026-04-20T00:00:00.000Z
 
 ## Current Test
 
-[testing complete — 1 issue found]
+[testing complete — all 11 tests pass]
 
 ## Tests
 
@@ -38,9 +38,7 @@ result: pass
 
 ### 7. PolicySimulate text field editing
 expected: User SID, User Name, Groups, Path rows are editable. Select a row and press Enter → type → Enter commits. Esc cancels without losing the current field value.
-result: issue
-reported: "Escape will empty the current field value"
-severity: major
+result: pass
 
 ### 8. PolicySimulate select cycling
 expected: Device Trust, Network Location, Classification, Action, Access Context rows cycle on Enter (e.g. Device Trust: Managed→Unmanaged→Compliant→Unknown→Managed).
@@ -61,16 +59,12 @@ result: pass
 ## Summary
 
 total: 11
-passed: 10
-issues: 1
+passed: 11
+issues: 0
 pending: 0
 skipped: 0
 blocked: 0
 
 ## Gaps
 
-- truth: "Esc cancels without losing the current field value"
-  status: failed
-  reason: "User reported: Escape will empty the current field value"
-  severity: major
-  test: 7
+_All gaps resolved._

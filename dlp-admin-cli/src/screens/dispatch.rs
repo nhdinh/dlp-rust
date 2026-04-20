@@ -1831,12 +1831,10 @@ fn handle_simulate_editing(app: &mut App, key: KeyEvent, _selected: usize) {
             }
         }
         KeyCode::Esc => {
-            // Cancel edit; restore field to pre-edit value.
-            if let Screen::PolicySimulate {
-                buffer, editing, ..
-            } = &mut app.screen
-            {
-                buffer.clear();
+            // Cancel edit; restore field to pre-edit value by simply exiting edit mode.
+            // The buffer retains in-progress text so it is recoverable if Enter is pressed
+            // again before re-entering edit mode (pre-fill from form field overwrites it).
+            if let Screen::PolicySimulate { editing, .. } = &mut app.screen {
                 *editing = false;
             }
         }
