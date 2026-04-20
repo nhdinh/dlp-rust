@@ -137,6 +137,9 @@ pub struct PolicyFormState {
     /// Server-side policy ID. Empty for new policies; populated for existing ones
     /// so it can be preserved through the ConditionsBuilder modal round-trip.
     pub id: String,
+    /// Boolean composition mode (ALL / ANY / NONE). Defaults to ALL via
+    /// `PolicyMode::default()`. In-memory UI state only — never serialized.
+    pub mode: dlp_common::abac::PolicyMode,
 }
 
 /// Fixed action options for the policy create / edit form.
@@ -252,6 +255,10 @@ pub struct PolicyResponse {
     pub version: i64,
     #[serde(default)]
     pub updated_at: String,
+    /// Boolean composition mode for the conditions list. Defaults to ALL
+    /// on legacy v0.4.0 exports that omit the field.
+    #[serde(default)]
+    pub mode: dlp_common::abac::PolicyMode,
 }
 
 /// Payload for `POST /admin/policies` and `PUT /admin/policies/{id}`.
@@ -267,6 +274,9 @@ pub struct PolicyPayload {
     pub conditions: serde_json::Value,
     pub action: String,
     pub enabled: bool,
+    /// Boolean composition mode for the conditions list.
+    #[serde(default)]
+    pub mode: dlp_common::abac::PolicyMode,
 }
 
 impl From<PolicyResponse> for PolicyPayload {
@@ -279,6 +289,7 @@ impl From<PolicyResponse> for PolicyPayload {
             conditions: r.conditions,
             action: r.action,
             enabled: r.enabled,
+            mode: r.mode,
         }
     }
 }
@@ -553,6 +564,85 @@ impl App {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+    use dlp_common::abac::PolicyMode;
+
+    #[test]
+    fn test_policy_response_defaults_missing_mode_to_all() {
+        let json = r#"{"id":"p","name":"n","description":null,"priority":1,"conditions":[],"action":"ALLOW","enabled":true}"#;
+        let got: PolicyResponse = serde_json::from_str(json).expect("deserialize without mode");
+        assert_eq!(got.mode, PolicyMode::ALL);
+    }
+
+    #[test]
+    fn test_policy_response_preserves_explicit_mode_any() {
+        let json = r#"{"id":"p","name":"n","description":null,"priority":1,"conditions":[],"action":"ALLOW","enabled":true,"mode":"ANY"}"#;
+        let got: PolicyResponse = serde_json::from_str(json).expect("deserialize with mode=ANY");
+        assert_eq!(got.mode, PolicyMode::ANY);
+    }
+
+    #[test]
+    fn test_policy_payload_roundtrips_all_three_modes() {
+        for mode in [PolicyMode::ALL, PolicyMode::ANY, PolicyMode::NONE] {
+            let payload = PolicyPayload {
+                id: "p".into(),
+                name: "n".into(),
+                description: None,
+                priority: 1,
+                conditions: serde_json::json!([]),
+                action: "DENY".into(),
+                enabled: true,
+                mode,
+            };
+            let json = serde_json::to_string(&payload).expect("serialize");
+            let expected = match mode {
+                PolicyMode::ALL => "\"mode\":\"ALL\"",
+                PolicyMode::ANY => "\"mode\":\"ANY\"",
+                PolicyMode::NONE => "\"mode\":\"NONE\"",
+            };
+            assert!(
+                json.contains(expected),
+                "json `{json}` missing `{expected}`"
+            );
+            let round_trip: PolicyPayload = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(round_trip.mode, mode);
+        }
+    }
+
+    #[test]
+    fn test_policy_payload_legacy_default_on_missing_mode() {
+        let json = r#"{"id":"p","name":"n","description":null,"priority":1,"conditions":[],"action":"ALLOW","enabled":true}"#;
+        let got: PolicyPayload = serde_json::from_str(json).expect("legacy deserialize");
+        assert_eq!(got.mode, PolicyMode::ALL);
+    }
+
+    #[test]
+    fn test_policy_response_into_payload_copies_mode() {
+        let resp = PolicyResponse {
+            id: "p".into(),
+            name: "n".into(),
+            description: None,
+            priority: 1,
+            conditions: serde_json::json!([]),
+            action: "DENY".into(),
+            enabled: true,
+            version: 0,
+            updated_at: String::new(),
+            mode: PolicyMode::NONE,
+        };
+        let payload: PolicyPayload = resp.into();
+        assert_eq!(payload.mode, PolicyMode::NONE);
+    }
+
+    #[test]
+    fn test_policy_form_state_default_mode_is_all() {
+        let form = PolicyFormState::default();
+        assert_eq!(form.mode, PolicyMode::ALL);
+    }
+}
+
+#[cfg(test)]
 mod import_export_tests {
     use super::*;
 
@@ -568,6 +658,7 @@ mod import_export_tests {
             enabled: true,
             version: 42,
             updated_at: "2026-01-01T00:00:00Z".to_string(),
+            mode: dlp_common::abac::PolicyMode::ALL,
         };
 
         let payload: PolicyPayload = response.into();
@@ -637,6 +728,7 @@ mod import_export_tests {
             ]),
             action: "AllowWithLog".to_string(),
             enabled: true,
+            mode: dlp_common::abac::PolicyMode::ALL,
         };
 
         let json = serde_json::to_value(&payload).expect("must serialize");
