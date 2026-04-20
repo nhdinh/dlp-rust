@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.5.0
 milestone_name: — Boolean Logic
-status: roadmap_complete
-last_updated: "2026-04-20T12:35:00Z"
-last_activity: 2026-04-20 -- Phase 18 context gathered; ready to plan
+status: phase_complete
+last_updated: "2026-04-20T23:15:00+07:00"
+last_activity: 2026-04-20 -- Phase 18 complete (6 UAT passed, 1 skipped, 0 issues; 119 unit tests)
 progress:
   total_phases: 4
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  completed_phases: 1
+  total_plans: 2
+  completed_plans: 2
+  percent: 25
 ---
 
 # STATE.md — Project Memory
@@ -20,15 +20,15 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-20)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** v0.5.0 Boolean Logic — flat boolean mode (ALL/ANY/NONE) per policy, in-place condition editing, expanded ABAC operators (`gt`, `lt`, `ne`, `contains`). Phase 18 context gathered; ready to plan.
+**Current focus:** v0.5.0 Boolean Logic — flat boolean mode (ALL/ANY/NONE) per policy, in-place condition editing, expanded ABAC operators (`gt`, `lt`, `ne`, `contains`). Phase 18 shipped; ready for Phase 19 (Boolean Mode in TUI + Import/Export).
 
 ## Current Position
 
-Phase: 18 — Boolean Mode Engine + Wire Format
+Phase: 19 — Boolean Mode in TUI + Import/Export
 Plan: —
-Status: Context gathered; ready to plan
-Resume: `.planning/phases/18-boolean-mode-engine-wire-format/18-CONTEXT.md`
-Last activity: 2026-04-20 -- Phase 18 context gathered (4 gray areas resolved across DB migration, PolicyMode shape, empty-conditions edge cases, serde defaults)
+Status: Ready to discuss / plan
+Resume: `/gsd-discuss-phase 19` or `/gsd-plan-phase 19`
+Last activity: 2026-04-20 -- Phase 18 complete; evaluator switches on PolicyMode, wire format round-trips, 119 unit tests pass, 6/7 UAT tests pass (1 skipped)
 
 ## Decisions
 

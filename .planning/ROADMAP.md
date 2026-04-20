@@ -23,7 +23,7 @@ implicit-AND-over-typed-conditions to flat boolean composition
 (`gt`, `lt`, `ne`, `contains`), and close the in-place
 condition-editing gap left by Phase 13.
 
-- [ ] **Phase 18: Boolean Mode Engine + Wire Format** - `mode` column, `PolicyPayload`/`PolicyResponse` field, evaluator switch, `ALL` default for legacy policies
+- [x] **Phase 18: Boolean Mode Engine + Wire Format** - `mode` column, `PolicyPayload`/`PolicyResponse` field, evaluator switch, `ALL` default for legacy policies (2026-04-20)
 - [ ] **Phase 19: Boolean Mode in TUI + Import/Export** - mode picker in Create/Edit forms, mode round-trips through export/import
 - [ ] **Phase 20: Operator Expansion** - per-attribute operator set in evaluator and conditions builder
 - [ ] **Phase 21: In-Place Condition Editing** - re-enter the 3-step picker pre-filled, replace at original list position
@@ -53,7 +53,7 @@ Full phase details: `.planning/milestones/v0.5.0-ROADMAP.md`
 | 15 | Policy Edit + Delete | v0.4.0 | 1/1 | Complete | 2026-04-17 |
 | 16 | Policy List + Simulate | v0.4.0 | 2/2 | Complete | 2026-04-20 |
 | 17 | Import + Export | v0.4.0 | 2/2 | Complete | 2026-04-20 |
-| 18 | Boolean Mode Engine + Wire Format | v0.5.0 | 0/TBD | Not started | - |
+| 18 | Boolean Mode Engine + Wire Format | v0.5.0 | 2/2 | Complete | 2026-04-20 |
 | 19 | Boolean Mode in TUI + Import/Export | v0.5.0 | 0/TBD | Not started | - |
 | 20 | Operator Expansion | v0.5.0 | 0/TBD | Not started | - |
 | 21 | In-Place Condition Editing | v0.5.0 | 0/TBD | Not started | - |
