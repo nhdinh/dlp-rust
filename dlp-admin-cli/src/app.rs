@@ -223,7 +223,6 @@ pub enum ImportCaller {
 
 /// Validation state for the ImportConfirm screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // Success/Error constructed in Wave 2 import execution.
 pub enum ImportState {
     /// Awaiting admin confirmation.
     Pending,
@@ -233,6 +232,55 @@ pub enum ImportState {
     Success { created: usize, updated: usize },
     /// Import failed; shows the error message and aborts.
     Error(String),
+}
+
+/// Policy record returned by `GET /admin/policies` (server's PolicyResponse shape).
+///
+/// The authoritative schema for import/export JSON. Imported JSON is deserialized
+/// into `Vec<PolicyResponse>` and converted to `PolicyPayload` before POST/PUT.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct PolicyResponse {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub priority: u32,
+    /// JSON-encoded conditions array (`Vec<PolicyCondition>` on the wire).
+    pub conditions: serde_json::Value,
+    pub action: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub version: i64,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+/// Payload for `POST /admin/policies` and `PUT /admin/policies/{id}`.
+///
+/// Matches `PolicyPayload` from `dlp-server/src/admin_api.rs`.
+/// Dropped from `PolicyResponse`: `version`, `updated_at`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PolicyPayload {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub priority: u32,
+    pub conditions: serde_json::Value,
+    pub action: String,
+    pub enabled: bool,
+}
+
+impl From<PolicyResponse> for PolicyPayload {
+    fn from(r: PolicyResponse) -> Self {
+        Self {
+            id: r.id,
+            name: r.name,
+            description: r.description,
+            priority: r.priority,
+            conditions: r.conditions,
+            action: r.action,
+            enabled: r.enabled,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -446,9 +494,8 @@ pub enum Screen {
     /// Enter on Cancel / Esc -> returns to PolicyMenu.
     ImportConfirm {
         /// Parsed policies from the imported JSON file.
-        policies: Vec<serde_json::Value>,
+        policies: Vec<PolicyResponse>,
         /// IDs currently present on the server (for conflict diff).
-        #[allow(dead_code)] // Consumed by Wave 2 import execution (POST vs PUT routing).
         existing_ids: Vec<String>,
         /// Number of policies whose IDs are already on the server (-> PUT).
         conflicting_count: usize,
@@ -502,5 +549,103 @@ impl App {
     #[allow(dead_code)]
     pub fn clear_status(&mut self) {
         self.status = None;
+    }
+}
+
+#[cfg(test)]
+mod import_export_tests {
+    use super::*;
+
+    #[test]
+    fn policy_response_to_payload_drops_version_and_updated_at() {
+        let response = PolicyResponse {
+            id: "test-id".to_string(),
+            name: "Test Policy".to_string(),
+            description: Some("A test".to_string()),
+            priority: 10,
+            conditions: serde_json::json!([]),
+            action: "DENY".to_string(),
+            enabled: true,
+            version: 42,
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let payload: PolicyPayload = response.into();
+
+        assert_eq!(payload.id, "test-id");
+        assert_eq!(payload.name, "Test Policy");
+        assert_eq!(payload.description, Some("A test".to_string()));
+        assert_eq!(payload.priority, 10);
+        assert_eq!(payload.conditions, serde_json::json!([]));
+        assert_eq!(payload.action, "DENY");
+        assert!(payload.enabled);
+    }
+
+    #[test]
+    fn policy_response_deserializes_from_server_json() {
+        let json = serde_json::json!({
+            "id": "policy-abc",
+            "name": "Block T4 Exports",
+            "description": "Prevent T4 data leaving the network",
+            "priority": 1,
+            "conditions": [
+                { "attribute": "Classification", "operator": "eq", "value": "T4" }
+            ],
+            "action": "DENY",
+            "enabled": true,
+            "version": 3,
+            "updated_at": "2026-04-01T12:00:00Z"
+        });
+
+        let response: PolicyResponse = serde_json::from_value(json).expect("must parse");
+        assert_eq!(response.id, "policy-abc");
+        assert_eq!(response.name, "Block T4 Exports");
+        assert_eq!(response.priority, 1);
+        assert_eq!(response.action, "DENY");
+        assert!(response.enabled);
+        assert!(response.description.is_some());
+        assert_eq!(response.conditions.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn policy_response_missing_optional_fields_default() {
+        // version and updated_at are optional via #[serde(default)].
+        let json = serde_json::json!({
+            "id": "minimal",
+            "name": "Minimal",
+            "priority": 5,
+            "conditions": [],
+            "action": "ALLOW",
+            "enabled": false
+        });
+
+        let response: PolicyResponse = serde_json::from_value(json).expect("must parse");
+        assert_eq!(response.version, 0);
+        assert_eq!(response.updated_at, "");
+        assert_eq!(response.description, None);
+    }
+
+    #[test]
+    fn policy_payload_roundtrip() {
+        let payload = PolicyPayload {
+            id: "roundtrip-test".to_string(),
+            name: "Roundtrip".to_string(),
+            description: None,
+            priority: 99,
+            conditions: serde_json::json!([
+                { "attribute": "DeviceTrust", "operator": "eq", "value": "Managed" }
+            ]),
+            action: "AllowWithLog".to_string(),
+            enabled: true,
+        };
+
+        let json = serde_json::to_value(&payload).expect("must serialize");
+        let deserialized: PolicyPayload = serde_json::from_value(json).expect("must deserialize");
+
+        assert_eq!(deserialized.id, payload.id);
+        assert_eq!(deserialized.name, payload.name);
+        assert_eq!(deserialized.priority, payload.priority);
+        assert_eq!(deserialized.action, payload.action);
+        assert_eq!(deserialized.enabled, payload.enabled);
     }
 }
