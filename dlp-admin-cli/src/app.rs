@@ -212,6 +212,30 @@ pub const SIMULATE_ROW_COUNT: usize = 10;
 pub const SIMULATE_SUBMIT_ROW: usize = 9;
 
 // ---------------------------------------------------------------------------
+// Import / Export supporting types
+// ---------------------------------------------------------------------------
+
+/// Identifies which menu opened the ImportConfirm screen — used to route Esc correctly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportCaller {
+    PolicyMenu,
+}
+
+/// Validation state for the ImportConfirm screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // Success/Error constructed in Wave 2 import execution.
+pub enum ImportState {
+    /// Awaiting admin confirmation.
+    Pending,
+    /// Confirmed; import execution is underway (displayed as a spinner/working state).
+    InProgress,
+    /// Import succeeded; shows the post-import summary.
+    Success { created: usize, updated: usize },
+    /// Import failed; shows the error message and aborts.
+    Error(String),
+}
+
+// ---------------------------------------------------------------------------
 // Screen enum
 // ---------------------------------------------------------------------------
 
@@ -407,6 +431,35 @@ pub enum Screen {
         result: SimulateOutcome,
         /// Which menu opened this screen (for Esc return destination).
         caller: SimulateCaller,
+    },
+    /// Import confirmation screen.
+    ///
+    /// Row layout (render list indices 0..=4):
+    ///   0: "Import {N} policies?"              (informational, bold header, skip-nav)
+    ///   1: "{conflicting_count} will overwrite" (informational, dark gray, skip-nav)
+    ///   2: "{non_conflicting_count} will be created" (informational, dark gray, skip-nav)
+    ///   3: [Confirm]   (Enter to proceed)      (actionable)
+    ///   4: [Cancel]    (Esc to abort)           (actionable)
+    ///
+    /// Navigation: Up/Down cycles only between rows 3 and 4 (the actionable rows).
+    /// Enter on Confirm -> transitions to InProgress / fires action.
+    /// Enter on Cancel / Esc -> returns to PolicyMenu.
+    ImportConfirm {
+        /// Parsed policies from the imported JSON file.
+        policies: Vec<serde_json::Value>,
+        /// IDs currently present on the server (for conflict diff).
+        #[allow(dead_code)] // Consumed by Wave 2 import execution (POST vs PUT routing).
+        existing_ids: Vec<String>,
+        /// Number of policies whose IDs are already on the server (-> PUT).
+        conflicting_count: usize,
+        /// Number of policies with new IDs (-> POST).
+        non_conflicting_count: usize,
+        /// Selected row index (0..=4); only rows 3 and 4 are actionable.
+        selected: usize,
+        /// Current validation / outcome state.
+        state: ImportState,
+        /// Which menu opened this screen.
+        caller: ImportCaller,
     },
 }
 
