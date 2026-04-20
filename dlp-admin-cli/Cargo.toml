@@ -9,6 +9,8 @@ description.workspace = true
 [dependencies]
 # Password management
 bcrypt = "0.16"
+# Date/time for EvaluateRequest timestamp in simulate form
+chrono = "0.4"
 anyhow = "1"
 
 # TUI

@@ -147,6 +147,71 @@ pub struct PolicyFormState {
 pub const ACTION_OPTIONS: [&str; 4] = ["ALLOW", "DENY", "AllowWithLog", "DenyWithAlert"];
 
 // ---------------------------------------------------------------------------
+// Policy simulate supporting types
+// ---------------------------------------------------------------------------
+
+/// Identifies which menu opened the simulate screen — used to route Esc correctly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimulateCaller {
+    MainMenu,
+    PolicyMenu,
+}
+
+/// The outcome of a simulate submission: no result yet, a successful evaluation,
+/// or an error (network or server).
+#[derive(Debug, Clone)]
+pub enum SimulateOutcome {
+    /// No submission made yet, or result was cleared.
+    None,
+    /// Server returned a decision successfully.
+    Success(dlp_common::abac::EvaluateResponse),
+    /// Network or server error; message is already prefixed with
+    /// "Network error: " or "Server error: ".
+    Error(String),
+}
+
+/// All form field values for the Policy Simulate screen.
+///
+/// `groups_raw` stores the comma-separated text buffer; it is split into
+/// `Vec<String>` on submit. Other fields store select indices or string values.
+#[derive(Debug, Clone, Default)]
+pub struct SimulateFormState {
+    /// Raw comma-separated SID input (not parsed until submit).
+    pub groups_raw: String,
+    /// Subject fields.
+    pub user_sid: String,
+    pub user_name: String,
+    /// Select index into SIMULATE_DEVICE_TRUST_OPTIONS (default 1 = Unmanaged).
+    pub device_trust: usize,
+    /// Select index into SIMULATE_NETWORK_LOCATION_OPTIONS (default 3 = Unknown).
+    pub network_location: usize,
+    /// Resource fields.
+    pub path: String,
+    /// Select index into SIMULATE_CLASSIFICATION_OPTIONS (default 0 = T1).
+    pub classification: usize,
+    /// Environment / action fields.
+    /// Select index into SIMULATE_ACTION_OPTIONS (default 0 = READ).
+    pub action: usize,
+    /// Select index into SIMULATE_ACCESS_CONTEXT_OPTIONS (default 0 = Local).
+    pub access_context: usize,
+}
+
+/// Fixed select options for the simulate form.
+pub const SIMULATE_DEVICE_TRUST_OPTIONS: [&str; 4] =
+    ["Managed", "Unmanaged", "Compliant", "Unknown"];
+pub const SIMULATE_NETWORK_LOCATION_OPTIONS: [&str; 4] =
+    ["Corporate", "CorporateVpn", "Guest", "Unknown"];
+pub const SIMULATE_CLASSIFICATION_OPTIONS: [&str; 4] = ["T1", "T2", "T3", "T4"];
+pub const SIMULATE_ACTION_OPTIONS: [&str; 6] = ["READ", "WRITE", "COPY", "DELETE", "MOVE", "PASTE"];
+pub const SIMULATE_ACCESS_CONTEXT_OPTIONS: [&str; 2] = ["Local", "Smb"];
+
+/// Total editable row count for the simulate form.
+pub const SIMULATE_ROW_COUNT: usize = 10;
+/// Index of the [Simulate] submit row within editable indices.
+#[allow(dead_code)]
+pub const SIMULATE_SUBMIT_ROW: usize = 9;
+
+// ---------------------------------------------------------------------------
 // Screen enum
 // ---------------------------------------------------------------------------
 
@@ -311,6 +376,37 @@ pub enum Screen {
         /// Inline validation error displayed below the [Save] row.
         /// Cleared on Esc or successful submission.
         validation_error: Option<String>,
+    },
+    /// Policy simulation form.
+    ///
+    /// Renders a Subject / Resource / Environment multi-field form, submits to
+    /// `POST /evaluate` (unauthenticated), and renders the `EvaluateResponse`
+    /// inline below the submit row. Reachable from both MainMenu and PolicyMenu.
+    ///
+    /// Editable row layout (selected index -> field):
+    ///   0: User SID            (text)
+    ///   1: User Name           (text)
+    ///   2: Groups (comma-SIDs)(text)
+    ///   3: Device Trust        (select: cycles on Enter)
+    ///   4: Network Location    (select: cycles on Enter)
+    ///   5: Path                (text)
+    ///   6: Classification     (select: cycles on Enter)
+    ///   7: Action              (select: cycles on Enter)
+    ///   8: Access Context     (select: cycles on Enter)
+    ///   9: [Simulate]
+    PolicySimulate {
+        /// All form field values and select indices.
+        form: SimulateFormState,
+        /// Index of the currently highlighted editable row (0..=9).
+        selected: usize,
+        /// Whether the selected text field is in edit mode.
+        editing: bool,
+        /// Text buffer while editing a field (User SID, User Name, Groups, Path).
+        buffer: String,
+        /// Inline result block or error.
+        result: SimulateOutcome,
+        /// Which menu opened this screen (for Esc return destination).
+        caller: SimulateCaller,
     },
 }
 

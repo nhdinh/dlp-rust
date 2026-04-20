@@ -8,7 +8,12 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::app::{App, ConditionAttribute, Screen, StatusKind, ACTION_OPTIONS, ATTRIBUTES};
+use crate::app::{
+    App, ConditionAttribute, Screen, SimulateFormState, SimulateOutcome, StatusKind,
+    ACTION_OPTIONS, ATTRIBUTES, SIMULATE_ACCESS_CONTEXT_OPTIONS, SIMULATE_ACTION_OPTIONS,
+    SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
+    SIMULATE_NETWORK_LOCATION_OPTIONS,
+};
 use crate::screens::dispatch::condition_display;
 
 /// Top-level draw function dispatched from the event loop.
@@ -30,7 +35,13 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 frame,
                 area,
                 "dlp-admin-cli",
-                &["Password Management", "Policy Management", "System", "Exit"],
+                &[
+                    "Password Management",
+                    "Policy Management",
+                    "System",
+                    "Simulate Policy",
+                    "Exit",
+                ],
                 *selected,
             );
         }
@@ -59,6 +70,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                     "Create Policy",
                     "Update Policy",
                     "Delete Policy",
+                    "Simulate Policy",
                     "Back",
                 ],
                 *selected,
@@ -183,6 +195,16 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 buffer,
                 validation_error.as_deref(),
             );
+        }
+        Screen::PolicySimulate {
+            form,
+            selected,
+            editing,
+            buffer,
+            result,
+            ..
+        } => {
+            draw_policy_simulate(frame, area, form, *selected, *editing, buffer, result);
         }
     }
 }
@@ -1140,29 +1162,37 @@ fn draw_policy_list(
     policies: &[serde_json::Value],
     selected: usize,
 ) {
-    let header = Row::new(vec!["ID", "Name", "Priority", "Enabled", "Version"])
+    let header = Row::new(vec!["Priority", "Name", "Action", "Enabled"])
         .style(Style::default().add_modifier(Modifier::BOLD))
         .bottom_margin(1);
 
     let rows: Vec<Row> = policies
         .iter()
         .map(|p| {
+            let priority = p["priority"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .unwrap_or(u32::MAX);
+            let action = p["action"].as_str().unwrap_or("-");
+            let enabled = if p["enabled"].as_bool().unwrap_or(false) {
+                "Yes"
+            } else {
+                "No"
+            };
             Row::new(vec![
-                p["id"].as_str().unwrap_or("-").to_string(),
+                priority.to_string(),
                 p["name"].as_str().unwrap_or("-").to_string(),
-                p["priority"].to_string(),
-                p["enabled"].to_string(),
-                p["version"].to_string(),
+                action.to_string(),
+                enabled.to_string(),
             ])
         })
         .collect();
 
     let widths = [
-        Constraint::Percentage(20),
-        Constraint::Percentage(30),
-        Constraint::Percentage(15),
-        Constraint::Percentage(15),
-        Constraint::Percentage(20),
+        Constraint::Percentage(15), // Priority
+        Constraint::Percentage(45), // Name
+        Constraint::Percentage(20), // Action
+        Constraint::Percentage(20), // Enabled
     ];
 
     let table = Table::new(rows, widths)
@@ -1187,8 +1217,244 @@ fn draw_policy_list(
     draw_hints(
         frame,
         area,
-        "e: edit | d: delete | Enter: view | Esc: back",
+        "n: new | e: edit | d: delete | Enter: view | Esc: back",
     );
+}
+
+/// Maps an editable `selected` index (0..=9) to the render-list position.
+///
+/// Section headers are interspersed at fixed render positions, so the editable
+/// `selected` index (0..=9) does not match the render list position 1:1.
+/// This lookup table is the single source of truth for the render/dispatch pair.
+const EDITABLE_TO_RENDER: [usize; 10] = [
+    0,  // User SID
+    1,  // User Name
+    2,  // Groups
+    4,  // Device Trust  (render row 3 = "--- Subject ---" header)
+    5,  // Network Location
+    7,  // Path          (render row 6 = "--- Resource ---" header)
+    8,  // Classification
+    10, // Action        (render row 9 = "--- Environment ---" header)
+    11, // Access Context
+    13, // [Simulate]    (render row 12 = "--- Submit ---" header)
+];
+
+/// Builds the full render list (14 ListItems) for the simulate form.
+fn build_simulate_items(
+    form: &SimulateFormState,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+) -> Vec<ListItem<'static>> {
+    let mut items = Vec::with_capacity(14);
+
+    // Section header helper.
+    let push_header = |label: &'static str, items: &mut Vec<_>| {
+        let line = Line::styled(
+            format!("  {label}"),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
+        items.push(ListItem::new(line));
+    };
+
+    // Editable text/select row helper.
+    let push_row =
+        |label: &str, value: &str, items: &mut Vec<_>, is_selected: bool, is_editing: bool| {
+            let line = if is_selected && is_editing {
+                Line::from(format!("{label:<22}[{buffer}_]"))
+            } else if value.is_empty() {
+                Line::from(vec![
+                    Span::raw(format!("{label:<22}")),
+                    Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
+                ])
+            } else {
+                Line::from(format!("{label:<22}{value}"))
+            };
+            items.push(ListItem::new(line));
+        };
+
+    // Select row helper.
+    let push_select = |label: &str, option_label: &str, items: &mut Vec<_>| {
+        let line = Line::from(format!("{label:<22}{option_label}"));
+        items.push(ListItem::new(line));
+    };
+
+    // Action row helper (non-editable, e.g. [Simulate]).
+    let push_action = |label: &str, items: &mut Vec<_>| {
+        items.push(ListItem::new(Line::from(format!("  {label}"))));
+    };
+
+    // --- Row 0: User SID ---
+    push_row(
+        "User SID:",
+        &form.user_sid,
+        &mut items,
+        selected == 0,
+        editing,
+    );
+
+    // --- Row 1: User Name ---
+    push_row(
+        "User Name:",
+        &form.user_name,
+        &mut items,
+        selected == 1,
+        editing,
+    );
+
+    // --- Row 2: Groups ---
+    push_row(
+        "Groups (comma-SIDs):",
+        &form.groups_raw,
+        &mut items,
+        selected == 2,
+        editing,
+    );
+
+    // --- Row 3: "--- Subject ---" header ---
+    push_header("--- Subject ---", &mut items);
+
+    // --- Row 4: Device Trust (select) ---
+    let dt = SIMULATE_DEVICE_TRUST_OPTIONS
+        .get(form.device_trust)
+        .unwrap_or(&"Unknown");
+    push_select("Device Trust:", dt, &mut items);
+
+    // --- Row 5: Network Location (select) ---
+    let nl = SIMULATE_NETWORK_LOCATION_OPTIONS
+        .get(form.network_location)
+        .unwrap_or(&"Unknown");
+    push_select("Network Location:", nl, &mut items);
+
+    // --- Row 6: "--- Resource ---" header ---
+    push_header("--- Resource ---", &mut items);
+
+    // --- Row 7: Path ---
+    push_row("Path:", &form.path, &mut items, selected == 5, editing);
+
+    // --- Row 8: Classification (select) ---
+    let cl = SIMULATE_CLASSIFICATION_OPTIONS
+        .get(form.classification)
+        .unwrap_or(&"T1");
+    push_select("Classification:", cl, &mut items);
+
+    // --- Row 9: "--- Environment ---" header ---
+    push_header("--- Environment ---", &mut items);
+
+    // --- Row 10: Action (select) ---
+    let ac = SIMULATE_ACTION_OPTIONS.get(form.action).unwrap_or(&"READ");
+    push_select("Action:", ac, &mut items);
+
+    // --- Row 11: Access Context (select) ---
+    let cx = SIMULATE_ACCESS_CONTEXT_OPTIONS
+        .get(form.access_context)
+        .unwrap_or(&"Local");
+    push_select("Access Context:", cx, &mut items);
+
+    // --- Row 12: "--- Submit ---" header ---
+    push_header("--- Submit ---", &mut items);
+
+    // --- Row 13: [Simulate] button ---
+    push_action("[Simulate]", &mut items);
+
+    items
+}
+
+/// Draws the Policy Simulate multi-field form with an inline result block.
+fn draw_policy_simulate(
+    frame: &mut Frame,
+    area: Rect,
+    form: &SimulateFormState,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+    result: &SimulateOutcome,
+) {
+    let items = build_simulate_items(form, selected, editing, buffer);
+    let render_selected = *EDITABLE_TO_RENDER.get(selected).unwrap_or(&0);
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Policy Simulate ")
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ListState::default();
+    state.select(Some(render_selected));
+    frame.render_stateful_widget(list, area, &mut state);
+
+    // Inline result block: positioned at the bottom of the form area.
+    const RESULT_HEIGHT: u16 = 5;
+    if area.height > RESULT_HEIGHT + 2 {
+        let result_area = Rect {
+            x: area.x + 2,
+            y: area
+                .y
+                .saturating_add(area.height)
+                .saturating_sub(RESULT_HEIGHT + 1),
+            width: area.width.saturating_sub(4),
+            height: RESULT_HEIGHT,
+        };
+
+        match result {
+            SimulateOutcome::None => {
+                // Nothing to render — form only.
+            }
+            SimulateOutcome::Success(resp) => {
+                let decision_color = if resp.decision.is_denied() {
+                    Color::Red
+                } else {
+                    Color::Green
+                };
+                let matched = resp.matched_policy_id.as_deref().unwrap_or("none");
+                let lines = vec![
+                    Line::from(format!("Matched policy:  {matched}")),
+                    Line::from(vec![
+                        Span::raw("Decision:        "),
+                        Span::styled(
+                            format!("{:?}", resp.decision),
+                            Style::default().fg(decision_color),
+                        ),
+                    ]),
+                    Line::from(format!("Reason:          {}", resp.reason)),
+                ];
+                let block = Block::default()
+                    .title(" Result ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Green));
+                frame.render_widget(Paragraph::new(lines).block(block), result_area);
+            }
+            SimulateOutcome::Error(msg) => {
+                let block = Block::default()
+                    .title(" Error ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red));
+                frame.render_widget(
+                    Paragraph::new(msg.as_str())
+                        .style(Style::default().fg(Color::Red))
+                        .block(block),
+                    result_area,
+                );
+            }
+        }
+    }
+
+    let hints = if editing {
+        "Type to edit | Enter: commit | Esc: cancel"
+    } else {
+        "Up/Down: navigate | Enter: select/cycle | Esc: back"
+    };
+    draw_hints(frame, area, hints);
 }
 
 /// Draws a scrollable agent table.

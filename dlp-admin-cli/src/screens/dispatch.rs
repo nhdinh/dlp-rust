@@ -4,7 +4,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use crate::app::{
     App, CallerScreen, ConditionAttribute, ConfirmPurpose, InputPurpose, PasswordPurpose,
-    PolicyFormState, Screen, StatusKind, ACTION_OPTIONS, ATTRIBUTES,
+    PolicyFormState, Screen, SimulateCaller, SimulateFormState, SimulateOutcome, StatusKind,
+    ACTION_OPTIONS, ATTRIBUTES,
 };
 use crate::event::AppEvent;
 
@@ -30,6 +31,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::ConditionsBuilder { .. } => handle_conditions_builder(app, key),
         Screen::PolicyCreate { .. } => handle_policy_create(app, key),
         Screen::PolicyEdit { .. } => handle_policy_edit(app, key),
+        Screen::PolicySimulate { .. } => handle_policy_simulate(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -64,12 +66,13 @@ fn handle_main_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        KeyCode::Up | KeyCode::Down => nav(selected, 4, key.code),
+        KeyCode::Up | KeyCode::Down => nav(selected, 5, key.code),
         KeyCode::Enter => match *selected {
             0 => app.screen = Screen::PasswordMenu { selected: 0 },
             1 => app.screen = Screen::PolicyMenu { selected: 0 },
             2 => app.screen = Screen::SystemMenu { selected: 0 },
-            3 => app.should_quit = true,
+            3 => action_open_simulate(app, SimulateCaller::MainMenu),
+            4 => app.should_quit = true,
             _ => {}
         },
         KeyCode::Esc | KeyCode::Char('q') => app.should_quit = true,
@@ -128,7 +131,7 @@ fn handle_policy_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        KeyCode::Up | KeyCode::Down => nav(selected, 6, key.code),
+        KeyCode::Up | KeyCode::Down => nav(selected, 7, key.code),
         KeyCode::Enter => match *selected {
             0 => action_list_policies(app),
             1 => {
@@ -161,7 +164,8 @@ fn handle_policy_menu(app: &mut App, key: KeyEvent) {
                     purpose: InputPurpose::DeletePolicyId,
                 };
             }
-            5 => app.screen = Screen::MainMenu { selected: 1 },
+            5 => action_open_simulate(app, SimulateCaller::PolicyMenu),
+            6 => app.screen = Screen::MainMenu { selected: 1 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 1 },
@@ -429,6 +433,15 @@ fn handle_policy_list(app: &mut App, key: KeyEvent) {
                 };
             }
         }
+        KeyCode::Char('n') => {
+            app.screen = Screen::PolicyCreate {
+                form: PolicyFormState::default(),
+                selected: 0,
+                editing: false,
+                buffer: String::new(),
+                validation_error: None,
+            };
+        }
         _ => {}
     }
 }
@@ -465,8 +478,26 @@ fn action_list_policies(app: &mut App) {
                 format!("Loaded {} policies", policies.len()),
                 StatusKind::Success,
             );
+            // Client-side sort: primary key = priority ascending (malformed = u32::MAX sinks to bottom);
+            // secondary key = name case-insensitive ascending for stable tiebreak.
+            let mut sorted = policies;
+            sorted.sort_by(|a, b| {
+                let pa = a["priority"]
+                    .as_u64()
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or(u32::MAX);
+                let pb = b["priority"]
+                    .as_u64()
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or(u32::MAX);
+                pa.cmp(&pb).then_with(|| {
+                    let na = a["name"].as_str().unwrap_or("").to_lowercase();
+                    let nb = b["name"].as_str().unwrap_or("").to_lowercase();
+                    na.cmp(&nb)
+                })
+            });
             app.screen = Screen::PolicyList {
-                policies,
+                policies: sorted,
                 selected: 0,
             };
         }
@@ -1606,6 +1637,307 @@ fn action_submit_policy_update(app: &mut App, id: &str, form: PolicyFormState) {
                 *validation_error = Some(format!("{e}"));
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Policy Simulate screen
+// ---------------------------------------------------------------------------
+
+/// Opens the Policy Simulate screen with a fresh `SimulateFormState::default()`
+/// and the appropriate caller enum value.
+fn action_open_simulate(app: &mut App, caller: SimulateCaller) {
+    app.screen = Screen::PolicySimulate {
+        form: SimulateFormState::default(),
+        selected: 0,
+        editing: false,
+        buffer: String::new(),
+        result: SimulateOutcome::None,
+        caller,
+    };
+}
+
+/// Builds an EvaluateRequest from the current form state, POSTs to /evaluate,
+/// and stores the outcome in the screen's result field.
+///
+/// On success: result = SimulateOutcome::Success(response).
+/// On reqwest network error: result = SimulateOutcome::Error("Network error: ...").
+/// On server 4xx/5xx: result = SimulateOutcome::Error("Server error: ...").
+fn action_submit_simulate(app: &mut App) {
+    // Clone form out of the screen to avoid borrow conflicts.
+    let form = match &app.screen {
+        Screen::PolicySimulate { form, .. } => form.clone(),
+        _ => return,
+    };
+
+    // Parse groups from comma-separated raw input.
+    let groups: Vec<String> = form
+        .groups_raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Map select indices to typed ABAC enums.
+    use dlp_common::abac::{
+        AccessContext, Action, DeviceTrust, Environment, EvaluateRequest, NetworkLocation,
+        Resource, Subject,
+    };
+    use dlp_common::Classification;
+
+    let device_trust_vals: [DeviceTrust; 4] = [
+        DeviceTrust::Managed,
+        DeviceTrust::Unmanaged,
+        DeviceTrust::Compliant,
+        DeviceTrust::Unknown,
+    ];
+    let network_location_vals: [NetworkLocation; 4] = [
+        NetworkLocation::Corporate,
+        NetworkLocation::CorporateVpn,
+        NetworkLocation::Guest,
+        NetworkLocation::Unknown,
+    ];
+    let classification_vals: [Classification; 4] = [
+        Classification::T1,
+        Classification::T2,
+        Classification::T3,
+        Classification::T4,
+    ];
+    let action_vals: [Action; 6] = [
+        Action::READ,
+        Action::WRITE,
+        Action::COPY,
+        Action::DELETE,
+        Action::MOVE,
+        Action::PASTE,
+    ];
+    let access_context_vals: [AccessContext; 2] = [AccessContext::Local, AccessContext::Smb];
+
+    let req = EvaluateRequest {
+        subject: Subject {
+            user_sid: form.user_sid,
+            user_name: form.user_name,
+            groups,
+            device_trust: device_trust_vals
+                .get(form.device_trust)
+                .cloned()
+                .unwrap_or(DeviceTrust::Unmanaged),
+            network_location: network_location_vals
+                .get(form.network_location)
+                .cloned()
+                .unwrap_or(NetworkLocation::Unknown),
+        },
+        resource: Resource {
+            path: form.path,
+            classification: classification_vals
+                .get(form.classification)
+                .copied()
+                .unwrap_or(Classification::T1),
+        },
+        environment: Environment {
+            timestamp: chrono::Utc::now(),
+            session_id: 0,
+            access_context: access_context_vals
+                .get(form.access_context)
+                .copied()
+                .unwrap_or(AccessContext::Local),
+        },
+        action: *action_vals.get(form.action).unwrap_or(&Action::READ),
+        agent: None,
+    };
+
+    let result = app.rt.block_on(
+        app.client
+            .post::<dlp_common::abac::EvaluateResponse, _>("evaluate", &req),
+    );
+
+    // Store outcome in screen (result field is &mut, needs to happen after block_on).
+    if let Screen::PolicySimulate {
+        result: out_result, ..
+    } = &mut app.screen
+    {
+        match result {
+            Ok(resp) => {
+                *out_result = SimulateOutcome::Success(resp);
+            }
+            Err(e) => {
+                // Distinguish reqwest transport errors from HTTP 4xx/5xx.
+                let prefix = if e.downcast_ref::<reqwest::Error>().is_some() {
+                    "Network error: "
+                } else {
+                    "Server error: "
+                };
+                *out_result = SimulateOutcome::Error(format!("{prefix}{e}"));
+            }
+        }
+    }
+}
+
+/// Routes key events for the Policy Simulate screen.
+fn handle_policy_simulate(app: &mut App, key: KeyEvent) {
+    // Extract guard fields in a separate borrow to avoid conflicts.
+    let (selected, editing) = match &app.screen {
+        Screen::PolicySimulate {
+            selected, editing, ..
+        } => (*selected, *editing),
+        _ => return,
+    };
+    if editing {
+        handle_simulate_editing(app, key, selected);
+    } else {
+        handle_simulate_nav(app, key, selected);
+    }
+}
+
+/// Handles key events while editing a text field in the Policy Simulate form.
+///
+/// Text rows: 0 = user_sid, 1 = user_name, 2 = groups_raw, 5 = path.
+fn handle_simulate_editing(app: &mut App, key: KeyEvent, _selected: usize) {
+    match key.code {
+        KeyCode::Char(c) => {
+            if let Screen::PolicySimulate { buffer, .. } = &mut app.screen {
+                buffer.push(c);
+            }
+        }
+        KeyCode::Backspace => {
+            if let Screen::PolicySimulate { buffer, .. } = &mut app.screen {
+                buffer.pop();
+            }
+        }
+        KeyCode::Enter => {
+            // Commit buffer to the appropriate field, then exit edit mode.
+            let (selected, buf) = match &app.screen {
+                Screen::PolicySimulate {
+                    selected, buffer, ..
+                } => (*selected, buffer.clone()),
+                _ => return,
+            };
+            if let Screen::PolicySimulate {
+                form,
+                buffer,
+                editing,
+                ..
+            } = &mut app.screen
+            {
+                match selected {
+                    0 => form.user_sid = buf.trim().to_string(),
+                    1 => form.user_name = buf.trim().to_string(),
+                    2 => form.groups_raw = buf.clone(), // Preserve exact formatting.
+                    5 => form.path = buf.trim().to_string(),
+                    _ => {}
+                }
+                buffer.clear();
+                *editing = false;
+            }
+        }
+        KeyCode::Esc => {
+            // Cancel edit; restore field to pre-edit value.
+            if let Screen::PolicySimulate {
+                buffer, editing, ..
+            } = &mut app.screen
+            {
+                buffer.clear();
+                *editing = false;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events while navigating the Policy Simulate form (not editing).
+fn handle_simulate_nav(app: &mut App, key: KeyEvent, selected: usize) {
+    use crate::app::SIMULATE_ROW_COUNT;
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::PolicySimulate { selected: sel, .. } = &mut app.screen {
+                nav(sel, SIMULATE_ROW_COUNT, key.code);
+            }
+        }
+        KeyCode::Enter => match selected {
+            // Text field rows: 0 (user_sid), 1 (user_name), 5 (path) — enter edit mode.
+            0 | 1 | 5 => {
+                if let Screen::PolicySimulate {
+                    form,
+                    editing,
+                    buffer,
+                    ..
+                } = &mut app.screen
+                {
+                    let pre_fill = match selected {
+                        0 => form.user_sid.clone(),
+                        1 => form.user_name.clone(),
+                        5 => form.path.clone(),
+                        _ => return,
+                    };
+                    *buffer = pre_fill;
+                    *editing = true;
+                }
+            }
+            // Groups row (2): free-text comma-separated SID input.
+            2 => {
+                if let Screen::PolicySimulate {
+                    form,
+                    editing,
+                    buffer,
+                    ..
+                } = &mut app.screen
+                {
+                    *buffer = form.groups_raw.clone();
+                    *editing = true;
+                }
+            }
+            // Select rows: Enter cycles to next option.
+            3 => {
+                if let Screen::PolicySimulate { form, .. } = &mut app.screen {
+                    form.device_trust =
+                        (form.device_trust + 1) % crate::app::SIMULATE_DEVICE_TRUST_OPTIONS.len();
+                }
+            }
+            4 => {
+                if let Screen::PolicySimulate { form, .. } = &mut app.screen {
+                    form.network_location = (form.network_location + 1)
+                        % crate::app::SIMULATE_NETWORK_LOCATION_OPTIONS.len();
+                }
+            }
+            6 => {
+                if let Screen::PolicySimulate { form, .. } = &mut app.screen {
+                    form.classification = (form.classification + 1)
+                        % crate::app::SIMULATE_CLASSIFICATION_OPTIONS.len();
+                }
+            }
+            7 => {
+                if let Screen::PolicySimulate { form, .. } = &mut app.screen {
+                    form.action = (form.action + 1) % crate::app::SIMULATE_ACTION_OPTIONS.len();
+                }
+            }
+            8 => {
+                if let Screen::PolicySimulate { form, .. } = &mut app.screen {
+                    form.access_context = (form.access_context + 1)
+                        % crate::app::SIMULATE_ACCESS_CONTEXT_OPTIONS.len();
+                }
+            }
+            // [Simulate] submit row (index 9).
+            9 => {
+                action_submit_simulate(app);
+            }
+            _ => {}
+        },
+        KeyCode::Esc | KeyCode::Char('q') => {
+            // Return to the caller screen, keeping the Simulate Policy row selected.
+            let caller = match &app.screen {
+                Screen::PolicySimulate { caller, .. } => *caller,
+                _ => return,
+            };
+            match caller {
+                SimulateCaller::MainMenu => {
+                    app.screen = Screen::MainMenu { selected: 3 };
+                }
+                SimulateCaller::PolicyMenu => {
+                    app.screen = Screen::PolicyMenu { selected: 5 };
+                }
+            }
+        }
+        _ => {}
     }
 }
 
