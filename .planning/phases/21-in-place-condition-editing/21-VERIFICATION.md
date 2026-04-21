@@ -1,7 +1,7 @@
 ---
 phase: 21-in-place-condition-editing
 verified: 2026-04-21T08:00:00Z
-status: human_needed
+status: passed
 score: 5/5 must-haves verified
 overrides_applied: 0
 human_verification:
@@ -20,7 +20,7 @@ human_verification:
 
 **Phase Goal:** Implement in-place condition editing for the ConditionsBuilder TUI modal — pressing 'e' on any pending condition opens the 3-step picker pre-filled, edit saves back to the original list position, Esc cancels leaving the list unchanged.
 **Verified:** 2026-04-21T08:00:00Z
-**Status:** human_needed
+**Status:** passed
 **Re-verification:** No — initial verification
 
 ## Goal Achievement

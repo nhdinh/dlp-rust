@@ -1,14 +1,14 @@
 ---
-status: deferred
+status: passed
 phase: 19-boolean-mode-tui-import-export
 source: [19-01-SUMMARY.md, 19-02-SUMMARY.md]
 started: 2026-04-21T01:15:00+07:00
-updated: 2026-04-21T01:15:00+07:00
+updated: 2026-04-21T09:30:00+07:00
 ---
 
 ## Current Test
 
-[UAT deferred — 8 automated tests pass, 6 manual TUI tests pending]
+[UAT complete — 8 automated tests pass, 6 manual TUI tests pass]
 
 ### A. test_policy_payload_roundtrips_all_three_modes (admin-cli unit)
 expected: JSON contains "mode":"ALL"/"ANY"/"NONE" verbatim; deserializes back preserving each mode
@@ -56,40 +56,40 @@ expected: |
   (between Enabled and [Add Conditions]).
   Press Enter once -> cycles to "ANY". Press again -> "NONE".
   Press again -> back to "ALL".
-result: pending
+result: pass
 
 ### 2. Mode Row in Edit form
 expected: Same behavior as Create: Mode row at position 5, cycles on Enter/Space.
-result: pending
+result: pass
 
 ### 3. Footer advisory for mode=ANY with no conditions
 expected: |
   When mode is ANY and conditions list is empty (no validation error),
   a dark-gray footer reads: "Note: mode=ANY with no conditions will never match."
-result: pending
+result: pass
 
 ### 4. Footer advisory for mode=NONE with no conditions
 expected: |
   When mode is NONE and conditions list is empty,
   footer reads: "Note: mode=NONE with no conditions matches every request."
-result: pending
+result: pass
 
 ### 5. Footer advisory suppressed correctly
 expected: Advisory does NOT appear when mode=ALL, or conditions list has entries, or validation_error is present.
-result: pending
+result: pass
 
 ### 6. Mode prefill on Edit
 expected: |
   Create a policy with mode=ANY, submit. Enter Policy Edit for that policy.
   The Mode row shows "ANY" pre-filled.
-result: pending
+result: pass
 
 ## Summary
 
 total: 14
-passed: 8
+passed: 14
 issues: 0
-pending: 6
+pending: 0
 skipped: 0
 
 ## Gaps
