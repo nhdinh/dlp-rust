@@ -1258,6 +1258,7 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
                         ..form
                     },
                     edit_index: None,
+                    edit_picker_prefill: None,
                 };
             }
             POLICY_ACTION_ROW => {
@@ -1592,6 +1593,7 @@ fn handle_policy_edit_nav(app: &mut App, key: KeyEvent, selected: usize) {
                         ..form
                     },
                     edit_index: None,
+                    edit_picker_prefill: None,
                 };
             }
             POLICY_CONDITIONS_DISPLAY_ROW => {
@@ -1903,10 +1905,11 @@ fn handle_simulate_editing(app: &mut App, key: KeyEvent, _selected: usize) {
             }
         }
         KeyCode::Esc => {
-            // Cancel edit; restore field to pre-edit value by simply exiting edit mode.
-            // The buffer retains in-progress text so it is recoverable if Enter is pressed
-            // again before re-entering edit mode (pre-fill from form field overwrites it).
-            if let Screen::PolicySimulate { editing, .. } = &mut app.screen {
+            // Cancel edit: clear the in-progress buffer and exit edit mode.
+            // Clearing ensures stale input is never silently re-used if the user
+            // re-enters edit mode on a different field before committing (WR-04 fix).
+            if let Screen::PolicySimulate { editing, buffer, .. } = &mut app.screen {
+                buffer.clear();
                 *editing = false;
             }
         }
@@ -2344,10 +2347,6 @@ fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
             // Find the attribute's position in ATTRIBUTES for Step 1 picker pre-fill.
             let attr_idx = ATTRIBUTES.iter().position(|a| *a == attr).unwrap_or(0);
 
-            // picker_idx is used for Step 3 pre-fill via build_condition roundtrip;
-            // not needed here but consumed to avoid unused-variable warnings.
-            let _ = picker_idx;
-
             // Phase 2: mutate screen state under a mutable borrow.
             // The shared borrow from Phase 1 is fully dropped at this point.
             if let Screen::ConditionsBuilder {
@@ -2356,6 +2355,7 @@ fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
                 selected_operator,
                 buffer,
                 edit_index,
+                edit_picker_prefill,
                 pending_focused,
                 picker_state,
                 ..
@@ -2369,9 +2369,13 @@ fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
                 *selected_operator = Some(op_str);
                 *buffer = buf;
                 *edit_index = Some(edit_i);
+                // Store the Step 3 list index so handle_conditions_step2's Enter arm can
+                // open the value picker on the original item (WR-01 fix).
+                *edit_picker_prefill = Some(picker_idx);
                 *pending_focused = false;
                 // Pre-select the attribute row so Step 1 opens on the correct item.
-                picker_state.select(Some(attr_idx));
+                // Clamp to the valid range (WR-03 defensive guard).
+                picker_state.select(Some(attr_idx.min(ATTRIBUTES.len().saturating_sub(1))));
             }
         }
         KeyCode::Esc => {
@@ -2555,6 +2559,7 @@ fn handle_conditions_step2(
                 selected_operator,
                 picker_state,
                 buffer,
+                edit_picker_prefill,
                 ..
             } = &mut app.screen
             {
@@ -2571,8 +2576,10 @@ fn handle_conditions_step2(
                 *step = 3;
                 // Clear any leftover MemberOf input from a previous iteration.
                 buffer.clear();
-                // Reset picker to top for Step 3 list (Pitfall 4).
-                picker_state.select(Some(0));
+                // Apply deferred Step 3 prefill from the 'e' edit handler (WR-01 fix).
+                // On a fresh condition, edit_picker_prefill is None and we start at 0.
+                let prefill = edit_picker_prefill.take().unwrap_or(0);
+                picker_state.select(Some(prefill));
             }
         }
         KeyCode::Esc => {
@@ -3211,6 +3218,7 @@ mod tests {
             caller: CallerScreen::PolicyCreate,
             form_snapshot: form_snapshot.clone(),
             edit_index: None,
+            edit_picker_prefill: None,
         };
         let mut app = make_test_app(screen);
 
@@ -3311,6 +3319,7 @@ mod tests {
             caller: CallerScreen::PolicyCreate,
             form_snapshot,
             edit_index: None,
+            edit_picker_prefill: None,
         };
         let mut app = make_test_app(screen);
 
@@ -3384,6 +3393,7 @@ mod tests {
                 ..Default::default()
             },
             edit_index: Some(0), // edit mode
+            edit_picker_prefill: None,
         };
         let mut app = make_test_app(screen);
 
@@ -3444,6 +3454,7 @@ mod tests {
                 ..Default::default()
             },
             edit_index: Some(0),
+            edit_picker_prefill: None,
         };
         let mut app = make_test_app(screen);
 

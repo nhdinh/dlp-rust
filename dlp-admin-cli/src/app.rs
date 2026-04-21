@@ -416,6 +416,13 @@ pub enum Screen {
         /// is freshly opened. The step-3 commit path calls `pending[i] = cond`
         /// when `Some(i)`, and `pending.push(cond)` when `None`.
         edit_index: Option<usize>,
+        /// Deferred Step 3 picker index for in-place editing.
+        ///
+        /// Populated from `condition_to_prefill`'s `picker_idx` return value when the
+        /// user presses `'e'`.  Consumed (and reset to `None`) when Step 2 advances to
+        /// Step 3 so that the Step 3 list opens on the original value rather than index 0.
+        /// `None` during normal (non-edit) condition creation.
+        edit_picker_prefill: Option<usize>,
     },
     /// Policy creation multi-field form.
     ///
