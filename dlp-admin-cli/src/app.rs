@@ -408,6 +408,14 @@ pub enum Screen {
         caller: CallerScreen,
         /// Snapshot of the caller's form state, restored when the modal closes.
         form_snapshot: PolicyFormState,
+        /// Index of the condition being edited in the `pending` list, or `None`
+        /// for a new condition.
+        ///
+        /// Set to `Some(i)` when the user presses `'e'` on pending row `i`.
+        /// Cleared to `None` after commit (replace path) or when the modal
+        /// is freshly opened. The step-3 commit path calls `pending[i] = cond`
+        /// when `Some(i)`, and `pending.push(cond)` when `None`.
+        edit_index: Option<usize>,
     },
     /// Policy creation multi-field form.
     ///

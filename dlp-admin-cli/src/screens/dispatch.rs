@@ -1257,6 +1257,7 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
                         conditions: vec![],
                         ..form
                     },
+                    edit_index: None,
                 };
             }
             POLICY_ACTION_ROW => {
@@ -1590,6 +1591,7 @@ fn handle_policy_edit_nav(app: &mut App, key: KeyEvent, selected: usize) {
                         conditions: vec![],
                         ..form
                     },
+                    edit_index: None,
                 };
             }
             POLICY_CONDITIONS_DISPLAY_ROW => {
@@ -2115,6 +2117,72 @@ fn build_condition(
     })
 }
 
+/// Decomposes a [`PolicyCondition`] into the `(attribute, op, picker_idx, buffer)`
+/// tuple needed to pre-fill the 3-step picker for in-place editing.
+///
+/// This is the inverse of [`build_condition`]: given a condition, it returns
+/// the four values that, when passed back to `build_condition`, reproduce the
+/// same condition.
+///
+/// # Arguments
+///
+/// * `cond` — The condition to decompose.
+///
+/// # Returns
+///
+/// `(ConditionAttribute, op_wire_string, picker_idx, buffer)` where:
+/// - `picker_idx` is the 0-based index into the Step 3 value list for
+///   select attributes; `0` for `MemberOf` (text path, index unused).
+/// - `buffer` is the `group_sid` string for `MemberOf`; `String::new()`
+///   for all other attributes.
+fn condition_to_prefill(
+    cond: &dlp_common::abac::PolicyCondition,
+) -> (ConditionAttribute, String, usize, String) {
+    use dlp_common::abac::{AccessContext, DeviceTrust, NetworkLocation, PolicyCondition};
+    // Classification is at dlp_common root, NOT dlp_common::abac (see abac.rs line 222).
+    use dlp_common::Classification;
+    match cond {
+        PolicyCondition::Classification { op, value } => {
+            let idx = match value {
+                Classification::T1 => 0,
+                Classification::T2 => 1,
+                Classification::T3 => 2,
+                Classification::T4 => 3,
+            };
+            (ConditionAttribute::Classification, op.clone(), idx, String::new())
+        }
+        PolicyCondition::MemberOf { op, group_sid } => {
+            // picker_idx is unused for MemberOf (text input); return 0.
+            (ConditionAttribute::MemberOf, op.clone(), 0, group_sid.clone())
+        }
+        PolicyCondition::DeviceTrust { op, value } => {
+            let idx = match value {
+                DeviceTrust::Managed   => 0,
+                DeviceTrust::Unmanaged => 1,
+                DeviceTrust::Compliant => 2,
+                DeviceTrust::Unknown   => 3,
+            };
+            (ConditionAttribute::DeviceTrust, op.clone(), idx, String::new())
+        }
+        PolicyCondition::NetworkLocation { op, value } => {
+            let idx = match value {
+                NetworkLocation::Corporate    => 0,
+                NetworkLocation::CorporateVpn => 1,
+                NetworkLocation::Guest        => 2,
+                NetworkLocation::Unknown      => 3,
+            };
+            (ConditionAttribute::NetworkLocation, op.clone(), idx, String::new())
+        }
+        PolicyCondition::AccessContext { op, value } => {
+            let idx = match value {
+                AccessContext::Local => 0,
+                AccessContext::Smb   => 1,
+            };
+            (ConditionAttribute::AccessContext, op.clone(), idx, String::new())
+        }
+    }
+}
+
 /// Returns a human-readable display string for a `PolicyCondition`.
 ///
 /// Used by the pending conditions list in the modal overlay.
@@ -2226,6 +2294,58 @@ fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
                         }
                     }
                 }
+            }
+        }
+        // 'e' or 'E' opens the selected condition in the 3-step picker pre-filled for editing.
+        KeyCode::Char('e') | KeyCode::Char('E') => {
+            // Phase 1: clone the condition and capture its index under a shared borrow.
+            // This must complete before taking &mut app.screen (Rust borrow rules).
+            let edit_target = match &app.screen {
+                Screen::ConditionsBuilder { pending, pending_state, .. } => {
+                    pending_state
+                        .selected()
+                        .and_then(|i| pending.get(i).cloned().map(|c| (i, c)))
+                }
+                _ => return,
+            };
+            let Some((edit_i, cond)) = edit_target else { return };
+
+            let (attr, op_str, picker_idx, buf) = condition_to_prefill(&cond);
+
+            // Find the attribute's position in ATTRIBUTES for Step 1 picker pre-fill.
+            let attr_idx = ATTRIBUTES
+                .iter()
+                .position(|a| *a == attr)
+                .unwrap_or(0);
+
+            // picker_idx is used for Step 3 pre-fill via build_condition roundtrip;
+            // not needed here but consumed to avoid unused-variable warnings.
+            let _ = picker_idx;
+
+            // Phase 2: mutate screen state under a mutable borrow.
+            // The shared borrow from Phase 1 is fully dropped at this point.
+            if let Screen::ConditionsBuilder {
+                step,
+                selected_attribute,
+                selected_operator,
+                buffer,
+                edit_index,
+                pending_focused,
+                picker_state,
+                ..
+            } = &mut app.screen
+            {
+                *step = 1;
+                *selected_attribute = Some(attr);
+                // Pre-set the operator so the SC-1 guard in handle_conditions_step1 can
+                // evaluate it when the user advances through Step 1. The guard will clear
+                // this if they change the attribute to an incompatible one.
+                *selected_operator = Some(op_str);
+                *buffer = buf;
+                *edit_index = Some(edit_i);
+                *pending_focused = false;
+                // Pre-select the attribute row so Step 1 opens on the correct item.
+                picker_state.select(Some(attr_idx));
             }
         }
         KeyCode::Esc => {
@@ -2504,13 +2624,24 @@ fn handle_conditions_step3_text(app: &mut App, key: KeyEvent, attr: ConditionAtt
                         selected_operator,
                         buffer,
                         picker_state,
+                        edit_index,
                         ..
                     } = &mut app.screen
                     {
-                        pending.push(cond);
-                        // Select the newly added condition in the pending list.
-                        pending_state.select(Some(pending.len() - 1));
-                        // Reset to Step 1 for the next condition (per D-05, Pitfall 4).
+                        // Replace at original index (edit mode) or append (new condition mode).
+                        match *edit_index {
+                            Some(i) if i < pending.len() => {
+                                // SC-2: replace in-place, preserving list length and position.
+                                pending[i] = cond;
+                                pending_state.select(Some(i));
+                                *edit_index = None;
+                            }
+                            _ => {
+                                pending.push(cond);
+                                pending_state.select(Some(pending.len() - 1));
+                            }
+                        }
+                        // Reset picker state for the next operation (regardless of mode).
                         *step = 1;
                         *selected_attribute = None;
                         *selected_operator = None;
@@ -2588,11 +2719,23 @@ fn handle_conditions_step3_select(
                     selected_attribute,
                     selected_operator,
                     picker_state,
+                    edit_index,
                     ..
                 } = &mut app.screen
                 {
-                    pending.push(cond);
-                    pending_state.select(Some(pending.len() - 1));
+                    // Replace at original index (edit mode) or append (new condition mode).
+                    match *edit_index {
+                        Some(i) if i < pending.len() => {
+                            // SC-2: replace in-place, preserving list length and position.
+                            pending[i] = cond;
+                            pending_state.select(Some(i));
+                            *edit_index = None;
+                        }
+                        _ => {
+                            pending.push(cond);
+                            pending_state.select(Some(pending.len() - 1));
+                        }
+                    }
                     // Reset to Step 1 for the next condition (per D-05, Pitfall 4).
                     *step = 1;
                     *selected_attribute = None;
@@ -3041,6 +3184,7 @@ mod tests {
             picker_state,
             caller: CallerScreen::PolicyCreate,
             form_snapshot: form_snapshot.clone(),
+            edit_index: None,
         };
         let mut app = make_test_app(screen);
 
@@ -3070,6 +3214,210 @@ mod tests {
                 );
             }
             other => panic!("expected Screen::PolicyCreate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn condition_to_prefill_roundtrip() {
+        use dlp_common::abac::{AccessContext, DeviceTrust, NetworkLocation, PolicyCondition};
+        use dlp_common::Classification;
+
+        // For each variant, prefill then rebuild and assert equality.
+        let cases: &[PolicyCondition] = &[
+            PolicyCondition::Classification { op: "gt".to_string(), value: Classification::T3 },
+            PolicyCondition::MemberOf {
+                op: "contains".to_string(),
+                group_sid: "S-1-5-21-999".to_string(),
+            },
+            PolicyCondition::DeviceTrust {
+                op: "neq".to_string(),
+                value: DeviceTrust::Unmanaged,
+            },
+            PolicyCondition::NetworkLocation {
+                op: "eq".to_string(),
+                value: NetworkLocation::CorporateVpn,
+            },
+            PolicyCondition::AccessContext { op: "neq".to_string(), value: AccessContext::Smb },
+        ];
+        for original in cases {
+            let (attr, op_str, picker_idx, buf) = condition_to_prefill(original);
+            let rebuilt = build_condition(attr, &op_str, picker_idx, &buf)
+                .expect("roundtrip must produce a valid condition");
+            assert_eq!(
+                &rebuilt, original,
+                "condition_to_prefill roundtrip failed for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn edit_opens_picker_prefilled() {
+        use dlp_common::abac::PolicyCondition;
+        use dlp_common::Classification;
+
+        let pending_condition = PolicyCondition::Classification {
+            op: "eq".to_string(),
+            value: Classification::T3,
+        };
+        let form_snapshot = PolicyFormState { ..Default::default() };
+        let mut picker_state = ratatui::widgets::ListState::default();
+        picker_state.select(Some(0));
+        let mut pending_state = ratatui::widgets::ListState::default();
+        pending_state.select(Some(0)); // row 0 selected in pending list
+
+        let screen = Screen::ConditionsBuilder {
+            step: 1,
+            selected_attribute: None,
+            selected_operator: None,
+            pending: vec![pending_condition.clone()],
+            buffer: String::new(),
+            pending_focused: true, // focus is on pending list (e is only handled here)
+            pending_state,
+            picker_state,
+            caller: CallerScreen::PolicyCreate,
+            form_snapshot,
+            edit_index: None,
+        };
+        let mut app = make_test_app(screen);
+
+        // Act: press 'e'
+        let key = KeyEvent::new(KeyCode::Char('e'), crossterm::event::KeyModifiers::NONE);
+        handle_conditions_pending(&mut app, key, 1);
+
+        // Assert: picker transitions to edit mode pre-filled.
+        match &app.screen {
+            Screen::ConditionsBuilder {
+                step,
+                selected_attribute,
+                selected_operator,
+                edit_index,
+                pending_focused,
+                picker_state,
+                ..
+            } => {
+                assert_eq!(*step, 1, "step must reset to 1 (attribute picker)");
+                assert_eq!(
+                    *selected_attribute,
+                    Some(ConditionAttribute::Classification),
+                    "attribute must be pre-filled"
+                );
+                assert_eq!(
+                    selected_operator.as_deref(),
+                    Some("eq"),
+                    "operator must be pre-filled"
+                );
+                assert_eq!(*edit_index, Some(0), "edit_index must point to the source row");
+                assert!(!pending_focused, "focus must switch to picker");
+                // Classification is ATTRIBUTES[0] => picker_state should select index 0.
+                assert_eq!(
+                    picker_state.selected(),
+                    Some(0),
+                    "picker must pre-select the attribute row"
+                );
+            }
+            other => panic!("expected ConditionsBuilder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edit_replace_preserves_index() {
+        use dlp_common::abac::PolicyCondition;
+        use dlp_common::Classification;
+
+        let original = PolicyCondition::Classification {
+            op: "eq".to_string(),
+            value: Classification::T3,
+        };
+        // Set up already in edit mode (edit_index = Some(0)).
+        let mut picker_state = ratatui::widgets::ListState::default();
+        picker_state.select(Some(3)); // T4 = index 3 for step3_select commit
+
+        let screen = Screen::ConditionsBuilder {
+            step: 3,
+            selected_attribute: Some(ConditionAttribute::Classification),
+            selected_operator: Some("eq".to_string()),
+            pending: vec![original.clone()],
+            buffer: String::new(),
+            pending_focused: false,
+            pending_state: ratatui::widgets::ListState::default(),
+            picker_state,
+            caller: CallerScreen::PolicyCreate,
+            form_snapshot: PolicyFormState { ..Default::default() },
+            edit_index: Some(0), // edit mode
+        };
+        let mut app = make_test_app(screen);
+
+        // Act: Enter at Step 3 (select path) commits the new T4 value.
+        let key = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
+        handle_conditions_step3_select(
+            &mut app,
+            key,
+            ConditionAttribute::Classification,
+            "eq",
+        );
+
+        // Assert: replace happened at index 0; list length unchanged.
+        match &app.screen {
+            Screen::ConditionsBuilder { pending, edit_index, .. } => {
+                assert_eq!(pending.len(), 1, "list length must be unchanged after replace");
+                let expected = PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T4,
+                };
+                assert_eq!(pending[0], expected, "condition at index 0 must be replaced");
+                assert_eq!(*edit_index, None, "edit_index must be cleared after commit");
+            }
+            other => panic!("expected ConditionsBuilder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edit_cancel_preserves_condition() {
+        use dlp_common::abac::PolicyCondition;
+        use dlp_common::Classification;
+
+        let original = PolicyCondition::Classification {
+            op: "eq".to_string(),
+            value: Classification::T3,
+        };
+        // Set up in edit mode at step 3.
+        let mut picker_state = ratatui::widgets::ListState::default();
+        picker_state.select(Some(0));
+
+        let screen = Screen::ConditionsBuilder {
+            step: 3,
+            selected_attribute: Some(ConditionAttribute::Classification),
+            selected_operator: Some("eq".to_string()),
+            pending: vec![original.clone()],
+            buffer: String::new(),
+            pending_focused: false,
+            pending_state: ratatui::widgets::ListState::default(),
+            picker_state,
+            caller: CallerScreen::PolicyCreate,
+            form_snapshot: PolicyFormState { ..Default::default() },
+            edit_index: Some(0),
+        };
+        let mut app = make_test_app(screen);
+
+        // Act: Esc at Step 3 goes back to Step 2 without modifying pending.
+        let esc_key = KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
+        handle_conditions_step3_select(
+            &mut app,
+            esc_key,
+            ConditionAttribute::Classification,
+            "eq",
+        );
+
+        // Assert: pending is untouched; step retreated to 2.
+        match &app.screen {
+            Screen::ConditionsBuilder { pending, step, edit_index, .. } => {
+                assert_eq!(pending.len(), 1, "pending list must be unchanged");
+                assert_eq!(pending[0], original, "original condition must be preserved");
+                assert_eq!(*step, 2, "step must retreat to 2 on Esc");
+                // edit_index is NOT cleared by Esc — it persists until commit or modal close.
+                assert_eq!(*edit_index, Some(0), "edit_index survives Esc");
+            }
+            other => panic!("expected ConditionsBuilder, got {other:?}"),
         }
     }
 }
