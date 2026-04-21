@@ -1,6 +1,6 @@
 ---
 id: SEED-003
-status: dormant
+status: active
 planted: 2026-04-10
 planted_during: v0.2.0 — Phase 4 (wire alert router into server)
 trigger_when: next endpoint hardening / device control / removable media milestone

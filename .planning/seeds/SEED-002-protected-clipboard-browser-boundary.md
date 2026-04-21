@@ -1,6 +1,6 @@
 ---
 id: SEED-002
-status: dormant
+status: active
 planted: 2026-04-10
 planted_during: v0.2.0 feature completion (Phase 4 planning)
 trigger_when: "browser integration phase planning begins, OR web-based exfiltration is identified as a priority threat, OR Microsoft Purview / Chrome Enterprise Connector integration is evaluated, OR SEED-001 (application-aware DLP) is being executed and the team hits the 'all browser traffic looks the same' wall"

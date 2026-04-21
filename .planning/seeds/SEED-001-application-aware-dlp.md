@@ -1,6 +1,6 @@
 ---
 id: SEED-001
-status: dormant
+status: active
 planted: 2026-04-10
 planted_during: v0.2.0 feature completion (Phase 4 planning)
 trigger_when: "ABAC attribute surface is extended beyond user/classification/device, OR clipboard/interception subsystems are revisited for smarter policy, OR v0.3.0+ milestone planning begins and the focus is policy expressiveness"
