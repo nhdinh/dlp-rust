@@ -211,7 +211,7 @@ impl EvaluateResponse {
 }
 
 /// A condition within an ABAC policy rule.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "attribute", rename_all = "snake_case")]
 pub enum PolicyCondition {
     /// Match by resource classification tier.
