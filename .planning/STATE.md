@@ -77,16 +77,18 @@ Last activity: 2026-04-21 -- Phase 21 executed and verified (1/1 plans); UAT app
 - Phase 4 human UAT: live webhook POST not tested
 - Phase 4 human UAT: hot-reload verification through HTTP + TUI not run
 
-## Deferred Items (from v0.4.0 close)
+## Deferred Items (from v0.5.0 close — 2026-04-21)
+
+Items acknowledged and deferred at milestone close on 2026-04-21. Known deferred items at close: 6
 
 | Category | Item | Status |
 |----------|------|--------|
-| seed | SEED-001: Application-aware DLP | dormant |
-| seed | SEED-002: Protected Clipboard browser boundary | dormant |
-| seed | SEED-003: USB Device-Identity-Aware Whitelist | dormant |
-| server | POLICY-F4: TOML export format | deferred to v0.5.x Server Hardening |
-| server | POLICY-F5: Batch import endpoint | deferred to v0.5.x Server Hardening |
-| server | POLICY-F6: Typed Decision action field | deferred to v0.5.x Server Hardening |
+| seed | SEED-001: Application-aware DLP | active — promoted to next milestone planning |
+| seed | SEED-002: Protected Clipboard browser boundary | active — promoted to next milestone planning (depends on SEED-001) |
+| seed | SEED-003: USB Device-Identity-Aware Whitelist | active — promoted to next milestone planning |
+| server | POLICY-F4: TOML export format | deferred — toml crate incompatible with #[serde(tag)] PolicyCondition |
+| server | POLICY-F5: Batch import endpoint | deferred — reduces cache invalidations on bulk import |
+| server | POLICY-F6: Typed Decision action field | deferred — eliminates silent `_ => DENY` fallback |
 
 ## Patterns
 
