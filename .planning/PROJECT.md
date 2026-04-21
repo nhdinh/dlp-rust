@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-20 — v0.5.0 Boolean Logic milestone started*
+*Last updated: 2026-04-21 — v0.5.0 Boolean Logic milestone complete*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -20,21 +20,14 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 
 **v0.4.0 Policy Authoring shipped** (2026-04-20). Five phases delivered — Conditions Builder (13), Policy Create (14), Policy Edit + Delete (15), Policy List + Simulate (16), and Import + Export (17). All 8 POLICY requirements validated. The admin TUI now covers the complete policy lifecycle without any raw JSON editing.
 
-## Current Milestone: v0.5.0 Boolean Logic
+## Shipped: v0.5.0 Boolean Logic (2026-04-21)
 
-**Goal:** Upgrade the ABAC policy engine and admin TUI from implicit-AND-over-typed-conditions to flat boolean composition with expanded per-attribute operators, and close the delete-and-recreate gap left by Phase 13.
+**Delivered:** All 4 phases complete — POLICY-09, POLICY-10, POLICY-11, POLICY-12 all validated.
 
-**Target features:**
-- Flat top-level boolean mode per policy — ALL (AND) / ANY (OR) / NONE (NOT) across the condition list (POLICY-F1)
-- In-place condition editing in the builder — re-open an existing pending condition, mutate, save without delete-and-recreate (POLICY-F2)
-- Expanded per-attribute operators — `gt`, `lt`, `ne`, `contains` in addition to `eq`, driven by attribute type (POLICY-F3)
-
-**Engine scope:** Both ABAC engine AND admin TUI. Server evaluator gains boolean mode + new operators; TUI authors them; end-to-end integration tests cover wire-format round-trip.
-
-**Explicitly out of scope:**
-- Nested expression trees — flat-only for this milestone
-- Application-aware DLP (SEED-001) — stays dormant; mismatch with boolean-logic focus
-- Server hardening items POLICY-F4..F6 (TOML export, batch import, typed Decision) — deferred to a later v0.5.x
+- Phase 18: Boolean Mode Engine + Wire Format — `mode` column, evaluator switch, backward-compat ALL default (POLICY-12)
+- Phase 19: Boolean Mode in TUI + Import/Export — mode picker in Create/Edit forms, round-trip through export/import (POLICY-09)
+- Phase 20: Operator Expansion — per-attribute operator sets (`gt`, `lt`, `ne`, `contains`) in evaluator and builder (POLICY-11)
+- Phase 21: In-Place Condition Editing — `'e'` key pre-fills 3-step picker, replace-at-index on save (POLICY-10)
 
 ## Deferred (future milestones)
 
