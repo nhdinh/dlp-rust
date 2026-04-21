@@ -1655,10 +1655,10 @@ fn draw_import_confirm(
         )
         .highlight_symbol("> ");
 
-    // Render list with cursor on the Confirm row (index 3) even though
-    // rows 0-2 are informational (skip-nav pattern).
+    // Render list with cursor tracking the `selected` parameter (WR-02 fix).
+    // Rows 0-2 are informational and skipped by nav; actionable rows are 3 and 4.
     let mut list_state = ListState::default();
-    list_state.select(Some(3));
+    list_state.select(Some(selected));
     frame.render_stateful_widget(list, area, &mut list_state);
 
     // Render the ImportState block below the list.
