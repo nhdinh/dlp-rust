@@ -65,3 +65,20 @@
 
 ---
 
+## v0.5.0 Boolean Logic (Shipped: 2026-04-21)
+
+**Phases completed:** 4 (18, 19, 20, 21) | **Plans:** 7 | **Days:** ~2
+
+**Key accomplishments:**
+
+- **Boolean mode engine + wire format** — `PolicyMode` enum (ALL/ANY/NONE), `policies.mode` column with `NOT NULL DEFAULT 'ALL'` migration, `PolicyStore::evaluate` switch on mode, 15 unit tests covering all three modes, empty-conditions edge cases, and legacy v0.4.0 backward-compat path (Phase 18; POLICY-12)
+- **Boolean mode TUI** — `POLICY_MODE_ROW` in 9-field Create/Edit forms, `cycle_mode()` helper, Enter/Space cyclers, footer advisory for empty-conditions modes, export always writes `mode`, import tolerates omitted `mode` (defaults to ALL), 4 HTTP integration tests proving ALL/ANY/NONE semantics end-to-end (Phase 19; POLICY-09)
+- **Operator expansion** — `operators_for()` per-attribute lists (Classification: eq/ne/gt/lt, MemberOf: eq/ne/contains, others: eq/ne), evaluator honors `gt`/`lt`/`contains`, Step 2 picker auto-sizes to attribute, SC-1 stale-operator reset on attribute change, 6 regression tests (Phase 20; POLICY-11)
+- **In-place condition editing** — `edit_index: Option<usize>` in ConditionsBuilder state, `condition_to_prefill()` inverse of `build_condition` for all 5 variants, `'e'` key handler pre-fills 3-step picker, index-aware replace-vs-push commit, "Edit Condition" modal title, 4 unit tests (Phase 21; POLICY-10)
+
+**All 4 POLICY requirements delivered:** POLICY-09 (boolean mode TUI), POLICY-10 (in-place edit), POLICY-11 (operator expansion), POLICY-12 (backward compat)
+
+**Deferred items at close:** 6 (3 seeds: SEED-001/002/003; 3 server: POLICY-F4/F5/F6). Tracked in STATE.md Deferred Items.
+
+---
+

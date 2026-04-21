@@ -5,7 +5,7 @@
 - ✅ **v0.2.0 Feature Completion** — Phases 0.1–12 (shipped 2026-04-13)
 - ✅ **v0.3.0 Operational Hardening** — Phases 7–11 (shipped 2026-04-16)
 - ✅ **v0.4.0 Policy Authoring** — Phases 13–17 (shipped 2026-04-20)
-- 🚧 **v0.5.0 Boolean Logic** — Phases 18–21 (in progress)
+- ✅ **v0.5.0 Boolean Logic** — Phases 18–21 (shipped 2026-04-21)
 
 ## Phases
 
@@ -15,20 +15,13 @@
 
 Phase numbering is continuous across milestones — never restarts.
 
-### 🚧 v0.5.0 Boolean Logic (In Progress)
+## v0.5.0 — Boolean Logic (Shipped)
 
-**Milestone Goal:** Upgrade the ABAC engine and admin TUI from
-implicit-AND-over-typed-conditions to flat boolean composition
-(`ALL` / `ANY` / `NONE`) with expanded per-attribute operators
-(`gt`, `lt`, `ne`, `contains`), and close the in-place
-condition-editing gap left by Phase 13.
+<details>
+<summary>✅ v0.5.0 — archived at <code>.planning/milestones/v0.5.0-ROADMAP.md</code></summary>
 
-- [x] **Phase 18: Boolean Mode Engine + Wire Format** - `mode` column, `PolicyPayload`/`PolicyResponse` field, evaluator switch, `ALL` default for legacy policies (2026-04-20)
-- [x] **Phase 19: Boolean Mode in TUI + Import/Export** - mode picker in Create/Edit forms, mode round-trips through export/import (2026-04-21)
-- [x] **Phase 20: Operator Expansion** - per-attribute operator set in evaluator and conditions builder (2026-04-21)
-- [ ] **Phase 21: In-Place Condition Editing** - re-enter the 3-step picker pre-filled, replace at original list position
-
-Full phase details: `.planning/milestones/v0.5.0-ROADMAP.md`
+Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-ROADMAP.md` and `.planning/milestones/v0.5.0-REQUIREMENTS.md`. Boolean mode engine (ALL/ANY/NONE) + TUI picker + expanded operators (gt/lt/ne/contains) + in-place condition editing — all 4 requirements (POLICY-09..12) delivered.
+</details>
 
 ## Progress
 
@@ -56,7 +49,7 @@ Full phase details: `.planning/milestones/v0.5.0-ROADMAP.md`
 | 18 | Boolean Mode Engine + Wire Format | v0.5.0 | 2/2 | Complete | 2026-04-20 |
 | 19 | Boolean Mode in TUI + Import/Export | v0.5.0 | 2/2 | Complete | 2026-04-21 |
 | 20 | Operator Expansion | v0.5.0 | 2/2 | Complete | 2026-04-21 |
-| 21 | In-Place Condition Editing | v0.5.0 | 0/TBD | Not started | - |
+| 21 | In-Place Condition Editing | v0.5.0 | 1/1 | Complete | 2026-04-21 |
 | 99 | Refactor DB Layer to Repository + Unit of Work | v0.3.0 | 3/3 | Complete | 2026-04-15 |
 
 ## v0.3.0 — Operational Hardening (Shipped)

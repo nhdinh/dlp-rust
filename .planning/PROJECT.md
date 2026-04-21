@@ -87,11 +87,16 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - ✓ POLICY-07: Admin can export the full policy set to a JSON file — v0.4.0 (Phase 17). TOML deferred as POLICY-F4.
 - ✓ POLICY-08: Admin can import policies from a JSON file with conflict detection — v0.4.0 (Phase 17)
 
-### Active (v0.5.0 Boolean Logic)
+### Validated (shipped in v0.5.0)
 
-- [ ] POLICY-09 (formerly POLICY-F1): Admin can choose a top-level boolean mode (ALL / ANY / NONE) per policy; evaluator honors the mode across the condition list
-- [ ] POLICY-10 (formerly POLICY-F2): Admin can edit an existing condition in-place in the conditions builder without deleting and recreating it
-- [ ] POLICY-11 (formerly POLICY-F3): Admin can pick expanded operators (`gt`, `lt`, `ne`, `contains`) where the attribute type permits; evaluator honors them
+- ✓ POLICY-09: Admin can choose a top-level boolean mode (ALL / ANY / NONE) per policy; evaluator honors the mode across the condition list — v0.5.0 (Phase 19)
+- ✓ POLICY-10: Admin can edit an existing condition in-place in the conditions builder without deleting and recreating it — v0.5.0 (Phase 21)
+- ✓ POLICY-11: Admin can pick expanded operators (`gt`, `lt`, `ne`, `contains`) where the attribute type permits; evaluator honors them — v0.5.0 (Phase 20)
+- ✓ POLICY-12: Existing v0.4.0 policies default to `mode = ALL`; backward-compat migration via `ALTER TABLE` — v0.5.0 (Phase 18)
+
+### Active
+
+(none — start next milestone with `/gsd-new-milestone`)
 
 ### Out of Scope
 

@@ -20,7 +20,7 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-20)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** v0.5.0 Boolean Logic — flat boolean mode (ALL/ANY/NONE) per policy, in-place condition editing, expanded ABAC operators (`gt`, `lt`, `ne`, `contains`). Phase 18 shipped; ready for Phase 19 (Boolean Mode in TUI + Import/Export).
+**Current focus:** v0.5.0 Boolean Logic shipped 2026-04-21 — all 4 phases complete, POLICY-09..12 delivered. Next: `/gsd-new-milestone` to plan v0.6.0.
 
 ## Current Position
 
