@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-21 — v0.5.0 Boolean Logic milestone complete*
+*Last updated: 2026-04-21 — v0.6.0 Endpoint Hardening milestone started*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -11,6 +11,15 @@ Enterprise-grade Data Loss Prevention system that enforces ABAC-based access pol
 ## Core Value
 
 Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
+
+## Current Milestone: v0.6.0 Endpoint Hardening
+
+**Goal:** Extend the enforcement layer with application identity, browser boundary control, and USB device control — all surfaced as first-class ABAC subject attributes.
+
+**Target features:**
+- SEED-001: Application-aware DLP — source/destination process identity for clipboard/paste flows
+- SEED-002: Protected clipboard browser boundary — managed vs. unmanaged web origins inside the browser
+- SEED-003: USB device-identity whitelist — VID/PID/Serial registry, read-only trust tier, user toast, ABAC device attributes
 
 ## Current State
 
@@ -94,9 +103,22 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - ✓ POLICY-11: Admin can pick expanded operators (`gt`, `lt`, `ne`, `contains`) where the attribute type permits; evaluator honors them — v0.5.0 (Phase 20)
 - ✓ POLICY-12: Existing v0.4.0 policies default to `mode = ALL`; backward-compat migration via `ALTER TABLE` — v0.5.0 (Phase 18)
 
-### Active
+### Active (v0.6.0 Endpoint Hardening)
 
-(none — start next milestone with `/gsd-new-milestone`)
+- [ ] APP-01: DLP agent captures destination process image path and publisher at paste time
+- [ ] APP-02: DLP agent captures source process identity via GetClipboardOwner at clipboard-change time
+- [ ] APP-03: Evaluator enforces allow/deny based on source_application and destination_application ABAC attributes
+- [ ] APP-04: Admin can author policies using app identity conditions (publisher, image path, trust tier) in TUI
+- [ ] APP-05: Audit events include source_application and destination_application fields populated on clipboard block
+- [ ] APP-06: Anti-spoofing: Authenticode signature verification for process identity (prevents renamed binary bypass)
+- [ ] BRW-01: dlp-server exposes Chrome Enterprise Connector scan endpoint for browser clipboard events
+- [ ] BRW-02: Admin can manage managed-origins list (trusted web domains) via TUI and admin API
+- [ ] BRW-03: Paste from protected origin to unmanaged origin is blocked and audited
+- [ ] USB-01: DLP agent captures VID/PID/Serial/description on USB device arrival via SetupDi API
+- [ ] USB-02: Admin can register/deregister USB devices with trust tier (blocked/read_only/full_access) via TUI and admin API
+- [ ] USB-03: Agent enforces trust tier at I/O time (read_only: allow reads, deny writes; blocked: deny all)
+- [ ] USB-04: User receives toast notification on USB block with policy explanation
+- [ ] USB-05: Audit events include device identity fields (VID, PID, serial, description) on USB block
 
 ### Out of Scope
 

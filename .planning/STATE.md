@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.5.0
-milestone_name: — Boolean Logic
-status: complete
-last_updated: "2026-04-21T14:10:00+07:00"
-last_activity: 2026-04-21 -- Phase 21 executed and verified (1/1 plans); UAT approved; v0.5.0 milestone complete
+milestone: v0.6.0
+milestone_name: — Endpoint Hardening
+status: in_progress
+last_updated: "2026-04-21T15:00:00+07:00"
+last_activity: 2026-04-21 -- Milestone v0.6.0 started; defining requirements
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # STATE.md — Project Memory
@@ -24,11 +24,11 @@ See: `.planning/PROJECT.md` (updated 2026-04-20)
 
 ## Current Position
 
-Phase: 21 — In-Place Condition Editing
-Plan: 01 (complete)
-Status: All phases complete; v0.5.0 milestone delivered
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements for v0.6.0 Endpoint Hardening
 Resume: None
-Last activity: 2026-04-21 -- Phase 21 executed and verified (1/1 plans); UAT approved; POLICY-10 delivered
+Last activity: 2026-04-21 -- Milestone v0.6.0 started
 
 ## Decisions
 
@@ -114,10 +114,13 @@ Items acknowledged and deferred at milestone close on 2026-04-21. Known deferred
 - v0.3.0 Operational Hardening (2026-04-16) — phases 7–11 + 99
 - v0.4.0 Policy Authoring (2026-04-20) — phases 13–17; POLICY-01..08 all delivered
 
+### Shipped Milestones (complete)
+
+- v0.5.0 Boolean Logic — phases 18–21; POLICY-09..12 (4 requirements, all delivered 2026-04-21)
+
 ### Active Milestone
 
-- v0.5.0 Boolean Logic — phases 18–21; POLICY-09..12 (4 requirements, all mapped)
-  - Phase 18: Boolean Mode Engine + Wire Format → POLICY-12
-  - Phase 19: Boolean Mode in TUI + Import/Export → POLICY-09
-  - Phase 20: Operator Expansion → POLICY-11
-  - Phase 21: In-Place Condition Editing → POLICY-10
+- v0.6.0 Endpoint Hardening — phases 22+; APP/BRW/USB requirements (defining)
+  - SEED-001: Application-aware DLP → APP-01..06
+  - SEED-002: Protected Clipboard browser boundary → BRW-01..03
+  - SEED-003: USB Device-Identity Whitelist → USB-01..05
