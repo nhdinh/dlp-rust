@@ -2149,36 +2149,61 @@ fn condition_to_prefill(
                 Classification::T3 => 2,
                 Classification::T4 => 3,
             };
-            (ConditionAttribute::Classification, op.clone(), idx, String::new())
+            (
+                ConditionAttribute::Classification,
+                op.clone(),
+                idx,
+                String::new(),
+            )
         }
         PolicyCondition::MemberOf { op, group_sid } => {
             // picker_idx is unused for MemberOf (text input); return 0.
-            (ConditionAttribute::MemberOf, op.clone(), 0, group_sid.clone())
+            (
+                ConditionAttribute::MemberOf,
+                op.clone(),
+                0,
+                group_sid.clone(),
+            )
         }
         PolicyCondition::DeviceTrust { op, value } => {
             let idx = match value {
-                DeviceTrust::Managed   => 0,
+                DeviceTrust::Managed => 0,
                 DeviceTrust::Unmanaged => 1,
                 DeviceTrust::Compliant => 2,
-                DeviceTrust::Unknown   => 3,
+                DeviceTrust::Unknown => 3,
             };
-            (ConditionAttribute::DeviceTrust, op.clone(), idx, String::new())
+            (
+                ConditionAttribute::DeviceTrust,
+                op.clone(),
+                idx,
+                String::new(),
+            )
         }
         PolicyCondition::NetworkLocation { op, value } => {
             let idx = match value {
-                NetworkLocation::Corporate    => 0,
+                NetworkLocation::Corporate => 0,
                 NetworkLocation::CorporateVpn => 1,
-                NetworkLocation::Guest        => 2,
-                NetworkLocation::Unknown      => 3,
+                NetworkLocation::Guest => 2,
+                NetworkLocation::Unknown => 3,
             };
-            (ConditionAttribute::NetworkLocation, op.clone(), idx, String::new())
+            (
+                ConditionAttribute::NetworkLocation,
+                op.clone(),
+                idx,
+                String::new(),
+            )
         }
         PolicyCondition::AccessContext { op, value } => {
             let idx = match value {
                 AccessContext::Local => 0,
-                AccessContext::Smb   => 1,
+                AccessContext::Smb => 1,
             };
-            (ConditionAttribute::AccessContext, op.clone(), idx, String::new())
+            (
+                ConditionAttribute::AccessContext,
+                op.clone(),
+                idx,
+                String::new(),
+            )
         }
     }
 }
@@ -2301,22 +2326,23 @@ fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
             // Phase 1: clone the condition and capture its index under a shared borrow.
             // This must complete before taking &mut app.screen (Rust borrow rules).
             let edit_target = match &app.screen {
-                Screen::ConditionsBuilder { pending, pending_state, .. } => {
-                    pending_state
-                        .selected()
-                        .and_then(|i| pending.get(i).cloned().map(|c| (i, c)))
-                }
+                Screen::ConditionsBuilder {
+                    pending,
+                    pending_state,
+                    ..
+                } => pending_state
+                    .selected()
+                    .and_then(|i| pending.get(i).cloned().map(|c| (i, c))),
                 _ => return,
             };
-            let Some((edit_i, cond)) = edit_target else { return };
+            let Some((edit_i, cond)) = edit_target else {
+                return;
+            };
 
             let (attr, op_str, picker_idx, buf) = condition_to_prefill(&cond);
 
             // Find the attribute's position in ATTRIBUTES for Step 1 picker pre-fill.
-            let attr_idx = ATTRIBUTES
-                .iter()
-                .position(|a| *a == attr)
-                .unwrap_or(0);
+            let attr_idx = ATTRIBUTES.iter().position(|a| *a == attr).unwrap_or(0);
 
             // picker_idx is used for Step 3 pre-fill via build_condition roundtrip;
             // not needed here but consumed to avoid unused-variable warnings.
@@ -3224,7 +3250,10 @@ mod tests {
 
         // For each variant, prefill then rebuild and assert equality.
         let cases: &[PolicyCondition] = &[
-            PolicyCondition::Classification { op: "gt".to_string(), value: Classification::T3 },
+            PolicyCondition::Classification {
+                op: "gt".to_string(),
+                value: Classification::T3,
+            },
             PolicyCondition::MemberOf {
                 op: "contains".to_string(),
                 group_sid: "S-1-5-21-999".to_string(),
@@ -3237,7 +3266,10 @@ mod tests {
                 op: "eq".to_string(),
                 value: NetworkLocation::CorporateVpn,
             },
-            PolicyCondition::AccessContext { op: "neq".to_string(), value: AccessContext::Smb },
+            PolicyCondition::AccessContext {
+                op: "neq".to_string(),
+                value: AccessContext::Smb,
+            },
         ];
         for original in cases {
             let (attr, op_str, picker_idx, buf) = condition_to_prefill(original);
@@ -3259,7 +3291,9 @@ mod tests {
             op: "eq".to_string(),
             value: Classification::T3,
         };
-        let form_snapshot = PolicyFormState { ..Default::default() };
+        let form_snapshot = PolicyFormState {
+            ..Default::default()
+        };
         let mut picker_state = ratatui::widgets::ListState::default();
         picker_state.select(Some(0));
         let mut pending_state = ratatui::widgets::ListState::default();
@@ -3306,7 +3340,11 @@ mod tests {
                     Some("eq"),
                     "operator must be pre-filled"
                 );
-                assert_eq!(*edit_index, Some(0), "edit_index must point to the source row");
+                assert_eq!(
+                    *edit_index,
+                    Some(0),
+                    "edit_index must point to the source row"
+                );
                 assert!(!pending_focused, "focus must switch to picker");
                 // Classification is ATTRIBUTES[0] => picker_state should select index 0.
                 assert_eq!(
@@ -3342,29 +3380,37 @@ mod tests {
             pending_state: ratatui::widgets::ListState::default(),
             picker_state,
             caller: CallerScreen::PolicyCreate,
-            form_snapshot: PolicyFormState { ..Default::default() },
+            form_snapshot: PolicyFormState {
+                ..Default::default()
+            },
             edit_index: Some(0), // edit mode
         };
         let mut app = make_test_app(screen);
 
         // Act: Enter at Step 3 (select path) commits the new T4 value.
         let key = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
-        handle_conditions_step3_select(
-            &mut app,
-            key,
-            ConditionAttribute::Classification,
-            "eq",
-        );
+        handle_conditions_step3_select(&mut app, key, ConditionAttribute::Classification, "eq");
 
         // Assert: replace happened at index 0; list length unchanged.
         match &app.screen {
-            Screen::ConditionsBuilder { pending, edit_index, .. } => {
-                assert_eq!(pending.len(), 1, "list length must be unchanged after replace");
+            Screen::ConditionsBuilder {
+                pending,
+                edit_index,
+                ..
+            } => {
+                assert_eq!(
+                    pending.len(),
+                    1,
+                    "list length must be unchanged after replace"
+                );
                 let expected = PolicyCondition::Classification {
                     op: "eq".to_string(),
                     value: Classification::T4,
                 };
-                assert_eq!(pending[0], expected, "condition at index 0 must be replaced");
+                assert_eq!(
+                    pending[0], expected,
+                    "condition at index 0 must be replaced"
+                );
                 assert_eq!(*edit_index, None, "edit_index must be cleared after commit");
             }
             other => panic!("expected ConditionsBuilder, got {other:?}"),
@@ -3394,23 +3440,25 @@ mod tests {
             pending_state: ratatui::widgets::ListState::default(),
             picker_state,
             caller: CallerScreen::PolicyCreate,
-            form_snapshot: PolicyFormState { ..Default::default() },
+            form_snapshot: PolicyFormState {
+                ..Default::default()
+            },
             edit_index: Some(0),
         };
         let mut app = make_test_app(screen);
 
         // Act: Esc at Step 3 goes back to Step 2 without modifying pending.
         let esc_key = KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
-        handle_conditions_step3_select(
-            &mut app,
-            esc_key,
-            ConditionAttribute::Classification,
-            "eq",
-        );
+        handle_conditions_step3_select(&mut app, esc_key, ConditionAttribute::Classification, "eq");
 
         // Assert: pending is untouched; step retreated to 2.
         match &app.screen {
-            Screen::ConditionsBuilder { pending, step, edit_index, .. } => {
+            Screen::ConditionsBuilder {
+                pending,
+                step,
+                edit_index,
+                ..
+            } => {
                 assert_eq!(pending.len(), 1, "pending list must be unchanged");
                 assert_eq!(pending[0], original, "original condition must be preserved");
                 assert_eq!(*step, 2, "step must retreat to 2 on Esc");

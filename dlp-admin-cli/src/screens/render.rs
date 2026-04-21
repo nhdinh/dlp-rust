@@ -149,6 +149,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             pending_focused,
             pending_state,
             picker_state,
+            edit_index,
             ..
         } => {
             draw_conditions_builder(
@@ -162,6 +163,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 *pending_focused,
                 pending_state,
                 picker_state,
+                *edit_index,
             );
         }
         Screen::PolicyCreate {
@@ -396,6 +398,7 @@ fn draw_conditions_builder(
     pending_focused: bool,
     pending_state: &ListState,
     picker_state: &ListState,
+    edit_index: Option<usize>,
 ) {
     // Full-frame Clear to overlay parent content (matches draw_hints pattern).
     frame.render_widget(Clear, area);
@@ -412,9 +415,12 @@ fn draw_conditions_builder(
         height: modal_height,
     };
 
-    let modal_block = Block::default()
-        .title(" Conditions Builder ")
-        .borders(Borders::ALL);
+    let modal_title = if edit_index.is_some() {
+        " Edit Condition "
+    } else {
+        " Conditions Builder "
+    };
+    let modal_block = Block::default().title(modal_title).borders(Borders::ALL);
     // CRITICAL: compute inner BEFORE rendering; inner() borrows &self so must be
     // called before the block is moved into render_widget (Pitfall 3 from PATTERNS.md).
     let inner = modal_block.inner(modal_area);
@@ -540,7 +546,7 @@ fn draw_conditions_builder(
     // --- Hints bar (inside modal bottom, NOT at terminal bottom) ---
     // Pass modal_area so draw_hints computes y = modal_area.y + modal_area.height - 1.
     let hints = if pending_focused {
-        "Up/Down Navigate  d: Delete  Tab: Switch to Picker  Esc: Close"
+        "Up/Down Navigate  d: Delete  e: Edit  Tab: Switch to Picker  Esc: Close"
     } else if is_member_of_step3 {
         "Type SID  Enter: Add  Esc: Back  Tab: Switch to Pending"
     } else {
