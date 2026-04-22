@@ -31,8 +31,21 @@ const TEST_JWT_SECRET: &str = "dlp-server-dev-secret-change-me";
 ///
 /// Returns the `Router` and the underlying pool so callers can verify the DB
 /// directly when needed.
+///
+/// # OnceLock constraint
+///
+/// `set_jwt_secret` uses a `OnceLock` internally: the first call wins and all
+/// subsequent calls are silently ignored. `cargo test` runs tests in parallel
+/// by default, so call order is non-deterministic. This is safe here because
+/// every test file in this binary uses the same `TEST_JWT_SECRET` constant,
+/// which matches `admin_auth::DEV_JWT_SECRET`. If you introduce a second test
+/// binary that sets a different secret, tokens minted in *this* binary may fail
+/// validation if that binary's `set_jwt_secret` call wins the race.
+///
+/// The `let _ = ...` assignment explicitly acknowledges the ignored return value
+/// on subsequent calls (the `OnceLock` already holds the correct secret).
 fn build_test_app() -> (axum::Router, Arc<db::Pool>) {
-    set_jwt_secret(TEST_JWT_SECRET.to_string());
+    let _ = set_jwt_secret(TEST_JWT_SECRET.to_string());
     let tmp = NamedTempFile::new().expect("create temp db");
     let pool = Arc::new(db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
     let siem = siem_connector::SiemConnector::new(Arc::clone(&pool));
