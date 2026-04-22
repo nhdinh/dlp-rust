@@ -101,9 +101,9 @@ Plans:
   5. Renaming a signed binary still produces the correct publisher (signature verified from file, not from process name)
 **Plans**: 3 plans
 Plans:
-- [ ] 25-01-PLAN.md - detection::app_identity module (AUTHENTICODE_CACHE, resolve_app_identity, Win32 feature flags, unit tests)
-- [ ] 25-02-PLAN.md - clipboard_monitor.rs integration (FOREGROUND_SLOT, SetWinEventHook, GetClipboardOwner, classify_and_alert signature update)
-- [ ] 25-03-PLAN.md - pipe3.rs wire-up (send_clipboard_alert 6-param signature, remove None placeholders, zero-warning build gate, human checkpoint)
+- [x] 25-01-PLAN.md - detection::app_identity module (AUTHENTICODE_CACHE, resolve_app_identity, Win32 feature flags, unit tests)
+- [x] 25-02-PLAN.md - clipboard_monitor.rs integration (FOREGROUND_SLOT, SetWinEventHook, GetClipboardOwner, classify_and_alert signature update)
+- [x] 25-03-PLAN.md - pipe3.rs wire-up (send_clipboard_alert 6-param signature, remove None placeholders, zero-warning build gate, human checkpoint)
 
 ### Phase 26: ABAC Enforcement Convergence
 **Goal**: The policy evaluator enforces decisions based on application identity and USB device trust tier so clipboard and file operations are blocked or allowed based on which app and which device are involved
