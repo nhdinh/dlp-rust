@@ -216,6 +216,14 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 offline_cache_enabled   INTEGER NOT NULL DEFAULT 1,
                 updated_at              TEXT NOT NULL DEFAULT ''
             );
+
+            -- managed_origins: URL-pattern strings trusted by the Chrome Enterprise
+            -- Connector (Phase 29) and managed via the admin TUI (Phase 28).
+            -- UNIQUE constraint on `origin` prevents duplicate URL patterns.
+            CREATE TABLE IF NOT EXISTS managed_origins (
+                id     TEXT PRIMARY KEY,
+                origin TEXT NOT NULL UNIQUE
+            );
             ",
     )
     .context("failed to initialize database tables")?;
