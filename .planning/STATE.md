@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.5.0
 milestone_name: â Boolean Logic
 status: verifying
-last_updated: "2026-04-22T15:05:01.702Z"
+last_updated: "2026-04-22T15:12:45Z"
 last_activity: 2026-04-22
 progress:
   total_phases: 14
   completed_phases: 11
   total_plans: 33
-  completed_plans: 28
-  percent: 85
+  completed_plans: 29
+  percent: 88
 ---
 
 # STATE.md — Project Memory
@@ -24,10 +24,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 ## Current Position
 
-Phase: 25 (app-identity-capture-in-dlp-user-ui) — COMPLETE
-Plan: 4 of 4
-Status: Phase complete — ready for verification
-Next: Phase 26 (ABAC Enforcement Convergence)
+Phase: 26 (abac-enforcement-convergence) — IN PROGRESS
+Plan: 2 of 5
+Status: Plan 02 complete — PolicyStore migrated to AbacContext, app-identity condition arms added
+Next: Plan 03 (public_routes.rs evaluate handler boundary conversion)
 Last activity: 2026-04-22
 
 ## Decisions
@@ -74,6 +74,9 @@ Last activity: 2026-04-22
 
 - [Phase 26]: AppField enum defined in dlp-common/src/abac.rs — policy DSL type, not identity type; placed before PolicyCondition to satisfy forward reference
 - [Phase 26]: From<EvaluateRequest> for AbacContext drops agent field (tracing metadata, not ABAC attribute) — single impl block, no helper function needed
+- [Phase 26 Plan 02]: EvaluateRequest removed from top-level policy_store.rs imports — only used in #[cfg(test)] module; retained there explicitly
+- [Phase 26 Plan 02]: AbacContext is the evaluation type from HTTP boundary inward — no EvaluateRequest on PolicyStore::evaluate() hot path
+- [Phase 26 Plan 02]: app_identity_matches fail-closed: Option<&AppIdentity> None returns false unconditionally (D-03)
 
 ## Known Issues (carry-forward)
 
