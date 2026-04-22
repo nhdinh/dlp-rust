@@ -163,18 +163,16 @@ impl DeviceRegistryCache {
     }
 }
 
-/// Test-only helpers for seeding the cache without a live server.
-///
-/// Gated behind `#[cfg(any(test, feature = "test-helpers"))]` so these methods
-/// are compiled for:
-/// - Unit tests in this file (`#[cfg(test)]`), and
-/// - Integration tests in `tests/` that enable the `test-helpers` feature
-///   (`cargo test --features test-helpers`).
-///
-/// They are never present in production builds (T-24-12 accepted).
-#[cfg(any(test, feature = "test-helpers"))]
 impl DeviceRegistryCache {
-    /// Seeds the cache with a single entry for use in unit/integration tests.
+    /// Seeds the cache with a single entry for use in tests.
+    ///
+    /// This method is always compiled so that integration tests in `tests/`
+    /// (which compile the library as a separate crate and therefore cannot use
+    /// `#[cfg(test)]` on the library side) can call it without a feature flag.
+    ///
+    /// It is intentionally hidden from generated documentation and carries no
+    /// security risk — it only writes to an in-memory `RwLock<HashMap>` that
+    /// is discarded when the process exits (T-24-12 accepted disposition).
     ///
     /// # Arguments
     ///
@@ -182,11 +180,11 @@ impl DeviceRegistryCache {
     /// * `pid` - USB Product ID hex string.
     /// * `serial` - Device serial number string.
     /// * `tier` - Trust tier to associate with this device key.
+    #[doc(hidden)]
     pub fn seed_for_test(&self, vid: &str, pid: &str, serial: &str, tier: UsbTrustTier) {
-        self.cache.write().insert(
-            (vid.to_string(), pid.to_string(), serial.to_string()),
-            tier,
-        );
+        self.cache
+            .write()
+            .insert((vid.to_string(), pid.to_string(), serial.to_string()), tier);
     }
 }
 
@@ -199,7 +197,10 @@ mod tests {
         // Arrange: empty cache (default)
         let cache = DeviceRegistryCache::new();
         // Act + Assert: unknown device returns Blocked (fail-safe D-10)
-        assert_eq!(cache.trust_tier_for("0951", "1666", "ABC"), UsbTrustTier::Blocked);
+        assert_eq!(
+            cache.trust_tier_for("0951", "1666", "ABC"),
+            UsbTrustTier::Blocked
+        );
     }
 
     #[test]
@@ -211,7 +212,10 @@ mod tests {
             UsbTrustTier::ReadOnly,
         );
         // Act + Assert: known device returns its tier
-        assert_eq!(cache.trust_tier_for("0951", "1666", "ABC"), UsbTrustTier::ReadOnly);
+        assert_eq!(
+            cache.trust_tier_for("0951", "1666", "ABC"),
+            UsbTrustTier::ReadOnly
+        );
     }
 
     #[test]
@@ -223,7 +227,10 @@ mod tests {
             UsbTrustTier::FullAccess,
         );
         // Act + Assert: different serial -> Blocked (not in cache)
-        assert_eq!(cache.trust_tier_for("0951", "1666", "DIFFERENT"), UsbTrustTier::Blocked);
+        assert_eq!(
+            cache.trust_tier_for("0951", "1666", "DIFFERENT"),
+            UsbTrustTier::Blocked
+        );
     }
 
     #[test]
@@ -241,7 +248,13 @@ mod tests {
         let t1 = thread::spawn(move || c1.trust_tier_for("vid", "pid", "ser"));
         let t2 = thread::spawn(move || c2.trust_tier_for("vid", "pid", "ser"));
         // Assert: both threads return the correct tier (no deadlock)
-        assert_eq!(t1.join().expect("thread 1 must not panic"), UsbTrustTier::FullAccess);
-        assert_eq!(t2.join().expect("thread 2 must not panic"), UsbTrustTier::FullAccess);
+        assert_eq!(
+            t1.join().expect("thread 1 must not panic"),
+            UsbTrustTier::FullAccess
+        );
+        assert_eq!(
+            t2.join().expect("thread 2 must not panic"),
+            UsbTrustTier::FullAccess
+        );
     }
 }

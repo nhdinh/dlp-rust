@@ -3759,7 +3759,10 @@ mod tests {
         assert_eq!(req.pid, "1666");
         assert_eq!(req.serial, "SN001");
         assert_eq!(req.trust_tier, "blocked");
-        assert_eq!(req.description, "", "description must default to empty string");
+        assert_eq!(
+            req.description, "",
+            "description must default to empty string"
+        );
     }
 
     /// DeviceRegistryResponse serializes to JSON with all 7 expected fields.
@@ -3783,7 +3786,10 @@ mod tests {
             json.contains(r#""description":"Kingston DataTraveler""#),
             "description field missing"
         );
-        assert!(json.contains(r#""trust_tier":"read_only""#), "trust_tier field missing");
+        assert!(
+            json.contains(r#""trust_tier":"read_only""#),
+            "trust_tier field missing"
+        );
         assert!(
             json.contains(r#""created_at":"2026-01-01T00:00:00Z""#),
             "created_at field missing"
@@ -3793,8 +3799,7 @@ mod tests {
     /// trust_tier value "read_only" is valid and round-trips correctly.
     #[test]
     fn test_device_registry_request_read_only_tier_accepted() {
-        let json =
-            r#"{"vid":"046d","pid":"c52b","serial":"ABC","trust_tier":"read_only"}"#;
+        let json = r#"{"vid":"046d","pid":"c52b","serial":"ABC","trust_tier":"read_only"}"#;
         let req: DeviceRegistryRequest =
             serde_json::from_str(json).expect("deserialize DeviceRegistryRequest");
         assert_eq!(req.trust_tier, "read_only");
@@ -3820,8 +3825,7 @@ mod tests {
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK);
         let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
-        let list: Vec<serde_json::Value> =
-            serde_json::from_slice(&body).expect("parse JSON array");
+        let list: Vec<serde_json::Value> = serde_json::from_slice(&body).expect("parse JSON array");
         assert!(list.is_empty(), "expected empty array from fresh DB");
     }
 
@@ -3936,7 +3940,9 @@ mod tests {
             .expect("build POST");
         let post_resp = app.clone().oneshot(post_req).await.expect("oneshot POST");
         assert_eq!(post_resp.status(), StatusCode::OK);
-        let body = to_bytes(post_resp.into_body(), usize::MAX).await.expect("body");
+        let body = to_bytes(post_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
         let row: DeviceRegistryResponse =
             serde_json::from_slice(&body).expect("parse DeviceRegistryResponse");
         let id = row.id;
@@ -3958,9 +3964,10 @@ mod tests {
             .body(Body::empty())
             .expect("build GET");
         let get_resp = app.oneshot(get_req).await.expect("oneshot GET");
-        let body = to_bytes(get_resp.into_body(), usize::MAX).await.expect("body");
-        let list: Vec<serde_json::Value> =
-            serde_json::from_slice(&body).expect("parse JSON array");
+        let body = to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let list: Vec<serde_json::Value> = serde_json::from_slice(&body).expect("parse JSON array");
         assert!(list.is_empty(), "list must be empty after delete");
     }
 

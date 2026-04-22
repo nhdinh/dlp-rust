@@ -195,7 +195,10 @@ mod tests {
     fn test_list_all_empty() {
         let pool = make_pool();
         let rows = DeviceRegistryRepository::list_all(&pool).expect("list_all on empty DB");
-        assert!(rows.is_empty(), "expected empty vec from fresh DB; got {rows:?}");
+        assert!(
+            rows.is_empty(),
+            "expected empty vec from fresh DB; got {rows:?}"
+        );
     }
 
     #[test]
@@ -256,12 +259,22 @@ mod tests {
         }
 
         let rows = DeviceRegistryRepository::list_all(&pool).expect("list_all");
-        assert_eq!(rows.len(), 1, "row count must stay 1 after upsert on conflict");
+        assert_eq!(
+            rows.len(),
+            1,
+            "row count must stay 1 after upsert on conflict"
+        );
         let r = &rows[0];
         // Original UUID must be preserved (ON CONFLICT DO UPDATE, not INSERT OR REPLACE).
-        assert_eq!(r.id, "uuid-1", "original UUID must be preserved on conflict");
+        assert_eq!(
+            r.id, "uuid-1",
+            "original UUID must be preserved on conflict"
+        );
         assert_eq!(r.trust_tier, "full_access", "trust_tier must be updated");
-        assert_eq!(r.description, "Updated description", "description must be updated");
+        assert_eq!(
+            r.description, "Updated description",
+            "description must be updated"
+        );
     }
 
     #[test]
@@ -279,8 +292,8 @@ mod tests {
         {
             let mut conn = pool.get().expect("get connection");
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
-            let affected = DeviceRegistryRepository::delete_by_id(&uow, "uuid-1")
-                .expect("delete_by_id");
+            let affected =
+                DeviceRegistryRepository::delete_by_id(&uow, "uuid-1").expect("delete_by_id");
             uow.commit().expect("commit");
             assert_eq!(affected, 1, "expected 1 row deleted");
         }
@@ -297,6 +310,9 @@ mod tests {
         let affected = DeviceRegistryRepository::delete_by_id(&uow, "does-not-exist")
             .expect("delete_by_id on missing UUID must not error");
         uow.commit().expect("commit");
-        assert_eq!(affected, 0, "expected 0 rows affected for non-existent UUID");
+        assert_eq!(
+            affected, 0,
+            "expected 0 rows affected for non-existent UUID"
+        );
     }
 }

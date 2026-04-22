@@ -402,14 +402,14 @@ async fn run_loop(
         crate::detection::usb::set_registry_client(sc.clone());
         // Store the current tokio Handle so the USB message-loop thread (a plain
         // std::thread that does NOT inherit the tokio context) can spawn async tasks.
-        crate::detection::usb::set_registry_runtime_handle(
-            tokio::runtime::Handle::current(),
-        );
-        Some(crate::device_registry::DeviceRegistryCache::spawn_poll_task(
-            Arc::clone(&registry_cache),
-            sc.clone(),
-            registry_shutdown_rx,
-        ))
+        crate::detection::usb::set_registry_runtime_handle(tokio::runtime::Handle::current());
+        Some(
+            crate::device_registry::DeviceRegistryCache::spawn_poll_task(
+                Arc::clone(&registry_cache),
+                sc.clone(),
+                registry_shutdown_rx,
+            ),
+        )
     } else {
         drop(registry_shutdown_rx);
         None

@@ -230,8 +230,9 @@ static DRIVE_DETECTOR: parking_lot::Mutex<Option<&'static UsbDetector>> =
 /// that cannot capture environment) to trigger an immediate cache refresh on
 /// USB device arrival (D-09 from 24-CONTEXT.md).
 #[cfg(windows)]
-static REGISTRY_CACHE: std::sync::OnceLock<std::sync::Arc<crate::device_registry::DeviceRegistryCache>> =
-    std::sync::OnceLock::new();
+static REGISTRY_CACHE: std::sync::OnceLock<
+    std::sync::Arc<crate::device_registry::DeviceRegistryCache>,
+> = std::sync::OnceLock::new();
 
 /// Global tokio runtime handle, stored before the USB notification thread is
 /// spawned so that `usb_wndproc` (which runs on a plain `std::thread`) can

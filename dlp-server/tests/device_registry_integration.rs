@@ -82,7 +82,9 @@ async fn test_get_empty_registry_returns_200_and_empty_array() {
     let resp = app.oneshot(req).await.expect("oneshot");
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let bytes = to_bytes(resp.into_body(), 8 * 1024).await.expect("read body");
+    let bytes = to_bytes(resp.into_body(), 8 * 1024)
+        .await
+        .expect("read body");
     let json: Value = serde_json::from_slice(&bytes).expect("parse JSON");
     assert!(json.is_array(), "expected JSON array");
     assert_eq!(json.as_array().unwrap().len(), 0, "expected empty array");
@@ -119,7 +121,9 @@ async fn test_post_creates_entry_returns_200_with_id() {
     let resp = app.oneshot(req).await.expect("oneshot");
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let bytes = to_bytes(resp.into_body(), 8 * 1024).await.expect("read body");
+    let bytes = to_bytes(resp.into_body(), 8 * 1024)
+        .await
+        .expect("read body");
     let json: Value = serde_json::from_slice(&bytes).expect("parse JSON");
 
     // Response must include a server-generated id (UUID string).
@@ -229,7 +233,9 @@ async fn test_get_after_post_returns_one_entry() {
     let get_resp = app.oneshot(get_req).await.expect("GET oneshot");
     assert_eq!(get_resp.status(), StatusCode::OK);
 
-    let bytes = to_bytes(get_resp.into_body(), 8 * 1024).await.expect("read body");
+    let bytes = to_bytes(get_resp.into_body(), 8 * 1024)
+        .await
+        .expect("read body");
     let list: Vec<Value> = serde_json::from_slice(&bytes).expect("parse JSON array");
 
     assert_eq!(list.len(), 1, "expected exactly 1 entry");
@@ -269,9 +275,14 @@ async fn test_delete_removes_entry_and_get_returns_empty() {
     let post_resp = app.clone().oneshot(post_req).await.expect("POST oneshot");
     assert_eq!(post_resp.status(), StatusCode::OK, "POST should return 200");
 
-    let post_bytes = to_bytes(post_resp.into_body(), 8 * 1024).await.expect("read body");
+    let post_bytes = to_bytes(post_resp.into_body(), 8 * 1024)
+        .await
+        .expect("read body");
     let created: Value = serde_json::from_slice(&post_bytes).expect("parse POST body");
-    let id = created["id"].as_str().expect("id must be a string").to_string();
+    let id = created["id"]
+        .as_str()
+        .expect("id must be a string")
+        .to_string();
 
     // DELETE the entry.
     let delete_req = Request::builder()
@@ -281,8 +292,16 @@ async fn test_delete_removes_entry_and_get_returns_empty() {
         .body(Body::empty())
         .expect("build DELETE request");
 
-    let delete_resp = app.clone().oneshot(delete_req).await.expect("DELETE oneshot");
-    assert_eq!(delete_resp.status(), StatusCode::NO_CONTENT, "DELETE must return 204");
+    let delete_resp = app
+        .clone()
+        .oneshot(delete_req)
+        .await
+        .expect("DELETE oneshot");
+    assert_eq!(
+        delete_resp.status(),
+        StatusCode::NO_CONTENT,
+        "DELETE must return 204"
+    );
 
     // GET: expect empty list.
     let get_req = Request::builder()
@@ -292,7 +311,9 @@ async fn test_delete_removes_entry_and_get_returns_empty() {
         .expect("build GET request");
 
     let get_resp = app.oneshot(get_req).await.expect("GET oneshot");
-    let bytes = to_bytes(get_resp.into_body(), 8 * 1024).await.expect("read body");
+    let bytes = to_bytes(get_resp.into_body(), 8 * 1024)
+        .await
+        .expect("read body");
     let list: Vec<Value> = serde_json::from_slice(&bytes).expect("parse JSON array");
     assert_eq!(list.len(), 0, "list must be empty after DELETE");
 }
@@ -370,8 +391,16 @@ async fn test_post_duplicate_upserts_and_get_shows_updated_tier() {
         .body(Body::from(serde_json::to_vec(&body_second).unwrap()))
         .expect("build second POST request");
 
-    let resp2 = app.clone().oneshot(req2).await.expect("second POST oneshot");
-    assert_eq!(resp2.status(), StatusCode::OK, "second POST (upsert) must return 200");
+    let resp2 = app
+        .clone()
+        .oneshot(req2)
+        .await
+        .expect("second POST oneshot");
+    assert_eq!(
+        resp2.status(),
+        StatusCode::OK,
+        "second POST (upsert) must return 200"
+    );
 
     // GET: verify exactly 1 entry with updated tier.
     let get_req = Request::builder()
@@ -381,9 +410,14 @@ async fn test_post_duplicate_upserts_and_get_shows_updated_tier() {
         .expect("build GET request");
 
     let get_resp = app.oneshot(get_req).await.expect("GET oneshot");
-    let bytes = to_bytes(get_resp.into_body(), 8 * 1024).await.expect("read body");
+    let bytes = to_bytes(get_resp.into_body(), 8 * 1024)
+        .await
+        .expect("read body");
     let list: Vec<Value> = serde_json::from_slice(&bytes).expect("parse JSON array");
 
     assert_eq!(list.len(), 1, "upsert must yield exactly 1 entry");
-    assert_eq!(list[0]["trust_tier"], "full_access", "trust_tier must reflect the second POST");
+    assert_eq!(
+        list[0]["trust_tier"], "full_access",
+        "trust_tier must reflect the second POST"
+    );
 }

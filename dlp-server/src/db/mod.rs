@@ -425,7 +425,15 @@ mod tests {
             .filter_map(Result::ok)
             .collect();
 
-        for col in &["id", "vid", "pid", "serial", "description", "trust_tier", "created_at"] {
+        for col in &[
+            "id",
+            "vid",
+            "pid",
+            "serial",
+            "description",
+            "trust_tier",
+            "created_at",
+        ] {
             assert!(
                 columns.contains(&col.to_string()),
                 "device_registry must have column '{col}'; found {columns:?}"
@@ -444,7 +452,10 @@ mod tests {
              VALUES ('id1', 'v', 'p', 's', '', 'bad_tier', '2026-01-01')",
             [],
         );
-        assert!(result.is_err(), "invalid trust_tier must be rejected by CHECK constraint");
+        assert!(
+            result.is_err(),
+            "invalid trust_tier must be rejected by CHECK constraint"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("CHECK constraint failed"),
@@ -469,7 +480,10 @@ mod tests {
              VALUES ('id2', '0951', '1666', 'SN001', '', 'read_only', '2026-01-02')",
             [],
         );
-        assert!(result.is_err(), "duplicate (vid, pid, serial) must fail UNIQUE constraint");
+        assert!(
+            result.is_err(),
+            "duplicate (vid, pid, serial) must fail UNIQUE constraint"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("UNIQUE constraint failed"),
