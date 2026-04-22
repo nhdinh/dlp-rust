@@ -25,9 +25,9 @@ See: `.planning/PROJECT.md` (updated 2026-04-21)
 ## Current Position
 
 Phase: 28 (admin-tui-screens) — EXECUTING
-Plan: 3 of 5
-Status: Waves 1-2 complete (28-01 managed_origins API, 28-02 AppField builder, 28-03 Device Registry TUI); Wave 3 in progress
-Next: Wave 3 — Plan 28-04 (Managed Origins TUI screen)
+Plan: 4 of 5
+Status: Waves 1-3 complete (28-01 managed_origins API, 28-02 AppField builder, 28-03 Device Registry TUI, 28-04 Managed Origins TUI); Wave 4 in progress
+Next: Wave 4 — Plan 28-05 (integration tests + human UAT checkpoint)
 Last activity: 2026-04-23
 
 ## Decisions
