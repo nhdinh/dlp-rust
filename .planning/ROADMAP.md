@@ -68,7 +68,10 @@ Plans:
   1. Plugging a USB mass-storage device causes the agent to log VID, PID, serial number, and description at INFO level within one second of arrival
   2. Devices without a serial number (e.g., generic USB hubs) are captured with serial = "(none)" rather than panicking or silently skipping
   3. Existing file interception and clipboard flows are unaffected — all pre-Phase-23 tests still pass
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 23-01-PLAN.md - Pure-Rust UsbDetector.device_identities field + parse_usb_device_path helper + identity accessor + Win32_Devices_DeviceAndDriverInstallation feature flag
+- [ ] 23-02-PLAN.md - GUID_DEVINTERFACE_USB_DEVICE const + second RegisterDeviceNotificationW call + WM_DEVICECHANGE arm in usb_wndproc + SetupDi description fetch + human checkpoint
 
 ### Phase 24: Device Registry DB + Admin API
 **Goal**: The server persists a trust-tier registry for USB devices and exposes a JWT-protected admin API for device management so agents can query registered device trust tiers
@@ -166,8 +169,8 @@ Plans:
 | 19 | Boolean Mode in TUI + Import/Export | v0.5.0 | 2/2 | Complete | 2026-04-21 |
 | 20 | Operator Expansion | v0.5.0 | 2/2 | Complete | 2026-04-21 |
 | 21 | In-Place Condition Editing | v0.5.0 | 1/1 | Complete | 2026-04-21 |
-| 22 | dlp-common Foundation | v0.6.0 | 0/4 | Not started | - |
-| 23 | USB Enumeration in dlp-agent | v0.6.0 | TBD | Not started | - |
+| 22 | dlp-common Foundation | v0.6.0 | 4/4 | Complete | 2026-04-22 |
+| 23 | USB Enumeration in dlp-agent | v0.6.0 | 0/2 | Planned | - |
 | 24 | Device Registry DB + Admin API | v0.6.0 | TBD | Not started | - |
 | 25 | App Identity Capture in dlp-user-ui | v0.6.0 | TBD | Not started | - |
 | 26 | ABAC Enforcement Convergence | v0.6.0 | TBD | Not started | - |
