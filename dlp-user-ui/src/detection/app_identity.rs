@@ -11,11 +11,6 @@
 //! The clipboard monitor thread is the sole caller in production, so there
 //! is no real contention. The Mutex is present for future multi-caller safety.
 
-// Public API of this module is consumed by clipboard_monitor in Plan 02.
-// Until that wiring is in place, suppress dead_code lints so clippy -D warnings
-// does not reject the module prematurely.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -484,16 +479,15 @@ pub fn build_app_identity_from_path(image_path: String) -> AppIdentity {
 
 /// Resolves an `Option<String>` image path to `Option<AppIdentity>`.
 ///
-/// This pure-logic helper is used by tests and non-Windows code paths to
-/// test the path->AppIdentity branch without invoking `hwnd_to_image_path`.
+/// This pure-logic helper is used by tests to verify D-08 semantics without
+/// Win32 HWND involvement.
 ///
 /// | Input | Outcome |
 /// |-------|---------|
 /// | `None` | `None` — no path to resolve |
 /// | `Some("")` | `Some(AppIdentity::default())` — all-Unknown fields |
 /// | `Some(path)` | `Some(AppIdentity { ... })` — fully populated |
-///
-/// Used by tests to verify D-08 semantics without Win32 HWND involvement.
+#[cfg(test)]
 pub fn resolve_app_identity_from_path(path: Option<String>) -> Option<AppIdentity> {
     match path {
         None => None,
