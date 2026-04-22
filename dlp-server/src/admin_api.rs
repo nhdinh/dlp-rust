@@ -1514,6 +1514,13 @@ async fn upsert_device_registry_handler(
     State(state): State<Arc<AppState>>,
     Json(body): Json<DeviceRegistryRequest>,
 ) -> Result<Json<DeviceRegistryResponse>, AppError> {
+    // Length guard — reject oversized inputs before heap allocation in allowlist check.
+    // Valid tiers are at most 11 chars ("full_access"); 32 is a generous ceiling.
+    if body.trust_tier.len() > 32 {
+        return Err(AppError::UnprocessableEntity(
+            "trust_tier exceeds maximum length".to_string(),
+        ));
+    }
     // Allowlist check before any DB access (T-24-05).
     const VALID_TIERS: &[&str] = &["blocked", "read_only", "full_access"];
     if !VALID_TIERS.contains(&body.trust_tier.as_str()) {
