@@ -329,6 +329,94 @@ fn extract_drive_letter(path: &str) -> Option<char> {
 mod tests {
     use super::*;
 
+    // ── New tests added in Phase 23 Plan 01 (TDD RED) ──────────────────────
+
+    #[test]
+    fn test_parse_happy_path() {
+        let path = r"\\?\USB#VID_0951&PID_1666#1234567890#{a5dcbf10-6530-11d2-901f-00c04fb951ed}";
+        let id = parse_usb_device_path(path);
+        assert_eq!(id.vid, "0951");
+        assert_eq!(id.pid, "1666");
+        assert_eq!(id.serial, "1234567890");
+        assert_eq!(id.description, "");
+    }
+
+    #[test]
+    fn test_parse_no_serial_empty_segment() {
+        let path = r"\\?\USB#VID_0951&PID_1666##{a5dcbf10-6530-11d2-901f-00c04fb951ed}";
+        let id = parse_usb_device_path(path);
+        assert_eq!(id.vid, "0951");
+        assert_eq!(id.pid, "1666");
+        assert_eq!(id.serial, "(none)");
+    }
+
+    #[test]
+    fn test_parse_no_serial_ampersand_synthesized() {
+        let path = r"\\?\USB#VID_0951&PID_1666#&0#{a5dcbf10-6530-11d2-901f-00c04fb951ed}";
+        let id = parse_usb_device_path(path);
+        assert_eq!(id.serial, "(none)");
+    }
+
+    #[test]
+    fn test_parse_lowercase_vid_pid_accepted() {
+        let path = r"\\?\USB#vid_0951&pid_1666#abc#{guid}";
+        let id = parse_usb_device_path(path);
+        assert_eq!(id.vid, "0951");
+        assert_eq!(id.pid, "1666");
+        assert_eq!(id.serial, "abc");
+    }
+
+    #[test]
+    fn test_parse_malformed_missing_vid_pid_segment() {
+        let path = r"\\?\USB#garbage#serial#{guid}";
+        let id = parse_usb_device_path(path);
+        assert_eq!(id.vid, "");
+        assert_eq!(id.pid, "");
+        assert_eq!(id.serial, "serial");
+    }
+
+    #[test]
+    fn test_parse_empty_string() {
+        let id = parse_usb_device_path("");
+        assert_eq!(id.vid, "");
+        assert_eq!(id.pid, "");
+        assert_eq!(id.serial, "(none)");
+        assert_eq!(id.description, "");
+    }
+
+    #[test]
+    fn test_parse_does_not_panic_on_unusual_input() {
+        // Only two segments; should yield empty serial → "(none)".
+        let id = parse_usb_device_path(r"\\?\USB#VID_0951&PID_1666");
+        assert_eq!(id.vid, "0951");
+        assert_eq!(id.pid, "1666");
+        assert_eq!(id.serial, "(none)");
+    }
+
+    #[test]
+    fn test_device_identities_default_empty() {
+        let detector = UsbDetector::new();
+        assert!(detector.device_identities.read().is_empty());
+    }
+
+    #[test]
+    fn test_device_identity_for_drive_present_and_absent() {
+        let detector = UsbDetector::new();
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN123".into(),
+            description: "Kingston DataTraveler".into(),
+        };
+        detector.device_identities.write().insert('E', identity.clone());
+
+        assert_eq!(detector.device_identity_for_drive('E'), Some(identity.clone()));
+        assert_eq!(detector.device_identity_for_drive('e'), Some(identity));
+        assert_eq!(detector.device_identity_for_drive('Z'), None);
+    }
+
+    // ── Pre-existing tests ──────────────────────────────────────────────────
+
     #[test]
     fn test_extract_drive_letter() {
         assert_eq!(extract_drive_letter(r"E:\Data\file.txt"), Some('E'));
