@@ -35,7 +35,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 - [x] **Phase 22: dlp-common Foundation** â New shared types (AppIdentity, DeviceIdentity, UsbTrustTier, SignatureState) that gate all three tracks (complete 2026-04-22)
 - [x] **Phase 23: USB Enumeration in dlp-agent** â Agent captures VID/PID/Serial/description on USB arrival via SetupDi; no enforcement yet (complete 2026-04-22)
 - [x] **Phase 24: Device Registry DB + Admin API** â device_registry table, trust-tier CRUD endpoints, agent polling for registry state (complete 2026-04-22)
-- [ ] **Phase 25: App Identity Capture in dlp-user-ui** â Source and destination process identity resolved at clipboard time; Authenticode verification; audit event fields populated
+- [x] **Phase 25: App Identity Capture in dlp-user-ui** (complete 2026-04-22) â Source and destination process identity resolved at clipboard time; Authenticode verification; audit event fields populated
 - [ ] **Phase 26: ABAC Enforcement Convergence** â Evaluator enforces app-identity and USB trust-tier conditions; USB I/O enforcement hot path in file_monitor.rs
 - [ ] **Phase 27: USB Toast Notification** â User toast on USB block via Pipe 2 + winrt-notification in dlp-user-ui
 - [ ] **Phase 28: Admin TUI Screens** â App identity condition picker, Device Registry screen, managed-origins screen in dlp-admin-cli
@@ -99,11 +99,12 @@ Plans:
   3. Authenticode publisher extraction runs in `spawn_blocking` with a per-process-path cache; the UI message pump is never blocked by CRL network calls
   4. A clipboard block audit event contains non-empty `source_application` and `destination_application` fields with image_path, publisher, and signature_state populated
   5. Renaming a signed binary still produces the correct publisher (signature verified from file, not from process name)
-**Plans**: 3 plans
+**Plans**: 4 plans
 Plans:
 - [x] 25-01-PLAN.md - detection::app_identity module (AUTHENTICODE_CACHE, resolve_app_identity, Win32 feature flags, unit tests)
 - [x] 25-02-PLAN.md - clipboard_monitor.rs integration (FOREGROUND_SLOT, SetWinEventHook, GetClipboardOwner, classify_and_alert signature update)
 - [x] 25-03-PLAN.md - pipe3.rs wire-up (send_clipboard_alert 6-param signature, remove None placeholders, zero-warning build gate, human checkpoint)
+- [x] 25-04-PLAN.md - agent-side gap closure (dlp-agent pipe3.rs extracts identity fields, AuditEvent populated)
 
 ### Phase 26: ABAC Enforcement Convergence
 **Goal**: The policy evaluator enforces decisions based on application identity and USB device trust tier so clipboard and file operations are blocked or allowed based on which app and which device are involved
