@@ -82,7 +82,12 @@ Plans:
   2. `POST /admin/device-registry` registers a new device entry; `DELETE /admin/device-registry/{id}` removes it — both require JWT auth
   3. Trust tier values `blocked`, `read_only`, and `full_access` are enforced by a DB CHECK constraint; invalid tier values are rejected with 422
   4. Agent can query the registry endpoint and cache results in `RwLock<HashMap>` indexed by device key (vid+pid+serial)
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+- [ ] 24-01-PLAN.md — device_registry table DDL (db/mod.rs) + DeviceRegistryRepository (db/repositories/device_registry.rs) + module registration
+- [ ] 24-02-PLAN.md — Admin API routes (GET/POST/DELETE /admin/device-registry) + request/response types + route registration in admin_api.rs
+- [ ] 24-03-PLAN.md — Agent DeviceRegistryCache module + 30-second poll task + USB arrival immediate refresh wired in service.rs and usb.rs
+- [ ] 24-04-PLAN.md — Integration tests (server CRUD round-trip + agent cache behavior) + human checkpoint + workspace zero-warning gate
 
 ### Phase 25: App Identity Capture in dlp-user-ui
 **Goal**: Users' clipboard actions carry source and destination process identity so the system knows which application produced or consumed clipboard content, with publisher verified against Authenticode
@@ -171,7 +176,7 @@ Plans:
 | 21 | In-Place Condition Editing | v0.5.0 | 1/1 | Complete | 2026-04-21 |
 | 22 | dlp-common Foundation | v0.6.0 | 4/4 | Complete | 2026-04-22 |
 | 23 | USB Enumeration in dlp-agent | v0.6.0 | 0/2 | Planned | - |
-| 24 | Device Registry DB + Admin API | v0.6.0 | TBD | Not started | - |
+| 24 | Device Registry DB + Admin API | v0.6.0 | 4/4 | Planned | - |
 | 25 | App Identity Capture in dlp-user-ui | v0.6.0 | TBD | Not started | - |
 | 26 | ABAC Enforcement Convergence | v0.6.0 | TBD | Not started | - |
 | 27 | USB Toast Notification | v0.6.0 | TBD | Not started | - |
