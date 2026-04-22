@@ -132,6 +132,20 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 updated_at  TEXT NOT NULL
             );
 
+            -- device_registry: USB device trust assignments managed by dlp-admin.
+            -- trust_tier CHECK constraint enforces only valid tier values at the DB layer.
+            -- UNIQUE(vid, pid, serial) ensures one row per physical device identity.
+            CREATE TABLE IF NOT EXISTS device_registry (
+                id          TEXT PRIMARY KEY,
+                vid         TEXT NOT NULL,
+                pid         TEXT NOT NULL,
+                serial      TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                trust_tier  TEXT NOT NULL CHECK(trust_tier IN ('blocked', 'read_only', 'full_access')),
+                created_at  TEXT NOT NULL,
+                UNIQUE(vid, pid, serial)
+            );
+
             CREATE TABLE IF NOT EXISTS siem_config (
                 id              INTEGER PRIMARY KEY CHECK (id = 1),
                 splunk_url      TEXT NOT NULL DEFAULT '',
