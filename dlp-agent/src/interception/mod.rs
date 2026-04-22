@@ -37,6 +37,7 @@ use crate::ipc::messages::Pipe1AgentMsg;
 use crate::ipc::pipe1;
 use crate::offline::OfflineManager;
 use crate::session_identity::SessionIdentityMap;
+use crate::usb_enforcer::UsbEnforcer;
 
 /// Runs the file interception event loop.
 ///
@@ -54,12 +55,14 @@ use crate::session_identity::SessionIdentityMap;
 /// * `ctx` — shared audit context (agent_id, session)
 /// * `session_map` — per-session identity map for resolving file owners
 /// * `ad_client` — optional AD client for group/trust/location resolution (None = fallback to placeholder)
+/// * `usb_enforcer` — optional USB trust-tier enforcer; fires before ABAC evaluation (None = USB enforcement disabled)
 pub async fn run_event_loop(
     mut rx: mpsc::Receiver<FileAction>,
     offline: Arc<OfflineManager>,
     ctx: EmitContext,
     session_map: Arc<SessionIdentityMap>,
     ad_client: Arc<Option<dlp_common::AdClient>>,
+    usb_enforcer: Option<Arc<UsbEnforcer>>,
 ) {
     info!("interception event loop started");
 
@@ -67,6 +70,54 @@ pub async fn run_event_loop(
         let action = action.clone();
         let path = action.path().to_string();
         let pid = action.process_id();
+
+        // ── USB enforcement (pre-ABAC check) ─────────────────────────────
+        // Fires before the ABAC engine. Blocked or ReadOnly+write operations
+        // short-circuit here and emit an audit Block event (D-11).
+        if let Some(ref enforcer) = usb_enforcer {
+            if let Some(decision) = enforcer.check(&path, &action) {
+                let audit_event = AuditEvent::new(
+                    EventType::Block,
+                    "SYSTEM".to_string(),
+                    "SYSTEM".to_string(),
+                    path.clone(),
+                    // Classification not yet resolved at this point; T1 is the
+                    // conservative public-tier placeholder (not used for ABAC here).
+                    dlp_common::Classification::T1,
+                    // Action placeholder — USB check fires before action mapping.
+                    dlp_common::Action::WRITE,
+                    decision,
+                    ctx.agent_id.clone(),
+                    ctx.session_id,
+                )
+                .with_access_context(AuditAccessContext::Local)
+                .with_policy(
+                    String::new(),
+                    "USB enforcement: device blocked or read-only".to_string(),
+                );
+
+                emit_audit(&ctx, &mut audit_event.clone());
+
+                if decision.is_denied() {
+                    if let Err(e) = pipe1::send_to_ui(
+                        ctx.session_id,
+                        &Pipe1AgentMsg::BlockNotify {
+                            reason: "USB enforcement: device blocked or read-only".to_string(),
+                            classification: "T1".to_string(),
+                            resource_path: path.clone(),
+                            policy_id: String::new(),
+                        },
+                    ) {
+                        warn!(
+                            error = %e,
+                            session_id = ctx.session_id,
+                            "failed to send USB BlockNotify to UI"
+                        );
+                    }
+                }
+                continue; // skip ABAC evaluation for this event
+            }
+        }
 
         // ── Resolve identity ───────────────────────────────────────────────
         let (user_sid, user_name) = {

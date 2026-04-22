@@ -21,8 +21,8 @@ use std::sync::Arc;
 
 use dlp_common::{Decision, UsbTrustTier};
 
-use crate::device_registry::DeviceRegistryCache;
 use crate::detection::UsbDetector;
+use crate::device_registry::DeviceRegistryCache;
 use crate::interception::FileAction;
 
 /// Bridges USB device identity (Phase 23) and trust-tier registry (Phase 24)

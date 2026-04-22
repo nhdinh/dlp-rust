@@ -386,8 +386,13 @@ async fn run_loop(
     // so the USB message-loop thread can reach it without capturing environment.
     // (Approach A from 24-03-PLAN.md)
     use std::sync::OnceLock;
-    static USB_DETECTOR: OnceLock<crate::detection::UsbDetector> = OnceLock::new();
-    let detector = USB_DETECTOR.get_or_init(crate::detection::UsbDetector::new);
+    static USB_DETECTOR: OnceLock<Arc<crate::detection::UsbDetector>> = OnceLock::new();
+    // Store an Arc in the OnceLock so UsbEnforcer (Phase 26) can hold a shared
+    // reference without cloning a non-Clone type.
+    let detector_arc = USB_DETECTOR.get_or_init(|| Arc::new(crate::detection::UsbDetector::new()));
+    // Obtain a plain reference for the existing scan_existing_drives() and
+    // register_usb_notifications() call sites (both accept &UsbDetector).
+    let detector = detector_arc.as_ref();
     detector.scan_existing_drives();
 
     // ── Device registry cache (D-07, D-08) ──────────────────────────────────
@@ -414,6 +419,15 @@ async fn run_loop(
         drop(registry_shutdown_rx);
         None
     };
+
+    // ── UsbEnforcer (D-12) ────────────────────────────────────────────────
+    // Constructed after registry_cache so both backing caches are ready.
+    // Always constructed (registry_cache exists even without a server_client).
+    let usb_enforcer_opt: Option<Arc<crate::usb_enforcer::UsbEnforcer>> =
+        Some(Arc::new(crate::usb_enforcer::UsbEnforcer::new(
+            Arc::clone(detector_arc),
+            Arc::clone(&registry_cache),
+        )));
 
     // Register USB notifications NOW (after statics are set) so usb_wndproc
     // has valid REGISTRY_CACHE / REGISTRY_CLIENT / REGISTRY_RUNTIME_HANDLE on first arrival.
@@ -517,6 +531,7 @@ async fn run_loop(
             ctx_ev,
             session_map_ev,
             ad_client_ev,
+            usb_enforcer_opt,
         )
         .await;
     });
@@ -1099,6 +1114,8 @@ async fn async_run_console() -> Result<()> {
             ctx_ev,
             session_map_ev,
             ad_client_ev,
+            // Console mode has no USB detector static — USB enforcement disabled.
+            None,
         )
         .await;
     });
