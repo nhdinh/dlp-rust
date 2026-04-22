@@ -25,11 +25,12 @@
 //! returned `HWND`.  Pass that `HWND` to [`unregister_usb_notifications`] on shutdown
 //! to destroy the window and release resources.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 
-use dlp_common::Classification;
+use dlp_common::{Classification, DeviceIdentity};
 use parking_lot::RwLock;
 use tracing::{debug, info};
 
@@ -52,6 +53,17 @@ pub struct UsbDetector {
     /// can seed drives (bypasses `GetDriveTypeW` which is unavailable in CI).
     /// Production code should use `on_drive_arrival` / `on_drive_removal` instead.
     pub blocked_drives: RwLock<HashSet<char>>,
+    /// In-memory map from drive letter to captured USB device identity.
+    ///
+    /// Populated on `DBT_DEVICEARRIVAL` for `GUID_DEVINTERFACE_USB_DEVICE`
+    /// (wired in Phase 23 Plan 02). Keyed by uppercase drive letter to mirror
+    /// [`UsbDetector::blocked_drives`]. Phase 26 reads this map at I/O
+    /// enforcement time without re-querying SetupDi (unreliable after removal).
+    ///
+    /// Marked `pub` to mirror `blocked_drives` — integration tests seed
+    /// entries directly; production code uses the arrival/removal handlers
+    /// added in Plan 02.
+    pub device_identities: RwLock<HashMap<char, DeviceIdentity>>,
 }
 
 impl UsbDetector {
@@ -121,6 +133,17 @@ impl UsbDetector {
     #[must_use]
     pub fn blocked_drive_letters(&self) -> Vec<char> {
         self.blocked_drives.read().iter().copied().collect()
+    }
+
+    /// Returns a clone of the captured `DeviceIdentity` for the given drive
+    /// letter, or `None` if no identity has been captured for that drive.
+    ///
+    /// Case-insensitive on the drive letter. Clones the `DeviceIdentity`
+    /// so the read lock is released immediately after lookup.
+    #[must_use]
+    pub fn device_identity_for_drive(&self, drive_letter: char) -> Option<DeviceIdentity> {
+        let letter = drive_letter.to_ascii_uppercase();
+        self.device_identities.read().get(&letter).cloned()
     }
 
     /// Queries `GetDriveTypeW` for the given drive letter to determine if it
@@ -311,6 +334,58 @@ pub fn unregister_usb_notifications(hwnd: HWND, _thread: std::thread::JoinHandle
     let _ = hwnd; // suppress unused warning
     *DRIVE_DETECTOR.lock() = None;
     debug!("USB device notifications cleanup skipped (process exit imminent)");
+}
+
+/// Parses a USB device interface path into a best-effort `DeviceIdentity`.
+///
+/// Parses a USB device interface path into a best-effort `DeviceIdentity`.
+///
+/// Called from the `WM_DEVICECHANGE` handler wired in Plan 02. Marked
+/// `allow(dead_code)` in Plan 01 because Plan 02 adds the call site.
+///
+/// Input format (from `DEV_BROADCAST_DEVICEINTERFACE_W::dbcc_name`):
+/// `\\?\USB#VID_0951&PID_1666#1234567890#{a5dcbf10-...}` or the equivalent
+/// with `\??\` kernel-namespace prefix. The path is split on `#`:
+/// - Segment 0: prefix (`\\?\USB` or similar) — ignored.
+/// - Segment 1: `VID_xxxx&PID_yyyy` (case-insensitive prefix match).
+/// - Segment 2: serial number. Windows synthesizes `&N` serials (e.g.,
+///   `&0`) when the device has no real serial descriptor; these and the
+///   empty-string serial are coerced to `"(none)"` (D-05).
+/// - Segment 3 onwards: device-interface GUID — ignored.
+///
+/// Never panics. If a segment is missing or malformed, the corresponding
+/// field is set to an empty string (D-04); the caller still logs the
+/// identity (best-effort, never silently skipped).
+///
+/// The `description` field is always empty here — it is filled in by the
+/// SetupDi lookup wired in Plan 02.
+#[allow(dead_code)]
+fn parse_usb_device_path(dbcc_name: &str) -> DeviceIdentity {
+    let mut identity = DeviceIdentity::default();
+    let parts: Vec<&str> = dbcc_name.split('#').collect();
+
+    // Segment 1 carries VID/PID.
+    if let Some(vid_pid_segment) = parts.get(1) {
+        for token in vid_pid_segment.split('&') {
+            let lower = token.to_ascii_lowercase();
+            if let Some(rest) = lower.strip_prefix("vid_") {
+                identity.vid = rest.to_string();
+            } else if let Some(rest) = lower.strip_prefix("pid_") {
+                identity.pid = rest.to_string();
+            }
+        }
+    }
+
+    // Segment 2 carries the serial number, or a Windows-synthesized
+    // placeholder like `&0` when no serial descriptor is present.
+    let raw_serial = parts.get(2).copied().unwrap_or("");
+    identity.serial = if raw_serial.is_empty() || raw_serial.starts_with('&') {
+        "(none)".to_string()
+    } else {
+        raw_serial.to_string()
+    };
+
+    identity
 }
 
 /// Extracts the uppercase drive letter from a Windows path.
