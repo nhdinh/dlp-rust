@@ -1,476 +1,675 @@
-# Domain Pitfalls: v0.4.0 Policy Authoring TUI
+# Domain Pitfalls — v0.6.0 Endpoint Hardening
 
-**Domain:** Adding policy authoring UX to an existing ratatui TUI system
-**Researched:** 2026-04-16
-**Codebase version:** v0.4.0 (post v0.3.0 operational hardening)
-
----
-
-## Critical Pitfalls
-
-These mistakes cause silent data corruption, server desync, or full rewrites.
+**Domain:** Windows DLP — App-aware clipboard, Browser connector, USB device identity
+**Researched:** 2026-04-21
+**Scope:** Pitfalls specific to adding these features to this Rust/Windows codebase
 
 ---
 
-### PITFALL-01: PolicyCondition JSON Shape Must Match the `#[serde(tag)]` Contract Exactly
+## Section 1: Application-Aware DLP (APP-01 to APP-06)
 
-**What goes wrong:**
-`PolicyCondition` uses `#[serde(tag = "attribute", rename_all = "snake_case")]`. This means the
-serialized form of a `Classification` condition is:
+### PITFALL-A1: Clipboard Ownership Race — Dead HWND from GetClipboardOwner
 
-```json
-{"attribute": "classification", "op": "eq", "value": "T3"}
-```
+**Problem:** `GetClipboardOwner()` returns the HWND of the window that last called
+`SetClipboardData`. If the source window is destroyed before the DLP code resolves
+PID from that HWND, `GetWindowThreadProcessId` returns 0 for the PID and the identity
+is lost. This happens routinely — apps that copy to clipboard then immediately close
+(short-lived paste dialogs, context-menu handlers, scripted automation) leave dead
+HWNDs within milliseconds.
 
-The `attribute` tag field drives deserialization on the server. If the conditions builder emits
-ANY other shape — e.g., `{"type": "classification", ...}`, or omits `"attribute"`, or uses
-`"Classification"` (PascalCase) instead of `"classification"` — the server's
-`serde_json::from_str::<Vec<PolicyCondition>>` in `deserialize_policy_row` will fail silently.
-The `load_from_db` path logs a `warn!` and **skips the policy** rather than returning an error.
-The admin sees "Policy created" but the policy is never evaluated.
-
-**Root cause:**
-The TUI builds conditions as `serde_json::Value` objects (passed through `PolicyPayload.conditions`),
-so there is no compile-time type check. The conditions builder must manually construct JSON that
-matches the server's enum tag schema.
-
-**Exact required shapes (from `abac.rs`):**
-
-| Variant | Required JSON shape |
-|---------|---------------------|
-| `Classification` | `{"attribute":"classification","op":"eq","value":"T3"}` — `value` must be `"T1"/"T2"/"T3"/"T4"` (UPPERCASE, from `#[serde(rename_all = "UPPERCASE")]` on `Classification`) |
-| `MemberOf` | `{"attribute":"member_of","op":"in","group_sid":"S-1-5-..."}` — uses `group_sid` not `value` |
-| `DeviceTrust` | `{"attribute":"device_trust","op":"eq","value":"Managed"}` — value must be PascalCase (`Managed/Unmanaged/Compliant/Unknown`) |
-| `NetworkLocation` | `{"attribute":"network_location","op":"eq","value":"Corporate"}` — PascalCase (`Corporate/CorporateVpn/Guest/Unknown`) |
-| `AccessContext` | `{"attribute":"access_context","op":"eq","value":"local"}` — lowercase (`local/smb`, from `#[serde(rename_all = "lowercase")]`) |
+**Why it happens:** `handle_clipboard_change` in `dlp-user-ui/src/clipboard_monitor.rs`
+fires on `WM_CLIPBOARDUPDATE`, which is delivered asynchronously via the message pump.
+The 100ms sleep in the current polling loop (`PeekMessageW` + `thread::sleep`) means
+source identity capture can lag by up to 100ms after the clipboard change. During that
+window, any short-lived source process has already exited.
 
 **Prevention:**
-- The conditions builder must serialize each completed condition through `serde_json::to_value`
-  of the actual `PolicyCondition` enum, not hand-craft strings. Construct a `PolicyCondition`
-  variant in Rust and call `serde_json::to_value` — the compiler enforces the field names.
-- Unit test: round-trip each variant through `serde_json::to_string` then
-  `serde_json::from_str::<PolicyCondition>` and assert the tag value.
+- Capture `GetClipboardOwner()` SYNCHRONOUSLY inside the `WM_CLIPBOARDUPDATE` handler
+  itself — not after the sleep cycle. Remove the 100ms sleep on the clipboard-update
+  code path (sleep only on the idle/no-message branch).
+- Cache `(hwnd, pid, image_path)` in a `Mutex<Option<AppIdentity>>` at WM_CLIPBOARDUPDATE
+  time. Use this cached value when building the `ClipboardAlert` — never re-query
+  at alert-send time.
+- If `GetWindowThreadProcessId` returns 0, log a warn-level event with identity
+  `AppIdentity::Unknown` and proceed. Never panic or block the clipboard monitor thread.
 
-**Phase:** Policy Conditions Builder (POLICY-05)
+**Phase to address:** Phase for APP-02 (source app detection). The caching structure
+must be in place before APP-05 (audit enrichment) can populate source fields.
 
 ---
 
-### PITFALL-02: N Invalidations on Import of N Policies
+### PITFALL-A2: UWP / AppX Apps Return Wrong Path from QueryFullProcessImageNameW
 
-**What goes wrong:**
-The import flow calls `POST /policies` once per policy in the file. Each call succeeds and the
-server handler calls `state.policy_store.invalidate()` after every individual write. For a 50-policy
-import file, this triggers 50 sequential DB reads inside `load_from_db` — each acquires the
-r2d2 pool, re-reads the entire `policies` table, and swaps the `RwLock<Vec<Policy>>` 50 times.
-The last 49 invalidations are wasted work. On slow storage this adds visible latency. More
-importantly, each invalidation acquires a **write lock** on the cache, blocking any concurrent
-`POST /evaluate` call for the duration of the reload.
+**Problem:** For UWP apps (Windows Store apps, Win11 system apps), `OpenProcess` +
+`QueryFullProcessImageNameW` returns the host process path (`C:\Windows\System32\
+RuntimeBroker.exe` or `C:\Program Files\WindowsApps\...\AppName.exe`). The image
+path alone is not a reliable identity token — multiple UWP apps share the same host.
+The correct identity is the Application User Model ID (AUMID), retrieved via
+`GetApplicationUserModelId` (winbase.h) on the process handle. If the code path
+only checks image path, all UWP apps will either all match or all miss a publisher rule.
 
-**Root cause:**
-The existing CRUD handlers each invalidate immediately — correct for single operations but
-wrong for bulk operations. The TUI import path loops over parsed policies and calls
-`client.post("policies", &payload)` one at a time, inheriting per-call invalidation.
-
-**Consequences:**
-- Evaluation requests blocked for 50 x (SQLite read time) during import.
-- Unnecessary load on SQLite connection pool.
+**Why it happens:** Electron/Win32 app detection using `QueryFullProcessImageNameW` is
+straightforward. UWP has a fundamentally different identity model (package + app ID,
+not filesystem path). SEED-001 explicitly flags this but it is easy to defer until
+an actual UWP app triggers the wrong behavior in QA.
 
 **Prevention:**
-- Add a `POST /admin/policies/import` batch endpoint on the server that inserts all policies
-  in a single `UnitOfWork` transaction and calls `invalidate()` exactly once after the
-  transaction commits.
-- The TUI import action calls this single endpoint with the parsed policy array. If a batch
-  endpoint is not added, the TUI must buffer all policies in memory, issue the N individual
-  POSTs, then display a single progress indicator — but it cannot avoid N invalidations without
-  server-side support.
-- Do NOT batch individual POST calls and call a separate "refresh" endpoint — this creates a
-  window where policies are partially committed but the cache has not been updated.
+- Add an `AppIdentityKind` enum (`Win32 { image_path }`, `Uwp { aumid, image_path }`,
+  `Unknown`) to the `AppIdentity` struct from the start.
+- After `QueryFullProcessImageNameW`, attempt `GetApplicationUserModelId`. If it
+  succeeds, the process is UWP; populate `aumid`. If it returns
+  `APPMODEL_ERROR_NO_APPLICATION`, the process is Win32.
+- Policy conditions for app identity MUST match on `publisher` (from Authenticode
+  signer CN, or AUMID package family), not raw `image_path`. Raw path rules are a
+  bypass vector (rename the binary) and also break UWP.
+- Add unit tests with synthetic `AppIdentity` structs covering both kinds before
+  implementing the Win32 API layer.
 
-**Phase:** Policy Import/Export (POLICY-07/08)
+**Phase to address:** Phase for APP-01 (destination app detection) and APP-06
+(anti-spoofing). The `AppIdentity` type must be defined with `AppIdentityKind` before
+any detection code is written, or retrofitting breaks existing tests.
 
 ---
 
-### PITFALL-03: Import Conflict Creates Duplicate IDs / Wrong Version
+### PITFALL-A3: Electron App Identity Collapses Multiple Apps to One Publisher
 
-**What goes wrong:**
-`PolicyPayload.id` is caller-supplied on `POST /policies`. If the export file contains existing
-IDs and the admin imports without conflict detection, `PolicyRepository::insert` calls
-`INSERT INTO policies ... VALUES (...)` with a duplicate primary key. SQLite returns
-`UNIQUE constraint failed: policies.id`, the server returns `500`, and the TUI shows "Failed"
-with no indication of which policy ID collided or how many succeeded before the failure.
+**Problem:** Slack, VSCode, Teams (classic), Discord, Notion, and 20+ other apps all
+ship signed Electron bundles. `WinVerifyTrust` on these binaries returns:
+- Slack: publisher = "Slack Technologies, Inc."
+- VSCode: publisher = "Microsoft Corporation"
+- Teams (classic): publisher = "Microsoft Corporation"
+- Discord: publisher = "Discord Inc."
 
-**Root cause:**
-The current `create_policy` handler does not detect duplicates before inserting. The DB error
-surfaces as a generic `AppError::Database`.
+If a policy says "allow T3 paste into Microsoft-signed apps", it will match BOTH
+VSCode AND Teams — and also any future Microsoft-signed Electron app. Policy authors
+expect "allow VSCode" and will author a publisher rule. The rule will silently allow
+far more apps than intended.
 
-**Consequences:**
-- Partial import: some policies land, the rest fail silently with the same opaque error.
-- Admin cannot distinguish "policy already exists" from "server error".
+**Why it happens:** Publisher-based allowlists are coarse. The granularity DLP
+operators expect (per-app) requires image-path-based rules, but image paths change
+on every app update (version number in path). This is a product design gap that
+surfaces as a misconfiguration pitfall.
 
 **Prevention:**
-- Import screen must: (1) call `GET /policies` first to fetch existing IDs, (2) diff the file
-  against existing IDs, (3) present a conflict report showing `count_new`, `count_conflict`,
-  `count_update` before committing anything.
-- The batch import endpoint (see PITFALL-02) should accept a `conflict_strategy` parameter:
-  `"skip"` (ignore duplicates), `"overwrite"` (upsert), or `"abort"` (reject the whole batch
-  if any duplicate exists).
-- The TUI import screen must expose this choice as a picker before committing the import.
+- `AppIdentity` must carry BOTH `publisher: Option<String>` AND `image_path: String`.
+- Policy conditions for `SourceApplication` and `DestinationApplication` must support
+  matching on either field independently. The TUI condition builder (APP-04) must
+  present this clearly: "publisher" for coarse group rules, "image_path glob" for
+  specific-app rules.
+- Docs and TUI help text must state that publisher rules match ALL apps from that signer.
+- For Electron apps, the executable name (e.g., `slack.exe`, `code.exe`) in the
+  image path is a more stable identifier than the full path. Consider a normalized
+  `executable_name: String` field stripped from the full path.
 
-**Phase:** Policy Import/Export (POLICY-08)
+**Phase to address:** Phase for APP-03 (policy evaluation) and APP-04 (TUI authoring).
+The policy condition schema in `dlp-common::abac::PolicyCondition` must have the
+`SourceApplication` and `DestinationApplication` variants defined before Phase for
+APP-03 begins, or the evaluator will be written to an incomplete contract.
 
 ---
 
-### PITFALL-04: Screen Variant Borrow Split — Editing State Left Behind
+### PITFALL-A4: WinVerifyTrust Blocks on Network Calls — Freezes the UI Thread
 
-**What goes wrong:**
-The existing `SiemConfig` and `AlertConfig` screens use a `(selected, editing, buffer)` triple
-inline in the `Screen` enum variant. The new policy create/edit forms will have more fields
-(name, description, priority, action, enabled, plus a variable-length conditions list). The
-pattern used in the existing code — `let (selected, editing) = match &app.screen { ... }` then
-a second mutable borrow inside the match arm — fails at larger scale when multiple mutable
-fields need simultaneous update.
+**Problem:** `WinVerifyTrust` with `WINTRUST_ACTION_GENERIC_VERIFY_V2` performs
+certificate revocation checks (CRL/OCSP) by default. On a machine with no internet
+access, or a machine where the CRL endpoint is slow, this call can block for 5-30
+seconds. The clipboard monitor runs in `dlp-user-ui` on the UI message thread. A
+30-second block on every clipboard change event will freeze the entire user interface
+and miss subsequent clipboard events.
 
-In the `handle_siem_config_editing` handler, `selected` is copied out before the mutable borrow
-of `app.screen`. This works for two fields but becomes error-prone when the form has 6+ fields
-and cursor focus must be shared between the top-level form fields and a nested conditions list.
-The risk: a key-event handler updates `editing = false` but forgets to clear `buffer`, leaving
-stale data pre-filled when the user reopens a field.
+**Why it happens:** The default `WINTRUST_DATA` flags do not disable revocation
+checking. Most DLP teams discover this only under production load when a flaky proxy
+causes random UI hangs.
 
 **Prevention:**
-- Introduce a dedicated `PolicyFormState` struct (not inline in `Screen`) containing all mutable
-  form state: `fields: Vec<String>`, `focused_field: usize`, `conditions: Vec<ConditionDraft>`,
-  `focused_condition: Option<usize>`, `condition_focus: ConditionCursor`.
-- Store `Box<PolicyFormState>` inside the `Screen::PolicyCreate` and `Screen::PolicyEdit`
-  variants to keep the `Screen` enum clone cheap.
-- Introduce a `clear_edit_state()` method on `PolicyFormState` called on every Esc press.
+- Set `dwProvFlags` to include `WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT` and consider
+  `WTD_CACHE_ONLY_URL_RETRIEVAL` for the clipboard hot path.
+- Run `WinVerifyTrust` in a `tokio::task::spawn_blocking` or a dedicated thread pool,
+  never on the message pump thread.
+- Cache verification results: once a binary at path X with size Y and mtime Z is
+  verified, cache the `(publisher, signature_state)` result. Re-verify only when the
+  file changes (check mtime/size, not hash, for performance). Cache in an
+  `Arc<RwLock<HashMap<String, CachedIdentity>>>` shared between source and destination
+  detection paths.
+- Fallback: if verification takes > 2 seconds, mark the app as
+  `SignatureState::VerificationTimeout` and apply the policy's default-for-unknown
+  behavior rather than blocking.
 
-**Phase:** Policy CRUD Forms (POLICY-02, POLICY-03)
+**Phase to address:** Phase for APP-06 (anti-spoofing). Must be addressed before
+APP-06 is considered complete. The caching structure should be introduced at the same
+time as `WinVerifyTrust` integration — retrofitting cache after the fact requires
+re-threading call sites.
 
 ---
 
-### PITFALL-05: Condition Builder Focus Trap — Incomplete Condition Submitted
+### PITFALL-A5: Pipe 3 ClipboardAlert Protocol Change Breaks Existing Integration Tests
 
-**What goes wrong:**
-A three-step picker (attribute → operator → value) must enforce that all three steps are
-complete before a condition can be added. In a ratatui form, the user can press Enter to
-"add condition" at step 1 or 2 if the handler does not validate completeness. An incomplete
-condition — e.g., `{"attribute":"classification"}` without `"op"` or `"value"` — will fail
-deserialization on the server and the policy will be silently skipped by `load_from_db`
-(see PITFALL-01).
+**Problem:** `ClipboardAlert` in `dlp-user-ui/src/ipc/messages.rs` and
+`dlp-agent/src/ipc/messages.rs` is a flat struct with 4 fields: `session_id`,
+`classification`, `preview`, `text_length`. Adding `source_application` and
+`destination_application` as new fields changes the Pipe 3 wire format. The agent-side
+handler at `dlp-agent/src/ipc/pipe3.rs:197-228` will fail to deserialize the old
+format and emit a `serde_json` error.
 
-Additionally, after completing step 3 (value selection), the cursor must return to the
-conditions list, not stay inside the value picker. Failure to reset the `ConditionCursor` state
-causes the picker to appear to accept a second value when the user presses Down, adding a
-duplicate or overwriting the just-completed condition.
+**Why it happens:** `Pipe3UiMsg` uses `#[serde(tag = "type", content = "payload")]`.
+Adding required fields to `ClipboardAlert` without defaults will break deserialization
+of any `ClipboardAlert` sent by a UI that has not yet been updated. During a rolling
+deploy (or during the integration test harness when old test fixtures are used), this
+causes silent drops.
 
 **Prevention:**
-- Model the condition builder as a state machine: `Idle → AttributePicked(attr) →
-  OperatorPicked(attr, op) → Complete(condition)`. Only the `Complete` state can be appended
-  to `conditions`. The "Add" button is only focusable when the state is `Idle` or `Complete`.
-- After completing step 3, immediately reset to `Idle` and shift focus to the conditions list.
-- The `conditions` list in the form state must hold `Vec<PolicyCondition>` (typed), not
-  `Vec<serde_json::Value>`, so incompleteness is caught at the type level before serialization.
+- All new fields in `ClipboardAlert` MUST be `Option<AppIdentity>` with `#[serde(default)]`.
+  This is the established pattern for forward/backward compat in this codebase (see
+  `EvaluateRequest::agent: Option<AgentInfo>` and `#[serde(default)]` on `AbacContext`).
+- Update BOTH `dlp-user-ui/src/ipc/messages.rs` AND `dlp-agent/src/ipc/messages.rs`
+  in the same commit. These files are intentionally duplicated (separate crates cannot
+  share IPC types without a dependency cycle). Any divergence causes runtime failures
+  that do not manifest at compile time.
+- Add a round-trip serde test: serialize a `ClipboardAlert` WITHOUT the new fields
+  (simulate old sender) and verify the agent-side deserializer succeeds with
+  `source_application: None`. This test must pass before the phase is closed.
 
-**Phase:** Conditions Builder (POLICY-05)
+**Phase to address:** Phase for APP-01 or APP-02, whichever first touches `ClipboardAlert`.
+The field additions and the serde compat test are a single atomic change — never split
+the struct change from the test.
 
 ---
 
-### PITFALL-06: Action String Mismatch — Server Silently Downgrades to DENY
+### PITFALL-A6: AbacContext / PolicyCondition Extension Breaks TOML Export
 
-**What goes wrong:**
-`deserialize_policy_row` in `policy_store.rs` maps the `action` string to a `Decision` via
-a hand-written `match`:
+**Problem:** `PolicyCondition` uses `#[serde(tag = "attribute", rename_all = "snake_case")]`.
+This is a known TOML incompatibility documented in STATE.md (2026-04-16). Adding
+`SourceApplication` and `DestinationApplication` variants to `PolicyCondition` extends
+this enum. If any phase tries to export policies containing the new condition types to
+TOML (POLICY-F4), it will fail for the same reason as before — and may surface as a
+panic at export time if POLICY-F4 is attempted in a future milestone.
 
-```rust
-"allow" => Decision::ALLOW,
-"deny" => Decision::DENY,
-"allow_with_log" | "allowwithlog" => Decision::AllowWithLog,
-"deny_with_alert" | "denywithalert" => Decision::DenyWithAlert,
-_ => Decision::DENY,  // silent fallback
-```
-
-The mapping is case-insensitive on the input (`to_lowercase()`), but the TUI must not emit
-arbitrary strings. If the picker emits `"ALLOW_WITH_LOG"` (from a `Decision` `Display` or
-debug representation) instead of `"Allow_With_Log"` or `"allow_with_log"`, it will match the
-`"allow_with_log"` arm. But if it emits `"AllowWithLog"` without an underscore, it hits only
-the `"allowwithlog"` arm — subtle and easy to miss. The `_ => Decision::DENY` catch-all means
-a misnamed action silently becomes DENY, which is a security-relevant behavior change with no
-error.
+**Why it happens:** The `toml` crate does not support internally-tagged enums with
+`#[serde(tag)]`. This is a pre-existing deficiency. New enum variants do not fix the
+underlying problem and will exhibit the same failure mode.
 
 **Prevention:**
-- The action picker must map display labels to the exact lowercase strings the server accepts:
-  `"allow"`, `"deny"`, `"allow_with_log"`, `"deny_with_alert"`.
-- Add a unit test asserting that every possible picker output round-trips through
-  `deserialize_policy_row` to the expected `Decision` variant.
-- Alternatively, change `PolicyPayload.action` to accept `Decision` directly (serde handles
-  it) and remove the hand-written match. This is a server-side change but eliminates the class
-  of bugs entirely.
+- New `PolicyCondition` variants (`SourceApplication`, `DestinationApplication`) are
+  JSON-only — same as all current variants. Do not attempt TOML serialization.
+- The TOML deferred status (POLICY-F4) applies to ALL `PolicyCondition` variants,
+  not just the old ones. Document this in the DEFERRED section of REQUIREMENTS.md for
+  v0.6.0.
+- When `EvaluateRequest` gains `source_application` / `destination_application` on
+  `AbacContext`, mark them `#[serde(default, skip_serializing_if = "Option::is_none")]`
+  for backward-compat with existing v0.4.0/v0.5.0 policy evaluations that do not
+  include these fields.
 
-**Phase:** Policy CRUD Forms (POLICY-02, POLICY-03)
-
----
-
-## Moderate Pitfalls
+**Phase to address:** Phase for APP-03 (policy evaluation engine extension).
 
 ---
 
-### PITFALL-07: Export Includes `version` and `updated_at` — Import Rejects or Misuses Them
+## Section 2: Browser Boundary (BRW-01 to BRW-03)
 
-**What goes wrong:**
-`PolicyResponse` (the GET response shape) includes `version: i64` and `updated_at: String`.
-If the export file is a direct serialization of `Vec<PolicyResponse>` and the import path
-deserializes each entry as `PolicyPayload`, `serde` will fail on unknown fields if
-`PolicyPayload` uses `#[serde(deny_unknown_fields)]`, or silently ignore them otherwise.
-More dangerously: if the import passes `version` through as part of the POST body, the server
-currently ignores it (version is set to 1 on insert), but future schema changes could cause
-conflicts.
+### PITFALL-B1: Chrome Content Analysis SDK Uses Named Pipes, Not HTTP
 
-Additionally, exporting `updated_at` from one environment and importing into another means the
-timestamp in the DB does not reflect when the import happened — audit trails become misleading.
+**Problem:** The Chrome Content Analysis Connector (content_analysis_sdk) communicates
+via a Windows named pipe, not HTTP. Chrome connects to a pipe registered under a
+well-known name derived from a policy-controlled configuration value. The protocol is
+protobuf-over-pipe, not JSON-over-HTTP. If the BRW-01 implementation builds an axum
+HTTP endpoint expecting Chrome to POST to it, Chrome will never connect — the browser
+only talks to the named pipe agent.
+
+**Why it happens:** The seed (SEED-002) describes "Path B" as building a
+`POST /browser/chrome-connector/scan` HTTP endpoint. This description is a
+simplification that does not match the actual Content Analysis SDK protocol. The real
+SDK uses protobuf messages over a named pipe and requires the agent to be registered
+under a policy-controlled registry entry. The dlp-server HTTP stack is not the right
+integration point for the SDK path.
+
+There are TWO distinct Chrome integration mechanisms. They are not interchangeable:
+- **Content Analysis SDK (named pipe + protobuf):** Chrome Enterprise DLP connector
+  that blocks clipboard/upload events synchronously. Requires a native pipe agent,
+  protobuf dependency (`prost` crate), and a Chrome enterprise policy to configure
+  the pipe name. The SDK C++ sources confirm this transport.
+- **Enterprise Connector HTTP endpoint (`OnTextEnteredEnterpriseConnector` policy):**
+  Chrome POSTs to an HTTPS URL. This path IS a dlp-server axum route but requires
+  TLS and a deployed Chrome policy. This is what SEED-002 "Path B minimum slice" refers to.
 
 **Prevention:**
-- Define a dedicated export schema (`PolicyExport`) that includes only the fields needed for
-  re-import: `id`, `name`, `description`, `priority`, `conditions`, `action`, `enabled`.
-  Exclude `version`, `updated_at`. Derive `Serialize`/`Deserialize` on `PolicyExport` in
-  `dlp-common`.
-- The export action serializes `Vec<PolicyExport>` to TOML or JSON.
-- The import action deserializes `Vec<PolicyExport>` and maps each to `PolicyPayload`.
+- Before Phase for BRW-01 begins, a design spike must confirm which of the two Chrome
+  integration paths is being implemented. The spike must produce a working prototype
+  that Chrome connects to — not just a design document.
+- If choosing the SDK path: add `prost` and `prost-build` to the workspace, generate
+  Rust types from the Content Analysis SDK `.proto` files, and implement the named
+  pipe agent using the same win32 pipe pattern as `dlp-agent/src/ipc/`.
+- If choosing the HTTP Enterprise Connector path: the axum handler for the scan
+  endpoint must match the request/response schema that Chrome sends. This schema is
+  JSON and requires the server to respond within Chrome's internal scan timeout.
+  TLS is mandatory — Chrome will not POST to plain HTTP.
+- Do not mix the two — they have different client configurations and different
+  request/response contracts.
 
-**Phase:** Policy Import/Export (POLICY-07/08)
+**Phase to address:** Phase for BRW-01 (design decision must precede implementation).
+This is the single highest-risk unknown in the browser boundary feature area.
 
 ---
 
-### PITFALL-08: TOML Serialization of Conditions Array Loses Type Tag
+### PITFALL-B2: Chrome Blocks Until the Connector Responds — Timeout Causes Tab Hang
 
-**What goes wrong:**
-`PolicyCondition` uses `#[serde(tag = "attribute")]` (internally tagged). The `toml` crate
-(v0.5/v0.8) does not support internally tagged enums when the inner value is not a map — this
-is a known limitation of `toml-rs`. Attempting to serialize `Vec<PolicyCondition>` via
-`toml::to_string` panics or produces `Error::UnsupportedType` at runtime.
+**Problem:** When Chrome submits a content scan request (whether via SDK pipe or HTTP
+Enterprise Connector), it blocks the paste/upload operation until the connector
+responds. If the dlp-server or the named pipe agent is slow or unreachable, the user's
+Chrome tab hangs until Chrome's internal timeout fires. At timeout, Chrome typically
+allows the operation (fail-open) or fails with an error dialog, depending on the
+policy configuration. Either behavior is unacceptable in production: fail-open defeats
+DLP; an error dialog every paste is intolerable.
+
+**Why it happens:** The scan request is synchronous from Chrome's perspective.
+The DLP connector is on the critical path of every paste and every file upload.
 
 **Prevention:**
-- For TOML export: serialize conditions as a `serde_json::Value` first (via
-  `serde_json::to_value`), then include the raw JSON string inside the TOML document as a
-  `conditions_json` text field. On import, parse the JSON string back to
-  `Vec<PolicyCondition>`.
-- Alternatively, use JSON as the only export format and offer "TOML" as a display-only feature.
-  This is simpler and avoids the `toml` crate limitation entirely.
-- Do not attempt to round-trip `PolicyCondition` through `toml::to_string` / `toml::from_str`
-  directly.
+- The connector must respond within 2-3 seconds for UX parity with non-DLP users.
+  The text classification pipeline (`dlp_common::classify_text`) is already fast, but
+  the round-trip through the ABAC policy engine and managed-origins lookup adds
+  latency. Benchmark the full path before shipping.
+- For the HTTP Enterprise Connector path: the axum handler for the scan endpoint
+  must use `tokio::time::timeout` around the policy evaluation call. If evaluation
+  exceeds a budget (e.g., 2000ms), respond with ALLOW + audit flag (never hang
+  the browser).
+- For the SDK named pipe path: the pipe message handler on the agent side must run
+  the evaluation in `tokio::task::spawn_blocking` if the ABAC evaluator is sync
+  (which it is per STATE.md). Never block the pipe read loop.
+- Add a health check that the browser connector endpoint measures latency on startup
+  and logs a warning if policy evaluation + managed-origins lookup exceeds 500ms.
 
-**Phase:** Policy Import/Export (POLICY-07/08) — HIGH priority design decision before coding
+**Phase to address:** Phase for BRW-01. Performance budget must be defined in the
+phase plan and validated before the phase is closed.
 
 ---
 
-### PITFALL-09: Simulate Form Uses Stale Cache, Not Live Server State
+### PITFALL-B3: Managed-Origins List Must Follow the Operator-Config-in-DB Pattern
 
-**What goes wrong:**
-The simulate/dry-run screen calls `POST /evaluate`. The `/evaluate` endpoint is NOT under
-`/admin/` — it is the unauthenticated evaluation endpoint (see `admin_api.rs` line 395). It
-evaluates against the server's `PolicyStore` cache. If the admin just created a policy but the
-background refresh interval (300s) has not fired yet, `/evaluate` will use the cache built
-before the CRUD write. However, `invalidate()` is called immediately after each CRUD write, so
-the cache IS current — this is only a risk if the admin is using a read-only replica that does
-not receive push-sync from `PolicySyncer`.
+**Problem:** If the managed-origins list is stored in the agent config TOML file
+(`C:\ProgramData\DLP\agent-config.toml`) or in env vars, it cannot be hot-reloaded
+without a service restart, cannot be managed from the TUI, and violates the established
+pattern for operator config (STATE.md 2026-04-13: "DB-backed config as the standard
+pattern"). Agents would need to restart to pick up origin list changes, creating a
+compliance gap window.
 
-The real risk is that the simulate form requires the admin to manually fill in a complete
-`EvaluateRequest` with `subject.user_sid`, `subject.groups` (SID array), `resource.path`,
-`resource.classification`, `environment.timestamp`, `environment.session_id`,
-`environment.access_context`, and `action`. If any required field is missing or incorrectly
-typed, the server returns a deserialization error. The TUI must not allow the admin to submit
-with empty required fields.
+**Why it happens:** The managed-origins list is a new data type that could plausibly
+live in agent config (it's used by the agent/connector for enforcement). The correct
+location per the codebase's established pattern is the server DB.
 
 **Prevention:**
-- Pre-populate the `EvaluateRequest` form with sensible defaults: `timestamp = Utc::now()`,
-  `session_id = 1`, `access_context = Local`, `device_trust = Managed`,
-  `network_location = Corporate`, `action = COPY`.
-- Required fields that must be filled: `user_sid` (non-empty string check), `resource.path`
-  (non-empty), `resource.classification` (picker, not free-text).
-- Show the `EvaluateResponse.reason` and `matched_policy_id` prominently in the result view.
+- New `managed_origins` table in `dlp-server/src/db.rs`. Schema: `id INTEGER PRIMARY KEY`,
+  `hostname TEXT NOT NULL UNIQUE`, `description TEXT`, `created_at TEXT`, `updated_at TEXT`.
+- JWT-protected `GET/POST/DELETE /admin/managed-origins` routes in `admin_api.rs`,
+  following the same pattern as device registry (SEED-003 phase B).
+- The connector (whether SDK agent or HTTP handler) fetches the origins list from the
+  server on startup and on a configurable refresh interval, storing it in an
+  `Arc<RwLock<HashSet<String>>>` — identical to `network_share.rs` pattern in the agent.
+- Admin TUI screen for managed-origins management mirrors the AlertConfig / SIEM config
+  pattern from previous milestones.
 
-**Phase:** Policy Simulate (POLICY-06)
+**Phase to address:** Phase for BRW-02 (managed-origins API + TUI). Must be completed
+before BRW-01 connector can enforce origin-based block decisions.
 
 ---
 
-### PITFALL-10: Esc From Create/Edit Form — Unsaved State Warning Not Present in Current Pattern
+### PITFALL-B4: Chrome Origin vs. Hostname Matching — Scheme and Port Sensitivity
 
-**What goes wrong:**
-The current Esc handlers (e.g., `handle_siem_config_nav`) immediately transition to the parent
-screen with no confirmation. For a SIEM config with 7 fields this is acceptable — the admin
-can re-navigate quickly. For a policy create form with a name, description, priority, action,
-and a conditions list containing multiple completed conditions, silently discarding on Esc is
-a poor UX that will cause accidental data loss.
+**Problem:** A managed-origins list entry of `"sharepoint.com"` is expected to match
+`https://company.sharepoint.com/sites/Finance`. But Chrome's connector sends the full
+origin (`scheme://hostname:port`), not just the hostname. A naive `hostname.contains(entry)`
+match will produce false positives (matching `evil-sharepoint.com.attacker.com`) and
+false negatives (missing `https://sharepoint.com:443` if the entry stores without port).
+The SEED-002 "copy once, paste many" problem is also related: if the source tab origin
+is stored at copy time, it must be stored with the same normalization applied to it
+as to the managed-origins entries, or the block decision will be inconsistent.
+
+**Why it happens:** Web origin comparison is canonically `scheme + hostname + port`.
+Substring matching on arbitrary strings is both insecure and unreliable.
 
 **Prevention:**
-- When the form has any non-default state (any field non-empty, or conditions list non-empty),
-  Esc should transition to a `Confirm { message: "Discard unsaved policy?", purpose:
-  DiscardPolicyForm }` screen rather than directly to `PolicyMenu`.
-- Implement `PolicyFormState::is_dirty() -> bool` that returns true when any field differs
-  from its initial value.
-- The `DiscardPolicyForm` confirm purpose transitions to `PolicyMenu { selected: 0 }` on Yes
-  and returns to the form on No.
+- Define an `Origin` newtype that parses and canonicalizes `scheme://hostname:port`
+  using a URL parser (the `url` crate, already likely transitive dep via reqwest).
+  Store canonicalized origins in the DB, match on exact equality or suffix-match
+  on eTLD+1 (registered domain) level using the `publicsuffix` crate.
+- The managed-origins list admin UI must validate entries at input time: accept
+  `sharepoint.com` (auto-expands to match all subdomains and schemes) OR full origins.
+- Define the matching semantics explicitly in REQUIREMENTS.md before writing the
+  matching code. "Matches sharepoint.com" should mean: hostname ends with `.sharepoint.com`
+  OR equals `sharepoint.com`, any scheme, any port. This must be a unit-tested function.
 
-**Phase:** Policy CRUD Forms (POLICY-02, POLICY-03)
+**Phase to address:** Phase for BRW-02 (origin storage and matching) — design the
+matching function before the BRW-01 connector logic references it.
 
 ---
 
-### PITFALL-11: `block_on` in Event Loop Freezes Terminal Render During HTTP Calls
+## Section 3: USB Device Identity (USB-01 to USB-05)
 
-**What goes wrong:**
-The existing dispatch handlers call `app.rt.block_on(...)` synchronously during key event
-processing. For fast local operations this is invisible. For the import flow (N sequential
-HTTP POSTs) or for the simulate call (network round trip to server), the terminal is
-completely frozen for the duration. The user sees no progress and cannot cancel.
+### PITFALL-U1: SetupDi Enumeration Must Happen in the WM_DEVICECHANGE Callback — Not After
 
-This is the same pattern already in use for SIEM config save (a single PUT), which is
-acceptable because it completes in <100ms. An import of 50 policies with N invalidations
-could block for 2-5 seconds.
+**Problem:** `DBT_DEVICEARRIVAL` is delivered as a `WM_DEVICECHANGE` message. The
+`DEV_BROADCAST_DEVICEINTERFACE_W.dbcc_name` field in the `lParam` struct contains the
+device instance path (e.g., `\\?\USB#VID_1234&PID_5678#SERIALNUMBER#{GUID}`). This
+device instance path is the correct input to `SetupDiOpenDeviceInterfaceW` and
+subsequent `SetupDiGetDeviceRegistryPropertyW` calls. If the SetupDi enumeration
+is deferred (e.g., spawned as a background task), the device may have been removed
+before enumeration completes, and the calls will fail with `ERROR_NO_SUCH_DEVINST`.
+
+**Why it happens:** The USB detection code in `dlp-agent/src/detection/usb.rs` currently
+processes `DBT_DEVICEARRIVAL` synchronously in the window procedure. Extending it to
+call multiple `SetupDi*` functions is tempting to do asynchronously to keep the message
+pump responsive, but the device instance data is most reliably available during the
+arrival callback itself.
 
 **Prevention:**
-- For multi-step operations (import with N items), show a progress message in the status bar
-  before starting: `app.set_status("Importing 50 policies...", StatusKind::Info)`.
-- After the blocking call returns, show the result count:
-  `"Imported 48/50 policies (2 conflicts skipped)"`.
-- Do not implement background tasks or tokio channels for this — the single-threaded TUI model
-  is intentional. The batch import endpoint (PITFALL-02) is the correct solution because it
-  reduces N blocking calls to 1.
+- Call `SetupDiGetDeviceRegistryPropertyW` (for VID, PID, serial, description) inside
+  the `DBT_DEVICEARRIVAL` handler, synchronously. The enumeration is fast (microseconds
+  per property) and does not block I/O.
+- Cache the result: `Arc<RwLock<HashMap<char, DeviceIdentity>>>` keyed by drive letter,
+  populated on arrival, cleared on `DBT_DEVICEREMOVECOMPLETE`.
+- Extract VID/PID from the Hardware ID string (format: `USB\VID_xxxx&PID_yyyy`) using
+  a regex or manual parse. Do NOT call `SetupDiGetDeviceRegistryPropertyW` for VID/PID
+  separately — parse them from `SPDRP_HARDWAREID` which contains the full `VID&PID` string.
+- The serial number is in the third segment of the device instance path
+  (`USB#VID_1234&PID_5678#SERIAL#{GUID}`). Extract it directly from
+  `dbcc_name` as a fallback if `SPDRP_FRIENDLYNAME` is empty.
 
-**Phase:** Policy Import/Export (POLICY-08)
+**Phase to address:** Phase for USB-01 (device identity enumeration).
 
 ---
 
-### PITFALL-12: Policy List Shows Stale Data After CRUD
+### PITFALL-U2: USB Serial Numbers Are Not Guaranteed Unique and Can Be Absent
 
-**What goes wrong:**
-`Screen::PolicyList` stores `policies: Vec<serde_json::Value>` in the enum variant. After
-creating, updating, or deleting a policy, navigating back to `Screen::PolicyList` shows the
-previously fetched list — not the updated state. The existing implementation navigates to
-`PolicyMenu` after CRUD (not back to `PolicyList`), so the admin must manually re-list. This
-is acceptable for the current file-based workflow but becomes a UX problem when the TUI
-supports inline create/edit.
+**Problem:** USB serial numbers are manufacturer-assigned and entirely optional.
+Cheap drives (commodity flash drives, no-name USB sticks) frequently report no serial
+number. When no serial is available, Windows uses a generated ID based on the USB
+controller port and hub position — meaning the same device in a different port will
+have a different "serial number". Conversely, some manufacturers ship all drives of
+a product line with the same hardcoded serial (e.g., `0001234567890`), making serial
+alone useless as a unique identifier. A whitelist keyed on `(VID, PID, serial)` will
+have registration failures for no-serial drives and false positives for clone-serial drives.
+
+**Why it happens:** The SEED-003 schema assumes `(vid, pid, serial)` as the primary
+key. This is the correct schema for devices that have real serials, but the
+application must handle the degenerate cases.
 
 **Prevention:**
-- After a successful create, edit, or delete operation, call `action_list_policies(app)` to
-  automatically refresh and navigate to `PolicyList`.
-- Do not cache the list in the screen variant across navigation events — always re-fetch on
-  entry to `PolicyList`.
+- The `device_registry` table MUST allow `serial TEXT` to be empty string or NULL.
+  Devices without a serial are identified by `(vid, pid)` alone and treated as a
+  weaker identity class (log a warning at registration time: "No serial — this entry
+  matches ALL devices with VID/PID xxxx:yyyy").
+- Policy enforcement must distinguish: `(vid, pid, serial)` match = high-confidence
+  registered device; `(vid, pid)` match with null/empty serial = low-confidence match,
+  apply the `trust_tier` but log an audit event with `identity_confidence: "low"`.
+- The admin TUI screen for device registration must display the confidence level and
+  warn when adding an entry with no serial.
+- A device with a duplicated/generic serial (heuristic: serial is all zeros, all `F`s,
+  or fewer than 4 characters) should be treated as "no serial" for matching purposes.
 
-**Phase:** Policy CRUD Forms (POLICY-02, POLICY-03, POLICY-04)
+**Phase to address:** Phase for USB-01 (identity enumeration) — detect and log the
+absent-serial case; Phase for USB-02 (device registry DB) — schema must support it.
 
 ---
 
-## Minor Pitfalls
+### PITFALL-U3: USB Thread Shutdown — GetMessageW Blocks Forever
 
----
+**Problem:** `STATE.md (2026-04-10)` documents: "Skip USB thread join on shutdown —
+`GetMessageW` blocks forever; OS reclaims on process exit." The existing implementation
+deliberately skips the `thread.join()` in `unregister_usb_notifications`. Any new
+code added to the USB thread (SetupDi enumeration, device registry lookup, cache
+invalidation) must not introduce new resources that require cleanup on the hot path
+before process exit. Specifically: Rust `Drop` impls for any struct held only in the
+USB thread may not run if the thread is abandoned.
 
-### PITFALL-13: `priority: u32` in Form — Free-Text Field Accepts Non-Numeric Input
-
-**What goes wrong:**
-The existing numeric field handling (demonstrated by `smtp_port` in `AlertConfig`) requires
-explicit `alert_is_numeric` classification and parse-on-commit. If the policy create form
-treats `priority` as a plain text field (like the existing `TextInput` screen), the admin can
-enter `"high"` and the server rejects the payload at the `u32` deserialization step with a
-400 response. The error message from the server (`"Failed to parse priority as u32"`) may
-not surface clearly in the status bar.
+**Why it happens:** `GetMessageW` in the message loop has no timeout. `PostQuitMessage`
+or `PostThreadMessage` to unblock it from another thread is unreliable for
+message-only windows, as documented in the existing code comments. The existing
+decision to not join is correct and should not be revisited.
 
 **Prevention:**
-- Classify the priority field as numeric in the form row classifier, identical to
-  `smtp_port`. Parse on commit and reject non-numeric input in the TUI before sending the
-  request.
+- The `DeviceIdentity` cache (`Arc<RwLock<HashMap<char, DeviceIdentity>>>`) MUST be
+  an `Arc` shared with the rest of the agent (not owned solely by the USB thread).
+  When the USB thread is abandoned on shutdown, the `Arc` still has strong references
+  from the enforcement layer — no data is lost.
+- Do NOT hold `MutexGuard`, `RwLockWriteGuard`, or `RwLockReadGuard` across any code
+  that could be blocked waiting for the message pump. The guards will never be released
+  if the thread is abandoned.
+- Any new `HANDLE` resources opened inside the USB thread (SetupDi device info sets,
+  etc.) must be closed before `GetMessageW` is called again, not deferred to a `Drop`
+  impl that may never run. Pattern: open handle, use handle, close handle, then re-enter
+  the message loop.
+- The device arrival handler should complete enumeration, update the cache, and return
+  to the message loop within milliseconds. Long-running operations inside the wndproc
+  callback will starve the message pump.
 
-**Phase:** Policy CRUD Forms (POLICY-02, POLICY-03)
-
----
-
-### PITFALL-14: `description: Option<String>` — Empty String vs. Absent
-
-**What goes wrong:**
-`PolicyPayload.description` is `Option<String>`. The server stores `NULL` in SQLite when
-`None`. If the TUI form commits an empty string as `description: Some("")`, the server stores
-an empty string (not `NULL`), and a subsequent GET returns `"description": ""` instead of
-`null`. This breaks the TUI's display logic if it uses `Option::is_none()` to decide whether
-to show the description row.
-
-**Prevention:**
-- Normalize the description field before sending: if the input buffer is empty or all
-  whitespace, set `description: None` in the payload. The form state should represent
-  description as `String` (buffer) and convert to `Option<String>` only at submission.
-
-**Phase:** Policy CRUD Forms (POLICY-02, POLICY-03)
+**Phase to address:** Phase for USB-01. This constraint must be written into the phase
+plan as a design invariant, not left to be discovered during code review.
 
 ---
 
-### PITFALL-15: Export File Path Validation — Windows Path Separators in TUI Input
+### PITFALL-U4: Read-Only Tier Enforcement at I/O Level Cannot Use file_monitor.rs Alone
 
-**What goes wrong:**
-The export/import screens accept a file path from the user via the existing `TextInput` screen
-pattern. On Windows, paths use backslashes (`C:\Exports\policies.json`), but users may also
-type forward slashes. `std::fs::write` and `std::fs::read_to_string` on Windows accept both
-forms. The problem is path display: if the TUI renders the raw input buffer in the status bar
-as `"Exported to C:\E..."` the backslash may be interpreted as an escape in terminal output.
+**Problem:** The current `file_monitor.rs` uses the `notify` crate to watch filesystem
+change events. The `notify` watcher fires AFTER the write succeeds (it is an
+observation layer, not an interception layer). For read-only USB enforcement, the write
+must be denied BEFORE it succeeds. The existing `should_block_write` check in
+`UsbDetector` only blocks based on classification, and the file_monitor detour is the
+only write-blocking mechanism. If read-only enforcement is added using the same
+post-event pattern, writes to read-only devices will succeed and then be logged —
+which is not enforcement, it is auditing.
+
+**Why it happens:** The SEED-003 description says "reuse the existing file_monitor
+detour." The existing detour for classification-based blocking works because the
+notify watcher is hooked into a write-interception path, not a post-event observer.
+But the details of HOW the detour works (kernel-level filter vs. user-mode hook) must
+be confirmed before trusting that the same mechanism blocks writes at I/O time.
 
 **Prevention:**
-- Display the canonical path via `std::path::Path::display()` in the status message, not the
-  raw input string.
-- Validate that the parent directory exists before attempting to write; report a clear error
-  if it does not.
+- Before the phase for USB-03 begins, verify with a test: can the current file_monitor
+  detour deny a write to a USB drive at the filesystem level, or does it only observe
+  after the fact? Check `dlp-agent/src/interception/file_monitor.rs` and the underlying
+  `notify` crate's backend on Windows (likely `ReadDirectoryChangesW`, which is
+  observation-only).
+- If the current detour is observation-only, USB read-only enforcement requires either:
+  (a) A Windows filesystem filter driver (`IRP_MJ_WRITE` intercept) — significant new
+      engineering, beyond the scope of a single phase.
+  (b) Volume shadow / NTFS permissions manipulation at mount time — fragile.
+  (c) A user-mode I/O completion port hook on the specific file handle — complex.
+- The SEED-003 "trade-off" question (mount-time vs. I/O-time) must be resolved in
+  the phase design discussion BEFORE implementation begins. This is the highest
+  technical risk item in the USB feature area.
+- If a filter driver is out of scope for v0.6.0, consider scoping read-only to
+  "deny mount" (prevent Explorer from seeing the drive at all) via a different
+  mechanism, or clearly document that the v0.6.0 read-only tier is "audit-only with
+  user notification" and enforcement is deferred to a future kernel-mode phase.
 
-**Phase:** Policy Import/Export (POLICY-07/08)
+**Phase to address:** Phase for USB-03 (read-only enforcement). The enforcement
+mechanism decision is a phase-0 design gate; all subsequent USB work depends on it.
+
+---
+
+### PITFALL-U5: User Notification Toast Must Run in User Session, Not Session 0
+
+**Problem:** `dlp-agent` runs as SYSTEM in Windows session 0. Session 0 is isolated
+from the interactive desktop. Any Win32 toast, balloon notification, or dialog
+created from session 0 will either fail silently or appear on an invisible desktop.
+This is the same constraint that drove the decision to run clipboard monitoring in
+`dlp-user-ui` (STATE.md 2026-04-10: "Clipboard monitoring in UI process — SYSTEM
+session 0 cannot access user clipboard").
+
+**Why it happens:** The SEED-003 Phase E describes adding a `Shell_NotifyIconW` or
+`ToastNotificationManager` call. Neither API works in session 0. The agent will
+receive the USB block event (it runs the enforcement), but the notification must be
+dispatched to the UI process in the user session via the existing IPC infrastructure.
+
+**Prevention:**
+- USB block events that need user notification must be sent from `dlp-agent` to
+  `dlp-user-ui` via Pipe 2 (`DLPEventAgent2UI`) using the existing `Pipe2AgentMsg::Toast`
+  variant, which already has `{ title: String, body: String }` fields — no new IPC
+  message type needed for basic notifications.
+- If richer USB-specific dialog (showing device identity, policy explanation, "request
+  registration" button) is needed, a new `Pipe2AgentMsg` variant can be added, but
+  the transport is still Pipe 2.
+- The `ToastNotificationManager` vs `Shell_NotifyIconW` decision (SEED-003 design
+  question) applies to the `dlp-user-ui` side. The user-ui process is already in the
+  user session. The installer question (COM activator registration for modern toast)
+  is a Phase E implementation detail, not a blocker for Phase D.
+- Unit test: verify that the USB block audit path calls the Pipe 2 notification
+  dispatch, not any direct Win32 notification API from within `dlp-agent`.
+
+**Phase to address:** Phase for USB-04 (user notification). Must use existing Pipe 2
+infrastructure — do not create a new IPC channel.
+
+---
+
+## Section 4: Cross-Cutting Integration Pitfalls
+
+### PITFALL-X1: AuditEvent New Fields Must Update alert_router.rs Simultaneously
+
+**Problem:** `dlp-common/src/audit.rs` `AuditEvent` will gain new fields for
+`source_application`, `destination_application`, and `device` (SEED-001 and SEED-003
+respectively). The `alert_router.rs::send_email` function in dlp-server formats audit
+events into email alert bodies. If a new field is added to `AuditEvent` without
+simultaneously updating `send_email`, the email template will either silently omit
+the new field (acceptable but incomplete) or panic if the field is accessed
+non-optionally.
+
+**Why it happens:** `AuditEvent` is shared across all crates via `dlp-common`.
+`alert_router.rs` accesses specific fields by name. This is an existing pattern
+documented in SEED-003 Breadcrumbs: "Per Phase 4 TM-03 forward-compat rule, the PR
+adding the field MUST simultaneously update `dlp-server/src/alert_router.rs::send_email`
+to redact or include the new field explicitly."
+
+**Prevention:**
+- Each PR that adds a field to `AuditEvent` MUST include a corresponding change to
+  `alert_router.rs::send_email` in the same commit (not a follow-up PR).
+- New optional fields must be `Option<T>` with `#[serde(default)]`. The email template
+  should render them with a "N/A" fallback, not `unwrap()`.
+- Add a compile-time test (or at minimum a clippy lint) that exhaustively matches
+  on all `AuditEvent` fields to catch silent omissions in the alert template.
+
+**Phase to address:** Every phase that modifies `AuditEvent` (APP-05, USB-05).
+
+---
+
+### PITFALL-X2: Policy Engine Sync Evaluator on the Hot Path Cannot Block on Win32 Calls
+
+**Problem:** `PolicyStore::evaluate()` is sync (STATE.md 2026-04-16: "PolicyStore
+evaluate() stays sync on hot path"). The new `SourceApplication` and `DestinationApplication`
+condition evaluation will need to compare the `AppIdentity` against policy rules.
+If condition evaluation calls Win32 APIs (e.g., `WinVerifyTrust`, `GetApplicationUserModelId`)
+at evaluation time, it violates the sync/no-block contract of the evaluator and will
+introduce unpredictable latency spikes.
+
+**Why it happens:** It is tempting to do "late" identity resolution — resolve app
+identity at evaluation time when the policy needs it. But the evaluator is on the
+critical path of every file and clipboard operation.
+
+**Prevention:**
+- App identity (publisher, signature state, AUMID) must be FULLY resolved and cached
+  BEFORE `PolicyStore::evaluate()` is called. The `ClipboardAlert` handler in
+  `dlp-agent/src/ipc/pipe3.rs` builds an `AuditEvent` — this is where the
+  `AbacContext` (once extended with app identity) must be populated from the already-
+  cached `AppIdentity` values.
+- The `AbacContext` struct (new for v0.6.0, wrapping the existing `EvaluateRequest`
+  or extending it) carries pre-resolved identity. The evaluator only reads struct
+  fields — it never calls Win32 APIs.
+- Follow the established pattern: classify text in `dlp-user-ui`, send
+  `ClipboardAlert` with pre-classified data. The agent evaluator receives pre-resolved
+  data. Same principle applies to app identity.
+
+**Phase to address:** Phase for APP-03 (policy evaluation). The `AbacContext` extension
+design must be documented in the phase plan before implementation.
+
+---
+
+### PITFALL-X3: DB Schema Changes Without Migration Framework Can Corrupt Existing Data
+
+**Problem:** This codebase uses `ALTER TABLE` in `dlp-server::db::open` for schema
+migrations (STATE.md: "DB schema migrations: column adds via ALTER TABLE in
+dlp-server::db::open with NOT NULL DEFAULT for backward compat"). New tables for
+`device_registry` and `managed_origins` must be created with `CREATE TABLE IF NOT EXISTS`.
+However, if a column is added to an existing table (e.g., adding `trust_tier` to a
+table that previously lacked it) WITHOUT a `NOT NULL DEFAULT`, existing rows will fail
+the constraint check and the server will fail to start after upgrade.
+
+**Why it happens:** The pattern works for simple column additions because all existing
+rows get the default. It breaks if: (a) the default is omitted, (b) a NOT NULL
+constraint is added to an existing column via ALTER TABLE (SQLite does not support
+`ALTER TABLE ... ALTER COLUMN`), (c) a new table has a foreign key to an old table
+with incompatible types.
+
+**Prevention:**
+- All new tables (`device_registry`, `managed_origins`) use `CREATE TABLE IF NOT EXISTS`
+  — safe on both fresh installs and upgrades.
+- Any `ALTER TABLE` for existing tables MUST specify `DEFAULT` for NOT NULL columns.
+- Do not add NOT NULL constraints to existing nullable columns — this is not supported
+  by SQLite's `ALTER TABLE`. If needed, create a new column with the constraint,
+  backfill, drop old column (requires table recreation in SQLite — avoid).
+- Run the integration test suite (which opens a real SQLite DB) against a pre-existing
+  database fixture that contains v0.5.0 schema data, verifying the v0.6.0 `db::open`
+  migrates it correctly without errors.
+
+**Phase to address:** Phase for USB-02 (device registry DB) and Phase for BRW-02
+(managed origins DB). Each phase's migration SQL must be reviewed before merge.
+
+---
+
+### PITFALL-X4: Two-Crate IPC Message Duplication — Silent Divergence on New Variants
+
+**Problem:** `Pipe3UiMsg` and `Pipe2AgentMsg` are defined in BOTH
+`dlp-user-ui/src/ipc/messages.rs` AND in the corresponding agent messages file.
+Per the codebase comment: "Since dlp-agent and dlp-user-ui are separate crates, the
+message types are duplicated here." When v0.6.0 adds new message variants
+(`UsbBlockNotification`, app identity fields on `ClipboardAlert`), both copies must
+be updated. Forgetting one copy compiles successfully — the deserialization failure
+only occurs at runtime when the new variant is sent.
+
+**Why it happens:** The two-crate architecture prevents a shared IPC types crate
+without a dependency cycle. This is an acknowledged structural decision. The risk is
+that both copies must be kept in sync manually.
+
+**Prevention:**
+- Every PR that adds or modifies a `Pipe2AgentMsg` or `Pipe3UiMsg` variant MUST
+  include a search for the other copy (Grep for the struct/enum name in both crates)
+  and update both in the same commit.
+- Add an integration test that serializes every variant in both copies and asserts
+  the JSON output matches. This test will fail at compile time if one copy gains a
+  new variant that the other lacks.
+- Consider adding a `#[test] mod ipc_sync_check` in `dlp-common` that imports
+  the canonical message shape and asserts that the field names and types match
+  a hardcoded schema string — a cheap structural synchrony test.
+
+**Phase to address:** Any phase that adds new IPC message variants (APP-01/02, USB-04).
 
 ---
 
 ## Phase-Specific Warning Matrix
 
-| Phase | Requirement | Pitfall | Mitigation |
-|-------|-------------|---------|------------|
-| Conditions Builder | POLICY-05 | PITFALL-01: Wrong JSON tag shape | Serialize via `serde_json::to_value::<PolicyCondition>`, not hand-crafted JSON |
-| Conditions Builder | POLICY-05 | PITFALL-05: Incomplete condition submitted | State-machine approach; only `Complete` state appends to list |
-| Conditions Builder | POLICY-05 | PITFALL-06: Action string mismatch | Picker maps display labels to exact server-accepted strings; unit test every action string |
-| Policy CRUD Forms | POLICY-02/03 | PITFALL-04: Borrow split with complex state | `PolicyFormState` struct, not inline variant fields |
-| Policy CRUD Forms | POLICY-02/03 | PITFALL-10: Silent Esc discard | `is_dirty()` guard before Esc; confirmation dialog |
-| Policy CRUD Forms | POLICY-02/03 | PITFALL-13: Non-numeric priority input | Numeric field classification; parse on commit |
-| Policy CRUD Forms | POLICY-02/03 | PITFALL-14: Empty string vs. None | Normalize empty → `None` at submission |
-| Policy CRUD Forms | POLICY-02/03/04 | PITFALL-12: Stale list after CRUD | Auto-refresh list after every successful write |
-| Policy Simulate | POLICY-06 | PITFALL-09: Incomplete EvaluateRequest | Sensible defaults pre-populated; required field guards |
-| Policy Import | POLICY-08 | PITFALL-02: N cache invalidations | Batch import endpoint with single `invalidate()` after transaction |
-| Policy Import | POLICY-08 | PITFALL-03: Duplicate ID collision | Pre-import conflict diff; conflict strategy picker |
-| Policy Import/Export | POLICY-07/08 | PITFALL-07: `version`/`updated_at` in export | Dedicated `PolicyExport` schema without server-managed fields |
-| Policy Import/Export | POLICY-07/08 | PITFALL-08: TOML + internally-tagged enum | Use JSON only, or store conditions as JSON string inside TOML |
-| Policy Import | POLICY-08 | PITFALL-11: Terminal freeze during bulk import | Batch endpoint reduces N calls to 1; progress status before call |
-| Policy Import/Export | POLICY-07/08 | PITFALL-15: Windows path in status bar | `Path::display()` for output; parent dir validation |
+| Phase Topic | Highest-Risk Pitfall | Mitigation Required Before Coding |
+|-------------|---------------------|-----------------------------------|
+| APP-01: Destination app detection | PITFALL-A2 (UWP), PITFALL-A4 (WinVerifyTrust hang) | Define `AppIdentityKind` enum; run Authenticode in spawn_blocking |
+| APP-02: Source app detection | PITFALL-A1 (dead HWND), PITFALL-A5 (Pipe 3 compat) | Synchronous capture at WM_CLIPBOARDUPDATE; all new fields `Option` + `#[serde(default)]` |
+| APP-03: Policy evaluation | PITFALL-A3 (Electron collapse), PITFALL-A6 (TOML), PITFALL-X2 (evaluator blocking) | Publisher + path both in condition; evaluator receives pre-resolved identity only |
+| APP-04: TUI authoring | PITFALL-A3 | Condition builder must expose publisher vs. path distinction clearly |
+| APP-05/06: Audit + anti-spoofing | PITFALL-X1, PITFALL-A4 | alert_router update in same PR; verification cache in place |
+| BRW-01: Chrome connector | PITFALL-B1 (wrong protocol), PITFALL-B2 (timeout) | Design spike to confirm HTTP vs. SDK path; timeout budget defined |
+| BRW-02: Managed origins | PITFALL-B3 (config location), PITFALL-B4 (origin matching) | DB-backed; URL-parsed origin matching with unit tests |
+| USB-01: Device enumeration | PITFALL-U1 (timing), PITFALL-U2 (serial absent), PITFALL-U3 (thread shutdown) | Enumerate in callback; Arc-based cache; no Drop deps in abandoned thread |
+| USB-02: Device registry DB | PITFALL-U2, PITFALL-X3 (migration) | Schema allows null serial; `CREATE TABLE IF NOT EXISTS` |
+| USB-03: Read-only enforcement | PITFALL-U4 (observation vs. interception) | Confirm file_monitor blocks vs. observes; resolve mount-time vs. I/O-time before coding |
+| USB-04: User notification | PITFALL-U5 (session 0) | Dispatch via Pipe 2 Toast; no direct Win32 notification from dlp-agent |
+| USB-05/APP-05: Audit enrichment | PITFALL-X1, PITFALL-X4 | alert_router + both IPC copies updated in same commit |
 
 ---
 
-## Integration Pitfalls: TUI Client vs. PolicyStore Cache
+## Sources
 
-The following summarize the integration contract between the TUI client and the server's
-`PolicyStore`:
-
-**Contract 1 — Invalidation is after-write, not before-write.**
-`policy_store.invalidate()` is called after `UnitOfWork.commit()` succeeds. If the TUI calls
-`GET /policies` immediately after a POST (e.g., to refresh the list), it will see the new
-policy because the cache is already updated. There is no race between write and read here for
-single operations.
-
-**Contract 2 — Bulk import breaks the single-invalidation contract.**
-The current per-handler `invalidate()` call is correct for single writes. N sequential POST
-calls from the TUI break this — each triggers a full cache reload. The only correct fix is a
-server-side batch endpoint.
-
-**Contract 3 — `load_from_db` silently skips malformed rows.**
-A conditions blob that fails `serde_json::from_str::<Vec<PolicyCondition>>` causes the policy
-to be skipped with a `warn!` log. From the TUI's perspective, the POST returned `201 Created`,
-the cache was invalidated, but the policy is absent from evaluation. The TUI must not rely on
-"POST succeeded" as proof the policy is active — it should verify by calling
-`GET /policies/{id}` and checking that the conditions field matches what was sent.
-
-**Contract 4 — Background refresh interval is 300 seconds.**
-If the TUI and a direct SQLite modification happen concurrently (e.g., a migration script),
-the cache may be stale for up to 5 minutes. For manual admin operations through the TUI this
-is not a risk because every TUI write calls `invalidate()` synchronously.
-
-**Contract 5 — `POST /evaluate` is unauthenticated and uses the in-process PolicyStore.**
-The simulate feature calls the live evaluation endpoint, not a separate dry-run path. The result
-reflects the server's current cache at the moment of the call. This is the desired behavior
-but means the simulate result can differ from what the admin expects if the server is a replica
-that has not yet received the push-synced policy from `PolicySyncer`.
+- Codebase analysis: `dlp-agent/src/detection/usb.rs`, `dlp-user-ui/src/clipboard_monitor.rs`,
+  `dlp-user-ui/src/ipc/messages.rs`, `dlp-agent/src/ipc/pipe3.rs`, `dlp-common/src/abac.rs`,
+  `dlp-common/src/audit.rs`, `.planning/seeds/SEED-001`, `.planning/seeds/SEED-002`,
+  `.planning/seeds/SEED-003`, `.planning/STATE.md`
+- [WinVerifyTrust API — Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust)
+- [GetClipboardOwner API — Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getclipboardowner)
+- [chromium/content_analysis_sdk — confirms protobuf-based named pipe protocol](https://github.com/chromium/content_analysis_sdk)
+- [Chrome Enterprise Content Analysis Connector (Broadcom/Symantec)](https://techdocs.broadcom.com/us/en/symantec-security-software/information-security/data-loss-prevention/16-0-1/about-discovering-and-preventing-data-loss-on-endp-v98548126-d294e27/about-monitoring-google-chrome-using-the-chrome-content-analysis-connector-agent-sdk-on-windows-endpoints.html)
+- WinVerifyTrust CVE-2013-3900 — confirms `EnableCertPaddingCheck` registry key behavior
+- [USB device instance ID serial number handling — Microsoft Q&A](https://learn.microsoft.com/en-us/answers/questions/1418133/usb-device-identification-serial-string-of-device-instance-id-changes)

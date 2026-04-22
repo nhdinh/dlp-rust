@@ -1,439 +1,531 @@
-# Architecture Patterns — v0.4.0 Policy Authoring TUI
+# Architecture: v0.6.0 Endpoint Hardening Integration
 
-**Domain:** Policy CRUD TUI for existing DLP admin CLI
-**Researched:** 2026-04-16
-**Overall confidence:** HIGH (all findings from direct source reading)
-
----
-
-## Existing Architecture — What v0.4.0 Adds To
-
-### Current dispatch pattern (HIGH confidence — source-verified)
-
-`dlp-admin-cli` is a pure state-machine TUI. Every screen is a variant of the
-`Screen` enum in `app.rs`. Navigation is driven by:
-
-1. `app.screen` — single field controls what is rendered and what key events mean
-2. `screens/dispatch.rs` — one `handle_*` function per `Screen` variant; all wired
-   in the top-level `handle_event` match
-3. `screens/render.rs` — one `draw_*` function per `Screen` variant; wired in `draw_screen`
-4. `App::rt.block_on(...)` — blocking async pattern; the TUI event loop is synchronous,
-   async HTTP calls are executed via a captured `tokio::Runtime`
-
-Purpose enums (`InputPurpose`, `PasswordPurpose`, `ConfirmPurpose`) carry multi-step
-wizard state inside `Screen` variants. This is the idiomatic extension point.
-
-### Existing policy-related screens (already in `Screen` enum)
-
-- `PolicyMenu { selected }` — submenu already present; currently exposes Get/Create/Update/Delete via raw JSON file path inputs
-- `PolicyList { policies, selected }` — already rendered; Enter navigates to `PolicyDetail`
-- `PolicyDetail { policy }` — read-only JSON dump view
-- `Confirm { message, yes_selected, purpose: ConfirmPurpose::DeletePolicy { id } }` — already used for delete confirmation
-
-The existing policy screens are functional but use raw file-path inputs for create/update.
-v0.4.0 replaces those flows with structured TUI forms.
+**Project:** dlp-rust
+**Milestone:** v0.6.0 — Application-Aware DLP, Browser Boundary, USB Device Control
+**Researched:** 2026-04-21
+**Confidence:** HIGH (derived directly from codebase + SEED files)
 
 ---
 
-## New Screen Variants Required
+## 1. Baseline Architecture (what exists today)
 
-### Core policy lifecycle screens
+```
+[User Session]                        [Session 0 / SYSTEM]
+ dlp-user-ui                           dlp-agent (Windows Service)
+   clipboard_monitor.rs                  detection/usb.rs       (WM_DEVICECHANGE pump)
+   dialogs/clipboard.rs                  detection/network_share.rs
+   ipc/pipe3.rs (client)                 interception/file_monitor.rs
+   notifications.rs                      ipc/pipe3.rs (server)
+        |                                      |
+        | Pipe 3 (UI->Agent)                   | HTTP POST /audit/events
+        v                                      v
+   Pipe3UiMsg::ClipboardAlert          dlp-server (axum 0.8)
+                                          policy_store.rs (PolicyStore::evaluate)
+                                          audit_store.rs
+                                          admin_api.rs
+                                          alert_router.rs
+                                          siem_connector.rs
+                                          db/ (SQLite)
 
-| Screen Variant | Purpose | Parent Screen |
-|---|---|---|
-| `PolicyCreateForm { draft: PolicyDraft, focused_field: usize }` | New policy creation form — name, description, priority, action, enabled | `PolicyMenu` |
-| `PolicyEditForm { policy_id: String, draft: PolicyDraft, focused_field: usize }` | Same form pre-filled for edit | `PolicyDetail` or `PolicyList` |
-| `ConditionBuilder { conditions: Vec<PolicyCondition>, step: ConditionStep, pending: PendingCondition }` | Stepped attribute/op/value picker; used as sub-state embedded in the form | (sub-state of `PolicyCreateForm` / `PolicyEditForm`) |
-| `PolicySimulate { draft: SimulateDraft, focused_field: usize, result: Option<EvaluateResult> }` | Fill EvaluateRequest, post to /evaluate, show decision | `PolicyMenu` |
-| `PolicyImport { file_path: String, conflict_mode: ConflictMode }` | File path input + conflict choice | `PolicyMenu` |
-| `PolicyExport { file_path: String, format: ExportFormat }` | File path + format choice | `PolicyMenu` |
+[Admin Terminal]
+ dlp-admin-cli (ratatui TUI)
+   SystemMenu -> SiemConfig, AlertConfig, ...
+   PolicyMenu -> PolicyCreate, PolicyEdit, PolicyList, PolicySimulate
+   HTTP -> dlp-server admin API
+```
 
-### Supporting struct additions to `app.rs`
+**Current `Pipe3UiMsg` variants:** `HealthPong`, `UiReady`, `UiClosing`, `ClipboardAlert`
+
+**Current `PolicyCondition` variants:** `Classification`, `MemberOf`, `DeviceTrust`, `NetworkLocation`, `AccessContext`
+
+**Current `AuditEvent` fields relevant to v0.6.0:** `application_path: Option<String>`, `application_hash: Option<String>` — both always `None` on the clipboard path today.
+
+**Current `AbacContext` / `EvaluateRequest`:** No process-level attributes. No device-identity attributes. No origin attributes.
+
+---
+
+## 2. Per-Crate Impact Table
+
+### dlp-common (shared types — all other crates depend on this)
+
+| Component | Status | Change |
+|-----------|--------|--------|
+| `abac::AppIdentity` struct | NEW | `canonical_path: String`, `publisher: Option<String>`, `signature_state: SignatureState`, `aumid: Option<String>` |
+| `abac::SignatureState` enum | NEW | `Signed`, `Unsigned`, `Invalid`, `Unknown` — anti-spoofing carrier |
+| `abac::DeviceIdentity` struct | NEW | `vid: u16`, `pid: u16`, `serial: Option<String>`, `description: String`, `trust_tier: UsbTrustTier` |
+| `abac::UsbTrustTier` enum | NEW | `Blocked`, `ReadOnly`, `FullAccess` |
+| `abac::PolicyCondition` enum | MODIFIED | Add variants: `SourceApplication { op, publisher/path }`, `DestinationApplication { op, publisher/path }`, `UsbDevice { op, vid/pid/trust_tier }`, `SourceOrigin { op, value }`, `DestinationOrigin { op, value }` |
+| `abac::EvaluateRequest` | MODIFIED | Add `source_application: Option<AppIdentity>`, `destination_application: Option<AppIdentity>`, `device: Option<DeviceIdentity>`, `source_origin: Option<String>`, `destination_origin: Option<String>` |
+| `audit::AuditEvent` | MODIFIED | Add `source_application: Option<AppIdentity>`, `destination_application: Option<AppIdentity>`, `device: Option<DeviceIdentity>`, `source_origin: Option<String>`, `destination_origin: Option<String>` |
+| `audit::AuditEvent::with_app_identity()` | NEW | Builder method for source+destination |
+| `audit::AuditEvent::with_device()` | NEW | Builder method for device fields |
+| IPC messages (`ipc::messages`) | MODIFIED | `Pipe3UiMsg::ClipboardAlert` gains `source_application: Option<AppIdentity>`, `destination_application: Option<AppIdentity>` |
+
+**Why dlp-common first:** Every crate (`dlp-agent`, `dlp-user-ui`, `dlp-server`, `dlp-admin-cli`) imports from `dlp-common`. Any new type must live here before downstream code can compile. This is the mandatory Phase 1 output.
+
+---
+
+### dlp-user-ui (user session, Win32 clipboard APIs)
+
+| Component | Status | Change |
+|-----------|--------|--------|
+| `clipboard_monitor::handle_clipboard_change` | MODIFIED | Call `GetClipboardOwner()` -> resolve PID -> `QueryFullProcessImageNameW` -> capture `AppIdentity` as `source_application` BEFORE reading clipboard text (race window: owner may close) |
+| `clipboard_monitor::classify_and_alert` | MODIFIED | Accept `source_application: Option<AppIdentity>` and pass to `send_clipboard_alert` |
+| NEW `detection/app_identity.rs` | NEW | `resolve_pid_to_identity(hwnd: HWND) -> Option<AppIdentity>`: `GetWindowThreadProcessId` -> `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` -> `QueryFullProcessImageNameW` -> optional `WinVerifyTrust` for signature state |
+| NEW `detection/destination_app.rs` | NEW | `capture_destination() -> Option<AppIdentity>`: `GetForegroundWindow()` -> `GetWindowThreadProcessId` -> `resolve_pid_to_identity`. Called at paste time (before `WM_CLIPBOARDUPDATE` is handled). |
+| `ipc/pipe3.rs::send_clipboard_alert` | MODIFIED | Add `source_application` and `destination_application` parameters; include in `Pipe3UiMsg::ClipboardAlert` |
+
+**Session-0 constraint enforced:** `GetForegroundWindow` and `GetClipboardOwner` are per-user-session Win32 calls. They MUST remain in `dlp-user-ui`. They cannot move to `dlp-agent` (Session 0 has no interactive window station).
+
+**Destination capture timing note:** There is no `WM_PASTE` message available OS-wide. The destination process is captured at `WM_CLIPBOARDUPDATE` time as "the currently focused window when data was placed on clipboard" — this is a best-effort capture that can race if the user switches focus mid-copy. Document this limitation explicitly.
+
+---
+
+### dlp-agent (Session 0 Windows Service)
+
+| Component | Status | Change |
+|-----------|--------|--------|
+| `ipc/messages::Pipe3UiMsg::ClipboardAlert` | MODIFIED | New fields `source_application`, `destination_application` (in dlp-common but reflected here in the handler) |
+| `ipc/pipe3.rs::route` (ClipboardAlert branch) | MODIFIED | Extract `source_application` and `destination_application` from message; populate `AuditEvent` via new `with_app_identity()` builder; include in `EvaluateRequest` for ABAC evaluation |
+| `detection/usb.rs::UsbDetector` | MODIFIED | On `DBT_DEVICEARRIVAL`: call `SetupDiGetClassDevsW` / `SetupDiEnumDeviceInfo` / `SetupDiGetDeviceRegistryPropertyW` to capture VID, PID, Serial, Description; lookup against device registry cache; populate `DeviceIdentity`; store in `Arc<RwLock<HashMap<char, DeviceIdentity>>>` keyed by drive letter |
+| NEW `detection/device_registry_cache.rs` | NEW | In-memory cache of `HashMap<(u16,u16,String), UsbTrustTier>` keyed by (VID, PID, Serial). Hot-reloaded when server signals config change. Mirrors the `network_share.rs` RwLock whitelist pattern. |
+| `interception/file_monitor.rs` | MODIFIED | On write operations to a USB drive: look up drive letter -> `DeviceIdentity` -> `UsbTrustTier`; if `ReadOnly`, deny writes; if `Blocked`, deny all I/O; populate `EvaluateRequest.device` before policy evaluation |
+| `audit_emitter.rs` | MODIFIED | Populate `device` field on USB block events from cached `DeviceIdentity` |
+| `ipc/messages::Pipe2AgentMsg` | MODIFIED | Add `UsbBlockNotify { device_description, vid, pid, trust_tier, policy_name }` variant for structured toast payload |
+
+**USB device identity enumeration stays in dlp-agent** because the `WM_DEVICECHANGE` pump and `SetupDi*` enumeration already reside there. The UI only receives the block toast (Pipe 2 -> `notifications.rs`).
+
+---
+
+### dlp-server (axum HTTP server)
+
+| Component | Status | Change |
+|-----------|--------|--------|
+| `db/mod.rs::init_tables` | MODIFIED | Add `device_registry` and `managed_origins` tables (see schema below) |
+| `db/mod.rs::run_migrations` | MODIFIED | `ALTER TABLE audit_events ADD COLUMN ...` for new fields on existing deployments |
+| NEW `db/repositories/device_registry.rs` | NEW | CRUD for `device_registry` — mirrors `siem_config.rs` / `alert_router_config.rs` pattern |
+| NEW `db/repositories/managed_origins.rs` | NEW | CRUD for `managed_origins` table |
+| `admin_api.rs` | MODIFIED | Add device-registry routes and managed-origins routes (see API routes below) |
+| NEW `chrome_connector.rs` | NEW | `POST /browser/chrome-connector/scan` endpoint — accepts Chrome Enterprise Connector DLP scan payload; evaluates against managed-origins list; returns allow/block decision; emits audit event |
+| `policy_store.rs::evaluate` | MODIFIED | Handle new `PolicyCondition` variants (`SourceApplication`, `DestinationApplication`, `UsbDevice`, `SourceOrigin`, `DestinationOrigin`) in the evaluator match arm |
+| `audit_store.rs` | MODIFIED | Persist new `AuditEvent` fields (source_application, destination_application, device) as nullable JSON columns |
+
+---
+
+### dlp-admin-cli (ratatui TUI)
+
+| Component | Status | Change |
+|-----------|--------|--------|
+| `screens/dispatch.rs::handle_system_menu` | MODIFIED | Add entries 5 = "Device Registry", 6 = "Managed Origins" (currently has 5 entries indexed 0-4; index 4 exits to main menu — shift exit to index 6) |
+| NEW `screens/device_registry.rs` | NEW | List registered devices (VID/PID/Serial/Trust Tier), Add / Edit / Remove screens. Mirrors `screens/siem_config.rs` / `screens/alert_config.rs` pattern. Uses generic `get::<serde_json::Value>` client calls. |
+| NEW `screens/managed_origins.rs` | NEW | List managed origins (domain, classification scope), Add / Remove screens. Same pattern. |
+| `screens/mod.rs` | MODIFIED | Add `Screen::DeviceRegistry { .. }` and `Screen::ManagedOrigins { .. }` variants |
+| `screens/render.rs` | MODIFIED | Add render arms for the two new screen variants |
+| `screens/dispatch.rs` (ConditionsBuilder) | MODIFIED | Add `SourceApplication`, `DestinationApplication`, `UsbDevice` condition types to the `ConditionsBuilder` picker list (APP-04). |
+
+---
+
+## 3. New IPC Messages
+
+### Pipe3UiMsg (UI -> Agent, `dlp-common::ipc::messages`)
 
 ```rust
-/// Working state for the policy create/edit form.
-pub struct PolicyDraft {
-    pub id: String,          // empty on create, filled on edit
-    pub name: String,
-    pub description: String,
-    pub priority: String,    // string for editing; parsed to u32 on submit
-    pub action: Decision,
-    pub enabled: bool,
-    pub conditions: Vec<PolicyCondition>,
-}
-
-/// Three-step condition picker state.
-pub enum ConditionStep {
-    PickAttribute { selected: usize },
-    PickOperator  { attribute: AttributeKind, selected: usize },
-    PickValue     { attribute: AttributeKind, op: String, input: String, selected: usize },
-}
-
-/// Tracks a condition in progress before it is committed to the list.
-pub struct PendingCondition {
-    pub step: ConditionStep,
-}
-
-pub enum AttributeKind {
-    Classification,
-    MemberOf,
-    DeviceTrust,
-    NetworkLocation,
-    AccessContext,
-}
+// MODIFIED variant — additive, backward-compatible with #[serde(default)] on new fields
+ClipboardAlert {
+    session_id: u32,
+    classification: String,
+    preview: String,
+    text_length: usize,
+    // NEW in v0.6.0:
+    source_application: Option<AppIdentity>,
+    destination_application: Option<AppIdentity>,
+},
 ```
 
-### Purpose enum additions
+### Pipe2AgentMsg (Agent -> UI, `dlp-common::ipc::messages`)
 
 ```rust
-// No new InputPurpose variants needed — structured forms replace the
-// current TextInput-based policy flows.
+// NEW variant for structured USB block notification
+UsbBlockNotify {
+    device_description: String,
+    vid: u16,
+    pid: u16,
+    trust_tier: String,
+    policy_name: String,
+},
+```
 
-// New ConfirmPurpose variant for the export overwrite prompt:
-pub enum ConfirmPurpose {
-    DeletePolicy { id: String },
-    OverwriteExportFile { path: String, format: ExportFormat },  // NEW
-}
+Recommendation: add `UsbBlockNotify` as a typed variant rather than reusing the generic `Toast` variant. It keeps the notification structured so `notifications.rs` can render a richer toast with device identity details rather than parsing a freeform string body.
+
+### No new pipe is needed
+The three-pipe architecture is sufficient. All new message types fit within existing pipe directions:
+- App identity flows UI -> Agent on Pipe 3 (existing direction of ClipboardAlert)
+- USB toast flows Agent -> UI on Pipe 2 (existing direction of Toast)
+- Chrome Connector is HTTP (not IPC) — handled by dlp-server directly
+
+---
+
+## 4. New Database Tables
+
+### `device_registry`
+```sql
+CREATE TABLE IF NOT EXISTS device_registry (
+    vid           INTEGER NOT NULL,
+    pid           INTEGER NOT NULL,
+    serial        TEXT    NOT NULL DEFAULT '',
+    description   TEXT    NOT NULL DEFAULT '',
+    manufacturer  TEXT    NOT NULL DEFAULT '',
+    trust_tier    TEXT    NOT NULL DEFAULT 'blocked'
+                  CHECK (trust_tier IN ('blocked', 'read_only', 'full_access')),
+    owner_user    TEXT,
+    registered_at TEXT    NOT NULL,
+    expires_at    TEXT,
+    registered_by TEXT    NOT NULL DEFAULT 'admin',
+    PRIMARY KEY (vid, pid, serial)
+);
+```
+
+No single-row constraint — this is a multi-row registry. No `INSERT OR IGNORE` seed needed.
+
+### `managed_origins`
+```sql
+CREATE TABLE IF NOT EXISTS managed_origins (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain      TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    added_at    TEXT NOT NULL,
+    added_by    TEXT NOT NULL DEFAULT 'admin'
+);
+```
+
+### Migration for `audit_events`
+```sql
+-- Run in run_migrations() -- idempotent, guarded by duplicate-column check
+ALTER TABLE audit_events ADD COLUMN source_application TEXT;
+ALTER TABLE audit_events ADD COLUMN destination_application TEXT;
+ALTER TABLE audit_events ADD COLUMN device_info TEXT;
+ALTER TABLE audit_events ADD COLUMN source_origin TEXT;
+ALTER TABLE audit_events ADD COLUMN destination_origin TEXT;
+```
+Store as nullable JSON text. Consistent with the existing pattern of storing `conditions` in `policies` as JSON text.
+
+---
+
+## 5. New Admin API Routes
+
+All routes follow existing patterns: JWT-protected under the admin auth layer, JSON body, same `AppState` extractor.
+
+### Device Registry
+```
+GET    /admin/device-registry                      -> list all registered devices
+POST   /admin/device-registry                      -> register a new device
+PUT    /admin/device-registry/:vid/:pid/:serial    -> update trust_tier or metadata
+DELETE /admin/device-registry/:vid/:pid/:serial    -> remove device registration
+```
+
+### Managed Origins (Browser Boundary)
+```
+GET    /admin/managed-origins          -> list all managed web origins
+POST   /admin/managed-origins          -> add an origin (body: domain, description)
+DELETE /admin/managed-origins/:id      -> remove an origin
+```
+
+### Chrome Enterprise Connector
+```
+POST   /browser/chrome-connector/scan  -> Chrome Enterprise DLP scan endpoint
+```
+
+Chrome Connector does NOT use the admin JWT (Chrome submits its own connector token). It is a separate router branch with its own shared-secret middleware. The connector secret is stored in a new single-row config table or as an entry in `agent_credentials`.
+
+---
+
+## 6. Data Flow Diagrams
+
+### SEED-001: App-Aware Clipboard Flow (v0.6.0)
+
+```
+[User copies text in Word]
+        |
+        | WM_CLIPBOARDUPDATE fires in dlp-user-ui message loop
+        v
+clipboard_monitor::handle_clipboard_change(session_id, last_hash)
+        |
+        |-- GetClipboardOwner() -> source HWND
+        |-- GetWindowThreadProcessId(source_hwnd) -> source PID
+        |-- OpenProcess + QueryFullProcessImageNameW -> source image path
+        |-- WinVerifyTrust -> signature state
+        |-- AppIdentity { canonical_path, publisher, signature_state }
+        |                            = source_application
+        |
+        |-- GetForegroundWindow() -> destination HWND (current focused window)
+        |-- GetWindowThreadProcessId(dest_hwnd) -> destination PID
+        |-- OpenProcess + QueryFullProcessImageNameW -> dest image path
+        |-- WinVerifyTrust -> signature state
+        |                            = destination_application
+        |
+        |-- read_clipboard() -> text content
+        |-- classify_text(text) -> Classification (T1..T4)
+        |
+        | [if T2+]
+        v
+pipe3::send_clipboard_alert(session_id, tier, preview, text_len,
+                             source_application, destination_application)
+        |
+        | Pipe 3 (UI -> Agent, JSON frame)
+        v
+dlp-agent ipc/pipe3.rs::route(Pipe3UiMsg::ClipboardAlert { ... })
+        |
+        |-- Build EvaluateRequest {
+        |       action: PASTE,
+        |       resource.classification: tier,
+        |       source_application: ...,
+        |       destination_application: ...,
+        |   }
+        |-- POST /evaluate -> dlp-server PolicyStore::evaluate()
+        |       PolicyCondition::SourceApplication match
+        |       PolicyCondition::DestinationApplication match
+        |-- Decision: ALLOW / DENY / DenyWithAlert
+        |
+        |-- Build AuditEvent with source_application, destination_application
+        |-- POST /audit/events -> dlp-server
+        |
+        | [if DENY]
+        v
+Pipe 2: Toast -> dlp-user-ui -> notifications.rs -> Win32 balloon
 ```
 
 ---
 
-## Conditions Builder Architecture
-
-### Recommendation: embed as sub-state inside the form screen, not a separate modal
-
-**Rationale:**
-
-The existing TUI has no modal/overlay mechanism. Every `Screen` variant IS the
-full screen. Introducing a true modal would require adding an `overlay: Option<ModalScreen>`
-field to `App` and teaching `render.rs` to composite two layers — significant scope
-increase with no other user in v0.4.0.
-
-The SIEM and Alert config screens demonstrate the correct pattern: complex sub-state
-(editing a specific field, bool toggles) is encoded directly inside the `Screen`
-variant. The conditions builder follows the same pattern.
-
-**Design: `ConditionStep` embedded in `PolicyCreateForm` / `PolicyEditForm`**
-
-The form variant holds `conditions: Vec<PolicyCondition>` plus an optional
-`pending: Option<PendingCondition>`. When `pending` is `Some`, the render function
-draws the attribute/op/value picker in the lower portion of the form area (replacing
-or extending the main form layout). When `pending` is `None`, the form shows the
-current conditions list with an `[Add Condition]` entry at the bottom.
-
-Keyboard flow:
-1. User navigates to `[Add Condition]` in the form → sets `pending = Some(PendingCondition { step: PickAttribute { selected: 0 } })`
-2. User picks attribute (Up/Down, Enter) → `step` advances to `PickOperator`
-3. User picks operator → `step` advances to `PickValue`
-4. User enters/picks value, presses Enter → condition serialised to `PolicyCondition`, pushed to `conditions`, `pending = None`
-5. User presses Esc at any step → `pending = None` (cancel)
-
-Each condition in the list has a `[x]` delete affordance navigable with Tab or a
-dedicated key.
-
-**Why not a separate screen:** The draft form data would need to survive a screen
-transition, requiring either cloning into the next screen variant or storing it in
-`App` as a separate field. Embedding avoids that coupling.
-
----
-
-## PolicyMenu Changes
-
-The existing `PolicyMenu` has 6 items (List, Get, Create, Update, Delete, Back).
-Replace the old raw-JSON Create/Update entries with structured forms and add new items:
-
-| Index | Item | Action |
-|---|---|---|
-| 0 | List Policies | `action_list_policies` (unchanged) |
-| 1 | Create Policy | push `PolicyCreateForm` with empty `PolicyDraft` |
-| 2 | Simulate Policy | push `PolicySimulate` with empty draft |
-| 3 | Import Policies | push `PolicyImport` |
-| 4 | Export Policies | push `PolicyExport` |
-| 5 | Back | `Screen::MainMenu { selected: 1 }` |
-
-Deleted: "Get Policy" (absorbed into PolicyList + PolicyDetail) and "Update Policy"
-(absorbed into PolicyDetail → edit action). The count changes from 6 to 6 (same count,
-different items) — the `nav(selected, 6, ...)` call in `handle_policy_menu` stays valid.
-
----
-
-## PolicyList Changes
-
-Add a keypress in `handle_policy_list`:
-
-- `Enter` → `PolicyDetail` (unchanged)
-- `n` or `Insert` → `PolicyCreateForm` with empty draft (shortcut)
-- `e` → `PolicyEditForm` pre-filled from the selected policy
-- `d` or `Delete` → `Confirm { purpose: ConfirmPurpose::DeletePolicy }` (unchanged path)
-
-The `selected` index already tracks the highlighted row, so the selected
-`PolicyResponse` is available for pre-filling the edit form.
-
----
-
-## PolicyDetail Changes
-
-Add keypresses in `handle_view` (currently handles `Enter`/`Esc` only):
-
-- `e` → load the policy by ID and push `PolicyEditForm`
-- `d` → push `Confirm { purpose: ConfirmPurpose::DeletePolicy }`
-
-The `policy: serde_json::Value` stored in `PolicyDetail` already contains the full
-`PolicyResponse` body needed to pre-fill the edit form draft.
-
----
-
-## Data Flow: Create / Edit
+### SEED-002: Chrome Enterprise Connector Flow (v0.6.0 Path B only)
 
 ```
-PolicyCreateForm (draft in Screen variant)
-  -> user fills name/desc/priority/action/enabled
-  -> user adds conditions via ConditionBuilder sub-state
-  -> [Save]: action_create_policy(draft) -> POST /admin/policies
-             serialize draft.conditions: Vec<PolicyCondition> to serde_json::Value
-             using serde_json::to_value(&conditions)?
-  -> on success: set_status + navigate to PolicyList
-
-PolicyEditForm (policy_id + draft in Screen variant)
-  -> same form, pre-filled from PolicyResponse
-  -> [Save]: action_update_policy(id, draft) -> PUT /admin/policies/{id}
-  -> on success: set_status + navigate to PolicyDetail or PolicyList
+[User pastes in Chrome tab]
+        |
+        | Chrome Enterprise Connector intercepts paste event
+        | Chrome POSTs to configured DLP scan endpoint
+        v
+dlp-server POST /browser/chrome-connector/scan
+        |
+        |-- Parse Chrome DLP scan payload:
+        |       { content_type, content, source_url, destination_url }
+        |-- Lookup source_url against managed_origins table
+        |-- Lookup destination_url against managed_origins table
+        |-- classify_text(content) -> Classification
+        |-- Build EvaluateRequest {
+        |       action: PASTE,
+        |       source_origin: source_url host,
+        |       destination_origin: destination_url host,
+        |       resource.classification: tier,
+        |   }
+        |-- PolicyStore::evaluate() -> Decision
+        |-- Build AuditEvent with source_origin, destination_origin
+        |-- store_events_sync(event)
+        |-- Return { action: "block" | "allow" } to Chrome
+        v
+Chrome honors the response (blocks or allows the paste)
 ```
 
-The conditions `Vec<PolicyCondition>` is serialised to `serde_json::Value` at submit
-time to match the `PolicyPayload.conditions: serde_json::Value` the server expects.
-This is a one-way conversion at the boundary — the builder works with typed
-`PolicyCondition` values internally throughout.
-
-When loading a policy for edit, the `conditions: serde_json::Value` from
-`PolicyResponse` must be deserialised back to `Vec<PolicyCondition>`:
-```rust
-let conditions: Vec<PolicyCondition> =
-    serde_json::from_value(policy_response.conditions.clone())?;
-```
-This round-trip works because `PolicyCondition` uses `#[serde(tag = "attribute")]`
-and the server stores the same JSON shape.
+This flow is entirely server-side. No agent involvement. No Pipe IPC. Chrome blocks synchronously while awaiting the server response.
 
 ---
 
-## Policy Simulate Data Flow
+### SEED-003: USB Device Identity Flow (v0.6.0)
 
 ```
-PolicySimulate screen
-  -> fields: subject.user_sid, subject.user_name, subject.groups (comma-sep),
-             subject.device_trust (picker), subject.network_location (picker),
-             resource.path, resource.classification (picker),
-             action (picker), environment.session_id
-  -> [Run]: build EvaluateRequest, call POST /evaluate (unauthenticated endpoint)
-  -> result stored in screen variant: Option<(Decision, Option<String>, String)>
-  -> render shows decision + matched_policy_id + reason in a result panel
-     within the same screen (no screen transition for the result — inline display)
+[User inserts USB drive]
+        |
+        | WM_DEVICECHANGE / DBT_DEVICEARRIVAL fires in dlp-agent message pump
+        v
+detection/usb.rs::on_drive_arrival(drive_letter)
+        |
+        |-- SetupDiGetClassDevsW(GUID_DEVINTERFACE_DISK)
+        |-- SetupDiEnumDeviceInfo -> enumerate device instances
+        |-- SetupDiGetDeviceRegistryPropertyW(SPDRP_HARDWAREID) -> "USB\VID_xxxx&PID_yyyy"
+        |-- Parse VID, PID
+        |-- SetupDiGetDeviceRegistryPropertyW(SPDRP_SERIALNUMBER) -> serial
+        |-- SetupDiGetDeviceRegistryPropertyW(SPDRP_DEVICEDESC) -> description
+        |-- Lookup (VID, PID, Serial) in device_registry_cache
+        |       -> UsbTrustTier: Blocked | ReadOnly | FullAccess | Unknown (default=Blocked)
+        |
+        |-- Store DeviceIdentity in Arc<RwLock<HashMap<char, DeviceIdentity>>>
+        |
+        | [if Blocked or Unknown]
+        |-- Pipe 2: UsbBlockNotify { description, vid, pid, trust_tier: "blocked", ... }
+        |        -> dlp-user-ui notifications.rs -> Toast to user
+        |-- Emit AuditEvent { event_type: Block, device: DeviceIdentity, ... }
+        |
+        | [if ReadOnly or FullAccess]
+        |-- Drive is allowed to mount
+        v
+[User writes to USB drive]
+        |
+        | NtWriteFile / NtCreateFile interception in file_monitor.rs
+        v
+interception/file_monitor.rs::on_write_attempt(path, classification)
+        |
+        |-- Extract drive letter from path
+        |-- Lookup drive letter in device_identity_map -> DeviceIdentity
+        |-- Build EvaluateRequest { device: DeviceIdentity, action: WRITE, ... }
+        |-- PolicyStore::evaluate() -> Decision
+        |
+        | [if ReadOnly tier AND write operation]
+        |-- Decision = DENY (trust tier overrides policy for writes)
+        |-- Emit AuditEvent with device fields
+        |-- Pipe 2: UsbBlockNotify -> dlp-user-ui -> Toast
+        |
+        v
+AuditEvent -> dlp-server -> SIEM relay + alert_router
 ```
 
-`EvaluateRequest` and `EvaluateResponse` are already in `dlp-common::abac`, so the
-CLI can use them directly with `dlp_common::EvaluateRequest`. The POST /evaluate
-endpoint is unauthenticated and uses the same `client.post` helper.
-
 ---
 
-## Import / Export: File Format Placement
-
-### Recommendation: define the serialization types in `dlp-admin-cli`, not `dlp-common`
-
-**Rationale:**
-
-The server already has `PolicyPayload` and `PolicyResponse` in `dlp-server::admin_api`.
-Import/export is a CLI-side administrative operation — no other crate needs it at runtime.
-The server does not bulk-import/export; it only handles individual CRUD via the REST API.
-
-Adding import/export types to `dlp-common` would introduce a file-format concern into
-a shared crate consumed by `dlp-agent` and `dlp-user-ui`, which have no use for it.
-
-**Format recommendation: TOML (primary), JSON (secondary via flag)**
-
-TOML is already the agent config format in this project (agent-config.toml). It is
-human-editable, comment-supporting, and unambiguous for the admin's use case of
-reviewing and tweaking policy sets before importing.
-
-The export file structs:
-
-```rust
-// In dlp-admin-cli, e.g. src/policy_file.rs
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PolicyFile {
-    pub version: u32,       // schema version, start at 1
-    pub exported_at: String, // ISO 8601 timestamp
-    pub policies: Vec<PolicyFileEntry>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PolicyFileEntry {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub priority: u32,
-    pub conditions: Vec<PolicyCondition>,  // typed, not serde_json::Value
-    pub action: String,
-    pub enabled: bool,
-}
-```
-
-`PolicyCondition` is in `dlp-common` so `PolicyFileEntry.conditions` can use the
-typed enum directly — no duplication needed.
-
-**Import conflict detection:**
-
-On import, for each entry in the file, check if an ID already exists via
-`GET /admin/policies/{id}`. If it does, present the admin with options:
-- Skip (leave existing untouched)
-- Replace (PUT with imported data)
-- Rename (generate a new ID with a suffix)
-
-The `PolicyImport` screen encodes this as a `ConflictMode` enum stored in the
-`Screen` variant. Conflict resolution is per-file not per-policy (keep it simple
-for v0.4.0).
-
----
-
-## Component Boundaries
-
-| Component | What Changes | Notes |
-|---|---|---|
-| `dlp-admin-cli/src/app.rs` | Add new `Screen` variants + supporting structs | Core state machine extension |
-| `dlp-admin-cli/src/screens/dispatch.rs` | Add `handle_*` functions for new screens; extend `handle_policy_list`, `handle_policy_menu`, `handle_view` | All action functions (`action_*`) live here |
-| `dlp-admin-cli/src/screens/render.rs` | Add `draw_*` functions for new screens | No logic — pure layout + widget calls |
-| `dlp-admin-cli/src/policy_file.rs` | New file: `PolicyFile`, `PolicyFileEntry`, TOML read/write | Import/export logic |
-| `dlp-common/src/abac.rs` | No changes needed | `PolicyCondition`, `EvaluateRequest`, etc. already correct |
-| `dlp-server` | No changes needed | `/admin/policies` CRUD + `/evaluate` already complete |
-
----
-
-## Build Order with Dependency Rationale
-
-### Phase A — Conditions Builder (no API dependency)
-
-Build `ConditionBuilder` sub-state types (`ConditionStep`, `AttributeKind`,
-`PendingCondition`), the render function for the picker, and unit tests for the
-step transitions. This has zero API dependency — it is pure local TUI state.
-
-Delivers: the picker component that Phase B requires.
-
-### Phase B — Policy Create Form (depends on A)
-
-Add `PolicyDraft`, `PolicyCreateForm` screen variant, `handle_policy_create_form`,
-`draw_policy_create_form`. Wire the ConditionBuilder sub-state from Phase A into the form.
-Add `action_create_policy` which serialises `PolicyDraft` to `PolicyPayload` and calls
-`POST /admin/policies`.
-
-Delivers: POLICY-02 (create with conditions), POLICY-05 (structured picker).
-
-Update `PolicyMenu` to route item 1 to `PolicyCreateForm` instead of the old
-`TextInput { purpose: CreatePolicyFromFile }` path.
-
-### Phase C — Policy Edit + Delete (depends on B, reuses A)
-
-Add `PolicyEditForm` screen variant (reuses `PolicyDraft` and ConditionBuilder from A/B).
-Add `action_update_policy` that calls `PUT /admin/policies/{id}`.
-Extend `handle_policy_list` and `handle_view` with `e` / `d` keypresses.
-The delete flow already works via `Confirm` — just wire it from the new entry points.
-
-Delivers: POLICY-03 (edit), POLICY-04 (delete from list/detail), POLICY-01 (list already works).
-
-### Phase D — Policy Simulate (depends on dlp-common types only, parallel-capable with B/C)
-
-Add `PolicySimulate` screen variant and supporting draft struct. Build the EvaluateRequest
-form fields (fixed number of fields, similar to the SIEM/Alert config pattern).
-Add `action_simulate_policy` calling `POST /evaluate`.
-Wire into `PolicyMenu` item 2.
-
-Delivers: POLICY-06.
-
-### Phase E — Import / Export (depends on B for `PolicyFileEntry` shape)
-
-Create `policy_file.rs` with `PolicyFile` / `PolicyFileEntry` and TOML serialization.
-Add `PolicyExport` and `PolicyImport` screen variants.
-Implement `action_export_policies` (GET list + serialize + write file) and
-`action_import_policies` (read file + conflict check + POST each entry).
-Wire into `PolicyMenu` items 3 and 4.
-
-Delivers: POLICY-07 (export), POLICY-08 (import).
-
-**Dependency summary:**
+## 7. Component Boundaries Summary
 
 ```
-A (ConditionBuilder types) --> B (CreateForm) --> C (EditForm)
-                                               --> E (ImportExport, needs PolicyFileEntry shape)
-D (Simulate) -- no dependency on A/B/C; parallel with B
+                     dlp-common (shared types — Phase 22 foundation)
+                    /      |      |      \
+         dlp-agent    dlp-user-ui  dlp-server  dlp-admin-cli
+              |             |           |
+              +---Pipe3---->+           |
+              |<---Pipe2----+           |
+              |                        |
+              +---HTTP /evaluate------->|
+              +---HTTP /audit/events--->|
+                                        |
+              dlp-admin-cli ---HTTP admin API---+
+
+New in v0.6.0:
+  dlp-user-ui:   adds detection/app_identity.rs, detection/destination_app.rs
+  dlp-agent:     adds detection/device_registry_cache.rs
+  dlp-server:    adds chrome_connector.rs, db/repositories/device_registry.rs,
+                 db/repositories/managed_origins.rs
+  dlp-admin-cli: adds screens/device_registry.rs, screens/managed_origins.rs
 ```
 
-Phases B and D can be developed in parallel after A is complete. Phase E needs B
-complete so the file entry structure mirrors what the create form builds.
+---
+
+## 8. Recommended Phase Build Order
+
+The dependency graph mandates this sequence. Each phase produces output the next phase consumes.
+
+```
+Phase 22: dlp-common type foundation
+  - New: AppIdentity, SignatureState, DeviceIdentity, UsbTrustTier structs
+  - Modified: PolicyCondition (5 new variants), EvaluateRequest (5 new fields),
+              AuditEvent (5 new fields + builders), Pipe3UiMsg::ClipboardAlert (2 new fields),
+              Pipe2AgentMsg::UsbBlockNotify (new variant)
+  - Output: all shared types compile; all downstream crates see new types
+  - Must come BEFORE: all of 23, 24, 25, 26, 27, 28, 29
+
+Phase 23: USB device identity enumeration  [dlp-agent, SEED-003 Phase A]
+  - Modified: detection/usb.rs -- SetupDi enumeration on DBT_DEVICEARRIVAL
+  - New: detection/device_registry_cache.rs -- Arc<RwLock<HashMap>> keyed by drive letter
+  - Output: agent captures and logs VID/PID/Serial/Description; no enforcement change yet
+  - Depends on: Phase 22
+  - Can run in parallel with: Phase 24, Phase 25
+
+Phase 24: Device registry DB + admin API  [dlp-server, SEED-003 Phase B]
+  - New: device_registry table, db/repositories/device_registry.rs
+  - New: GET/POST/PUT/DELETE /admin/device-registry routes in admin_api.rs
+  - Output: server stores and serves device registry over API
+  - Depends on: Phase 22
+  - Can run in parallel with: Phase 23, Phase 25
+
+Phase 25: App identity capture in clipboard monitor  [dlp-user-ui, SEED-001]
+  - New: detection/app_identity.rs -- Win32 process identity resolution
+  - New: detection/destination_app.rs -- GetForegroundWindow capture
+  - Modified: clipboard_monitor.rs -- capture source + destination at WM_CLIPBOARDUPDATE
+  - Modified: ipc/pipe3.rs::send_clipboard_alert -- include AppIdentity fields
+  - Output: ClipboardAlert IPC messages now carry source_application + destination_application
+  - Depends on: Phase 22 (AppIdentity type)
+  - Can run in parallel with: Phase 23, Phase 24
+
+Phase 26: ABAC enforcement -- app identity + USB read-only  [dlp-agent + dlp-server]
+  - Modified: ipc/pipe3.rs::route(ClipboardAlert) -- build EvaluateRequest with app identity
+  - Modified: interception/file_monitor.rs -- USB trust tier enforcement at I/O time
+  - Modified: detection/usb.rs -- consult device_registry_cache; send UsbBlockNotify via Pipe 2
+  - Modified: policy_store.rs::evaluate -- handle SourceApplication, DestinationApplication,
+              UsbDevice, SourceOrigin, DestinationOrigin condition variants
+  - Audit events populated: source_application, destination_application, device fields
+  - Output: ABAC decisions use app identity and USB device identity (APP-01/02/03, USB-03)
+  - Depends on: Phase 22, 23, 24, 25 (all must complete before integration phase)
+
+Phase 27: User notifications for USB blocks  [dlp-user-ui, SEED-003 Phase E]
+  - Modified: notifications.rs -- handle Pipe2AgentMsg::UsbBlockNotify, render structured toast
+  - Output: User sees Toast when USB is blocked with device description and policy name (USB-04)
+  - Depends on: Phase 22 (UsbBlockNotify variant), Phase 26 (agent emits the message)
+
+Phase 28: Admin TUI screens  [dlp-admin-cli, SEED-003 Phase C + SEED-001 APP-04]
+  - New: screens/device_registry.rs -- list/add/edit/remove devices with trust tier
+  - New: screens/managed_origins.rs -- list/add/remove managed web origins
+  - Modified: screens/dispatch.rs::handle_system_menu -- add entries 5 and 6
+  - Modified: screens/mod.rs, screens/render.rs -- new Screen variants
+  - Modified: ConditionsBuilder picker -- add SourceApplication, DestinationApplication,
+              UsbDevice condition types (APP-04)
+  - Output: Admin can author device-aware and app-aware policies in TUI
+  - Depends on: Phase 24 (server API must exist); Phase 26 (conditions must evaluate)
+
+Phase 29: Chrome Enterprise Connector  [dlp-server, SEED-002 Path B]
+  - New: chrome_connector.rs -- POST /browser/chrome-connector/scan
+  - New: managed_origins table, db/repositories/managed_origins.rs
+  - Modified: admin_api.rs -- GET/POST/DELETE /admin/managed-origins routes
+  - Modified: policy_store.rs::evaluate -- SourceOrigin, DestinationOrigin condition evaluation
+  - Output: Chrome Enterprise customers can block paste into unmanaged origins (BRW-01/02/03)
+  - Depends on: Phase 22 (origin types), Phase 28 (admin can manage origins list)
+  - Note: Can be parallelized with Phase 27-28 on the server side; sequence after Phase 26
+    to avoid shipping browser enforcement before OS-level app enforcement is proven
+```
+
+### Build Order Summary (dependency graph)
+
+```
+Phase 22 (dlp-common foundation)
+  |
+  +---> Phase 23 (USB enumeration, dlp-agent)     \
+  |                                                |
+  +---> Phase 24 (device registry DB, dlp-server) +---> Phase 26 (ABAC enforcement) ---> Phase 27 (toast)
+  |                                                |                                  \
+  +---> Phase 25 (app identity, dlp-user-ui)      /                                   --> Phase 28 (TUI)
+                                                                                                |
+                                                                                                v
+                                                                                       Phase 29 (Chrome connector)
+```
+
+Phases 23, 24, and 25 can be developed in parallel after Phase 22 lands (different crates). Phase 26 is the convergence point. Phases 27 and 28 can also overlap since they target different crates. Phase 29 sequences after Phase 28.
 
 ---
 
-## Anti-Patterns to Avoid
+## 9. Key Design Decisions
 
-### Anti-Pattern 1: Storing policy draft in `App` as a top-level field
-
-Putting `pending_draft: Option<PolicyDraft>` on `App` means two sources of truth when
-the draft screen is active. The SIEM/Alert config precedent is correct: all screen
-state lives inside the `Screen` variant. Follow that pattern.
-
-### Anti-Pattern 2: Adding `PolicyCondition` serialization to `dlp-server`
-
-The server's `PolicyPayload.conditions` is already `serde_json::Value`. Do not change
-this to `Vec<PolicyCondition>`. The server is the authoritative persistence layer; the
-CLI is the structured interface. Converting at the CLI boundary (as described above)
-keeps the API surface stable and avoids forcing `dlp-agent` to depend on admin API types.
-
-### Anti-Pattern 3: Using `TextInput` with raw JSON for condition entry
-
-The existing `CreatePolicyFromFile` / `UpdatePolicyFile` flows are the exact pattern
-to replace. Do not build the new create/edit forms as further variations of
-`InputPurpose` over `TextInput`. The structured picker exists specifically to
-eliminate this.
-
-### Anti-Pattern 4: Separate TUI modal for the conditions builder
-
-As discussed above, ratatui's widget model renders into a full frame each cycle.
-There is no lightweight overlay/modal in the existing codebase. Introducing one adds
-a new `App` field, double-dispatch in `handle_event`, and composite rendering. The
-embedded sub-state pattern used by SIEM/Alert config handles the same requirement
-with one-third the code.
-
-### Anti-Pattern 5: Export format defined in `dlp-common`
-
-`dlp-common` is consumed by `dlp-agent` at runtime on Windows endpoints. A policy
-file format struct adds compile-time and binary-size cost to the agent crate with zero
-operational benefit. Keep it in `dlp-admin-cli/src/policy_file.rs`.
+| Decision | Rationale |
+|----------|-----------|
+| `AppIdentity` lives in `dlp-common`, not `dlp-user-ui` | `dlp-agent` must receive it over Pipe 3 and embed it in `EvaluateRequest`; keeping it in common avoids a crate cycle |
+| Source app captured at `WM_CLIPBOARDUPDATE`, not at paste time | `GetClipboardOwner()` returns the window that called `SetClipboardData`; that window may have closed by paste time (SEED-001 risk 3 — ownership race) |
+| Destination app captured at same `WM_CLIPBOARDUPDATE` moment | `GetForegroundWindow()` at change time approximates paste destination; better than no capture; documented as best-effort |
+| USB device registry in server DB, NOT agent TOML | Operator-config-in-DB pattern (established v0.3.0, enforced by project memory). Hot-reload without restart. TUI-manageable. |
+| USB trust tier enforcement: I/O-time, not mount-time | Mount-time blocking requires a filesystem filter driver (major new subsystem). I/O-time reuses existing `file_monitor.rs` detour. Documented as limitation (drive letter appears, writes fail). |
+| Chrome Connector as Path B first | Path B ships in one phase with no browser extension. Path A (native extension) is a separate milestone. Path B delivers immediate value for enterprise Chrome/Edge customers. |
+| `UsbBlockNotify` as typed Pipe 2 variant | Allows `notifications.rs` to render a structured toast with device name, VID/PID, and policy name rather than parsing a freeform generic Toast body string. |
+| All new dlp-common types ship in one phase (Phase 22) | One breaking change across all crates instead of sequential partial breakage. Downstream crates update in the same PR window. |
 
 ---
 
-## Integration Points Summary
+## 10. Anti-Spoofing (APP-06)
 
-| Existing Mechanism | How v0.4.0 Uses It |
-|---|---|
-| `Screen` enum in `app.rs` | Add 6 new variants (CreateForm, EditForm, Simulate, Import, Export + ConditionBuilder as sub-state) |
-| `dispatch.rs` top-level match | Add 5 new `handle_*` arms; extend 3 existing (PolicyMenu, PolicyList, handle_view) |
-| `render.rs` `draw_screen` match | Add 5 new `draw_*` arms |
-| `App::rt.block_on(client.*())` | Action functions follow the exact same pattern; no new async machinery |
-| `ConfirmPurpose` enum | Add `OverwriteExportFile` variant |
-| `dlp-common::PolicyCondition` | Used typed in builder; serialised to `serde_json::Value` at API boundary |
-| `dlp-common::EvaluateRequest / Response` | Used directly in PolicySimulate action |
-| `EngineClient::post / get / put / delete` | All policy API calls use the existing generic HTTP helpers; no new client methods needed |
+`WinVerifyTrust` (Authenticode) verification lives in `detection/app_identity.rs` in `dlp-user-ui`. It is the only viable defense against a renamed binary attack (e.g., `notepad.exe` renamed to `excel.exe`). The `SignatureState` enum carries this into `AppIdentity`. Policy conditions can express "publisher = Microsoft Corporation AND signature_state = Signed". Without this field, an attacker can bypass an allowlist by renaming their binary. The initial Phase 25 implementation may mark `SignatureState::Unknown` while the Win32 verification call is wired up; the policy evaluator should treat `Unknown` as `Unsigned` for safety.
 
 ---
 
-## Sources
+## 11. Gaps and Open Questions for Phase Planning
 
-All findings are from direct source reading — no external references needed.
+1. **Destination app capture accuracy:** `GetForegroundWindow()` at copy time is a proxy for paste destination. A user who copies, then switches windows, then pastes defeats this. The correct fix is hooking `WM_PASTE` globally via `WH_CALLWNDPROC` (requires DLL injection — significant complexity). Document the limitation; defer global paste hook to a future milestone.
 
-- `dlp-admin-cli/src/app.rs` — `Screen` enum, `App` struct, purpose enums
-- `dlp-admin-cli/src/screens/dispatch.rs` — full dispatch pattern, all action functions
-- `dlp-admin-cli/src/screens/render.rs` — render pattern, SIEM/Alert form examples
-- `dlp-admin-cli/src/client.rs` — `EngineClient` generic HTTP methods
-- `dlp-common/src/abac.rs` — `PolicyCondition`, `EvaluateRequest`, `EvaluateResponse`, `Policy`
-- `dlp-common/src/classification.rs` — `Classification` enum values
-- `dlp-server/src/admin_api.rs` — `PolicyPayload`, `PolicyResponse`, `/admin/policies` routes, `/evaluate` handler
-- `.planning/PROJECT.md` — v0.4.0 requirements POLICY-01 through POLICY-08
+2. **UWP app identity:** `QueryFullProcessImageNameW` returns a generic host process path for packaged apps. AUMID resolution requires `GetApplicationUserModelId` via COM. Phase 25 should return `canonical_path` as the host path with `aumid: None`; add a follow-up issue for UWP-specific resolution.
+
+3. **Browser origin coverage gap:** SEED-001 detects "this is chrome.exe" at the process level. SEED-002 Path B (Chrome Connector) detects "this paste came from origin X" but only when the IT admin has configured Chrome Enterprise policy. Unmanaged Chrome instances are handled only by the coarse "destination = browser process" SEED-001 policy. Phase 29 should document this coverage boundary.
+
+4. **USB mount-time vs I/O-time trade-off:** Architecture here assumes I/O-time enforcement (lower risk, reuses existing infrastructure). If mount-time blocking is required, a kernel-mode filter driver phase is needed and is out of scope for v0.6.0.
+
+5. **`audit_events` schema growth:** Five new nullable columns added via migration. This is acceptable technical debt for v0.6.0 given the existing precedent. Long-term, a `audit_event_metadata` key-value side table may be preferable.
+
+6. **Chrome Connector shared secret storage:** The connector token that Chrome sends for authentication needs a storage home. Options: (a) new single-row `chrome_connector_config` table, (b) entry in existing `agent_credentials` table (key = "chrome_connector_secret"). Option (b) avoids a new table and follows an existing pattern.
