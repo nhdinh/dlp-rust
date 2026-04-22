@@ -248,6 +248,51 @@ impl EvaluateResponse {
     }
 }
 
+/// The application-identity field targeted by a [`PolicyCondition`].
+///
+/// Used with `SourceApplication` and `DestinationApplication` condition variants
+/// to select which field of [`crate::endpoint::AppIdentity`] to compare.
+///
+/// # Serde
+///
+/// Serializes as snake_case: `"publisher"`, `"image_path"`, `"trust_tier"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppField {
+    /// Publisher common name from the Authenticode certificate (e.g., `"Microsoft Corporation"`).
+    Publisher,
+    /// Full NT image path of the process (e.g., `C:\Program Files\App\app.exe`).
+    ImagePath,
+    /// Application trust tier assigned by the Phase 25 publisher-verification pipeline.
+    TrustTier,
+}
+
+impl From<EvaluateRequest> for AbacContext {
+    /// Converts a wire [`EvaluateRequest`] into an internal [`AbacContext`].
+    ///
+    /// The `agent` field is intentionally dropped — `AgentInfo` is
+    /// request-tracing metadata, not an ABAC attribute (Phase 22 D-10).
+    ///
+    /// # Arguments
+    ///
+    /// * `req` - The wire-format evaluation request to convert.
+    ///
+    /// # Returns
+    ///
+    /// An [`AbacContext`] with `subject`, `resource`, `environment`, `action`,
+    /// `source_application`, and `destination_application` forwarded from `req`.
+    fn from(req: EvaluateRequest) -> Self {
+        Self {
+            subject: req.subject,
+            resource: req.resource,
+            environment: req.environment,
+            action: req.action,
+            source_application: req.source_application,
+            destination_application: req.destination_application,
+        }
+    }
+}
+
 /// A condition within an ABAC policy rule.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "attribute", rename_all = "snake_case")]
@@ -281,6 +326,32 @@ pub enum PolicyCondition {
         #[serde(rename = "op")]
         op: String,
         value: AccessContext,
+    },
+    /// Match by the source application's identity (the process that initiated the operation).
+    ///
+    /// If `source_application` is `None` on the [`AbacContext`], this condition does NOT match
+    /// (fails closed — no identity means the condition cannot be confirmed, per D-03).
+    SourceApplication {
+        /// Which field of [`crate::endpoint::AppIdentity`] to compare.
+        field: AppField,
+        /// Comparison operator: `"eq"`, `"ne"`, or `"contains"` (ImagePath only).
+        #[serde(rename = "op")]
+        op: String,
+        /// The value to compare against (string form).
+        value: String,
+    },
+    /// Match by the destination application's identity (the paste target process).
+    ///
+    /// If `destination_application` is `None` on the [`AbacContext`], this condition does NOT match
+    /// (fails closed — no identity means the condition cannot be confirmed, per D-03).
+    DestinationApplication {
+        /// Which field of [`crate::endpoint::AppIdentity`] to compare.
+        field: AppField,
+        /// Comparison operator: `"eq"`, `"ne"`, or `"contains"` (ImagePath only).
+        #[serde(rename = "op")]
+        op: String,
+        /// The value to compare against (string form).
+        value: String,
     },
 }
 
@@ -499,5 +570,125 @@ mod tests {
             let rt: Decision = serde_json::from_str(&json).unwrap();
             assert_eq!(decision, rt);
         }
+    }
+
+    #[test]
+    fn test_app_field_serde_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&AppField::Publisher).unwrap(),
+            "\"publisher\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AppField::ImagePath).unwrap(),
+            "\"image_path\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AppField::TrustTier).unwrap(),
+            "\"trust_tier\""
+        );
+    }
+
+    #[test]
+    fn test_policy_condition_source_application_round_trip() {
+        // D-01 wire format: {"attribute": "source_application", "field": "publisher", "op": "eq", "value": "Microsoft"}
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::Publisher,
+            op: "eq".to_string(),
+            value: "Microsoft".to_string(),
+        };
+        let json = serde_json::to_string(&condition).unwrap();
+        assert!(
+            json.contains("\"attribute\":\"source_application\""),
+            "json: {json}"
+        );
+        assert!(json.contains("\"field\":\"publisher\""), "json: {json}");
+        let rt: PolicyCondition = serde_json::from_str(&json).unwrap();
+        assert_eq!(condition, rt);
+    }
+
+    #[test]
+    fn test_policy_condition_destination_application_round_trip() {
+        let condition = PolicyCondition::DestinationApplication {
+            field: AppField::ImagePath,
+            op: "contains".to_string(),
+            value: r"Program Files".to_string(),
+        };
+        let json = serde_json::to_string(&condition).unwrap();
+        assert!(
+            json.contains("\"attribute\":\"destination_application\""),
+            "json: {json}"
+        );
+        let rt: PolicyCondition = serde_json::from_str(&json).unwrap();
+        assert_eq!(condition, rt);
+    }
+
+    #[test]
+    fn test_from_evaluate_request_for_abac_context_drops_agent() {
+        use crate::endpoint::{AppIdentity, AppTrustTier, SignatureState};
+        let req = EvaluateRequest {
+            subject: Subject {
+                user_sid: "S-1-5-21-999".to_string(),
+                user_name: "alice".to_string(),
+                ..Default::default()
+            },
+            action: Action::COPY,
+            agent: Some(AgentInfo {
+                machine_name: Some("PC-01".to_string()),
+                current_user: Some("alice".to_string()),
+            }),
+            source_application: Some(AppIdentity {
+                publisher: "Contoso".to_string(),
+                image_path: r"C:\app.exe".to_string(),
+                trust_tier: AppTrustTier::Trusted,
+                signature_state: SignatureState::Valid,
+            }),
+            ..Default::default()
+        };
+        let ctx: AbacContext = req.into();
+        // agent field is dropped — AbacContext has no agent field (Phase 22 D-10)
+        assert_eq!(ctx.subject.user_sid, "S-1-5-21-999");
+        assert_eq!(ctx.action, Action::COPY);
+        assert_eq!(
+            ctx.source_application
+                .as_ref()
+                .map(|a| a.publisher.as_str()),
+            Some("Contoso")
+        );
+        assert!(ctx.destination_application.is_none());
+    }
+
+    #[test]
+    fn test_from_evaluate_request_forwards_all_fields() {
+        use crate::endpoint::{AppIdentity, AppTrustTier, SignatureState};
+        let req = EvaluateRequest {
+            subject: Subject {
+                user_sid: "S-1-5-21-777".to_string(),
+                user_name: "bob".to_string(),
+                ..Default::default()
+            },
+            resource: Resource {
+                path: r"C:\Data\file.txt".to_string(),
+                classification: crate::Classification::T3,
+            },
+            action: Action::WRITE,
+            destination_application: Some(AppIdentity {
+                publisher: "Adobe Inc.".to_string(),
+                image_path: r"C:\dst.exe".to_string(),
+                trust_tier: AppTrustTier::Untrusted,
+                signature_state: SignatureState::NotSigned,
+            }),
+            ..Default::default()
+        };
+        let ctx: AbacContext = req.into();
+        assert_eq!(ctx.subject.user_name, "bob");
+        assert_eq!(ctx.resource.path, r"C:\Data\file.txt");
+        assert_eq!(ctx.action, Action::WRITE);
+        assert!(ctx.source_application.is_none());
+        assert_eq!(
+            ctx.destination_application
+                .as_ref()
+                .map(|a| a.publisher.as_str()),
+            Some("Adobe Inc.")
+        );
     }
 }
