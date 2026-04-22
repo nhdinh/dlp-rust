@@ -483,9 +483,15 @@ mod tests {
             serial: "SN123".into(),
             description: "Kingston DataTraveler".into(),
         };
-        detector.device_identities.write().insert('E', identity.clone());
+        detector
+            .device_identities
+            .write()
+            .insert('E', identity.clone());
 
-        assert_eq!(detector.device_identity_for_drive('E'), Some(identity.clone()));
+        assert_eq!(
+            detector.device_identity_for_drive('E'),
+            Some(identity.clone())
+        );
         assert_eq!(detector.device_identity_for_drive('e'), Some(identity));
         assert_eq!(detector.device_identity_for_drive('Z'), None);
     }
