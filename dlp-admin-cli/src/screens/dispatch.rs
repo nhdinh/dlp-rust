@@ -1244,6 +1244,7 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 app.screen = Screen::ConditionsBuilder {
                     step: 1,
                     selected_attribute: None,
+                    selected_field: None,
                     selected_operator: None,
                     // Pre-populate pending with any conditions already added.
                     pending: form.conditions.clone(),
@@ -1581,6 +1582,7 @@ fn handle_policy_edit_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 app.screen = Screen::ConditionsBuilder {
                     step: 1,
                     selected_attribute: None,
+                    selected_field: None,
                     selected_operator: None,
                     pending: form.conditions.clone(),
                     buffer: String::new(),
@@ -2024,11 +2026,26 @@ fn handle_simulate_nav(app: &mut App, key: KeyEvent, selected: usize) {
 
 /// Returns the operator list (wire string + enforcement flag) valid for the given attribute.
 ///
+/// For `SourceApplication` and `DestinationApplication`, the operator set depends on the
+/// selected `AppField`: Publisher/ImagePath support `contains`; TrustTier does not.
+/// Pass `None` for `field` on initial sub-step entry (before field selection) to get the
+/// conservative eq/ne set.
+///
 /// Per D-08: DeviceTrust, NetworkLocation, AccessContext get `neq` added.
 /// Per D-10: each attribute's list is fixed; the Step 2 picker auto-sizes to the count.
 /// Display labels are: "equals" (eq), "not equals" (neq), "greater than" (gt),
 /// "less than" (lt), "contains" (contains).
-pub(crate) fn operators_for(attr: ConditionAttribute) -> &'static [(&'static str, bool)] {
+///
+/// # Arguments
+///
+/// * `attr` - The condition attribute being built.
+/// * `field` - For app-identity attributes: which AppField was selected in the sub-step.
+///   For other attributes this parameter is ignored (pass `None`).
+pub(crate) fn operators_for(
+    attr: ConditionAttribute,
+    field: Option<dlp_common::abac::AppField>,
+) -> &'static [(&'static str, bool)] {
+    use dlp_common::abac::AppField;
     match attr {
         ConditionAttribute::Classification => {
             &[("eq", true), ("neq", true), ("gt", true), ("lt", true)]
@@ -2037,6 +2054,17 @@ pub(crate) fn operators_for(attr: ConditionAttribute) -> &'static [(&'static str
         ConditionAttribute::DeviceTrust => &[("eq", true), ("neq", true)],
         ConditionAttribute::NetworkLocation => &[("eq", true), ("neq", true)],
         ConditionAttribute::AccessContext => &[("eq", true), ("neq", true)],
+        ConditionAttribute::SourceApplication | ConditionAttribute::DestinationApplication => {
+            match field {
+                Some(AppField::Publisher) | Some(AppField::ImagePath) => {
+                    // String fields support equality, inequality, and substring matching.
+                    &[("eq", true), ("ne", true), ("contains", true)]
+                }
+                // TrustTier is an enum value — contains doesn't apply.
+                // None means sub-step not yet resolved; conservative set is safe.
+                Some(AppField::TrustTier) | None => &[("eq", true), ("ne", true)],
+            }
+        }
     }
 }
 
@@ -2044,30 +2072,59 @@ pub(crate) fn operators_for(attr: ConditionAttribute) -> &'static [(&'static str
 ///
 /// Used to bound navigation and for `ListState` range checks.
 /// `MemberOf` returns 0 because it uses free-text input, not a select list.
-fn value_count_for(attr: ConditionAttribute) -> usize {
+/// For app-identity attributes, `TrustTier` returns 3 (picker); Publisher/ImagePath
+/// return 0 (free-text input). Pass `None` when field is not yet resolved — returns 0.
+///
+/// # Arguments
+///
+/// * `attr` - The condition attribute being built.
+/// * `field` - For app-identity attributes: which AppField was selected in the sub-step.
+///   Ignored for other attributes.
+fn value_count_for(attr: ConditionAttribute, field: Option<dlp_common::abac::AppField>) -> usize {
+    use dlp_common::abac::AppField;
     match attr {
         ConditionAttribute::Classification => 4,  // T1, T2, T3, T4
         ConditionAttribute::MemberOf => 0,        // text input, not a list
         ConditionAttribute::DeviceTrust => 4,     // Managed, Unmanaged, Compliant, Unknown
         ConditionAttribute::NetworkLocation => 4, // Corporate, CorporateVpn, Guest, Unknown
         ConditionAttribute::AccessContext => 2,   // Local, Smb
+        ConditionAttribute::SourceApplication | ConditionAttribute::DestinationApplication => {
+            match field {
+                Some(AppField::TrustTier) => 3, // trusted / untrusted / unknown picker
+                _ => 0,                         // Publisher / ImagePath: free-text input
+            }
+        }
     }
 }
 
 /// Constructs a `PolicyCondition` from the selected attribute, operator, picker index, and buffer.
 ///
-/// Returns `None` if the picker index is out of range or the MemberOf buffer is empty.
+/// Returns `None` if the picker index is out of range, the MemberOf buffer is empty,
+/// or an app-identity attribute is provided without a resolved `field` (T-28-02-01 mitigated
+/// by the `field?` early-return, which prevents a malformed condition from being constructed).
 ///
 /// # Field name note
 ///
 /// `MemberOf` uses `group_sid: String`, NOT `value`. All other variants use `value`.
+///
+/// # Arguments
+///
+/// * `attr` - Condition attribute to build.
+/// * `op` - Operator wire string (e.g. `"eq"`, `"ne"`, `"contains"`).
+/// * `picker_selected` - 0-based index into the Step 3 value picker list.
+/// * `buffer` - Free-text input for MemberOf and app-identity Publisher/ImagePath fields.
+/// * `field` - For `SourceApplication`/`DestinationApplication`: the AppField selected in the
+///   sub-step. `None` causes an early return of `None` (fail-closed, per T-28-02-01).
 fn build_condition(
     attr: ConditionAttribute,
     op: &str,
     picker_selected: usize,
     buffer: &str,
+    field: Option<dlp_common::abac::AppField>,
 ) -> Option<dlp_common::abac::PolicyCondition> {
-    use dlp_common::abac::{AccessContext, DeviceTrust, NetworkLocation, PolicyCondition};
+    use dlp_common::abac::{
+        AccessContext, AppField, DeviceTrust, NetworkLocation, PolicyCondition,
+    };
     // Classification is at dlp_common root, NOT dlp_common::abac (see abac.rs line 222).
     use dlp_common::Classification;
 
@@ -2120,6 +2177,53 @@ fn build_condition(
                 _ => return None,
             };
             PolicyCondition::AccessContext { op, value }
+        }
+        ConditionAttribute::SourceApplication => {
+            // `field?` enforces fail-closed: None field means sub-step was skipped
+            // and the condition cannot be constructed (T-28-02-01 mitigation).
+            let f = field?;
+            let value = match f {
+                AppField::TrustTier => match picker_selected {
+                    0 => "trusted".to_string(),
+                    1 => "untrusted".to_string(),
+                    _ => "unknown".to_string(),
+                },
+                AppField::Publisher | AppField::ImagePath => {
+                    let v = buffer.trim().to_string();
+                    if v.is_empty() {
+                        return None;
+                    }
+                    v
+                }
+            };
+            PolicyCondition::SourceApplication {
+                field: f,
+                op,
+                value,
+            }
+        }
+        ConditionAttribute::DestinationApplication => {
+            // Same fail-closed guard as SourceApplication (T-28-02-01).
+            let f = field?;
+            let value = match f {
+                AppField::TrustTier => match picker_selected {
+                    0 => "trusted".to_string(),
+                    1 => "untrusted".to_string(),
+                    _ => "unknown".to_string(),
+                },
+                AppField::Publisher | AppField::ImagePath => {
+                    let v = buffer.trim().to_string();
+                    if v.is_empty() {
+                        return None;
+                    }
+                    v
+                }
+            };
+            PolicyCondition::DestinationApplication {
+                field: f,
+                op,
+                value,
+            }
         }
     })
 }
@@ -2212,12 +2316,47 @@ fn condition_to_prefill(
                 String::new(),
             )
         }
-        // App-identity conditions added in Phase 26 — TUI picker support is a future phase.
-        // Return a stable fallback so existing policies that include these conditions
-        // can be opened and re-saved without data loss.
-        PolicyCondition::SourceApplication { op, .. }
-        | PolicyCondition::DestinationApplication { op, .. } => {
-            (ConditionAttribute::Classification, op.clone(), 0, String::new())
+        PolicyCondition::SourceApplication { field, op, value } => {
+            use dlp_common::abac::AppField;
+            // Publisher/ImagePath: value is a text string; picker_idx is unused (0).
+            // TrustTier: value is one of trusted/untrusted/unknown; mapped to picker index.
+            let (picker_idx, buffer) = match field {
+                AppField::Publisher | AppField::ImagePath => (0usize, value.clone()),
+                AppField::TrustTier => {
+                    let idx = match value.as_str() {
+                        "trusted" => 0,
+                        "untrusted" => 1,
+                        _ => 2,
+                    };
+                    (idx, String::new())
+                }
+            };
+            (
+                ConditionAttribute::SourceApplication,
+                op.clone(),
+                picker_idx,
+                buffer,
+            )
+        }
+        PolicyCondition::DestinationApplication { field, op, value } => {
+            use dlp_common::abac::AppField;
+            let (picker_idx, buffer) = match field {
+                AppField::Publisher | AppField::ImagePath => (0usize, value.clone()),
+                AppField::TrustTier => {
+                    let idx = match value.as_str() {
+                        "trusted" => 0,
+                        "untrusted" => 1,
+                        _ => 2,
+                    };
+                    (idx, String::new())
+                }
+            };
+            (
+                ConditionAttribute::DestinationApplication,
+                op.clone(),
+                picker_idx,
+                buffer,
+            )
         }
     }
 }
@@ -2253,12 +2392,13 @@ pub fn condition_display(cond: &dlp_common::abac::PolicyCondition) -> String {
 /// borrow first, then mutate with `if let Screen::ConditionsBuilder { .. } = &mut app.screen`.
 fn handle_conditions_builder(app: &mut App, key: KeyEvent) {
     // Phase 1: read scalar state with a shared borrow to avoid borrow conflicts.
-    let (step, pending_focused, selected_attribute, selected_operator, pending_len) =
+    let (step, pending_focused, selected_attribute, selected_field, selected_operator, pending_len) =
         match &app.screen {
             Screen::ConditionsBuilder {
                 step,
                 pending_focused,
                 selected_attribute,
+                selected_field,
                 selected_operator,
                 pending,
                 ..
@@ -2266,6 +2406,7 @@ fn handle_conditions_builder(app: &mut App, key: KeyEvent) {
                 *step,
                 *pending_focused,
                 *selected_attribute,
+                *selected_field,
                 selected_operator.clone(),
                 pending.len(),
             ),
@@ -2289,10 +2430,14 @@ fn handle_conditions_builder(app: &mut App, key: KeyEvent) {
     } else {
         match step {
             1 => handle_conditions_step1(app, key),
-            2 => handle_conditions_step2(app, key, selected_attribute),
-            3 => {
-                handle_conditions_step3(app, key, selected_attribute, selected_operator.as_deref())
-            }
+            2 => handle_conditions_step2(app, key, selected_attribute, selected_field),
+            3 => handle_conditions_step3(
+                app,
+                key,
+                selected_attribute,
+                selected_field,
+                selected_operator.as_deref(),
+            ),
             _ => {}
         }
     }
@@ -2361,6 +2506,16 @@ fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
 
             let (attr, op_str, picker_idx, buf) = condition_to_prefill(&cond);
 
+            // For app-identity conditions, extract the AppField directly from the condition
+            // so the sub-step is pre-filled correctly when the edit modal opens.
+            let prefill_field: Option<dlp_common::abac::AppField> = match &cond {
+                dlp_common::abac::PolicyCondition::SourceApplication { field, .. }
+                | dlp_common::abac::PolicyCondition::DestinationApplication { field, .. } => {
+                    Some(*field)
+                }
+                _ => None,
+            };
+
             // Find the attribute's position in ATTRIBUTES for Step 1 picker pre-fill.
             let attr_idx = ATTRIBUTES.iter().position(|a| *a == attr).unwrap_or(0);
 
@@ -2369,6 +2524,7 @@ fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
             if let Screen::ConditionsBuilder {
                 step,
                 selected_attribute,
+                selected_field,
                 selected_operator,
                 buffer,
                 edit_index,
@@ -2380,8 +2536,11 @@ fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
             {
                 *step = 1;
                 *selected_attribute = Some(attr);
-                // Pre-set the operator so the SC-1 guard in handle_conditions_step1 can
-                // evaluate it when the user advances through Step 1. The guard will clear
+                // For app-identity conditions: pre-fill selected_field so the sub-step is
+                // skipped on re-open and Step 2 opens directly with the correct operator set.
+                *selected_field = prefill_field;
+                // Pre-set the operator so the SC-1 guard in handle_conditions_attribute_picker
+                // can evaluate it when the user advances through Step 1. The guard will clear
                 // this if they change the attribute to an incompatible one.
                 *selected_operator = Some(op_str);
                 *buffer = buf;
@@ -2440,8 +2599,111 @@ fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
     }
 }
 
-/// Handles key events at Step 1: attribute selection.
+/// Handles key events at Step 1: attribute selection, and the AppField sub-step.
+///
+/// The sub-step is active when `step == 1`, `selected_attribute` is `Some(SourceApplication)`
+/// or `Some(DestinationApplication)`, and `selected_field` is `None`.
+/// The attribute picker is active when `selected_attribute` is `None`.
 fn handle_conditions_step1(app: &mut App, key: KeyEvent) {
+    // Phase 1: read the sub-step guard flags under a shared borrow.
+    let (selected_attribute, selected_field) = match &app.screen {
+        Screen::ConditionsBuilder {
+            selected_attribute,
+            selected_field,
+            ..
+        } => (*selected_attribute, *selected_field),
+        _ => return,
+    };
+
+    // Determine whether we are in the AppField sub-step.
+    // Sub-step is active when an app-identity attribute is selected but no field is chosen yet.
+    let in_sub_step = matches!(
+        selected_attribute,
+        Some(ConditionAttribute::SourceApplication)
+            | Some(ConditionAttribute::DestinationApplication)
+    ) && selected_field.is_none();
+
+    if in_sub_step {
+        handle_conditions_app_field_sub_step(app, key);
+    } else {
+        handle_conditions_attribute_picker(app, key);
+    }
+}
+
+/// The AppField labels shown in picker order: Publisher (0), ImagePath (1), TrustTier (2).
+const APP_FIELD_LABELS: [&str; 3] = ["publisher", "image_path", "trust_tier"];
+
+/// Maps a picker index to the corresponding [`dlp_common::abac::AppField`].
+fn app_field_from_idx(idx: usize) -> dlp_common::abac::AppField {
+    use dlp_common::abac::AppField;
+    match idx {
+        0 => AppField::Publisher,
+        1 => AppField::ImagePath,
+        _ => AppField::TrustTier,
+    }
+}
+
+/// Handles key events in the AppField sub-picker (Step 1.5).
+///
+/// Active when `step == 1`, an app-identity attribute is selected, and `selected_field` is `None`.
+/// Up/Down navigates the three field options; Enter confirms the field and advances to Step 2;
+/// Esc returns to the attribute picker by clearing `selected_attribute`.
+fn handle_conditions_app_field_sub_step(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
+                let current = picker_state.selected().unwrap_or(0);
+                let new_idx = match key.code {
+                    KeyCode::Up => {
+                        if current == 0 {
+                            APP_FIELD_LABELS.len() - 1
+                        } else {
+                            current - 1
+                        }
+                    }
+                    KeyCode::Down => (current + 1) % APP_FIELD_LABELS.len(),
+                    _ => current,
+                };
+                picker_state.select(Some(new_idx));
+            }
+        }
+        KeyCode::Enter => {
+            // Confirm the AppField selection and advance to Step 2.
+            if let Screen::ConditionsBuilder {
+                step,
+                selected_field,
+                selected_operator,
+                picker_state,
+                ..
+            } = &mut app.screen
+            {
+                let idx = picker_state.selected().unwrap_or(0);
+                *selected_field = Some(app_field_from_idx(idx));
+                // Clear any stale operator from a previous condition-builder iteration.
+                *selected_operator = None;
+                *step = 2;
+                picker_state.select(Some(0));
+            }
+        }
+        KeyCode::Esc => {
+            // Return to the attribute picker: clear the selected attribute so the user
+            // can choose a different one.
+            if let Screen::ConditionsBuilder {
+                selected_attribute,
+                picker_state,
+                ..
+            } = &mut app.screen
+            {
+                *selected_attribute = None;
+                picker_state.select(Some(0));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events at the attribute picker (Step 1, before attribute is selected).
+fn handle_conditions_attribute_picker(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Up | KeyCode::Down => {
             if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
@@ -2461,10 +2723,11 @@ fn handle_conditions_step1(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Enter => {
-            // Advance to Step 2 with the selected attribute (per D-17).
+            // Advance based on attribute type (per D-12).
             if let Screen::ConditionsBuilder {
                 step,
                 selected_attribute,
+                selected_field,
                 selected_operator,
                 picker_state,
                 ..
@@ -2478,17 +2741,50 @@ fn handle_conditions_step1(app: &mut App, key: KeyEvent) {
                     .copied()
                     .unwrap_or(ConditionAttribute::Classification);
                 *selected_attribute = Some(attr);
-                // SC-1: clear a stale operator when it is not valid for the new attribute.
-                // In normal navigation the operator is already None here (Esc from Step 2
-                // always clears it), but this guard is an explicit safety net per ROADMAP SC-1.
-                if let Some(prev_op) = selected_operator.as_deref() {
-                    if !operators_for(attr).iter().any(|(op, _)| *op == prev_op) {
+
+                // App-identity attributes need a field sub-step before Step 2.
+                // Exception: if selected_field is already set (edit-mode pre-fill), skip the
+                // sub-step and advance directly to Step 2 with the pre-filled field.
+                if matches!(
+                    attr,
+                    ConditionAttribute::SourceApplication
+                        | ConditionAttribute::DestinationApplication
+                ) {
+                    if selected_field.is_some() {
+                        // Edit mode: field is already set — advance to Step 2 directly.
+                        // SC-1: verify the pre-set operator is valid for this field.
+                        if let Some(prev_op) = selected_operator.as_deref() {
+                            if !operators_for(attr, *selected_field)
+                                .iter()
+                                .any(|(op, _)| *op == prev_op)
+                            {
+                                *selected_operator = None;
+                            }
+                        }
+                        *step = 2;
+                        picker_state.select(Some(0));
+                    } else {
+                        // Normal (new condition) flow: enter the AppField sub-step.
+                        // Clear any residual operator from a previous iteration.
                         *selected_operator = None;
+                        // Reset picker to top for the sub-picker list (Pitfall 4).
+                        picker_state.select(Some(0));
+                        // step stays 1 — sub-step is triggered by the attribute+no-field state.
                     }
+                } else {
+                    // Non-app-identity attributes: advance directly to Step 2.
+                    // SC-1: clear a stale operator when it is not valid for the new attribute.
+                    if let Some(prev_op) = selected_operator.as_deref() {
+                        if !operators_for(attr, None)
+                            .iter()
+                            .any(|(op, _)| *op == prev_op)
+                        {
+                            *selected_operator = None;
+                        }
+                    }
+                    *step = 2;
+                    picker_state.select(Some(0));
                 }
-                *step = 2;
-                // Reset picker to top for the new step's list (Pitfall 4).
-                picker_state.select(Some(0));
             }
         }
         KeyCode::Esc => {
@@ -2541,12 +2837,14 @@ fn handle_conditions_step2(
     app: &mut App,
     key: KeyEvent,
     selected_attribute: Option<ConditionAttribute>,
+    selected_field: Option<dlp_common::abac::AppField>,
 ) {
     let attr = match selected_attribute {
         Some(a) => a,
         None => return,
     };
-    let ops = operators_for(attr);
+    // Pass selected_field so app-identity attributes show the field-constrained operator set.
+    let ops = operators_for(attr, selected_field);
 
     match key.code {
         KeyCode::Up | KeyCode::Down => {
@@ -2601,16 +2899,31 @@ fn handle_conditions_step2(
         }
         KeyCode::Esc => {
             // Per D-18: Esc at Step 2 goes back to Step 1.
+            // For app-identity attributes, also clear selected_field so the user re-enters
+            // the AppField sub-picker (Step 1.5) rather than skipping back to the attribute list.
             if let Screen::ConditionsBuilder {
                 step,
                 selected_attribute,
+                selected_field,
                 selected_operator,
                 picker_state,
                 ..
             } = &mut app.screen
             {
                 *step = 1;
-                *selected_attribute = None;
+                // Keep selected_attribute set for app-identity variants so the sub-step
+                // re-activates; clear it for all others so the attribute picker shows.
+                let is_app_identity = matches!(
+                    *selected_attribute,
+                    Some(ConditionAttribute::SourceApplication)
+                        | Some(ConditionAttribute::DestinationApplication)
+                );
+                if is_app_identity {
+                    // Return to the AppField sub-picker, not the top-level attribute picker.
+                    *selected_field = None;
+                } else {
+                    *selected_attribute = None;
+                }
                 *selected_operator = None;
                 picker_state.select(Some(0));
             }
@@ -2621,14 +2934,21 @@ fn handle_conditions_step2(
 
 /// Handles key events at Step 3: value selection or text input.
 ///
-/// Routes to the text-input path for `MemberOf` (free-text AD group SID)
-/// or the list-select path for all other attributes.
+/// Routes to the text-input path for `MemberOf` and for app-identity
+/// Publisher/ImagePath fields, or the list-select path for all other attributes.
+///
+/// # Arguments
+///
+/// * `selected_field` - For app-identity attributes, the AppField chosen in the sub-step.
+///   `None` for all other attributes.
 fn handle_conditions_step3(
     app: &mut App,
     key: KeyEvent,
     selected_attribute: Option<ConditionAttribute>,
+    selected_field: Option<dlp_common::abac::AppField>,
     selected_operator: Option<&str>,
 ) {
+    use dlp_common::abac::AppField;
     let attr = match selected_attribute {
         Some(a) => a,
         None => return,
@@ -2638,15 +2958,34 @@ fn handle_conditions_step3(
         None => return,
     };
 
-    if attr == ConditionAttribute::MemberOf {
-        handle_conditions_step3_text(app, key, attr, op);
+    // Use text input for:
+    // - MemberOf (AD group SID)
+    // - app-identity Publisher or ImagePath (free-text string)
+    let use_text_input = attr == ConditionAttribute::MemberOf
+        || matches!(
+            (attr, selected_field),
+            (
+                ConditionAttribute::SourceApplication | ConditionAttribute::DestinationApplication,
+                Some(AppField::Publisher) | Some(AppField::ImagePath)
+            )
+        );
+
+    if use_text_input {
+        handle_conditions_step3_text(app, key, attr, op, selected_field);
     } else {
-        handle_conditions_step3_select(app, key, attr, op);
+        handle_conditions_step3_select(app, key, attr, op, selected_field);
     }
 }
 
-/// Handles Step 3 for MemberOf: free-text input for the AD group SID.
-fn handle_conditions_step3_text(app: &mut App, key: KeyEvent, attr: ConditionAttribute, op: &str) {
+/// Handles Step 3 for text-input attributes: MemberOf (AD group SID) and app-identity
+/// Publisher/ImagePath fields.
+fn handle_conditions_step3_text(
+    app: &mut App,
+    key: KeyEvent,
+    attr: ConditionAttribute,
+    op: &str,
+    field: Option<dlp_common::abac::AppField>,
+) {
     match key.code {
         KeyCode::Char(c) => {
             if let Screen::ConditionsBuilder { buffer, .. } = &mut app.screen {
@@ -2664,13 +3003,15 @@ fn handle_conditions_step3_text(app: &mut App, key: KeyEvent, attr: ConditionAtt
                 Screen::ConditionsBuilder { buffer, .. } => buffer.clone(),
                 _ => return,
             };
-            match build_condition(attr, op, 0, &buffer_snapshot) {
+            // Pass field so build_condition can construct the correct app-identity variant.
+            match build_condition(attr, op, 0, &buffer_snapshot, field) {
                 Some(cond) => {
                     if let Screen::ConditionsBuilder {
                         pending,
                         pending_state,
                         step,
                         selected_attribute,
+                        selected_field,
                         selected_operator,
                         buffer,
                         picker_state,
@@ -2694,13 +3035,15 @@ fn handle_conditions_step3_text(app: &mut App, key: KeyEvent, attr: ConditionAtt
                         // Reset picker state for the next operation (regardless of mode).
                         *step = 1;
                         *selected_attribute = None;
+                        *selected_field = None;
                         *selected_operator = None;
                         buffer.clear();
                         picker_state.select(Some(0));
                     }
                 }
                 None => {
-                    app.set_status("AD group SID cannot be empty", StatusKind::Error);
+                    // MemberOf and Publisher/ImagePath both require non-empty input.
+                    app.set_status("Value cannot be empty", StatusKind::Error);
                 }
             }
         }
@@ -2724,14 +3067,20 @@ fn handle_conditions_step3_text(app: &mut App, key: KeyEvent, attr: ConditionAtt
     }
 }
 
-/// Handles Step 3 for select-based attributes (Classification, DeviceTrust, etc.).
+/// Handles Step 3 for select-based attributes (Classification, DeviceTrust, TrustTier, etc.).
+///
+/// # Arguments
+///
+/// * `field` - For app-identity attributes with a `TrustTier` field, the picker shows
+///   `trusted/untrusted/unknown`; for other attributes `field` is `None` and ignored.
 fn handle_conditions_step3_select(
     app: &mut App,
     key: KeyEvent,
     attr: ConditionAttribute,
     op: &str,
+    field: Option<dlp_common::abac::AppField>,
 ) {
-    let count = value_count_for(attr);
+    let count = value_count_for(attr, field);
 
     match key.code {
         KeyCode::Up | KeyCode::Down => {
@@ -2761,12 +3110,14 @@ fn handle_conditions_step3_select(
                 }
                 _ => return,
             };
-            if let Some(cond) = build_condition(attr, op, picker_idx, "") {
+            // Pass field so build_condition constructs the correct app-identity variant.
+            if let Some(cond) = build_condition(attr, op, picker_idx, "", field) {
                 if let Screen::ConditionsBuilder {
                     pending,
                     pending_state,
                     step,
                     selected_attribute,
+                    selected_field,
                     selected_operator,
                     picker_state,
                     edit_index,
@@ -2789,6 +3140,7 @@ fn handle_conditions_step3_select(
                     // Reset to Step 1 for the next condition (per D-05, Pitfall 4).
                     *step = 1;
                     *selected_attribute = None;
+                    *selected_field = None;
                     *selected_operator = None;
                     picker_state.select(Some(0));
                 }
@@ -3133,7 +3485,7 @@ mod tests {
 
     #[test]
     fn build_condition_classification_t3() {
-        let cond = build_condition(ConditionAttribute::Classification, "eq", 2, "");
+        let cond = build_condition(ConditionAttribute::Classification, "eq", 2, "", None);
         assert!(cond.is_some());
         let json = serde_json::to_string(&cond.unwrap()).expect("serialize");
         assert!(json.contains("\"attribute\":\"classification\""));
@@ -3143,7 +3495,7 @@ mod tests {
 
     #[test]
     fn build_condition_member_of_group_sid() {
-        let cond = build_condition(ConditionAttribute::MemberOf, "eq", 0, "S-1-5-21-123");
+        let cond = build_condition(ConditionAttribute::MemberOf, "eq", 0, "S-1-5-21-123", None);
         assert!(cond.is_some());
         let json = serde_json::to_string(&cond.unwrap()).expect("serialize");
         assert!(json.contains("\"group_sid\":\"S-1-5-21-123\""));
@@ -3153,7 +3505,7 @@ mod tests {
 
     #[test]
     fn build_condition_member_of_empty_buffer_returns_none() {
-        let cond = build_condition(ConditionAttribute::MemberOf, "eq", 0, "  ");
+        let cond = build_condition(ConditionAttribute::MemberOf, "eq", 0, "  ", None);
         assert!(cond.is_none());
     }
 
@@ -3165,7 +3517,7 @@ mod tests {
             (2, "Compliant"),
             (3, "Unknown"),
         ] {
-            let cond = build_condition(ConditionAttribute::DeviceTrust, "eq", idx, "")
+            let cond = build_condition(ConditionAttribute::DeviceTrust, "eq", idx, "", None)
                 .expect("should build");
             let json = serde_json::to_string(&cond).expect("serialize");
             assert!(
@@ -3183,7 +3535,7 @@ mod tests {
             (2, "Guest"),
             (3, "Unknown"),
         ] {
-            let cond = build_condition(ConditionAttribute::NetworkLocation, "eq", idx, "")
+            let cond = build_condition(ConditionAttribute::NetworkLocation, "eq", idx, "", None)
                 .expect("should build");
             let json = serde_json::to_string(&cond).expect("serialize");
             assert!(
@@ -3196,7 +3548,7 @@ mod tests {
     #[test]
     fn build_condition_access_context_all_variants() {
         for (idx, expected) in [(0, "local"), (1, "smb")] {
-            let cond = build_condition(ConditionAttribute::AccessContext, "eq", idx, "")
+            let cond = build_condition(ConditionAttribute::AccessContext, "eq", idx, "", None)
                 .expect("should build");
             let json = serde_json::to_string(&cond).expect("serialize");
             assert!(
@@ -3208,14 +3560,14 @@ mod tests {
 
     #[test]
     fn build_condition_out_of_range_returns_none() {
-        assert!(build_condition(ConditionAttribute::Classification, "eq", 5, "").is_none());
-        assert!(build_condition(ConditionAttribute::AccessContext, "eq", 2, "").is_none());
+        assert!(build_condition(ConditionAttribute::Classification, "eq", 5, "", None).is_none());
+        assert!(build_condition(ConditionAttribute::AccessContext, "eq", 2, "", None).is_none());
     }
 
     #[test]
     fn operators_for_all_attributes_have_eq() {
         for attr in ATTRIBUTES {
-            let ops = operators_for(attr);
+            let ops = operators_for(attr, None);
             assert!(!ops.is_empty(), "operators_for({attr:?}) must not be empty");
             assert_eq!(ops[0].0, "eq", "first operator must be eq for {attr:?}");
             assert!(ops[0].1, "eq must be enforced for {attr:?}");
@@ -3245,7 +3597,7 @@ mod tests {
 
         #[test]
         fn test_operators_for_classification() {
-            let ops = operators_for(ConditionAttribute::Classification);
+            let ops = operators_for(ConditionAttribute::Classification, None);
             assert_eq!(ops.len(), 4);
             let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
             assert!(wire.contains(&"eq"));
@@ -3256,7 +3608,7 @@ mod tests {
 
         #[test]
         fn test_operators_for_memberof() {
-            let ops = operators_for(ConditionAttribute::MemberOf);
+            let ops = operators_for(ConditionAttribute::MemberOf, None);
             assert_eq!(ops.len(), 3);
             let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
             assert!(wire.contains(&"eq"));
@@ -3266,7 +3618,7 @@ mod tests {
 
         #[test]
         fn test_operators_for_device_trust() {
-            let ops = operators_for(ConditionAttribute::DeviceTrust);
+            let ops = operators_for(ConditionAttribute::DeviceTrust, None);
             assert_eq!(ops.len(), 2);
             let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
             assert!(wire.contains(&"eq"));
@@ -3275,13 +3627,13 @@ mod tests {
 
         #[test]
         fn test_operators_for_network_location() {
-            let ops = operators_for(ConditionAttribute::NetworkLocation);
+            let ops = operators_for(ConditionAttribute::NetworkLocation, None);
             assert_eq!(ops.len(), 2);
         }
 
         #[test]
         fn test_operators_for_access_context() {
-            let ops = operators_for(ConditionAttribute::AccessContext);
+            let ops = operators_for(ConditionAttribute::AccessContext, None);
             assert_eq!(ops.len(), 2);
         }
 
@@ -3335,11 +3687,14 @@ mod tests {
 
     #[test]
     fn value_count_for_all_attributes() {
-        assert_eq!(value_count_for(ConditionAttribute::Classification), 4);
-        assert_eq!(value_count_for(ConditionAttribute::MemberOf), 0);
-        assert_eq!(value_count_for(ConditionAttribute::DeviceTrust), 4);
-        assert_eq!(value_count_for(ConditionAttribute::NetworkLocation), 4);
-        assert_eq!(value_count_for(ConditionAttribute::AccessContext), 2);
+        assert_eq!(value_count_for(ConditionAttribute::Classification, None), 4);
+        assert_eq!(value_count_for(ConditionAttribute::MemberOf, None), 0);
+        assert_eq!(value_count_for(ConditionAttribute::DeviceTrust, None), 4);
+        assert_eq!(
+            value_count_for(ConditionAttribute::NetworkLocation, None),
+            4
+        );
+        assert_eq!(value_count_for(ConditionAttribute::AccessContext, None), 2);
     }
 
     // ---------------------------------------------------------------------------
@@ -3511,6 +3866,7 @@ mod tests {
         let screen = Screen::ConditionsBuilder {
             step: 1,
             selected_attribute: None,
+            selected_field: None,
             selected_operator: None,
             pending: vec![pending_condition.clone()],
             buffer: String::new(),
@@ -3583,7 +3939,7 @@ mod tests {
         ];
         for original in cases {
             let (attr, op_str, picker_idx, buf) = condition_to_prefill(original);
-            let rebuilt = build_condition(attr, &op_str, picker_idx, &buf)
+            let rebuilt = build_condition(attr, &op_str, picker_idx, &buf, None)
                 .expect("roundtrip must produce a valid condition");
             assert_eq!(
                 &rebuilt, original,
@@ -3612,6 +3968,7 @@ mod tests {
         let screen = Screen::ConditionsBuilder {
             step: 1,
             selected_attribute: None,
+            selected_field: None,
             selected_operator: None,
             pending: vec![pending_condition.clone()],
             buffer: String::new(),
@@ -3684,6 +4041,7 @@ mod tests {
         let screen = Screen::ConditionsBuilder {
             step: 3,
             selected_attribute: Some(ConditionAttribute::Classification),
+            selected_field: None,
             selected_operator: Some("eq".to_string()),
             pending: vec![original.clone()],
             buffer: String::new(),
@@ -3701,7 +4059,13 @@ mod tests {
 
         // Act: Enter at Step 3 (select path) commits the new T4 value.
         let key = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
-        handle_conditions_step3_select(&mut app, key, ConditionAttribute::Classification, "eq");
+        handle_conditions_step3_select(
+            &mut app,
+            key,
+            ConditionAttribute::Classification,
+            "eq",
+            None,
+        );
 
         // Assert: replace happened at index 0; list length unchanged.
         match &app.screen {
@@ -3745,6 +4109,7 @@ mod tests {
         let screen = Screen::ConditionsBuilder {
             step: 3,
             selected_attribute: Some(ConditionAttribute::Classification),
+            selected_field: None,
             selected_operator: Some("eq".to_string()),
             pending: vec![original.clone()],
             buffer: String::new(),
@@ -3762,7 +4127,13 @@ mod tests {
 
         // Act: Esc at Step 3 goes back to Step 2 without modifying pending.
         let esc_key = KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
-        handle_conditions_step3_select(&mut app, esc_key, ConditionAttribute::Classification, "eq");
+        handle_conditions_step3_select(
+            &mut app,
+            esc_key,
+            ConditionAttribute::Classification,
+            "eq",
+            None,
+        );
 
         // Assert: pending is untouched; step retreated to 2.
         match &app.screen {

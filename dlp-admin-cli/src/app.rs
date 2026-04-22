@@ -59,7 +59,7 @@ pub enum PasswordPurpose {
 // Conditions builder supporting types
 // ---------------------------------------------------------------------------
 
-/// The five ABAC condition attributes available in the conditions builder.
+/// The seven ABAC condition attributes available in the conditions builder.
 ///
 /// Used across Step 1 display, Step 2 operator lookup, Step 3 value-picker
 /// branching, and `PolicyCondition` construction. A dedicated enum avoids
@@ -76,22 +76,28 @@ pub enum ConditionAttribute {
     NetworkLocation,
     /// Access context (Local or SMB).
     AccessContext,
+    /// Source application identity (process publisher, image path, or app trust tier).
+    SourceApplication,
+    /// Destination application identity (process publisher, image path, or app trust tier).
+    DestinationApplication,
 }
 
 /// All condition attributes in display order (Step 1 list).
-pub const ATTRIBUTES: [ConditionAttribute; 5] = [
+pub const ATTRIBUTES: [ConditionAttribute; 7] = [
     ConditionAttribute::Classification,
     ConditionAttribute::MemberOf,
     ConditionAttribute::DeviceTrust,
     ConditionAttribute::NetworkLocation,
     ConditionAttribute::AccessContext,
+    ConditionAttribute::SourceApplication,
+    ConditionAttribute::DestinationApplication,
 ];
 
 impl ConditionAttribute {
     /// Human-readable label for display in the step picker.
     ///
     /// Called by the render function in Plan 02 (`draw_conditions_builder`).
-    #[allow(dead_code)] // Used by Plan 02 render.rs draw_conditions_builder.
+    #[allow(dead_code)] // Used by render.rs draw_conditions_builder.
     pub fn label(self) -> &'static str {
         match self {
             Self::Classification => "Classification",
@@ -99,6 +105,8 @@ impl ConditionAttribute {
             Self::DeviceTrust => "DeviceTrust",
             Self::NetworkLocation => "NetworkLocation",
             Self::AccessContext => "AccessContext",
+            Self::SourceApplication => "SourceApplication",
+            Self::DestinationApplication => "DestinationApplication",
         }
     }
 }
@@ -392,6 +400,9 @@ pub enum Screen {
         step: u8,
         /// The attribute selected in Step 1 (None until Step 1 completed).
         selected_attribute: Option<ConditionAttribute>,
+        /// AppField selected in the sub-step (between Step 1 and Step 2). None while the sub-picker
+        /// is active or for attributes that have no sub-step.
+        selected_field: Option<dlp_common::abac::AppField>,
         /// The operator selected in Step 2 (None until Step 2 completed).
         selected_operator: Option<String>,
         /// Conditions already added this session.
