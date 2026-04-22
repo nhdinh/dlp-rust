@@ -36,7 +36,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 - [x] **Phase 23: USB Enumeration in dlp-agent** â Agent captures VID/PID/Serial/description on USB arrival via SetupDi; no enforcement yet (complete 2026-04-22)
 - [x] **Phase 24: Device Registry DB + Admin API** â device_registry table, trust-tier CRUD endpoints, agent polling for registry state (complete 2026-04-22)
 - [x] **Phase 25: App Identity Capture in dlp-user-ui** (complete 2026-04-22) â Source and destination process identity resolved at clipboard time; Authenticode verification; audit event fields populated
-- [ ] **Phase 26: ABAC Enforcement Convergence** â Evaluator enforces app-identity and USB trust-tier conditions; USB I/O enforcement hot path in file_monitor.rs
+- [x] **Phase 26: ABAC Enforcement Convergence** (complete 2026-04-22) â Evaluator enforces app-identity and USB trust-tier conditions; USB I/O enforcement hot path in file_monitor.rs
 - [ ] **Phase 27: USB Toast Notification** â User toast on USB block via Pipe 2 + winrt-notification in dlp-user-ui
 - [ ] **Phase 28: Admin TUI Screens** â App identity condition picker, Device Registry screen, managed-origins screen in dlp-admin-cli
 - [ ] **Phase 29: Chrome Enterprise Connector** â Named-pipe server in dlp-agent; protobuf decode; browser clipboard block + audit
