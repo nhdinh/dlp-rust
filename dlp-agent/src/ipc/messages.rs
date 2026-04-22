@@ -4,6 +4,7 @@
 //! A frame is: `[u32:length][json:payload]` — exactly what `serde_json` produces when
 //! combined with a manual length-prefix write/read.
 
+use dlp_common::AppIdentity;
 use serde::{Deserialize, Serialize};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,5 +103,113 @@ pub enum Pipe3UiMsg {
         preview: String,
         /// Total length of the pasted text.
         text_length: usize,
+        /// Identity of the application that initiated the clipboard operation
+        /// (populated by Phase 25's source-resolver).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_application: Option<AppIdentity>,
+        /// Identity of the application that received the paste
+        /// (populated by Phase 25's destination-resolver).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination_application: Option<AppIdentity>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dlp_common::endpoint::{AppIdentity, AppTrustTier, SignatureState};
+
+    #[test]
+    fn test_clipboard_alert_none_fields_skipped_in_json() {
+        let msg = Pipe3UiMsg::ClipboardAlert {
+            session_id: 1,
+            classification: "T3".to_string(),
+            preview: "x".to_string(),
+            text_length: 1,
+            source_application: None,
+            destination_application: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("source_application"), "json was: {json}");
+        assert!(!json.contains("destination_application"), "json was: {json}");
+    }
+
+    #[test]
+    fn test_clipboard_alert_round_trip_with_app_identity() {
+        let src = AppIdentity {
+            image_path: r"C:\src.exe".to_string(),
+            publisher: "Contoso".to_string(),
+            trust_tier: AppTrustTier::Trusted,
+            signature_state: SignatureState::Valid,
+        };
+        let msg = Pipe3UiMsg::ClipboardAlert {
+            session_id: 3,
+            classification: "T4".to_string(),
+            preview: "secret".to_string(),
+            text_length: 6,
+            source_application: Some(src),
+            destination_application: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("source_application"));
+        assert!(!json.contains("destination_application"));
+        let rt: Pipe3UiMsg = serde_json::from_str(&json).unwrap();
+        match rt {
+            Pipe3UiMsg::ClipboardAlert {
+                session_id,
+                source_application,
+                destination_application,
+                ..
+            } => {
+                assert_eq!(session_id, 3);
+                assert_eq!(
+                    source_application.as_ref().map(|a| a.publisher.as_str()),
+                    Some("Contoso"),
+                );
+                assert!(destination_application.is_none());
+            }
+            _ => panic!("expected ClipboardAlert variant"),
+        }
+    }
+
+    #[test]
+    fn test_clipboard_alert_deserializes_legacy_payload() {
+        // Payload as emitted by pre-Phase-22 UI processes -- no new fields.
+        // Must still deserialize successfully (D-15 backward compat).
+        let legacy = r#"{
+            "type": "ClipboardAlert",
+            "payload": {
+                "session_id": 2,
+                "classification": "T3",
+                "preview": "hello",
+                "text_length": 5
+            }
+        }"#;
+        let msg: Pipe3UiMsg = serde_json::from_str(legacy).unwrap();
+        match msg {
+            Pipe3UiMsg::ClipboardAlert {
+                session_id,
+                source_application,
+                destination_application,
+                ..
+            } => {
+                assert_eq!(session_id, 2);
+                assert!(source_application.is_none());
+                assert!(destination_application.is_none());
+            }
+            _ => panic!("expected ClipboardAlert variant"),
+        }
+    }
+
+    #[test]
+    fn test_pipe2_toast_unchanged() {
+        // D-16: Toast does NOT carry app identity.
+        let toast = Pipe2AgentMsg::Toast {
+            title: "Blocked".to_string(),
+            body: "Clipboard content blocked".to_string(),
+        };
+        let json = serde_json::to_string(&toast).unwrap();
+        assert!(!json.contains("source_application"));
+        assert!(!json.contains("destination_application"));
+    }
 }
