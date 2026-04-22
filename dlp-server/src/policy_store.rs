@@ -1309,7 +1309,440 @@ mod tests {
         assert_eq!(resp.matched_policy_id.as_deref(), Some("empty-none"));
     }
 
-    // ---- SourceApplication / DestinationApplication condition tests (Phase 26) ----
+    // ---- SourceApplication / DestinationApplication condition tests (Phase 26 Plan 03) ----
+    //
+    // Helpers follow the patterns specified in 26-03-PLAN.md <implementation> section.
+
+    /// Builds an [`AbacContext`] with `source_application` set to the given identity fields.
+    fn make_ctx_with_source_app(
+        classification: Classification,
+        publisher: &str,
+        image_path: &str,
+        trust_tier: dlp_common::endpoint::AppTrustTier,
+    ) -> AbacContext {
+        use dlp_common::endpoint::{AppIdentity, SignatureState};
+        let mut ctx = make_request(classification);
+        ctx.source_application = Some(AppIdentity {
+            publisher: publisher.to_string(),
+            image_path: image_path.to_string(),
+            trust_tier,
+            signature_state: SignatureState::Valid,
+        });
+        ctx
+    }
+
+    /// Builds an [`AbacContext`] with `destination_application` set to the given identity fields.
+    fn make_ctx_with_dest_app(
+        classification: Classification,
+        publisher: &str,
+        image_path: &str,
+        trust_tier: dlp_common::endpoint::AppTrustTier,
+    ) -> AbacContext {
+        use dlp_common::endpoint::{AppIdentity, SignatureState};
+        let mut ctx = make_request(classification);
+        ctx.destination_application = Some(AppIdentity {
+            publisher: publisher.to_string(),
+            image_path: image_path.to_string(),
+            trust_tier,
+            signature_state: SignatureState::Valid,
+        });
+        ctx
+    }
+
+    /// Builds a single-condition `SourceApplication` policy.
+    fn make_source_app_policy(field: AppField, op: &str, value: &str, action: Decision) -> Policy {
+        Policy {
+            id: "app-p1".to_string(),
+            name: "app-p1".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::SourceApplication {
+                field,
+                op: op.to_string(),
+                value: value.to_string(),
+            }],
+            action,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        }
+    }
+
+    /// Builds a single-condition `DestinationApplication` policy.
+    fn make_dest_app_policy(field: AppField, op: &str, value: &str, action: Decision) -> Policy {
+        Policy {
+            id: "dest-p1".to_string(),
+            name: "dest-p1".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::DestinationApplication {
+                field,
+                op: op.to_string(),
+                value: value.to_string(),
+            }],
+            action,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        }
+    }
+
+    // -- Publisher: ne operator --
+
+    /// `publisher ne "Contoso"` with a non-Contoso publisher → condition matches.
+    #[test]
+    fn test_source_app_publisher_ne_match() {
+        use dlp_common::endpoint::AppTrustTier;
+        let ctx = make_ctx_with_source_app(
+            Classification::T3,
+            "Microsoft",
+            r"C:\Windows\notepad.exe",
+            AppTrustTier::Trusted,
+        );
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::Publisher,
+            op: "ne".to_string(),
+            value: "Contoso".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
+    }
+
+    /// `publisher ne "Contoso"` with None source identity → fails closed (D-03).
+    #[test]
+    fn test_source_app_publisher_ne_none_fails_closed() {
+        let ctx = make_request(Classification::T3);
+        // ctx.source_application is None by default in make_request
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::Publisher,
+            op: "ne".to_string(),
+            value: "Contoso".to_string(),
+        };
+        assert!(!condition_matches(&condition, &ctx));
+    }
+
+    // -- ImagePath: no-match, exact eq, contains with None identity --
+
+    /// `image_path contains "Untrusted"` with path that does not contain that substring → no match.
+    #[test]
+    fn test_source_app_image_path_contains_no_match() {
+        use dlp_common::endpoint::AppTrustTier;
+        let ctx = make_ctx_with_source_app(
+            Classification::T3,
+            "Microsoft",
+            r"C:\TrustedApp.exe",
+            AppTrustTier::Trusted,
+        );
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::ImagePath,
+            op: "contains".to_string(),
+            value: "Untrusted".to_string(),
+        };
+        assert!(!condition_matches(&condition, &ctx));
+    }
+
+    /// `image_path eq "C:\app.exe"` with an exact matching path → matches.
+    #[test]
+    fn test_source_app_image_path_eq_exact_match() {
+        use dlp_common::endpoint::AppTrustTier;
+        let ctx = make_ctx_with_source_app(
+            Classification::T3,
+            "Contoso",
+            r"C:\app.exe",
+            AppTrustTier::Trusted,
+        );
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::ImagePath,
+            op: "eq".to_string(),
+            value: r"C:\app.exe".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
+    }
+
+    /// `image_path contains ...` with None source identity → fails closed (D-03).
+    #[test]
+    fn test_source_app_image_path_contains_none_fails_closed() {
+        let ctx = make_request(Classification::T3);
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::ImagePath,
+            op: "contains".to_string(),
+            value: "Program Files".to_string(),
+        };
+        assert!(!condition_matches(&condition, &ctx));
+    }
+
+    // -- TrustTier: eq "untrusted" does NOT match Trusted; ne "trusted" matches Untrusted; Unknown --
+
+    /// `trust_tier eq "untrusted"` with a Trusted app → does NOT match.
+    #[test]
+    fn test_source_app_trust_tier_eq_untrusted_no_match_for_trusted() {
+        use dlp_common::endpoint::AppTrustTier;
+        let ctx = make_ctx_with_source_app(
+            Classification::T3,
+            "Microsoft",
+            r"C:\Windows\notepad.exe",
+            AppTrustTier::Trusted,
+        );
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::TrustTier,
+            op: "eq".to_string(),
+            value: "untrusted".to_string(),
+        };
+        assert!(!condition_matches(&condition, &ctx));
+    }
+
+    /// `trust_tier ne "trusted"` with an Untrusted app → matches.
+    #[test]
+    fn test_source_app_trust_tier_ne_trusted_matches_untrusted() {
+        use dlp_common::endpoint::AppTrustTier;
+        let ctx = make_ctx_with_source_app(
+            Classification::T3,
+            "Unknown",
+            r"C:\Temp\bad.exe",
+            AppTrustTier::Untrusted,
+        );
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::TrustTier,
+            op: "ne".to_string(),
+            value: "trusted".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
+    }
+
+    /// `trust_tier eq "unknown"` with an Unknown app → matches.
+    #[test]
+    fn test_source_app_trust_tier_eq_unknown_matches() {
+        use dlp_common::endpoint::{AppIdentity, AppTrustTier, SignatureState};
+        let mut ctx = make_request(Classification::T3);
+        ctx.source_application = Some(AppIdentity {
+            publisher: "Vendor".to_string(),
+            image_path: r"C:\Tool\tool.exe".to_string(),
+            trust_tier: AppTrustTier::Unknown,
+            signature_state: SignatureState::Valid,
+        });
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::TrustTier,
+            op: "eq".to_string(),
+            value: "unknown".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
+    }
+
+    // -- DestinationApplication: publisher eq match and None fails closed --
+
+    /// `dest publisher eq "Contoso"` with a dest_app matching that publisher → matches.
+    #[test]
+    fn test_dest_app_publisher_eq_match() {
+        use dlp_common::endpoint::AppTrustTier;
+        let ctx = make_ctx_with_dest_app(
+            Classification::T3,
+            "Contoso",
+            r"C:\Contoso\app.exe",
+            AppTrustTier::Trusted,
+        );
+        let condition = PolicyCondition::DestinationApplication {
+            field: AppField::Publisher,
+            op: "eq".to_string(),
+            value: "Contoso".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
+    }
+
+    /// `dest publisher eq "Contoso"` with None destination identity → fails closed (D-03).
+    #[test]
+    fn test_dest_app_publisher_eq_none_fails_closed() {
+        let ctx = make_request(Classification::T3);
+        let condition = PolicyCondition::DestinationApplication {
+            field: AppField::Publisher,
+            op: "eq".to_string(),
+            value: "Contoso".to_string(),
+        };
+        assert!(!condition_matches(&condition, &ctx));
+    }
+
+    // -- Unsupported operator: "contains" on Publisher field returns false (T-26-09) --
+
+    /// `publisher contains "soft"` is NOT a supported operator for Publisher (only ImagePath
+    /// supports `contains` per D-03). Confirmed that it returns false — no accidental ALLOW.
+    #[test]
+    fn test_source_app_publisher_contains_unsupported_returns_false() {
+        use dlp_common::endpoint::AppTrustTier;
+        let ctx = make_ctx_with_source_app(
+            Classification::T3,
+            "Microsoft",
+            r"C:\Windows\notepad.exe",
+            AppTrustTier::Trusted,
+        );
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::Publisher,
+            op: "contains".to_string(),
+            value: "soft".to_string(),
+        };
+        // "contains" on Publisher is unsupported → returns false even with a matching substring
+        assert!(!condition_matches(&condition, &ctx));
+    }
+
+    // -- End-to-end evaluate() with app-identity policies --
+
+    /// PolicyMode::ALL with one SourceApplication condition + one Classification condition:
+    /// both must match for the policy to fire (DENY).
+    #[test]
+    fn test_evaluate_all_mode_source_app_and_classification_both_match() {
+        use dlp_common::endpoint::AppTrustTier;
+        let policy = Policy {
+            id: "app-class-all".to_string(),
+            name: "app + class ALL".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::SourceApplication {
+                    field: AppField::Publisher,
+                    op: "eq".to_string(),
+                    value: "Contoso".to_string(),
+                },
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // Both match: publisher == "Contoso" AND classification == T3
+        let ctx = make_ctx_with_source_app(
+            Classification::T3,
+            "Contoso",
+            r"C:\Contoso\app.exe",
+            AppTrustTier::Trusted,
+        );
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("app-class-all"));
+    }
+
+    /// PolicyMode::ALL: if the SourceApplication condition fails (None identity, fails closed)
+    /// but the Classification condition would match, the overall policy does NOT fire.
+    #[test]
+    fn test_evaluate_all_mode_source_app_none_blocks_policy() {
+        let policy = Policy {
+            id: "app-class-all".to_string(),
+            name: "app + class ALL".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::SourceApplication {
+                    field: AppField::Publisher,
+                    op: "eq".to_string(),
+                    value: "Contoso".to_string(),
+                },
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // source_application is None → SourceApplication condition fails closed →
+        // ALL mode means policy does NOT fire → falls through to default-deny (T3)
+        let ctx = make_request(Classification::T3);
+        let resp = store.evaluate(&ctx);
+        // Policy did not match (matched_policy_id is None), but default-deny still fires for T3
+        assert!(resp.matched_policy_id.is_none());
+        assert_eq!(resp.decision, Decision::DENY); // default-deny for T3
+    }
+
+    /// PolicyMode::ANY: source_application is None (SourceApplication fails closed)
+    /// but Classification matches → the Classification condition alone triggers DENY.
+    #[test]
+    fn test_evaluate_any_mode_source_app_none_classification_matches() {
+        let policy = Policy {
+            id: "app-class-any".to_string(),
+            name: "app + class ANY".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::SourceApplication {
+                    field: AppField::Publisher,
+                    op: "eq".to_string(),
+                    value: "Contoso".to_string(),
+                },
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ANY,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // source_application is None → SourceApplication fails closed (false).
+        // But Classification == T3 matches → ANY mode fires → DENY via policy match.
+        let ctx = make_request(Classification::T3);
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("app-class-any"));
+    }
+
+    // -- Policy-helper round-trip tests (make_source_app_policy / make_dest_app_policy) --
+
+    /// Verifies `make_source_app_policy` + `evaluate()` round-trip: Contoso source DENY.
+    #[test]
+    fn test_source_app_policy_helper_deny_on_match() {
+        use dlp_common::endpoint::AppTrustTier;
+        let policy = make_source_app_policy(AppField::Publisher, "eq", "Contoso", Decision::DENY);
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let ctx = make_ctx_with_source_app(
+            Classification::T2,
+            "Contoso",
+            r"C:\Contoso\app.exe",
+            AppTrustTier::Trusted,
+        );
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("app-p1"));
+    }
+
+    /// Verifies `make_dest_app_policy` + `evaluate()` round-trip: Contoso dest DENY.
+    #[test]
+    fn test_dest_app_policy_helper_deny_on_match() {
+        use dlp_common::endpoint::AppTrustTier;
+        let policy = make_dest_app_policy(AppField::Publisher, "eq", "Contoso", Decision::DENY);
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let ctx = make_ctx_with_dest_app(
+            Classification::T2,
+            "Contoso",
+            r"C:\Contoso\app.exe",
+            AppTrustTier::Trusted,
+        );
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("dest-p1"));
+    }
+
+    // ---- SourceApplication / DestinationApplication condition tests (Phase 26 Plan 02 — original 6) ----
 
     /// Builds a minimal AbacContext with the given classification and app identities.
     fn make_ctx_with_apps(
