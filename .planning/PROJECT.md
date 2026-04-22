@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-21 — v0.6.0 Endpoint Hardening milestone started*
+*Last updated: 2026-04-22 — Phase 27 complete (USB-04 delivered)*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -37,6 +37,12 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - Phase 19: Boolean Mode in TUI + Import/Export — mode picker in Create/Edit forms, round-trip through export/import (POLICY-09)
 - Phase 20: Operator Expansion — per-attribute operator sets (`gt`, `lt`, `ne`, `contains`) in evaluator and builder (POLICY-11)
 - Phase 21: In-Place Condition Editing — `'e'` key pre-fills 3-step picker, replace-at-index on save (POLICY-10)
+
+## In Progress: v0.6.0 Endpoint Hardening
+
+**Phases 22–27 complete (6/8).** USB-04 (toast notification) delivered in Phase 27 — `UsbBlockResult` carries identity+tier+notify, 30s per-drive cooldown gates repeat toasts without suppressing blocks, `Pipe2AgentMsg::Toast` broadcast wired into the USB block handler. All USB requirements (USB-01..04) now validated.
+
+**Remaining:** Phase 28 (Admin TUI Screens — APP-04, BRW-02), Phase 29 (Chrome Enterprise Connector — BRW-01, BRW-03).
 
 ## Deferred (future milestones)
 
