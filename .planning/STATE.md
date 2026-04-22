@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.6.0
-milestone_name: Endpoint Hardening
+milestone: v0.5.0
+milestone_name: â Boolean Logic
 status: executing
-last_updated: "2026-04-22T18:30:00.000Z"
-last_activity: 2026-04-22 -- Phase 27 planned — 2 plans in 2 waves (USB-04)
+last_updated: "2026-04-22T16:55:04.975Z"
+last_activity: 2026-04-22
 progress:
-  total_phases: 14
-  completed_phases: 13
-  total_plans: 34
-  completed_plans: 34
-  percent: 97
+  total_phases: 15
+  completed_phases: 12
+  total_plans: 35
+  completed_plans: 33
+  percent: 94
 ---
 
 # STATE.md — Project Memory
@@ -24,10 +24,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 ## Current Position
 
-Phase: 27 (usb-toast-notification) — READY TO EXECUTE
-Plan: 0 of 2
-Status: 2 plans written (27-01, 27-02); verification passed; ready for /gsd-execute-phase 27
-Next: Phase 28 (Admin TUI Screens — APP-04, BRW-02)
+Phase: 27 (usb-toast-notification) — EXECUTING
+Plan: 1 of 2 complete
+Status: 27-01 done (UsbBlockResult + cooldown); 27-02 ready to execute
+Next: Execute 27-02 (Pipe 2 toast broadcast in interception + dlp-user-ui)
 Last activity: 2026-04-22
 
 ## Decisions
@@ -73,6 +73,9 @@ Last activity: 2026-04-22
 | 2026-04-22 | seed_for_test always-compiled, not feature-gated | Integration tests in tests/ compile lib crate without cfg(test); #[doc(hidden)] pub fn is the only pattern that works without --features flags |
 | 2026-04-22 | USB_DETECTOR static promoted to OnceLock<Arc<UsbDetector>> | UsbDetector contains RwLock fields and is not Clone; wrapping in Arc at OnceLock::get_or_init time enables shared ownership with UsbEnforcer without cloning |
 | 2026-04-22 | Console mode passes None for usb_enforcer | async_run_console has no USB detector setup; None consistent with ad_client optional-subsystem pattern |
+| 2026-04-22 | UsbBlockResult derives PartialEq | Required for assert_eq!(result, None) in tests; no semantic impact on production code |
+| 2026-04-22 | check() returns Option<UsbBlockResult> with notify flag | Rich result carries identity+tier+notify; block always DENY; notify gated by 30s per-drive cooldown (USB-04) |
+| 2026-04-22 | is_none_or over map_or(true) in should_notify | Clippy unnecessary_map_or lint; is_none_or is semantically clearer and idiomatic Rust 1.82+ |
 
 - [Phase 26]: AppField enum defined in dlp-common/src/abac.rs — policy DSL type, not identity type; placed before PolicyCondition to satisfy forward reference
 - [Phase 26]: From<EvaluateRequest> for AbacContext drops agent field (tracing metadata, not ABAC attribute) — single impl block, no helper function needed
