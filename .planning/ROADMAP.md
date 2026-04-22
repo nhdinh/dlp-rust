@@ -145,8 +145,13 @@ Plans:
   2. The TUI presents a Managed Origins screen where the admin can list, add, and remove trusted web domains â changes persist via the admin API and hot-reload without server restart
   3. The TUI conditions builder's attribute picker includes `source_application` and `destination_application` as selectable attributes with publisher, image_path, and trust_tier sub-pickers â no raw JSON entry required
   4. All three new screens follow the existing ratatui TUI conventions (keyboard nav, Esc to cancel, confirmation on destructive actions)
-**Plans**: TBD
-**UI hint**: yes
+**Plans**: 5 plans
+Plans:
+- [ ] 28-01-PLAN.md -- managed_origins DDL + ManagedOriginsRepository + GET/POST/DELETE /admin/managed-origins handlers
+- [ ] 28-02-PLAN.md -- ConditionAttribute Source/DestinationApplication variants + AppField sub-picker in conditions builder
+- [ ] 28-03-PLAN.md -- DevicesMenu + DeviceList + DeviceTierPicker + register/delete flows for device registry TUI
+- [ ] 28-04-PLAN.md -- ManagedOriginList screen + add/delete flows wired to /admin/managed-origins API
+- [ ] 28-05-PLAN.md -- managed_origins integration tests + zero-warning build gate + human UAT checkpoint
 
 ### Phase 29: Chrome Enterprise Connector
 **Goal**: Chrome browser clipboard events are intercepted and evaluated by the DLP system so paste operations from managed origins to unmanaged destinations are blocked at the browser level
@@ -192,7 +197,7 @@ Plans:
 | 25 | App Identity Capture in dlp-user-ui | v0.6.0 | 0/3 | Planned | - |
 | 26 | ABAC Enforcement Convergence | v0.6.0 | 0/5 | Planned | - |
 | 27 | USB Toast Notification | v0.6.0 | 2/2 | Complete | 2026-04-22 |
-| 28 | Admin TUI Screens | v0.6.0 | TBD | Not started | - |
+| 28 | Admin TUI Screens | v0.6.0 | 0/5 | Planned | - |
 | 29 | Chrome Enterprise Connector | v0.6.0 | TBD | Not started | - |
 | 99 | Refactor DB Layer to Repository + Unit of Work | v0.3.0 | 3/3 | Complete | 2026-04-15 |
 
