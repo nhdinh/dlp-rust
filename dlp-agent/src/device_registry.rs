@@ -163,6 +163,33 @@ impl DeviceRegistryCache {
     }
 }
 
+/// Test-only helpers for seeding the cache without a live server.
+///
+/// Gated behind `#[cfg(any(test, feature = "test-helpers"))]` so these methods
+/// are compiled for:
+/// - Unit tests in this file (`#[cfg(test)]`), and
+/// - Integration tests in `tests/` that enable the `test-helpers` feature
+///   (`cargo test --features test-helpers`).
+///
+/// They are never present in production builds (T-24-12 accepted).
+#[cfg(any(test, feature = "test-helpers"))]
+impl DeviceRegistryCache {
+    /// Seeds the cache with a single entry for use in unit/integration tests.
+    ///
+    /// # Arguments
+    ///
+    /// * `vid` - USB Vendor ID hex string.
+    /// * `pid` - USB Product ID hex string.
+    /// * `serial` - Device serial number string.
+    /// * `tier` - Trust tier to associate with this device key.
+    pub fn seed_for_test(&self, vid: &str, pid: &str, serial: &str, tier: UsbTrustTier) {
+        self.cache.write().insert(
+            (vid.to_string(), pid.to_string(), serial.to_string()),
+            tier,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
