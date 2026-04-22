@@ -1,6 +1,7 @@
 ---
 phase: 25-app-identity-capture-in-dlp-user-ui
 plan: "03"
+status: complete
 subsystem: dlp-user-ui/ipc/pipe3
 tags: [app-identity, pipe3, clipboard-alert, wire-up, app05, ipc]
 dependency_graph:
