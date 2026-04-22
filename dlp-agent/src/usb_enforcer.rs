@@ -333,4 +333,48 @@ mod tests {
     fn test_extract_drive_letter_empty_returns_none() {
         assert_eq!(extract_drive_letter(""), None);
     }
+
+    /// T-26-14: Unregistered device defaults to Blocked (fail-safe).
+    ///
+    /// The device triple is present in the USB detector's drive-letter map
+    /// (the drive letter IS known), but the VID/PID/serial are NOT in the
+    /// device registry cache. `trust_tier_for` returns `Blocked` as the
+    /// default-deny value (D-10). All operations must be denied.
+    #[test]
+    fn test_unregistered_device_defaults_to_blocked() {
+        // Detector knows about drive E (device identity present), but the
+        // registry has never been seeded with this VID/PID/serial.
+        let detector = make_detector(vec![('E', "DEAD", "BEEF", "UNREGISTERED")]);
+        // Empty registry — no seed_for_test call.
+        let registry = Arc::new(DeviceRegistryCache::new());
+        let enforcer = UsbEnforcer::new(detector, registry);
+
+        // Default-deny: unregistered device treated as Blocked.
+        assert_eq!(
+            enforcer.check("E:\\secret.docx", &written_action()),
+            Some(Decision::DENY)
+        );
+        assert_eq!(
+            enforcer.check("E:\\file.txt", &read_action()),
+            Some(Decision::DENY)
+        );
+    }
+
+    /// D-09: path starting with a non-ASCII-alphabetic character returns None.
+    ///
+    /// Linux-style paths (e.g., `/usr/local/file.txt`) start with `/` which
+    /// is not an ASCII alphabetic character. No drive letter can be extracted,
+    /// so USB enforcement is skipped entirely.
+    #[test]
+    fn test_non_alpha_path_returns_none() {
+        let detector = make_detector(vec![]);
+        let registry = Arc::new(DeviceRegistryCache::new());
+        let enforcer = UsbEnforcer::new(detector, registry);
+
+        // Path starting with `/` (Linux-style) has no Windows drive letter.
+        assert_eq!(
+            enforcer.check("/usr/local/file.txt", &written_action()),
+            None
+        );
+    }
 }
