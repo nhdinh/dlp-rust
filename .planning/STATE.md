@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v0.6.0
 milestone_name: — Endpoint Hardening
 status: in_progress
-last_updated: "2026-04-22T00:00:00+07:00"
-last_activity: 2026-04-22 -- Phase 22 context gathered; ready to plan
+last_updated: "2026-04-22T09:00:00+07:00"
+last_activity: 2026-04-22 -- Phase 22 planned; 4 plans (3 waves) ready to execute
 progress:
   total_phases: 8
   completed_phases: 0
-  total_plans: 0
+  total_plans: 4
   completed_plans: 0
   percent: 0
 ---
@@ -20,15 +20,15 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** v0.6.0 Endpoint Hardening — roadmap defined, 8 phases (22–29), 13 requirements. Next: `/gsd-plan-phase 22`.
+**Current focus:** v0.6.0 Endpoint Hardening — Phase 22 planned (4 plans, 3 waves). Next: `/gsd-execute-phase 22`.
 
 ## Current Position
 
-Phase: Phase 22 (context gathered)
-Plan: —
-Status: Context captured; ready to plan Phase 22
-Resume: `/gsd-plan-phase 22`
-Last activity: 2026-04-22 -- Phase 22 context gathered (endpoint types, module org, AbacContext shape)
+Phase: Phase 22 (ready to execute)
+Plan: 4 plans across 3 waves
+Status: Planning complete; all 5 success criteria covered; zero-warning workspace build is phase gate
+Resume: `/gsd-execute-phase 22`
+Last activity: 2026-04-22 -- Phase 22 planned (endpoint.rs + abac.rs + audit.rs + IPC extensions)
 
 ## Decisions
 
