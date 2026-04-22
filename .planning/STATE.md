@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.5.0
 milestone_name: â Boolean Logic
-status: verifying
-last_updated: "2026-04-22T15:12:45Z"
+status: executing
+last_updated: "2026-04-22T15:21:27.616Z"
 last_activity: 2026-04-22
 progress:
   total_phases: 14
   completed_phases: 11
   total_plans: 33
-  completed_plans: 29
-  percent: 88
+  completed_plans: 30
+  percent: 91
 ---
 
 # STATE.md — Project Memory
@@ -25,9 +25,9 @@ See: `.planning/PROJECT.md` (updated 2026-04-21)
 ## Current Position
 
 Phase: 26 (abac-enforcement-convergence) — IN PROGRESS
-Plan: 2 of 5
-Status: Plan 02 complete — PolicyStore migrated to AbacContext, app-identity condition arms added
-Next: Plan 03 (public_routes.rs evaluate handler boundary conversion)
+Plan: 3 of 5
+Status: Plan 03 complete — comprehensive app-identity condition TDD tests added (61 policy_store tests pass)
+Next: Plan 04 (USB enforcement — UsbEnforcer struct + run_event_loop wiring)
 Last activity: 2026-04-22
 
 ## Decisions
@@ -77,6 +77,9 @@ Last activity: 2026-04-22
 - [Phase 26 Plan 02]: EvaluateRequest removed from top-level policy_store.rs imports — only used in #[cfg(test)] module; retained there explicitly
 - [Phase 26 Plan 02]: AbacContext is the evaluation type from HTTP boundary inward — no EvaluateRequest on PolicyStore::evaluate() hot path
 - [Phase 26 Plan 02]: app_identity_matches fail-closed: Option<&AppIdentity> None returns false unconditionally (D-03)
+- [Phase 26 Plan 03]: make_ctx_with_source_app/dest_app helpers mutate make_request() output — reuses EvaluateRequest::into() path, no boilerplate duplication
+- [Phase 26 Plan 03]: AppTrustTier::Unknown test uses inline AppIdentity (not bool helper) — bool helper only covers Trusted/Untrusted
+- [Phase 26 Plan 03]: test_evaluate_all_mode_source_app_none_blocks_policy asserts matched_policy_id.is_none() to distinguish policy non-fire from default-deny
 
 ## Known Issues (carry-forward)
 
