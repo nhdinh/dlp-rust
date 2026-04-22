@@ -242,7 +242,12 @@ async fn test_get_after_post_returns_one_entry() {
     assert_eq!(list[0]["vid"], "AAAA");
     assert_eq!(list[0]["pid"], "BBBB");
     assert_eq!(list[0]["serial"], "SN-001");
-    assert_eq!(list[0]["trust_tier"], "read_only");
+    // trust_tier is intentionally omitted from the unauthenticated GET response
+    // (CR-01 fix): the public list endpoint returns only vid, pid, serial.
+    assert!(
+        list[0].get("trust_tier").is_none() || list[0]["trust_tier"].is_null(),
+        "trust_tier must not be present in unauthenticated GET response"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -416,8 +421,9 @@ async fn test_post_duplicate_upserts_and_get_shows_updated_tier() {
     let list: Vec<Value> = serde_json::from_slice(&bytes).expect("parse JSON array");
 
     assert_eq!(list.len(), 1, "upsert must yield exactly 1 entry");
-    assert_eq!(
-        list[0]["trust_tier"], "full_access",
-        "trust_tier must reflect the second POST"
-    );
+    // trust_tier is intentionally omitted from the unauthenticated GET response
+    // (CR-01 fix): verify via vid/pid/serial identity only on the public endpoint.
+    assert_eq!(list[0]["vid"], vid, "vid must match the upserted entry");
+    assert_eq!(list[0]["pid"], pid, "pid must match the upserted entry");
+    assert_eq!(list[0]["serial"], serial, "serial must match the upserted entry");
 }

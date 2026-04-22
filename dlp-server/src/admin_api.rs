@@ -321,6 +321,33 @@ impl From<repositories::DeviceRegistryRow> for DeviceRegistryResponse {
     }
 }
 
+/// Reduced device entry returned by the unauthenticated `GET /admin/device-registry`
+/// endpoint.
+///
+/// Omits `trust_tier`, `description`, and `created_at` so that unauthenticated
+/// callers (i.e. agents polling for device identity) cannot enumerate which
+/// devices have elevated access. Full details remain available to authenticated
+/// callers via the JWT-protected POST response.
+#[derive(Debug, Serialize)]
+struct PublicDeviceEntry {
+    /// USB Vendor ID hex string.
+    pub vid: String,
+    /// USB Product ID hex string.
+    pub pid: String,
+    /// Device serial number.
+    pub serial: String,
+}
+
+impl From<repositories::DeviceRegistryRow> for PublicDeviceEntry {
+    fn from(row: repositories::DeviceRegistryRow) -> Self {
+        Self {
+            vid: row.vid,
+            pid: row.pid,
+            serial: row.serial,
+        }
+    }
+}
+
 /// Health/readiness probe response.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -1476,24 +1503,30 @@ async fn test_alert_config_handler(
 // Device Registry handlers
 // ---------------------------------------------------------------------------
 
-/// Returns all registered USB device trust-tier entries.
+/// Returns the public device identity list (vid, pid, serial only).
 ///
 /// `GET /admin/device-registry` — intentionally unauthenticated so agents can
-/// poll for the trust-tier list without stored credentials (T-24-06 accepted).
+/// poll for the enrolled device list without stored credentials (T-24-06 accepted).
+///
+/// `trust_tier` is deliberately omitted from this response: unauthenticated
+/// callers must not be able to enumerate which devices have elevated access,
+/// as that information could be used to identify or spoof high-privilege devices.
+/// Full device details (including trust_tier) are available to authenticated
+/// callers via the POST response.
 ///
 /// # Errors
 ///
 /// Returns `AppError::Internal` if the pool or query fails.
 async fn list_device_registry_handler(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<DeviceRegistryResponse>>, AppError> {
+) -> Result<Json<Vec<PublicDeviceEntry>>, AppError> {
     let pool = Arc::clone(&state.pool);
     let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         repositories::DeviceRegistryRepository::list_all(&pool).map_err(AppError::Database)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
-    let response: Vec<DeviceRegistryResponse> = rows.into_iter().map(Into::into).collect();
+    let response: Vec<PublicDeviceEntry> = rows.into_iter().map(Into::into).collect();
     Ok(Json(response))
 }
 
