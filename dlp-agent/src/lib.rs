@@ -77,3 +77,5 @@ pub mod session_identity;
 
 #[cfg(windows)]
 pub mod server_client;
+
+pub mod device_registry;

@@ -359,6 +359,44 @@ impl ServerClient {
         Ok(payload)
     }
 
+    /// Fetches the full device registry from `GET /admin/device-registry`.
+    ///
+    /// Returns a JSON array of [`DeviceRegistryEntry`] objects. The endpoint is
+    /// unauthenticated — agents do not send a JWT (D-01 from 24-CONTEXT.md).
+    ///
+    /// On success: returns the parsed list for the caller to refresh its cache.
+    /// On failure: returns an error so the caller can retain the stale cache (D-10).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerClientError::Http`] if the HTTP request fails (network error,
+    /// timeout, TLS error, or JSON decode failure).
+    /// Returns [`ServerClientError::ServerError`] if the response status is not 2xx.
+    pub async fn fetch_device_registry(
+        &self,
+    ) -> Result<Vec<DeviceRegistryEntry>, ServerClientError> {
+        let url = format!("{}/admin/device-registry", self.base_url);
+        let response = self
+            .client
+            .get(&url)
+            .timeout(REQUEST_TIMEOUT)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
+            return Err(ServerClientError::ServerError { status, body });
+        }
+        let entries = response
+            .json::<Vec<DeviceRegistryEntry>>()
+            .await
+            .map_err(ServerClientError::Http)?;
+        Ok(entries)
+    }
+
     /// Sends a batch of audit events to the dlp-server.
     ///
     /// # Arguments
@@ -390,6 +428,32 @@ impl ServerClient {
         debug!(count = events.len(), "audit events relayed to server");
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// DeviceRegistryEntry -- deserialization target for GET /admin/device-registry
+// ---------------------------------------------------------------------------
+
+/// A single entry from the `GET /admin/device-registry` response.
+///
+/// Matches the `DeviceRegistryResponse` shape returned by `dlp-server`.
+/// Fields mirror the `device_registry` table columns (Phase 24 Plan 01).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DeviceRegistryEntry {
+    /// Server-generated UUID for the registry row.
+    pub id: String,
+    /// USB Vendor ID hex string (e.g., `"0951"`).
+    pub vid: String,
+    /// USB Product ID hex string (e.g., `"1666"`).
+    pub pid: String,
+    /// Device serial number, or `"(none)"` for devices without one.
+    pub serial: String,
+    /// Human-readable device description from the USB descriptor.
+    pub description: String,
+    /// Trust tier string: `"blocked"`, `"read_only"`, or `"full_access"`.
+    pub trust_tier: String,
+    /// ISO-8601 creation timestamp.
+    pub created_at: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -715,5 +779,13 @@ mod tests {
             .expect("client creation");
         let result = sc.fetch_agent_config().await;
         assert!(result.is_err(), "unreachable server should return error");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_device_registry_unreachable_server() {
+        // Test 5: fetch_device_registry on an unreachable server returns Err (does not panic).
+        let client = unreachable_client();
+        let result = client.fetch_device_registry().await;
+        assert!(result.is_err(), "unreachable server must return Err");
     }
 }
