@@ -26,14 +26,14 @@ use std::sync::Arc;
 
 use dlp_common::{
     AccessContext, AgentInfo, AuditAccessContext, AuditEvent, Decision, Environment,
-    EvaluateRequest, EventType, Resource, Subject,
+    EvaluateRequest, EventType, Resource, Subject, UsbTrustTier,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::audit_emitter::{self, emit_audit, EmitContext};
 use crate::identity::WindowsIdentity;
-use crate::ipc::messages::Pipe1AgentMsg;
+use crate::ipc::messages::{Pipe1AgentMsg, Pipe2AgentMsg};
 use crate::ipc::pipe1;
 use crate::offline::OfflineManager;
 use crate::session_identity::SessionIdentityMap;
@@ -114,6 +114,31 @@ pub async fn run_event_loop(
                             "failed to send USB BlockNotify to UI"
                         );
                     }
+                }
+                // USB-04: toast notification — fires only when per-drive cooldown has not suppressed it.
+                if usb_result.notify {
+                    let (title, body) = match usb_result.tier {
+                        UsbTrustTier::Blocked => (
+                            "USB Device Blocked".to_string(),
+                            format!(
+                                "{} \u{2014} this device is not permitted",
+                                usb_result.identity.description
+                            ),
+                        ),
+                        UsbTrustTier::ReadOnly => (
+                            "USB Device Read-Only".to_string(),
+                            format!(
+                                "{} \u{2014} write operations are not permitted",
+                                usb_result.identity.description
+                            ),
+                        ),
+                        UsbTrustTier::FullAccess => {
+                            unreachable!(
+                                "FullAccess never returns a block result from UsbEnforcer::check"
+                            )
+                        }
+                    };
+                    crate::ipc::pipe2::BROADCASTER.broadcast(&Pipe2AgentMsg::Toast { title, body });
                 }
                 continue; // skip ABAC evaluation for this event
             }
