@@ -24,10 +24,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 ## Current Position
 
-Phase: 27 (usb-toast-notification) — EXECUTING
-Plan: 1 of 2 complete
-Status: 27-01 done (UsbBlockResult + cooldown); 27-02 ready to execute
-Next: Execute 27-02 (Pipe 2 toast broadcast in interception + dlp-user-ui)
+Phase: 27 (usb-toast-notification) — COMPLETE
+Plan: 2 of 2 complete
+Status: 27-01 done (UsbBlockResult + cooldown); 27-02 done (Pipe2AgentMsg::Toast broadcast wired)
+Next: Execute Phase 28 (Admin TUI Screens — APP-04, BRW-02)
 Last activity: 2026-04-22
 
 ## Decisions
@@ -76,6 +76,9 @@ Last activity: 2026-04-22
 | 2026-04-22 | UsbBlockResult derives PartialEq | Required for assert_eq!(result, None) in tests; no semantic impact on production code |
 | 2026-04-22 | check() returns Option<UsbBlockResult> with notify flag | Rich result carries identity+tier+notify; block always DENY; notify gated by 30s per-drive cooldown (USB-04) |
 | 2026-04-22 | is_none_or over map_or(true) in should_notify | Clippy unnecessary_map_or lint; is_none_or is semantically clearer and idiomatic Rust 1.82+ |
+| 2026-04-22 | Toast broadcast additive before continue in USB block handler | Inserted after BlockNotify send; does not replace audit or BlockNotify — notify=false suppresses toast only |
+| 2026-04-22 | unreachable!() on FullAccess arm in toast tier match | Exhaustive match required by Rust; unreachable!() documents invariant that UsbEnforcer::check() never returns FullAccess (T-27-07) |
+| 2026-04-22 | \\u{2014} escape for em-dash in toast body strings | Avoids literal multibyte char in source; CLAUDE.md prohibits emoji but not typographic punctuation |
 
 - [Phase 26]: AppField enum defined in dlp-common/src/abac.rs — policy DSL type, not identity type; placed before PolicyCondition to satisfy forward reference
 - [Phase 26]: From<EvaluateRequest> for AbacContext drops agent field (tracing metadata, not ABAC attribute) — single impl block, no helper function needed
