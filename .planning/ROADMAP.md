@@ -131,8 +131,10 @@ Plans:
   1. When a USB device is blocked by the agent, `dlp-user-ui` displays a Windows toast notification within two seconds containing the device name and a brief policy explanation
   2. The notification correctly identifies the device by its description (not just VID/PID)
   3. Toast delivery reuses the existing `winrt-notification` integration â no new notification library is added
-**Plans**: TBD
-**UI hint**: yes
+**Plans**: 2 plans
+Plans:
+- [ ] 27-01-PLAN.md â UsbBlockResult struct + per-drive cooldown field + check() return type change + updated unit tests in usb_enforcer.rs
+- [ ] 27-02-PLAN.md â Toast broadcast call site in interception/mod.rs run_event_loop (Pipe2AgentMsg::Toast wired after USB block)
 
 ### Phase 28: Admin TUI Screens
 **Goal**: Administrators can manage USB device trust tiers, managed web origins, and author app-identity policy conditions through the TUI without touching the API directly
@@ -189,7 +191,7 @@ Plans:
 | 24 | Device Registry DB + Admin API | v0.6.0 | 4/4 | Planned | - |
 | 25 | App Identity Capture in dlp-user-ui | v0.6.0 | 0/3 | Planned | - |
 | 26 | ABAC Enforcement Convergence | v0.6.0 | 0/5 | Planned | - |
-| 27 | USB Toast Notification | v0.6.0 | TBD | Not started | - |
+| 27 | USB Toast Notification | v0.6.0 | 2/2 | Planned | - |
 | 28 | Admin TUI Screens | v0.6.0 | TBD | Not started | - |
 | 29 | Chrome Enterprise Connector | v0.6.0 | TBD | Not started | - |
 | 99 | Refactor DB Layer to Repository + Unit of Work | v0.3.0 | 3/3 | Complete | 2026-04-15 |
