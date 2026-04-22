@@ -2212,6 +2212,13 @@ fn condition_to_prefill(
                 String::new(),
             )
         }
+        // App-identity conditions added in Phase 26 — TUI picker support is a future phase.
+        // Return a stable fallback so existing policies that include these conditions
+        // can be opened and re-saved without data loss.
+        PolicyCondition::SourceApplication { op, .. }
+        | PolicyCondition::DestinationApplication { op, .. } => {
+            (ConditionAttribute::Classification, op.clone(), 0, String::new())
+        }
     }
 }
 
@@ -2231,6 +2238,12 @@ pub fn condition_display(cond: &dlp_common::abac::PolicyCondition) -> String {
             format!("NetworkLocation {op} {value:?}")
         }
         PolicyCondition::AccessContext { op, value } => format!("AccessContext {op} {value:?}"),
+        PolicyCondition::SourceApplication { field, op, value } => {
+            format!("SourceApplication {field:?} {op} {value}")
+        }
+        PolicyCondition::DestinationApplication { field, op, value } => {
+            format!("DestinationApplication {field:?} {op} {value}")
+        }
     }
 }
 
