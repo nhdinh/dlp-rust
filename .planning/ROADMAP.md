@@ -53,7 +53,12 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
   3. `AbacContext` carries `source_application: Option<AppIdentity>` and `destination_application: Option<AppIdentity>` fields with `#[serde(default)]`
   4. `AuditEvent` wire format includes app identity and device identity optional fields with `#[serde(default)]` — no deserialization breaks on old events
   5. Pipe 3 `ClipboardAlert` and Pipe 2 message types carry the new fields with `#[serde(default)]`; workspace compiles with zero warnings
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+- [ ] 22-01-PLAN.md - endpoint.rs new types (AppIdentity, DeviceIdentity, UsbTrustTier, AppTrustTier, SignatureState) + lib.rs re-exports
+- [ ] 22-02-PLAN.md - abac.rs (EvaluateRequest fields + new AbacContext) and audit.rs (AuditEvent fields + three builder methods)
+- [ ] 22-03-PLAN.md - Pipe3UiMsg::ClipboardAlert extended in dlp-agent + dlp-user-ui IPC messages.rs (mirrored)
+- [ ] 22-04-PLAN.md - Cross-type integration test + workspace zero-warning verification gate + human checkpoint
 
 ### Phase 23: USB Enumeration in dlp-agent
 **Goal**: The agent reliably detects USB device arrival and captures device identity; the information is logged and ready for enforcement without any behavior change to existing flows
@@ -161,7 +166,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 | 19 | Boolean Mode in TUI + Import/Export | v0.5.0 | 2/2 | Complete | 2026-04-21 |
 | 20 | Operator Expansion | v0.5.0 | 2/2 | Complete | 2026-04-21 |
 | 21 | In-Place Condition Editing | v0.5.0 | 1/1 | Complete | 2026-04-21 |
-| 22 | dlp-common Foundation | v0.6.0 | TBD | Not started | - |
+| 22 | dlp-common Foundation | v0.6.0 | 0/4 | Not started | - |
 | 23 | USB Enumeration in dlp-agent | v0.6.0 | TBD | Not started | - |
 | 24 | Device Registry DB + Admin API | v0.6.0 | TBD | Not started | - |
 | 25 | App Identity Capture in dlp-user-ui | v0.6.0 | TBD | Not started | - |
