@@ -1551,12 +1551,17 @@ async fn upsert_device_registry_handler(
     // Upsert, then re-read by (vid, pid, serial) to get the persisted UUID.
     // On conflict the original UUID is preserved — re-reading is necessary.
     let persisted = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        repositories::DeviceRegistryRepository::upsert(&uow, &row).map_err(AppError::Database)?;
-        uow.commit().map_err(AppError::Database)?;
-        // Re-read outside the transaction using the pool (write conn already returned).
-        drop(conn);
+        {
+            // Explicit scope: `conn` (an RAII pool guard) is returned to the pool
+            // at the closing brace, before the re-acquire below. Without this scope
+            // block, a pool with max_size = 1 (e.g., some test fixtures) would
+            // deadlock waiting for a connection it already holds.
+            let mut conn = pool.get().map_err(AppError::from)?;
+            let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+            repositories::DeviceRegistryRepository::upsert(&uow, &row)
+                .map_err(AppError::Database)?;
+            uow.commit().map_err(AppError::Database)?;
+        } // conn returned to pool here
         repositories::DeviceRegistryRepository::get_by_device_key(&pool, &vid, &pid, &serial)
             .map_err(AppError::Database)
     })
