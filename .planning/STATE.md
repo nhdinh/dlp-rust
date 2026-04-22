@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.5.0
 milestone_name: â Boolean Logic
 status: executing
-last_updated: "2026-04-22T15:21:27.616Z"
+last_updated: "2026-04-22T15:32:39.971Z"
 last_activity: 2026-04-22
 progress:
   total_phases: 14
   completed_phases: 11
   total_plans: 33
-  completed_plans: 30
-  percent: 91
+  completed_plans: 31
+  percent: 94
 ---
 
 # STATE.md — Project Memory
@@ -25,9 +25,9 @@ See: `.planning/PROJECT.md` (updated 2026-04-21)
 ## Current Position
 
 Phase: 26 (abac-enforcement-convergence) — IN PROGRESS
-Plan: 3 of 5
-Status: Plan 03 complete — comprehensive app-identity condition TDD tests added (61 policy_store tests pass)
-Next: Plan 04 (USB enforcement — UsbEnforcer struct + run_event_loop wiring)
+Plan: 4 of 5
+Status: Plan 04 complete — UsbEnforcer struct + run_event_loop wiring delivered (9 unit tests pass)
+Next: Plan 05 (integration verification + final phase close)
 Last activity: 2026-04-22
 
 ## Decisions
@@ -71,6 +71,8 @@ Last activity: 2026-04-22
 | 2026-04-22 | ON CONFLICT DO UPDATE preserves UUID PK | INSERT OR REPLACE deletes-then-reinserts changing the PK; ON CONFLICT DO UPDATE updates in place keeping the original id |
 | 2026-04-22 | In-memory pool test: release write conn before read | r2d2 in-memory SQLite pool — write PooledConnection must be dropped (returned to pool) before list_all acquires a second connection |
 | 2026-04-22 | seed_for_test always-compiled, not feature-gated | Integration tests in tests/ compile lib crate without cfg(test); #[doc(hidden)] pub fn is the only pattern that works without --features flags |
+| 2026-04-22 | USB_DETECTOR static promoted to OnceLock<Arc<UsbDetector>> | UsbDetector contains RwLock fields and is not Clone; wrapping in Arc at OnceLock::get_or_init time enables shared ownership with UsbEnforcer without cloning |
+| 2026-04-22 | Console mode passes None for usb_enforcer | async_run_console has no USB detector setup; None consistent with ad_client optional-subsystem pattern |
 
 - [Phase 26]: AppField enum defined in dlp-common/src/abac.rs — policy DSL type, not identity type; placed before PolicyCondition to satisfy forward reference
 - [Phase 26]: From<EvaluateRequest> for AbacContext drops agent field (tracing metadata, not ABAC attribute) — single impl block, no helper function needed
@@ -80,6 +82,8 @@ Last activity: 2026-04-22
 - [Phase 26 Plan 03]: make_ctx_with_source_app/dest_app helpers mutate make_request() output — reuses EvaluateRequest::into() path, no boilerplate duplication
 - [Phase 26 Plan 03]: AppTrustTier::Unknown test uses inline AppIdentity (not bool helper) — bool helper only covers Trusted/Untrusted
 - [Phase 26 Plan 03]: test_evaluate_all_mode_source_app_none_blocks_policy asserts matched_policy_id.is_none() to distinguish policy non-fire from default-deny
+- [Phase 26 Plan 04]: UsbEnforcer check() fires before offline.evaluate() — None return is zero-cost fast-path for non-USB drives; Some(DENY) short-circuits ABAC entirely
+- [Phase 26 Plan 04]: extract_drive_letter normalizes to uppercase — lowercase drive letters (e:\file) resolve to same HashMap key as E:\file (T-26-12 mitigation)
 
 ## Known Issues (carry-forward)
 
