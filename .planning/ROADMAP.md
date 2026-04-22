@@ -32,7 +32,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 
 ### Phase Summary
 
-- [ ] **Phase 22: dlp-common Foundation** — New shared types (AppIdentity, DeviceIdentity, UsbTrustTier, SignatureState) that gate all three tracks
+- [x] **Phase 22: dlp-common Foundation** — New shared types (AppIdentity, DeviceIdentity, UsbTrustTier, SignatureState) that gate all three tracks (complete 2026-04-22)
 - [ ] **Phase 23: USB Enumeration in dlp-agent** — Agent captures VID/PID/Serial/description on USB arrival via SetupDi; no enforcement yet
 - [ ] **Phase 24: Device Registry DB + Admin API** — device_registry table, trust-tier CRUD endpoints, agent polling for registry state
 - [ ] **Phase 25: App Identity Capture in dlp-user-ui** — Source and destination process identity resolved at clipboard time; Authenticode verification; audit event fields populated
@@ -55,10 +55,10 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
   5. Pipe 3 `ClipboardAlert` and Pipe 2 message types carry the new fields with `#[serde(default)]`; workspace compiles with zero warnings
 **Plans**: 4 plans
 Plans:
-- [ ] 22-01-PLAN.md - endpoint.rs new types (AppIdentity, DeviceIdentity, UsbTrustTier, AppTrustTier, SignatureState) + lib.rs re-exports
-- [ ] 22-02-PLAN.md - abac.rs (EvaluateRequest fields + new AbacContext) and audit.rs (AuditEvent fields + three builder methods)
-- [ ] 22-03-PLAN.md - Pipe3UiMsg::ClipboardAlert extended in dlp-agent + dlp-user-ui IPC messages.rs (mirrored)
-- [ ] 22-04-PLAN.md - Cross-type integration test + workspace zero-warning verification gate + human checkpoint
+- [x] 22-01-PLAN.md - endpoint.rs new types (AppIdentity, DeviceIdentity, UsbTrustTier, AppTrustTier, SignatureState) + lib.rs re-exports
+- [x] 22-02-PLAN.md - abac.rs (EvaluateRequest fields + new AbacContext) and audit.rs (AuditEvent fields + three builder methods)
+- [x] 22-03-PLAN.md - Pipe3UiMsg::ClipboardAlert extended in dlp-agent + dlp-user-ui IPC messages.rs (mirrored)
+- [x] 22-04-PLAN.md - Cross-type integration test + workspace zero-warning verification gate + human checkpoint
 
 ### Phase 23: USB Enumeration in dlp-agent
 **Goal**: The agent reliably detects USB device arrival and captures device identity; the information is logged and ready for enforcement without any behavior change to existing flows
