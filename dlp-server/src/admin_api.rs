@@ -42,7 +42,7 @@ fn mode_from_str(s: &str) -> PolicyMode {
     }
 }
 use crate::AppState;
-use dlp_common::abac::{EvaluateRequest, EvaluateResponse};
+use dlp_common::abac::{AbacContext, EvaluateRequest, EvaluateResponse};
 use tracing::info;
 
 // ---------------------------------------------------------------------------
@@ -53,6 +53,11 @@ use tracing::info;
 ///
 /// `POST /evaluate` — intentionally unauthenticated.
 /// Agent identity is established by `AgentInfo` in the request body.
+///
+/// The wire [`EvaluateRequest`] is converted to an internal [`AbacContext`]
+/// immediately after agent-tracing metadata is extracted (D-04). The `agent`
+/// field is intentionally dropped at this boundary — it is request-tracing
+/// metadata, not an ABAC attribute (Phase 22 D-10).
 async fn evaluate_handler(
     State(state): State<Arc<AppState>>,
     Json(request): Json<EvaluateRequest>,
@@ -69,14 +74,21 @@ async fn evaluate_handler(
         })
         .unwrap_or_else(|| "unknown".to_string());
 
+    // Extract classification before consuming `request` via `.into()`.
+    let resource_classification = request.resource.classification;
     info!(
         agent_id = %agent_id,
-        resource_classification = ?request.resource.classification,
+        resource_classification = ?resource_classification,
         "policy evaluation request"
     );
 
+    // Convert wire request to internal ABAC context at the HTTP boundary (D-04).
+    // The agent field is intentionally dropped — it is request-tracing metadata,
+    // not an ABAC attribute (Phase 22 D-10).
+    let ctx: AbacContext = request.into();
+
     // NOTE: evaluate() is synchronous — no .await here.
-    let response = state.policy_store.evaluate(&request);
+    let response = state.policy_store.evaluate(&ctx);
     Ok(Json(response))
 }
 
