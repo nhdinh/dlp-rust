@@ -87,6 +87,10 @@ pub fn send_clipboard_alert(
         classification: classification.to_string(),
         preview: preview.to_string(),
         text_length,
+        // Phase 25 will populate these; for now the UI sends None until the
+        // source-resolver is wired up.
+        source_application: None,
+        destination_application: None,
     };
     let json =
         serde_json::to_vec(&msg).map_err(|e| anyhow::anyhow!("serialise ClipboardAlert: {}", e))?;
