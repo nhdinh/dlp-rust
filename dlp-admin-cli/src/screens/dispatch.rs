@@ -1244,6 +1244,7 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 app.screen = Screen::ConditionsBuilder {
                     step: 1,
                     selected_attribute: None,
+                    selected_field: None,
                     selected_operator: None,
                     // Pre-populate pending with any conditions already added.
                     pending: form.conditions.clone(),
@@ -1581,6 +1582,7 @@ fn handle_policy_edit_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 app.screen = Screen::ConditionsBuilder {
                     step: 1,
                     selected_attribute: None,
+                    selected_field: None,
                     selected_operator: None,
                     pending: form.conditions.clone(),
                     buffer: String::new(),
