@@ -79,3 +79,6 @@ pub mod session_identity;
 pub mod server_client;
 
 pub mod device_registry;
+
+#[cfg(windows)]
+pub mod usb_enforcer;
