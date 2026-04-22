@@ -300,7 +300,7 @@ const ALERT_TIMEOUT: Duration = Duration::from_millis(500);
 fn test_ssn_triggers_t4_alert() {
     let messages = setup_pipe();
 
-    let tier = classify_and_alert(TEST_SESSION_ID, "My SSN is 123-45-6789");
+    let tier = classify_and_alert(TEST_SESSION_ID, "My SSN is 123-45-6789", None, None);
     assert_eq!(tier, Some("T4"));
 
     let received = wait_for_messages(&messages, ALERT_TIMEOUT);
@@ -319,7 +319,7 @@ fn test_ssn_triggers_t4_alert() {
 fn test_credit_card_triggers_t4_alert() {
     let messages = setup_pipe();
 
-    let tier = classify_and_alert(TEST_SESSION_ID, "Card: 4111-1111-1111-1111");
+    let tier = classify_and_alert(TEST_SESSION_ID, "Card: 4111-1111-1111-1111", None, None);
     assert_eq!(tier, Some("T4"));
 
     let received = wait_for_messages(&messages, ALERT_TIMEOUT);
@@ -338,7 +338,7 @@ fn test_credit_card_triggers_t4_alert() {
 fn test_confidential_triggers_t3_alert() {
     let messages = setup_pipe();
 
-    let tier = classify_and_alert(TEST_SESSION_ID, "This memo is CONFIDENTIAL");
+    let tier = classify_and_alert(TEST_SESSION_ID, "This memo is CONFIDENTIAL", None, None);
     assert_eq!(tier, Some("T3"));
 
     let received = wait_for_messages(&messages, ALERT_TIMEOUT);
@@ -357,7 +357,7 @@ fn test_confidential_triggers_t3_alert() {
 fn test_internal_triggers_t2_alert() {
     let messages = setup_pipe();
 
-    let tier = classify_and_alert(TEST_SESSION_ID, "For internal only distribution");
+    let tier = classify_and_alert(TEST_SESSION_ID, "For internal only distribution", None, None);
     assert_eq!(tier, Some("T2"));
 
     let received = wait_for_messages(&messages, ALERT_TIMEOUT);
@@ -376,7 +376,7 @@ fn test_internal_triggers_t2_alert() {
 fn test_ordinary_text_no_alert() {
     let messages = setup_pipe();
 
-    let tier = classify_and_alert(TEST_SESSION_ID, "Hello, world!");
+    let tier = classify_and_alert(TEST_SESSION_ID, "Hello, world!", None, None);
     assert_eq!(tier, None, "T1 text must not produce an alert");
 
     // Give the (hypothetical) alert time to arrive — we expect nothing.
@@ -399,8 +399,8 @@ fn test_duplicate_deduplicated() {
     // produces two frames, confirming the helper is stateless.
     let messages = setup_pipe();
 
-    let t1 = classify_and_alert(TEST_SESSION_ID, "Secret document");
-    let t2 = classify_and_alert(TEST_SESSION_ID, "Secret document");
+    let t1 = classify_and_alert(TEST_SESSION_ID, "Secret document", None, None);
+    let t2 = classify_and_alert(TEST_SESSION_ID, "Secret document", None, None);
     assert_eq!(t1, Some("T3"));
     assert_eq!(t2, Some("T3"));
 
@@ -423,7 +423,7 @@ fn test_duplicate_deduplicated() {
 fn test_empty_clipboard_ignored() {
     let messages = setup_pipe();
 
-    let tier = classify_and_alert(TEST_SESSION_ID, "");
+    let tier = classify_and_alert(TEST_SESSION_ID, "", None, None);
     assert_eq!(tier, None, "empty text must not produce an alert");
 
     thread::sleep(Duration::from_millis(150));
@@ -447,7 +447,7 @@ fn test_non_text_clipboard_ignored() {
     // nothing to classify -> nothing sent.
     let messages = setup_pipe();
 
-    let tier = classify_and_alert(TEST_SESSION_ID, "");
+    let tier = classify_and_alert(TEST_SESSION_ID, "", None, None);
     assert_eq!(tier, None);
 
     thread::sleep(Duration::from_millis(150));
