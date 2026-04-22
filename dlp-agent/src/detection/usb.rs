@@ -225,6 +225,66 @@ const GUID_DEVINTERFACE_USB_DEVICE: windows::core::GUID = windows::core::GUID::f
 static DRIVE_DETECTOR: parking_lot::Mutex<Option<&'static UsbDetector>> =
     parking_lot::Mutex::new(None);
 
+/// Global registry cache reference, set from `service.rs` before the USB window
+/// thread is spawned. Allows `usb_wndproc` (an `unsafe extern "system"` callback
+/// that cannot capture environment) to trigger an immediate cache refresh on
+/// USB device arrival (D-09 from 24-CONTEXT.md).
+#[cfg(windows)]
+static REGISTRY_CACHE: std::sync::OnceLock<std::sync::Arc<crate::device_registry::DeviceRegistryCache>> =
+    std::sync::OnceLock::new();
+
+/// Global tokio runtime handle, stored before the USB notification thread is
+/// spawned so that `usb_wndproc` (which runs on a plain `std::thread`) can
+/// schedule async work on the existing runtime without creating a new one.
+///
+/// `std::thread::spawn` does NOT inherit the caller's tokio context — this
+/// static bridges the gap.
+#[cfg(windows)]
+static REGISTRY_RUNTIME_HANDLE: std::sync::OnceLock<tokio::runtime::Handle> =
+    std::sync::OnceLock::new();
+
+/// Global server client reference for registry refresh from `usb_wndproc`.
+/// Set alongside [`REGISTRY_CACHE`] and [`REGISTRY_RUNTIME_HANDLE`] in `service.rs`.
+#[cfg(windows)]
+static REGISTRY_CLIENT: std::sync::OnceLock<crate::server_client::ServerClient> =
+    std::sync::OnceLock::new();
+
+/// Sets the global registry cache reference.
+///
+/// Called once from `service.rs` before spawning USB notifications.
+/// Subsequent calls are silently ignored (OnceLock contract).
+///
+/// # Arguments
+///
+/// * `cache` - The `Arc<DeviceRegistryCache>` to store globally.
+#[cfg(windows)]
+pub fn set_registry_cache(cache: std::sync::Arc<crate::device_registry::DeviceRegistryCache>) {
+    let _ = REGISTRY_CACHE.set(cache);
+}
+
+/// Sets the global server client for device registry refresh.
+///
+/// Called once from `service.rs` before spawning USB notifications.
+/// Subsequent calls are silently ignored (OnceLock contract).
+///
+/// # Arguments
+///
+/// * `client` - The [`crate::server_client::ServerClient`] to store globally.
+#[cfg(windows)]
+pub fn set_registry_client(client: crate::server_client::ServerClient) {
+    let _ = REGISTRY_CLIENT.set(client);
+}
+
+/// Sets the global tokio runtime handle for use by `usb_wndproc`.
+///
+/// Called once from `service.rs` (inside the async `run_loop`, so
+/// `Handle::current()` is valid) before spawning USB notifications.
+/// Subsequent calls are silently ignored (OnceLock contract).
+#[cfg(windows)]
+pub fn set_registry_runtime_handle(handle: tokio::runtime::Handle) {
+    let _ = REGISTRY_RUNTIME_HANDLE.set(handle);
+}
+
 /// Window procedure for the USB notification window.
 ///
 /// Handles `WM_DESTROY` (quit message loop) and `WM_DEVICECHANGE` (route USB
@@ -274,6 +334,29 @@ unsafe extern "system" fn usb_wndproc(
                             let device_path = unsafe { read_dbcc_name(di) };
                             if event_type == DBT_DEVICEARRIVAL {
                                 on_usb_device_arrival(detector, &device_path);
+
+                                // Trigger an immediate device registry cache refresh so the
+                                // new device's trust tier is available before the first I/O
+                                // event (D-09 from 24-CONTEXT.md).
+                                //
+                                // NOTE: usb_wndproc runs on a plain std::thread that does NOT
+                                // inherit the tokio context. We stored the runtime Handle in
+                                // REGISTRY_RUNTIME_HANDLE (set in service.rs before this thread
+                                // was spawned) to schedule the async refresh without creating a
+                                // second tokio runtime.
+                                if let (Some(cache), Some(client), Some(handle)) = (
+                                    REGISTRY_CACHE.get(),
+                                    REGISTRY_CLIENT.get(),
+                                    REGISTRY_RUNTIME_HANDLE.get(),
+                                ) {
+                                    let cache_clone = std::sync::Arc::clone(cache);
+                                    let client_clone = client.clone();
+                                    // Fire-and-forget: spawn on the existing runtime so the
+                                    // message loop is not blocked by the async refresh.
+                                    handle.spawn(async move {
+                                        cache_clone.refresh(&client_clone).await;
+                                    });
+                                }
                             } else {
                                 on_usb_device_removal(detector, &device_path);
                             }
