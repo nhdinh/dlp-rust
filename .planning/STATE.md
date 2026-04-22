@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v0.6.0
 milestone_name: — Endpoint Hardening
 status: in_progress
-last_updated: "2026-04-21T15:00:00+07:00"
-last_activity: 2026-04-21 -- Milestone v0.6.0 started; defining requirements
+last_updated: "2026-04-22T00:00:00+07:00"
+last_activity: 2026-04-22 -- Roadmap created for v0.6.0; 8 phases defined (22–29)
 progress:
-  total_phases: 0
+  total_phases: 8
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -17,18 +17,18 @@ progress:
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-04-20)
+See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** v0.5.0 Boolean Logic shipped 2026-04-21 — all 4 phases complete, POLICY-09..12 delivered. Next: `/gsd-new-milestone` to plan v0.6.0.
+**Current focus:** v0.6.0 Endpoint Hardening — roadmap defined, 8 phases (22–29), 13 requirements. Next: `/gsd-plan-phase 22`.
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: Phase 22 (not started)
 Plan: —
-Status: Defining requirements for v0.6.0 Endpoint Hardening
-Resume: None
-Last activity: 2026-04-21 -- Milestone v0.6.0 started
+Status: Roadmap created; ready to plan Phase 22
+Resume: `/gsd-plan-phase 22`
+Last activity: 2026-04-22 -- Roadmap written for v0.6.0 Endpoint Hardening
 
 ## Decisions
 
@@ -83,9 +83,9 @@ Items acknowledged and deferred at milestone close on 2026-04-21. Known deferred
 
 | Category | Item | Status |
 |----------|------|--------|
-| seed | SEED-001: Application-aware DLP | active — promoted to next milestone planning |
-| seed | SEED-002: Protected Clipboard browser boundary | active — promoted to next milestone planning (depends on SEED-001) |
-| seed | SEED-003: USB Device-Identity-Aware Whitelist | active — promoted to next milestone planning |
+| seed | SEED-001: Application-aware DLP | active — promoted to v0.6.0 as APP-01..06 |
+| seed | SEED-002: Protected Clipboard browser boundary | active — promoted to v0.6.0 as BRW-01..03 |
+| seed | SEED-003: USB Device-Identity-Aware Whitelist | active — promoted to v0.6.0 as USB-01..04 |
 | server | POLICY-F4: TOML export format | deferred — toml crate incompatible with #[serde(tag)] PolicyCondition |
 | server | POLICY-F5: Batch import endpoint | deferred — reduces cache invalidations on bulk import |
 | server | POLICY-F6: Typed Decision action field | deferred — eliminates silent `_ => DENY` fallback |
@@ -120,7 +120,12 @@ Items acknowledged and deferred at milestone close on 2026-04-21. Known deferred
 
 ### Active Milestone
 
-- v0.6.0 Endpoint Hardening — phases 22+; APP/BRW/USB requirements (defining)
-  - SEED-001: Application-aware DLP → APP-01..06
-  - SEED-002: Protected Clipboard browser boundary → BRW-01..03
-  - SEED-003: USB Device-Identity Whitelist → USB-01..05
+- v0.6.0 Endpoint Hardening — phases 22–29; APP-01..06, BRW-01..03, USB-01..04 (13 requirements)
+  - Phase 22: dlp-common Foundation (unblocks all tracks)
+  - Phase 23: USB Enumeration in dlp-agent (USB-01)
+  - Phase 24: Device Registry DB + Admin API (USB-02)
+  - Phase 25: App Identity Capture in dlp-user-ui (APP-01, APP-02, APP-05, APP-06)
+  - Phase 26: ABAC Enforcement Convergence (APP-03, USB-03)
+  - Phase 27: USB Toast Notification (USB-04)
+  - Phase 28: Admin TUI Screens (APP-04, BRW-02)
+  - Phase 29: Chrome Enterprise Connector (BRW-01, BRW-03)

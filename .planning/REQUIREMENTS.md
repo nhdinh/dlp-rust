@@ -59,16 +59,16 @@
 
 | REQ-ID | Phase | Status |
 |--------|-------|--------|
-| APP-01 | — | Pending |
-| APP-02 | — | Pending |
-| APP-03 | — | Pending |
-| APP-04 | — | Pending |
-| APP-05 | — | Pending |
-| APP-06 | — | Pending |
-| BRW-01 | — | Pending |
-| BRW-02 | — | Pending |
-| BRW-03 | — | Pending |
-| USB-01 | — | Pending |
-| USB-02 | — | Pending |
-| USB-03 | — | Pending |
-| USB-04 | — | Pending |
+| APP-01 | Phase 25 | Pending |
+| APP-02 | Phase 25 | Pending |
+| APP-03 | Phase 26 | Pending |
+| APP-04 | Phase 28 | Pending |
+| APP-05 | Phase 25 | Pending |
+| APP-06 | Phase 25 | Pending |
+| BRW-01 | Phase 29 | Pending |
+| BRW-02 | Phase 28 | Pending |
+| BRW-03 | Phase 29 | Pending |
+| USB-01 | Phase 23 | Pending |
+| USB-02 | Phase 24 | Pending |
+| USB-03 | Phase 26 | Pending |
+| USB-04 | Phase 27 | Pending |
