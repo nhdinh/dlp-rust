@@ -71,15 +71,27 @@ pub async fn run_event_loop(
         let path = action.path().to_string();
         let pid = action.process_id();
 
+        // ── Resolve identity ───────────────────────────────────────────────
+        // Resolved early so that both the USB short-circuit path and the ABAC
+        // path emit accurate user attribution in their audit events.
+        let (user_sid, user_name) = {
+            let (app_path, _app_hash) = audit_emitter::get_application_metadata(pid);
+            debug!(pid, path = %path, ?app_path, "file action received");
+            // Resolve the actual user from the file path using the
+            // per-session identity map (path heuristic + single-user
+            // fallback).
+            session_map.resolve_for_path(&path)
+        };
+
         // ── USB enforcement (pre-ABAC check) ─────────────────────────────
         // Fires before the ABAC engine. Blocked or ReadOnly+write operations
         // short-circuit here and emit an audit Block event (D-11).
         if let Some(ref enforcer) = usb_enforcer {
             if let Some(usb_result) = enforcer.check(&path, &action) {
-                let audit_event = AuditEvent::new(
+                let mut audit_event = AuditEvent::new(
                     EventType::Block,
-                    "SYSTEM".to_string(),
-                    "SYSTEM".to_string(),
+                    user_sid.clone(),
+                    user_name.clone(),
                     path.clone(),
                     // Classification not yet resolved at this point; T1 is the
                     // conservative public-tier placeholder (not used for ABAC here).
@@ -96,14 +108,22 @@ pub async fn run_event_loop(
                     "USB enforcement: device blocked or read-only".to_string(),
                 );
 
-                emit_audit(&ctx, &mut audit_event.clone());
+                emit_audit(&ctx, &mut audit_event);
 
                 if usb_result.decision.is_denied() {
                     if let Err(e) = pipe1::send_to_ui(
                         ctx.session_id,
                         &Pipe1AgentMsg::BlockNotify {
                             reason: "USB enforcement: device blocked or read-only".to_string(),
-                            classification: "T1".to_string(),
+                            classification: match usb_result.tier {
+                                UsbTrustTier::Blocked => "USB-Blocked".to_string(),
+                                UsbTrustTier::ReadOnly => "USB-ReadOnly".to_string(),
+                                UsbTrustTier::FullAccess => {
+                                    unreachable!(
+                                        "FullAccess never produces a block result"
+                                    )
+                                }
+                            },
                             resource_path: path.clone(),
                             policy_id: String::new(),
                         },
@@ -121,14 +141,14 @@ pub async fn run_event_loop(
                         UsbTrustTier::Blocked => (
                             "USB Device Blocked".to_string(),
                             format!(
-                                "{} \u{2014} this device is not permitted",
+                                "{} - this device is not permitted",
                                 usb_result.identity.description
                             ),
                         ),
                         UsbTrustTier::ReadOnly => (
                             "USB Device Read-Only".to_string(),
                             format!(
-                                "{} \u{2014} write operations are not permitted",
+                                "{} - write operations are not permitted",
                                 usb_result.identity.description
                             ),
                         ),
@@ -143,16 +163,6 @@ pub async fn run_event_loop(
                 continue; // skip ABAC evaluation for this event
             }
         }
-
-        // ── Resolve identity ───────────────────────────────────────────────
-        let (user_sid, user_name) = {
-            let (app_path, _app_hash) = audit_emitter::get_application_metadata(pid);
-            debug!(pid, path = %path, ?app_path, "file action received");
-            // Resolve the actual user from the file path using the
-            // per-session identity map (path heuristic + single-user
-            // fallback).
-            session_map.resolve_for_path(&path)
-        };
 
         let abac_action = PolicyMapper::action_for(&action);
 
@@ -217,7 +227,7 @@ pub async fn run_event_loop(
 
         // ── Emit audit event ───────────────────────────────────────────────
         let policy_id_str = response_policy_id.unwrap_or_default();
-        let audit_event = AuditEvent::new(
+        let mut audit_event = AuditEvent::new(
             event_type,
             user_sid.clone(),
             user_name.clone(),
@@ -231,7 +241,7 @@ pub async fn run_event_loop(
         .with_access_context(AuditAccessContext::Local)
         .with_policy(policy_id_str.clone(), response_reason.clone());
 
-        emit_audit(&ctx, &mut audit_event.clone());
+        emit_audit(&ctx, &mut audit_event);
 
         // ── UI notification for blocking decisions ──────────────────────────
         if is_denied {
