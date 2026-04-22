@@ -1818,6 +1818,7 @@ fn action_submit_simulate(app: &mut App) {
         },
         action: *action_vals.get(form.action).unwrap_or(&Action::READ),
         agent: None,
+        ..Default::default()
     };
 
     let result = app.rt.block_on(
