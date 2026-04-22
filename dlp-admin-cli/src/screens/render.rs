@@ -41,6 +41,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                     "Password Management",
                     "Policy Management",
                     "System",
+                    "Devices & Origins",
                     "Simulate Policy",
                     "Exit",
                 ],
@@ -231,6 +232,32 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 *selected,
                 state,
             );
+        }
+        Screen::DevicesMenu { selected } => {
+            draw_menu(
+                frame,
+                area,
+                "Devices & Origins",
+                &["Device Registry", "Managed Origins"],
+                *selected,
+            );
+            draw_hints(frame, area, "Enter: Open   Esc: Main Menu");
+        }
+        Screen::DeviceList { devices, selected } => {
+            draw_device_list(frame, area, devices, *selected);
+        }
+        Screen::DeviceTierPicker { selected, .. } => {
+            draw_menu(
+                frame,
+                area,
+                "Select Trust Tier",
+                &["blocked", "read_only", "full_access"],
+                *selected,
+            );
+            draw_hints(frame, area, "Enter: Confirm   Esc: Back");
+        }
+        Screen::ManagedOriginList { origins, selected } => {
+            draw_managed_origin_list(frame, area, origins, *selected);
         }
     }
 }
@@ -1886,6 +1913,109 @@ fn draw_agent_list(frame: &mut Frame, area: Rect, agents: &[serde_json::Value], 
     frame.render_stateful_widget(table, area, &mut state);
 
     draw_hints(frame, area, "Up/Down: navigate | Esc: back");
+}
+
+/// Draws the Device Registry list screen.
+///
+/// Each device is shown as a compact one-liner:
+/// `[TRUST_TIER] VID:{vid} PID:{pid} SER:{serial} "{description}"`
+///
+/// An empty list renders a single informational row.
+fn draw_device_list(frame: &mut Frame, area: Rect, devices: &[serde_json::Value], selected: usize) {
+    let items: Vec<ListItem> = if devices.is_empty() {
+        vec![ListItem::new(Line::from(
+            "No devices registered.".to_string(),
+        ))]
+    } else {
+        devices
+            .iter()
+            .map(|d| {
+                let trust_tier = d["trust_tier"].as_str().unwrap_or("blocked");
+                let tier_tag = match trust_tier {
+                    "read_only" => "[READ_ONLY]",
+                    "full_access" => "[FULL_ACCESS]",
+                    _ => "[BLOCKED]",
+                };
+                let vid = d["vid"].as_str().unwrap_or("-");
+                let pid = d["pid"].as_str().unwrap_or("-");
+                let serial = d["serial"].as_str().unwrap_or("");
+                let description = d["description"].as_str().unwrap_or("");
+                let line = format!("{tier_tag} VID:{vid} PID:{pid} SER:{serial} \"{description}\"");
+                ListItem::new(Line::from(line))
+            })
+            .collect()
+    };
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(format!(" Device Registry ({}) ", devices.len()))
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::ListState::default();
+    // Only select a row when the list is non-empty to avoid rendering
+    // the highlight on the "No devices registered." informational row.
+    if !devices.is_empty() {
+        state.select(Some(selected));
+    }
+    frame.render_stateful_widget(list, area, &mut state);
+
+    draw_hints(frame, area, "r: Register   d: Delete   Esc: Back");
+}
+
+/// Draws the Managed Origins list screen.
+///
+/// Each origin is shown as its URL-pattern string.
+/// An empty list renders a single informational row.
+fn draw_managed_origin_list(
+    frame: &mut Frame,
+    area: Rect,
+    origins: &[serde_json::Value],
+    selected: usize,
+) {
+    let items: Vec<ListItem> = if origins.is_empty() {
+        vec![ListItem::new(Line::from(
+            "No managed origins configured.".to_string(),
+        ))]
+    } else {
+        origins
+            .iter()
+            .map(|o| {
+                let origin = o["origin"].as_str().unwrap_or("-");
+                ListItem::new(Line::from(origin.to_string()))
+            })
+            .collect()
+    };
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(format!(" Managed Origins ({}) ", origins.len()))
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::ListState::default();
+    if !origins.is_empty() {
+        state.select(Some(selected));
+    }
+    frame.render_stateful_widget(list, area, &mut state);
+
+    draw_hints(frame, area, "a: Add   d: Delete   Esc: Back");
 }
 
 /// Draws a JSON detail view.
