@@ -1,21 +1,36 @@
 {
   "version": "1.0",
-  "timestamp": "2026-04-15T16:23:40.398Z",
-  "phase": "10",
-  "phase_name": "SQLite connection pool",
-  "phase_dir": ".planning/phases/10-sqlite-connection-pool",
-  "plan": null,
-  "task": null,
-  "total_tasks": null,
-  "status": "complete",
-  "completed_tasks": [],
-  "remaining_tasks": [],
-  "blockers": [],
+  "timestamp": "2026-04-22T11:27:14.788Z",
+  "phase": "25",
+  "phase_name": "app-identity-capture-in-dlp-user-ui",
+  "phase_dir": ".planning/phases/25-app-identity-capture-in-dlp-user-ui",
+  "plan": 3,
+  "task": 3,
+  "total_tasks": 3,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": "25-01", "name": "detection::app_identity module — AUTHENTICODE_CACHE + Win32 pipeline", "status": "done", "commit": "54c6181"},
+    {"id": "25-02", "name": "FOREGROUND_SLOT + SetWinEventHook + GetClipboardOwner wiring", "status": "done", "commit": "2cca0ff"},
+    {"id": "25-03-T1", "name": "Extend send_clipboard_alert to 6 params, remove None placeholders", "status": "done", "commit": "feccab6"},
+    {"id": "25-03-T2", "name": "Zero-warning workspace build gate", "status": "done", "commit": "4e74bf6"},
+    {"id": "25-03-bugfix", "name": "Fix spawn_blocking panic — call resolve_app_identity directly from std::thread", "status": "done", "commit": "6b0fe78"}
+  ],
+  "remaining_tasks": [
+    {"id": "25-gap", "name": "Agent-side: update pipe3.rs to consume source_application/destination_application from ClipboardAlert and log to AuditEvent", "status": "not_started"}
+  ],
+  "blockers": [
+    {
+      "description": "dlp-agent/src/ipc/pipe3.rs line 193 uses '..' on ClipboardAlert, discarding source_application and destination_application. AuditEvent has no identity fields. APP-05 not fully met.",
+      "type": "technical",
+      "workaround": "/gsd-plan-phase 25 --gaps"
+    }
+  ],
   "human_actions_pending": [],
   "decisions": [
-    {"decision": "Phase 11 (Policy Engine Separation) is next — not started", "rationale": "No phase directory exists", "phase": "11"}
+    {"decision": "Remove spawn_blocking — call resolve_app_identity directly from std::thread", "rationale": "spawn_blocking panics outside Tokio context; std::thread is already blocking", "phase": "25"},
+    {"decision": "Agent pipe3.rs '..' discards identity — needs gap plan", "rationale": "Agent handler predates Phase 25; out of scope for original plans", "phase": "25"}
   ],
   "uncommitted_files": [],
-  "next_action": "Run /gsd-discuss-phase 11 to begin Policy Engine Separation planning",
-  "context_notes": "Milestone v0.3.0 Operational Hardening: Phase 7,8,9,10,99 complete. Phase 11 next. All prior phases verified."
+  "next_action": "Run /gsd-plan-phase 25 --gaps to create gap-closure plan updating dlp-agent/src/ipc/pipe3.rs (line 193) to extract source_application/destination_application and include in AuditEvent",
+  "context_notes": "All 3 Phase 25 plans committed. UI capture pipeline correct — identity flows through Pipe 3. Gap is agent-side only: pipe3.rs line 193 uses .. to drop identity fields, AuditEvent has no source/dest fields. spawn_blocking panic fixed (commit 6b0fe78). Alerts verified at 11:21-11:22 with SSN content, T4 classification working."
 }
