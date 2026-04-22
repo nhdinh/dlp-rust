@@ -24,7 +24,8 @@ use crate::db;
 use crate::db::repositories;
 use crate::db::repositories::{
     AgentConfigRepository, AlertRouterConfigRepository, CredentialsRepository,
-    LdapConfigRepository, PolicyRepository, SiemConfigRepository,
+    LdapConfigRepository, ManagedOriginRow, ManagedOriginsRepository, PolicyRepository,
+    SiemConfigRepository,
 };
 use crate::exception_store;
 use crate::policy_store::mode_str;
@@ -360,6 +361,24 @@ impl From<repositories::DeviceRegistryRow> for PublicDeviceEntry {
     }
 }
 
+/// Request body for `POST /admin/managed-origins`.
+///
+/// Creates a new managed origin entry. The UUID is server-generated.
+#[derive(Debug, serde::Deserialize)]
+pub struct ManagedOriginRequest {
+    /// URL pattern string, e.g. `"https://company.sharepoint.com/*"`.
+    pub origin: String,
+}
+
+/// Response body for `GET` and `POST /admin/managed-origins`.
+#[derive(Debug, serde::Serialize)]
+pub struct ManagedOriginResponse {
+    /// Server-generated UUID.
+    pub id: String,
+    /// URL pattern string.
+    pub origin: String,
+}
+
 /// Health/readiness probe response.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -525,7 +544,8 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         )
         .route("/agent-credentials/auth-hash", get(get_agent_auth_hash))
         .route("/agent-config/{id}", get(get_agent_config_for_agent))
-        .route("/admin/device-registry", get(list_device_registry_handler));
+        .route("/admin/device-registry", get(list_device_registry_handler))
+        .route("/admin/managed-origins", get(list_managed_origins_handler));
 
     // Routes that require a valid JWT.
     // Policy routes get a tighter limit (60/min) via `.route_layer()`.
@@ -588,6 +608,11 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route(
             "/admin/device-registry/{id}",
             delete(delete_device_registry_handler),
+        )
+        .route("/admin/managed-origins", post(create_managed_origin_handler))
+        .route(
+            "/admin/managed-origins/{id}",
+            delete(delete_managed_origin_handler),
         )
         .route_layer(default_config())
         .layer(middleware::from_fn(admin_auth::require_auth));
@@ -1650,6 +1675,103 @@ async fn delete_device_registry_handler(
     }
 
     tracing::info!(device_id = %id, "device registry entry deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Managed origins handlers
+// ---------------------------------------------------------------------------
+
+/// `GET /admin/managed-origins` — unauthenticated; returns all managed origins.
+///
+/// Used by the Phase 29 Chrome Enterprise Connector agent to poll the trusted
+/// origin list, and by the admin TUI to populate the managed origins screen.
+///
+/// # Errors
+///
+/// Returns `AppError::Internal` if the pool or query fails.
+async fn list_managed_origins_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl axum::response::IntoResponse, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let rows = tokio::task::spawn_blocking(move || ManagedOriginsRepository::list_all(&pool))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("spawn_blocking join: {e}")))?
+        .map_err(AppError::Database)?;
+    let resp: Vec<ManagedOriginResponse> = rows
+        .into_iter()
+        .map(|r| ManagedOriginResponse { id: r.id, origin: r.origin })
+        .collect();
+    Ok(Json(resp))
+}
+
+/// `POST /admin/managed-origins` — JWT-protected; inserts a new managed origin.
+///
+/// Returns 409 Conflict if the `origin` string already exists (UNIQUE constraint).
+///
+/// # Errors
+///
+/// Returns `AppError::Conflict` (409) on duplicate origin.
+/// Returns `AppError::Internal` on pool or query failure.
+async fn create_managed_origin_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ManagedOriginRequest>,
+) -> Result<impl axum::response::IntoResponse, AppError> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let row = ManagedOriginRow { id: id.clone(), origin: req.origin.clone() };
+    let pool = Arc::clone(&state.pool);
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        ManagedOriginsRepository::insert(&uow, &row).map_err(|e| {
+            // SQLite extended error code 2067 = SQLITE_CONSTRAINT_UNIQUE.
+            if let rusqlite::Error::SqliteFailure(ref fe, _) = e {
+                if fe.extended_code == 2067 {
+                    return AppError::Conflict("origin already exists".to_string());
+                }
+            }
+            AppError::Database(e)
+        })?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("spawn_blocking join: {e}")))??;
+
+    Ok((StatusCode::OK, Json(ManagedOriginResponse { id, origin: req.origin })))
+}
+
+/// `DELETE /admin/managed-origins/{id}` — JWT-protected; removes by UUID.
+///
+/// # Returns
+///
+/// `204 No Content` on success; `404 Not Found` if the UUID does not exist.
+///
+/// # Errors
+///
+/// Returns `AppError::Internal` on pool or query failure.
+async fn delete_managed_origin_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let origin_id = id.clone();
+    let rows_deleted = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let n = ManagedOriginsRepository::delete_by_id(&uow, &origin_id)
+            .map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(n)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    if rows_deleted == 0 {
+        return Err(AppError::NotFound(format!("managed origin {id} not found")));
+    }
+
+    tracing::info!(origin_id = %id, "managed origin deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 

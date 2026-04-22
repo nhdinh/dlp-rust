@@ -102,6 +102,13 @@ pub enum AppError {
     /// domain-level invariants (e.g., an unrecognized `trust_tier` string).
     #[error("unprocessable entity: {0}")]
     UnprocessableEntity(String),
+
+    /// A resource conflict occurred (e.g., unique constraint violation).
+    ///
+    /// Maps to HTTP 409 Conflict. Use this when an insert fails because the
+    /// resource already exists (e.g., duplicate origin string).
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 /// Converts axum extract rejections into `AppError::BadRequest`.
@@ -146,6 +153,7 @@ impl IntoResponse for AppError {
             AppError::UnprocessableEntity(_) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, self.to_string())
             }
+            AppError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
         };
 
         let body = serde_json::json!({ "error": message });
