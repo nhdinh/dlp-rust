@@ -6,9 +6,8 @@
 //! would cascade across the workspace.
 
 use dlp_common::{
-    AbacContext, Action, AppIdentity, AppTrustTier, AuditEvent, Classification,
-    Decision, DeviceIdentity, EvaluateRequest, EventType, SignatureState,
-    UsbTrustTier,
+    AbacContext, Action, AppIdentity, AppTrustTier, AuditEvent, Classification, Decision,
+    DeviceIdentity, EvaluateRequest, EventType, SignatureState, UsbTrustTier,
 };
 
 fn sample_app() -> AppIdentity {
@@ -44,8 +43,14 @@ fn usb_trust_tier_wire_values_match_db_check_constraint() {
     // Phase 24 DB CHECK constraint (REQUIREMENTS.md USB-02) requires exactly
     // these three strings. If this test ever fails, Phase 24's CHECK will
     // reject valid Rust payloads at insert time.
-    assert_eq!(serde_json::to_string(&UsbTrustTier::Blocked).unwrap(), "\"blocked\"");
-    assert_eq!(serde_json::to_string(&UsbTrustTier::ReadOnly).unwrap(), "\"read_only\"");
+    assert_eq!(
+        serde_json::to_string(&UsbTrustTier::Blocked).unwrap(),
+        "\"blocked\""
+    );
+    assert_eq!(
+        serde_json::to_string(&UsbTrustTier::ReadOnly).unwrap(),
+        "\"read_only\""
+    );
     assert_eq!(
         serde_json::to_string(&UsbTrustTier::FullAccess).unwrap(),
         "\"full_access\""
@@ -117,7 +122,10 @@ fn audit_event_builder_chain_and_round_trip() {
     let rt: AuditEvent = serde_json::from_str(&json).unwrap();
     assert!(rt.source_application.is_some());
     assert!(rt.destination_application.is_none());
-    assert_eq!(rt.device_identity.as_ref().map(|d| d.vid.as_str()), Some("0951"));
+    assert_eq!(
+        rt.device_identity.as_ref().map(|d| d.vid.as_str()),
+        Some("0951")
+    );
 }
 
 #[test]

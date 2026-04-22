@@ -1909,7 +1909,10 @@ fn handle_simulate_editing(app: &mut App, key: KeyEvent, _selected: usize) {
             // Cancel edit: clear the in-progress buffer and exit edit mode.
             // Clearing ensures stale input is never silently re-used if the user
             // re-enters edit mode on a different field before committing (WR-04 fix).
-            if let Screen::PolicySimulate { editing, buffer, .. } = &mut app.screen {
+            if let Screen::PolicySimulate {
+                editing, buffer, ..
+            } = &mut app.screen
+            {
                 buffer.clear();
                 *editing = false;
             }
@@ -2795,6 +2798,291 @@ fn handle_conditions_step3_select(
         _ => {}
     }
 }
+// ---------------------------------------------------------------------------
+// Import / Export actions
+// ---------------------------------------------------------------------------
+
+/// Opens a native save dialog and writes the full policy set as JSON.
+///
+/// D-03 / D-04 / D-05 from Phase 17 context.
+/// Uses `GET /policies` -> `serde_json::to_string_pretty` -> `rfd::FileDialog::save_file`.
+fn action_export_policies(app: &mut App) {
+    let policies_result = app
+        .rt
+        .block_on(app.client.get::<Vec<serde_json::Value>>("policies"));
+
+    let policies = match policies_result {
+        Ok(p) => p,
+        Err(e) => {
+            app.set_status(format!("Failed to fetch policies: {e}"), StatusKind::Error);
+            return;
+        }
+    };
+
+    let json = match serde_json::to_string_pretty(&policies) {
+        Ok(j) => j,
+        Err(e) => {
+            app.set_status(
+                format!("Failed to serialize policies: {e}"),
+                StatusKind::Error,
+            );
+            return;
+        }
+    };
+
+    // Build default filename: policies-export-{YYYY-MM-DD}.json
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let default_name = format!("policies-export-{today}.json");
+
+    let save_path = rfd::FileDialog::new()
+        .set_title("Export Policies")
+        .add_filter("JSON Files", &["json"])
+        .set_file_name(&default_name)
+        .save_file();
+
+    let file_path = match save_path {
+        Some(p) => p,
+        None => {
+            // User cancelled -- no error, just return to PolicyMenu.
+            return;
+        }
+    };
+
+    // Write in a blocking task to avoid blocking the async runtime.
+    let write_result = std::fs::write(&file_path, json);
+
+    match write_result {
+        Ok(()) => {
+            app.set_status(
+                format!(
+                    "Exported {} policies to {}",
+                    policies.len(),
+                    file_path.display()
+                ),
+                StatusKind::Success,
+            );
+        }
+        Err(e) => {
+            app.set_status(format!("Failed to write file: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+/// Opens a file-open dialog, parses the selected JSON, and transitions to
+/// `Screen::ImportConfirm` for conflict review.
+///
+/// D-07 / D-08 / D-09 / D-13 from Phase 17 context.
+fn action_import_policies(app: &mut App) {
+    let file_path = rfd::FileDialog::new()
+        .set_title("Import Policies")
+        .add_filter("JSON Files", &["json"])
+        .pick_file();
+
+    let file_path = match file_path {
+        Some(p) => p,
+        None => {
+            // User cancelled -- no error, just return to PolicyMenu.
+            return;
+        }
+    };
+
+    // Read and parse JSON in a blocking task.
+    let read_result = std::fs::read_to_string(&file_path);
+    let json_str = match read_result {
+        Ok(s) => s,
+        Err(e) => {
+            app.set_status(
+                format!("Failed to read file {}: {e}", file_path.display()),
+                StatusKind::Error,
+            );
+            return;
+        }
+    };
+
+    let imported: Vec<crate::app::PolicyResponse> = match serde_json::from_str(&json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            app.set_status(format!("Failed to parse JSON file: {e}"), StatusKind::Error);
+            return;
+        }
+    };
+
+    // Fetch existing IDs for conflict detection (authenticated endpoint).
+    let existing_result = app
+        .rt
+        .block_on(app.client.get::<Vec<serde_json::Value>>("policies"));
+
+    let (existing_ids, conflicting_count, non_conflicting_count) = match existing_result {
+        Ok(existing) => {
+            let ids: Vec<String> = existing
+                .iter()
+                .filter_map(|p| p["id"].as_str().map(String::from))
+                .collect();
+            let conflict = imported.iter().filter(|p| ids.contains(&p.id)).count();
+            let non_conflict = imported.len() - conflict;
+            (ids, conflict, non_conflict)
+        }
+        Err(e) => {
+            app.set_status(
+                format!("Could not fetch current policies: {e}"),
+                StatusKind::Error,
+            );
+            return;
+        }
+    };
+
+    app.screen = Screen::ImportConfirm {
+        policies: imported,
+        existing_ids,
+        conflicting_count,
+        non_conflicting_count,
+        selected: 3, // Start on [Confirm] row
+        state: ImportState::Pending,
+        caller: ImportCaller::PolicyMenu,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// ImportConfirm screen handler
+// ---------------------------------------------------------------------------
+
+/// Handles key events for the `Screen::ImportConfirm` variant.
+///
+/// Navigation: Up/Down cycles only between rows 3 ([Confirm]) and 4 ([Cancel]).
+/// Enter on row 3 -> execute import (POST new policies, PUT conflicting policies).
+/// Enter on row 4 / Esc -> return to PolicyMenu.
+///
+/// Import execution (per Phase 17 D-09, D-11, D-17, D-18, D-19):
+/// - POST non-conflicting policies (IDs not on server).
+/// - PUT conflicting policies (IDs already on server).
+/// - Abort on first failure with per-policy error message.
+/// - Transitions to ImportState::Success { created, updated } on success,
+///   ImportState::Error(msg) on failure.
+fn handle_import_confirm(app: &mut App, key: KeyEvent) {
+    use crate::app::{PolicyPayload, PolicyResponse};
+
+    let caller = match &app.screen {
+        Screen::ImportConfirm { caller, .. } => *caller,
+        _ => return,
+    };
+
+    // Outside Pending, only Enter/Esc dismiss the screen.
+    if !matches!(
+        app.screen,
+        Screen::ImportConfirm {
+            state: ImportState::Pending,
+            ..
+        }
+    ) {
+        if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+            let return_to = match caller {
+                ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
+            };
+            app.screen = return_to;
+        }
+        return;
+    }
+
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::ImportConfirm { selected, .. } = &mut app.screen {
+                *selected = if *selected == 3 { 4 } else { 3 };
+            }
+        }
+        KeyCode::Esc => {
+            let return_to = match caller {
+                ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
+            };
+            app.screen = return_to;
+        }
+        KeyCode::Enter => {
+            // Determine which button is active.
+            let selected = match &app.screen {
+                Screen::ImportConfirm { selected, .. } => *selected,
+                _ => return,
+            };
+
+            if selected != 3 {
+                // [Cancel] pressed.
+                let return_to = match caller {
+                    ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
+                };
+                app.screen = return_to;
+                return;
+            }
+
+            // [Confirm] pressed — extract execution state.
+            let (policies, existing_ids): (Vec<PolicyResponse>, Vec<String>) = match &app.screen {
+                Screen::ImportConfirm {
+                    policies,
+                    existing_ids,
+                    ..
+                } => (policies.clone(), existing_ids.clone()),
+                _ => return,
+            };
+
+            // Transition to InProgress immediately so UI reflects working state.
+            if let Screen::ImportConfirm { state, .. } = &mut app.screen {
+                *state = ImportState::InProgress;
+            }
+
+            // Partition into POST (new) and PUT (existing) using O(1) HashSet lookup.
+            let existing_set: std::collections::HashSet<String> =
+                existing_ids.into_iter().collect();
+            let (to_create, to_update): (Vec<PolicyResponse>, Vec<PolicyResponse>) = policies
+                .into_iter()
+                .partition(|p| !existing_set.contains(&p.id));
+
+            let mut created = 0usize;
+            let mut updated = 0usize;
+
+            // POST non-conflicting policies.
+            for policy in to_create {
+                let name = policy.name.clone();
+                let payload: PolicyPayload = policy.into();
+                let result = app.rt.block_on(
+                    app.client
+                        .post::<serde_json::Value, _>("admin/policies", &payload),
+                );
+                match result {
+                    Ok(_) => created += 1,
+                    Err(e) => {
+                        if let Screen::ImportConfirm { state, .. } = &mut app.screen {
+                            *state = ImportState::Error(format!("Failed on policy '{name}': {e}"));
+                        }
+                        return;
+                    }
+                }
+            }
+
+            // PUT conflicting policies.
+            for policy in to_update {
+                let name = policy.name.clone();
+                let id = policy.id.clone();
+                let payload: PolicyPayload = policy.into();
+                let path = format!("admin/policies/{id}");
+                let result = app
+                    .rt
+                    .block_on(app.client.put::<serde_json::Value, _>(&path, &payload));
+                match result {
+                    Ok(_) => updated += 1,
+                    Err(e) => {
+                        if let Screen::ImportConfirm { state, .. } = &mut app.screen {
+                            *state = ImportState::Error(format!("Failed on policy '{name}': {e}"));
+                        }
+                        return;
+                    }
+                }
+            }
+
+            // All succeeded — invalidate cache and show summary.
+            if let Screen::ImportConfirm { state, .. } = &mut app.screen {
+                *state = ImportState::Success { created, updated };
+            }
+        }
+        _ => {}
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -3479,291 +3767,5 @@ mod tests {
             }
             other => panic!("expected ConditionsBuilder, got {other:?}"),
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Import / Export actions
-// ---------------------------------------------------------------------------
-
-/// Opens a native save dialog and writes the full policy set as JSON.
-///
-/// D-03 / D-04 / D-05 from Phase 17 context.
-/// Uses `GET /policies` -> `serde_json::to_string_pretty` -> `rfd::FileDialog::save_file`.
-fn action_export_policies(app: &mut App) {
-    let policies_result = app
-        .rt
-        .block_on(app.client.get::<Vec<serde_json::Value>>("policies"));
-
-    let policies = match policies_result {
-        Ok(p) => p,
-        Err(e) => {
-            app.set_status(format!("Failed to fetch policies: {e}"), StatusKind::Error);
-            return;
-        }
-    };
-
-    let json = match serde_json::to_string_pretty(&policies) {
-        Ok(j) => j,
-        Err(e) => {
-            app.set_status(
-                format!("Failed to serialize policies: {e}"),
-                StatusKind::Error,
-            );
-            return;
-        }
-    };
-
-    // Build default filename: policies-export-{YYYY-MM-DD}.json
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let default_name = format!("policies-export-{today}.json");
-
-    let save_path = rfd::FileDialog::new()
-        .set_title("Export Policies")
-        .add_filter("JSON Files", &["json"])
-        .set_file_name(&default_name)
-        .save_file();
-
-    let file_path = match save_path {
-        Some(p) => p,
-        None => {
-            // User cancelled -- no error, just return to PolicyMenu.
-            return;
-        }
-    };
-
-    // Write in a blocking task to avoid blocking the async runtime.
-    let write_result = std::fs::write(&file_path, json);
-
-    match write_result {
-        Ok(()) => {
-            app.set_status(
-                format!(
-                    "Exported {} policies to {}",
-                    policies.len(),
-                    file_path.display()
-                ),
-                StatusKind::Success,
-            );
-        }
-        Err(e) => {
-            app.set_status(format!("Failed to write file: {e}"), StatusKind::Error);
-        }
-    }
-}
-
-/// Opens a file-open dialog, parses the selected JSON, and transitions to
-/// `Screen::ImportConfirm` for conflict review.
-///
-/// D-07 / D-08 / D-09 / D-13 from Phase 17 context.
-fn action_import_policies(app: &mut App) {
-    let file_path = rfd::FileDialog::new()
-        .set_title("Import Policies")
-        .add_filter("JSON Files", &["json"])
-        .pick_file();
-
-    let file_path = match file_path {
-        Some(p) => p,
-        None => {
-            // User cancelled -- no error, just return to PolicyMenu.
-            return;
-        }
-    };
-
-    // Read and parse JSON in a blocking task.
-    let read_result = std::fs::read_to_string(&file_path);
-    let json_str = match read_result {
-        Ok(s) => s,
-        Err(e) => {
-            app.set_status(
-                format!("Failed to read file {}: {e}", file_path.display()),
-                StatusKind::Error,
-            );
-            return;
-        }
-    };
-
-    let imported: Vec<crate::app::PolicyResponse> = match serde_json::from_str(&json_str) {
-        Ok(v) => v,
-        Err(e) => {
-            app.set_status(format!("Failed to parse JSON file: {e}"), StatusKind::Error);
-            return;
-        }
-    };
-
-    // Fetch existing IDs for conflict detection (authenticated endpoint).
-    let existing_result = app
-        .rt
-        .block_on(app.client.get::<Vec<serde_json::Value>>("policies"));
-
-    let (existing_ids, conflicting_count, non_conflicting_count) = match existing_result {
-        Ok(existing) => {
-            let ids: Vec<String> = existing
-                .iter()
-                .filter_map(|p| p["id"].as_str().map(String::from))
-                .collect();
-            let conflict = imported.iter().filter(|p| ids.contains(&p.id)).count();
-            let non_conflict = imported.len() - conflict;
-            (ids, conflict, non_conflict)
-        }
-        Err(e) => {
-            app.set_status(
-                format!("Could not fetch current policies: {e}"),
-                StatusKind::Error,
-            );
-            return;
-        }
-    };
-
-    app.screen = Screen::ImportConfirm {
-        policies: imported,
-        existing_ids,
-        conflicting_count,
-        non_conflicting_count,
-        selected: 3, // Start on [Confirm] row
-        state: ImportState::Pending,
-        caller: ImportCaller::PolicyMenu,
-    };
-}
-
-// ---------------------------------------------------------------------------
-// ImportConfirm screen handler
-// ---------------------------------------------------------------------------
-
-/// Handles key events for the `Screen::ImportConfirm` variant.
-///
-/// Navigation: Up/Down cycles only between rows 3 ([Confirm]) and 4 ([Cancel]).
-/// Enter on row 3 -> execute import (POST new policies, PUT conflicting policies).
-/// Enter on row 4 / Esc -> return to PolicyMenu.
-///
-/// Import execution (per Phase 17 D-09, D-11, D-17, D-18, D-19):
-/// - POST non-conflicting policies (IDs not on server).
-/// - PUT conflicting policies (IDs already on server).
-/// - Abort on first failure with per-policy error message.
-/// - Transitions to ImportState::Success { created, updated } on success,
-///   ImportState::Error(msg) on failure.
-fn handle_import_confirm(app: &mut App, key: KeyEvent) {
-    use crate::app::{PolicyPayload, PolicyResponse};
-
-    let caller = match &app.screen {
-        Screen::ImportConfirm { caller, .. } => *caller,
-        _ => return,
-    };
-
-    // Outside Pending, only Enter/Esc dismiss the screen.
-    if !matches!(
-        app.screen,
-        Screen::ImportConfirm {
-            state: ImportState::Pending,
-            ..
-        }
-    ) {
-        if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
-            let return_to = match caller {
-                ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
-            };
-            app.screen = return_to;
-        }
-        return;
-    }
-
-    match key.code {
-        KeyCode::Up | KeyCode::Down => {
-            if let Screen::ImportConfirm { selected, .. } = &mut app.screen {
-                *selected = if *selected == 3 { 4 } else { 3 };
-            }
-        }
-        KeyCode::Esc => {
-            let return_to = match caller {
-                ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
-            };
-            app.screen = return_to;
-        }
-        KeyCode::Enter => {
-            // Determine which button is active.
-            let selected = match &app.screen {
-                Screen::ImportConfirm { selected, .. } => *selected,
-                _ => return,
-            };
-
-            if selected != 3 {
-                // [Cancel] pressed.
-                let return_to = match caller {
-                    ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
-                };
-                app.screen = return_to;
-                return;
-            }
-
-            // [Confirm] pressed — extract execution state.
-            let (policies, existing_ids): (Vec<PolicyResponse>, Vec<String>) = match &app.screen {
-                Screen::ImportConfirm {
-                    policies,
-                    existing_ids,
-                    ..
-                } => (policies.clone(), existing_ids.clone()),
-                _ => return,
-            };
-
-            // Transition to InProgress immediately so UI reflects working state.
-            if let Screen::ImportConfirm { state, .. } = &mut app.screen {
-                *state = ImportState::InProgress;
-            }
-
-            // Partition into POST (new) and PUT (existing) using O(1) HashSet lookup.
-            let existing_set: std::collections::HashSet<String> =
-                existing_ids.into_iter().collect();
-            let (to_create, to_update): (Vec<PolicyResponse>, Vec<PolicyResponse>) = policies
-                .into_iter()
-                .partition(|p| !existing_set.contains(&p.id));
-
-            let mut created = 0usize;
-            let mut updated = 0usize;
-
-            // POST non-conflicting policies.
-            for policy in to_create {
-                let name = policy.name.clone();
-                let payload: PolicyPayload = policy.into();
-                let result = app.rt.block_on(
-                    app.client
-                        .post::<serde_json::Value, _>("admin/policies", &payload),
-                );
-                match result {
-                    Ok(_) => created += 1,
-                    Err(e) => {
-                        if let Screen::ImportConfirm { state, .. } = &mut app.screen {
-                            *state = ImportState::Error(format!("Failed on policy '{name}': {e}"));
-                        }
-                        return;
-                    }
-                }
-            }
-
-            // PUT conflicting policies.
-            for policy in to_update {
-                let name = policy.name.clone();
-                let id = policy.id.clone();
-                let payload: PolicyPayload = policy.into();
-                let path = format!("admin/policies/{id}");
-                let result = app
-                    .rt
-                    .block_on(app.client.put::<serde_json::Value, _>(&path, &payload));
-                match result {
-                    Ok(_) => updated += 1,
-                    Err(e) => {
-                        if let Screen::ImportConfirm { state, .. } = &mut app.screen {
-                            *state = ImportState::Error(format!("Failed on policy '{name}': {e}"));
-                        }
-                        return;
-                    }
-                }
-            }
-
-            // All succeeded — invalidate cache and show summary.
-            if let Screen::ImportConfirm { state, .. } = &mut app.screen {
-                *state = ImportState::Success { created, updated };
-            }
-        }
-        _ => {}
     }
 }

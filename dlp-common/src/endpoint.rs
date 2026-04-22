@@ -129,8 +129,14 @@ mod tests {
     #[test]
     fn test_usb_trust_tier_serde_values() {
         // DB CHECK constraint (REQUIREMENTS.md USB-02) demands exact snake_case values.
-        assert_eq!(serde_json::to_string(&UsbTrustTier::Blocked).unwrap(), "\"blocked\"");
-        assert_eq!(serde_json::to_string(&UsbTrustTier::ReadOnly).unwrap(), "\"read_only\"");
+        assert_eq!(
+            serde_json::to_string(&UsbTrustTier::Blocked).unwrap(),
+            "\"blocked\""
+        );
+        assert_eq!(
+            serde_json::to_string(&UsbTrustTier::ReadOnly).unwrap(),
+            "\"read_only\""
+        );
         assert_eq!(
             serde_json::to_string(&UsbTrustTier::FullAccess).unwrap(),
             "\"full_access\""
@@ -167,9 +173,18 @@ mod tests {
 
     #[test]
     fn test_app_trust_tier_serde_values() {
-        assert_eq!(serde_json::to_string(&AppTrustTier::Trusted).unwrap(), "\"trusted\"");
-        assert_eq!(serde_json::to_string(&AppTrustTier::Untrusted).unwrap(), "\"untrusted\"");
-        assert_eq!(serde_json::to_string(&AppTrustTier::Unknown).unwrap(), "\"unknown\"");
+        assert_eq!(
+            serde_json::to_string(&AppTrustTier::Trusted).unwrap(),
+            "\"trusted\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AppTrustTier::Untrusted).unwrap(),
+            "\"untrusted\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AppTrustTier::Unknown).unwrap(),
+            "\"unknown\""
+        );
     }
 
     #[test]
@@ -179,13 +194,22 @@ mod tests {
 
     #[test]
     fn test_signature_state_serde_values() {
-        assert_eq!(serde_json::to_string(&SignatureState::Valid).unwrap(), "\"valid\"");
-        assert_eq!(serde_json::to_string(&SignatureState::Invalid).unwrap(), "\"invalid\"");
+        assert_eq!(
+            serde_json::to_string(&SignatureState::Valid).unwrap(),
+            "\"valid\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SignatureState::Invalid).unwrap(),
+            "\"invalid\""
+        );
         assert_eq!(
             serde_json::to_string(&SignatureState::NotSigned).unwrap(),
             "\"not_signed\""
         );
-        assert_eq!(serde_json::to_string(&SignatureState::Unknown).unwrap(), "\"unknown\"");
+        assert_eq!(
+            serde_json::to_string(&SignatureState::Unknown).unwrap(),
+            "\"unknown\""
+        );
     }
 
     #[test]

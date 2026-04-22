@@ -14,10 +14,10 @@
 //!                                               |- Splunk HEC / ELK HTTP Ingest
 //! ```
 
+use crate::endpoint::{AppIdentity, DeviceIdentity};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use crate::endpoint::{AppIdentity, DeviceIdentity};
 
 use super::{Action, Classification, Decision};
 
@@ -421,7 +421,13 @@ mod tests {
             1,
         )
         .with_source_application(Some(app.clone()));
-        assert_eq!(event.source_application.as_ref().map(|a| a.publisher.as_str()), Some("Contoso"));
+        assert_eq!(
+            event
+                .source_application
+                .as_ref()
+                .map(|a| a.publisher.as_str()),
+            Some("Contoso")
+        );
         assert!(event.destination_application.is_none());
         assert!(event.device_identity.is_none());
     }
@@ -455,7 +461,10 @@ mod tests {
         .with_destination_application(Some(dest))
         .with_device_identity(Some(dev.clone()));
         assert!(event.destination_application.is_some());
-        assert_eq!(event.device_identity.as_ref().map(|d| d.vid.as_str()), Some("0951"));
+        assert_eq!(
+            event.device_identity.as_ref().map(|d| d.vid.as_str()),
+            Some("0951")
+        );
     }
 
     #[test]
@@ -493,7 +502,10 @@ mod tests {
             rt.source_application.as_ref().map(|a| a.publisher.as_str()),
             Some("Contoso"),
         );
-        assert_eq!(rt.device_identity.as_ref().map(|d| d.serial.as_str()), Some("(none)"));
+        assert_eq!(
+            rt.device_identity.as_ref().map(|d| d.serial.as_str()),
+            Some("(none)")
+        );
     }
 
     #[test]

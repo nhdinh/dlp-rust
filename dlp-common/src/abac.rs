@@ -3,8 +3,8 @@
 //! These types define the attribute model used by the Policy Engine's
 //! Attribute-Based Access Control evaluation layer.
 
-use serde::{Deserialize, Serialize};
 use crate::endpoint::AppIdentity;
+use serde::{Deserialize, Serialize};
 
 /// The action the user is attempting to perform on a resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -383,11 +383,15 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         let rt: EvaluateRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(
-            rt.source_application.as_ref().map(|a| a.image_path.as_str()),
+            rt.source_application
+                .as_ref()
+                .map(|a| a.image_path.as_str()),
             Some(r"C:\src.exe"),
         );
         assert_eq!(
-            rt.destination_application.as_ref().map(|a| a.image_path.as_str()),
+            rt.destination_application
+                .as_ref()
+                .map(|a| a.image_path.as_str()),
             Some(r"C:\dst.exe"),
         );
     }
@@ -400,7 +404,10 @@ mod tests {
         let req = EvaluateRequest::default();
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("source_application"), "json was: {json}");
-        assert!(!json.contains("destination_application"), "json was: {json}");
+        assert!(
+            !json.contains("destination_application"),
+            "json was: {json}"
+        );
     }
 
     #[test]

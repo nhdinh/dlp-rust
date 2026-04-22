@@ -341,6 +341,8 @@ mod tests {
             },
             action: dlp_common::abac::Action::COPY,
             agent: None,
+            source_application: None,
+            destination_application: None,
         }
     }
 

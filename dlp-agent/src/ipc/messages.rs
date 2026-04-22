@@ -131,7 +131,10 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("source_application"), "json was: {json}");
-        assert!(!json.contains("destination_application"), "json was: {json}");
+        assert!(
+            !json.contains("destination_application"),
+            "json was: {json}"
+        );
     }
 
     #[test]
