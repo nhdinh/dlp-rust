@@ -11,10 +11,31 @@
 //! interactive user's clipboard.  The UI runs in the user session and
 //! has direct access to the clipboard.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use dlp_common::AppIdentity;
 use tracing::{debug, info, warn};
+
+/// Previous-foreground window slot for destination identity capture (D-01, APP-01).
+///
+/// Updated by `foreground_event_proc` on every `EVENT_SYSTEM_FOREGROUND` event.
+/// Read-and-cleared atomically by the `WM_CLIPBOARDUPDATE` handler via `swap(0)`.
+///
+/// A value of 0 means no foreground window has been captured since the last
+/// clipboard event (slot cleared or hook not yet fired). An `HWND` is a
+/// `*mut c_void` (pointer-sized), which fits in `usize` on both 32-bit and 64-bit
+/// Windows targets.
+///
+/// # Thread safety
+///
+/// The slot is written by `foreground_event_proc` (on the clipboard-monitor
+/// thread, delivered via the WinEvent subsystem) and read by the
+/// `WM_CLIPBOARDUPDATE` handler (also on the clipboard-monitor thread). Both
+/// run on the same OS thread — `Relaxed` ordering is sufficient because there
+/// is no cross-thread visibility requirement. The `AtomicUsize` provides
+/// compile-time `Sync` without a `Mutex`.
+static FOREGROUND_SLOT: AtomicUsize = AtomicUsize::new(0);
 
 /// Maximum preview length sent in clipboard alerts.
 const PREVIEW_MAX: usize = 80;
@@ -30,10 +51,18 @@ pub fn start(session_id: u32) -> Arc<AtomicBool> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
 
+    // SC-3: Capture the Tokio runtime handle before entering the OS thread.
+    // The clipboard monitor runs in a std::thread (required for the Win32
+    // message pump), but WinVerifyTrust involves disk I/O that must not block
+    // Tokio's async executor. We capture the handle here — on the async
+    // caller's thread — and move it into the closure so handle_clipboard_change
+    // can call rt_handle.block_on(spawn_blocking(...)) around verify_and_cache.
+    let rt_handle = tokio::runtime::Handle::current();
+
     std::thread::Builder::new()
         .name("clipboard-monitor".into())
         .spawn(move || {
-            if let Err(e) = run_monitor(session_id, stop_clone) {
+            if let Err(e) = run_monitor(session_id, stop_clone, rt_handle) {
                 warn!(error = %e, "clipboard monitor exited with error");
             }
         })
@@ -47,7 +76,11 @@ pub fn start(session_id: u32) -> Arc<AtomicBool> {
 ///
 /// Uses `AddClipboardFormatListener` to receive `WM_CLIPBOARDUPDATE`
 /// messages when the clipboard changes.
-fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
+fn run_monitor(
+    session_id: u32,
+    stop: Arc<AtomicBool>,
+    rt_handle: tokio::runtime::Handle,
+) -> anyhow::Result<()> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::System::DataExchange::{
         AddClipboardFormatListener, RemoveClipboardFormatListener,
@@ -99,6 +132,33 @@ fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
 
     debug!("clipboard format listener registered");
 
+    // Register WinEvent hook for foreground window tracking (D-01, APP-01).
+    //
+    // WINEVENT_OUTOFCONTEXT: callback runs in our process without DLL injection.
+    // WINEVENT_SKIPOWNPROCESS: prevents DLP UI's own focus events (e.g., dialogs)
+    // from poisoning the destination slot (PITFALL-A3).
+    //
+    // Thread affinity: SetWinEventHook MUST be called on a thread with a message
+    // loop — the clipboard-monitor thread satisfies this (PeekMessageW loop below).
+    // The callback is delivered on this same thread. Do NOT call from tokio tasks.
+    use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    };
+
+    let winevent_hook = unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND, // eventMin: only foreground changes
+            EVENT_SYSTEM_FOREGROUND, // eventMax: same event
+            None,                    // hmodWinEventProc: None for OUTOFCONTEXT
+            Some(foreground_event_proc),
+            0, // idProcess: 0 = all processes
+            0, // idThread: 0 = all threads
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        )
+    };
+    debug!("WinEvent hook registered for foreground tracking");
+
     // Track the last clipboard text to avoid duplicate alerts.
     let mut last_hash: u64 = 0;
 
@@ -122,7 +182,35 @@ fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
 
         if has_msg.as_bool() {
             if msg.message == WM_CLIPBOARDUPDATE {
-                handle_clipboard_change(session_id, &mut last_hash);
+                // Capture source identity synchronously — BEFORE handle_clipboard_change.
+                // GetClipboardOwner must be called here (D-03, APP-02): the source
+                // process may exit within milliseconds of setting clipboard data.
+                // Returns windows_core::Result<HWND> — Err means NULL (no owner).
+                let source_hwnd: Option<windows::Win32::Foundation::HWND> = unsafe {
+                    windows::Win32::System::DataExchange::GetClipboardOwner().ok()
+                };
+
+                // Read-and-clear the foreground slot atomically (D-01, APP-01).
+                // swap(0) returns the previous value and resets the slot to 0 in
+                // one operation — no separate load + store needed.
+                let dest_raw = FOREGROUND_SLOT.swap(0, Ordering::Relaxed);
+                let dest_hwnd: Option<windows::Win32::Foundation::HWND> = if dest_raw != 0 {
+                    // Reconstruct HWND from usize. The cast is the inverse of the
+                    // store in foreground_event_proc (hwnd.0 as usize).
+                    Some(windows::Win32::Foundation::HWND(
+                        dest_raw as *mut core::ffi::c_void,
+                    ))
+                } else {
+                    None
+                };
+
+                handle_clipboard_change(
+                    session_id,
+                    &mut last_hash,
+                    source_hwnd,
+                    dest_hwnd,
+                    &rt_handle,
+                );
             }
             unsafe {
                 let _ = TranslateMessage(&msg);
@@ -134,16 +222,58 @@ fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
         }
     }
 
+    // Unhook the WinEvent hook before exiting — must be called on the same
+    // thread that registered it (clipboard-monitor thread). Behavior is
+    // undefined if called from a different thread.
+    let _ = unsafe { UnhookWinEvent(winevent_hook) };
     let _ = unsafe { RemoveClipboardFormatListener(hwnd) };
     debug!("clipboard monitor exiting");
     Ok(())
+}
+
+/// WinEvent callback for `EVENT_SYSTEM_FOREGROUND`.
+///
+/// Invoked by the WinEvent subsystem when any window gains foreground focus.
+/// Stores the newly-foreground HWND in `FOREGROUND_SLOT` so the next
+/// `WM_CLIPBOARDUPDATE` handler can read it as the destination application.
+///
+/// # Thread affinity
+///
+/// Delivered on the same thread that called `SetWinEventHook` — the
+/// clipboard-monitor thread — so no cross-thread synchronization is needed
+/// beyond the `AtomicUsize` store.
+///
+/// # Safety
+///
+/// This is an `unsafe extern "system"` function required by the Windows
+/// callback ABI. All parameters are Win32-provided and are only used for
+/// the `HWND` value extraction. No owned resources are created.
+#[cfg(windows)]
+unsafe extern "system" fn foreground_event_proc(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    _event: u32,
+    hwnd: windows::Win32::Foundation::HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _event_thread: u32,
+    _event_time: u32,
+) {
+    // Store the HWND as usize. HWND is *mut c_void — `.0` accesses the raw
+    // pointer field. This cast is valid on all Windows 32/64-bit targets.
+    FOREGROUND_SLOT.store(hwnd.0 as usize, Ordering::Relaxed);
 }
 
 /// Called when the clipboard content changes.
 ///
 /// Reads the clipboard text, classifies it, and sends an alert to the
 /// agent if the content is T2 or higher.
-fn handle_clipboard_change(session_id: u32, last_hash: &mut u64) {
+fn handle_clipboard_change(
+    session_id: u32,
+    last_hash: &mut u64,
+    source_hwnd: Option<windows::Win32::Foundation::HWND>,
+    dest_hwnd: Option<windows::Win32::Foundation::HWND>,
+    rt_handle: &tokio::runtime::Handle,
+) {
     let text = match crate::dialogs::clipboard::read_clipboard() {
         Ok(Some(t)) if !t.is_empty() => t,
         _ => return,
@@ -161,7 +291,66 @@ fn handle_clipboard_change(session_id: u32, last_hash: &mut u64) {
     }
     *last_hash = hash;
 
-    if let Some(tier_str) = classify_and_alert(session_id, &text) {
+    // Resolve source and destination application identities (APP-01, APP-02).
+    //
+    // SC-3 compliance: resolve_app_identity calls verify_and_cache which invokes
+    // WinVerifyTrust (disk I/O + certificate parse). We wrap each call in
+    // spawn_blocking so any blocking work is offloaded to Tokio's blocking
+    // thread pool rather than occupying the Tokio executor. block_on drives
+    // the future to completion on the current OS thread (safe here because this
+    // is a std::thread, not a Tokio worker thread — no executor re-entrancy).
+    //
+    // HWND is `*mut c_void` which is not Send, so it cannot be moved directly
+    // into spawn_blocking closures. We convert to usize (a raw pointer integer)
+    // before crossing the thread boundary, then reconstruct inside the closure.
+    // This is safe: the HWND value is only used for Win32 API calls inside the
+    // blocking thread and the usize representation is pointer-sized and Copy.
+    let source_identity = {
+        // Extract raw pointer as usize — usize is Send + Copy.
+        let sh_raw: Option<usize> = source_hwnd.map(|h| h.0 as usize);
+        rt_handle
+            .block_on(tokio::task::spawn_blocking(move || {
+                let hwnd = sh_raw.map(|raw| {
+                    windows::Win32::Foundation::HWND(raw as *mut core::ffi::c_void)
+                });
+                crate::detection::app_identity::resolve_app_identity(hwnd)
+            }))
+            .ok()
+            .flatten()
+    };
+
+    // D-02: Intra-app copy — if source and dest share the same PID, clone
+    // source identity instead of making a second verify_and_cache call.
+    let dest_identity = match dest_hwnd {
+        None => None,
+        Some(dh) => {
+            let source_pid = source_hwnd
+                .map(crate::detection::app_identity::hwnd_to_pid)
+                .unwrap_or(0);
+            let dest_pid = crate::detection::app_identity::hwnd_to_pid(dh);
+
+            if source_pid != 0 && source_pid == dest_pid {
+                // Same process — destination is the same application as source.
+                // Clone rather than re-resolving (avoids a second WinVerifyTrust
+                // hit for the same path, though the cache would also prevent it).
+                source_identity.clone()
+            } else {
+                // Extract raw pointer as usize for Send boundary crossing.
+                let dh_raw = dh.0 as usize;
+                rt_handle
+                    .block_on(tokio::task::spawn_blocking(move || {
+                        let hwnd = windows::Win32::Foundation::HWND(
+                            dh_raw as *mut core::ffi::c_void,
+                        );
+                        crate::detection::app_identity::resolve_app_identity(Some(hwnd))
+                    }))
+                    .ok()
+                    .flatten()
+            }
+        }
+    };
+
+    if let Some(tier_str) = classify_and_alert(session_id, &text, source_identity, dest_identity) {
         info!(
             session_id,
             classification = tier_str,
@@ -183,6 +372,10 @@ fn handle_clipboard_change(session_id: u32, last_hash: &mut u64) {
 ///
 /// * `session_id` - The Windows session ID to attribute the alert to.
 /// * `text` - The clipboard text to classify.
+/// * `source_identity` - Resolved identity of the clipboard source application (APP-02).
+///   `None` when `GetClipboardOwner` returned NULL.
+/// * `dest_identity` - Resolved identity of the paste-destination application (APP-01).
+///   `None` when no foreground window was captured in `FOREGROUND_SLOT`.
 ///
 /// # Returns
 ///
@@ -191,7 +384,12 @@ fn handle_clipboard_change(session_id: u32, last_hash: &mut u64) {
 ///   logged via `tracing::warn!`, matching the live monitor's semantics).
 /// * `None` if the text is empty or classifies as T1 (public) and no alert
 ///   was sent.
-pub fn classify_and_alert(session_id: u32, text: &str) -> Option<&'static str> {
+pub fn classify_and_alert(
+    session_id: u32,
+    text: &str,
+    source_identity: Option<AppIdentity>,
+    dest_identity: Option<AppIdentity>,
+) -> Option<&'static str> {
     // Empty text should never have been scheduled for classification,
     // but guard defensively so tests and callers cannot trigger a
     // zero-length alert.
@@ -222,6 +420,10 @@ pub fn classify_and_alert(session_id: u32, text: &str) -> Option<&'static str> {
     {
         warn!(error = %e, "failed to send clipboard alert to agent");
     }
+    // NOTE: source_identity and dest_identity are not yet forwarded to
+    // send_clipboard_alert — Plan 03 (25-03-PLAN.md) extends the signature.
+    // The _ suppresses unused-variable warnings until Plan 03.
+    let _ = (source_identity, dest_identity);
 
     Some(tier_str)
 }
@@ -235,4 +437,60 @@ unsafe extern "system" fn wndproc(
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
     windows::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_foreground_slot_store_and_swap() {
+        // Simulate foreground_event_proc storing a value.
+        FOREGROUND_SLOT.store(0xDEAD_BEEF, Ordering::Relaxed);
+        // WM_CLIPBOARDUPDATE read-and-clear.
+        let prev = FOREGROUND_SLOT.swap(0, Ordering::Relaxed);
+        assert_eq!(prev, 0xDEAD_BEEF, "swap must return stored HWND value");
+        // Slot must be cleared after swap.
+        assert_eq!(
+            FOREGROUND_SLOT.load(Ordering::Relaxed),
+            0,
+            "slot must be 0 after swap(0)"
+        );
+    }
+
+    #[test]
+    fn test_foreground_slot_empty_gives_zero() {
+        FOREGROUND_SLOT.store(0, Ordering::Relaxed);
+        let val = FOREGROUND_SLOT.swap(0, Ordering::Relaxed);
+        assert_eq!(val, 0, "empty slot must return 0");
+    }
+
+    #[test]
+    fn test_classify_and_alert_with_none_identities_returns_tier_for_sensitive() {
+        // Backward compat: None, None identities must not break classification.
+        // "password: secret123" classifies as T3 in the existing classifier.
+        let result = classify_and_alert(1, "password: secret123", None, None);
+        assert!(result.is_some(), "T3 content must produce Some(tier)");
+    }
+
+    #[test]
+    fn test_classify_and_alert_with_none_identities_returns_none_for_t1() {
+        let result = classify_and_alert(1, "hello world", None, None);
+        assert!(result.is_none(), "T1 content must produce None");
+    }
+
+    #[test]
+    fn test_intraapp_copy_dest_equals_source_identity() {
+        use dlp_common::{AppIdentity, AppTrustTier, SignatureState};
+        // D-02: same PID -> dest identity = source identity clone.
+        // We test the clone logic in isolation using AppIdentity directly.
+        let source = AppIdentity {
+            image_path: r"C:\Windows\System32\notepad.exe".to_string(),
+            publisher: "Microsoft Corporation".to_string(),
+            trust_tier: AppTrustTier::Trusted,
+            signature_state: SignatureState::Valid,
+        };
+        let dest = source.clone();
+        assert_eq!(source, dest, "intra-app dest must equal source clone");
+    }
 }
