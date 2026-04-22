@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.6.0
 milestone_name: Endpoint Hardening
 status: executing
-last_updated: "2026-04-22T10:50:00.000Z"
-last_activity: 2026-04-22 -- Phase 23 complete (USB enumeration delivered, SC-1..SC-3 verified)
+last_updated: "2026-04-22T05:28:28Z"
+last_activity: 2026-04-22 -- Phase 24 Plan 01 complete (device_registry DB layer)
 progress:
   total_phases: 8
   completed_phases: 2
-  total_plans: 8
-  completed_plans: 6
-  percent: 75
+  total_plans: 10
+  completed_plans: 7
+  percent: 65
 ---
 
 # STATE.md — Project Memory
@@ -20,15 +20,15 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** v0.6.0 Endpoint Hardening — Phase 23 complete. Next: Phase 24 (Device Registry DB + Admin API).
+**Current focus:** Phase 24 — device-registry-db-admin-api
 
 ## Current Position
 
-Phase: Phase 24 (next)
-Plan: next — Device Registry DB + Admin API
-Status: Ready to discuss/plan
-Resume: `/gsd-discuss-phase 24`
-Last activity: 2026-04-22 -- Phase 23 complete (USB enumeration delivered, SC-1..SC-3 verified)
+Phase: 24 (device-registry-db-admin-api) — EXECUTING
+Plan: 2 of 4
+Status: Executing Phase 24
+Resume: `/gsd-execute-phase 24`
+Last activity: 2026-04-22 -- Phase 24 Plan 01 complete (device_registry DB layer)
 
 ## Decisions
 
@@ -68,6 +68,8 @@ Last activity: 2026-04-22 -- Phase 23 complete (USB enumeration delivered, SC-1.
 | 2026-04-21 | PolicyMode::ALL arm in footer advisory is exhaustive-but-unreachable | Outer guard `form.mode != PolicyMode::ALL` makes the ALL arm dead code; Rust requires exhaustive match on three-variant enum; empty string renders nothing |
 | 2026-04-21 | Integration test conditions JSON uses snake_case attribute tags | `PolicyCondition` has `#[serde(tag = "attribute", rename_all = "snake_case")]`; AccessContext variant serializes as "access_context" not "accesscontext" |
 | 2026-04-21 | CARGO_TARGET_DIR=target-test workaround for locked dlp-server.exe | Elevated dlp-server process holds target/debug/dlp-server.exe; alternate target dir lets cargo compile test binary without touching locked file |
+| 2026-04-22 | ON CONFLICT DO UPDATE preserves UUID PK | INSERT OR REPLACE deletes-then-reinserts changing the PK; ON CONFLICT DO UPDATE updates in place keeping the original id |
+| 2026-04-22 | In-memory pool test: release write conn before read | r2d2 in-memory SQLite pool — write PooledConnection must be dropped (returned to pool) before list_all acquires a second connection |
 
 ## Known Issues (carry-forward)
 

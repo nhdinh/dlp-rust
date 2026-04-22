@@ -84,7 +84,7 @@ Plans:
   4. Agent can query the registry endpoint and cache results in `RwLock<HashMap>` indexed by device key (vid+pid+serial)
 **Plans**: 4 plans
 Plans:
-- [ ] 24-01-PLAN.md — device_registry table DDL (db/mod.rs) + DeviceRegistryRepository (db/repositories/device_registry.rs) + module registration
+- [x] 24-01-PLAN.md — device_registry table DDL (db/mod.rs) + DeviceRegistryRepository (db/repositories/device_registry.rs) + module registration
 - [ ] 24-02-PLAN.md — Admin API routes (GET/POST/DELETE /admin/device-registry) + request/response types + route registration in admin_api.rs
 - [ ] 24-03-PLAN.md — Agent DeviceRegistryCache module + 30-second poll task + USB arrival immediate refresh wired in service.rs and usb.rs
 - [ ] 24-04-PLAN.md — Integration tests (server CRUD round-trip + agent cache behavior) + human checkpoint + workspace zero-warning gate
