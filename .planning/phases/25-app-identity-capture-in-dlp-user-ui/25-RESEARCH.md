@@ -678,17 +678,13 @@ pub fn send_clipboard_alert(
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **`parking_lot::Mutex` vs `std::sync::Mutex` for AUTHENTICODE_CACHE**
-   - What we know: `dlp-user-ui` has `parking_lot` in Cargo.toml; existing code uses it for other shared state
-   - What's unclear: Whether `parking_lot::Mutex` works correctly in a `OnceLock` static (it should — no difference from `std::sync::Mutex` in this context)
-   - Recommendation: Use `std::sync::Mutex` for the OnceLock static (simpler, no import confusion) since the clipboard monitor thread has no contention
+   - **RESOLVED:** Use `std::sync::Mutex` for the `OnceLock` static. The clipboard monitor is single-threaded (no actual contention), `parking_lot` offers no benefit here, and `std::sync::Mutex` avoids an extra import. `parking_lot::Mutex` also does not implement `std::panic::UnwindSafe` which is needed for some `OnceLock` implementations.
 
 2. **Intra-app copy PID comparison timing**
-   - What we know: D-02 requires dest = source identity for intra-app copy
-   - What's unclear: Whether to compare PIDs before or after resolving identities (comparing after wastes a second `verify_and_cache` call for the same path)
-   - Recommendation: Compare source and dest HWNDs' PIDs first; if equal, call `resolve_app_identity` once and `clone()` the result for dest
+   - **RESOLVED:** Compare source and dest HWNDs' PIDs *before* resolving identities. If PIDs are equal, call `resolve_app_identity` once and `clone()` the result for dest. This avoids a redundant second `verify_and_cache` call for the same path (the common intra-app copy case).
 
 ---
 
