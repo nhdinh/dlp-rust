@@ -121,7 +121,7 @@ Plans:
 - [x] 26-02-PLAN.md - evaluate() + condition_matches() migration to &AbacContext + app_identity_matches helper + HTTP boundary conversion in admin_api.rs
 - [x] 26-03-PLAN.md - TDD tests for APP-03 (all AppField variants, None-identity fails-closed, eq/ne/contains operators)
 - [x] 26-04-PLAN.md - UsbEnforcer struct in usb_enforcer.rs + run_event_loop wiring + service.rs construction
-- [ ] 26-05-PLAN.md - TDD tests for USB-03 (all FileAction variants, blocked/read_only/full_access, drive-letter edge cases)
+- [x] 26-05-PLAN.md - TDD tests for USB-03 (all FileAction variants, blocked/read_only/full_access, drive-letter edge cases)
 
 ### Phase 27: USB Toast Notification
 **Goal**: Users receive an immediate, informative toast notification when a USB device is blocked so they understand why the device is not working
