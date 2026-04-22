@@ -51,18 +51,10 @@ pub fn start(session_id: u32) -> Arc<AtomicBool> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
 
-    // SC-3: Capture the Tokio runtime handle before entering the OS thread.
-    // The clipboard monitor runs in a std::thread (required for the Win32
-    // message pump), but WinVerifyTrust involves disk I/O that must not block
-    // Tokio's async executor. We capture the handle here — on the async
-    // caller's thread — and move it into the closure so handle_clipboard_change
-    // can call rt_handle.block_on(spawn_blocking(...)) around verify_and_cache.
-    let rt_handle = tokio::runtime::Handle::current();
-
     std::thread::Builder::new()
         .name("clipboard-monitor".into())
         .spawn(move || {
-            if let Err(e) = run_monitor(session_id, stop_clone, rt_handle) {
+            if let Err(e) = run_monitor(session_id, stop_clone) {
                 warn!(error = %e, "clipboard monitor exited with error");
             }
         })
@@ -79,7 +71,6 @@ pub fn start(session_id: u32) -> Arc<AtomicBool> {
 fn run_monitor(
     session_id: u32,
     stop: Arc<AtomicBool>,
-    rt_handle: tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::System::DataExchange::{
@@ -209,7 +200,6 @@ fn run_monitor(
                     &mut last_hash,
                     source_hwnd,
                     dest_hwnd,
-                    &rt_handle,
                 );
             }
             unsafe {
@@ -272,7 +262,6 @@ fn handle_clipboard_change(
     last_hash: &mut u64,
     source_hwnd: Option<windows::Win32::Foundation::HWND>,
     dest_hwnd: Option<windows::Win32::Foundation::HWND>,
-    rt_handle: &tokio::runtime::Handle,
 ) {
     let text = match crate::dialogs::clipboard::read_clipboard() {
         Ok(Some(t)) if !t.is_empty() => t,
@@ -293,31 +282,10 @@ fn handle_clipboard_change(
 
     // Resolve source and destination application identities (APP-01, APP-02).
     //
-    // SC-3 compliance: resolve_app_identity calls verify_and_cache which invokes
-    // WinVerifyTrust (disk I/O + certificate parse). We wrap each call in
-    // spawn_blocking so any blocking work is offloaded to Tokio's blocking
-    // thread pool rather than occupying the Tokio executor. block_on drives
-    // the future to completion on the current OS thread (safe here because this
-    // is a std::thread, not a Tokio worker thread — no executor re-entrancy).
-    //
-    // HWND is `*mut c_void` which is not Send, so it cannot be moved directly
-    // into spawn_blocking closures. We convert to usize (a raw pointer integer)
-    // before crossing the thread boundary, then reconstruct inside the closure.
-    // This is safe: the HWND value is only used for Win32 API calls inside the
-    // blocking thread and the usize representation is pointer-sized and Copy.
-    let source_identity = {
-        // Extract raw pointer as usize — usize is Send + Copy.
-        let sh_raw: Option<usize> = source_hwnd.map(|h| h.0 as usize);
-        rt_handle
-            .block_on(tokio::task::spawn_blocking(move || {
-                let hwnd = sh_raw.map(|raw| {
-                    windows::Win32::Foundation::HWND(raw as *mut core::ffi::c_void)
-                });
-                crate::detection::app_identity::resolve_app_identity(hwnd)
-            }))
-            .ok()
-            .flatten()
-    };
+    // This runs on the dedicated clipboard-monitor std::thread — NOT a Tokio
+    // async task — so calling blocking Win32 APIs (WinVerifyTrust) directly is
+    // correct. There is no Tokio executor to starve here.
+    let source_identity = crate::detection::app_identity::resolve_app_identity(source_hwnd);
 
     // D-02: Intra-app copy — if source and dest share the same PID, clone
     // source identity instead of making a second verify_and_cache call.
@@ -330,22 +298,9 @@ fn handle_clipboard_change(
             let dest_pid = crate::detection::app_identity::hwnd_to_pid(dh);
 
             if source_pid != 0 && source_pid == dest_pid {
-                // Same process — destination is the same application as source.
-                // Clone rather than re-resolving (avoids a second WinVerifyTrust
-                // hit for the same path, though the cache would also prevent it).
                 source_identity.clone()
             } else {
-                // Extract raw pointer as usize for Send boundary crossing.
-                let dh_raw = dh.0 as usize;
-                rt_handle
-                    .block_on(tokio::task::spawn_blocking(move || {
-                        let hwnd = windows::Win32::Foundation::HWND(
-                            dh_raw as *mut core::ffi::c_void,
-                        );
-                        crate::detection::app_identity::resolve_app_identity(Some(hwnd))
-                    }))
-                    .ok()
-                    .flatten()
+                crate::detection::app_identity::resolve_app_identity(Some(dh))
             }
         }
     };
