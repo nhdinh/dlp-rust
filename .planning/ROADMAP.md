@@ -147,8 +147,8 @@ Plans:
   4. All three new screens follow the existing ratatui TUI conventions (keyboard nav, Esc to cancel, confirmation on destructive actions)
 **Plans**: 5 plans
 Plans:
-- [ ] 28-01-PLAN.md -- managed_origins DDL + ManagedOriginsRepository + GET/POST/DELETE /admin/managed-origins handlers
-- [ ] 28-02-PLAN.md -- ConditionAttribute Source/DestinationApplication variants + AppField sub-picker in conditions builder
+- [x] 28-01-PLAN.md -- managed_origins DDL + ManagedOriginsRepository + GET/POST/DELETE /admin/managed-origins handlers
+- [x] 28-02-PLAN.md -- ConditionAttribute Source/DestinationApplication variants + AppField sub-picker in conditions builder
 - [ ] 28-03-PLAN.md -- DevicesMenu + DeviceList + DeviceTierPicker + register/delete flows for device registry TUI
 - [ ] 28-04-PLAN.md -- ManagedOriginList screen + add/delete flows wired to /admin/managed-origins API
 - [ ] 28-05-PLAN.md -- managed_origins integration tests + zero-warning build gate + human UAT checkpoint

@@ -24,10 +24,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 ## Current Position
 
-Phase: 28 (admin-tui-screens) — READY TO EXECUTE
-Plan: 0 of 5
-Status: Phase 27 complete (USB-04 delivered); Phase 28 planned 2026-04-23 — 5 plans, 4 waves
-Next: /gsd-execute-phase 28
+Phase: 28 (admin-tui-screens) — EXECUTING
+Plan: 2 of 5
+Status: Wave 1 complete (28-01 managed_origins API, 28-02 AppField builder); Wave 2 in progress
+Next: Wave 2 — Plan 28-03 (Device Registry TUI screens)
 Last activity: 2026-04-23
 
 ## Decisions
