@@ -36,12 +36,26 @@ pub enum InputPurpose {
         id: String,
     },
     DeletePolicyId,
+    /// Step 1 of device register flow: prompts for USB Vendor ID (hex string).
+    RegisterDeviceVid,
+    /// Step 2: carries the confirmed VID; prompts for Product ID (hex string).
+    RegisterDevicePid { vid: String },
+    /// Step 3: carries VID + PID; prompts for serial number.
+    RegisterDeviceSerial { vid: String, pid: String },
+    /// Step 4: carries VID + PID + serial; prompts for human-readable description.
+    RegisterDeviceDescription { vid: String, pid: String, serial: String },
+    /// Prompts for a URL-pattern string to add as a managed origin.
+    AddManagedOrigin,
 }
 
 /// What happens when the user confirms a yes/no dialog.
 #[derive(Debug, Clone)]
 pub enum ConfirmPurpose {
     DeletePolicy { id: String },
+    /// Confirm deletion of a device registry entry by UUID.
+    DeleteDevice { id: String },
+    /// Confirm deletion of a managed origin entry by UUID.
+    DeleteManagedOrigin { id: String },
 }
 
 /// What happens when the user confirms a password input.
@@ -517,6 +531,41 @@ pub enum Screen {
         /// Which menu opened this screen (for Esc return destination).
         caller: SimulateCaller,
     },
+    /// "Devices & Origins" submenu with 2 items: Device Registry, Managed Origins.
+    DevicesMenu { selected: usize },
+
+    /// Scrollable registered-device list.
+    ///
+    /// Keyboard shortcuts: `r` register, `d` delete selected, Esc back to DevicesMenu.
+    DeviceList {
+        /// All registered devices as raw JSON objects from the API.
+        devices: Vec<serde_json::Value>,
+        /// Currently highlighted row index.
+        selected: usize,
+    },
+
+    /// Final step of the device register flow: select trust tier.
+    ///
+    /// The three tiers are displayed as a picker; Enter confirms and submits.
+    DeviceTierPicker {
+        vid: String,
+        pid: String,
+        serial: String,
+        description: String,
+        /// Selected tier index: 0 = blocked, 1 = read_only, 2 = full_access.
+        selected: usize,
+    },
+
+    /// Scrollable managed-origins list.
+    ///
+    /// Keyboard shortcuts: `a` add, `d` delete selected, Esc back to DevicesMenu.
+    ManagedOriginList {
+        /// All managed origins as raw JSON objects from the API.
+        origins: Vec<serde_json::Value>,
+        /// Currently highlighted row index.
+        selected: usize,
+    },
+
     /// Import confirmation screen.
     ///
     /// Row layout (render list indices 0..=4):
