@@ -195,6 +195,8 @@ fn route(msg: Pipe3UiMsg) {
             classification,
             preview,
             text_length,
+            source_application,
+            destination_application,
             ..
         } => {
             info!(
@@ -223,6 +225,8 @@ fn route(msg: Pipe3UiMsg) {
                 session_id,
             );
             event = event.with_access_context(dlp_common::AuditAccessContext::Local);
+            event = event.with_source_application(source_application);
+            event = event.with_destination_application(destination_application);
             crate::audit_emitter::emit(&event).ok();
         }
     }
