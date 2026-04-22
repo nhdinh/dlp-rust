@@ -3753,9 +3753,16 @@ fn handle_managed_origin_list(app: &mut App, key: KeyEvent) {
             if origins_len == 0 {
                 return;
             }
-            let id = match &app.screen {
+            // Extract both the UUID (for the DELETE request) and the origin URL
+            // (for the human-readable confirm message).
+            let (id, origin_str) = match &app.screen {
                 Screen::ManagedOriginList { origins, selected } => {
-                    origins[*selected]["id"].as_str().unwrap_or("").to_string()
+                    let id = origins[*selected]["id"].as_str().unwrap_or("").to_string();
+                    let origin = origins[*selected]["origin"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                    (id, origin)
                 }
                 _ => return,
             };
@@ -3763,7 +3770,7 @@ fn handle_managed_origin_list(app: &mut App, key: KeyEvent) {
                 return;
             }
             app.screen = Screen::Confirm {
-                message: format!("Delete origin {id}?"),
+                message: format!("Remove origin '{origin_str}'?"),
                 yes_selected: true,
                 purpose: ConfirmPurpose::DeleteManagedOrigin { id },
             };
