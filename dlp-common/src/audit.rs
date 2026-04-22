@@ -17,6 +17,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use crate::endpoint::{AppIdentity, DeviceIdentity};
 
 use super::{Action, Classification, Decision};
 
@@ -153,6 +154,17 @@ pub struct AuditEvent {
     /// Populated via `GetNamedSecurityInfoW` + `ConvertSidToStringSidW`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_owner: Option<String>,
+    /// Resolved identity of the application that initiated the operation
+    /// (populated by Phase 25 for clipboard events).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_application: Option<AppIdentity>,
+    /// Resolved identity of the destination application (e.g. the paste target).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_application: Option<AppIdentity>,
+    /// USB device identity for block events involving removable storage
+    /// (populated by Phase 26/27 on USB blocks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_identity: Option<DeviceIdentity>,
 }
 
 impl AuditEvent {
@@ -203,6 +215,9 @@ impl AuditEvent {
             application_path: None,
             application_hash: None,
             resource_owner: None,
+            source_application: None,
+            destination_application: None,
+            device_identity: None,
         }
     }
 
@@ -256,6 +271,24 @@ impl AuditEvent {
     /// Sets the resource owner SID.
     pub fn with_resource_owner(mut self, resource_owner: Option<String>) -> Self {
         self.resource_owner = resource_owner;
+        self
+    }
+
+    /// Sets the resolved identity of the application that initiated the operation.
+    pub fn with_source_application(mut self, app: Option<AppIdentity>) -> Self {
+        self.source_application = app;
+        self
+    }
+
+    /// Sets the resolved identity of the destination application (paste target).
+    pub fn with_destination_application(mut self, app: Option<AppIdentity>) -> Self {
+        self.destination_application = app;
+        self
+    }
+
+    /// Sets the USB device identity on block events involving removable storage.
+    pub fn with_device_identity(mut self, device: Option<DeviceIdentity>) -> Self {
+        self.device_identity = device;
         self
     }
 }
@@ -361,6 +394,130 @@ mod tests {
         assert!(!json.contains("\"application_path\":null"));
         assert!(!json.contains("\"application_hash\":null"));
         assert!(!json.contains("\"resource_owner\":null"));
+        // Phase 22 new fields must also be skipped when None (D-11, D-12, D-13).
+        assert!(!json.contains("\"source_application\":null"));
+        assert!(!json.contains("\"destination_application\":null"));
+        assert!(!json.contains("\"device_identity\":null"));
+    }
+
+    #[test]
+    fn test_audit_event_with_source_application() {
+        use crate::endpoint::{AppIdentity, AppTrustTier, SignatureState};
+        let app = AppIdentity {
+            image_path: r"C:\src.exe".to_string(),
+            publisher: "Contoso".to_string(),
+            trust_tier: AppTrustTier::Trusted,
+            signature_state: SignatureState::Valid,
+        };
+        let event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\x.txt".to_string(),
+            Classification::T3,
+            Action::PASTE,
+            Decision::DENY,
+            "AGENT-01".to_string(),
+            1,
+        )
+        .with_source_application(Some(app.clone()));
+        assert_eq!(event.source_application.as_ref().map(|a| a.publisher.as_str()), Some("Contoso"));
+        assert!(event.destination_application.is_none());
+        assert!(event.device_identity.is_none());
+    }
+
+    #[test]
+    fn test_audit_event_with_destination_application_and_device_identity() {
+        use crate::endpoint::{AppIdentity, AppTrustTier, DeviceIdentity, SignatureState};
+        let dest = AppIdentity {
+            image_path: r"C:\dst.exe".to_string(),
+            publisher: "Unknown".to_string(),
+            trust_tier: AppTrustTier::Untrusted,
+            signature_state: SignatureState::NotSigned,
+        };
+        let dev = DeviceIdentity {
+            vid: "0951".to_string(),
+            pid: "1666".to_string(),
+            serial: "XYZ".to_string(),
+            description: "Kingston DT 3.0".to_string(),
+        };
+        let event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            r"E:\payload.zip".to_string(),
+            Classification::T3,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-01".to_string(),
+            1,
+        )
+        .with_destination_application(Some(dest))
+        .with_device_identity(Some(dev.clone()));
+        assert!(event.destination_application.is_some());
+        assert_eq!(event.device_identity.as_ref().map(|d| d.vid.as_str()), Some("0951"));
+    }
+
+    #[test]
+    fn test_audit_event_app_and_device_serde_round_trip() {
+        use crate::endpoint::{AppIdentity, AppTrustTier, DeviceIdentity, SignatureState};
+        let event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-2".to_string(),
+            "jsmith".to_string(),
+            r"E:\doc.pdf".to_string(),
+            Classification::T2,
+            Action::COPY,
+            Decision::DENY,
+            "AGENT-02".to_string(),
+            3,
+        )
+        .with_source_application(Some(AppIdentity {
+            image_path: r"C:\src.exe".to_string(),
+            publisher: "Contoso".to_string(),
+            trust_tier: AppTrustTier::Trusted,
+            signature_state: SignatureState::Valid,
+        }))
+        .with_device_identity(Some(DeviceIdentity {
+            vid: "0951".to_string(),
+            pid: "1666".to_string(),
+            serial: "(none)".to_string(),
+            description: "Kingston".to_string(),
+        }));
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("source_application"));
+        assert!(json.contains("device_identity"));
+        assert!(!json.contains("destination_application"));
+        let rt: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            rt.source_application.as_ref().map(|a| a.publisher.as_str()),
+            Some("Contoso"),
+        );
+        assert_eq!(rt.device_identity.as_ref().map(|d| d.serial.as_str()), Some("(none)"));
+    }
+
+    #[test]
+    fn test_audit_event_backward_compat_missing_new_fields() {
+        // D-13: deserializing an AuditEvent JSON that predates Phase 22 must
+        // still succeed — all three new fields default to None.
+        let legacy = r#"{
+            "timestamp": "2025-01-01T00:00:00Z",
+            "event_type": "BLOCK",
+            "user_sid": "S-1-5-21-1",
+            "user_name": "jsmith",
+            "resource_path": "C:\\Data\\x.txt",
+            "classification": "T3",
+            "action_attempted": "READ",
+            "decision": "DENY",
+            "agent_id": "AGENT-01",
+            "session_id": 1,
+            "override_granted": false,
+            "access_context": "local"
+        }"#;
+        let event: AuditEvent = serde_json::from_str(legacy).unwrap();
+        assert!(event.source_application.is_none());
+        assert!(event.destination_application.is_none());
+        assert!(event.device_identity.is_none());
     }
 
     #[test]
