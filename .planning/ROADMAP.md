@@ -117,7 +117,7 @@ Plans:
   4. Device trust tier enforcement uses the in-memory `RwLock<HashMap>` cache; registry updates (from Phase 24 API) invalidate and refresh the cache without agent restart
 **Plans**: 5 plans
 Plans:
-- [ ] 26-01-PLAN.md - AppField enum + SourceApplication/DestinationApplication PolicyCondition variants + From<EvaluateRequest> for AbacContext in dlp-common/src/abac.rs
+- [x] 26-01-PLAN.md - AppField enum + SourceApplication/DestinationApplication PolicyCondition variants + From<EvaluateRequest> for AbacContext in dlp-common/src/abac.rs
 - [ ] 26-02-PLAN.md - evaluate() + condition_matches() migration to &AbacContext + app_identity_matches helper + HTTP boundary conversion in admin_api.rs
 - [ ] 26-03-PLAN.md - TDD tests for APP-03 (all AppField variants, None-identity fails-closed, eq/ne/contains operators)
 - [ ] 26-04-PLAN.md - UsbEnforcer struct in usb_enforcer.rs + run_event_loop wiring + service.rs construction
