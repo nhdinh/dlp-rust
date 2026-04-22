@@ -94,6 +94,14 @@ pub enum AppError {
     /// Authentication failed or token is invalid/expired.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+
+    /// The request is semantically invalid (e.g., enum value out of range).
+    ///
+    /// Maps to HTTP 422 Unprocessable Entity. Use this instead of
+    /// `BadRequest` when the JSON is structurally valid but violates
+    /// domain-level invariants (e.g., an unrecognized `trust_tier` string).
+    #[error("unprocessable entity: {0}")]
+    UnprocessableEntity(String),
 }
 
 /// Converts axum extract rejections into `AppError::BadRequest`.
@@ -135,6 +143,9 @@ impl IntoResponse for AppError {
             AppError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             AppError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             AppError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, self.to_string()),
+            AppError::UnprocessableEntity(_) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, self.to_string())
+            }
         };
 
         let body = serde_json::json!({ "error": message });

@@ -261,6 +261,66 @@ pub struct AgentConfigPayload {
     pub offline_cache_enabled: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Device Registry request / response types
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /admin/device-registry`.
+///
+/// Registers or updates a USB device trust tier. If a row with the same
+/// `(vid, pid, serial)` already exists, the `trust_tier` and `description`
+/// are updated in place (upsert). The UUID is server-generated and returned
+/// in the response — callers do not provide it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceRegistryRequest {
+    /// USB Vendor ID as a hex string, e.g. `"0951"`.
+    pub vid: String,
+    /// USB Product ID as a hex string, e.g. `"1666"`.
+    pub pid: String,
+    /// Device serial number, or `"(none)"` for devices without one.
+    pub serial: String,
+    /// Human-readable device description. Optional; defaults to empty string.
+    #[serde(default)]
+    pub description: String,
+    /// Trust tier: must be one of `"blocked"`, `"read_only"`, or `"full_access"`.
+    pub trust_tier: String,
+}
+
+/// Response body returned by `GET` and `POST /admin/device-registry`.
+///
+/// Mirrors the `device_registry` table row shape exactly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceRegistryResponse {
+    /// Server-generated UUID.
+    pub id: String,
+    /// USB Vendor ID hex string.
+    pub vid: String,
+    /// USB Product ID hex string.
+    pub pid: String,
+    /// Device serial number.
+    pub serial: String,
+    /// Human-readable device description (empty string if not provided).
+    pub description: String,
+    /// Trust tier: `"blocked"`, `"read_only"`, or `"full_access"`.
+    pub trust_tier: String,
+    /// ISO-8601 creation timestamp.
+    pub created_at: String,
+}
+
+impl From<repositories::DeviceRegistryRow> for DeviceRegistryResponse {
+    fn from(row: repositories::DeviceRegistryRow) -> Self {
+        Self {
+            id: row.id,
+            vid: row.vid,
+            pid: row.pid,
+            serial: row.serial,
+            description: row.description,
+            trust_tier: row.trust_tier,
+            created_at: row.created_at,
+        }
+    }
+}
+
 /// Health/readiness probe response.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -3550,5 +3610,60 @@ mod tests {
         );
         let round_trip: PolicyPayload = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(round_trip.mode, PolicyMode::NONE);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Device Registry type shape tests (Task 1 — TDD RED)
+    // ---------------------------------------------------------------------------
+
+    /// DeviceRegistryRequest with description omitted deserializes with empty string default.
+    #[test]
+    fn test_device_registry_request_description_defaults_to_empty() {
+        let json = r#"{"vid":"0951","pid":"1666","serial":"SN001","trust_tier":"blocked"}"#;
+        let req: DeviceRegistryRequest =
+            serde_json::from_str(json).expect("deserialize DeviceRegistryRequest");
+        assert_eq!(req.vid, "0951");
+        assert_eq!(req.pid, "1666");
+        assert_eq!(req.serial, "SN001");
+        assert_eq!(req.trust_tier, "blocked");
+        assert_eq!(req.description, "", "description must default to empty string");
+    }
+
+    /// DeviceRegistryResponse serializes to JSON with all 7 expected fields.
+    #[test]
+    fn test_device_registry_response_serializes_all_fields() {
+        let resp = DeviceRegistryResponse {
+            id: "uuid-001".to_string(),
+            vid: "0951".to_string(),
+            pid: "1666".to_string(),
+            serial: "SN001".to_string(),
+            description: "Kingston DataTraveler".to_string(),
+            trust_tier: "read_only".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&resp).expect("serialize");
+        assert!(json.contains(r#""id":"uuid-001""#), "id field missing");
+        assert!(json.contains(r#""vid":"0951""#), "vid field missing");
+        assert!(json.contains(r#""pid":"1666""#), "pid field missing");
+        assert!(json.contains(r#""serial":"SN001""#), "serial field missing");
+        assert!(
+            json.contains(r#""description":"Kingston DataTraveler""#),
+            "description field missing"
+        );
+        assert!(json.contains(r#""trust_tier":"read_only""#), "trust_tier field missing");
+        assert!(
+            json.contains(r#""created_at":"2026-01-01T00:00:00Z""#),
+            "created_at field missing"
+        );
+    }
+
+    /// trust_tier value "read_only" is valid and round-trips correctly.
+    #[test]
+    fn test_device_registry_request_read_only_tier_accepted() {
+        let json =
+            r#"{"vid":"046d","pid":"c52b","serial":"ABC","trust_tier":"read_only"}"#;
+        let req: DeviceRegistryRequest =
+            serde_json::from_str(json).expect("deserialize DeviceRegistryRequest");
+        assert_eq!(req.trust_tier, "read_only");
     }
 }

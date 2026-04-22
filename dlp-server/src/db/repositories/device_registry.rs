@@ -106,6 +106,48 @@ impl DeviceRegistryRepository {
         Ok(())
     }
 
+    /// Returns the device registry entry matching the given `(vid, pid, serial)` key.
+    ///
+    /// Used after an upsert to retrieve the persisted row — which may carry the
+    /// original UUID when the upsert resolved a conflict rather than inserting.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - Connection pool to acquire a read connection from.
+    /// * `vid` - USB Vendor ID hex string.
+    /// * `pid` - USB Product ID hex string.
+    /// * `serial` - Device serial number.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error::QueryReturnedNoRows` if no matching row exists.
+    pub fn get_by_device_key(
+        pool: &Pool,
+        vid: &str,
+        pid: &str,
+        serial: &str,
+    ) -> rusqlite::Result<DeviceRegistryRow> {
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        conn.query_row(
+            "SELECT id, vid, pid, serial, description, trust_tier, created_at \
+             FROM device_registry WHERE vid = ?1 AND pid = ?2 AND serial = ?3",
+            params![vid, pid, serial],
+            |row| {
+                Ok(DeviceRegistryRow {
+                    id: row.get(0)?,
+                    vid: row.get(1)?,
+                    pid: row.get(2)?,
+                    serial: row.get(3)?,
+                    description: row.get(4)?,
+                    trust_tier: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            },
+        )
+    }
+
     /// Deletes the device registry entry with the given `id`.
     ///
     /// # Arguments
