@@ -62,6 +62,9 @@ windows = { version = "0.58", features = [
     "Win32_System_LibraryLoader",
     # ad_client.rs: DsGetSiteNameW (AD site lookup)
     "Win32_Networking_ActiveDirectory",
+    # detection/usb.rs Plan 02: SetupDiGetClassDevsW, SetupDiEnumDeviceInfo,
+    # SetupDiGetDeviceRegistryPropertyW for device friendly-name lookup.
+    "Win32_Devices_DeviceAndDriverInstallation",
 ] }
 
 # Password hashing: bcrypt for dlp-admin stop-password verification
