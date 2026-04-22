@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use dlp_common::abac::{
-    Decision, EvaluateRequest, EvaluateResponse, Policy, PolicyCondition, PolicyMode,
+    AbacContext, AppField, Decision, EvaluateResponse, Policy, PolicyCondition, PolicyMode,
 };
 use dlp_common::Classification;
 use parking_lot::RwLock;
@@ -99,7 +99,7 @@ impl PolicyStore {
         }
     }
 
-    /// Evaluates `request` against the cached policy set.
+    /// Evaluates `ctx` against the cached policy set.
     ///
     /// Returns a decision for the first enabled policy whose conditions all
     /// match. If no policy matches, applies tiered default-deny (D-01):
@@ -107,7 +107,12 @@ impl PolicyStore {
     /// - T3 / T4 → `Decision::DENY`
     ///
     /// This is the **hot path** — it acquires only a read lock on the cache.
-    pub fn evaluate(&self, request: &EvaluateRequest) -> EvaluateResponse {
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - The internal ABAC evaluation context (converted from `EvaluateRequest`
+    ///   at the HTTP boundary per D-04).
+    pub fn evaluate(&self, ctx: &AbacContext) -> EvaluateResponse {
         let cache = self.cache.read();
 
         for policy in cache.iter() {
@@ -115,18 +120,9 @@ impl PolicyStore {
                 continue;
             }
             let conditions_match = match policy.mode {
-                PolicyMode::ALL => policy
-                    .conditions
-                    .iter()
-                    .all(|c| condition_matches(c, request)),
-                PolicyMode::ANY => policy
-                    .conditions
-                    .iter()
-                    .any(|c| condition_matches(c, request)),
-                PolicyMode::NONE => !policy
-                    .conditions
-                    .iter()
-                    .any(|c| condition_matches(c, request)),
+                PolicyMode::ALL => policy.conditions.iter().all(|c| condition_matches(c, ctx)),
+                PolicyMode::ANY => policy.conditions.iter().any(|c| condition_matches(c, ctx)),
+                PolicyMode::NONE => !policy.conditions.iter().any(|c| condition_matches(c, ctx)),
             };
             if conditions_match {
                 return EvaluateResponse {
@@ -138,7 +134,7 @@ impl PolicyStore {
         }
 
         // No policy matched — tiered default-deny (D-01).
-        match request.resource.classification {
+        match ctx.resource.classification {
             Classification::T1 | Classification::T2 => EvaluateResponse::default_allow(),
             Classification::T3 | Classification::T4 => EvaluateResponse::default_deny(),
         }
@@ -209,27 +205,38 @@ fn deserialize_policy_row(
     })
 }
 
-/// Evaluates a single condition against an evaluation request.
+/// Evaluates a single condition against an ABAC evaluation context.
 ///
 /// Returns `true` if the condition matches, `false` otherwise.
 /// Operators `"in"` and `"not_in"` on non-MemberOf conditions return `false`
 /// defensively (they only apply to group membership checks).
-fn condition_matches(condition: &PolicyCondition, request: &EvaluateRequest) -> bool {
+///
+/// # Arguments
+///
+/// * `condition` - The policy condition to evaluate.
+/// * `ctx` - The internal ABAC context built from the evaluation request.
+fn condition_matches(condition: &PolicyCondition, ctx: &AbacContext) -> bool {
     match condition {
         PolicyCondition::Classification { op, value } => {
-            compare_op_classification(op, &request.resource.classification, value)
+            compare_op_classification(op, &ctx.resource.classification, value)
         }
         PolicyCondition::MemberOf { op, group_sid } => {
-            memberof_matches(op, group_sid, &request.subject.groups)
+            memberof_matches(op, group_sid, &ctx.subject.groups)
         }
         PolicyCondition::DeviceTrust { op, value } => {
-            compare_op(op, &request.subject.device_trust, value)
+            compare_op(op, &ctx.subject.device_trust, value)
         }
         PolicyCondition::NetworkLocation { op, value } => {
-            compare_op(op, &request.subject.network_location, value)
+            compare_op(op, &ctx.subject.network_location, value)
         }
         PolicyCondition::AccessContext { op, value } => {
-            compare_op(op, &request.environment.access_context, value)
+            compare_op(op, &ctx.environment.access_context, value)
+        }
+        PolicyCondition::SourceApplication { field, op, value } => {
+            app_identity_matches(field, op, value, ctx.source_application.as_ref())
+        }
+        PolicyCondition::DestinationApplication { field, op, value } => {
+            app_identity_matches(field, op, value, ctx.destination_application.as_ref())
         }
     }
 }
@@ -292,6 +299,61 @@ fn memberof_matches(op: &str, target_sid: &str, subject_groups: &[String]) -> bo
     }
 }
 
+/// Evaluates an application-identity condition against an optional [`AppIdentity`].
+///
+/// Returns `false` (fails closed) if `identity` is `None` — a missing application
+/// identity cannot satisfy an identity-based condition (per D-03).
+///
+/// Supported operators:
+/// - `"eq"` / `"ne"` — exact match on Publisher, ImagePath, or TrustTier
+/// - `"contains"` — substring match on ImagePath only; returns `false` for other fields
+///
+/// # Arguments
+///
+/// * `field` - Which [`AppField`] to inspect on the identity
+/// * `op` - Operator string: `"eq"`, `"ne"`, or `"contains"`
+/// * `value` - The policy-authored value to compare against (string form)
+/// * `identity` - The resolved [`AppIdentity`] from the evaluation context, or `None`
+fn app_identity_matches(
+    field: &AppField,
+    op: &str,
+    value: &str,
+    identity: Option<&dlp_common::endpoint::AppIdentity>,
+) -> bool {
+    // D-03: None identity fails closed — no identity means the condition cannot be confirmed.
+    let Some(app) = identity else {
+        return false;
+    };
+
+    match field {
+        AppField::Publisher => match op {
+            "eq" => app.publisher == value,
+            "ne" => app.publisher != value,
+            // "contains" is not supported for Publisher (only ImagePath per D-03).
+            _ => false,
+        },
+        AppField::ImagePath => match op {
+            "eq" => app.image_path == value,
+            "ne" => app.image_path != value,
+            "contains" => app.image_path.contains(value),
+            _ => false,
+        },
+        AppField::TrustTier => {
+            // Compare value string against AppTrustTier's serde serialized form:
+            // "trusted", "untrusted", "unknown"
+            let tier_str = serde_json::to_string(&app.trust_tier)
+                .unwrap_or_default()
+                .trim_matches('"')
+                .to_string();
+            match op {
+                "eq" => tier_str == value,
+                "ne" => tier_str != value,
+                _ => false,
+            }
+        }
+    }
+}
+
 /// Maps a Classification tier to its ordinal position (1–4).
 ///
 /// T1 = 1 (lowest sensitivity), T4 = 4 (highest sensitivity).
@@ -318,10 +380,16 @@ fn classification_ord(c: &Classification) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dlp_common::abac::{AccessContext, DeviceTrust, NetworkLocation, Subject};
+    use dlp_common::abac::{
+        AbacContext, AccessContext, AppField, DeviceTrust, EvaluateRequest, NetworkLocation,
+        Subject,
+    };
 
-    /// Helper to build a minimal EvaluateRequest with the given classification tier.
-    fn make_request(classification: Classification) -> EvaluateRequest {
+    /// Helper to build a minimal [`AbacContext`] with the given classification tier.
+    ///
+    /// Uses `EvaluateRequest::into()` so the `From` impl is exercised on every
+    /// existing test — confirming the conversion path compiles and behaves correctly.
+    fn make_request(classification: Classification) -> AbacContext {
         EvaluateRequest {
             subject: Subject {
                 user_sid: "S-1-5-21-123".to_string(),
@@ -344,6 +412,7 @@ mod tests {
             source_application: None,
             destination_application: None,
         }
+        .into()
     }
 
     /// Helper to build a PolicyStore with an empty in-memory cache.
@@ -1238,6 +1307,137 @@ mod tests {
         let resp = store.evaluate(&make_request(Classification::T1));
         assert_eq!(resp.decision, Decision::ALLOW);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("empty-none"));
+    }
+
+    // ---- SourceApplication / DestinationApplication condition tests (Phase 26) ----
+
+    /// Builds a minimal AbacContext with the given classification and app identities.
+    fn make_ctx_with_apps(
+        classification: Classification,
+        source_app: Option<dlp_common::endpoint::AppIdentity>,
+        dest_app: Option<dlp_common::endpoint::AppIdentity>,
+    ) -> AbacContext {
+        use dlp_common::endpoint::{AppTrustTier, SignatureState};
+        let _ = (AppTrustTier::Trusted, SignatureState::Valid); // ensure types are in scope
+        EvaluateRequest {
+            subject: Subject {
+                user_sid: "S-1-5-21-123".to_string(),
+                user_name: "testuser".to_string(),
+                groups: vec!["S-1-5-21-123-512".to_string()],
+                device_trust: DeviceTrust::Managed,
+                network_location: NetworkLocation::Corporate,
+            },
+            resource: dlp_common::abac::Resource {
+                path: r"C:\Data\test.txt".to_string(),
+                classification,
+            },
+            environment: dlp_common::abac::Environment {
+                timestamp: chrono::Utc::now(),
+                session_id: 1,
+                access_context: AccessContext::Local,
+            },
+            action: dlp_common::abac::Action::COPY,
+            agent: None,
+            source_application: source_app,
+            destination_application: dest_app,
+        }
+        .into()
+    }
+
+    fn make_app_identity(
+        publisher: &str,
+        image_path: &str,
+        trusted: bool,
+    ) -> dlp_common::endpoint::AppIdentity {
+        use dlp_common::endpoint::{AppTrustTier, SignatureState};
+        dlp_common::endpoint::AppIdentity {
+            publisher: publisher.to_string(),
+            image_path: image_path.to_string(),
+            trust_tier: if trusted {
+                AppTrustTier::Trusted
+            } else {
+                AppTrustTier::Untrusted
+            },
+            signature_state: SignatureState::Valid,
+        }
+    }
+
+    #[test]
+    fn test_source_app_publisher_eq_matches() {
+        let microsoft_app = make_app_identity("Microsoft", r"C:\Windows\notepad.exe", true);
+        let ctx = make_ctx_with_apps(Classification::T3, Some(microsoft_app), None);
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::Publisher,
+            op: "eq".to_string(),
+            value: "Microsoft".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
+    }
+
+    #[test]
+    fn test_source_app_publisher_eq_none_fails_closed() {
+        // D-03: None identity must NOT match even with eq operator.
+        let ctx = make_ctx_with_apps(Classification::T3, None, None);
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::Publisher,
+            op: "eq".to_string(),
+            value: "Microsoft".to_string(),
+        };
+        assert!(!condition_matches(&condition, &ctx));
+    }
+
+    #[test]
+    fn test_source_app_image_path_contains_matches() {
+        let app = make_app_identity("Microsoft", r"C:\Program Files\App\app.exe", true);
+        let ctx = make_ctx_with_apps(Classification::T3, Some(app), None);
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::ImagePath,
+            op: "contains".to_string(),
+            value: "Program Files".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
+    }
+
+    #[test]
+    fn test_source_app_trust_tier_eq_trusted_matches() {
+        let app = make_app_identity("Microsoft", r"C:\Windows\notepad.exe", true);
+        let ctx = make_ctx_with_apps(Classification::T3, Some(app), None);
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::TrustTier,
+            op: "eq".to_string(),
+            value: "trusted".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
+    }
+
+    #[test]
+    fn test_dest_app_trust_tier_ne_trusted_matches() {
+        use dlp_common::endpoint::{AppTrustTier, SignatureState};
+        let untrusted_dest = dlp_common::endpoint::AppIdentity {
+            publisher: "Unknown".to_string(),
+            image_path: r"C:\Temp\bad.exe".to_string(),
+            trust_tier: AppTrustTier::Untrusted,
+            signature_state: SignatureState::NotSigned,
+        };
+        let ctx = make_ctx_with_apps(Classification::T3, None, Some(untrusted_dest));
+        let condition = PolicyCondition::DestinationApplication {
+            field: AppField::TrustTier,
+            op: "ne".to_string(),
+            value: "trusted".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
+    }
+
+    #[test]
+    fn test_dest_app_none_fails_closed() {
+        // D-03: None destination identity must NOT match.
+        let ctx = make_ctx_with_apps(Classification::T3, None, None);
+        let condition = PolicyCondition::DestinationApplication {
+            field: AppField::TrustTier,
+            op: "ne".to_string(),
+            value: "trusted".to_string(),
+        };
+        assert!(!condition_matches(&condition, &ctx));
     }
 
     // ---- Legacy v0.4.0 payload parity (D-25) ----
