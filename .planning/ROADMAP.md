@@ -119,7 +119,7 @@ Plans:
 Plans:
 - [x] 26-01-PLAN.md - AppField enum + SourceApplication/DestinationApplication PolicyCondition variants + From<EvaluateRequest> for AbacContext in dlp-common/src/abac.rs
 - [x] 26-02-PLAN.md - evaluate() + condition_matches() migration to &AbacContext + app_identity_matches helper + HTTP boundary conversion in admin_api.rs
-- [ ] 26-03-PLAN.md - TDD tests for APP-03 (all AppField variants, None-identity fails-closed, eq/ne/contains operators)
+- [x] 26-03-PLAN.md - TDD tests for APP-03 (all AppField variants, None-identity fails-closed, eq/ne/contains operators)
 - [ ] 26-04-PLAN.md - UsbEnforcer struct in usb_enforcer.rs + run_event_loop wiring + service.rs construction
 - [ ] 26-05-PLAN.md - TDD tests for USB-03 (all FileAction variants, blocked/read_only/full_access, drive-letter edge cases)
 
