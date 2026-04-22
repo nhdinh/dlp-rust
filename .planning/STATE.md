@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.5.0
-milestone_name: â Boolean Logic
+milestone: v0.6.0
+milestone_name: Endpoint Hardening
 status: executing
-last_updated: "2026-04-22T16:55:04.975Z"
+last_updated: "2026-04-22T17:07:06.000Z"
 last_activity: 2026-04-22
 progress:
   total_phases: 15
-  completed_phases: 12
-  total_plans: 35
-  completed_plans: 33
-  percent: 94
+  completed_phases: 14
+  total_plans: 37
+  completed_plans: 37
+  percent: 97
 ---
 
 # STATE.md — Project Memory
@@ -20,14 +20,14 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** Phase 27 — usb-toast-notification
+**Current focus:** Phase 28 — admin-tui-screens
 
 ## Current Position
 
-Phase: 27 (usb-toast-notification) — COMPLETE
-Plan: 2 of 2 complete
-Status: 27-01 done (UsbBlockResult + cooldown); 27-02 done (Pipe2AgentMsg::Toast broadcast wired)
-Next: Execute Phase 28 (Admin TUI Screens — APP-04, BRW-02)
+Phase: 28 (admin-tui-screens) — READY TO PLAN
+Plan: 0 of TBD
+Status: Phase 27 complete (USB-04 delivered); Phase 28 not yet planned
+Next: /gsd-discuss-phase 28 or /gsd-plan-phase 28
 Last activity: 2026-04-22
 
 ## Decisions
