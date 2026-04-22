@@ -75,7 +75,7 @@ pub async fn run_event_loop(
         // Fires before the ABAC engine. Blocked or ReadOnly+write operations
         // short-circuit here and emit an audit Block event (D-11).
         if let Some(ref enforcer) = usb_enforcer {
-            if let Some(decision) = enforcer.check(&path, &action) {
+            if let Some(usb_result) = enforcer.check(&path, &action) {
                 let audit_event = AuditEvent::new(
                     EventType::Block,
                     "SYSTEM".to_string(),
@@ -86,7 +86,7 @@ pub async fn run_event_loop(
                     dlp_common::Classification::T1,
                     // Action placeholder — USB check fires before action mapping.
                     dlp_common::Action::WRITE,
-                    decision,
+                    usb_result.decision,
                     ctx.agent_id.clone(),
                     ctx.session_id,
                 )
@@ -98,7 +98,7 @@ pub async fn run_event_loop(
 
                 emit_audit(&ctx, &mut audit_event.clone());
 
-                if decision.is_denied() {
+                if usb_result.decision.is_denied() {
                     if let Err(e) = pipe1::send_to_ui(
                         ctx.session_id,
                         &Pipe1AgentMsg::BlockNotify {

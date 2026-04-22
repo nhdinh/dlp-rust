@@ -1,4 +1,4 @@
-//! USB enforcement layer (USB-03).
+//! USB enforcement layer (USB-03, USB-04).
 //!
 //! [`UsbEnforcer`] bridges the Phase 23 drive-letter map ([`UsbDetector`])
 //! and the Phase 24 trust-tier cache ([`DeviceRegistryCache`]) to enforce
@@ -9,21 +9,43 @@
 //! 1. Extract the drive letter from the file path (first character, must be ASCII alpha).
 //! 2. Look up the [`DeviceIdentity`] for that drive letter in the USB detector's map.
 //! 3. Look up the [`UsbTrustTier`] from the device registry using the VID/PID/serial.
-//! 4. Return a [`Decision`]:
-//!    - [`UsbTrustTier::Blocked`]: deny all operations.
-//!    - [`UsbTrustTier::ReadOnly`]: deny write-class operations; allow reads.
+//! 4. Return a [`UsbBlockResult`] carrying the decision, identity, tier, and toast flag:
+//!    - [`UsbTrustTier::Blocked`]: deny all operations; `notify` per 30-second cooldown.
+//!    - [`UsbTrustTier::ReadOnly`]: deny write-class operations; `notify` per cooldown.
 //!    - [`UsbTrustTier::FullAccess`]: return `None` (fall through to ABAC engine).
 //!
 //! UNC paths (`\\server\share\...`) are not USB drives and return `None` immediately.
 //! Paths on drives not present in the USB detector return `None` (not a USB drive).
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use dlp_common::{Decision, UsbTrustTier};
+use dlp_common::{Decision, DeviceIdentity, UsbTrustTier};
+use parking_lot::Mutex;
 
 use crate::detection::UsbDetector;
 use crate::device_registry::DeviceRegistryCache;
 use crate::interception::FileAction;
+
+/// Result returned by [`UsbEnforcer::check`] when a USB operation is blocked.
+///
+/// Carries all data needed by the interception event loop to emit an audit event
+/// and — when `notify` is true — broadcast a toast notification to the UI.
+///
+/// `notify` is `false` when a per-drive-letter 30-second cooldown is active.
+/// The block decision (`Decision::DENY`) is always applied regardless of `notify`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsbBlockResult {
+    /// The enforcement decision — currently always `Decision::DENY`.
+    pub decision: Decision,
+    /// The device identity for the blocked drive (VID, PID, serial, description).
+    pub identity: DeviceIdentity,
+    /// The USB trust tier that triggered the block.
+    pub tier: UsbTrustTier,
+    /// `true` if the UI should display a toast; `false` when cooldown suppresses it.
+    pub notify: bool,
+}
 
 /// Bridges USB device identity (Phase 23) and trust-tier registry (Phase 24)
 /// to enforce device trust policies at file I/O time.
@@ -33,6 +55,9 @@ use crate::interception::FileAction;
 pub struct UsbEnforcer {
     detector: Arc<UsbDetector>,
     registry: Arc<DeviceRegistryCache>,
+    /// Per-drive-letter timestamp of the last toast broadcast.
+    /// Used to enforce the 30-second cooldown (D-02).
+    last_toast: Mutex<HashMap<char, Instant>>,
 }
 
 impl UsbEnforcer {
@@ -43,15 +68,43 @@ impl UsbEnforcer {
     /// * `detector` - Shared USB detector holding the drive-letter → [`DeviceIdentity`] map.
     /// * `registry` - Shared device registry cache holding VID/PID/serial → [`UsbTrustTier`].
     pub fn new(detector: Arc<UsbDetector>, registry: Arc<DeviceRegistryCache>) -> Self {
-        Self { detector, registry }
+        Self {
+            detector,
+            registry,
+            last_toast: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Returns `true` and updates `last_toast` if the drive's cooldown has expired
+    /// (or the drive has never fired a toast). Returns `false` during the 30-second
+    /// cooldown window. The block decision is NOT affected by this return value.
+    fn should_notify(&self, drive: char) -> bool {
+        const COOLDOWN: Duration = Duration::from_secs(30);
+        let mut map = self.last_toast.lock();
+        let now = Instant::now();
+        // `is_none_or` treats a missing entry as "expired" so the first call always
+        // returns true. `duration_since` is safe here because `now` is always >= stored
+        // `last`; both are monotonic `Instant` values from the same clock.
+        let expired = map
+            .get(&drive)
+            .is_none_or(|last| now.duration_since(*last) >= COOLDOWN);
+        if expired {
+            map.insert(drive, now);
+        }
+        expired
     }
 
     /// Evaluates whether the given file operation should be blocked based on the
     /// USB trust tier of the drive the file resides on.
     ///
-    /// Returns `Some(Decision::DENY)` if the operation must be blocked.
+    /// Returns `Some(UsbBlockResult)` if the operation must be blocked, carrying
+    /// the decision, device identity, trust tier, and a toast notification flag.
     /// Returns `None` if the path is not on a USB drive or the device has full access
     /// (caller should proceed to ABAC evaluation).
+    ///
+    /// The `notify` field in the result is `true` on the first block within a
+    /// 30-second window for a given drive letter; subsequent calls within the same
+    /// window return `notify: false`. The block decision is always `DENY` regardless.
     ///
     /// # Arguments
     ///
@@ -60,10 +113,10 @@ impl UsbEnforcer {
     ///
     /// # Returns
     ///
-    /// - `Some(Decision::DENY)` — operation must be blocked.
+    /// - `Some(UsbBlockResult)` — operation must be blocked; see struct fields for detail.
     /// - `None` — not a USB path, or USB path with full access; proceed to ABAC.
     #[must_use]
-    pub fn check(&self, path: &str, action: &FileAction) -> Option<Decision> {
+    pub fn check(&self, path: &str, action: &FileAction) -> Option<UsbBlockResult> {
         // D-09: Extract drive letter — first character, must be ASCII alphabetic.
         // UNC paths start with `\\` and have no drive letter; return None immediately.
         let drive = extract_drive_letter(path)?;
@@ -83,11 +136,25 @@ impl UsbEnforcer {
 
         match tier {
             // Blocked: deny all operations regardless of action type.
-            UsbTrustTier::Blocked => Some(Decision::DENY),
+            UsbTrustTier::Blocked => {
+                let notify = self.should_notify(drive);
+                Some(UsbBlockResult {
+                    decision: Decision::DENY,
+                    identity,
+                    tier: UsbTrustTier::Blocked,
+                    notify,
+                })
+            }
             // ReadOnly: deny write-class operations; allow reads (D-08).
             UsbTrustTier::ReadOnly => {
                 if is_write_class(action) {
-                    Some(Decision::DENY)
+                    let notify = self.should_notify(drive);
+                    Some(UsbBlockResult {
+                        decision: Decision::DENY,
+                        identity,
+                        tier: UsbTrustTier::ReadOnly,
+                        notify,
+                    })
                 } else {
                     None
                 }
@@ -224,26 +291,30 @@ mod tests {
         let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::Blocked);
         let enforcer = UsbEnforcer::new(detector, registry);
 
-        assert_eq!(
-            enforcer.check("E:\\file.txt", &written_action()),
-            Some(Decision::DENY)
-        );
-        assert_eq!(
-            enforcer.check("E:\\file.txt", &read_action()),
-            Some(Decision::DENY)
-        );
-        assert_eq!(
-            enforcer.check("E:\\file.txt", &created_action()),
-            Some(Decision::DENY)
-        );
-        assert_eq!(
-            enforcer.check("E:\\file.txt", &deleted_action()),
-            Some(Decision::DENY)
-        );
-        assert_eq!(
-            enforcer.check("E:\\file.txt", &moved_action()),
-            Some(Decision::DENY)
-        );
+        // Written — blocked tier, first call so notify=true.
+        let result = enforcer.check("E:\\file.txt", &written_action());
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(r.decision, Decision::DENY);
+        assert_eq!(r.tier, UsbTrustTier::Blocked);
+        assert_eq!(r.identity.description, "Test Device");
+
+        // Read — same drive, cooldown window active, notify=false but still DENY.
+        let result = enforcer.check("E:\\file.txt", &read_action());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, Decision::DENY);
+
+        let result = enforcer.check("E:\\file.txt", &created_action());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, Decision::DENY);
+
+        let result = enforcer.check("E:\\file.txt", &deleted_action());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, Decision::DENY);
+
+        let result = enforcer.check("E:\\file.txt", &moved_action());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, Decision::DENY);
     }
 
     #[test]
@@ -252,22 +323,24 @@ mod tests {
         let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::ReadOnly);
         let enforcer = UsbEnforcer::new(detector, registry);
 
-        assert_eq!(
-            enforcer.check("E:\\file.txt", &written_action()),
-            Some(Decision::DENY)
-        );
-        assert_eq!(
-            enforcer.check("E:\\file.txt", &created_action()),
-            Some(Decision::DENY)
-        );
-        assert_eq!(
-            enforcer.check("E:\\file.txt", &deleted_action()),
-            Some(Decision::DENY)
-        );
-        assert_eq!(
-            enforcer.check("E:\\file.txt", &moved_action()),
-            Some(Decision::DENY)
-        );
+        // Written — first write, notify=true, decision DENY.
+        let result = enforcer.check("E:\\file.txt", &written_action());
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(r.decision, Decision::DENY);
+        assert_eq!(r.tier, UsbTrustTier::ReadOnly);
+
+        let result = enforcer.check("E:\\file.txt", &created_action());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, Decision::DENY);
+
+        let result = enforcer.check("E:\\file.txt", &deleted_action());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, Decision::DENY);
+
+        let result = enforcer.check("E:\\file.txt", &moved_action());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, Decision::DENY);
     }
 
     #[test]
@@ -350,14 +423,13 @@ mod tests {
         let enforcer = UsbEnforcer::new(detector, registry);
 
         // Default-deny: unregistered device treated as Blocked.
-        assert_eq!(
-            enforcer.check("E:\\secret.docx", &written_action()),
-            Some(Decision::DENY)
-        );
-        assert_eq!(
-            enforcer.check("E:\\file.txt", &read_action()),
-            Some(Decision::DENY)
-        );
+        let result = enforcer.check("E:\\secret.docx", &written_action());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, Decision::DENY);
+
+        let result = enforcer.check("E:\\file.txt", &read_action());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().decision, Decision::DENY);
     }
 
     /// D-09: path starting with a non-ASCII-alphabetic character returns None.
@@ -375,6 +447,36 @@ mod tests {
         assert_eq!(
             enforcer.check("/usr/local/file.txt", &written_action()),
             None
+        );
+    }
+
+    /// D-02 (USB-04): Per-drive cooldown suppresses repeat toasts without
+    /// suppressing the block decision.
+    ///
+    /// First call within a 30-second window: notify=true, decision=DENY.
+    /// Second call within the same window: notify=false, decision=DENY.
+    /// The block is always enforced; only the toast is gated by the cooldown.
+    #[test]
+    fn test_cooldown_suppresses_second_toast() {
+        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
+        let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::Blocked);
+        let enforcer = UsbEnforcer::new(detector, registry);
+
+        // First call: cooldown map is empty, so notify=true.
+        let first = enforcer
+            .check("E:\\file.txt", &written_action())
+            .expect("first check must return Some for Blocked device");
+        assert_eq!(first.decision, Decision::DENY, "first call must still deny");
+        assert!(first.notify, "first call must request toast notification");
+
+        // Immediate second call: cooldown is active (< 30s elapsed), notify=false.
+        let second = enforcer
+            .check("E:\\file.txt", &written_action())
+            .expect("second check must return Some for Blocked device");
+        assert_eq!(second.decision, Decision::DENY, "second call must still deny");
+        assert!(
+            !second.notify,
+            "second call within cooldown window must suppress toast"
         );
     }
 }
