@@ -34,6 +34,10 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::PolicyEdit { .. } => handle_policy_edit(app, key),
         Screen::PolicySimulate { .. } => handle_policy_simulate(app, key),
         Screen::ImportConfirm { .. } => handle_import_confirm(app, key),
+        Screen::DevicesMenu { .. } => handle_devices_menu(app, key),
+        Screen::DeviceList { .. } => handle_device_list(app, key),
+        Screen::DeviceTierPicker { .. } => handle_device_tier_picker(app, key),
+        Screen::ManagedOriginList { .. } => handle_managed_origin_list(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -68,13 +72,15 @@ fn handle_main_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        KeyCode::Up | KeyCode::Down => nav(selected, 5, key.code),
+        // Updated from 5 to 6 items: added "Devices & Origins" at index 3.
+        KeyCode::Up | KeyCode::Down => nav(selected, 6, key.code),
         KeyCode::Enter => match *selected {
             0 => app.screen = Screen::PasswordMenu { selected: 0 },
             1 => app.screen = Screen::PolicyMenu { selected: 0 },
             2 => app.screen = Screen::SystemMenu { selected: 0 },
-            3 => action_open_simulate(app, SimulateCaller::MainMenu),
-            4 => app.should_quit = true,
+            3 => app.screen = Screen::DevicesMenu { selected: 0 },
+            4 => action_open_simulate(app, SimulateCaller::MainMenu),
+            5 => app.should_quit = true,
             _ => {}
         },
         KeyCode::Esc | KeyCode::Char('q') => app.should_quit = true,
@@ -217,14 +223,31 @@ fn handle_text_input(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Enter => {
             let value = input.clone();
-            if value.is_empty() {
+            // Serial number and description are optional fields in the device register chain;
+            // they are allowed to be empty. All other text inputs require a non-empty value.
+            let allow_empty = matches!(
+                purpose,
+                InputPurpose::RegisterDeviceSerial { .. }
+                    | InputPurpose::RegisterDeviceDescription { .. }
+            );
+            if value.is_empty() && !allow_empty {
                 app.set_status("Input cannot be empty", StatusKind::Error);
                 return;
             }
             on_text_confirmed(app, &value, purpose);
         }
         KeyCode::Esc => {
-            app.screen = Screen::PolicyMenu { selected: 0 };
+            // Return to the contextually appropriate parent screen.
+            app.screen = match &purpose {
+                InputPurpose::RegisterDeviceVid
+                | InputPurpose::RegisterDevicePid { .. }
+                | InputPurpose::RegisterDeviceSerial { .. }
+                | InputPurpose::RegisterDeviceDescription { .. } => {
+                    Screen::DevicesMenu { selected: 0 }
+                }
+                InputPurpose::AddManagedOrigin => Screen::DevicesMenu { selected: 1 },
+                _ => Screen::PolicyMenu { selected: 0 },
+            };
         }
         _ => {}
     }
@@ -254,6 +277,62 @@ fn on_text_confirmed(app: &mut App, value: &str, purpose: InputPurpose) {
                     id: value.to_string(),
                 },
             };
+        }
+        // Device register sequential chain: each step carries accumulated fields forward.
+        InputPurpose::RegisterDeviceVid => {
+            app.screen = Screen::TextInput {
+                prompt: "PID (hex, e.g. 1666):".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::RegisterDevicePid {
+                    vid: value.to_string(),
+                },
+            };
+        }
+        InputPurpose::RegisterDevicePid { vid } => {
+            app.screen = Screen::TextInput {
+                prompt: "Serial number (or press Enter to skip):".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::RegisterDeviceSerial {
+                    vid,
+                    pid: value.to_string(),
+                },
+            };
+        }
+        InputPurpose::RegisterDeviceSerial { vid, pid } => {
+            app.screen = Screen::TextInput {
+                prompt: "Description (optional):".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::RegisterDeviceDescription {
+                    vid,
+                    pid,
+                    serial: value.to_string(),
+                },
+            };
+        }
+        InputPurpose::RegisterDeviceDescription { vid, pid, serial } => {
+            app.screen = Screen::DeviceTierPicker {
+                vid,
+                pid,
+                serial,
+                description: value.to_string(),
+                selected: 0,
+            };
+        }
+        InputPurpose::AddManagedOrigin => {
+            let body = serde_json::json!({ "origin": value });
+            match app.rt.block_on(
+                app.client
+                    .post::<serde_json::Value, _>("admin/managed-origins", &body),
+            ) {
+                Ok(_) => {
+                    app.set_status("Managed origin added.", StatusKind::Success);
+                    action_load_managed_origin_list(app);
+                }
+                Err(e) => {
+                    app.set_status(format!("Error adding origin: {e}"), StatusKind::Error);
+                    app.screen = Screen::DevicesMenu { selected: 1 };
+                }
+            }
         }
     }
 }
@@ -356,23 +435,39 @@ fn handle_confirm(app: &mut App, key: KeyEvent) {
         KeyCode::Left | KeyCode::Right => *yes_selected = !*yes_selected,
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             *yes_selected = true;
-            let ConfirmPurpose::DeletePolicy { id } = &purpose;
-            action_delete_policy(app, id);
+            on_confirm_yes(app, &purpose);
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            // Cancel: stay on PolicyList (D-17).
-            action_list_policies(app);
+            on_confirm_cancel(app, &purpose);
         }
         KeyCode::Enter => {
             if *yes_selected {
-                match purpose {
-                    ConfirmPurpose::DeletePolicy { id } => action_delete_policy(app, &id),
-                }
+                on_confirm_yes(app, &purpose);
             } else {
-                action_list_policies(app);
+                on_confirm_cancel(app, &purpose);
             }
         }
         _ => {}
+    }
+}
+
+/// Executes the confirmed action for the given purpose.
+fn on_confirm_yes(app: &mut App, purpose: &ConfirmPurpose) {
+    match purpose {
+        ConfirmPurpose::DeletePolicy { id } => action_delete_policy(app, id),
+        ConfirmPurpose::DeleteDevice { id } => action_delete_device(app, id),
+        ConfirmPurpose::DeleteManagedOrigin { id } => action_delete_managed_origin(app, id),
+    }
+}
+
+/// Navigates back to the appropriate parent screen on cancel/no.
+fn on_confirm_cancel(app: &mut App, purpose: &ConfirmPurpose) {
+    match purpose {
+        // Policy delete cancel: stay on PolicyList (D-17).
+        ConfirmPurpose::DeletePolicy { .. } => action_list_policies(app),
+        // Device/origin delete cancel: return to the respective list.
+        ConfirmPurpose::DeleteDevice { .. } => action_load_device_list(app),
+        ConfirmPurpose::DeleteManagedOrigin { .. } => action_load_managed_origin_list(app),
     }
 }
 
@@ -3446,6 +3541,250 @@ fn handle_import_confirm(app: &mut App, key: KeyEvent) {
             }
         }
         _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Devices & Origins screens
+// ---------------------------------------------------------------------------
+
+/// Handles key events for the Devices & Origins submenu.
+fn handle_devices_menu(app: &mut App, key: KeyEvent) {
+    let selected = match &mut app.screen {
+        Screen::DevicesMenu { selected } => selected,
+        _ => return,
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Down => nav(selected, 2, key.code),
+        KeyCode::Esc => app.screen = Screen::MainMenu { selected: 3 },
+        KeyCode::Enter => {
+            let idx = *selected;
+            match idx {
+                0 => action_load_device_list(app),
+                1 => action_load_managed_origin_list(app),
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Loads the device registry list from the server and navigates to DeviceList.
+fn action_load_device_list(app: &mut App) {
+    match app.rt.block_on(
+        app.client
+            .get::<Vec<serde_json::Value>>("admin/device-registry"),
+    ) {
+        Ok(devices) => {
+            app.screen = Screen::DeviceList {
+                devices,
+                selected: 0,
+            };
+        }
+        Err(e) => {
+            app.set_status(format!("Error loading devices: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+/// Loads the managed origins list from the server and navigates to ManagedOriginList.
+fn action_load_managed_origin_list(app: &mut App) {
+    match app.rt.block_on(
+        app.client
+            .get::<Vec<serde_json::Value>>("admin/managed-origins"),
+    ) {
+        Ok(origins) => {
+            app.screen = Screen::ManagedOriginList {
+                origins,
+                selected: 0,
+            };
+        }
+        Err(e) => {
+            app.set_status(format!("Error loading origins: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+/// Handles key events for the Device Registry list screen.
+fn handle_device_list(app: &mut App, key: KeyEvent) {
+    let devices_len = match &app.screen {
+        Screen::DeviceList { devices, .. } => devices.len(),
+        _ => return,
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if devices_len == 0 {
+                return;
+            }
+            if let Screen::DeviceList { selected, .. } = &mut app.screen {
+                nav(selected, devices_len, key.code);
+            }
+        }
+        // `r` starts the device register sequential input chain.
+        KeyCode::Char('r') => {
+            app.screen = Screen::TextInput {
+                prompt: "VID (hex, e.g. 0951):".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::RegisterDeviceVid,
+            };
+        }
+        // `d` opens delete confirmation for the selected device.
+        KeyCode::Char('d') => {
+            if devices_len == 0 {
+                return;
+            }
+            let id = match &app.screen {
+                Screen::DeviceList { devices, selected } => {
+                    devices[*selected]["id"].as_str().unwrap_or("").to_string()
+                }
+                _ => return,
+            };
+            if id.is_empty() {
+                return;
+            }
+            app.screen = Screen::Confirm {
+                message: format!("Delete device {id}?"),
+                yes_selected: true,
+                purpose: ConfirmPurpose::DeleteDevice { id },
+            };
+        }
+        KeyCode::Esc => app.screen = Screen::DevicesMenu { selected: 0 },
+        _ => {}
+    }
+}
+
+/// Deletes a device registry entry by UUID and reloads the device list.
+fn action_delete_device(app: &mut App, id: &str) {
+    let path = format!("admin/device-registry/{id}");
+    match app.rt.block_on(app.client.delete(&path)) {
+        Ok(()) => {
+            app.set_status("Device deleted.", StatusKind::Success);
+            action_load_device_list(app);
+        }
+        Err(e) => {
+            app.set_status(format!("Error deleting device: {e}"), StatusKind::Error);
+            app.screen = Screen::DevicesMenu { selected: 0 };
+        }
+    }
+}
+
+/// Handles key events for the DeviceTierPicker screen (final step of device register flow).
+fn handle_device_tier_picker(app: &mut App, key: KeyEvent) {
+    // Extract all fields before mutable borrow for the nav branch.
+    let (vid, pid, serial, description, sel) = match &app.screen {
+        Screen::DeviceTierPicker {
+            vid,
+            pid,
+            serial,
+            description,
+            selected,
+        } => (
+            vid.clone(),
+            pid.clone(),
+            serial.clone(),
+            description.clone(),
+            *selected,
+        ),
+        _ => return,
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::DeviceTierPicker { selected, .. } = &mut app.screen {
+                nav(selected, 3, key.code);
+            }
+        }
+        KeyCode::Esc => app.screen = Screen::DevicesMenu { selected: 0 },
+        KeyCode::Enter => {
+            let trust_tier = match sel {
+                0 => "blocked",
+                1 => "read_only",
+                _ => "full_access",
+            };
+            let body = serde_json::json!({
+                "vid": vid,
+                "pid": pid,
+                "serial": serial,
+                "description": description,
+                "trust_tier": trust_tier,
+            });
+            match app.rt.block_on(
+                app.client
+                    .post::<serde_json::Value, _>("admin/device-registry", &body),
+            ) {
+                Ok(_) => {
+                    app.set_status("Device registered successfully.", StatusKind::Success);
+                    action_load_device_list(app);
+                }
+                Err(e) => {
+                    app.set_status(format!("Error registering device: {e}"), StatusKind::Error);
+                    app.screen = Screen::DevicesMenu { selected: 0 };
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events for the Managed Origins list screen.
+fn handle_managed_origin_list(app: &mut App, key: KeyEvent) {
+    let origins_len = match &app.screen {
+        Screen::ManagedOriginList { origins, .. } => origins.len(),
+        _ => return,
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if origins_len == 0 {
+                return;
+            }
+            if let Screen::ManagedOriginList { selected, .. } = &mut app.screen {
+                nav(selected, origins_len, key.code);
+            }
+        }
+        // `a` starts the add-origin text input.
+        KeyCode::Char('a') => {
+            app.screen = Screen::TextInput {
+                prompt: "Origin URL pattern (e.g. https://company.sharepoint.com/*):".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::AddManagedOrigin,
+            };
+        }
+        // `d` opens delete confirmation for the selected origin.
+        KeyCode::Char('d') => {
+            if origins_len == 0 {
+                return;
+            }
+            let id = match &app.screen {
+                Screen::ManagedOriginList { origins, selected } => {
+                    origins[*selected]["id"].as_str().unwrap_or("").to_string()
+                }
+                _ => return,
+            };
+            if id.is_empty() {
+                return;
+            }
+            app.screen = Screen::Confirm {
+                message: format!("Delete origin {id}?"),
+                yes_selected: true,
+                purpose: ConfirmPurpose::DeleteManagedOrigin { id },
+            };
+        }
+        KeyCode::Esc => app.screen = Screen::DevicesMenu { selected: 1 },
+        _ => {}
+    }
+}
+
+/// Deletes a managed origin entry by UUID and reloads the origins list.
+fn action_delete_managed_origin(app: &mut App, id: &str) {
+    let path = format!("admin/managed-origins/{id}");
+    match app.rt.block_on(app.client.delete(&path)) {
+        Ok(()) => {
+            app.set_status("Managed origin deleted.", StatusKind::Success);
+            action_load_managed_origin_list(app);
+        }
+        Err(e) => {
+            app.set_status(format!("Error deleting origin: {e}"), StatusKind::Error);
+            app.screen = Screen::DevicesMenu { selected: 1 };
+        }
     }
 }
 

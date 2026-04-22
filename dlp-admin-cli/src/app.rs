@@ -39,23 +39,43 @@ pub enum InputPurpose {
     /// Step 1 of device register flow: prompts for USB Vendor ID (hex string).
     RegisterDeviceVid,
     /// Step 2: carries the confirmed VID; prompts for Product ID (hex string).
-    RegisterDevicePid { vid: String },
+    RegisterDevicePid {
+        vid: String,
+    },
     /// Step 3: carries VID + PID; prompts for serial number.
-    RegisterDeviceSerial { vid: String, pid: String },
+    RegisterDeviceSerial {
+        vid: String,
+        pid: String,
+    },
     /// Step 4: carries VID + PID + serial; prompts for human-readable description.
-    RegisterDeviceDescription { vid: String, pid: String, serial: String },
+    RegisterDeviceDescription {
+        vid: String,
+        pid: String,
+        serial: String,
+    },
     /// Prompts for a URL-pattern string to add as a managed origin.
     AddManagedOrigin,
 }
 
 /// What happens when the user confirms a yes/no dialog.
+///
+/// All variants intentionally share the `Delete` prefix because every confirmation
+/// in this TUI is a destructive delete action. The prefix is meaningful and
+/// consistent — allow the clippy lint that flags it.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone)]
 pub enum ConfirmPurpose {
-    DeletePolicy { id: String },
+    DeletePolicy {
+        id: String,
+    },
     /// Confirm deletion of a device registry entry by UUID.
-    DeleteDevice { id: String },
+    DeleteDevice {
+        id: String,
+    },
     /// Confirm deletion of a managed origin entry by UUID.
-    DeleteManagedOrigin { id: String },
+    DeleteManagedOrigin {
+        id: String,
+    },
 }
 
 /// What happens when the user confirms a password input.
