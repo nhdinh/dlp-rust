@@ -12,7 +12,7 @@
 
 - [ ] **APP-01**: Agent captures destination process image path and publisher at paste time — `GetForegroundWindow` → `GetWindowThreadProcessId` → `QueryFullProcessImageNameW` in `dlp-user-ui` (user session only)
 - [ ] **APP-02**: Agent captures source process identity at clipboard-change time — `GetClipboardOwner` called synchronously inside `WM_CLIPBOARDUPDATE` handler before source window closes
-- [ ] **APP-03**: Evaluator enforces allow/deny decisions based on `source_application` and `destination_application` ABAC attributes — `AbacContext` gains both fields; `PolicyStore::evaluate` honors them
+- [x] **APP-03**: Evaluator enforces allow/deny decisions based on `source_application` and `destination_application` ABAC attributes — `AbacContext` gains both fields; `PolicyStore::evaluate` honors them
 - [ ] **APP-04**: Admin can author app-identity conditions in TUI using a structured picker (publisher, image path, trust tier) — no raw JSON
 - [ ] **APP-05**: Audit events include `source_application` and `destination_application` fields populated on clipboard block
 - [ ] **APP-06**: Authenticode publisher extraction via `WinVerifyTrust` prevents renamed-binary bypass — result cached per process path, non-blocking (routed through `spawn_blocking`)
@@ -61,7 +61,7 @@
 |--------|-------|--------|
 | APP-01 | Phase 25 | Pending |
 | APP-02 | Phase 25 | Pending |
-| APP-03 | Phase 26 | Pending |
+| APP-03 | Phase 26 | Complete |
 | APP-04 | Phase 28 | Pending |
 | APP-05 | Phase 25 | Pending |
 | APP-06 | Phase 25 | Pending |

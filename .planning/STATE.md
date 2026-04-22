@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
 milestone: v0.5.0
-milestone_name: â Boolean Logic
-status: executing
-last_updated: "2026-04-22T14:00:00.000Z"
-last_activity: 2026-04-22 -- Phase 26 planned — 5 plans (2 waves) covering APP-03 and USB-03
+milestone_name: â Boolean Logic
+status: verifying
+last_updated: "2026-04-22T15:05:01.702Z"
+last_activity: 2026-04-22
 progress:
-  total_phases: 13
-  completed_phases: 12
-  total_plans: 29
-  completed_plans: 29
-  percent: 100
+  total_phases: 14
+  completed_phases: 11
+  total_plans: 33
+  completed_plans: 28
+  percent: 85
 ---
 
 # STATE.md — Project Memory
@@ -26,7 +26,7 @@ See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 Phase: 25 (app-identity-capture-in-dlp-user-ui) — COMPLETE
 Plan: 4 of 4
-Status: Phase 25 complete — APP-01, APP-02, APP-05, APP-06 delivered
+Status: Phase complete — ready for verification
 Next: Phase 26 (ABAC Enforcement Convergence)
 Last activity: 2026-04-22
 
@@ -71,6 +71,9 @@ Last activity: 2026-04-22
 | 2026-04-22 | ON CONFLICT DO UPDATE preserves UUID PK | INSERT OR REPLACE deletes-then-reinserts changing the PK; ON CONFLICT DO UPDATE updates in place keeping the original id |
 | 2026-04-22 | In-memory pool test: release write conn before read | r2d2 in-memory SQLite pool — write PooledConnection must be dropped (returned to pool) before list_all acquires a second connection |
 | 2026-04-22 | seed_for_test always-compiled, not feature-gated | Integration tests in tests/ compile lib crate without cfg(test); #[doc(hidden)] pub fn is the only pattern that works without --features flags |
+
+- [Phase 26]: AppField enum defined in dlp-common/src/abac.rs — policy DSL type, not identity type; placed before PolicyCondition to satisfy forward reference
+- [Phase 26]: From<EvaluateRequest> for AbacContext drops agent field (tracing metadata, not ABAC attribute) — single impl block, no helper function needed
 
 ## Known Issues (carry-forward)
 
