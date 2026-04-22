@@ -34,7 +34,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 
 - [x] **Phase 22: dlp-common Foundation** — New shared types (AppIdentity, DeviceIdentity, UsbTrustTier, SignatureState) that gate all three tracks (complete 2026-04-22)
 - [x] **Phase 23: USB Enumeration in dlp-agent** — Agent captures VID/PID/Serial/description on USB arrival via SetupDi; no enforcement yet (complete 2026-04-22)
-- [ ] **Phase 24: Device Registry DB + Admin API** — device_registry table, trust-tier CRUD endpoints, agent polling for registry state
+- [x] **Phase 24: Device Registry DB + Admin API** — device_registry table, trust-tier CRUD endpoints, agent polling for registry state (complete 2026-04-22)
 - [ ] **Phase 25: App Identity Capture in dlp-user-ui** — Source and destination process identity resolved at clipboard time; Authenticode verification; audit event fields populated
 - [ ] **Phase 26: ABAC Enforcement Convergence** — Evaluator enforces app-identity and USB trust-tier conditions; USB I/O enforcement hot path in file_monitor.rs
 - [ ] **Phase 27: USB Toast Notification** — User toast on USB block via Pipe 2 + winrt-notification in dlp-user-ui
@@ -85,9 +85,9 @@ Plans:
 **Plans**: 4 plans
 Plans:
 - [x] 24-01-PLAN.md — device_registry table DDL (db/mod.rs) + DeviceRegistryRepository (db/repositories/device_registry.rs) + module registration
-- [ ] 24-02-PLAN.md — Admin API routes (GET/POST/DELETE /admin/device-registry) + request/response types + route registration in admin_api.rs
-- [ ] 24-03-PLAN.md — Agent DeviceRegistryCache module + 30-second poll task + USB arrival immediate refresh wired in service.rs and usb.rs
-- [ ] 24-04-PLAN.md — Integration tests (server CRUD round-trip + agent cache behavior) + human checkpoint + workspace zero-warning gate
+- [x] 24-02-PLAN.md — Admin API routes (GET/POST/DELETE /admin/device-registry) + request/response types + route registration in admin_api.rs
+- [x] 24-03-PLAN.md — Agent DeviceRegistryCache module + 30-second poll task + USB arrival immediate refresh wired in service.rs and usb.rs
+- [x] 24-04-PLAN.md — Integration tests (server CRUD round-trip + agent cache behavior) + human checkpoint + workspace zero-warning gate
 
 ### Phase 25: App Identity Capture in dlp-user-ui
 **Goal**: Users' clipboard actions carry source and destination process identity so the system knows which application produced or consumed clipboard content, with publisher verified against Authenticode

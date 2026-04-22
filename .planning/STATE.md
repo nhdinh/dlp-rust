@@ -4,7 +4,7 @@ milestone: v0.6.0
 milestone_name: Endpoint Hardening
 status: executing
 last_updated: "2026-04-22T06:30:00Z"
-last_activity: 2026-04-22 -- Phase 24 Plan 04 Task 1 complete (integration tests); stopped at checkpoint:human-verify
+last_activity: 2026-04-22 -- Phase 24 Plan 04 complete (zero-warning gate + SUMMARY); Phase 24 fully delivered
 progress:
   total_phases: 8
   completed_phases: 2
@@ -24,11 +24,11 @@ See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 ## Current Position
 
-Phase: 24 (device-registry-db-admin-api) — EXECUTING
-Plan: 4 of 4 (Task 1 complete, stopped at Task 2 checkpoint:human-verify)
-Status: Awaiting human checkpoint approval before Task 3 (zero-warning gate)
-Resume: `/gsd-execute-phase 24`
-Last activity: 2026-04-22 -- Phase 24 Plan 04 Task 1 complete — 8 server + 3 agent cache tests pass; stopped at checkpoint:human-verify
+Phase: 24 (device-registry-db-admin-api) — COMPLETE
+Plan: 4 of 4 (all plans delivered)
+Status: Phase 24 complete — ready for Phase 25
+Resume: `/gsd-execute-phase 25`
+Last activity: 2026-04-22 -- Phase 24 Plan 04 complete — zero-warning gate passed, SUMMARY created, USB-02 delivered
 
 ## Decisions
 
@@ -70,6 +70,7 @@ Last activity: 2026-04-22 -- Phase 24 Plan 04 Task 1 complete — 8 server + 3 a
 | 2026-04-21 | CARGO_TARGET_DIR=target-test workaround for locked dlp-server.exe | Elevated dlp-server process holds target/debug/dlp-server.exe; alternate target dir lets cargo compile test binary without touching locked file |
 | 2026-04-22 | ON CONFLICT DO UPDATE preserves UUID PK | INSERT OR REPLACE deletes-then-reinserts changing the PK; ON CONFLICT DO UPDATE updates in place keeping the original id |
 | 2026-04-22 | In-memory pool test: release write conn before read | r2d2 in-memory SQLite pool — write PooledConnection must be dropped (returned to pool) before list_all acquires a second connection |
+| 2026-04-22 | seed_for_test always-compiled, not feature-gated | Integration tests in tests/ compile lib crate without cfg(test); #[doc(hidden)] pub fn is the only pattern that works without --features flags |
 
 ## Known Issues (carry-forward)
 
@@ -78,6 +79,7 @@ Last activity: 2026-04-22 -- Phase 24 Plan 04 Task 1 complete — 8 server + 3 a
 - Phase 4 human UAT: live SMTP email delivery not tested
 - Phase 4 human UAT: live webhook POST not tested
 - Phase 4 human UAT: hot-reload verification through HTTP + TUI not run
+- Phase 24 human UAT: approved for debug build only — release-mode UAT (cargo build --release + curl smoke test) not verified; defer to Phase 25 or hardening pass
 
 ## Deferred Items (from v0.5.0 close — 2026-04-21)
 
