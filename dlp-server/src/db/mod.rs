@@ -384,6 +384,86 @@ mod tests {
     }
 
     #[test]
+    fn test_device_registry_table_exists() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='device_registry'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query sqlite_master");
+        assert_eq!(count, 1, "device_registry table must exist after init");
+    }
+
+    #[test]
+    fn test_device_registry_columns() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(device_registry)")
+            .expect("prepare pragma")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query pragma")
+            .filter_map(Result::ok)
+            .collect();
+
+        for col in &["id", "vid", "pid", "serial", "description", "trust_tier", "created_at"] {
+            assert!(
+                columns.contains(&col.to_string()),
+                "device_registry must have column '{col}'; found {columns:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_device_registry_check_constraint() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        // 'bad_tier' is not in ('blocked', 'read_only', 'full_access') — must fail.
+        let result = conn.execute(
+            "INSERT INTO device_registry (id, vid, pid, serial, description, trust_tier, created_at) \
+             VALUES ('id1', 'v', 'p', 's', '', 'bad_tier', '2026-01-01')",
+            [],
+        );
+        assert!(result.is_err(), "invalid trust_tier must be rejected by CHECK constraint");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("CHECK constraint failed"),
+            "error must mention CHECK constraint; got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_device_registry_unique_constraint() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        conn.execute(
+            "INSERT INTO device_registry (id, vid, pid, serial, description, trust_tier, created_at) \
+             VALUES ('id1', '0951', '1666', 'SN001', '', 'blocked', '2026-01-01')",
+            [],
+        )
+        .expect("first insert must succeed");
+
+        let result = conn.execute(
+            "INSERT INTO device_registry (id, vid, pid, serial, description, trust_tier, created_at) \
+             VALUES ('id2', '0951', '1666', 'SN001', '', 'read_only', '2026-01-02')",
+            [],
+        );
+        assert!(result.is_err(), "duplicate (vid, pid, serial) must fail UNIQUE constraint");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("UNIQUE constraint failed"),
+            "error must mention UNIQUE constraint; got: {err_msg}"
+        );
+    }
+
+    #[test]
     fn test_migration_add_mode_column() {
         // Simulates the v0.4.0 → v0.5.0 upgrade path: an existing DB without
         // the `mode` column gets it added by `run_migrations` (called inside
