@@ -133,29 +133,6 @@ pub fn run_service() -> Result<()> {
     let session_handle = crate::session_monitor::start();
     info!(thread_id = ?session_handle.thread().id(), "session monitor started");
 
-    // ── Start USB mass-storage detection ─────────────────────────
-    // UsbDetector is a &'static so it can be accessed from the message-only
-    // window thread without Arc/RwLock.
-    use std::sync::OnceLock;
-    static USB_DETECTOR: OnceLock<crate::detection::UsbDetector> = OnceLock::new();
-    let detector = USB_DETECTOR.get_or_init(crate::detection::UsbDetector::new);
-    detector.scan_existing_drives();
-    let usb_cleanup = match crate::detection::usb::register_usb_notifications(detector) {
-        Ok((hwnd, thread)) => {
-            info!(
-                thread_id = ?thread.thread().id(),
-                "USB notifications registered"
-            );
-            Some((hwnd, thread))
-        }
-        Err(e) => {
-            warn!(error = %e,
-                "USB detection unavailable — continuing without USB monitoring"
-            );
-            None
-        }
-    };
-
     // Report RUNNING.
     set_status(
         &status_handle,
@@ -165,6 +142,9 @@ pub fn run_service() -> Result<()> {
     )?;
 
     // Enter the main run loop.
+    // NOTE: USB notification registration has been moved inside run_loop (Approach A)
+    // so that usb_wndproc can schedule async refreshes on the live tokio runtime via
+    // a stored Handle. run_loop also owns USB cleanup on shutdown.
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_loop(&status_handle, machine_name))?;
 
@@ -177,13 +157,6 @@ pub fn run_service() -> Result<()> {
     // ── Graceful shutdown of blocking threads ────────────────────────
     crate::password_stop::debug_log("run_service: run_loop returned — shutting down subsystems");
     info!(service_name = SERVICE_NAME, "shutting down subsystems");
-
-    // Unregister USB device notifications.
-    if let Some((hwnd, thread)) = usb_cleanup {
-        crate::password_stop::debug_log("run_service: unregistering USB notifications");
-        crate::detection::usb::unregister_usb_notifications(hwnd, thread);
-        crate::password_stop::debug_log("run_service: USB unregistered");
-    }
 
     crate::password_stop::debug_log("run_service: reporting STOPPED to SCM");
 
@@ -406,6 +379,61 @@ async fn run_loop(
         None
     };
 
+    // ── Start USB mass-storage detection (inside run_loop for tokio Handle access) ──
+    // USB registration is done here (not in run_service) so that usb_wndproc can
+    // schedule async device-registry refreshes via a stored tokio::runtime::Handle.
+    // The Handle is captured now (we are inside rt.block_on) and stored in a static
+    // so the USB message-loop thread can reach it without capturing environment.
+    // (Approach A from 24-03-PLAN.md)
+    use std::sync::OnceLock;
+    static USB_DETECTOR: OnceLock<crate::detection::UsbDetector> = OnceLock::new();
+    let detector = USB_DETECTOR.get_or_init(crate::detection::UsbDetector::new);
+    detector.scan_existing_drives();
+
+    // ── Device registry cache (D-07, D-08) ──────────────────────────────────
+    // Polls GET /admin/device-registry every 30 s. Phase 26 enforcement reads
+    // from this cache at I/O time without a server call.
+    let registry_cache = Arc::new(crate::device_registry::DeviceRegistryCache::new());
+    let (registry_shutdown_tx, registry_shutdown_rx) = tokio::sync::watch::channel(false);
+    let _registry_poll_handle = if let Some(ref sc) = server_client {
+        // Store the cache and client in statics so usb_wndproc can trigger an
+        // immediate refresh on DBT_DEVICEARRIVAL (D-09).
+        crate::detection::usb::set_registry_cache(Arc::clone(&registry_cache));
+        crate::detection::usb::set_registry_client(sc.clone());
+        // Store the current tokio Handle so the USB message-loop thread (a plain
+        // std::thread that does NOT inherit the tokio context) can spawn async tasks.
+        crate::detection::usb::set_registry_runtime_handle(
+            tokio::runtime::Handle::current(),
+        );
+        Some(crate::device_registry::DeviceRegistryCache::spawn_poll_task(
+            Arc::clone(&registry_cache),
+            sc.clone(),
+            registry_shutdown_rx,
+        ))
+    } else {
+        drop(registry_shutdown_rx);
+        None
+    };
+
+    // Register USB notifications NOW (after statics are set) so usb_wndproc
+    // has valid REGISTRY_CACHE / REGISTRY_CLIENT / REGISTRY_RUNTIME_HANDLE on first arrival.
+    let usb_cleanup = match crate::detection::usb::register_usb_notifications(detector) {
+        Ok((hwnd, thread)) => {
+            info!(
+                thread_id = ?thread.thread().id(),
+                "USB notifications registered"
+            );
+            Some((hwnd, thread))
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "USB detection unavailable — continuing without USB monitoring"
+            );
+            None
+        }
+    };
+
     // ── Clone server client for config poll BEFORE it moves into offline_manager ──
     // server_client is an Option<ServerClient>. ServerClient is Clone.
     let server_client_for_config = server_client.clone();
@@ -569,6 +597,20 @@ async fn run_loop(
         let _ = h.await;
     }
     crate::password_stop::debug_log("run_loop: config poll stopped");
+
+    // Stop the device registry poll task.
+    let _ = registry_shutdown_tx.send(true);
+    if let Some(h) = _registry_poll_handle {
+        let _ = h.await;
+    }
+    crate::password_stop::debug_log("run_loop: device registry poll stopped");
+
+    // Unregister USB device notifications (owned by run_loop since Approach A move).
+    if let Some((hwnd, thread)) = usb_cleanup {
+        crate::password_stop::debug_log("run_loop: unregistering USB notifications");
+        crate::detection::usb::unregister_usb_notifications(hwnd, thread);
+        crate::password_stop::debug_log("run_loop: USB unregistered");
+    }
 
     // Stop the audit buffer flush task (final flush runs inside).
     let _ = audit_shutdown_tx.send(true);
