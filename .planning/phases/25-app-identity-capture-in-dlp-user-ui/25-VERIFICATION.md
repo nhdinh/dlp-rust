@@ -1,7 +1,7 @@
 ---
 phase: 25-app-identity-capture-in-dlp-user-ui
 verified: 2026-04-22T12:00:00Z
-status: human_needed
+status: passed
 score: 4/5 must-haves verified
 overrides_applied: 1
 overrides:
