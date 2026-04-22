@@ -195,6 +195,7 @@ fn route(msg: Pipe3UiMsg) {
             classification,
             preview,
             text_length,
+            ..
         } => {
             info!(
                 session_id,

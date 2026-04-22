@@ -910,6 +910,8 @@ async fn test_offline_manager_carries_machine_name() {
             machine_name: Some("WORKSTATION-01".into()),
             current_user: Some("jsmith".into()),
         }),
+        source_application: None,
+        destination_application: None,
     };
 
     let resp = offline.evaluate(&req).await;

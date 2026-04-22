@@ -120,6 +120,7 @@ pub async fn run_event_loop(
                 machine_name: Some(machine_name.clone()),
                 current_user: Some(user_name.clone()),
             }),
+            ..Default::default()
         };
 
         // ── Evaluate against Policy Engine ────────────────────────────────

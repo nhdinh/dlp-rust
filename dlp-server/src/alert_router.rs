@@ -274,6 +274,9 @@ impl AlertRouter {
             application_path: None,
             application_hash: None,
             resource_owner: None,
+            source_application: None,
+            destination_application: None,
+            device_identity: None,
         };
         self.send_alert(&event).await
     }

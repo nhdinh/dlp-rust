@@ -236,6 +236,7 @@ fn build_probe_request(machine_name: Option<&str>) -> EvaluateRequest {
             machine_name: Some(name.to_string()),
             current_user: None,
         }),
+        ..Default::default()
     }
 }
 

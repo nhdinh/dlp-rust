@@ -3,6 +3,7 @@
 //! These types define the attribute model used by the Policy Engine's
 //! Attribute-Based Access Control evaluation layer.
 
+use crate::endpoint::AppIdentity;
 use serde::{Deserialize, Serialize};
 
 /// The action the user is attempting to perform on a resource.
@@ -113,6 +114,7 @@ pub enum NetworkLocation {
 
 /// The requesting user and their attributes.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Subject {
     /// The user's Windows Security Identifier (e.g., "S-1-5-21-...").
     pub user_sid: String,
@@ -130,6 +132,7 @@ pub struct Subject {
 
 /// The file resource being accessed.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Resource {
     /// The full path to the file or directory (e.g., "C:\\Data\\Q4-Financials.xlsx").
     pub path: String,
@@ -139,6 +142,7 @@ pub struct Resource {
 
 /// The environmental context at the time of the access request.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Environment {
     /// The current time on the endpoint.
     pub timestamp: chrono::DateTime<chrono::Utc>,
@@ -175,6 +179,40 @@ pub struct EvaluateRequest {
     /// Logged by the Policy Engine for request tracing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentInfo>,
+    /// Resolved identity of the application that initiated the request
+    /// (e.g. the process that copied clipboard content). Populated by
+    /// Phase 25. `None` on requests from agents that predate Phase 25.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_application: Option<AppIdentity>,
+    /// Resolved identity of the destination application (e.g. the
+    /// paste target). Populated by Phase 25.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_application: Option<AppIdentity>,
+}
+
+/// Internal ABAC evaluation context.
+///
+/// Constructed from [`EvaluateRequest`] at the evaluate boundary in Phase 26.
+/// Mirrors [`EvaluateRequest`] fields minus wire-only metadata: there is
+/// deliberately no `agent` field (per Phase 22 D-10) because `AgentInfo`
+/// is request-tracing metadata, not an ABAC attribute.
+///
+/// Defined in Phase 22 so downstream crates compile against the type
+/// before Phase 26 wires it into [`crate::abac::EvaluateRequest`]-to-context
+/// conversion at `PolicyStore::evaluate()`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AbacContext {
+    pub subject: Subject,
+    pub resource: Resource,
+    pub environment: Environment,
+    pub action: Action,
+    /// Resolved identity of the application that initiated the operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_application: Option<AppIdentity>,
+    /// Resolved identity of the destination application (paste target).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_application: Option<AppIdentity>,
 }
 
 /// A complete ABAC evaluation response.
@@ -291,6 +329,103 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_abac_context_default() {
+        // Pitfall 1 prevention: AbacContext is public but not referenced in
+        // library code during Phase 22 (Phase 26 wires it in). Constructing
+        // the default here both prevents the dead_code warning and locks the
+        // D-10 invariant: no `agent` field, both application fields None.
+        let ctx = AbacContext::default();
+        assert!(ctx.source_application.is_none());
+        assert!(ctx.destination_application.is_none());
+    }
+
+    #[test]
+    fn test_abac_context_round_trip() {
+        use crate::endpoint::{AppIdentity, AppTrustTier, SignatureState};
+        let ctx = AbacContext {
+            source_application: Some(AppIdentity {
+                image_path: r"C:\app.exe".to_string(),
+                publisher: "Contoso".to_string(),
+                trust_tier: AppTrustTier::Trusted,
+                signature_state: SignatureState::Valid,
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let rt: AbacContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            rt.source_application.as_ref().map(|a| a.publisher.as_str()),
+            Some("Contoso"),
+        );
+        assert!(rt.destination_application.is_none());
+        // Destination app is None, so the key must be absent from JSON.
+        assert!(!json.contains("destination_application"));
+    }
+
+    #[test]
+    fn test_evaluate_request_app_identity_fields_round_trip() {
+        use crate::endpoint::{AppIdentity, AppTrustTier, SignatureState};
+        let req = EvaluateRequest {
+            source_application: Some(AppIdentity {
+                image_path: r"C:\src.exe".to_string(),
+                publisher: "Adobe Inc.".to_string(),
+                trust_tier: AppTrustTier::Trusted,
+                signature_state: SignatureState::Valid,
+            }),
+            destination_application: Some(AppIdentity {
+                image_path: r"C:\dst.exe".to_string(),
+                publisher: "Unknown".to_string(),
+                trust_tier: AppTrustTier::Untrusted,
+                signature_state: SignatureState::NotSigned,
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let rt: EvaluateRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            rt.source_application
+                .as_ref()
+                .map(|a| a.image_path.as_str()),
+            Some(r"C:\src.exe"),
+        );
+        assert_eq!(
+            rt.destination_application
+                .as_ref()
+                .map(|a| a.image_path.as_str()),
+            Some(r"C:\dst.exe"),
+        );
+    }
+
+    #[test]
+    fn test_evaluate_request_omits_none_app_identity_fields() {
+        // SC-3 observable truth: default EvaluateRequest serializes without
+        // the two new keys when they are None, preserving wire-compat with
+        // every agent running today (that does not send them).
+        let req = EvaluateRequest::default();
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("source_application"), "json was: {json}");
+        assert!(
+            !json.contains("destination_application"),
+            "json was: {json}"
+        );
+    }
+
+    #[test]
+    fn test_evaluate_request_backward_compat_missing_new_fields() {
+        // SC-3: old payloads without the two new fields must still deserialize.
+        // This is the exact shape dlp-agent emits today.
+        let old_payload = r#"{
+            "subject": {},
+            "resource": {},
+            "environment": {},
+            "action": "READ"
+        }"#;
+        let req: EvaluateRequest = serde_json::from_str(old_payload).unwrap();
+        assert!(req.source_application.is_none());
+        assert!(req.destination_application.is_none());
+    }
+
+    #[test]
     fn test_decision_is_denied() {
         assert!(!Decision::ALLOW.is_denied());
         assert!(Decision::DENY.is_denied());
@@ -335,6 +470,7 @@ mod tests {
             },
             action: Action::COPY,
             agent: None,
+            ..Default::default()
         };
         let json = serde_json::to_string(&req).unwrap();
         let round_trip: EvaluateRequest = serde_json::from_str(&json).unwrap();

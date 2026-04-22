@@ -4,6 +4,7 @@
 //! message types.  Since dlp-agent and dlp-user-ui are separate crates,
 //! the message types are duplicated here.
 
+use dlp_common::AppIdentity;
 use serde::{Deserialize, Serialize};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -97,5 +98,9 @@ pub enum Pipe3UiMsg {
         classification: String,
         preview: String,
         text_length: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_application: Option<AppIdentity>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination_application: Option<AppIdentity>,
     },
 }
