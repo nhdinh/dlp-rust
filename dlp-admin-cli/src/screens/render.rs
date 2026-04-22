@@ -143,6 +143,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         Screen::ConditionsBuilder {
             step,
             selected_attribute,
+            selected_field,
             selected_operator,
             pending,
             buffer,
@@ -157,6 +158,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 area,
                 *step,
                 selected_attribute.as_ref(),
+                *selected_field,
                 selected_operator.as_deref(),
                 pending,
                 buffer,
@@ -254,13 +256,30 @@ const NETWORK_LOCATION_VALUES: [&str; 4] = ["Corporate", "CorporateVpn", "Guest"
 /// Step 3 value labels for AccessContext (per D-15).
 const ACCESS_CONTEXT_VALUES: [&str; 2] = ["Local", "Smb"];
 
+/// Step 3 value labels for AppField::TrustTier (app-identity conditions, per D-14).
+/// Index 0 = "trusted", 1 = "untrusted", 2 = "unknown" — matches build_condition mapping.
+const TRUST_TIER_VALUES: [&str; 3] = ["trusted", "untrusted", "unknown"];
+
+/// AppField sub-picker labels (Step 1.5, per D-12).
+/// Index 0 = Publisher, 1 = ImagePath, 2 = TrustTier — matches APP_FIELD_LABELS in dispatch.rs.
+const APP_FIELD_LABELS: [&str; 3] = ["publisher", "image_path", "trust_tier"];
+
 /// Step 2 operator list — driven by the attribute chosen in Step 1.
 ///
 /// The list is built by calling `operators_for`, which returns the correct
 /// operators for the attribute. Enforced operators are shown verbatim;
 /// advisory-only operators are annotated "(not enforced)".
-fn pick_operators(attr: ConditionAttribute) -> Vec<ListItem<'static>> {
-    operators_for(attr)
+///
+/// # Arguments
+///
+/// * `attr` - Condition attribute being built.
+/// * `field` - For app-identity attributes: the AppField selected in the sub-step.
+///   Pass `None` for other attributes or when field is not yet resolved.
+fn pick_operators(
+    attr: ConditionAttribute,
+    field: Option<dlp_common::abac::AppField>,
+) -> Vec<ListItem<'static>> {
+    operators_for(attr, field)
         .iter()
         .map(|(op, enforced)| {
             if *enforced {
@@ -319,10 +338,20 @@ fn step_label(step: u8, selected_attribute: Option<&ConditionAttribute>) -> Line
 }
 
 /// Returns the list items for the step picker at the given step.
+///
+/// # Arguments
+///
+/// * `step` - Current step number (1, 2, or 3). Step 1.5 (app-field sub-picker) is rendered
+///   by the caller directly using `APP_FIELD_LABELS`.
+/// * `selected_attribute` - Attribute selected in Step 1 (None until Step 1 completed).
+/// * `selected_field` - For app-identity attributes, the AppField selected in the sub-step.
+///   Required for Step 2 operator list; used in Step 3 to switch between picker and text input.
 fn picker_items(
     step: u8,
     selected_attribute: Option<&ConditionAttribute>,
+    selected_field: Option<dlp_common::abac::AppField>,
 ) -> Vec<ListItem<'static>> {
+    use dlp_common::abac::AppField;
     match step {
         1 => ATTRIBUTES
             .iter()
@@ -333,7 +362,7 @@ fn picker_items(
                 Some(a) => a,
                 None => return vec![],
             };
-            pick_operators(*attr)
+            pick_operators(*attr, selected_field)
         }
         3 => {
             let attr = match selected_attribute {
@@ -358,6 +387,17 @@ fn picker_items(
                     .iter()
                     .map(|v| ListItem::new(v.to_string()))
                     .collect(),
+                ConditionAttribute::SourceApplication
+                | ConditionAttribute::DestinationApplication => {
+                    match selected_field {
+                        // TrustTier uses a picker; Publisher/ImagePath use text input (returns []).
+                        Some(AppField::TrustTier) => TRUST_TIER_VALUES
+                            .iter()
+                            .map(|v| ListItem::new(v.to_string()))
+                            .collect(),
+                        _ => vec![], // Publisher/ImagePath: free-text input path
+                    }
+                }
             }
         }
         _ => vec![],
@@ -370,7 +410,8 @@ fn picker_items(
 /// - Breadcrumb header (2 rows)
 /// - Pending conditions list (6 rows, scrollable)
 /// - Divider (1 row)
-/// - Step picker (remaining rows)
+/// - Step picker (remaining rows): attribute list (Step 1), AppField sub-picker (Step 1.5),
+///   operator list (Step 2), or value picker / text input (Step 3)
 /// - Hints bar (1 row, inside modal bottom)
 ///
 /// # Arguments
@@ -379,18 +420,22 @@ fn picker_items(
 /// * `area` - full terminal area (modal is centered within this)
 /// * `step` - current step number (1, 2, or 3)
 /// * `selected_attribute` - attribute chosen in Step 1 (None until completed)
+/// * `selected_field` - AppField chosen in sub-step (None until sub-step completed, or for
+///   non-app-identity attributes)
 /// * `selected_operator` - operator chosen in Step 2 (None until completed)
 /// * `pending` - conditions already added this session
-/// * `buffer` - text buffer for MemberOf Step 3 free-text input
+/// * `buffer` - text buffer for MemberOf and app-identity Publisher/ImagePath Step 3 input
 /// * `pending_focused` - true when the pending list has keyboard focus
 /// * `pending_state` - scroll position for the pending list
 /// * `picker_state` - scroll position for the step picker list
+/// * `edit_index` - Some(i) when editing an existing condition at index i
 #[allow(clippy::too_many_arguments)]
 fn draw_conditions_builder(
     frame: &mut Frame,
     area: Rect,
     step: u8,
     selected_attribute: Option<&ConditionAttribute>,
+    selected_field: Option<dlp_common::abac::AppField>,
     // Operator is resolved for future steps; accepted here for completeness.
     _selected_operator: Option<&str>,
     pending: &[dlp_common::abac::PolicyCondition],
@@ -505,23 +550,81 @@ fn draw_conditions_builder(
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(picker_area);
 
-    let label = step_label(step, selected_attribute);
-    frame.render_widget(Paragraph::new(label), picker_chunks[0]);
+    use dlp_common::abac::AppField;
 
-    // Step 3 MemberOf: text input instead of a selection list (per D-12).
+    // Determine the rendering mode for the picker area.
+    // Sub-step (Step 1.5): step==1, app-identity attribute selected, field not yet chosen.
+    let in_app_field_sub_step = step == 1
+        && matches!(
+            selected_attribute,
+            Some(ConditionAttribute::SourceApplication)
+                | Some(ConditionAttribute::DestinationApplication)
+        )
+        && selected_field.is_none();
+
+    // Render the step label above the picker list (skipped for sub-step which has its own label).
+    if !in_app_field_sub_step {
+        let label = step_label(step, selected_attribute);
+        frame.render_widget(Paragraph::new(label), picker_chunks[0]);
+    }
+
+    // Text-input paths: MemberOf SID, or app-identity Publisher/ImagePath value.
     let is_member_of_step3 = step == 3 && selected_attribute == Some(&ConditionAttribute::MemberOf);
-
-    if is_member_of_step3 {
-        // Free-text input for the AD group SID; trailing `_` acts as a cursor.
-        let input_display = format!("[{buffer}_]");
-        let input_paragraph = Paragraph::new(input_display).block(
-            Block::default()
-                .title(" AD Group SID (partial match) ")
-                .borders(Borders::ALL),
+    let is_app_text_step3 = step == 3
+        && matches!(
+            selected_attribute,
+            Some(ConditionAttribute::SourceApplication)
+                | Some(ConditionAttribute::DestinationApplication)
+        )
+        && matches!(
+            selected_field,
+            Some(AppField::Publisher) | Some(AppField::ImagePath)
         );
+    let is_text_input_step3 = is_member_of_step3 || is_app_text_step3;
+
+    if in_app_field_sub_step {
+        // --- Step 1.5: AppField sub-picker ---
+        // Override the step label to communicate the sub-step to the admin.
+        let sub_label = Line::styled(
+            "Step 1.5: Select Application Field",
+            Style::default().add_modifier(Modifier::BOLD),
+        );
+        frame.render_widget(Paragraph::new(sub_label), picker_chunks[0]);
+
+        let sub_items: Vec<ListItem> = APP_FIELD_LABELS
+            .iter()
+            .map(|f| ListItem::new(f.to_string()))
+            .collect();
+
+        let picker_highlight = if pending_focused {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        };
+
+        let sub_picker = List::new(sub_items)
+            .highlight_style(picker_highlight)
+            .highlight_symbol("> ");
+
+        let mut pk = picker_state.clone();
+        frame.render_stateful_widget(sub_picker, picker_chunks[1], &mut pk);
+    } else if is_text_input_step3 {
+        // --- Step 3 text input (MemberOf SID or Publisher/ImagePath value) ---
+        let title = if is_member_of_step3 {
+            " AD Group SID (partial match) "
+        } else {
+            " Application Value "
+        };
+        // Trailing `_` acts as a simple cursor indicator.
+        let input_display = format!("[{buffer}_]");
+        let input_paragraph = Paragraph::new(input_display)
+            .block(Block::default().title(title).borders(Borders::ALL));
         frame.render_widget(input_paragraph, picker_chunks[1]);
     } else {
-        let items = picker_items(step, selected_attribute);
+        let items = picker_items(step, selected_attribute, selected_field);
         if !items.is_empty() {
             let picker_highlight = if pending_focused {
                 // Picker is not focused; show selection in plain White.
@@ -547,8 +650,10 @@ fn draw_conditions_builder(
     // Pass modal_area so draw_hints computes y = modal_area.y + modal_area.height - 1.
     let hints = if pending_focused {
         "Up/Down Navigate  d: Delete  e: Edit  Tab: Switch to Picker  Esc: Close"
-    } else if is_member_of_step3 {
-        "Type SID  Enter: Add  Esc: Back  Tab: Switch to Pending"
+    } else if in_app_field_sub_step {
+        "Enter: Select   Esc: Back to attribute"
+    } else if is_text_input_step3 {
+        "Type value  Enter: Add  Esc: Back  Tab: Switch to Pending"
     } else {
         "Up/Down Navigate  Enter: Select  Esc: Back/Close  Tab: Switch to Pending"
     };
