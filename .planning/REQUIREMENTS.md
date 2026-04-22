@@ -28,7 +28,7 @@
 - [ ] **USB-01**: Agent captures VID, PID, Serial Number, and device description on `DBT_DEVICEARRIVAL` via `SetupDiGetClassDevsW` / `SetupDiGetDeviceInstanceIdW`
 - [ ] **USB-02**: Admin can register and deregister USB devices with a trust tier (`blocked` / `read_only` / `full_access`) via TUI screen and admin API (`GET/POST/DELETE /admin/device-registry`)
 - [x] **USB-03**: Agent enforces trust tier at I/O level: `blocked` denies all access; `read_only` allows reads and denies writes — trust tier cached in `RwLock<HashMap>` per device, invalidated on removal or registry update
-- [ ] **USB-04**: User receives a toast notification on USB block containing the device name and policy explanation — runs in `dlp-user-ui` (user session), reuses `winrt-notification`
+- [x] **USB-04**: User receives a toast notification on USB block containing the device name and policy explanation — runs in `dlp-user-ui` (user session), reuses `winrt-notification`
 
 ---
 
@@ -71,4 +71,4 @@
 | USB-01 | Phase 23 | Pending |
 | USB-02 | Phase 24 | Pending |
 | USB-03 | Phase 26 | Complete |
-| USB-04 | Phase 27 | Pending |
+| USB-04 | Phase 27 | Complete |
