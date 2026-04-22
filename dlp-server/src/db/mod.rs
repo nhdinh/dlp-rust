@@ -32,7 +32,11 @@ pub type Connection = r2d2::PooledConnection<SqliteConnectionManager>;
 ///
 /// Returns an error if the pool cannot be built or table creation fails.
 pub fn new_pool(path: &str) -> anyhow::Result<Pool> {
-    let mgr = SqliteConnectionManager::file(path);
+    // Enable foreign-key enforcement on every checked-out connection.
+    // SQLite does NOT enforce FK constraints unless `PRAGMA foreign_keys = ON`
+    // is set per connection — the setting is not persisted at the file level.
+    let mgr = SqliteConnectionManager::file(path)
+        .with_init(|conn| conn.execute_batch("PRAGMA foreign_keys = ON;"));
     let pool = R2d2Pool::builder()
         .max_size(5)
         .build(mgr)
