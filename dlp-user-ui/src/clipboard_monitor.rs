@@ -415,15 +415,16 @@ pub fn classify_and_alert(
         dlp_common::Classification::T1 => return None,
     };
 
-    if let Err(e) =
-        crate::ipc::pipe3::send_clipboard_alert(session_id, tier_str, &preview, text.len())
-    {
+    if let Err(e) = crate::ipc::pipe3::send_clipboard_alert(
+        session_id,
+        tier_str,
+        &preview,
+        text.len(),
+        source_identity,
+        dest_identity,
+    ) {
         warn!(error = %e, "failed to send clipboard alert to agent");
     }
-    // NOTE: source_identity and dest_identity are not yet forwarded to
-    // send_clipboard_alert — Plan 03 (25-03-PLAN.md) extends the signature.
-    // The _ suppresses unused-variable warnings until Plan 03.
-    let _ = (source_identity, dest_identity);
 
     Some(tier_str)
 }

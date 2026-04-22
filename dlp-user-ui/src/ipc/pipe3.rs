@@ -3,6 +3,7 @@
 //! Sends UI-to-agent events: `UiReady`.
 
 use anyhow::Result;
+use dlp_common::AppIdentity;
 use tracing::info;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -73,12 +74,30 @@ pub async fn send_ui_ready(session_id: u32) -> Result<()> {
 
 /// Sends a clipboard alert to the agent via Pipe 3.
 ///
-/// Opens a new Pipe 3 connection for each alert (short-lived).
+/// Opens a new Pipe 3 connection for each alert (short-lived connection).
+///
+/// # Arguments
+///
+/// * `session_id` — Windows session ID.
+/// * `classification` — Tier string: `"T2"`, `"T3"`, or `"T4"`.
+/// * `preview` — First 80 chars of clipboard content.
+/// * `text_length` — Full length of clipboard text in bytes.
+/// * `source_application` — Resolved identity of the clipboard source app (APP-02).
+///   `None` when `GetClipboardOwner` returned NULL.
+/// * `destination_application` — Resolved identity of the paste-destination app (APP-01).
+///   `None` when no foreground window was captured before this clipboard event.
+///
+/// # Errors
+///
+/// Returns an error if the Pipe 3 connection cannot be opened or the message
+/// cannot be written.
 pub fn send_clipboard_alert(
     session_id: u32,
     classification: &str,
     preview: &str,
     text_length: usize,
+    source_application: Option<AppIdentity>,
+    destination_application: Option<AppIdentity>,
 ) -> Result<()> {
     let handle = open_pipe()?;
 
@@ -87,10 +106,8 @@ pub fn send_clipboard_alert(
         classification: classification.to_string(),
         preview: preview.to_string(),
         text_length,
-        // Phase 25 will populate these; for now the UI sends None until the
-        // source-resolver is wired up.
-        source_application: None,
-        destination_application: None,
+        source_application,
+        destination_application,
     };
     let json =
         serde_json::to_vec(&msg).map_err(|e| anyhow::anyhow!("serialise ClipboardAlert: {}", e))?;
@@ -102,4 +119,75 @@ pub fn send_clipboard_alert(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ipc::messages::Pipe3UiMsg;
+    use dlp_common::{AppIdentity, AppTrustTier, SignatureState};
+
+    #[test]
+    fn test_clipboard_alert_with_identity_serializes_source_application_key() {
+        // APP-05 validation: ClipboardAlert with Some(AppIdentity) must produce
+        // JSON containing the "source_application" key.
+        let alert = Pipe3UiMsg::ClipboardAlert {
+            session_id: 1,
+            classification: "T2".to_string(),
+            preview: "test".to_string(),
+            text_length: 4,
+            source_application: Some(AppIdentity {
+                image_path: "C:\\test.exe".to_string(),
+                publisher: String::new(),
+                trust_tier: AppTrustTier::Untrusted,
+                signature_state: SignatureState::NotSigned,
+            }),
+            destination_application: None,
+        };
+        let json = serde_json::to_string(&alert).expect("serialization must not fail");
+        assert!(
+            json.contains("source_application"),
+            "source_application key must appear in JSON when Some: got {json}"
+        );
+    }
+
+    #[test]
+    fn test_clipboard_alert_includes_identity_in_json() {
+        // VALIDATION.md APP-05: full round-trip with both identity fields.
+        let alert = Pipe3UiMsg::ClipboardAlert {
+            session_id: 1,
+            classification: "T2".to_string(),
+            preview: "test".to_string(),
+            text_length: 4,
+            source_application: Some(AppIdentity {
+                image_path: "C:\\test.exe".to_string(),
+                publisher: String::new(),
+                trust_tier: AppTrustTier::Untrusted,
+                signature_state: SignatureState::NotSigned,
+            }),
+            destination_application: None,
+        };
+        let json = serde_json::to_string(&alert).expect("serialization must not fail");
+        assert!(
+            json.contains("source_application"),
+            "source_application key must appear in JSON"
+        );
+    }
+
+    #[test]
+    fn test_clipboard_alert_without_identity_omits_source_application_key() {
+        // skip_serializing_if = "Option::is_none": None fields must be absent from JSON.
+        let alert = Pipe3UiMsg::ClipboardAlert {
+            session_id: 1,
+            classification: "T1".to_string(),
+            preview: "hello".to_string(),
+            text_length: 5,
+            source_application: None,
+            destination_application: None,
+        };
+        let json = serde_json::to_string(&alert).expect("serialization must not fail");
+        assert!(
+            !json.contains("source_application"),
+            "source_application key must be absent when None: got {json}"
+        );
+    }
 }
