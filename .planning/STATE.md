@@ -4,7 +4,7 @@ milestone: v0.6.0
 milestone_name: — Endpoint Hardening
 status: in_progress
 last_updated: "2026-04-22T00:00:00+07:00"
-last_activity: 2026-04-22 -- Roadmap created for v0.6.0; 8 phases defined (22–29)
+last_activity: 2026-04-22 -- Phase 22 context gathered; ready to plan
 progress:
   total_phases: 8
   completed_phases: 0
@@ -24,11 +24,11 @@ See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 ## Current Position
 
-Phase: Phase 22 (not started)
+Phase: Phase 22 (context gathered)
 Plan: —
-Status: Roadmap created; ready to plan Phase 22
+Status: Context captured; ready to plan Phase 22
 Resume: `/gsd-plan-phase 22`
-Last activity: 2026-04-22 -- Roadmap written for v0.6.0 Endpoint Hardening
+Last activity: 2026-04-22 -- Phase 22 context gathered (endpoint types, module org, AbacContext shape)
 
 ## Decisions
 
