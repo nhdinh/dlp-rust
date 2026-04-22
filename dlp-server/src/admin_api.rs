@@ -12,7 +12,7 @@ use std::sync::Arc;
 use axum::extract::{FromRequest, Path, State};
 use axum::http::StatusCode;
 use axum::middleware;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -485,7 +485,8 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
             post(audit_store::ingest_events).route_layer(rate_limiter::per_agent_config()),
         )
         .route("/agent-credentials/auth-hash", get(get_agent_auth_hash))
-        .route("/agent-config/{id}", get(get_agent_config_for_agent));
+        .route("/agent-config/{id}", get(get_agent_config_for_agent))
+        .route("/admin/device-registry", get(list_device_registry_handler));
 
     // Routes that require a valid JWT.
     // Policy routes get a tighter limit (60/min) via `.route_layer()`.
@@ -540,6 +541,14 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
             get(get_agent_config_override_handler)
                 .put(update_agent_config_override_handler)
                 .delete(delete_agent_config_override_handler),
+        )
+        .route(
+            "/admin/device-registry",
+            post(upsert_device_registry_handler),
+        )
+        .route(
+            "/admin/device-registry/{id}",
+            delete(delete_device_registry_handler),
         )
         .route_layer(default_config())
         .layer(middleware::from_fn(admin_auth::require_auth));
@@ -1461,6 +1470,130 @@ async fn test_alert_config_handler(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("{e}")))?;
 
     Ok(Json(serde_json::json!({ "status": "ok" })))
+}
+
+// ---------------------------------------------------------------------------
+// Device Registry handlers
+// ---------------------------------------------------------------------------
+
+/// Returns all registered USB device trust-tier entries.
+///
+/// `GET /admin/device-registry` — intentionally unauthenticated so agents can
+/// poll for the trust-tier list without stored credentials (T-24-06 accepted).
+///
+/// # Errors
+///
+/// Returns `AppError::Internal` if the pool or query fails.
+async fn list_device_registry_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<DeviceRegistryResponse>>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        repositories::DeviceRegistryRepository::list_all(&pool).map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    let response: Vec<DeviceRegistryResponse> = rows.into_iter().map(Into::into).collect();
+    Ok(Json(response))
+}
+
+/// Registers a new device or updates trust_tier/description for an existing one.
+///
+/// `POST /admin/device-registry` — requires JWT Bearer auth (T-24-04).
+///
+/// Upserts on `(vid, pid, serial)` conflict: the original UUID is preserved and
+/// only `trust_tier` and `description` are updated. The response always reflects
+/// the persisted state by re-reading the row after the upsert.
+///
+/// # Errors
+///
+/// Returns `AppError::UnprocessableEntity` (422) if `trust_tier` is not one of
+/// `"blocked"`, `"read_only"`, or `"full_access"`.
+/// Returns `AppError::Internal` on pool or query failure.
+async fn upsert_device_registry_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<DeviceRegistryRequest>,
+) -> Result<Json<DeviceRegistryResponse>, AppError> {
+    // Allowlist check before any DB access (T-24-05).
+    const VALID_TIERS: &[&str] = &["blocked", "read_only", "full_access"];
+    if !VALID_TIERS.contains(&body.trust_tier.as_str()) {
+        return Err(AppError::UnprocessableEntity(format!(
+            "invalid trust_tier '{}'; must be one of: blocked, read_only, full_access",
+            body.trust_tier
+        )));
+    }
+
+    // Generate a new UUID for the insert path; ON CONFLICT preserves the original.
+    let id = uuid::Uuid::new_v4().to_string();
+    let created_at = chrono::Utc::now().to_rfc3339();
+    let row = repositories::DeviceRegistryRow {
+        id,
+        vid: body.vid.clone(),
+        pid: body.pid.clone(),
+        serial: body.serial.clone(),
+        description: body.description.clone(),
+        trust_tier: body.trust_tier.clone(),
+        created_at,
+    };
+
+    let pool = Arc::clone(&state.pool);
+    let vid = body.vid.clone();
+    let pid = body.pid.clone();
+    let serial = body.serial.clone();
+
+    // Upsert, then re-read by (vid, pid, serial) to get the persisted UUID.
+    // On conflict the original UUID is preserved — re-reading is necessary.
+    let persisted = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        repositories::DeviceRegistryRepository::upsert(&uow, &row).map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
+        // Re-read outside the transaction using the pool (write conn already returned).
+        drop(conn);
+        repositories::DeviceRegistryRepository::get_by_device_key(&pool, &vid, &pid, &serial)
+            .map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(vid = %persisted.vid, pid = %persisted.pid, serial = %persisted.serial, "device registry upsert");
+    Ok(Json(persisted.into()))
+}
+
+/// Removes a registered device entry by its server-generated UUID.
+///
+/// `DELETE /admin/device-registry/{id}` — requires JWT Bearer auth (T-24-04).
+///
+/// # Returns
+///
+/// `204 No Content` on success; `404 Not Found` if the UUID does not exist.
+///
+/// # Errors
+///
+/// Returns `AppError::Internal` on pool or query failure.
+async fn delete_device_registry_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let device_id = id.clone();
+    let rows_deleted = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let n = repositories::DeviceRegistryRepository::delete_by_id(&uow, &device_id)
+            .map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(n)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    if rows_deleted == 0 {
+        return Err(AppError::NotFound(format!("device {id} not found")));
+    }
+
+    tracing::info!(device_id = %id, "device registry entry deleted");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
@@ -3665,5 +3798,188 @@ mod tests {
         let req: DeviceRegistryRequest =
             serde_json::from_str(json).expect("deserialize DeviceRegistryRequest");
         assert_eq!(req.trust_tier, "read_only");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Device Registry handler integration tests (Task 2 — TDD RED)
+    // ---------------------------------------------------------------------------
+
+    /// GET /admin/device-registry returns 200 + empty JSON array when DB is empty (no auth).
+    #[tokio::test]
+    async fn test_device_registry_get_returns_empty_list() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/device-registry")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let list: Vec<serde_json::Value> =
+            serde_json::from_slice(&body).expect("parse JSON array");
+        assert!(list.is_empty(), "expected empty array from fresh DB");
+    }
+
+    /// POST /admin/device-registry with valid JWT returns 200 + full DeviceRegistryResponse JSON.
+    #[tokio::test]
+    async fn test_device_registry_post_upserts_and_returns_row() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+        let payload = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "ABC",
+            "trust_tier": "blocked"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let row: DeviceRegistryResponse =
+            serde_json::from_slice(&body).expect("parse DeviceRegistryResponse");
+        assert!(!row.id.is_empty(), "id must be a non-empty UUID");
+        assert_eq!(row.vid, "0951");
+        assert_eq!(row.pid, "1666");
+        assert_eq!(row.serial, "ABC");
+        assert_eq!(row.trust_tier, "blocked");
+    }
+
+    /// POST /admin/device-registry with invalid trust_tier returns 422.
+    #[tokio::test]
+    async fn test_device_registry_post_invalid_tier_returns_422() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+        let payload = serde_json::json!({
+            "vid": "x",
+            "pid": "y",
+            "serial": "z",
+            "trust_tier": "invalid"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// POST /admin/device-registry without JWT returns 401.
+    #[tokio::test]
+    async fn test_device_registry_post_without_jwt_returns_401() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let payload = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "ABC",
+            "trust_tier": "blocked"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// DELETE /admin/device-registry/{id} with valid JWT returns 204;
+    /// subsequent GET confirms the list is empty.
+    #[tokio::test]
+    async fn test_device_registry_delete_returns_204_and_removes_row() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        // Insert a device first.
+        let payload = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "DEL001",
+            "trust_tier": "read_only"
+        });
+        let post_req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .expect("build POST");
+        let post_resp = app.clone().oneshot(post_req).await.expect("oneshot POST");
+        assert_eq!(post_resp.status(), StatusCode::OK);
+        let body = to_bytes(post_resp.into_body(), usize::MAX).await.expect("body");
+        let row: DeviceRegistryResponse =
+            serde_json::from_slice(&body).expect("parse DeviceRegistryResponse");
+        let id = row.id;
+
+        // Delete by UUID.
+        let del_req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/admin/device-registry/{id}"))
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build DELETE");
+        let del_resp = app.clone().oneshot(del_req).await.expect("oneshot DELETE");
+        assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
+
+        // Verify the list is now empty.
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/admin/device-registry")
+            .body(Body::empty())
+            .expect("build GET");
+        let get_resp = app.oneshot(get_req).await.expect("oneshot GET");
+        let body = to_bytes(get_resp.into_body(), usize::MAX).await.expect("body");
+        let list: Vec<serde_json::Value> =
+            serde_json::from_slice(&body).expect("parse JSON array");
+        assert!(list.is_empty(), "list must be empty after delete");
+    }
+
+    /// DELETE /admin/device-registry/{nonexistent-uuid} returns 404.
+    #[tokio::test]
+    async fn test_device_registry_delete_nonexistent_returns_404() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/admin/device-registry/00000000-0000-0000-0000-000000000000")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
