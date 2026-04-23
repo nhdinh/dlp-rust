@@ -473,7 +473,11 @@ mod tests {
         let second = enforcer
             .check("E:\\file.txt", &written_action())
             .expect("second check must return Some for Blocked device");
-        assert_eq!(second.decision, Decision::DENY, "second call must still deny");
+        assert_eq!(
+            second.decision,
+            Decision::DENY,
+            "second call must still deny"
+        );
         assert!(
             !second.notify,
             "second call within cooldown window must suppress toast"

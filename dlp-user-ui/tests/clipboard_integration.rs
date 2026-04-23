@@ -357,7 +357,12 @@ fn test_confidential_triggers_t3_alert() {
 fn test_internal_triggers_t2_alert() {
     let messages = setup_pipe();
 
-    let tier = classify_and_alert(TEST_SESSION_ID, "For internal only distribution", None, None);
+    let tier = classify_and_alert(
+        TEST_SESSION_ID,
+        "For internal only distribution",
+        None,
+        None,
+    );
     assert_eq!(tier, Some("T2"));
 
     let received = wait_for_messages(&messages, ALERT_TIMEOUT);

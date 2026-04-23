@@ -609,7 +609,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
             "/admin/device-registry/{id}",
             delete(delete_device_registry_handler),
         )
-        .route("/admin/managed-origins", post(create_managed_origin_handler))
+        .route(
+            "/admin/managed-origins",
+            post(create_managed_origin_handler),
+        )
         .route(
             "/admin/managed-origins/{id}",
             delete(delete_managed_origin_handler),
@@ -1700,7 +1703,10 @@ async fn list_managed_origins_handler(
         .map_err(AppError::Database)?;
     let resp: Vec<ManagedOriginResponse> = rows
         .into_iter()
-        .map(|r| ManagedOriginResponse { id: r.id, origin: r.origin })
+        .map(|r| ManagedOriginResponse {
+            id: r.id,
+            origin: r.origin,
+        })
         .collect();
     Ok(Json(resp))
 }
@@ -1718,7 +1724,10 @@ async fn create_managed_origin_handler(
     Json(req): Json<ManagedOriginRequest>,
 ) -> Result<impl axum::response::IntoResponse, AppError> {
     let id = uuid::Uuid::new_v4().to_string();
-    let row = ManagedOriginRow { id: id.clone(), origin: req.origin.clone() };
+    let row = ManagedOriginRow {
+        id: id.clone(),
+        origin: req.origin.clone(),
+    };
     let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
@@ -1738,7 +1747,13 @@ async fn create_managed_origin_handler(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("spawn_blocking join: {e}")))??;
 
-    Ok((StatusCode::OK, Json(ManagedOriginResponse { id, origin: req.origin })))
+    Ok((
+        StatusCode::OK,
+        Json(ManagedOriginResponse {
+            id,
+            origin: req.origin,
+        }),
+    ))
 }
 
 /// `DELETE /admin/managed-origins/{id}` — JWT-protected; removes by UUID.
@@ -1759,8 +1774,8 @@ async fn delete_managed_origin_handler(
     let rows_deleted = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        let n = ManagedOriginsRepository::delete_by_id(&uow, &origin_id)
-            .map_err(AppError::Database)?;
+        let n =
+            ManagedOriginsRepository::delete_by_id(&uow, &origin_id).map_err(AppError::Database)?;
         uow.commit().map_err(AppError::Database)?;
         Ok(n)
     })
