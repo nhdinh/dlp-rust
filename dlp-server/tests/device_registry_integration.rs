@@ -438,5 +438,8 @@ async fn test_post_duplicate_upserts_and_get_shows_updated_tier() {
     // (CR-01 fix): verify via vid/pid/serial identity only on the public endpoint.
     assert_eq!(list[0]["vid"], vid, "vid must match the upserted entry");
     assert_eq!(list[0]["pid"], pid, "pid must match the upserted entry");
-    assert_eq!(list[0]["serial"], serial, "serial must match the upserted entry");
+    assert_eq!(
+        list[0]["serial"], serial,
+        "serial must match the upserted entry"
+    );
 }

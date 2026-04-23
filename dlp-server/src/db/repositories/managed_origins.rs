@@ -40,8 +40,7 @@ impl ManagedOriginsRepository {
         let conn = pool
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        let mut stmt =
-            conn.prepare("SELECT id, origin FROM managed_origins ORDER BY rowid ASC")?;
+        let mut stmt = conn.prepare("SELECT id, origin FROM managed_origins ORDER BY rowid ASC")?;
         let rows = stmt.query_map([], |row| {
             Ok(ManagedOriginRow {
                 id: row.get(0)?,
@@ -115,7 +114,10 @@ mod tests {
     fn test_list_all_empty() {
         let pool = make_pool();
         let rows = ManagedOriginsRepository::list_all(&pool).expect("list_all on empty DB");
-        assert!(rows.is_empty(), "expected empty vec from fresh DB; got {rows:?}");
+        assert!(
+            rows.is_empty(),
+            "expected empty vec from fresh DB; got {rows:?}"
+        );
     }
 
     #[test]
@@ -147,8 +149,8 @@ mod tests {
         {
             let mut conn = pool.get().expect("get connection");
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
-            let affected = ManagedOriginsRepository::delete_by_id(&uow, "uuid-1")
-                .expect("delete_by_id");
+            let affected =
+                ManagedOriginsRepository::delete_by_id(&uow, "uuid-1").expect("delete_by_id");
             uow.commit().expect("commit");
             assert_eq!(affected, 1, "expected 1 row deleted");
         }

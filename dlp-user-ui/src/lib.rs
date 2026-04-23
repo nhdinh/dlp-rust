@@ -6,7 +6,7 @@
 
 mod app;
 pub mod clipboard_monitor;
-mod detection;           // app identity resolution and Authenticode cache
+mod detection; // app identity resolution and Authenticode cache
 pub mod dialogs;
 pub mod ipc;
 mod notifications;

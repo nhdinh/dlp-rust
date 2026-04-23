@@ -233,12 +233,11 @@ fn run_wintrust(image_path: &str) -> i32 {
 fn extract_publisher(image_path: &str) -> String {
     use std::ffi::c_void;
     use windows::Win32::Security::Cryptography::{
-        CertCloseStore, CertFindCertificateInStore, CertFreeCertificateContext,
-        CertGetNameStringW, CryptMsgClose, CryptMsgGetParam, CryptQueryObject,
-        CERT_FIND_SUBJECT_NAME, CERT_NAME_SIMPLE_DISPLAY_TYPE,
-        CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED, CERT_QUERY_ENCODING_TYPE,
-        CERT_QUERY_FORMAT_FLAG_BINARY, CERT_QUERY_OBJECT_FILE, CMSG_SIGNER_INFO_PARAM,
-        HCERTSTORE, PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
+        CertCloseStore, CertFindCertificateInStore, CertFreeCertificateContext, CertGetNameStringW,
+        CryptMsgClose, CryptMsgGetParam, CryptQueryObject, CERT_FIND_SUBJECT_NAME,
+        CERT_NAME_SIMPLE_DISPLAY_TYPE, CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+        CERT_QUERY_ENCODING_TYPE, CERT_QUERY_FORMAT_FLAG_BINARY, CERT_QUERY_OBJECT_FILE,
+        CMSG_SIGNER_INFO_PARAM, HCERTSTORE, PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
     };
 
     let path_wide: Vec<u16> = image_path
@@ -316,9 +315,7 @@ fn extract_publisher(image_path: &str) -> String {
 
     // Step 3: Find the signing certificate in the message's embedded cert store.
     // dwcertencodingtype must be CERT_QUERY_ENCODING_TYPE (not raw u32).
-    let combined_encoding = CERT_QUERY_ENCODING_TYPE(
-        X509_ASN_ENCODING.0 | PKCS_7_ASN_ENCODING.0,
-    );
+    let combined_encoding = CERT_QUERY_ENCODING_TYPE(X509_ASN_ENCODING.0 | PKCS_7_ASN_ENCODING.0);
     let cert_ctx = unsafe {
         CertFindCertificateInStore(
             h_store,
@@ -341,15 +338,8 @@ fn extract_publisher(image_path: &str) -> String {
 
     // Step 4: Extract the Subject CN from the certificate.
     // First call gets the required buffer size (chars, including NUL terminator).
-    let name_len = unsafe {
-        CertGetNameStringW(
-            cert_ctx,
-            CERT_NAME_SIMPLE_DISPLAY_TYPE,
-            0,
-            None,
-            None,
-        )
-    };
+    let name_len =
+        unsafe { CertGetNameStringW(cert_ctx, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None, None) };
 
     let publisher = if name_len > 1 {
         let mut name_buf = vec![0u16; name_len as usize];
@@ -609,8 +599,15 @@ mod tests {
 
         let (publisher, state) = verify_and_cache(&exe_path);
         // Rust test binaries are unsigned — WinVerifyTrust returns TRUST_E_NOSIGNATURE.
-        assert_eq!(state, SignatureState::NotSigned, "test binary must be unsigned");
-        assert!(publisher.is_empty(), "unsigned binary must have empty publisher");
+        assert_eq!(
+            state,
+            SignatureState::NotSigned,
+            "test binary must be unsigned"
+        );
+        assert!(
+            publisher.is_empty(),
+            "unsigned binary must have empty publisher"
+        );
     }
 
     #[test]
@@ -623,7 +620,10 @@ mod tests {
 
         let first = verify_and_cache(&exe_path);
         let second = verify_and_cache(&exe_path);
-        assert_eq!(first, second, "cache must return same result on second call");
+        assert_eq!(
+            first, second,
+            "cache must return same result on second call"
+        );
     }
 
     #[test]
@@ -647,8 +647,7 @@ mod tests {
             cache.contains_key(&path_b)
         };
         assert_eq!(
-            cache_before_a,
-            cache_after_a,
+            cache_before_a, cache_after_a,
             "verifying path_a must not populate path_b cache entry"
         );
     }
@@ -663,7 +662,10 @@ mod tests {
             .to_string();
 
         let identity = build_app_identity_from_path(exe_path.clone());
-        assert_eq!(identity.image_path, exe_path, "image_path must match input path");
+        assert_eq!(
+            identity.image_path, exe_path,
+            "image_path must match input path"
+        );
         // Unsigned binary -> Untrusted tier
         assert_eq!(identity.trust_tier, AppTrustTier::Untrusted);
         assert_eq!(identity.signature_state, SignatureState::NotSigned);

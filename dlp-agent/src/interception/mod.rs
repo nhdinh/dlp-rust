@@ -119,9 +119,7 @@ pub async fn run_event_loop(
                                 UsbTrustTier::Blocked => "USB-Blocked".to_string(),
                                 UsbTrustTier::ReadOnly => "USB-ReadOnly".to_string(),
                                 UsbTrustTier::FullAccess => {
-                                    unreachable!(
-                                        "FullAccess never produces a block result"
-                                    )
+                                    unreachable!("FullAccess never produces a block result")
                                 }
                             },
                             resource_path: path.clone(),

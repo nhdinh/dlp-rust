@@ -68,10 +68,7 @@ pub fn start(session_id: u32) -> Arc<AtomicBool> {
 ///
 /// Uses `AddClipboardFormatListener` to receive `WM_CLIPBOARDUPDATE`
 /// messages when the clipboard changes.
-fn run_monitor(
-    session_id: u32,
-    stop: Arc<AtomicBool>,
-) -> anyhow::Result<()> {
+fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::System::DataExchange::{
         AddClipboardFormatListener, RemoveClipboardFormatListener,
@@ -177,9 +174,8 @@ fn run_monitor(
                 // GetClipboardOwner must be called here (D-03, APP-02): the source
                 // process may exit within milliseconds of setting clipboard data.
                 // Returns windows_core::Result<HWND> — Err means NULL (no owner).
-                let source_hwnd: Option<windows::Win32::Foundation::HWND> = unsafe {
-                    windows::Win32::System::DataExchange::GetClipboardOwner().ok()
-                };
+                let source_hwnd: Option<windows::Win32::Foundation::HWND> =
+                    unsafe { windows::Win32::System::DataExchange::GetClipboardOwner().ok() };
 
                 // Read-and-clear the foreground slot atomically (D-01, APP-01).
                 // swap(0) returns the previous value and resets the slot to 0 in
@@ -195,12 +191,7 @@ fn run_monitor(
                     None
                 };
 
-                handle_clipboard_change(
-                    session_id,
-                    &mut last_hash,
-                    source_hwnd,
-                    dest_hwnd,
-                );
+                handle_clipboard_change(session_id, &mut last_hash, source_hwnd, dest_hwnd);
             }
             unsafe {
                 let _ = TranslateMessage(&msg);
