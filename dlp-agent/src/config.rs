@@ -20,8 +20,18 @@
 //!
 //! # Additional folders to exclude (case-insensitive substring match).
 //! # These are MERGED with the built-in exclusions, not replacing them.
+//! #
+//! # Built-in exclusions (always active, not configurable):
+//! #   \appdata\           — all per-user app caches, browser data, IDE state
+//! #   c:\windows\         — OS internals
+//! #   c:\programdata\     — system service data (includes DLP audit logs)
+//! #   c:\program files\   — installed application binaries
+//! #   c:\$recycle.bin\    — recycle bin
+//! #
+//! # Use excluded_paths to suppress additional noisy directories:
 //! excluded_paths = [
 //!     'C:\BuildOutput\',
+//!     'C:\Users\dev\node_modules\',
 //! ]
 //!
 //! # Heartbeat interval in seconds (populated by server config push).
