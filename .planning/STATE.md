@@ -158,3 +158,4 @@ Items acknowledged and deferred at milestone close on 2026-04-21. Known deferred
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260424-q07 | dlp-user-ui self-kills when dlp-agent disconnects (pipe1 watchdog) | 2026-04-24 | f12d139 | [260424-q07-ui-self-kill-on-agent-exit](./.planning/quick/260424-q07-ui-self-kill-on-agent-exit/) |
+| 260424-q08 | Tray icon tooltip shows UI->Agent and Agent->Server connection states | 2026-04-24 | a414413 | [260424-q08-tray-connection-status](./.planning/quick/260424-q08-tray-connection-status/) |
