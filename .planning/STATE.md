@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.6.0
-milestone_name: Endpoint Hardening
+milestone: v0.5.0
+milestone_name: â Boolean Logic
 status: executing
-last_updated: "2026-04-23T06:00:00.000Z"
-last_activity: 2026-04-23
+last_updated: "2026-04-24T03:04:38.704Z"
+last_activity: 2026-04-24
 progress:
-  total_phases: 15
-  completed_phases: 14
-  total_plans: 42
-  completed_plans: 37
-  percent: 88
+  total_phases: 8
+  completed_phases: 6
+  total_plans: 26
+  completed_plans: 25
+  percent: 96
 ---
 
 # STATE.md — Project Memory
@@ -152,3 +152,9 @@ Items acknowledged and deferred at milestone close on 2026-04-21. Known deferred
   - Phase 27: USB Toast Notification (USB-04)
   - Phase 28: Admin TUI Screens (APP-04, BRW-02)
   - Phase 29: Chrome Enterprise Connector (BRW-01, BRW-03)
+
+## Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260424-q07 | dlp-user-ui self-kills when dlp-agent disconnects (pipe1 watchdog) | 2026-04-24 | f12d139 | [260424-q07-ui-self-kill-on-agent-exit](./.planning/quick/260424-q07-ui-self-kill-on-agent-exit/) |
