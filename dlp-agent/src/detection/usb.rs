@@ -250,6 +250,15 @@ static REGISTRY_RUNTIME_HANDLE: std::sync::OnceLock<tokio::runtime::Handle> =
 static REGISTRY_CLIENT: std::sync::OnceLock<crate::server_client::ServerClient> =
     std::sync::OnceLock::new();
 
+/// Channel sender used by `handle_volume_event` to push newly-arrived USB drive
+/// roots into the running `InterceptionEngine`.  A `parking_lot::Mutex` wrapper
+/// is required because `std::sync::mpsc::Sender<T>` is `Send` but not `Sync`
+/// and therefore cannot be stored in an `OnceLock`.
+#[cfg(windows)]
+static WATCH_PATH_TX: parking_lot::Mutex<
+    Option<std::sync::mpsc::Sender<std::path::PathBuf>>,
+> = parking_lot::Mutex::new(None);
+
 /// Sets the global registry cache reference.
 ///
 /// Called once from `service.rs` before spawning USB notifications.
@@ -284,6 +293,21 @@ pub fn set_registry_client(client: crate::server_client::ServerClient) {
 #[cfg(windows)]
 pub fn set_registry_runtime_handle(handle: tokio::runtime::Handle) {
     let _ = REGISTRY_RUNTIME_HANDLE.set(handle);
+}
+
+/// Stores the channel sender used to notify `InterceptionEngine` of newly-arrived
+/// USB drive roots.
+///
+/// Called once from `service.rs` before spawning USB notifications.  When a USB
+/// drive arrives after agent startup, `handle_volume_event` sends the new drive
+/// root through this channel so the file watcher can register it dynamically.
+///
+/// # Arguments
+///
+/// * `tx` - Sender half of a `std::sync::mpsc::channel::<std::path::PathBuf>()`.
+#[cfg(windows)]
+pub fn set_watch_path_sender(tx: std::sync::mpsc::Sender<std::path::PathBuf>) {
+    *WATCH_PATH_TX.lock() = Some(tx);
 }
 
 /// Window procedure for the USB notification window.
@@ -414,6 +438,10 @@ fn handle_volume_event(detector: &UsbDetector, event_type: u32) {
     if event_type == DBT_DEVICEARRIVAL {
         for letter in now_present.difference(&before) {
             detector.on_drive_arrival(*letter);
+            // Notify the file monitor to start watching this new drive root so
+            // file events on the USB drive reach UsbEnforcer::check().
+            let root = std::path::PathBuf::from(format!("{}:\\", letter));
+            let _ = WATCH_PATH_TX.lock().as_ref().map(|tx| tx.send(root));
         }
     } else {
         for letter in before.difference(&now_present) {
