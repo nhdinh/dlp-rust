@@ -75,6 +75,22 @@ pub enum Pipe2AgentMsg {
     HealthPing,
     UiRespawn { session_id: u32 },
     UiClosingSequence { session_id: u32 },
+    /// Broadcast by the agent after each heartbeat attempt to dlp-server.
+    /// The UI uses this to display Agent->Server connection state in the tray tooltip.
+    ServerConnected { connected: bool },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_connected_roundtrip() {
+        let msg = Pipe2AgentMsg::ServerConnected { connected: true };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: Pipe2AgentMsg = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, Pipe2AgentMsg::ServerConnected { connected: true }));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

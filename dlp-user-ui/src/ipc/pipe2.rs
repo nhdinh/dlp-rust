@@ -4,6 +4,8 @@
 //! `UiRespawn`, `UiClosingSequence`.  The first four are fire-and-forget;
 //! `UiClosingSequence` triggers the UI close sequence and exits.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::Result;
 use tracing::{debug, error, info};
 use windows::core::PCWSTR;
@@ -16,6 +18,19 @@ use super::messages::Pipe2AgentMsg;
 
 /// The Win32 pipe name.
 const PIPE_NAME: &str = r"\\.\pipe\DLPEventAgent2UI";
+
+/// Tracks the last known Agent->Server connection state received via IPC.
+/// Initialized to false (unknown/disconnected) until the agent broadcasts.
+static AGENT_SERVER_CONNECTED: AtomicBool = AtomicBool::new(false);
+
+/// Returns the last known Agent->Server connection state.
+///
+/// Returns `false` until the agent broadcasts a `ServerConnected { connected: true }` message.
+/// Updated atomically with `Relaxed` ordering — callers read a recent but not necessarily
+/// instantaneous value, which is acceptable for UI display purposes.
+pub fn agent_server_connected() -> bool {
+    AGENT_SERVER_CONNECTED.load(Ordering::Relaxed)
+}
 
 /// `HANDLE` is `*mut c_void` — not `Send + Sync`.  Named-pipe handles are safe
 /// to move between threads, so we re-expose them with the correct trait impls.
@@ -118,6 +133,9 @@ fn handle_agent_msg(msg: Pipe2AgentMsg) {
             info!(session_id, "Pipe 2: UiClosingSequence received");
             crate::dialogs::show_closing_sequence();
             std::process::exit(0);
+        }
+        Pipe2AgentMsg::ServerConnected { connected } => {
+            AGENT_SERVER_CONNECTED.store(connected, Ordering::Relaxed);
         }
     }
 }

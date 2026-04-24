@@ -77,6 +77,9 @@ pub enum Pipe2AgentMsg {
     UiRespawn { session_id: u32 },
     /// The session is ending — the UI should run its closing sequence and exit.
     UiClosingSequence { session_id: u32 },
+    /// Broadcast by the agent after each heartbeat attempt to dlp-server.
+    /// The UI uses this to display Agent->Server connection state in the tray tooltip.
+    ServerConnected { connected: bool },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -118,6 +121,14 @@ pub enum Pipe3UiMsg {
 mod tests {
     use super::*;
     use dlp_common::endpoint::{AppIdentity, AppTrustTier, SignatureState};
+
+    #[test]
+    fn server_connected_roundtrip() {
+        let msg = Pipe2AgentMsg::ServerConnected { connected: true };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: Pipe2AgentMsg = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, Pipe2AgentMsg::ServerConnected { connected: true }));
+    }
 
     #[test]
     fn test_clipboard_alert_none_fields_skipped_in_json() {
