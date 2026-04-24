@@ -264,6 +264,23 @@ impl DlpApp {
                 // Apply any pending tray status updates from the Pipe 2 thread.
                 tray::apply_pending_status();
 
+                // Rebuild the tray tooltip with current connection states every Tick (100 ms).
+                // \u{2192} is the Unicode right arrow (->). Not an emoji -- safe per CLAUDE.md.
+                let ui_agent_state = if *self.state.pipe1_connected.read() {
+                    "Connected"
+                } else {
+                    "Disconnected"
+                };
+                let agent_server_state = if crate::ipc::pipe2::agent_server_connected() {
+                    "Connected"
+                } else {
+                    "Unknown"
+                };
+                tray::update_tooltip(&format!(
+                    "DLP Agent UI\nUI\u{2192}Agent: {ui_agent_state}\nAgent\u{2192}Server: {agent_server_state}"
+                ));
+                tray::apply_pending_tooltip();
+
                 // Poll tray menu events from the muda receiver.
                 if let Ok(event) = muda::MenuEvent::receiver().try_recv() {
                     let id = event.id.0.clone();
