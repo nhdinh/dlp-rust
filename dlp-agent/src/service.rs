@@ -495,8 +495,7 @@ async fn run_loop(
     // startup. The sender is stored in a global so usb_wndproc can push new
     // drive roots from the USB notification thread without holding a reference
     // to the InterceptionEngine.
-    let (watch_tx, watch_rx) =
-        std::sync::mpsc::channel::<std::path::PathBuf>();
+    let (watch_tx, watch_rx) = std::sync::mpsc::channel::<std::path::PathBuf>();
     crate::detection::usb::set_watch_path_sender(watch_tx);
 
     // Per-session identity map — resolves actual interactive users for
