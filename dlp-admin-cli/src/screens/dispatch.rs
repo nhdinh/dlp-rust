@@ -3573,7 +3573,7 @@ fn handle_devices_menu(app: &mut App, key: KeyEvent) {
 fn action_load_device_list(app: &mut App) {
     match app.rt.block_on(
         app.client
-            .get::<Vec<serde_json::Value>>("admin/device-registry"),
+            .get::<Vec<serde_json::Value>>("admin/device-registry/full"),
     ) {
         Ok(devices) => {
             app.screen = Screen::DeviceList {

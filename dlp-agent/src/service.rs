@@ -491,6 +491,14 @@ async fn run_loop(
 
     let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
 
+    // Channel for dynamically adding USB drive roots to the file watcher after
+    // startup. The sender is stored in a global so usb_wndproc can push new
+    // drive roots from the USB notification thread without holding a reference
+    // to the InterceptionEngine.
+    let (watch_tx, watch_rx) =
+        std::sync::mpsc::channel::<std::path::PathBuf>();
+    crate::detection::usb::set_watch_path_sender(watch_tx);
+
     // Per-session identity map — resolves actual interactive users for
     // file events instead of attributing everything to SYSTEM.
     let session_map = Arc::new(crate::session_identity::SessionIdentityMap::new());
@@ -542,7 +550,7 @@ async fn run_loop(
     let file_monitor_clone = file_monitor.clone();
     let file_handle = tokio::task::spawn_blocking(move || {
         // file_monitor.run() is synchronous; it blocks until stop() is called.
-        let _ = file_monitor_clone.run(action_tx);
+        let _ = file_monitor_clone.run(action_tx, Some(watch_rx));
     });
 
     info!(
@@ -626,6 +634,12 @@ async fn run_loop(
         crate::detection::usb::unregister_usb_notifications(hwnd, thread);
         crate::password_stop::debug_log("run_loop: USB unregistered");
     }
+
+    // Kill all UI processes spawned by the session monitor.  Must happen before
+    // the process exits so users are not left with orphaned dlp-user-ui windows.
+    crate::password_stop::debug_log("run_loop: killing UI processes");
+    crate::ui_spawner::kill_all();
+    crate::password_stop::debug_log("run_loop: UI processes killed");
 
     // Stop the audit buffer flush task (final flush runs inside).
     let _ = audit_shutdown_tx.send(true);
@@ -1123,7 +1137,7 @@ async fn async_run_console() -> Result<()> {
     // File monitor runs on a blocking thread so it doesn't starve the Tokio executor.
     let file_monitor_clone = file_monitor.clone();
     let file_handle = tokio::task::spawn_blocking(move || {
-        if let Err(e) = file_monitor_clone.run(action_tx) {
+        if let Err(e) = file_monitor_clone.run(action_tx, None) {
             // Always log this error — it means the file monitor failed to start or crashed.
             // This is important enough to print to stderr directly as a fallback
             // in case tracing is misconfigured.
@@ -1156,6 +1170,9 @@ async fn async_run_console() -> Result<()> {
     if let Some(h) = _audit_flush_handle {
         let _ = h.await;
     }
+
+    // Kill all UI processes so users are not left with orphaned dlp-user-ui windows.
+    crate::ui_spawner::kill_all();
 
     info!(
         service_name = SERVICE_NAME,

@@ -177,8 +177,18 @@ impl InterceptionEngine {
     /// reliable, cross-session approach that works on all Windows configurations.
     ///
     /// Returns `Ok(())` when [`stop()`](InterceptionEngine::stop) is called.
-    pub fn run(&self, tx: mpsc::Sender<FileAction>) -> Result<()> {
-        use notify::{Config, RecommendedWatcher, Watcher};
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - Channel for file action events consumed by the interception event loop.
+    /// * `watch_rx` - Optional receiver for dynamically-added watch paths (e.g. USB drives
+    ///   that arrive after startup). Each `PathBuf` received is registered with the watcher.
+    pub fn run(
+        &self,
+        tx: mpsc::Sender<FileAction>,
+        watch_rx: Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
+    ) -> Result<()> {
+        use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
         use std::sync::mpsc as std_mpsc;
         use std::time::Duration;
 
@@ -224,6 +234,27 @@ impl InterceptionEngine {
                 Err(std_mpsc::RecvTimeoutError::Disconnected) => {
                     tracing::info!("watcher channel disconnected — exiting");
                     return Ok(());
+                }
+            }
+
+            // Drain any USB drive roots that arrived since the last poll and add
+            // them to the active watch set. This is the dynamic counterpart to the
+            // one-time register_watch_paths() call above: drives plugged in after
+            // agent startup are added here so file events reach UsbEnforcer::check().
+            if let Some(ref rx) = watch_rx {
+                while let Ok(new_path) = rx.try_recv() {
+                    if let Err(e) = watcher.watch(&new_path, RecursiveMode::Recursive) {
+                        tracing::warn!(
+                            path = %new_path.display(),
+                            error = %e,
+                            "could not watch new USB drive root"
+                        );
+                    } else {
+                        tracing::info!(
+                            path = %new_path.display(),
+                            "dynamically added USB drive root to watch set"
+                        );
+                    }
                 }
             }
 

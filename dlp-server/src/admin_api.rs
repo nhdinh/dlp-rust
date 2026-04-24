@@ -606,6 +606,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
             post(upsert_device_registry_handler),
         )
         .route(
+            "/admin/device-registry/full",
+            get(list_device_registry_full_handler),
+        )
+        .route(
             "/admin/device-registry/{id}",
             delete(delete_device_registry_handler),
         )
@@ -1567,6 +1571,26 @@ async fn list_device_registry_handler(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
     let response: Vec<PublicDeviceEntry> = rows.into_iter().map(Into::into).collect();
+    Ok(Json(response))
+}
+
+/// Returns the full device registry list including `trust_tier` and `description`.
+///
+/// `GET /admin/device-registry/full` — requires JWT Bearer auth.
+///
+/// Used by the admin TUI to display the complete device list.  Separated from
+/// the unauthenticated `GET /admin/device-registry` endpoint which omits
+/// `trust_tier` to prevent unauthenticated enumeration of privileged devices.
+async fn list_device_registry_full_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<DeviceRegistryResponse>>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        repositories::DeviceRegistryRepository::list_all(&pool).map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    let response: Vec<DeviceRegistryResponse> = rows.into_iter().map(Into::into).collect();
     Ok(Json(response))
 }
 

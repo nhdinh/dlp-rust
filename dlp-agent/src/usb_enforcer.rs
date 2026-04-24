@@ -127,7 +127,29 @@ impl UsbEnforcer {
             let map = self.detector.device_identities.read();
             map.get(&drive).cloned()
         };
-        let identity = identity?;
+        let identity = match identity {
+            Some(id) => id,
+            None => {
+                // Defence-in-depth: a drive letter may be known as USB (via
+                // `scan_existing_drives` at startup or a missed identity-capture
+                // race) without an associated VID/PID/serial. In that case, we
+                // cannot consult the device registry — but treating the drive as
+                // "not a USB" and falling through to ABAC would violate the
+                // default-deny posture (Zero Trust, CLAUDE.md §3.1). If the drive
+                // is in `blocked_drives`, treat it as a known-USB-without-identity
+                // and DENY all operations with tier=Blocked.
+                if self.detector.blocked_drives.read().contains(&drive) {
+                    let notify = self.should_notify(drive);
+                    return Some(UsbBlockResult {
+                        decision: Decision::DENY,
+                        identity: DeviceIdentity::default(),
+                        tier: UsbTrustTier::Blocked,
+                        notify,
+                    });
+                }
+                return None;
+            }
+        };
 
         // Look up the trust tier from the device registry using the device triple.
         let tier = self
@@ -482,5 +504,43 @@ mod tests {
             !second.notify,
             "second call within cooldown window must suppress toast"
         );
+    }
+
+    /// Defence-in-depth: a drive letter known to be USB (via `scan_existing_drives`)
+    /// but missing from `device_identities` (VID/PID/serial never captured) must still
+    /// be denied on all operations. Without this guard, the enforcer would return `None`
+    /// and fall through to ABAC, which allows the operation — the Phase 28 UAT bug.
+    ///
+    /// Precondition: `blocked_drives` contains the letter; `device_identities` is empty.
+    #[test]
+    fn test_known_usb_without_identity_is_denied() {
+        // Build a detector with E in blocked_drives but nothing in device_identities —
+        // simulating a USB plugged in before the agent started (scan_existing_drives
+        // captures the drive letter but not the VID/PID/serial).
+        let mut blocked = HashSet::new();
+        blocked.insert('E');
+        let detector = Arc::new(UsbDetector {
+            blocked_drives: RwLock::new(blocked),
+            device_identities: RwLock::new(HashMap::new()),
+        });
+        let registry = Arc::new(DeviceRegistryCache::new());
+        let enforcer = UsbEnforcer::new(detector, registry);
+
+        for action in [
+            written_action(),
+            read_action(),
+            created_action(),
+            deleted_action(),
+            moved_action(),
+        ] {
+            let result = enforcer.check("E:\\file.txt", &action);
+            let r = result.expect("known USB without identity must be denied, not allowed");
+            assert_eq!(r.decision, Decision::DENY, "action {action:?} must DENY");
+            assert_eq!(
+                r.tier,
+                UsbTrustTier::Blocked,
+                "action {action:?} must report Blocked tier"
+            );
+        }
     }
 }
