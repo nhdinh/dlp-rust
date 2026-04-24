@@ -33,12 +33,10 @@ const BUILTIN_EXCLUDED_PREFIXES: &[&str] = &[
     r"c:\program files (x86)\",
     r"c:\$recycle.bin\",
     r"c:\system volume information\",
-    // Per-user application caches and temp directories.
-    r"\appdata\local\temp\",
-    r"\appdata\local\microsoft\",
-    r"\appdata\local\packages\",
-    r"\appdata\roaming\code\",
-    r"\appdata\roaming\microsoft\",
+    // The entire AppData tree — browser caches, IDE state, OS temp dirs, and
+    // per-user app data generate high-volume low-value events that inflate the
+    // audit log without carrying DLP-relevant content.
+    r"\appdata\",
 ];
 
 /// Returns `true` if the path should be excluded from monitoring.
@@ -416,17 +414,27 @@ mod tests {
     }
 
     #[test]
-    fn test_excluded_appdata_temp() {
+    fn test_excluded_appdata_tree() {
+        // Temp and IDE caches (previously covered by specific entries).
         assert!(is_excluded(
             r"C:\Users\jsmith\AppData\Local\Temp\tmp1234.dat",
             NO_CUSTOM,
         ));
-    }
-
-    #[test]
-    fn test_excluded_appdata_vscode() {
         assert!(is_excluded(
             r"C:\Users\jsmith\AppData\Roaming\Code\User\state.vscdb",
+            NO_CUSTOM,
+        ));
+        // Browser and app caches that were NOT excluded before this change.
+        assert!(is_excluded(
+            r"C:\Users\jsmith\AppData\Local\Google\Chrome\User Data\Default\Cache\data_0",
+            NO_CUSTOM,
+        ));
+        assert!(is_excluded(
+            r"C:\Users\jsmith\AppData\Roaming\Discord\Cache\f_000001",
+            NO_CUSTOM,
+        ));
+        assert!(is_excluded(
+            r"C:\Users\jsmith\AppData\Local\slack\Cache\Cache_Data\index",
             NO_CUSTOM,
         ));
     }
