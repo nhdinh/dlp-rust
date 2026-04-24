@@ -19,6 +19,43 @@ use crate::tray;
 struct UiState {
     session_id: u32,
     pipe1_connected: Arc<RwLock<bool>>,
+    /// Latches to `true` the first time `pipe1_connected` is seen as `true`.
+    /// Used to distinguish "agent not yet started" (safe to wait) from
+    /// "agent was running and died" (self-terminate).
+    pipe1_ever_connected: bool,
+}
+
+/// Drives the watchdog latch and returns `true` if the UI should self-terminate.
+///
+/// # Arguments
+///
+/// * `currently_connected` - Whether the pipe1 connection is active right now.
+/// * `ever_connected` - Mutable latch; set to `true` on first connection.
+///
+/// # Returns
+///
+/// `true` when the process should call `std::process::exit(0)`, `false` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// let mut ever = false;
+/// // Not yet connected — should not exit.
+/// assert!(!watchdog_should_exit(false, &mut ever));
+/// // First successful connection — latch fires, still no exit.
+/// assert!(!watchdog_should_exit(true,  &mut ever));
+/// assert!(ever);
+/// // Connection dropped after latch — should exit.
+/// assert!(watchdog_should_exit(false, &mut ever));
+/// ```
+fn watchdog_should_exit(currently_connected: bool, ever_connected: &mut bool) -> bool {
+    if currently_connected {
+        *ever_connected = true;
+        false
+    } else {
+        // Only self-terminate if we had a connection at least once.
+        *ever_connected
+    }
 }
 
 /// Top-level application message.
@@ -205,6 +242,7 @@ pub fn run() -> iced::Result {
             let state = UiState {
                 session_id,
                 pipe1_connected,
+                pipe1_ever_connected: false,
             };
             (DlpApp { state }, iced::Task::none())
         });
@@ -238,6 +276,14 @@ impl DlpApp {
                         _ => {}
                     }
                 }
+                // Watchdog: if pipe1 was ever connected and is now disconnected,
+                // the agent has been killed — terminate the UI process.
+                let currently_connected = *self.state.pipe1_connected.read();
+                if watchdog_should_exit(currently_connected, &mut self.state.pipe1_ever_connected) {
+                    info!("dlp-agent disconnected -- self-terminating");
+                    std::process::exit(0);
+                }
+
                 iced::Task::none()
             }
         }
@@ -265,5 +311,48 @@ impl DlpApp {
     /// events.
     fn subscription(&self) -> iced::Subscription<Message> {
         iced::time::every(std::time::Duration::from_millis(100)).map(|_| Message::Tick(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::watchdog_should_exit;
+
+    /// Test 1: UI that has connected (ever_connected=true) then disconnects
+    /// calls should return true (trigger exit).
+    #[test]
+    fn test_watchdog_exits_after_disconnect() {
+        let mut ever = false;
+        // Simulate a connected tick — sets the latch.
+        assert!(!watchdog_should_exit(true, &mut ever));
+        assert!(ever, "latch must be set after a connected tick");
+        // Agent dies — pipe drops.
+        assert!(
+            watchdog_should_exit(false, &mut ever),
+            "should exit after disconnect when latch is set"
+        );
+    }
+
+    /// Test 2: UI that has never connected (ever_connected=false) and
+    /// pipe1_connected=false does NOT exit (startup race safety).
+    #[test]
+    fn test_watchdog_no_exit_when_never_connected() {
+        let mut ever = false;
+        assert!(
+            !watchdog_should_exit(false, &mut ever),
+            "must not exit when agent was never seen"
+        );
+        assert!(!ever, "latch must remain false when never connected");
+    }
+
+    /// Test 3: UI that is actively connected sets the latch and does NOT exit.
+    #[test]
+    fn test_watchdog_no_exit_while_connected() {
+        let mut ever = false;
+        assert!(
+            !watchdog_should_exit(true, &mut ever),
+            "must not exit while actively connected"
+        );
+        assert!(ever, "latch must be set when connected");
     }
 }
