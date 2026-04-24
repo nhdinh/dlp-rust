@@ -26,11 +26,26 @@ static OP_OPEN: std::sync::LazyLock<Vec<u16>> =
 /// menu item on the main thread.
 static PENDING_STATUS: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
 
+/// Pending tooltip text queued from any thread; applied on the main thread
+/// by [`apply_pending_tooltip`].  `TrayIcon` is not `Send`, so we stage the
+/// string here and perform the actual `set_tooltip` call from the Tick arm.
+static PENDING_TOOLTIP: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
 // Handle to the "Agent Status" menu item.  Only accessed from the main
 // thread (iced event loop).  Stored in a thread_local because MenuItem
 // is not Send.
 std::thread_local! {
     static STATUS_ITEM: std::cell::RefCell<Option<MenuItem>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+// Handle to the TrayIcon.  Only accessed from the main thread (iced event
+// loop).  Stored in a thread_local because TrayIcon is not Send.
+// Previously the icon was kept alive via `std::mem::forget`; storing it
+// here allows us to call `set_tooltip` on it later.
+std::thread_local! {
+    static TRAY_ICON: std::cell::RefCell<Option<tray_icon::TrayIcon>> = const {
         std::cell::RefCell::new(None)
     };
 }
@@ -73,10 +88,13 @@ pub fn init() -> Result<()> {
         .build()
         .map_err(|e| anyhow::anyhow!("failed to build tray icon: {e}"))?;
 
-    // Leak the tray icon so it lives for the process lifetime.
-    // tray-icon drops the icon (and removes it from the taskbar)
-    // when the TrayIcon value is dropped.
-    std::mem::forget(tray);
+    // Store the TrayIcon in thread-local so we can update the tooltip later.
+    // Previously this was std::mem::forget(tray), which kept it alive but
+    // prevented any subsequent calls (e.g. set_tooltip).  Thread-local storage
+    // achieves the same lifetime guarantee while allowing mutation.
+    TRAY_ICON.with(|cell| {
+        *cell.borrow_mut() = Some(tray);
+    });
 
     Ok(())
 }
@@ -103,6 +121,38 @@ pub fn apply_pending_status() {
                 let label = format!("Agent Status: {status}");
                 item.set_text(label);
                 tracing::info!(status, "tray status applied");
+            }
+        });
+    }
+}
+
+/// Queues a tooltip string for application on the next Tick.
+///
+/// Thread-safe: can be called from any thread.  The actual `set_tooltip`
+/// call happens on the main thread via [`apply_pending_tooltip`].
+///
+/// # Arguments
+///
+/// * `text` - The new tooltip string to display on the tray icon.
+pub fn update_tooltip(text: &str) {
+    *PENDING_TOOLTIP.lock() = Some(text.to_owned());
+}
+
+/// Applies any queued tooltip update to the tray icon.
+///
+/// Must be called from the main (iced) thread because `TrayIcon` is not
+/// `Send`.  Called from the Tick arm in `app.rs` every 100 ms.
+/// If no tooltip update is pending, this is a no-op.
+pub fn apply_pending_tooltip() {
+    // `take()` atomically clears the pending value and returns it.
+    // The lock is held only for this take(), not across the set_tooltip call,
+    // preventing lock-contention stalls (T-Q08-03 mitigation).
+    let pending = PENDING_TOOLTIP.lock().take();
+    if let Some(text) = pending {
+        TRAY_ICON.with(|cell| {
+            if let Some(icon) = cell.borrow().as_ref() {
+                // set_tooltip accepts Option<&str>; None clears the tooltip.
+                let _ = icon.set_tooltip(Some(text.as_str()));
             }
         });
     }
