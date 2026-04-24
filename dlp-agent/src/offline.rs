@@ -170,14 +170,24 @@ impl OfflineManager {
 
             // Best-effort heartbeat to dlp-server (independent of
             // Policy Engine online/offline state).
-            if let Some(ref sc) = self.server_client {
-                if let Err(e) = sc.send_heartbeat().await {
-                    debug!(
-                        error = %e,
-                        "dlp-server heartbeat failed (best-effort)"
-                    );
+            let server_connected = if let Some(ref sc) = self.server_client {
+                let ok = sc.send_heartbeat().await.is_ok();
+                if !ok {
+                    debug!("dlp-server heartbeat failed (best-effort)");
                 }
-            }
+                ok
+            } else {
+                false
+            };
+
+            // Broadcast the current Agent->Server connection state to all UI clients.
+            // The UI stores this atomically and displays it in the tray tooltip.
+            // Fire-and-forget — no acknowledgement expected.
+            crate::ipc::pipe2::BROADCASTER.broadcast(
+                &crate::ipc::messages::Pipe2AgentMsg::ServerConnected {
+                    connected: server_connected,
+                },
+            );
 
             if self.is_online() {
                 continue;

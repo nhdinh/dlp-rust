@@ -70,14 +70,25 @@ pub enum Pipe1UiMsg {
 #[serde(tag = "type", content = "payload")]
 #[allow(dead_code)]
 pub enum Pipe2AgentMsg {
-    Toast { title: String, body: String },
-    StatusUpdate { status: String },
+    Toast {
+        title: String,
+        body: String,
+    },
+    StatusUpdate {
+        status: String,
+    },
     HealthPing,
-    UiRespawn { session_id: u32 },
-    UiClosingSequence { session_id: u32 },
+    UiRespawn {
+        session_id: u32,
+    },
+    UiClosingSequence {
+        session_id: u32,
+    },
     /// Broadcast by the agent after each heartbeat attempt to dlp-server.
     /// The UI uses this to display Agent->Server connection state in the tray tooltip.
-    ServerConnected { connected: bool },
+    ServerConnected {
+        connected: bool,
+    },
 }
 
 #[cfg(test)]
@@ -89,7 +100,10 @@ mod tests {
         let msg = Pipe2AgentMsg::ServerConnected { connected: true };
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: Pipe2AgentMsg = serde_json::from_str(&json).unwrap();
-        assert!(matches!(decoded, Pipe2AgentMsg::ServerConnected { connected: true }));
+        assert!(matches!(
+            decoded,
+            Pipe2AgentMsg::ServerConnected { connected: true }
+        ));
     }
 }
 
