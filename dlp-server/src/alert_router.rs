@@ -405,6 +405,7 @@ impl AlertRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{extract::Json, http::StatusCode};
 
     #[test]
     fn test_smtp_config_fields() {
@@ -596,5 +597,164 @@ mod tests {
         // Second read: must reflect the update (no caching).
         let row2 = router.load_config().expect("load 2");
         assert_eq!(row2.smtp_host, "updated.example.com");
+    }
+
+    /// Verifies that `send_webhook` actually POSTs a JSON payload to the
+    /// configured endpoint.  Starts a local mock HTTP server, calls
+    /// `send_webhook` directly, and asserts the received body matches the
+    /// audit event.
+    #[tokio::test]
+    async fn test_send_webhook_delivers_payload() {
+        use dlp_common::{
+            Action, AuditAccessContext, AuditEvent, Classification, Decision, EventType,
+        };
+        use tokio::net::TcpListener;
+
+        // Channel to capture the received webhook body.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+
+        let mock_app = axum::Router::new().route(
+            "/webhook",
+            axum::routing::post(
+                move |Json(body): Json<serde_json::Value>| async move {
+                    let _ = tx.send(body).await;
+                    StatusCode::OK
+                },
+            ),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
+        let port = listener.local_addr().expect("get addr").port();
+        let mock_handle = tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.expect("mock serve");
+        });
+
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let router = AlertRouter::new(pool);
+
+        let event = AuditEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: EventType::Alert,
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "dlp-admin".to_string(),
+            resource_path: "[DLP Test Connection]".to_string(),
+            classification: Classification::T4,
+            action_attempted: Action::COPY,
+            decision: Decision::DenyWithAlert,
+            policy_id: None,
+            policy_name: None,
+            agent_id: "dlp-server".to_string(),
+            session_id: 0,
+            device_trust: None,
+            network_location: None,
+            justification: Some("webhook integration test".to_string()),
+            override_granted: false,
+            access_context: AuditAccessContext::Local,
+            correlation_id: None,
+            application_path: None,
+            application_hash: None,
+            resource_owner: None,
+            source_application: None,
+            destination_application: None,
+            device_identity: None,
+        };
+
+        let cfg = WebhookConfig {
+            url: format!("http://127.0.0.1:{}/webhook", port),
+            secret: None,
+        };
+
+        router
+            .send_webhook(&cfg, &event)
+            .await
+            .expect("webhook delivery should succeed against mock server");
+
+        // Verify the mock server received the correct payload.
+        let payload = rx
+            .recv()
+            .await
+            .expect("mock server should have received a payload");
+        assert_eq!(payload["user_name"], "dlp-admin");
+        assert_eq!(payload["resource_path"], "[DLP Test Connection]");
+        assert_eq!(payload["decision"], "DENY_WITH_ALERT");
+
+        mock_handle.abort();
+    }
+
+    /// Verifies that `send_email` exercises the SMTP code path when given a
+    /// valid-looking config pointing at a closed port.
+    ///
+    /// Since we do not have a real SMTP relay in the test environment, we
+    /// configure the transport to connect to `127.0.0.1:1` (guaranteed closed).
+    /// The expected result is a connection-refused error, proving that the
+    /// message was built and the transport attempted delivery.
+    #[tokio::test]
+    async fn test_send_email_exercises_smtp_path() {
+        use dlp_common::{
+            Action, AuditAccessContext, AuditEvent, Classification, Decision, EventType,
+        };
+
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let router = AlertRouter::new(pool);
+
+        let cfg = SmtpConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1, // guaranteed closed — forces a connection error
+            username: "testuser".to_string(),
+            password: "testpass".to_string(),
+            from: "dlp@test.local".to_string(),
+            to: vec!["admin@test.local".to_string()],
+        };
+
+        let event = AuditEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: EventType::Alert,
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "dlp-admin".to_string(),
+            resource_path: "[DLP Test Connection]".to_string(),
+            classification: Classification::T4,
+            action_attempted: Action::COPY,
+            decision: Decision::DenyWithAlert,
+            policy_id: None,
+            policy_name: None,
+            agent_id: "dlp-server".to_string(),
+            session_id: 0,
+            device_trust: None,
+            network_location: None,
+            justification: Some("SMTP integration test".to_string()),
+            override_granted: false,
+            access_context: AuditAccessContext::Local,
+            correlation_id: None,
+            application_path: None,
+            application_hash: None,
+            resource_owner: None,
+            source_application: None,
+            destination_application: None,
+            device_identity: None,
+        };
+
+        let err = router
+            .send_email(&cfg, &event)
+            .await
+            .expect_err("SMTP to closed port must fail");
+
+        // The error must be an Email error (connection refused / network failure),
+        // not a serialization or message-build error.
+        match err {
+            AlertError::Email(msg) => {
+                assert!(
+                    msg.contains("connection")
+                        || msg.contains("refused")
+                        || msg.contains("network")
+                        || msg.contains("tcp")
+                        || msg.contains("Io"),
+                    "expected SMTP connection error, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected AlertError::Email, got {:?}", other),
+        }
     }
 }
