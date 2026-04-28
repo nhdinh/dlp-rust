@@ -1,0 +1,25 @@
+[package]
+name = "dlp-e2e"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "End-to-end integration test harness for the Enterprise DLP System"
+
+[dependencies]
+dlp-common = { path = "../dlp-common" }
+dlp-admin-cli = { path = "../dlp-admin-cli" }
+dlp-agent = { path = "../dlp-agent" }
+dlp-server = { path = "../dlp-server" }
+
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+axum = { version = "0.8", features = ["macros"] }
+tower = { version = "0.4", features = ["util"] }
+reqwest = { version = "0.12", features = ["json"], default-features = false }
+serde_json = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+jsonwebtoken = "9"
+tempfile = "3"
+ratatui = "0.29"
+crossterm = "0.28"
+tracing = { workspace = true }
