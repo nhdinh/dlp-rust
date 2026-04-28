@@ -42,16 +42,49 @@ use tokio::net::TcpListener;
 ///
 /// Panics if the agent binary cannot be spawned.
 fn spawn_agent(config_path: &Path, server_url: &str) -> std::process::Child {
-    Command::new("cargo")
-        .args(["run", "--bin", "dlp-agent", "--", "--console"])
+    // Derive a log directory inside the same temp dir so the agent can write
+    // its rolling log file without requiring elevated privileges.
+    let log_dir = config_path
+        .parent()
+        .expect("config_path must have a parent directory")
+        .join("logs");
+
+    // Prefer the pre-built binary path set by cargo test via CARGO_BIN_EXE_dlp-agent.
+    // This avoids `cargo run` which would lock the EXE file and prevent rebuilds.
+    // Fall back to cargo run only if the env var is not set (e.g., direct invocation).
+    let agent_exe = std::env::var("CARGO_BIN_EXE_dlp-agent").unwrap_or_else(|_| {
+        // Fallback: derive from CARGO_TARGET_DIR or the test binary's own path.
+        // Test binaries live at {target_dir}/debug/deps/; agent is at {target_dir}/debug/.
+        let test_exe = std::env::current_exe().expect("get current exe path");
+        let target_debug = test_exe
+            .parent()
+            .and_then(|d| d.parent())
+            .expect("derive target/debug from test exe path");
+        target_debug
+            .join("dlp-agent.exe")
+            .to_string_lossy()
+            .into_owned()
+    });
+
+    Command::new(&agent_exe)
+        .args(["--console"])
         .env("DLP_CONFIG_PATH", config_path)
         .env("DLP_SERVER_URL", server_url)
-        .env("CARGO_TARGET_DIR", "target-test")
         .env("DLP_JWT_SECRET", TEST_JWT_SECRET)
+        // Redirect log output to a temp directory to avoid requiring
+        // elevated privileges for writing to C:\ProgramData\DLP\logs\.
+        .env("DLP_LOG_DIR", &log_dir)
+        // Skip DACL hardening so the test can kill the agent process with
+        // Child::kill() — hardening denies PROCESS_TERMINATE to non-SYSTEM callers.
+        .env("DLP_SKIP_HARDENING", "1")
+        // Skip IPC pipe creation — integration tests may have a stale agent instance
+        // holding the named-pipe handles. Skipping IPC avoids the 5-second
+        // start_all() timeout that would otherwise burn test time.
+        .env("DLP_SKIP_IPC", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn dlp-agent binary")
+        .unwrap_or_else(|e| panic!("spawn dlp-agent binary ({agent_exe}): {e}"))
 }
 
 /// Polls the temp config TOML file until it exists and parses successfully,

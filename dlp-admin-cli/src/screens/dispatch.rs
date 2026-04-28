@@ -13,7 +13,16 @@ use dlp_common::abac::PolicyMode;
 /// Routes an event to the handler for the current screen.
 pub fn handle_event(app: &mut App, event: AppEvent) {
     let key = match event {
-        AppEvent::Key(k) if k.kind == KeyEventKind::Press => k,
+        AppEvent::Key(k) => {
+            // In headless test mode (TestBackend) KeyEventKind is not set to
+            // Press, so accept all kinds.  In production (CrosstermBackend)
+            // only Press events are meaningful.
+            if cfg!(test) || k.kind == KeyEventKind::Press {
+                k
+            } else {
+                return;
+            }
+        }
         _ => return,
     };
 

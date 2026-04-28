@@ -13,7 +13,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use dlp_common::{EvaluateRequest, EvaluateResponse};
-use dlp_e2e::helpers;
+use dlp_e2e::helpers::server;
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -27,7 +27,7 @@ fn build_put_request(path: &str, payload: serde_json::Value) -> Request<Body> {
         .method(Method::PUT)
         .uri(path)
         .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", helpers::server::mint_jwt()))
+        .header("Authorization", format!("Bearer {}", server::mint_jwt()))
         .body(Body::from(payload.to_string()))
         .expect("build PUT request")
 }
@@ -37,7 +37,7 @@ fn build_get_request(path: &str) -> Request<Body> {
     Request::builder()
         .method(Method::GET)
         .uri(path)
-        .header("Authorization", format!("Bearer {}", helpers::server::mint_jwt()))
+        .header("Authorization", format!("Bearer {}", server::mint_jwt()))
         .body(Body::empty())
         .expect("build GET request")
 }
@@ -68,7 +68,7 @@ async fn get_config(app: &mut Router, path: &str) -> (StatusCode, serde_json::Va
 
 #[tokio::test]
 async fn test_siem_config_hot_reload() {
-    let (mut app, _pool) = helpers::server::build_test_app();
+    let (mut app, _pool) = server::build_test_app();
 
     // Step 1: GET default config
     let (status, default) = get_config(&mut app, "/admin/siem-config").await;
@@ -114,7 +114,7 @@ async fn test_siem_config_hot_reload() {
 
 #[tokio::test]
 async fn test_alert_config_hot_reload() {
-    let (mut app, _pool) = helpers::server::build_test_app();
+    let (mut app, _pool) = server::build_test_app();
 
     // Step 1: GET default config
     let (status, default) = get_config(&mut app, "/admin/alert-config").await;
@@ -164,7 +164,7 @@ async fn test_alert_config_hot_reload() {
 
 #[tokio::test]
 async fn test_agent_config_hot_reload() {
-    let (mut app, _pool) = helpers::server::build_test_app();
+    let (mut app, _pool) = server::build_test_app();
 
     // Step 1: GET default config
     let (status, default) = get_config(&mut app, "/admin/agent-config").await;
@@ -215,7 +215,7 @@ async fn test_agent_config_hot_reload() {
 
 #[tokio::test]
 async fn test_policy_store_hot_reload() {
-    let (app, _pool) = helpers::server::build_test_app();
+    let (app, _pool) = server::build_test_app();
 
     // Step 1: Create a DENY policy for T4 resources
     let policy_payload = json!({
@@ -239,11 +239,11 @@ async fn test_policy_store_hot_reload() {
         .method(Method::POST)
         .uri("/admin/policies")
         .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", helpers::server::mint_jwt()))
+        .header("Authorization", format!("Bearer {}", server::mint_jwt()))
         .body(Body::from(policy_payload.to_string()))
         .expect("build POST request");
 
-    let create_resp = app.clone().oneshot(create_req).await.expect("send POST request");
+    let create_resp: axum::http::Response<axum::body::Body> = app.clone().oneshot(create_req).await.expect("send POST request");
     assert_eq!(
         create_resp.status(),
         StatusCode::CREATED,
@@ -283,7 +283,7 @@ async fn test_policy_store_hot_reload() {
         ))
         .expect("build eval request");
 
-    let eval_resp = app.clone().oneshot(eval_req_http).await.expect("send eval request");
+    let eval_resp: axum::http::Response<axum::body::Body> = app.clone().oneshot(eval_req_http).await.expect("send eval request");
     assert_eq!(eval_resp.status(), StatusCode::OK, "POST /evaluate should return 200");
     let eval_bytes = to_bytes(eval_resp.into_body(), usize::MAX)
         .await
@@ -317,11 +317,11 @@ async fn test_policy_store_hot_reload() {
         .method(Method::PUT)
         .uri("/admin/policies/hot-reload-test")
         .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", helpers::server::mint_jwt()))
+        .header("Authorization", format!("Bearer {}", server::mint_jwt()))
         .body(Body::from(update_payload.to_string()))
         .expect("build PUT request");
 
-    let update_resp = app.clone().oneshot(update_req).await.expect("send PUT request");
+    let update_resp: axum::http::Response<axum::body::Body> = app.clone().oneshot(update_req).await.expect("send PUT request");
     assert_eq!(
         update_resp.status(),
         StatusCode::OK,
@@ -339,7 +339,7 @@ async fn test_policy_store_hot_reload() {
         ))
         .expect("build eval request");
 
-    let eval_resp2 = app.clone().oneshot(eval_req2_http).await.expect("send eval request");
+    let eval_resp2: axum::http::Response<axum::body::Body> = app.clone().oneshot(eval_req2_http).await.expect("send eval request");
     assert_eq!(
         eval_resp2.status(),
         StatusCode::OK,

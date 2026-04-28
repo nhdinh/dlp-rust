@@ -357,6 +357,7 @@ mod config_edge_cases {
             excluded_paths: Vec::new(),
             heartbeat_interval_secs: None,
             offline_cache_enabled: None,
+            log_level: None,
             ldap_config: None,
             machine_name: None,
         };
@@ -376,6 +377,7 @@ mod config_edge_cases {
             excluded_paths: vec![r"C:\Temp\".to_string()],
             heartbeat_interval_secs: None,
             offline_cache_enabled: None,
+            log_level: None,
             ldap_config: None,
             machine_name: None,
         };
