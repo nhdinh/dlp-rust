@@ -35,7 +35,21 @@ const DENIED_ACCESS: u32 = 0x0001 | 0x0002 | 0x0008 | 0x0010 | 0x0020;
 ///
 /// Called once during service startup.  Failures are logged as warnings
 /// but do not prevent the service from running.
+///
+/// # Test override
+///
+/// Set `DLP_SKIP_HARDENING=1` to disable DACL hardening.  This allows
+/// integration tests to kill the agent process via `Child::kill()` without
+/// requiring SYSTEM-level privileges.
 pub fn harden_agent_process() {
+    // Skip DACL hardening when running in test mode. Integration tests spawn
+    // the agent as a child process and need to terminate it with child.kill(),
+    // which requires PROCESS_TERMINATE access. Hardening blocks this for
+    // non-privileged callers.
+    if std::env::var("DLP_SKIP_HARDENING").is_ok_and(|v| v == "1") {
+        info!(pid = std::process::id(), "agent process DACL hardening skipped (DLP_SKIP_HARDENING=1)");
+        return;
+    }
     // SAFETY: `GetCurrentProcess()` returns a pseudo-handle (-1) that is
     // always valid and does not need to be closed.
     let handle = unsafe { windows::Win32::System::Threading::GetCurrentProcess() };

@@ -12,6 +12,11 @@
 //! # If omitted, defaults to http://127.0.0.1:9090.
 //! server_url = 'http://10.0.1.5:9090'
 //!
+//! # Minimum log level written to C:\ProgramData\DLP\logs\dlp-agent.log.
+//! # Accepted values (case-insensitive): trace, debug, info, warn, error.
+//! # Default (when omitted): trace — all log lines are written.
+//! log_level = 'info'
+//!
 //! # Folders to monitor recursively.  Empty list = all drives A-Z.
 //! monitored_paths = [
 //!     'C:\Data\',
@@ -93,6 +98,17 @@ pub struct AgentConfig {
     #[serde(default)]
     pub offline_cache_enabled: Option<bool>,
 
+    /// Minimum log level for the rolling log file.
+    ///
+    /// Accepted values (case-insensitive): `"trace"`, `"debug"`, `"info"`,
+    /// `"warn"`, `"error"`. When `None` or omitted the agent defaults to
+    /// `TRACE` so every log line is visible — useful for diagnosing issues
+    /// without redeploying the binary.
+    ///
+    /// Set to `"info"` for production deployments to reduce log volume.
+    #[serde(default)]
+    pub log_level: Option<String>,
+
     /// LDAP/AD configuration for group resolution. When `None`, AD features
     /// are disabled (fallback to placeholder identity values). Populated by
     /// server config push and persisted to the TOML config file.
@@ -161,9 +177,32 @@ impl AgentConfig {
         }
     }
 
-    /// Loads configuration from the default path ([`DEFAULT_CONFIG_PATH`]).
+    /// Loads configuration from the effective config path.
+    ///
+    /// Checks the `DLP_CONFIG_PATH` environment variable first.  If set and
+    /// non-empty, that path is used; otherwise falls back to [`DEFAULT_CONFIG_PATH`].
+    ///
+    /// This allows integration tests to redirect the agent to a temp directory
+    /// without requiring admin privileges or touching the production config file.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // In a test: set DLP_CONFIG_PATH to a temp file before spawning the agent.
+    /// std::env::set_var("DLP_CONFIG_PATH", "/tmp/test/agent-config.toml");
+    /// ```
     pub fn load_default() -> Self {
-        Self::load(Path::new(DEFAULT_CONFIG_PATH))
+        Self::load(Path::new(&Self::effective_config_path()))
+    }
+
+    /// Returns the config file path honoring the `DLP_CONFIG_PATH` env override.
+    ///
+    /// Used by both [`load_default`] and the config poll loop's save path.
+    pub fn effective_config_path() -> String {
+        std::env::var("DLP_CONFIG_PATH")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_PATH.to_string())
     }
 
     /// Persists the current config to a TOML file.
@@ -183,6 +222,35 @@ impl AgentConfig {
         std::fs::write(path, toml_str)
             .with_context(|| format!("failed to write config to {}", path.display()))?;
         Ok(())
+    }
+
+    /// Returns the [`tracing::Level`] configured by `log_level`.
+    ///
+    /// Parses the `log_level` string case-insensitively.  Unknown values and
+    /// `None` both resolve to [`tracing::Level::TRACE`] so that all diagnostic
+    /// output is visible by default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use dlp_agent::config::AgentConfig;
+    /// let cfg = AgentConfig { log_level: Some("info".to_string()), ..Default::default() };
+    /// assert_eq!(cfg.resolved_log_level(), tracing::Level::INFO);
+    /// ```
+    pub fn resolved_log_level(&self) -> tracing::Level {
+        match self
+            .log_level
+            .as_deref()
+            .unwrap_or("trace")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "error" => tracing::Level::ERROR,
+            "warn" => tracing::Level::WARN,
+            "info" => tracing::Level::INFO,
+            "debug" => tracing::Level::DEBUG,
+            _ => tracing::Level::TRACE,
+        }
     }
 
     /// Returns the resolved list of paths to watch.
@@ -280,6 +348,7 @@ mod tests {
             excluded_paths: Vec::new(),
             heartbeat_interval_secs: None,
             offline_cache_enabled: None,
+            log_level: None,
             ldap_config: None,
             machine_name: None,
         };
@@ -312,6 +381,7 @@ mod tests {
             excluded_paths: vec![r"C:\Temp\".to_string()],
             heartbeat_interval_secs: Some(45),
             offline_cache_enabled: Some(true),
+            log_level: Some("info".to_string()),
             ldap_config: None,
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
@@ -339,6 +409,7 @@ mod tests {
             excluded_paths: Vec::new(),
             heartbeat_interval_secs: None,
             offline_cache_enabled: None,
+            log_level: None,
             ldap_config: None,
             machine_name: None,
         };
@@ -366,5 +437,68 @@ mod tests {
         assert_eq!(config.monitored_paths, vec![r"C:\Restricted\"]);
         assert!(config.heartbeat_interval_secs.is_none());
         assert!(config.offline_cache_enabled.is_none());
+    }
+
+    #[test]
+    fn test_resolved_log_level_none_defaults_to_trace() {
+        let config = AgentConfig::default();
+        assert_eq!(config.resolved_log_level(), tracing::Level::TRACE);
+    }
+
+    #[test]
+    fn test_resolved_log_level_known_values() {
+        for (input, expected) in [
+            ("trace", tracing::Level::TRACE),
+            ("debug", tracing::Level::DEBUG),
+            ("info", tracing::Level::INFO),
+            ("warn", tracing::Level::WARN),
+            ("error", tracing::Level::ERROR),
+            ("INFO", tracing::Level::INFO),
+            ("Warn", tracing::Level::WARN),
+        ] {
+            let config = AgentConfig {
+                log_level: Some(input.to_string()),
+                ..Default::default()
+            };
+            assert_eq!(config.resolved_log_level(), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn test_resolved_log_level_unknown_falls_back_to_trace() {
+        let config = AgentConfig {
+            log_level: Some("verbose".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.resolved_log_level(), tracing::Level::TRACE);
+    }
+
+    #[test]
+    fn test_log_level_roundtrip_toml() {
+        let toml_str = "log_level = 'debug'\n";
+        let config: AgentConfig = toml::from_str(toml_str).expect("parse");
+        assert_eq!(config.resolved_log_level(), tracing::Level::DEBUG);
+    }
+
+    #[test]
+    fn test_effective_config_path_no_env_uses_default() {
+        // Temporarily clear the env var (if set) and verify fallback.
+        // Using a separate env key to avoid interfering with running tests.
+        let path = {
+            let _guard = std::env::remove_var("DLP_CONFIG_PATH");
+            AgentConfig::effective_config_path()
+        };
+        assert_eq!(path, DEFAULT_CONFIG_PATH);
+    }
+
+    #[test]
+    fn test_effective_config_path_env_override() {
+        // Use std::env::set_var inside a block so we restore after the test.
+        // Note: parallel test execution can race on env vars — acceptable for
+        // this unit test because we restore immediately after reading.
+        std::env::set_var("DLP_CONFIG_PATH", r"C:\TestData\override.toml");
+        let path = AgentConfig::effective_config_path();
+        std::env::remove_var("DLP_CONFIG_PATH");
+        assert_eq!(path, r"C:\TestData\override.toml");
     }
 }

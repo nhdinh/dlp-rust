@@ -119,6 +119,10 @@ impl From<AdLdapConfig> for LdapConfigPayload {
 pub struct AgentConfigPayload {
     /// Directory paths the agent should monitor.
     pub monitored_paths: Vec<String>,
+    /// Directory paths to exclude from monitoring (merged with built-in exclusions).
+    /// Defaults to empty when absent for backward compatibility with older servers.
+    #[serde(default)]
+    pub excluded_paths: Vec<String>,
     /// Heartbeat interval in seconds.
     pub heartbeat_interval_secs: u64,
     /// Whether offline caching is active.
@@ -739,6 +743,7 @@ mod tests {
     fn test_agent_config_payload_serde() {
         let payload = AgentConfigPayload {
             monitored_paths: vec![r"C:\Data\".to_string()],
+            excluded_paths: vec![],
             heartbeat_interval_secs: 60,
             offline_cache_enabled: false,
             ldap_config: None,
@@ -759,6 +764,7 @@ mod tests {
         };
         let payload = AgentConfigPayload {
             monitored_paths: vec![r"C:\Data\".to_string()],
+            excluded_paths: vec![],
             heartbeat_interval_secs: 60,
             offline_cache_enabled: false,
             ldap_config: Some(ldap),
