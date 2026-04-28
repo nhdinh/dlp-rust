@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["dlp-common", "dlp-agent", "dlp-user-ui", "dlp-admin-cli", "dlp-server"]
+members = ["dlp-common", "dlp-agent", "dlp-user-ui", "dlp-admin-cli", "dlp-server", "dlp-e2e"]
 
 [workspace.package]
 version = "0.1.0"

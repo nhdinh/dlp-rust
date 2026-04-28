@@ -4,8 +4,6 @@
 //! mock evaluation engines, and headless TUI testing. All downstream
 //! Phase 30 integration tests import from this crate.
 
-use std::sync::Arc;
-
 // Re-export common types so tests only need one `use dlp_e2e::helpers::*;`
 pub use dlp_common::EvaluateResponse;
 
@@ -49,7 +47,7 @@ pub mod server {
     /// parallel, so call order is non-deterministic. This is safe because every
     /// test that uses this helper shares the same `TEST_JWT_SECRET` constant.
     pub fn build_test_app() -> (Router, Arc<db::Pool>) {
-        let _ = set_jwt_secret(TEST_JWT_SECRET.to_string());
+        set_jwt_secret(TEST_JWT_SECRET.to_string());
         let tmp = NamedTempFile::new().expect("create temp db");
         let pool = Arc::new(db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         let siem = siem_connector::SiemConnector::new(Arc::clone(&pool));
@@ -181,15 +179,10 @@ pub mod tui {
     ///
     /// Panics if the tokio runtime cannot be created.
     pub fn build_test_app_with_mock_client(base_url: String) -> App {
-        let client = EngineClient::for_test_with_url(base_url);
-        // We need to set the token — but EngineClient::set_token takes String
-        // and is only available when compiled. Let's check the actual signature.
-        // From client.rs line 134: pub fn set_token(&mut self, token: String)
-        // But it's #[allow(dead_code)] — we may need to construct differently.
-        // Actually for_test_with_url doesn't exist. Let's use for_test() and
-        // mutate base_url. But base_url is private. Hmm.
-        // Let me re-read client.rs more carefully.
-        unimplemented!("need to check EngineClient construction API")
+        let mut client = EngineClient::for_test_with_url(base_url);
+        client.set_token(mint_jwt());
+        let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        App::new(client, rt)
     }
 
     /// Injects a sequence of key events into the TUI app state machine.
