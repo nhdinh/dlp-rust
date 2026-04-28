@@ -7,6 +7,17 @@
 // Re-export common types so tests only need one `use dlp_e2e::helpers::*;`
 pub use dlp_common::EvaluateResponse;
 
+/// Grouped re-exports so test files can write `use dlp_e2e::helpers::{server, tui}`.
+///
+/// All three sub-modules are re-exported here as well as at the crate root
+/// (`dlp_e2e::server`, `dlp_e2e::tui`, `dlp_e2e::mock_engine`) to support
+/// both import styles used across the test suite.
+pub mod helpers {
+    pub use crate::mock_engine;
+    pub use crate::server;
+    pub use crate::tui;
+}
+
 // ---------------------------------------------------------------------------
 // Public helper modules
 // ---------------------------------------------------------------------------
