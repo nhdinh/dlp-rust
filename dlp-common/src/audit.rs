@@ -165,6 +165,14 @@ pub struct AuditEvent {
     /// (populated by Phase 26/27 on USB blocks).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_identity: Option<DeviceIdentity>,
+    /// Source origin URL for Chrome Content Analysis clipboard events
+    /// (populated by Phase 29 Chrome Enterprise Connector).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_origin: Option<String>,
+    /// Destination origin URL for Chrome Content Analysis clipboard events
+    /// (populated by Phase 29 Chrome Enterprise Connector).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_origin: Option<String>,
 }
 
 impl AuditEvent {
@@ -218,6 +226,8 @@ impl AuditEvent {
             source_application: None,
             destination_application: None,
             device_identity: None,
+            source_origin: None,
+            destination_origin: None,
         }
     }
 
@@ -289,6 +299,18 @@ impl AuditEvent {
     /// Sets the USB device identity on block events involving removable storage.
     pub fn with_device_identity(mut self, device: Option<DeviceIdentity>) -> Self {
         self.device_identity = device;
+        self
+    }
+
+    /// Sets the source origin for Chrome Content Analysis events.
+    pub fn with_source_origin(mut self, origin: Option<String>) -> Self {
+        self.source_origin = origin;
+        self
+    }
+
+    /// Sets the destination origin for Chrome Content Analysis events.
+    pub fn with_destination_origin(mut self, origin: Option<String>) -> Self {
+        self.destination_origin = origin;
         self
     }
 }
@@ -398,6 +420,9 @@ mod tests {
         assert!(!json.contains("\"source_application\":null"));
         assert!(!json.contains("\"destination_application\":null"));
         assert!(!json.contains("\"device_identity\":null"));
+        // Phase 29 new fields must also be skipped when None.
+        assert!(!json.contains("\"source_origin\":null"));
+        assert!(!json.contains("\"destination_origin\":null"));
     }
 
     #[test]
@@ -530,6 +555,29 @@ mod tests {
         assert!(event.source_application.is_none());
         assert!(event.destination_application.is_none());
         assert!(event.device_identity.is_none());
+    }
+
+    #[test]
+    fn test_audit_event_backward_compat_missing_origin_fields() {
+        // Deserializing an AuditEvent JSON that predates Phase 29 must still
+        // succeed — both new origin fields default to None.
+        let legacy = r#"{
+            "timestamp": "2025-01-01T00:00:00Z",
+            "event_type": "BLOCK",
+            "user_sid": "S-1-5-21-1",
+            "user_name": "jsmith",
+            "resource_path": "C:\\Data\\x.txt",
+            "classification": "T3",
+            "action_attempted": "READ",
+            "decision": "DENY",
+            "agent_id": "AGENT-01",
+            "session_id": 1,
+            "override_granted": false,
+            "access_context": "local"
+        }"#;
+        let event: AuditEvent = serde_json::from_str(legacy).unwrap();
+        assert!(event.source_origin.is_none());
+        assert!(event.destination_origin.is_none());
     }
 
     #[test]
