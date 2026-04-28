@@ -1,0 +1,67 @@
+name: Nightly Release Build + Smoke Tests
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  release-build-and-smoke:
+    name: Release Build and Smoke Tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target-release
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build workspace in release mode
+        run: cargo build --workspace --release
+        env:
+          CARGO_TARGET_DIR: target-release
+          RUSTFLAGS: "-D warnings"
+
+      - name: Run clippy on release build
+        run: cargo clippy --workspace --release -- -D warnings
+        env:
+          CARGO_TARGET_DIR: target-release
+
+      - name: Run workspace tests against release binaries
+        run: cargo test --workspace --release
+        env:
+          CARGO_TARGET_DIR: target-release
+          RUSTFLAGS: "-D warnings"
+
+      - name: Smoke test -- verify release binaries exist
+        run: |
+          Test-Path target-release/release/dlp-server.exe
+          Test-Path target-release/release/dlp-agent.exe
+          Test-Path target-release/release/dlp-admin-cli.exe
+        shell: pwsh
+
+      - name: Smoke test -- dlp-server health check
+        run: |
+          $proc = Start-Process -FilePath "target-release/release/dlp-server.exe" -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 5
+          try {
+            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:9090/health" -TimeoutSec 5
+            if ($resp.status -eq "ok") {
+              Write-Host "PASS: dlp-server health check" -ForegroundColor Green
+            } else {
+              Write-Error "FAIL: dlp-server health check returned unexpected status"
+            }
+          } catch {
+            Write-Error "FAIL: dlp-server health check failed: $_"
+          } finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
+        shell: pwsh
