@@ -1,88 +1,138 @@
-//! Chrome policy decision cache.
+//! Managed origins cache for the Chrome Content Analysis agent.
 //!
-//! Caches allow/block verdicts keyed by origin URL to avoid redundant
-//! ABAC evaluations for repeated Chrome Content Analysis requests.
+//! Maintains an in-memory `RwLock<HashSet<String>>` of managed origin
+//! strings (e.g. `"https://sharepoint.com"`).  The cache is populated by
+//! polling `GET /admin/managed-origins` every 30 seconds.
+//!
+//! ## Fail-safe behaviour
+//!
+//! If the server is unreachable, the stale cache is retained.  An origin
+//! not present in the cache is treated as *unmanaged* (allowed).
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use parking_lot::RwLock;
+use tracing::{debug, info, warn};
 
-/// Default TTL for cached Chrome policy decisions.
-const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(60);
+#[cfg(windows)]
+use crate::server_client::ServerClient;
 
-/// Cached verdict with expiration timestamp.
-#[derive(Debug, Clone, PartialEq)]
-struct CacheEntry {
-    verdict: bool,
-    expires_at: Instant,
-}
+/// Background poll interval for managed-origins refresh.
+const ORIGINS_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Thread-safe LRU-like cache for Chrome origin trust decisions.
+/// In-memory cache of managed origin strings.
 ///
-/// Entries expire after `ttl` seconds; stale entries are evicted on read.
-#[derive(Debug, Clone)]
-pub struct ChromeCache {
-    inner: Arc<RwLock<HashMap<String, CacheEntry>>>,
-    ttl: Duration,
+/// The cache is replaced atomically on each successful refresh.  Concurrent
+/// read access (via [`ManagedOriginsCache::is_managed`]) never blocks
+/// writers longer than a single lock acquisition.
+#[derive(Debug, Default)]
+pub struct ManagedOriginsCache {
+    cache: RwLock<HashSet<String>>,
 }
 
-impl Default for ChromeCache {
-    fn default() -> Self {
-        Self::new(DEFAULT_CACHE_TTL)
-    }
-}
-
-impl ChromeCache {
-    /// Creates a new cache with the specified TTL.
-    pub fn new(ttl: Duration) -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(HashMap::new())),
-            ttl,
-        }
+impl ManagedOriginsCache {
+    /// Constructs a new, empty cache.
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Returns the cached verdict for `key`, or `None` if missing or expired.
-    pub fn get(&self, key: &str) -> Option<bool> {
-        let mut guard = self.inner.write();
-        if let Some(entry) = guard.get(key) {
-            if entry.expires_at > Instant::now() {
-                return Some(entry.verdict);
-            }
-            // Evict stale entry.
-            guard.remove(key);
-        }
-        None
-    }
-
-    /// Stores a verdict for `key` with the cache's TTL.
-    pub fn insert(&self, key: String, verdict: bool) {
-        let entry = CacheEntry {
-            verdict,
-            expires_at: Instant::now() + self.ttl,
-        };
-        self.inner.write().insert(key, entry);
-    }
-
-    /// Clears all cached entries.
-    pub fn clear(&self) {
-        self.inner.write().clear();
-    }
-
-    /// Returns the number of active (non-expired) entries.
+    /// Returns `true` if the given origin is in the managed-origins list.
     ///
-    /// Note: this performs a full sweep to evict stale entries.
-    pub fn len(&self) -> usize {
-        let now = Instant::now();
-        let mut guard = self.inner.write();
-        guard.retain(|_, entry| entry.expires_at > now);
-        guard.len()
+    /// The comparison is case-sensitive exact string match (no wildcard
+    /// support in this phase).
+    ///
+    /// # Arguments
+    ///
+    /// * `origin` — the origin string to check (e.g. `"https://sharepoint.com"`).
+    #[must_use]
+    pub fn is_managed(&self, origin: &str) -> bool {
+        self.cache.read().contains(origin)
+    }
+}
+
+#[cfg(windows)]
+impl ManagedOriginsCache {
+    /// Fetches the current managed-origins list from the server and replaces
+    /// the cache.
+    ///
+    /// On success: atomically replaces the entire set with new entries.
+    /// On failure: retains the existing cache (fail-safe).
+    ///
+    /// # Arguments
+    ///
+    /// * `client` — Server client used to call `GET /admin/managed-origins`.
+    pub async fn refresh(&self, client: &ServerClient) {
+        match client.fetch_managed_origins().await {
+            Ok(entries) => {
+                let new_set: HashSet<String> =
+                    entries.into_iter().map(|e| e.origin).collect();
+                let count = new_set.len();
+                *self.cache.write() = new_set;
+                debug!(count, "managed origins cache refreshed");
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "managed origins refresh failed — retaining stale cache"
+                );
+            }
+        }
     }
 
-    /// Returns `true` if the cache contains no active entries.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    /// Spawns a background tokio task that refreshes the cache every
+    /// [`ORIGINS_POLL_INTERVAL`] seconds.
+    ///
+    /// The task performs an immediate refresh on startup, then polls on the
+    /// fixed interval.  It respects the `shutdown` channel: on signal it
+    /// exits cleanly without a final refresh.
+    ///
+    /// # Arguments
+    ///
+    /// * `self_arc` — `Arc`-wrapped cache instance to refresh.
+    /// * `client` — Server client cloned into the background task.
+    /// * `shutdown` — Watch receiver; task exits when this signals.
+    ///
+    /// # Returns
+    ///
+    /// A `JoinHandle` for the background task (detached; join only needed on
+    /// shutdown).
+    pub fn spawn_poll_task(
+        self_arc: Arc<Self>,
+        client: ServerClient,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            self_arc.refresh(&client).await;
+            info!("managed origins cache: initial refresh complete");
+
+            let mut interval = tokio::time::interval(ORIGINS_POLL_INTERVAL);
+            interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        self_arc.refresh(&client).await;
+                    }
+                    _ = shutdown.changed() => {
+                        info!("managed origins poll task shutting down");
+                        return;
+                    }
+                }
+            }
+        })
+    }
+}
+
+impl ManagedOriginsCache {
+    /// Seeds the cache with a single origin for use in tests.
+    ///
+    /// This method is always compiled so that integration tests in `tests/`
+    /// can call it without a feature flag.
+    #[doc(hidden)]
+    pub fn seed_for_test(&self, origin: &str) {
+        self.cache.write().insert(origin.to_string());
     }
 }
 
@@ -91,34 +141,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_cache_hit_and_miss() {
-        let cache = ChromeCache::new(Duration::from_secs(60));
-        assert_eq!(cache.get("https://example.com"), None);
-
-        cache.insert("https://example.com".to_string(), true);
-        assert_eq!(cache.get("https://example.com"), Some(true));
-        assert_eq!(cache.get("https://other.com"), None);
+    fn test_is_managed_empty_cache_returns_false() {
+        let cache = ManagedOriginsCache::new();
+        assert!(!cache.is_managed("https://example.com"));
     }
 
     #[test]
-    fn test_cache_expiration() {
-        let cache = ChromeCache::new(Duration::from_millis(10));
-        cache.insert("https://example.com".to_string(), false);
-        assert_eq!(cache.get("https://example.com"), Some(false));
-
-        std::thread::sleep(Duration::from_millis(20));
-        assert_eq!(cache.get("https://example.com"), None);
+    fn test_is_managed_known_origin_returns_true() {
+        let cache = ManagedOriginsCache::new();
+        cache.cache.write().insert("https://sharepoint.com".to_string());
+        assert!(cache.is_managed("https://sharepoint.com"));
     }
 
     #[test]
-    fn test_cache_clear() {
-        let cache = ChromeCache::new(Duration::from_secs(60));
-        cache.insert("https://a.com".to_string(), true);
-        cache.insert("https://b.com".to_string(), false);
-        assert_eq!(cache.len(), 2);
+    fn test_is_managed_unknown_origin_returns_false() {
+        let cache = ManagedOriginsCache::new();
+        cache.cache.write().insert("https://sharepoint.com".to_string());
+        assert!(!cache.is_managed("https://example.com"));
+    }
 
-        cache.clear();
-        assert_eq!(cache.len(), 0);
-        assert_eq!(cache.get("https://a.com"), None);
+    #[test]
+    fn test_seed_for_test_inserts_origin() {
+        let cache = ManagedOriginsCache::new();
+        cache.seed_for_test("https://test.com");
+        assert!(cache.is_managed("https://test.com"));
+    }
+
+    #[test]
+    fn test_concurrent_reads_do_not_deadlock() {
+        use std::thread;
+        let cache = Arc::new(ManagedOriginsCache::new());
+        cache.cache.write().insert("https://a.com".to_string());
+
+        let c1 = Arc::clone(&cache);
+        let c2 = Arc::clone(&cache);
+        let t1 = thread::spawn(move || c1.is_managed("https://a.com"));
+        let t2 = thread::spawn(move || c2.is_managed("https://a.com"));
+
+        assert!(t1.join().expect("thread 1 must not panic"));
+        assert!(t2.join().expect("thread 2 must not panic"));
     }
 }

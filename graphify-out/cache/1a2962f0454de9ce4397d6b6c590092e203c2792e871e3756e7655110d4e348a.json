@@ -1,0 +1,1 @@
+{"nodes": [{"id": "dlp_agent_src_lib_rs", "label": "lib.rs", "file_type": "code", "source_file": "dlp-agent\\src\\lib.rs", "source_location": "L1"}], "edges": [{"source": "dlp_agent_src_lib_rs", "target": "dlp_common", "relation": "imports_from", "confidence": "EXTRACTED", "source_file": "dlp-agent\\src\\lib.rs", "source_location": "L28", "weight": 1.0}]}
