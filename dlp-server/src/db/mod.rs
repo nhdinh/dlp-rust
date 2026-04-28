@@ -202,6 +202,7 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
             CREATE TABLE IF NOT EXISTS global_agent_config (
                 id                      INTEGER PRIMARY KEY CHECK (id = 1),
                 monitored_paths         TEXT NOT NULL DEFAULT '[]',
+                excluded_paths          TEXT NOT NULL DEFAULT '[]',
                 heartbeat_interval_secs INTEGER NOT NULL DEFAULT 30,
                 offline_cache_enabled   INTEGER NOT NULL DEFAULT 1,
                 updated_at              TEXT NOT NULL DEFAULT ''
@@ -212,6 +213,7 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 agent_id                TEXT PRIMARY KEY
                                         REFERENCES agents(agent_id) ON DELETE CASCADE,
                 monitored_paths         TEXT NOT NULL DEFAULT '[]',
+                excluded_paths          TEXT NOT NULL DEFAULT '[]',
                 heartbeat_interval_secs INTEGER NOT NULL DEFAULT 30,
                 offline_cache_enabled   INTEGER NOT NULL DEFAULT 1,
                 updated_at              TEXT NOT NULL DEFAULT ''
@@ -233,22 +235,42 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
 
 /// Runs database migrations for existing installations.
 ///
-/// Adds the `mode` column to the `policies` table if it does not already exist.
-/// Idempotent — safe to call on every startup; no-op if column already exists.
+/// Each migration is idempotent — safe to call on every startup. Duplicate-column
+/// errors from `ALTER TABLE` are swallowed; all other errors are propagated.
 pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
-    let result = conn.execute(
+    run_alter(
+        conn,
         "ALTER TABLE policies ADD COLUMN mode TEXT NOT NULL DEFAULT 'ALL'",
-        [],
-    );
-    if let Err(e) = result {
-        let msg = e.to_string();
-        if msg.contains("duplicate column name: mode") {
-            // Column already exists — nothing to do.
-        } else {
-            return Err(e).context("running migration: add mode column to policies");
-        }
-    }
+        "mode",
+        "policies",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE global_agent_config ADD COLUMN excluded_paths TEXT NOT NULL DEFAULT '[]'",
+        "excluded_paths",
+        "global_agent_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE agent_config_overrides ADD COLUMN excluded_paths TEXT NOT NULL DEFAULT '[]'",
+        "excluded_paths",
+        "agent_config_overrides",
+    )?;
     Ok(())
+}
+
+/// Executes a single `ALTER TABLE` statement, ignoring duplicate-column errors.
+fn run_alter(conn: &SqliteConn, sql: &str, column: &str, table: &str) -> anyhow::Result<()> {
+    match conn.execute(sql, []) {
+        Ok(_) => Ok(()),
+        Err(e)
+            if e.to_string()
+                .contains(&format!("duplicate column name: {column}")) =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(e).context(format!("running migration: add {column} column to {table}")),
+    }
 }
 
 #[cfg(test)]
