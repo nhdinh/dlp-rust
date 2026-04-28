@@ -1,36 +1,37 @@
 {
   "version": "1.0",
-  "timestamp": "2026-04-22T11:27:14.788Z",
-  "phase": "25",
-  "phase_name": "app-identity-capture-in-dlp-user-ui",
-  "phase_dir": ".planning/phases/25-app-identity-capture-in-dlp-user-ui",
-  "plan": 3,
-  "task": 3,
-  "total_tasks": 3,
-  "status": "paused",
+  "timestamp": "2026-04-29T00:20:00+07:00",
+  "phase": "30",
+  "phase_name": "automated-uat-infrastructure",
+  "phase_dir": ".planning/phases/30-automated-uat-infrastructure",
+  "plan": 10,
+  "task": 10,
+  "total_tasks": 10,
+  "status": "complete",
   "completed_tasks": [
-    {"id": "25-01", "name": "detection::app_identity module — AUTHENTICODE_CACHE + Win32 pipeline", "status": "done", "commit": "54c6181"},
-    {"id": "25-02", "name": "FOREGROUND_SLOT + SetWinEventHook + GetClipboardOwner wiring", "status": "done", "commit": "2cca0ff"},
-    {"id": "25-03-T1", "name": "Extend send_clipboard_alert to 6 params, remove None placeholders", "status": "done", "commit": "feccab6"},
-    {"id": "25-03-T2", "name": "Zero-warning workspace build gate", "status": "done", "commit": "4e74bf6"},
-    {"id": "25-03-bugfix", "name": "Fix spawn_blocking panic — call resolve_app_identity directly from std::thread", "status": "done", "commit": "6b0fe78"}
+    {"id": 1, "name": "dlp-e2e test harness foundation", "status": "done", "commit": "0d84496"},
+    {"id": 2, "name": "Device Registry TUI test", "status": "done", "commit": "a500117"},
+    {"id": 3, "name": "Managed Origins TUI test", "status": "done", "commit": "bc3c3b5"},
+    {"id": 4, "name": "Conditions Builder TUI test", "status": "done", "commit": "bcd6379"},
+    {"id": 5, "name": "Agent TOML write-back test", "status": "done", "commit": "6254452"},
+    {"id": 6, "name": "Hot-reload config tests", "status": "done", "commit": "ade130a"},
+    {"id": 7, "name": "USB write-protection unit tests", "status": "done", "commit": "39c6419"},
+    {"id": 8, "name": "USB UAT PowerShell script", "status": "done", "commit": "2db8a48"},
+    {"id": 9, "name": "CI build.yml test job", "status": "done", "commit": "b850b01"},
+    {"id": 10, "name": "Nightly release workflow", "status": "done", "commit": "b850b01"}
   ],
-  "remaining_tasks": [
-    {"id": "25-gap", "name": "Agent-side: update pipe3.rs to consume source_application/destination_application from ClipboardAlert and log to AuditEvent", "status": "not_started"}
-  ],
-  "blockers": [
-    {
-      "description": "dlp-agent/src/ipc/pipe3.rs line 193 uses '..' on ClipboardAlert, discarding source_application and destination_application. AuditEvent has no identity fields. APP-05 not fully met.",
-      "type": "technical",
-      "workaround": "/gsd-plan-phase 25 --gaps"
-    }
-  ],
+  "remaining_tasks": [],
+  "blockers": [],
   "human_actions_pending": [],
   "decisions": [
-    {"decision": "Remove spawn_blocking — call resolve_app_identity directly from std::thread", "rationale": "spawn_blocking panics outside Tokio context; std::thread is already blocking", "phase": "25"},
-    {"decision": "Agent pipe3.rs '..' discards identity — needs gap plan", "rationale": "Agent handler predates Phase 25; out of scope for original plans", "phase": "25"}
+    {"decision": "Added 6 env-var overrides to dlp-agent for testability", "rationale": "Integration tests need to spawn agent binary without admin privileges", "phase": "30"},
+    {"decision": "Alert delivery tests added to dlp-server alert_router module", "rationale": "Close deferred Phase 4 UAT items for SMTP and webhook", "phase": "30"}
   ],
-  "uncommitted_files": [],
-  "next_action": "Run /gsd-plan-phase 25 --gaps to create gap-closure plan updating dlp-agent/src/ipc/pipe3.rs (line 193) to extract source_application/destination_application and include in AuditEvent",
-  "context_notes": "All 3 Phase 25 plans committed. UI capture pipeline correct — identity flows through Pipe 3. Gap is agent-side only: pipe3.rs line 193 uses .. to drop identity fields, AuditEvent has no source/dest fields. spawn_blocking panic fixed (commit 6b0fe78). Alerts verified at 11:21-11:22 with SSN content, T4 classification working."
+  "uncommitted_files": [
+    ".gitignore", ".planning/ROADMAP.md", ".planning/STATE.md",
+    ".planning/debug/*.md", "CLAUDE.md", "dlp-agent/src/detection/usb.rs",
+    "dlp-agent/src/device_registry.rs", "dlp-agent/tests/device_registry_cache.rs"
+  ],
+  "next_action": "Close v0.6.0 milestone with /gsd-complete-milestone",
+  "context_notes": "Phase 30 fully complete. All 9 deferred UAT items automated. UAT passed 6/6. Working tree has pre-session unstaged changes unrelated to Phase 30 work."
 }
