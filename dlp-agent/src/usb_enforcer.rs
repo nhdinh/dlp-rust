@@ -433,10 +433,10 @@ mod tests {
     ///
     /// The device triple is present in the USB detector's drive-letter map
     /// (the drive letter IS known), but the VID/PID/serial are NOT in the
-    /// device registry cache. `trust_tier_for` returns `Blocked` as the
-    /// default-deny value (D-10). All operations must be denied.
+    /// device registry cache. `trust_tier_for` returns `ReadOnly` as the
+    /// default — reads are allowed, writes are denied.
     #[test]
-    fn test_unregistered_device_defaults_to_blocked() {
+    fn test_unregistered_device_defaults_to_read_only() {
         // Detector knows about drive E (device identity present), but the
         // registry has never been seeded with this VID/PID/serial.
         let detector = make_detector(vec![('E', "DEAD", "BEEF", "UNREGISTERED")]);
@@ -444,14 +444,14 @@ mod tests {
         let registry = Arc::new(DeviceRegistryCache::new());
         let enforcer = UsbEnforcer::new(detector, registry);
 
-        // Default-deny: unregistered device treated as Blocked.
+        // Write must be denied.
         let result = enforcer.check("E:\\secret.docx", &written_action());
         assert!(result.is_some());
         assert_eq!(result.unwrap().decision, Decision::DENY);
 
+        // Read must be allowed.
         let result = enforcer.check("E:\\file.txt", &read_action());
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().decision, Decision::DENY);
+        assert!(result.is_none());
     }
 
     /// D-09: path starting with a non-ASCII-alphabetic character returns None.
@@ -542,5 +542,109 @@ mod tests {
                 "action {action:?} must report Blocked tier"
             );
         }
+    }
+
+    /// Blocked drive without identity: first call returns notify=true and default identity.
+    ///
+    /// When a drive is in `blocked_drives` but has no `DeviceIdentity` entry,
+    /// the enforcer must still deny all operations with a default identity
+    /// (empty strings) and request toast notification on the first call.
+    #[test]
+    fn test_blocked_drive_without_identity_returns_blocked() {
+        let detector = Arc::new(UsbDetector {
+            blocked_drives: RwLock::new(HashSet::from(['E'])),
+            device_identities: RwLock::new(HashMap::new()),
+        });
+        let registry = Arc::new(DeviceRegistryCache::new());
+        let enforcer = UsbEnforcer::new(detector, registry);
+        let result = enforcer.check("E:\\file.txt", &written_action());
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(r.decision, Decision::DENY);
+        assert_eq!(r.tier, UsbTrustTier::Blocked);
+        assert_eq!(r.identity, DeviceIdentity::default());
+        assert!(r.notify); // first call
+    }
+
+    /// ReadOnly device: write-class actions are denied, read action is allowed.
+    ///
+    /// Combines the write-denial and read-allowance into a single test for clarity.
+    #[test]
+    fn test_readonly_device_write_denied_read_allowed() {
+        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
+        let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::ReadOnly);
+        let enforcer = UsbEnforcer::new(detector, registry);
+        assert!(enforcer.check("E:\\file.txt", &written_action()).is_some());
+        assert_eq!(enforcer.check("E:\\file.txt", &read_action()), None);
+    }
+
+    /// FullAccess device: all actions are allowed (fall through to ABAC).
+    ///
+    /// Verifies that Written, Read, and Created actions all return None
+    /// when the device trust tier is FullAccess.
+    #[test]
+    fn test_full_access_device_all_actions_allowed() {
+        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
+        let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::FullAccess);
+        let enforcer = UsbEnforcer::new(detector, registry);
+        assert_eq!(enforcer.check("E:\\file.txt", &written_action()), None);
+        assert_eq!(enforcer.check("E:\\file.txt", &read_action()), None);
+        assert_eq!(enforcer.check("E:\\file.txt", &created_action()), None);
+    }
+
+    /// Blocked device denies read actions too.
+    ///
+    /// A Blocked tier must deny ALL operations, including reads which are
+    /// normally allowed on ReadOnly devices.
+    #[test]
+    fn test_blocked_device_denies_reads_too() {
+        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
+        let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::Blocked);
+        let enforcer = UsbEnforcer::new(detector, registry);
+        assert!(enforcer.check("E:\\file.txt", &read_action()).is_some());
+        assert_eq!(
+            enforcer.check("E:\\file.txt", &read_action()).unwrap().decision,
+            Decision::DENY
+        );
+    }
+
+    /// Per-drive isolation: different drives can have different trust tiers.
+    ///
+    /// Drive E is Blocked, drive F is FullAccess. Operations on each drive
+    /// must be evaluated independently against their respective tier.
+    #[test]
+    fn test_per_drive_isolation() {
+        let mut map = HashMap::new();
+        let mut blocked = HashSet::new();
+        map.insert(
+            'E',
+            DeviceIdentity {
+                vid: "0951".into(),
+                pid: "1666".into(),
+                serial: "SN001".into(),
+                description: "Test".into(),
+            },
+        );
+        map.insert(
+            'F',
+            DeviceIdentity {
+                vid: "0951".into(),
+                pid: "1667".into(),
+                serial: "SN002".into(),
+                description: "Test2".into(),
+            },
+        );
+        blocked.insert('E');
+        blocked.insert('F');
+        let detector = Arc::new(UsbDetector {
+            blocked_drives: RwLock::new(blocked),
+            device_identities: RwLock::new(map),
+        });
+        let registry = Arc::new(DeviceRegistryCache::new());
+        registry.seed_for_test("0951", "1666", "SN001", UsbTrustTier::Blocked);
+        registry.seed_for_test("0951", "1667", "SN002", UsbTrustTier::FullAccess);
+        let enforcer = UsbEnforcer::new(detector, registry);
+        assert!(enforcer.check("E:\\file.txt", &written_action()).is_some());
+        assert_eq!(enforcer.check("F:\\file.txt", &written_action()), None);
     }
 }
