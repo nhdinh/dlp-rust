@@ -1,0 +1,26 @@
+{
+  "doc_path": "docs/SECURITY_AUDIT.md",
+  "claims_checked": 22,
+  "claims_passed": 19,
+  "claims_failed": 3,
+  "failures": [
+    {
+      "line": 10,
+      "claim": "THREAT_MODEL.md",
+      "expected": "file exists",
+      "actual": "file not found at docs/THREAT_MODEL.md"
+    },
+    {
+      "line": 123,
+      "claim": "evaluator.rs",
+      "expected": "file exists",
+      "actual": "file not found — no evaluator.rs in dlp-server/src/ or anywhere in the project"
+    },
+    {
+      "line": 124,
+      "claim": "validate_policy()",
+      "expected": "function 'validate_policy' in codebase (dlp-server policy hot-reload context)",
+      "actual": "no definition of fn validate_policy found in dlp-server; only test helper variants exist in dlp-admin-cli/src/screens/dispatch.rs"
+    }
+  ]
+}

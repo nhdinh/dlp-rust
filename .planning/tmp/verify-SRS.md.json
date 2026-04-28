@@ -1,0 +1,140 @@
+{
+  "doc_path": "docs/SRS.md",
+  "claims_checked": 56,
+  "claims_passed": 34,
+  "claims_failed": 22,
+  "failures": [
+    {
+      "line": 124,
+      "claim": "docs/THREAT_MODEL.md",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/docs/THREAT_MODEL.md"
+    },
+    {
+      "line": 128,
+      "claim": "docs/ISO27001_MAPPING.md",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/docs/ISO27001_MAPPING.md"
+    },
+    {
+      "line": 379,
+      "claim": "GET /audit-events",
+      "expected": "route definition in codebase",
+      "actual": "no route definition found for /audit-events; actual endpoint is /audit/events"
+    },
+    {
+      "line": 553,
+      "claim": "dlp-server/src/engine.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-server/src/engine.rs"
+    },
+    {
+      "line": 554,
+      "claim": "dlp-server/src/ad_client.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-server/src/ad_client.rs (found at dlp-common/src/ad_client.rs instead)"
+    },
+    {
+      "line": 555,
+      "claim": "dlp-server/src/http_server.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-server/src/http_server.rs"
+    },
+    {
+      "line": 569,
+      "claim": "dlp-server/src/admin_audit.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-server/src/admin_audit.rs"
+    },
+    {
+      "line": 570,
+      "claim": "dlp-server/src/config_push.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-server/src/config_push.rs"
+    },
+    {
+      "line": 581,
+      "claim": "dlp-agent/src/ipc/command_pipe.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-agent/src/ipc/command_pipe.rs (actual files are pipe1.rs, pipe2.rs, pipe3.rs)"
+    },
+    {
+      "line": 582,
+      "claim": "dlp-agent/src/ipc/event_a2u.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-agent/src/ipc/event_a2u.rs"
+    },
+    {
+      "line": 583,
+      "claim": "dlp-agent/src/ipc/event_u2a.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-agent/src/ipc/event_u2a.rs"
+    },
+    {
+      "line": 607,
+      "claim": "dlp-user-ui/src/ui_main.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-user-ui/src/ui_main.rs"
+    },
+    {
+      "line": 609,
+      "claim": "dlp-user-ui/src/dialogs/block_notify.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-user-ui/src/dialogs/block_notify.rs"
+    },
+    {
+      "line": 611,
+      "claim": "dlp-user-ui/src/dialogs/password_dialog.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-user-ui/src/dialogs/password_dialog.rs (actual file is stop_password.rs)"
+    },
+    {
+      "line": 613,
+      "claim": "dlp-user-ui/src/clipboard.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-user-ui/src/clipboard.rs"
+    },
+    {
+      "line": 615,
+      "claim": "dlp-user-ui/src/health_monitor.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-user-ui/src/health_monitor.rs"
+    },
+    {
+      "line": 755,
+      "claim": "docs/plans/user-stories.md",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/docs/plans/user-stories.md"
+    },
+    {
+      "line": 763,
+      "claim": "dlp-server/src/evaluator.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-server/src/evaluator.rs"
+    },
+    {
+      "line": 764,
+      "claim": "dlp-server/src/http_server.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-server/src/http_server.rs"
+    },
+    {
+      "line": 766,
+      "claim": "dlp-server/src/rest_api.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-server/src/rest_api.rs"
+    },
+    {
+      "line": 768,
+      "claim": "dlp-server/tests/mock_ad/",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-server/tests/mock_ad/"
+    },
+    {
+      "line": 815,
+      "claim": "dlp-user-ui/src/dialogs/block.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/dlp-user-ui/src/dialogs/block.rs"
+    }
+  ]
+}

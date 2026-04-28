@@ -1,0 +1,14 @@
+{
+  "doc_path": "docs/CONFIGURATION.md",
+  "claims_checked": 6,
+  "claims_passed": 5,
+  "claims_failed": 1,
+  "failures": [
+    {
+      "line": 13,
+      "claim": "./design/decisions/feedback_operator_config_in_db.md",
+      "expected": "file exists",
+      "actual": "file not found at /c/Users/nhdinh/dev/dlp-rust/docs/design/decisions/feedback_operator_config_in_db.md"
+    }
+  ]
+}
