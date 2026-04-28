@@ -79,6 +79,10 @@ hostname = "0.4"
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
+# Protobuf (Chrome Enterprise Content Analysis)
+prost = "0.14"
+bytes = "1"
+
 [dev-dependencies]
 tempfile = "3"
 axum = { version = "0.7", features = ["macros"] }
@@ -88,3 +92,6 @@ tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
 notify = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.14"
