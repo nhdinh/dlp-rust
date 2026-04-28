@@ -162,7 +162,12 @@ Plans:
   2. Chrome sends a clipboard scan request to the pipe when the user pastes; the agent decodes the protobuf frame and resolves source and destination origins from the request
   3. Pasting from a managed/protected origin (in the managed-origins list) to an unmanaged origin results in a BLOCK response returned to Chrome -- the paste is prevented inside the browser
   4. A block event produces an audit entry with `source_origin` and `destination_origin` fields visible in the audit log
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+- [ ] 29-01-PLAN.md -- Protobuf types + frame protocol + chrome module scaffolding
+- [ ] 29-02-PLAN.md -- ManagedOriginsCache + server client + audit fields
+- [ ] 29-03-PLAN.md -- Chrome pipe server + HKLM registration
+- [ ] 29-04-PLAN.md -- Unit tests + integration tests + zero-warning build gate
 
 ### Phase 30: Automated UAT Infrastructure
 **Goal**: Replace manual human UAT checkpoints with automated verification scripts and environment setup so deferred UAT items from Phases 4, 6, 24, and 28 are verified without relying on manual human testing
@@ -176,14 +181,14 @@ Plans:
   5. All deferred human UAT items from STATE.md are covered by automation and marked resolved
 **Plans**: 10 plans
 Plans:
-- [ ] 30-01-PLAN.md -- Create dlp-e2e workspace member with shared test helpers
+- [x] 30-01-PLAN.md -- Create dlp-e2e workspace member with shared test helpers
 - [ ] 30-02-PLAN.md -- Headless TUI test for Device Registry screen
 - [ ] 30-03-PLAN.md -- Headless TUI test for Managed Origins screen
 - [ ] 30-04-PLAN.md -- Headless TUI test for Conditions Builder (App Identity)
 - [ ] 30-05-PLAN.md -- Full stack agent TOML write-back test
 - [ ] 30-06-PLAN.md -- Hot-reload verification for all config types
-- [ ] 30-07-PLAN.md -- USB unit tests with mocked Win32 APIs
-- [ ] 30-08-PLAN.md -- PowerShell script for real-hardware USB verification
+- [x] 30-07-PLAN.md -- USB unit tests with mocked Win32 APIs
+- [x] 30-08-PLAN.md -- PowerShell script for real-hardware USB verification
 - [ ] 30-09-PLAN.md -- Add cargo test --workspace to GitHub Actions
 - [ ] 30-10-PLAN.md -- Nightly CI for release-mode build + smoke tests
 
@@ -221,7 +226,7 @@ Plans:
 | 26 | ABAC Enforcement Convergence | v0.6.0 | 5/5 | Complete | 2026-04-22 |
 | 27 | USB Toast Notification | v0.6.0 | 2/2 | Complete | 2026-04-22 |
 | 28 | Admin TUI Screens | v0.6.0 | 4/5 | Planned | - |
-| 29 | Chrome Enterprise Connector | v0.6.0 | TBD | Not started | - |
+| 29 | Chrome Enterprise Connector | v0.6.0 | 4/4 | Planned | - |
 | 30 | Automated UAT Infrastructure | v0.6.0 | 0/10 | Not started | - |
 | 99 | Refactor DB Layer to Repository + Unit of Work | v0.3.0 | 3/3 | Complete | 2026-04-15 |
 
