@@ -22,6 +22,16 @@ pub mod helpers {
 // Public helper modules
 // ---------------------------------------------------------------------------
 
+/// Public re-export of helper modules for downstream test files.
+///
+/// Tests import via `use dlp_e2e::helpers::*;` to access `server`, `tui`,
+/// and `mock_engine` submodules in one line.
+pub mod helpers {
+    pub use crate::mock_engine;
+    pub use crate::server;
+    pub use crate::tui;
+}
+
 /// Helpers for spinning up in-process `dlp-server` routers and minting JWTs.
 pub mod server {
     use std::sync::Arc;
@@ -192,7 +202,13 @@ pub mod tui {
     pub fn build_test_app_with_mock_client(base_url: String) -> App {
         let mut client = EngineClient::for_test_with_url(base_url);
         client.set_token(mint_jwt());
-        let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        // Use a single-threaded runtime so that `block_on` inside the TUI
+        // handlers does not conflict with the multi-threaded runtime that
+        // `cargo test` spawns for `#[tokio::test]`.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("create tokio runtime");
         App::new(client, rt)
     }
 

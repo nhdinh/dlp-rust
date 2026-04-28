@@ -16,7 +16,7 @@ use dlp_admin_cli::app::{App, ConditionAttribute, Screen};
 use dlp_common::abac::{AppField, PolicyCondition};
 use dlp_admin_cli::event::AppEvent;
 use dlp_admin_cli::screens::handle_event;
-use dlp_e2e::helpers;
+use dlp_e2e::helpers::{server, tui};
 use ratatui::buffer::Buffer;
 use tokio::net::TcpListener;
 
@@ -29,7 +29,7 @@ use tokio::net::TcpListener;
 ///
 /// Returns `(app, pool, socket_addr)` so callers can verify DB state directly.
 fn setup_test_app() -> (App, std::sync::Arc<dlp_server::db::Pool>, std::net::SocketAddr) {
-    let (router, pool) = helpers::server::build_test_app();
+    let (router, pool) = server::build_test_app();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -45,7 +45,7 @@ fn setup_test_app() -> (App, std::sync::Arc<dlp_server::db::Pool>, std::net::Soc
         addr
     });
 
-    let app = helpers::tui::build_test_app_with_mock_client(format!("http://{addr}"));
+    let app = tui::build_test_app_with_mock_client(format!("http://{addr}"));
     (app, pool, addr)
 }
 
@@ -220,7 +220,7 @@ fn test_source_application_publisher_eq() {
     );
 
     // Render assertion: buffer must contain "SourceApplication".
-    let buffer = helpers::tui::render_to_buffer(&app, 80, 24);
+    let buffer = tui::render_to_buffer(&app, 80, 24);
     let buf: &Buffer = buffer.buffer();
     let text: String = buf.content.iter().map(|c| c.symbol()).collect();
     assert!(
@@ -326,7 +326,7 @@ fn test_destination_application_imagepath_contains() {
     );
 
     // Render assertion: buffer must contain "DestinationApplication".
-    let buffer = helpers::tui::render_to_buffer(&app, 80, 24);
+    let buffer = tui::render_to_buffer(&app, 80, 24);
     let buf: &Buffer = buffer.buffer();
     let text: String = buf.content.iter().map(|c| c.symbol()).collect();
     assert!(
@@ -419,7 +419,7 @@ fn test_source_application_trusttier_eq_picker() {
     );
 
     // Render assertion: buffer must contain "SourceApplication".
-    let buffer = helpers::tui::render_to_buffer(&app, 80, 24);
+    let buffer = tui::render_to_buffer(&app, 80, 24);
     let buf: &Buffer = buffer.buffer();
     let text: String = buf.content.iter().map(|c| c.symbol()).collect();
     assert!(
