@@ -277,6 +277,8 @@ impl AlertRouter {
             source_application: None,
             destination_application: None,
             device_identity: None,
+            source_origin: None,
+            destination_origin: None,
         };
         self.send_alert(&event).await
     }
@@ -658,6 +660,8 @@ mod tests {
             source_application: None,
             destination_application: None,
             device_identity: None,
+            source_origin: None,
+            destination_origin: None,
         };
 
         let cfg = WebhookConfig {
@@ -733,6 +737,8 @@ mod tests {
             source_application: None,
             destination_application: None,
             device_identity: None,
+            source_origin: None,
+            destination_origin: None,
         };
 
         let err = router

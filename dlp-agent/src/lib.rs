@@ -85,5 +85,3 @@ pub mod chrome;
 #[cfg(windows)]
 pub mod usb_enforcer;
 
-#[cfg(windows)]
-pub mod chrome;
