@@ -80,5 +80,7 @@ pub mod server_client;
 
 pub mod device_registry;
 
+pub mod chrome;
+
 #[cfg(windows)]
 pub mod usb_enforcer;
