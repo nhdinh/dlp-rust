@@ -1,0 +1,70 @@
+// Vendored from https://github.com/chromium/content_analysis_sdk
+// Minimized to only the types needed for BRW-01 and BRW-03.
+
+syntax = "proto2";
+
+package content_analysis.sdk;
+
+enum AnalysisConnector {
+  ANALYSIS_CONNECTOR_UNSPECIFIED = 0;
+  FILE_DOWNLOADED = 1;
+  FILE_ATTACHED = 2;
+  BULK_DATA_ENTRY = 3;
+  PRINT = 4;
+  FILE_TRANSFER = 5;
+}
+
+message ContentMetaData {
+  optional string url = 1;
+  optional string filename = 2;
+  optional string digest = 3;
+  optional string email = 5;
+  optional string tab_title = 9;
+}
+
+message ContentAnalysisRequest {
+  optional string request_token = 5;
+  optional AnalysisConnector analysis_connector = 9;
+  optional ContentMetaData request_data = 10;
+  repeated string tags = 11;
+  enum Reason {
+    UNKNOWN = 0;
+    CLIPBOARD_PASTE = 1;
+    DRAG_AND_DROP = 2;
+    FILE_PICKER_DIALOG = 3;
+    PRINT_PREVIEW_PRINT = 4;
+    SYSTEM_DIALOG_PRINT = 5;
+    NORMAL_DOWNLOAD = 6;
+    SAVE_AS_DOWNLOAD = 7;
+  }
+  optional Reason reason = 19;
+  oneof content_data {
+    string text_content = 13;
+    string file_path = 14;
+  }
+}
+
+message ContentAnalysisResponse {
+  optional string request_token = 1;
+  message Result {
+    enum Status {
+      STATUS_UNKNOWN = 0;
+      SUCCESS = 1;
+      FAILURE = 2;
+    }
+    optional Status status = 2;
+    message TriggeredRule {
+      enum Action {
+        ACTION_UNSPECIFIED = 0;
+        REPORT_ONLY = 1;
+        WARN = 2;
+        BLOCK = 3;
+      }
+      optional Action action = 1;
+      optional string rule_name = 2;
+      optional string rule_id = 3;
+    }
+    repeated TriggeredRule triggered_rules = 3;
+  }
+  repeated Result results = 4;
+}
