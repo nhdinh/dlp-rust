@@ -22,16 +22,6 @@ pub mod helpers {
 // Public helper modules
 // ---------------------------------------------------------------------------
 
-/// Public re-export of helper modules for downstream test files.
-///
-/// Tests import via `use dlp_e2e::helpers::*;` to access `server`, `tui`,
-/// and `mock_engine` submodules in one line.
-pub mod helpers {
-    pub use crate::mock_engine;
-    pub use crate::server;
-    pub use crate::tui;
-}
-
 /// Helpers for spinning up in-process `dlp-server` routers and minting JWTs.
 pub mod server {
     use std::sync::Arc;
