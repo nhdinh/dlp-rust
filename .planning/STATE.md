@@ -93,11 +93,12 @@ Last activity: 2026-04-29 -- Phase 30 execution complete — all 10 plans delive
 
 ## Known Issues (carry-forward)
 
-- Phase 4 human UAT: live SMTP email delivery not tested
-- Phase 4 human UAT: live webhook POST not tested
+None — all deferred UAT items have been automated.
 
 ## Resolved by Phase 30 (Automated UAT Infrastructure)
 
+- Phase 4 UAT: live webhook POST — automated via `alert_router::test_send_webhook_delivers_payload`
+- Phase 4 UAT: live SMTP email delivery — automated via `alert_router::test_send_email_exercises_smtp_path`
 - Phase 6 UAT: agent TOML write-back — automated via `dlp-e2e/tests/agent_toml_writeback.rs`
 - Phase 6 UAT: zero-warning workspace build — automated via CI `cargo build --workspace` with `RUSTFLAGS=-D warnings`
 - Phase 6 UAT: hot-reload verification — automated via `dlp-e2e/tests/hot_reload_config.rs`
