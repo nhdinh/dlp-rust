@@ -268,6 +268,8 @@ pub struct LdapConfigPayload {
 pub struct AgentConfigPayload {
     /// Directory paths the agent should monitor (empty = all drives).
     pub monitored_paths: Vec<String>,
+    /// Directory paths to exclude from monitoring (merged with built-in exclusions).
+    pub excluded_paths: Vec<String>,
     /// Heartbeat interval in seconds (minimum 10).
     pub heartbeat_interval_secs: u64,
     /// Whether offline caching is active.
@@ -1256,6 +1258,7 @@ async fn get_agent_config_for_agent(
         match AgentConfigRepository::get_override(&pool, &id) {
             Ok(row) => Ok(AgentConfigPayload {
                 monitored_paths: serde_json::from_str(&row.monitored_paths).unwrap_or_default(),
+                excluded_paths: serde_json::from_str(&row.excluded_paths).unwrap_or_default(),
                 heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs).unwrap_or(30),
                 offline_cache_enabled: row.offline_cache_enabled != 0,
             }),
@@ -1264,6 +1267,7 @@ async fn get_agent_config_for_agent(
                 let row = AgentConfigRepository::get_global(&pool).map_err(AppError::Database)?;
                 Ok(AgentConfigPayload {
                     monitored_paths: serde_json::from_str(&row.monitored_paths).unwrap_or_default(),
+                    excluded_paths: serde_json::from_str(&row.excluded_paths).unwrap_or_default(),
                     heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs)
                         .unwrap_or(30),
                     offline_cache_enabled: row.offline_cache_enabled != 0,
@@ -1370,6 +1374,7 @@ async fn get_global_agent_config_handler(
 
     Ok(Json(AgentConfigPayload {
         monitored_paths: serde_json::from_str(&row.monitored_paths).unwrap_or_default(),
+        excluded_paths: serde_json::from_str(&row.excluded_paths).unwrap_or_default(),
         heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs).unwrap_or(30),
         offline_cache_enabled: row.offline_cache_enabled != 0,
     }))
@@ -1402,8 +1407,10 @@ async fn update_global_agent_config_handler(
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
         let paths_json = serde_json::to_string(&p.monitored_paths).map_err(AppError::from)?;
+        let excluded_json = serde_json::to_string(&p.excluded_paths).map_err(AppError::from)?;
         let record = repositories::GlobalAgentConfigRow {
             monitored_paths: paths_json,
+            excluded_paths: excluded_json,
             heartbeat_interval_secs: i64::try_from(p.heartbeat_interval_secs).unwrap_or(30),
             offline_cache_enabled: if p.offline_cache_enabled { 1 } else { 0 },
             updated_at: now,
@@ -1436,6 +1443,7 @@ async fn get_agent_config_override_handler(
 
     Ok(Json(AgentConfigPayload {
         monitored_paths: serde_json::from_str(&row.monitored_paths).unwrap_or_default(),
+        excluded_paths: serde_json::from_str(&row.excluded_paths).unwrap_or_default(),
         heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs).unwrap_or(30),
         offline_cache_enabled: row.offline_cache_enabled != 0,
     }))
@@ -1469,10 +1477,12 @@ async fn update_agent_config_override_handler(
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
         let paths_json = serde_json::to_string(&p.monitored_paths).map_err(AppError::from)?;
+        let excluded_json = serde_json::to_string(&p.excluded_paths).map_err(AppError::from)?;
         AgentConfigRepository::upsert_override(
             &uow,
             &id,
             &paths_json,
+            &excluded_json,
             i64::try_from(p.heartbeat_interval_secs).unwrap_or(30),
             if p.offline_cache_enabled { 1 } else { 0 },
             &now,
@@ -3090,6 +3100,7 @@ mod tests {
     fn test_agent_config_payload_serde() {
         let payload = AgentConfigPayload {
             monitored_paths: vec![r"C:\Data\".to_string()],
+            excluded_paths: vec![],
             heartbeat_interval_secs: 60,
             offline_cache_enabled: false,
         };
@@ -3164,6 +3175,7 @@ mod tests {
 
         let new_config = AgentConfigPayload {
             monitored_paths: vec![r"C:\Data\".to_string()],
+            excluded_paths: vec![r"C:\Temp\".to_string()],
             heartbeat_interval_secs: 60,
             offline_cache_enabled: true,
         };
@@ -3207,6 +3219,7 @@ mod tests {
 
         let bad_config = AgentConfigPayload {
             monitored_paths: vec![],
+            excluded_paths: vec![],
             heartbeat_interval_secs: 5,
             offline_cache_enabled: true,
         };
@@ -3248,6 +3261,7 @@ mod tests {
 
         let override_config = AgentConfigPayload {
             monitored_paths: vec![r"D:\Secret\".to_string()],
+            excluded_paths: vec![r"D:\Secret\Temp\".to_string()],
             heartbeat_interval_secs: 15,
             offline_cache_enabled: false,
         };
@@ -3310,6 +3324,7 @@ mod tests {
         // Seed an override first.
         let override_config = AgentConfigPayload {
             monitored_paths: vec![r"E:\Logs\".to_string()],
+            excluded_paths: vec![],
             heartbeat_interval_secs: 20,
             offline_cache_enabled: false,
         };
@@ -3378,6 +3393,7 @@ mod tests {
         let app = spawn_admin_app();
         let config = AgentConfigPayload {
             monitored_paths: vec![],
+            excluded_paths: vec![],
             heartbeat_interval_secs: 30,
             offline_cache_enabled: true,
         };
