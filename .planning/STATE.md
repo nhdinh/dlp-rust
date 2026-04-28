@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.5.0
 milestone_name: â Boolean Logic
-status: executing
-last_updated: "2026-04-28T02:02:30.063Z"
-last_activity: 2026-04-23
+status: complete
+last_updated: "2026-04-29T00:10:00.000+07:00"
+last_activity: 2026-04-29 -- Phase 30 execution complete
 progress:
   total_phases: 17
-  completed_phases: 14
-  total_plans: 40
-  completed_plans: 39
-  percent: 98
+  completed_phases: 15
+  total_plans: 50
+  completed_plans: 50
+  percent: 100
 ---
 
 # STATE.md — Project Memory
@@ -20,15 +20,15 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** Phase 28 — admin-tui-screens (context gathered 2026-04-23)
+**Current focus:** Phase 30 — automated-uat-infrastructure
 
 ## Current Position
 
-Phase: 30 (automated-uat-infrastructure) — CONTEXT GATHERED
-Plan: N/A (discussion complete, ready for planning)
-Status: Phase 28 complete (5/5 plans delivered). Phase 30 context gathered 2026-04-28.
-Next: /gsd-plan-phase 30
-Last activity: 2026-04-28
+Phase: 30 (automated-uat-infrastructure) — COMPLETE
+Plan: 10 of 10
+Status: All plans complete
+Next: /gsd-verify-work 30
+Last activity: 2026-04-29 -- Phase 30 execution complete — all 10 plans delivered
 
 ## Decisions
 
@@ -93,12 +93,18 @@ Last activity: 2026-04-28
 
 ## Known Issues (carry-forward)
 
-- Phase 6 human UAT: live agent TOML write-back test not run
-- Phase 6 human UAT: zero-warning workspace build not verified
 - Phase 4 human UAT: live SMTP email delivery not tested
 - Phase 4 human UAT: live webhook POST not tested
-- Phase 4 human UAT: hot-reload verification through HTTP + TUI not run
-- Phase 24 human UAT: approved for debug build only — release-mode UAT (cargo build --release + curl smoke test) not verified; defer to Phase 25 or hardening pass
+
+## Resolved by Phase 30 (Automated UAT Infrastructure)
+
+- Phase 6 UAT: agent TOML write-back — automated via `dlp-e2e/tests/agent_toml_writeback.rs`
+- Phase 6 UAT: zero-warning workspace build — automated via CI `cargo build --workspace` with `RUSTFLAGS=-D warnings`
+- Phase 6 UAT: hot-reload verification — automated via `dlp-e2e/tests/hot_reload_config.rs`
+- Phase 24 UAT: release-mode build verification — automated via nightly.yml scheduled workflow
+- Phase 28 UAT: Device Registry TUI — automated via `dlp-e2e/tests/tui_device_registry.rs`
+- Phase 28 UAT: Managed Origins TUI — automated via `dlp-e2e/tests/tui_managed_origins.rs`
+- Phase 28 UAT: Conditions Builder TUI — automated via `dlp-e2e/tests/tui_conditions_builder.rs`
 
 ## Deferred Items (from v0.5.0 close — 2026-04-21)
 
