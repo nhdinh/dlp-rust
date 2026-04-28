@@ -411,6 +411,40 @@ impl ServerClient {
     ///
     /// Returns `ServerClientError::Http` on network failures.
     /// Returns `ServerClientError::ServerError` on non-2xx responses.
+    /// Fetches the managed origins list from `GET /admin/managed-origins`.
+    ///
+    /// Returns a JSON array of [`ManagedOriginEntry`] objects.  The endpoint is
+    /// unauthenticated — agents do not send a JWT (D-06 from 28-CONTEXT.md).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerClientError::Http`] if the HTTP request fails.
+    /// Returns [`ServerClientError::ServerError`] if the response status is not 2xx.
+    pub async fn fetch_managed_origins(
+        &self,
+    ) -> Result<Vec<ManagedOriginEntry>, ServerClientError> {
+        let url = format!("{}/admin/managed-origins", self.base_url);
+        let response = self
+            .client
+            .get(&url)
+            .timeout(REQUEST_TIMEOUT)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
+            return Err(ServerClientError::ServerError { status, body });
+        }
+        let entries = response
+            .json::<Vec<ManagedOriginEntry>>()
+            .await
+            .map_err(ServerClientError::Http)?;
+        Ok(entries)
+    }
+
     pub async fn send_audit_events(&self, events: &[AuditEvent]) -> Result<(), ServerClientError> {
         if events.is_empty() {
             return Ok(());
@@ -458,6 +492,21 @@ pub struct DeviceRegistryEntry {
     pub trust_tier: String,
     /// ISO-8601 creation timestamp.
     pub created_at: String,
+}
+
+// ---------------------------------------------------------------------------
+// ManagedOriginEntry -- deserialization target for GET /admin/managed-origins
+// ---------------------------------------------------------------------------
+
+/// A single entry from the `GET /admin/managed-origins` response.
+///
+/// Matches the `ManagedOriginResponse` shape returned by `dlp-server`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ManagedOriginEntry {
+    /// Server-generated UUID for the origin row.
+    pub id: String,
+    /// The origin pattern string (e.g., `"https://sharepoint.com"`).
+    pub origin: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -792,6 +841,13 @@ mod tests {
         // Test 5: fetch_device_registry on an unreachable server returns Err (does not panic).
         let client = unreachable_client();
         let result = client.fetch_device_registry().await;
+        assert!(result.is_err(), "unreachable server must return Err");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_managed_origins_unreachable_server() {
+        let client = unreachable_client();
+        let result = client.fetch_managed_origins().await;
         assert!(result.is_err(), "unreachable server must return Err");
     }
 }
