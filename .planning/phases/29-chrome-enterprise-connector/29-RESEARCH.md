@@ -583,7 +583,7 @@ pub fn register_agent() -> Result<()> {
 | A4 | The `url` field in `ContentMetaData` contains the source origin for clipboard paste operations | Decision Logic | If Chrome puts the destination URL in `url` instead, the origin extraction logic will evaluate the wrong endpoint. The SDK documentation is unclear on which URL represents source vs destination for clipboard. **May need to inspect actual Chrome requests.** |
 | A5 | `prost-build` supports `proto2` syntax with `optional` fields generating `Option<T>` Rust types | Standard Stack | `prost` does support proto2 optional fields. This is a safe assumption [VERIFIED: prost documentation]. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Exact HKLM registry path for agent registration**
    - What we know: Chrome discovers agents via HKLM registry. The Broadcom DLP docs mention Chrome Enterprise policy configuration but not the exact registry key for third-party agents.

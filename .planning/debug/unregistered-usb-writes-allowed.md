@@ -1,9 +1,9 @@
 ---
 slug: unregistered-usb-writes-allowed
-status: root_cause_found
+status: resolved
 trigger: "Unregistered USB drive allows file writes — agent should block all operations on any USB not in the device registry (fail-safe default-deny), but writes succeed on a freshly plugged-in USB with no registry entry"
 created: 2026-04-24
-updated: 2026-04-24
+updated: 2026-04-25
 source_phase: 28-admin-tui-screens (UAT check 1)
 ---
 
@@ -133,3 +133,73 @@ dynamically while existing paths continue to be watched without interruption.
 - `dlp-agent/src/detection/usb.rs` — on_drive_arrival, scan_existing_drives
 - `dlp-agent/src/config.rs` — resolve_watch_paths
 - `dlp-agent/src/service.rs` — agent startup, wires interception + USB detection
+
+### Fix Applied
+
+**Date:** 2026-04-25
+
+The fix was already present in the codebase across three files — confirmed correct and verified
+by `cargo check` (zero errors) and 182 unit tests passing.
+
+**Channel wiring (service.rs lines 505-506, 559):**
+A `std::sync::mpsc` channel is created in `run_loop`. The sender end is stored in the global
+`WATCH_PATH_TX` via `set_watch_path_sender()`. The receiver end is passed as `Some(watch_rx)`
+to `file_monitor.run()`.
+
+**USB arrival sender (detection/usb.rs lines 452-453):**
+Inside `handle_volume_event`, after `on_drive_arrival(letter)` inserts the new drive letter
+into `UsbDetector::blocked_drives`, the new drive root path (e.g. `E:\`) is sent through
+`WATCH_PATH_TX` to the file monitor.
+
+**Dynamic watcher registration (interception/file_monitor.rs lines 242-257):**
+Inside the `run()` polling loop (500 ms timeout), after each `recv_timeout` call, a
+`try_recv` drains all pending paths from `watch_rx` and calls
+`watcher.watch(&new_path, RecursiveMode::Recursive)` for each one. Errors are logged as
+warnings; success is logged at INFO level.
+
+**Result:** Any USB drive plugged in after agent startup now has its drive root registered
+with the notify watcher within one poll cycle (~500 ms). File events on that drive reach
+`UsbEnforcer::check()` and the ABAC engine. Unregistered devices are denied by the
+existing default-deny logic in `UsbEnforcer::check()`.
+
+---
+
+## Addendum — Second Root Cause (2026-04-25)
+
+User reported writes still possible after the watcher channel fix above. Investigated
+`set_disk_read_only()` in `detection/usb.rs`.
+
+### Root Cause #2
+
+`set_disk_read_only()` used the wrong IOCTL control code:
+
+```rust
+// BUG: 0x0007_007C = CTL_CODE(7, 0x1F, METHOD_BUFFERED, FILE_ANY_ACCESS)
+//      = IOCTL_DISK_GET_READ_ONLY  (a GET, not a SET — reads current state, changes nothing)
+const IOCTL_DISK_SET_READ_ONLY_MODE: u32 = 0x0007_007C;
+```
+
+The code sent a `u32` input value of `1` to `IOCTL_DISK_GET_READ_ONLY`, which either
+silently succeeds (returning current state) or fails with an access error — in neither
+case is write protection applied. The IOCTL was likely logging "write protection active"
+while the disk remained fully writable.
+
+### Fix
+
+Replaced with the correct IOCTL `IOCTL_DISK_SET_DISK_ATTRIBUTES` and a properly
+structured `SET_DISK_ATTRIBUTES` input buffer:
+
+```rust
+// CORRECT: CTL_CODE(7, 0x3d, METHOD_BUFFERED, FILE_READ_ACCESS|FILE_WRITE_ACCESS)
+//          = IOCTL_DISK_SET_DISK_ATTRIBUTES
+const IOCTL_DISK_SET_DISK_ATTRIBUTES: u32 = 0x0007_C0F4;
+const DISK_ATTRIBUTE_READ_ONLY: u64 = 0x0000_0000_0000_0002;
+```
+
+Input buffer is now a `repr(C)` `SetDiskAttributes` struct (40 bytes, matching
+`SET_DISK_ATTRIBUTES` in WinIoCtl.h) with `Persist = false` so the protection
+clears automatically on USB removal.
+
+**Files changed:** `dlp-agent/src/detection/usb.rs` (lines ~758-935)
+**Verification:** `cargo check --package dlp-agent` clean; 31 USB lib tests pass.
+

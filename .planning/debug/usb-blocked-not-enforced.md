@@ -1,9 +1,9 @@
 ---
 slug: usb-blocked-not-enforced
-status: root_cause_found
+status: resolved
 trigger: "a USB registered as blocked would still allow read/write"
 created: 2026-04-23
-updated: 2026-04-23
+updated: 2026-04-25
 source_phase: 28-admin-tui-screens (UAT check 1)
 ---
 
@@ -56,11 +56,13 @@ source_phase: 28-admin-tui-screens (UAT check 1)
 
 - root_cause: Pre-existing USB drives (plugged in before agent start) are marked in `UsbDetector.blocked_drives` by `scan_existing_drives()` but never have their VID/PID/serial captured into `UsbDetector.device_identities`. The Phase 26 `UsbEnforcer` only consults `device_identities`; when it's empty for the drive letter, `check()` returns `None`, bypassing USB policy and falling through to ABAC, which allows the operation.
 - fix: Two-part fix. (1) Defence-in-depth in `UsbEnforcer::check`: when `device_identities[drive]` is missing but `blocked_drives.contains(&drive)` is true, treat the drive as "known USB without identity" and return `UsbBlockResult { decision: DENY, tier: Blocked, identity: DeviceIdentity::default() }` to preserve default-deny. (2) Extend `scan_existing_drives()` to resolve VID/PID/serial/description for each removable drive via `SetupDiGetClassDevs(GUID_DEVINTERFACE_DISK)` → `IOCTL_STORAGE_GET_DEVICE_NUMBER` → walk `GUID_DEVINTERFACE_USB_DEVICE` interfaces → `parse_usb_device_path` + `setupdi_description_for_device`, populating `device_identities` on startup so registry lookups work for pre-existing devices too.
-- specialist_review: pending
+- specialist_review: none
+- fix_note: Both parts applied 2026-04-25
+- fix_applied: 2026-04-25
 
 ## Specialist Review
 
-(to be populated after user approves fix direction)
+None requested (goal=find_and_fix, specialist_dispatch skipped — fix applied directly).
 
 ## Related Files (initial candidates)
 

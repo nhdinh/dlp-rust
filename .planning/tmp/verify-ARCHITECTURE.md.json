@@ -1,0 +1,20 @@
+{
+  "doc_path": "docs/ARCHITECTURE.md",
+  "claims_checked": 74,
+  "claims_passed": 72,
+  "claims_failed": 2,
+  "failures": [
+    {
+      "line": 285,
+      "claim": "dlp-server/src/db.rs",
+      "expected": "file exists",
+      "actual": "file not found at dlp-server/src/db.rs — exists as a directory (dlp-server/src/db/) with mod.rs, repositories/, unit_of_work.rs"
+    },
+    {
+      "line": 356,
+      "claim": "docs/THREAT_MODEL.md",
+      "expected": "file exists",
+      "actual": "file not found at docs/THREAT_MODEL.md"
+    }
+  ]
+}

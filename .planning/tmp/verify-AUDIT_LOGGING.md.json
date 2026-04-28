@@ -1,0 +1,14 @@
+{
+  "doc_path": "docs/AUDIT_LOGGING.md",
+  "claims_checked": 10,
+  "claims_passed": 9,
+  "claims_failed": 1,
+  "failures": [
+    {
+      "line": 61,
+      "claim": "common-types/src/audit.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:\\Users\\nhdinh\\dev\\dlp-rust\\common-types\\src\\audit.rs (actual path is dlp-common/src/audit.rs)"
+    }
+  ]
+}

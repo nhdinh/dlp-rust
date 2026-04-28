@@ -1,0 +1,62 @@
+{
+  "doc_path": "docs/SECURITY_ARCHITECTURE.md",
+  "claims_checked": 34,
+  "claims_passed": 25,
+  "claims_failed": 9,
+  "failures": [
+    {
+      "line": 13,
+      "claim": "docs/ISO27001_MAPPING.md",
+      "expected": "file exists",
+      "actual": "file not found at C:\\Users\\nhdinh\\dev\\dlp-rust\\docs\\ISO27001_MAPPING.md"
+    },
+    {
+      "line": 272,
+      "claim": "dlp-server/src/engine.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:\\Users\\nhdinh\\dev\\dlp-rust\\dlp-server\\src\\engine.rs — Decision enum lives in dlp-common/src/abac.rs"
+    },
+    {
+      "line": 336,
+      "claim": "dlp-server/src/ad_client.rs",
+      "expected": "file exists",
+      "actual": "file not found at C:\\Users\\nhdinh\\dev\\dlp-rust\\dlp-server\\src\\ad_client.rs — actual location is dlp-common/src/ad_client.rs"
+    },
+    {
+      "line": 379,
+      "claim": "offline.rs line 131 contains fail_closed_response call",
+      "expected": "fail_closed_response called at offline.rs line 131",
+      "actual": "line 131 of offline.rs is a closing brace; fail_closed_response is called at line 153"
+    },
+    {
+      "line": 423,
+      "claim": "AdClientError::LdapInitError",
+      "expected": "variant 'LdapInitError' on AdClientError enum",
+      "actual": "no LdapInitError variant found; actual variant is AdClientError::LdapConnect in dlp-common/src/ad_client.rs"
+    },
+    {
+      "line": 427,
+      "claim": "escape_filter()",
+      "expected": "function 'escape_filter' in codebase",
+      "actual": "no escape_filter function found; LDAP injection prevention uses ldap3::ldap_escape() at dlp-common/src/ad_client.rs lines 434 and 478"
+    },
+    {
+      "line": 449,
+      "claim": "CreateNamedPipeW call in pipe1.rs at line 92-102 uses None for security descriptor",
+      "expected": "CreateNamedPipeW at line 92-102 with None security descriptor",
+      "actual": "CreateNamedPipeW is in create_pipe() at line 160 (function starts at 152); security descriptor is Some(sec.as_ptr()) — a custom PipeSecurity descriptor, not None"
+    },
+    {
+      "line": 459,
+      "claim": "pipe1.rs::handle_client() at line 114",
+      "expected": "handle_client defined at line 114 in pipe1.rs",
+      "actual": "handle_client is defined at line 182 of dlp-agent/src/ipc/pipe1.rs; line 114 is inside serve_with_ready()"
+    },
+    {
+      "line": 552,
+      "claim": "service.rs::service_control_handler() at line 190",
+      "expected": "service_control_handler defined at line 190 in service.rs",
+      "actual": "service_control_handler is defined at line 728 of dlp-agent/src/service.rs; line 190 is inside config_poll_loop()"
+    }
+  ]
+}

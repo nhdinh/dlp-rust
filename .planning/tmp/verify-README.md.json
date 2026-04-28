@@ -1,0 +1,26 @@
+{
+  "doc_path": "README.md",
+  "claims_checked": 9,
+  "claims_passed": 6,
+  "claims_failed": 3,
+  "failures": [
+    {
+      "line": 53,
+      "claim": "docs/THREAT_MODEL.md",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/docs/THREAT_MODEL.md"
+    },
+    {
+      "line": 57,
+      "claim": "docs/ISO27001_MAPPING.md",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/docs/ISO27001_MAPPING.md"
+    },
+    {
+      "line": 58,
+      "claim": "docs/CLAUDE.md",
+      "expected": "file exists",
+      "actual": "file not found at C:/Users/nhdinh/dev/dlp-rust/docs/CLAUDE.md"
+    }
+  ]
+}

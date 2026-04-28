@@ -451,22 +451,19 @@ fn mint_jwt() -> String {
 | A3 | `std::process::Command` is adequate for spawning dlp-server/dlp-agent from tests | Architecture Patterns | If async process management needed, switch to `tokio::process::Command` |
 | A4 | Physical USB device is available for local manual testing | Runtime State Inventory | If no USB device, PowerShell script cannot run; unit tests still cover logic |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Does the TUI `App::new()` constructor require a real `EngineClient` with a running server?**
+1. **Does the TUI `App::new()` constructor require a real `EngineClient` with a running server?** — RESOLVED
    - What we know: `App::new` takes `EngineClient` and `tokio::runtime::Runtime`. `EngineClient` makes HTTP calls.
-   - What's unclear: Whether a mock client (pointing at a mock server) is sufficient, or if the TUI tests need a full server running.
-   - Recommendation: Use a mock `EngineClient` pointing at an in-process mock axum server (same pattern as existing integration tests). The `EngineClient` in dlp-admin-cli uses `reqwest::blocking::Client` internally, so it needs a real HTTP endpoint.
+   - Resolution: Use a mock `EngineClient` pointing at an in-process mock axum server (same pattern as existing integration tests). The `EngineClient` in dlp-admin-cli uses `reqwest::blocking::Client` internally, so it needs a real HTTP endpoint. Captured in Plan 30-01 (shared helpers) and Plans 30-02 through 30-04 (TUI tests).
 
-2. **Can the agent TOML write-back test use the agent's library directly instead of spawning the binary?**
+2. **Can the agent TOML write-back test use the agent's library directly instead of spawning the binary?** — RESOLVED
    - What we know: `config_poll_loop` is async and internal to `service.rs`. `AgentConfig::save()` exists.
-   - What's unclear: Whether the full poll loop can be exercised without the binary.
-   - Recommendation: Spawn the binary for true end-to-end verification. For faster unit tests, test `AgentConfig::save()` and `AgentConfig::load()` directly (already covered in comprehensive.rs).
+   - Resolution: Spawn the binary for true end-to-end verification. For faster unit tests, test `AgentConfig::save()` and `AgentConfig::load()` directly (already covered in comprehensive.rs). Captured in Plan 30-05.
 
-3. **Should the nightly workflow use `sccache` for faster release builds?**
+3. **Should the nightly workflow use `sccache` for faster release builds?** — RESOLVED
    - What we know: Release builds are slow. Nightly schedule means caching helps across days.
-   - What's unclear: Whether sccache is available in GitHub Actions windows-latest.
-   - Recommendation: Start without sccache. Add it later if build times are problematic (deferred per 30-CONTEXT.md).
+   - Resolution: Start without sccache. Add it later if build times are problematic (deferred per 30-CONTEXT.md). Captured in Plan 30-10.
 
 ## Environment Availability
 

@@ -1,0 +1,14 @@
+{
+  "doc_path": "docs/MANUAL_TESTING.md",
+  "claims_checked": 13,
+  "claims_passed": 12,
+  "claims_failed": 1,
+  "failures": [
+    {
+      "line": 922,
+      "claim": "GET /policies/:id/versions",
+      "expected": "route definition in codebase",
+      "actual": "no route definition found for /policies/:id/versions in dlp-server/src/admin_api.rs"
+    }
+  ]
+}

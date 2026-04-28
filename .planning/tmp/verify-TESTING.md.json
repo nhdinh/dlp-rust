@@ -1,0 +1,14 @@
+{
+  "doc_path": "docs/TESTING.md",
+  "claims_checked": 7,
+  "claims_passed": 6,
+  "claims_failed": 1,
+  "failures": [
+    {
+      "line": 140,
+      "claim": "get_admin_token(",
+      "expected": "function 'get_admin_token' in codebase",
+      "actual": "no definition found in dlp-server (searched dlp-server/src/admin_api.rs and all dlp-server source files)"
+    }
+  ]
+}
