@@ -68,7 +68,10 @@ pub fn service_main(_arguments: Vec<std::ffi::OsString>) {
 
 /// Runs the DLP Agent Windows Service to completion.
 pub fn run_service() -> Result<()> {
-    init_logging();
+    // Load the config early — only to read `log_level` before the subscriber
+    // is initialised.  The full config load happens later at its normal site.
+    let log_level = crate::config::AgentConfig::load_default().resolved_log_level();
+    init_logging(log_level);
     info!(service_name = SERVICE_NAME, "DLP Agent service starting");
 
     // Resolve machine hostname once at startup for inclusion in evaluation requests.
@@ -195,13 +198,91 @@ async fn config_poll_loop(
     config: Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
-    // Read the initial poll interval from config; default 30 s if not set.
-    let initial_interval = {
-        let cfg = config.lock();
-        cfg.heartbeat_interval_secs.unwrap_or(30)
-    };
+    // Perform an immediate first fetch so the agent reflects server-pushed
+    // config as soon as possible after startup. This also ensures that tests
+    // with fast poll intervals (heartbeat_interval_secs = 10) do not need to
+    // wait for the full 30-second default before the first update.
+    //
+    // After the initial fetch, the interval-based loop takes over with the
+    // heartbeat_interval_secs value returned by the server (or 30 s default).
+    // Helper closure: fetch, diff, and persist config. Returns the previous
+    // interval (before the update), which is used to re-arm the timer.
+    // Defined as a macro because async closures are not stable and we share
+    // `config` and `server_client` by reference across .await points.
+    macro_rules! do_poll {
+        () => {{
+            // Capture interval BEFORE applying any update (T-06-08 DoS mitigation).
+            let current_interval = {
+                let cfg = config.lock();
+                cfg.heartbeat_interval_secs.unwrap_or(30)
+            };
+
+            match server_client.fetch_agent_config().await {
+                Ok(payload) => {
+                    let mut changed_fields: Vec<&str> = Vec::new();
+                    {
+                        let mut cfg = config.lock();
+
+                        if cfg.monitored_paths != payload.monitored_paths {
+                            changed_fields.push("monitored_paths");
+                            cfg.monitored_paths = payload.monitored_paths.clone();
+                        }
+                        if cfg.heartbeat_interval_secs != Some(payload.heartbeat_interval_secs) {
+                            changed_fields.push("heartbeat_interval_secs");
+                            cfg.heartbeat_interval_secs = Some(payload.heartbeat_interval_secs);
+                        }
+                        if cfg.offline_cache_enabled != Some(payload.offline_cache_enabled) {
+                            changed_fields.push("offline_cache_enabled");
+                            cfg.offline_cache_enabled = Some(payload.offline_cache_enabled);
+                        }
+                        if cfg.ldap_config != payload.ldap_config {
+                            changed_fields.push("ldap_config");
+                            cfg.ldap_config = payload.ldap_config;
+                        }
+                        if cfg.excluded_paths != payload.excluded_paths {
+                            changed_fields.push("excluded_paths");
+                            cfg.excluded_paths = payload.excluded_paths;
+                        }
+
+                        if !changed_fields.is_empty() {
+                            // Log field names only — never log path values (T-06-09 info disclosure).
+                            info!(
+                                fields = ?changed_fields,
+                                "agent config updated from server"
+                            );
+                            // Write back to TOML for persistence across restarts.
+                            // Use the effective path (DLP_CONFIG_PATH env var if set, else
+                            // DEFAULT_CONFIG_PATH) so integration tests can redirect to a
+                            // temp directory without touching the production config file.
+                            let effective_path =
+                                crate::config::AgentConfig::effective_config_path();
+                            let config_path = std::path::Path::new(&effective_path);
+                            if let Err(e) = cfg.save(config_path) {
+                                tracing::error!(
+                                    error = %e,
+                                    "failed to write updated config to TOML"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Best-effort: log and retain current config on server error.
+                    debug!(error = %e, "config poll failed — retaining current config");
+                }
+            }
+
+            // Re-arm using the PREVIOUS interval so a server-reduced interval
+            // does not cause a tight loop on the very next tick.
+            current_interval
+        }};
+    }
+
+    // Initial fetch — runs immediately without waiting for an interval tick.
+    let initial_interval = do_poll!();
     let mut interval = tokio::time::interval(Duration::from_secs(initial_interval));
-    // Skip the first immediate tick — let the agent settle after startup.
+    // Consume the immediate first tick of the new interval so the next loop
+    // iteration waits a full interval_secs before polling again.
     interval.tick().await;
 
     loop {
@@ -213,65 +294,11 @@ async fn config_poll_loop(
             }
         }
 
-        // Capture the current interval BEFORE applying any update.
-        // The timer re-arms with this value so a server-reduced interval
-        // does not cause a tight loop (T-06-08 DoS mitigation).
-        let current_interval = {
-            let cfg = config.lock();
-            cfg.heartbeat_interval_secs.unwrap_or(30)
-        };
-
-        let payload = match server_client.fetch_agent_config().await {
-            Ok(p) => p,
-            Err(e) => {
-                // Best-effort: log and retain current config on server error.
-                debug!(error = %e, "config poll failed — retaining current config");
-                continue;
-            }
-        };
-
-        // Diff: compare fetched payload against in-memory config.
-        let mut changed_fields: Vec<&str> = Vec::new();
-        {
-            let mut cfg = config.lock();
-
-            if cfg.monitored_paths != payload.monitored_paths {
-                changed_fields.push("monitored_paths");
-                cfg.monitored_paths = payload.monitored_paths.clone();
-            }
-            if cfg.heartbeat_interval_secs != Some(payload.heartbeat_interval_secs) {
-                changed_fields.push("heartbeat_interval_secs");
-                cfg.heartbeat_interval_secs = Some(payload.heartbeat_interval_secs);
-            }
-            if cfg.offline_cache_enabled != Some(payload.offline_cache_enabled) {
-                changed_fields.push("offline_cache_enabled");
-                cfg.offline_cache_enabled = Some(payload.offline_cache_enabled);
-            }
-            if cfg.ldap_config != payload.ldap_config {
-                changed_fields.push("ldap_config");
-                cfg.ldap_config = payload.ldap_config;
-            }
-
-            if !changed_fields.is_empty() {
-                // Log field names only — never log path values (T-06-09 info disclosure).
-                info!(
-                    fields = ?changed_fields,
-                    "agent config updated from server"
-                );
-                // Write back to TOML for persistence across restarts.
-                let config_path = std::path::Path::new(crate::config::DEFAULT_CONFIG_PATH);
-                if let Err(e) = cfg.save(config_path) {
-                    tracing::error!(
-                        error = %e,
-                        "failed to write updated config to TOML"
-                    );
-                }
-            }
-        }
+        let next_interval = do_poll!();
 
         // Re-arm the timer using the PREVIOUS interval, not the new one.
         // The new interval takes effect after the *next* tick completes.
-        interval = tokio::time::interval(Duration::from_secs(current_interval));
+        interval = tokio::time::interval(Duration::from_secs(next_interval));
         interval.tick().await; // consume immediate first tick
     }
 }
@@ -844,7 +871,11 @@ fn acquire_instance_mutex() {
 // Logging
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Log directory for the DLP Agent service.
+/// Default log directory for the DLP Agent service.
+///
+/// Override with `DLP_LOG_DIR` env var to redirect logs to a different directory
+/// (e.g., a temp dir during integration tests where `C:\ProgramData\DLP\logs`
+/// may require elevated privileges).
 const LOG_DIR: &str = r"C:\ProgramData\DLP\logs";
 
 /// Initialises structured logging to a rolling daily log file.
@@ -866,31 +897,44 @@ const LOG_DIR: &str = r"C:\ProgramData\DLP\logs";
 /// the worker thread and the channel entirely: each log event is written on
 /// the calling thread.  The `RollingFileAppender` guards its internal `File`
 /// handle with an `RwLock` for multi-thread safety.
-fn init_logging() {
+fn init_logging(level: Level) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
     crate::password_stop::debug_log("init_logging: entered");
 
-    // Default to INFO unless RUST_LOG overrides.  `from_env_lossy` silently
-    // ignores unrecognised directives so a misconfigured RUST_LOG does not
-    // crash the service.
-    let filter = tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(Level::INFO.into())
-        .from_env_lossy();
+    // Always prepend the configured level as the global default so that all
+    // crate targets (dlp_agent::*, dlp_common::*, etc.) are covered.  Any
+    // RUST_LOG value is appended after the default, so it can narrow specific
+    // targets further without accidentally silencing everything else.
+    // Example: RUST_LOG=dlp_endpoint=debug becomes "trace,dlp_endpoint=debug"
+    // which keeps trace-level output for all other targets.
+    let filter_str = match std::env::var("RUST_LOG") {
+        Ok(s) if !s.is_empty() => format!("{level},{s}"),
+        _ => level.to_string(),
+    };
+    let filter = tracing_subscriber::EnvFilter::new(&filter_str);
 
     crate::password_stop::debug_log(&format!("init_logging: filter = {filter}"));
 
+    // Determine the log directory: DLP_LOG_DIR env var overrides the default.
+    // This allows integration tests to redirect logs to a temp directory where
+    // the test process has write access without requiring elevated privileges.
+    let log_dir = std::env::var("DLP_LOG_DIR")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| LOG_DIR.to_string());
+
     // Ensure the log directory exists before creating any file appender.
-    let dir_result = std::fs::create_dir_all(LOG_DIR);
+    let dir_result = std::fs::create_dir_all(&log_dir);
     crate::password_stop::debug_log(&format!(
-        "init_logging: create_dir_all({LOG_DIR}) = {dir_result:?}"
+        "init_logging: create_dir_all({log_dir}) = {dir_result:?}"
     ));
 
-    // Rolling daily log file: C:\ProgramData\DLP\logs\dlp-agent.log.<date>
+    // Rolling daily log file: {log_dir}/dlp-agent.log.<date>
     // Used directly as a synchronous MakeWriter — no background thread required.
     // `RollingFileAppender` is thread-safe via its internal RwLock<File>.
-    let file_appender = tracing_appender::rolling::daily(LOG_DIR, "dlp-agent.log");
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "dlp-agent.log");
 
     crate::password_stop::debug_log("init_logging: file_appender created");
 
@@ -947,7 +991,8 @@ fn init_logging() {
 ///   - No UI is spawned (console sessions don't have an interactive desktop)
 ///   - File monitor runs with the console user's identity context
 pub fn run_console() -> Result<()> {
-    init_logging();
+    let log_level = crate::config::AgentConfig::load_default().resolved_log_level();
+    init_logging(log_level);
     info!(
         service_name = SERVICE_NAME,
         "DLP Agent running in console mode (full pipeline)"
@@ -961,8 +1006,16 @@ pub fn run_console() -> Result<()> {
     info!(thread_id = ?_health_handle.thread().id(), "health monitor started");
 
     // ── IPC pipe servers (blocking threads) ───────────────────────────────────
-    crate::ipc::start_all()?;
-    info!("IPC pipe servers started");
+    // Skip pipe creation when DLP_SKIP_IPC=1. Integration tests that spawn
+    // the agent binary may have an older agent instance holding the pipe
+    // server handles (named pipes are unique per name). Skipping IPC in tests
+    // avoids the 5-second start_all() timeout from failing CreateNamedPipeW calls.
+    if std::env::var("DLP_SKIP_IPC").is_ok_and(|v| v == "1") {
+        info!("IPC pipe servers skipped (DLP_SKIP_IPC=1)");
+    } else {
+        crate::ipc::start_all()?;
+        info!("IPC pipe servers started");
+    }
 
     // ── File system monitor + event loop on a Tokio runtime ─────────────────
     let rt = tokio::runtime::Runtime::new()?;
@@ -1050,6 +1103,11 @@ async fn async_run_console() -> Result<()> {
         crate::password_stop::sync_auth_hash_from_server(sc).await;
     }
 
+    // ── Clone server client for config poll BEFORE it moves into offline_manager ──
+    // ServerClient is Clone; we need two independent owners: offline_manager and
+    // the config poll loop.
+    let server_client_for_config = server_client.clone();
+
     // ── Audit buffer for server relay ────────────────────────────────────
     let (audit_shutdown_tx, audit_shutdown_rx) = tokio::sync::watch::channel(false);
     let _audit_flush_handle = if let Some(ref sc) = server_client {
@@ -1071,12 +1129,30 @@ async fn async_run_console() -> Result<()> {
     }
     let offline = Arc::new(offline_manager);
 
+    // ── Wrap agent_config in Arc<Mutex<>> for shared access ──────────────
+    // The config poll loop needs a shared mutable reference to apply
+    // server-pushed updates. InterceptionEngine gets a clone of the config
+    // at construction time (paths are fixed at startup).
+    let config_arc = Arc::new(parking_lot::Mutex::new(agent_config.clone()));
+
     // ── Heartbeat ───────────────────────────────────────────────────────────
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let offline_hb = offline.clone();
     let _heartbeat_handle = tokio::spawn(async move {
         offline_hb.heartbeat_loop(shutdown_rx).await;
     });
+
+    // ── Start the config poll loop ─────────────────────────────────────────
+    let (config_shutdown_tx, config_shutdown_rx) = tokio::sync::watch::channel(false);
+    let _config_poll_handle = if let Some(sc) = server_client_for_config {
+        let config_for_poll = Arc::clone(&config_arc);
+        Some(tokio::spawn(async move {
+            config_poll_loop(sc, config_for_poll, config_shutdown_rx).await;
+        }))
+    } else {
+        drop(config_shutdown_rx);
+        None
+    };
 
     // ── Start file system monitor pipeline ─────────────────────────────
     let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
@@ -1163,6 +1239,12 @@ async fn async_run_console() -> Result<()> {
     drop(event_loop_handle);
     let _ = shutdown_tx.send(true);
     let _ = _heartbeat_handle.await;
+
+    // Stop the config poll loop.
+    let _ = config_shutdown_tx.send(true);
+    if let Some(h) = _config_poll_handle {
+        let _ = h.await;
+    }
 
     // Stop the audit buffer flush task (final flush runs inside).
     let _ = audit_shutdown_tx.send(true);
