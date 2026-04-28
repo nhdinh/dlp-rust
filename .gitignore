@@ -40,3 +40,6 @@ installer/dist/
 
 # Claude session config (local machine-specific, never committed)
 .claude/
+
+# RTK / alternate target dirs
+target-test/

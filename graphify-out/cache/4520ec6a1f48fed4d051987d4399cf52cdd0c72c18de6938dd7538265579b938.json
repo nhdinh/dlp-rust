@@ -1,0 +1,1 @@
+{"nodes": [{"id": "dlp_agent_src_ipc_mod_rs", "label": "mod.rs", "file_type": "code", "source_file": "dlp-agent\\src\\ipc\\mod.rs", "source_location": "L1"}], "edges": [{"source": "dlp_agent_src_ipc_mod_rs", "target": "start_all", "relation": "imports_from", "confidence": "EXTRACTED", "source_file": "dlp-agent\\src\\ipc\\mod.rs", "source_location": "L24", "weight": 1.0}]}
