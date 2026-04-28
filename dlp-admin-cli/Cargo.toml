@@ -6,6 +6,14 @@ authors.workspace = true
 license.workspace = true
 description.workspace = true
 
+[lib]
+name = "dlp_admin_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dlp-admin-cli"
+path = "src/main.rs"
+
 [dependencies]
 # Password management
 bcrypt = "0.16"

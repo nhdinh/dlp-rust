@@ -116,12 +116,21 @@ impl EngineClient {
     /// call) are exercised in tests.
     #[cfg(test)]
     pub fn for_test() -> Self {
+        Self::for_test_with_url("http://127.0.0.1:0".to_string())
+    }
+
+    /// Constructs an `EngineClient` pointing at a specific base URL for
+    /// integration tests.
+    ///
+    /// Unlike [`for_test`], this allows the caller to specify a real mock
+    /// server address (e.g. `http://127.0.0.1:12345`).
+    pub fn for_test_with_url(base_url: String) -> Self {
         let inner = Client::builder()
             .build()
             .expect("test client build must succeed");
         Self {
             inner,
-            base_url: "http://127.0.0.1:0".to_string(),
+            base_url,
             token: None,
         }
     }
