@@ -1,531 +1,543 @@
-# Architecture: v0.6.0 Endpoint Hardening Integration
+# Architecture Patterns: Disk Exfiltration Prevention
 
-**Project:** dlp-rust
-**Milestone:** v0.6.0 — Application-Aware DLP, Browser Boundary, USB Device Control
-**Researched:** 2026-04-21
-**Confidence:** HIGH (derived directly from codebase + SEED files)
+**Domain:** Enterprise DLP — Fixed disk allowlist with BitLocker encryption check
+**Researched:** 2026-04-30
+**Confidence:** HIGH (existing codebase fully understood; Windows APIs well-documented)
 
 ---
 
-## 1. Baseline Architecture (what exists today)
+## Executive Summary
+
+The v0.7.0 disk exfiltration prevention feature adds a **fourth enforcement dimension** to the existing DLP architecture. Where v0.6.0 controls USB (removable) devices via VID/PID/Serial trust tiers, v0.7.0 controls **fixed disks** (internal SATA/NVMe, USB-bridged internal drives, eSATA enclosures) via an **install-time allowlist** with **BitLocker encryption verification**.
+
+The feature is architecturally analogous to USB device control but differs in three critical ways:
+1. **Enumeration timing**: USB devices are enumerated at runtime on plug-in; fixed disks are enumerated once at install time and persisted.
+2. **Identity mechanism**: USB uses VID/PID/Serial from the USB descriptor; fixed disks use a composite identity of **device instance ID + bus type + encryption status**.
+3. **Blocking mechanism**: USB uses `CM_Disable_DevNode` (PnP disable) and volume DACL modification; fixed disks must use a **different blocking strategy** because `CM_Disable_DevNode` on internal boot or data disks is unsafe and may crash the system.
+
+**Key architectural decision**: Disk identity is a **separate enforcement layer** (not an ABAC subject attribute). The disk allowlist is evaluated before ABAC, similar to how USB trust tiers are evaluated pre-ABAC in v0.6.0. This preserves the "NTFS = coarse-grained, ABAC = fine-grained" principle from CLAUDE.md.
+
+---
+
+## Recommended Architecture
+
+### High-Level Component Diagram
 
 ```
-[User Session]                        [Session 0 / SYSTEM]
- dlp-user-ui                           dlp-agent (Windows Service)
-   clipboard_monitor.rs                  detection/usb.rs       (WM_DEVICECHANGE pump)
-   dialogs/clipboard.rs                  detection/network_share.rs
-   ipc/pipe3.rs (client)                 interception/file_monitor.rs
-   notifications.rs                      ipc/pipe3.rs (server)
-        |                                      |
-        | Pipe 3 (UI->Agent)                   | HTTP POST /audit/events
-        v                                      v
-   Pipe3UiMsg::ClipboardAlert          dlp-server (axum 0.8)
-                                          policy_store.rs (PolicyStore::evaluate)
-                                          audit_store.rs
-                                          admin_api.rs
-                                          alert_router.rs
-                                          siem_connector.rs
-                                          db/ (SQLite)
-
-[Admin Terminal]
- dlp-admin-cli (ratatui TUI)
-   SystemMenu -> SiemConfig, AlertConfig, ...
-   PolicyMenu -> PolicyCreate, PolicyEdit, PolicyList, PolicySimulate
-   HTTP -> dlp-server admin API
++-----------------------------------------------------------------------------+
+|                           dlp-agent (Windows Service)                        |
+|                                                                              |
+|  +-------------------+    +-------------------+    +---------------------+  |
+|  |  DiskEnumerator   |    |  DiskAllowlist    |    |   DiskEnforcer      |  |
+|  |  (install-time)   |--->|  (TOML + in-mem)  |--->|  (I/O-time check)   |  |
+|  +-------------------+    +-------------------+    +---------------------+  |
+|           |                                               |                 |
+|           v                                               v                 |
+|  +-------------------+                         +---------------------+     |
+|  | BitLockerChecker  |                         | FileAction filter   |     |
+|  | (WMI/Win32 API)   |                         | (pre-ABAC)          |     |
+|  +-------------------+                         +---------------------+     |
+|                                                        |                    |
+|  +-------------------+    +-------------------+       |                    |
+|  |  UsbDetector      |    |  UsbEnforcer      |<------+                    |
+|  |  (v0.6.0)         |    |  (v0.6.0)         |  (existing pipeline)       |
+|  +-------------------+    +-------------------+                            |
+|                                                                              |
+|  +---------------------------------------------------------------+        |
+|  |                    run_event_loop (existing)                   |        |
+|  |  1. DiskEnforcer::check() -> DENY? -> audit + skip ABAC       |        |
+|  |  2. UsbEnforcer::check()  -> DENY? -> audit + skip ABAC       |        |
+|  |  3. ABAC evaluation (existing)                                |        |
+|  +---------------------------------------------------------------+        |
++-----------------------------------------------------------------------------+
+         |                                                           |
+         v                                                           v
++-------------------+                                    +-------------------+
+| dlp-user-ui       |                                    | dlp-server        |
+| (toast on block)  |                                    | (disk_registry DB)|
++-------------------+                                    +-------------------+
 ```
 
-**Current `Pipe3UiMsg` variants:** `HealthPong`, `UiReady`, `UiClosing`, `ClipboardAlert`
+### Component Boundaries
 
-**Current `PolicyCondition` variants:** `Classification`, `MemberOf`, `DeviceTrust`, `NetworkLocation`, `AccessContext`
-
-**Current `AuditEvent` fields relevant to v0.6.0:** `application_path: Option<String>`, `application_hash: Option<String>` — both always `None` on the clipboard path today.
-
-**Current `AbacContext` / `EvaluateRequest`:** No process-level attributes. No device-identity attributes. No origin attributes.
-
----
-
-## 2. Per-Crate Impact Table
-
-### dlp-common (shared types — all other crates depend on this)
-
-| Component | Status | Change |
-|-----------|--------|--------|
-| `abac::AppIdentity` struct | NEW | `canonical_path: String`, `publisher: Option<String>`, `signature_state: SignatureState`, `aumid: Option<String>` |
-| `abac::SignatureState` enum | NEW | `Signed`, `Unsigned`, `Invalid`, `Unknown` — anti-spoofing carrier |
-| `abac::DeviceIdentity` struct | NEW | `vid: u16`, `pid: u16`, `serial: Option<String>`, `description: String`, `trust_tier: UsbTrustTier` |
-| `abac::UsbTrustTier` enum | NEW | `Blocked`, `ReadOnly`, `FullAccess` |
-| `abac::PolicyCondition` enum | MODIFIED | Add variants: `SourceApplication { op, publisher/path }`, `DestinationApplication { op, publisher/path }`, `UsbDevice { op, vid/pid/trust_tier }`, `SourceOrigin { op, value }`, `DestinationOrigin { op, value }` |
-| `abac::EvaluateRequest` | MODIFIED | Add `source_application: Option<AppIdentity>`, `destination_application: Option<AppIdentity>`, `device: Option<DeviceIdentity>`, `source_origin: Option<String>`, `destination_origin: Option<String>` |
-| `audit::AuditEvent` | MODIFIED | Add `source_application: Option<AppIdentity>`, `destination_application: Option<AppIdentity>`, `device: Option<DeviceIdentity>`, `source_origin: Option<String>`, `destination_origin: Option<String>` |
-| `audit::AuditEvent::with_app_identity()` | NEW | Builder method for source+destination |
-| `audit::AuditEvent::with_device()` | NEW | Builder method for device fields |
-| IPC messages (`ipc::messages`) | MODIFIED | `Pipe3UiMsg::ClipboardAlert` gains `source_application: Option<AppIdentity>`, `destination_application: Option<AppIdentity>` |
-
-**Why dlp-common first:** Every crate (`dlp-agent`, `dlp-user-ui`, `dlp-server`, `dlp-admin-cli`) imports from `dlp-common`. Any new type must live here before downstream code can compile. This is the mandatory Phase 1 output.
+| Component | Responsibility | Communicates With |
+|-----------|---------------|-------------------|
+| `DiskEnumerator` | Install-time enumeration of all fixed disks; BitLocker status check | Writes to `agent-config.toml`; sends to `DiskAllowlist` |
+| `BitLockerChecker` | Queries WMI `Win32_EncryptableVolume` for encryption status | Called by `DiskEnumerator` |
+| `DiskAllowlist` | In-memory cache of allowed fixed disk identities; TOML persistence | Read by `DiskEnforcer`; written by `DiskEnumerator` + server sync |
+| `DiskEnforcer` | Runtime I/O check: is the target drive on an unregistered fixed disk? | Called from `run_event_loop` pre-ABAC; emits audit events |
+| `DiskRegistryCache` | Server-side polling cache (analogous to `DeviceRegistryCache`) | Polls dlp-server; read by `DiskEnforcer` |
+| `disk_wndproc` | `WM_DEVICECHANGE` handler for `GUID_DEVINTERFACE_DISK` arrivals | Calls `DiskEnforcer::on_disk_arrival` for new fixed disks |
 
 ---
 
-### dlp-user-ui (user session, Win32 clipboard APIs)
+## Data Flow
 
-| Component | Status | Change |
-|-----------|--------|--------|
-| `clipboard_monitor::handle_clipboard_change` | MODIFIED | Call `GetClipboardOwner()` -> resolve PID -> `QueryFullProcessImageNameW` -> capture `AppIdentity` as `source_application` BEFORE reading clipboard text (race window: owner may close) |
-| `clipboard_monitor::classify_and_alert` | MODIFIED | Accept `source_application: Option<AppIdentity>` and pass to `send_clipboard_alert` |
-| NEW `detection/app_identity.rs` | NEW | `resolve_pid_to_identity(hwnd: HWND) -> Option<AppIdentity>`: `GetWindowThreadProcessId` -> `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` -> `QueryFullProcessImageNameW` -> optional `WinVerifyTrust` for signature state |
-| NEW `detection/destination_app.rs` | NEW | `capture_destination() -> Option<AppIdentity>`: `GetForegroundWindow()` -> `GetWindowThreadProcessId` -> `resolve_pid_to_identity`. Called at paste time (before `WM_CLIPBOARDUPDATE` is handled). |
-| `ipc/pipe3.rs::send_clipboard_alert` | MODIFIED | Add `source_application` and `destination_application` parameters; include in `Pipe3UiMsg::ClipboardAlert` |
+### Install-Time Flow (One-Time)
 
-**Session-0 constraint enforced:** `GetForegroundWindow` and `GetClipboardOwner` are per-user-session Win32 calls. They MUST remain in `dlp-user-ui`. They cannot move to `dlp-agent` (Session 0 has no interactive window station).
+```
+Installer / Agent first startup
+    |
+    +---> DiskEnumerator::enumerate_fixed_disks()
+    |         |
+    |         +---> SetupDiGetClassDevsW(GUID_DEVINTERFACE_DISK)
+    |         +---> For each disk:
+    |         |       +---> Get device instance ID
+    |         |       +---> IOCTL_STORAGE_QUERY_PROPERTY -> BusType (SATA/NVMe/USB/SCSI)
+    |         |       +---> BitLockerChecker::is_encrypted(drive_letter)
+    |         |       +---> Build DiskIdentity { instance_id, bus_type, encrypted, model }
+    |         |
+    |         +---> Filter: only include BusType == SATA || BusType == NVMe
+    |         +---> Verify: all included disks have encrypted == true
+    |         |       (warn if not; still include but flag in audit)
+    |         |
+    |         +---> Write DiskAllowlist to agent-config.toml
+    |         +---> Send DiskAllowlist to dlp-server (POST /agent/{id}/disk-allowlist)
+    |
+    +---> DiskAllowlist::load_from_toml() -> in-memory HashSet<DiskIdentity>
+```
 
-**Destination capture timing note:** There is no `WM_PASTE` message available OS-wide. The destination process is captured at `WM_CLIPBOARDUPDATE` time as "the currently focused window when data was placed on clipboard" — this is a best-effort capture that can race if the user switches focus mid-copy. Document this limitation explicitly.
+### Runtime Arrival Flow (New Fixed Disk Detected)
+
+```
+Windows PnP: new fixed disk arrives
+    |
+    +---> WM_DEVICECHANGE -> DBT_DEVICEARRIVAL -> GUID_DEVINTERFACE_DISK
+    |         |
+    |         +---> disk_wndproc extracts device instance ID
+    |         +---> DiskEnforcer::on_disk_arrival(instance_id, drive_letter)
+    |                 |
+    |                 +---> Look up in DiskAllowlist
+    |                 +---> IF NOT FOUND:
+    |                         +---> Block I/O to this drive letter
+    |                         +---> Emit audit event (EventType::Block)
+    |                         +---> Send toast notification (via Pipe 2)
+    |                         +---> Optionally: CM_Disable_DevNode (see Blocking Strategy)
+    |                 +---> IF FOUND:
+    |                         +---> Allow I/O (fall through to ABAC)
+    |
+    +---> File monitor watches new drive root (existing watch_rx mechanism)
+```
+
+### Runtime I/O Flow (File Operation on Fixed Disk)
+
+```
+File monitor -> FileAction -> run_event_loop
+    |
+    +---> DiskEnforcer::check(path, &action)
+    |         |
+    |         +---> Extract drive letter from path
+    |         +---> Is this drive letter a fixed disk? (GetDriveTypeW == DRIVE_FIXED)
+    |         +---> IF yes AND drive not in DiskAllowlist:
+    |                 +---> Return Some(DiskBlockResult) -> DENY
+    |         +---> ELSE:
+    |                 +---> Return None (fall through)
+    |
+    +---> UsbEnforcer::check(path, &action) [existing v0.6.0]
+    +---> ABAC evaluation [existing]
+```
 
 ---
 
-### dlp-agent (Session 0 Windows Service)
+## New Components (Detailed)
 
-| Component | Status | Change |
-|-----------|--------|--------|
-| `ipc/messages::Pipe3UiMsg::ClipboardAlert` | MODIFIED | New fields `source_application`, `destination_application` (in dlp-common but reflected here in the handler) |
-| `ipc/pipe3.rs::route` (ClipboardAlert branch) | MODIFIED | Extract `source_application` and `destination_application` from message; populate `AuditEvent` via new `with_app_identity()` builder; include in `EvaluateRequest` for ABAC evaluation |
-| `detection/usb.rs::UsbDetector` | MODIFIED | On `DBT_DEVICEARRIVAL`: call `SetupDiGetClassDevsW` / `SetupDiEnumDeviceInfo` / `SetupDiGetDeviceRegistryPropertyW` to capture VID, PID, Serial, Description; lookup against device registry cache; populate `DeviceIdentity`; store in `Arc<RwLock<HashMap<char, DeviceIdentity>>>` keyed by drive letter |
-| NEW `detection/device_registry_cache.rs` | NEW | In-memory cache of `HashMap<(u16,u16,String), UsbTrustTier>` keyed by (VID, PID, Serial). Hot-reloaded when server signals config change. Mirrors the `network_share.rs` RwLock whitelist pattern. |
-| `interception/file_monitor.rs` | MODIFIED | On write operations to a USB drive: look up drive letter -> `DeviceIdentity` -> `UsbTrustTier`; if `ReadOnly`, deny writes; if `Blocked`, deny all I/O; populate `EvaluateRequest.device` before policy evaluation |
-| `audit_emitter.rs` | MODIFIED | Populate `device` field on USB block events from cached `DeviceIdentity` |
-| `ipc/messages::Pipe2AgentMsg` | MODIFIED | Add `UsbBlockNotify { device_description, vid, pid, trust_tier, policy_name }` variant for structured toast payload |
+### 1. DiskEnumerator
 
-**USB device identity enumeration stays in dlp-agent** because the `WM_DEVICECHANGE` pump and `SetupDi*` enumeration already reside there. The UI only receives the block toast (Pipe 2 -> `notifications.rs`).
+**Location:** `dlp-agent/src/disk/enumerator.rs` (new module)
+
+**Purpose:** One-time enumeration of all fixed disks at install/agent startup. Builds the initial allowlist.
+
+**Key APIs:**
+- `SetupDiGetClassDevsW(GUID_DEVINTERFACE_DISK, ..., DIGCF_PRESENT | DIGCF_DEVICEINTERFACE)`
+- `SetupDiEnumDeviceInfo` / `SetupDiGetDeviceInstanceIdW`
+- `IOCTL_STORAGE_QUERY_PROPERTY` with `StorageAdapterProperty` -> `STORAGE_ADAPTER_DESCRIPTOR.BusType`
+- `GetDriveTypeW` to confirm `DRIVE_FIXED`
+
+**Algorithm:**
+```rust
+pub fn enumerate_fixed_disks() -> Vec<DiskIdentity> {
+    // 1. Enumerate all disk device interfaces
+    // 2. For each disk:
+    //    a. Get device instance ID
+    //    b. Open device handle
+    //    c. IOCTL_STORAGE_QUERY_PROPERTY -> BusType
+    //    d. If BusType == SATA || BusType == NVMe:
+    //       - Get drive letter(s) for this disk
+    //       - Check BitLocker status via WMI
+    //       - Build DiskIdentity
+    // 3. Return vector of DiskIdentity
+}
+```
+
+**Confidence:** HIGH -- `IOCTL_STORAGE_QUERY_PROPERTY` is the standard Windows API for bus type detection. The `StorageBusType` enum includes `BusTypeSata` and `BusTypeNvme` values.
+
+### 2. BitLockerChecker
+
+**Location:** `dlp-agent/src/disk/bitlocker.rs` (new module)
+
+**Purpose:** Check whether a given volume is BitLocker-encrypted.
+
+**Key APIs:**
+- WMI namespace: `root\CIMV2\Security\MicrosoftVolumeEncryption`
+- WMI class: `Win32_EncryptableVolume`
+- Property: `ProtectionStatus` (0 = Off, 1 = On, 2 = Unknown)
+
+**Implementation options (ranked):**
+
+| Approach | Complexity | Reliability | Recommendation |
+|----------|-----------|-------------|----------------|
+| WMI COM (`WbemScripting.SWbemLocator`) | Medium | High | **Recommended** -- standard Windows API, works in SYSTEM context |
+| PowerShell invocation (`manage-bde -status`) | Low | Medium | Rejected -- spawns subprocess, parsing fragile, SYSTEM context issues |
+| `GetVolumeInformationW` + `FILE_SUPPORTS_ENCRYPTION` | Low | Low | Rejected -- only indicates FS-level encryption support, not BitLocker specifically |
+| `Win32_EncryptableVolume` via `wmi-rs` crate | Medium | High | Alternative if COM is problematic |
+
+**Confidence:** HIGH -- WMI `Win32_EncryptableVolume` is the documented API for BitLocker status. The `ProtectionStatus` property is reliable.
+
+### 3. DiskAllowlist
+
+**Location:** `dlp-agent/src/disk/allowlist.rs` (new module)
+
+**Purpose:** In-memory cache of allowed fixed disk identities, loaded from TOML at startup.
+
+**Data structure:**
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct DiskIdentity {
+    /// Windows device instance ID (e.g., "PCIIDE\IDE_DEVICE\0").
+    pub instance_id: String,
+    /// Storage bus type (SATA, NVMe, etc.).
+    pub bus_type: StorageBusType,
+    /// Whether the volume was BitLocker-encrypted at install time.
+    pub encrypted_at_install: bool,
+    /// Drive letter at install time (informational; may change).
+    pub install_letter: char,
+    /// Disk model string from WMI or SetupDi.
+    pub model: String,
+}
+
+pub struct DiskAllowlist {
+    allowed: RwLock<HashSet<DiskIdentity>>,
+}
+```
+
+**TOML serialization in `agent-config.toml`:**
+```toml
+[disk_allowlist]
+# Install-time enumerated fixed disks.
+# Each entry represents an approved internal disk.
+# DO NOT EDIT MANUALLY -- use dlp-admin-cli or the installer.
+
+disks = [
+    { instance_id = "PCIIDE\\IDE_DEVICE\\0", bus_type = "SATA", encrypted = true, letter = "C", model = "Samsung SSD 870 EVO" },
+    { instance_id = "PCI\\VEN_144D&DEV_A808\\0", bus_type = "NVMe", encrypted = true, letter = "D", model = "Samsung SSD 980 PRO" },
+]
+```
+
+### 4. DiskEnforcer
+
+**Location:** `dlp-agent/src/disk/enforcer.rs` (new module)
+
+**Purpose:** Runtime I/O enforcement -- check if a file operation targets an unregistered fixed disk.
+
+**Interface:**
+```rust
+impl DiskEnforcer {
+    /// Called from run_event_loop before ABAC evaluation.
+    /// Returns Some(DiskBlockResult) if the path is on an unregistered fixed disk.
+    pub fn check(&self, path: &str, action: &FileAction) -> Option<DiskBlockResult>;
+
+    /// Called from disk_wndproc on DBT_DEVICEARRIVAL for a fixed disk.
+    /// Adds the drive to the blocked set if not in the allowlist.
+    pub fn on_disk_arrival(&self, instance_id: &str, drive_letter: char);
+
+    /// Called from disk_wndproc on DBT_DEVICEREMOVECOMPLETE.
+    /// Removes the drive from the blocked set.
+    pub fn on_disk_removal(&self, drive_letter: char);
+}
+```
+
+**Integration into `run_event_loop`:**
+```rust
+// In dlp-agent/src/interception/mod.rs::run_event_loop:
+
+// -- Disk enforcement (NEW v0.7.0) --
+if let Some(ref disk_enforcer) = disk_enforcer {
+    if let Some(disk_result) = disk_enforcer.check(&path, &action) {
+        // Emit audit event, send toast, skip ABAC
+        continue;
+    }
+}
+
+// -- USB enforcement (existing v0.6.0) --
+if let Some(ref enforcer) = usb_enforcer {
+    // ... existing code ...
+}
+```
 
 ---
 
-### dlp-server (axum HTTP server)
+## Modified Components
 
-| Component | Status | Change |
-|-----------|--------|--------|
-| `db/mod.rs::init_tables` | MODIFIED | Add `device_registry` and `managed_origins` tables (see schema below) |
-| `db/mod.rs::run_migrations` | MODIFIED | `ALTER TABLE audit_events ADD COLUMN ...` for new fields on existing deployments |
-| NEW `db/repositories/device_registry.rs` | NEW | CRUD for `device_registry` — mirrors `siem_config.rs` / `alert_router_config.rs` pattern |
-| NEW `db/repositories/managed_origins.rs` | NEW | CRUD for `managed_origins` table |
-| `admin_api.rs` | MODIFIED | Add device-registry routes and managed-origins routes (see API routes below) |
-| NEW `chrome_connector.rs` | NEW | `POST /browser/chrome-connector/scan` endpoint — accepts Chrome Enterprise Connector DLP scan payload; evaluates against managed-origins list; returns allow/block decision; emits audit event |
-| `policy_store.rs::evaluate` | MODIFIED | Handle new `PolicyCondition` variants (`SourceApplication`, `DestinationApplication`, `UsbDevice`, `SourceOrigin`, `DestinationOrigin`) in the evaluator match arm |
-| `audit_store.rs` | MODIFIED | Persist new `AuditEvent` fields (source_application, destination_application, device) as nullable JSON columns |
+### 1. `agent-config.toml` Schema
 
----
-
-### dlp-admin-cli (ratatui TUI)
-
-| Component | Status | Change |
-|-----------|--------|--------|
-| `screens/dispatch.rs::handle_system_menu` | MODIFIED | Add entries 5 = "Device Registry", 6 = "Managed Origins" (currently has 5 entries indexed 0-4; index 4 exits to main menu — shift exit to index 6) |
-| NEW `screens/device_registry.rs` | NEW | List registered devices (VID/PID/Serial/Trust Tier), Add / Edit / Remove screens. Mirrors `screens/siem_config.rs` / `screens/alert_config.rs` pattern. Uses generic `get::<serde_json::Value>` client calls. |
-| NEW `screens/managed_origins.rs` | NEW | List managed origins (domain, classification scope), Add / Remove screens. Same pattern. |
-| `screens/mod.rs` | MODIFIED | Add `Screen::DeviceRegistry { .. }` and `Screen::ManagedOrigins { .. }` variants |
-| `screens/render.rs` | MODIFIED | Add render arms for the two new screen variants |
-| `screens/dispatch.rs` (ConditionsBuilder) | MODIFIED | Add `SourceApplication`, `DestinationApplication`, `UsbDevice` condition types to the `ConditionsBuilder` picker list (APP-04). |
-
----
-
-## 3. New IPC Messages
-
-### Pipe3UiMsg (UI -> Agent, `dlp-common::ipc::messages`)
+Add a `[disk_allowlist]` section. The existing `AgentConfig` struct in `dlp-agent/src/config.rs` gains:
 
 ```rust
-// MODIFIED variant — additive, backward-compatible with #[serde(default)] on new fields
-ClipboardAlert {
-    session_id: u32,
-    classification: String,
-    preview: String,
-    text_length: usize,
-    // NEW in v0.6.0:
-    source_application: Option<AppIdentity>,
-    destination_application: Option<AppIdentity>,
-},
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct AgentConfig {
+    // ... existing fields ...
+
+    /// Install-time fixed disk allowlist.
+    #[serde(default)]
+    pub disk_allowlist: DiskAllowlistConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DiskAllowlistConfig {
+    #[serde(default)]
+    pub disks: Vec<DiskIdentity>,
+}
 ```
 
-### Pipe2AgentMsg (Agent -> UI, `dlp-common::ipc::messages`)
+### 2. `run_event_loop` in `dlp-agent/src/interception/mod.rs`
+
+Add `disk_enforcer: Option<Arc<DiskEnforcer>>` parameter. Insert disk check before USB check:
 
 ```rust
-// NEW variant for structured USB block notification
-UsbBlockNotify {
-    device_description: String,
-    vid: u16,
-    pid: u16,
-    trust_tier: String,
-    policy_name: String,
-},
+pub async fn run_event_loop(
+    mut rx: mpsc::Receiver<FileAction>,
+    offline: Arc<OfflineManager>,
+    ctx: EmitContext,
+    session_map: Arc<SessionIdentityMap>,
+    ad_client: Arc<Option<dlp_common::AdClient>>,
+    usb_enforcer: Option<Arc<UsbEnforcer>>,
+    disk_enforcer: Option<Arc<DiskEnforcer>>,  // NEW
+) { ... }
 ```
 
-Recommendation: add `UsbBlockNotify` as a typed variant rather than reusing the generic `Toast` variant. It keeps the notification structured so `notifications.rs` can render a richer toast with device identity details rather than parsing a freeform string body.
+### 3. `UsbDetector` / `usb_wndproc` in `dlp-agent/src/detection/usb.rs`
 
-### No new pipe is needed
-The three-pipe architecture is sufficient. All new message types fit within existing pipe directions:
-- App identity flows UI -> Agent on Pipe 3 (existing direction of ClipboardAlert)
-- USB toast flows Agent -> UI on Pipe 2 (existing direction of Toast)
-- Chrome Connector is HTTP (not IPC) — handled by dlp-server directly
+The existing `usb_wndproc` already handles `GUID_DEVINTERFACE_DISK` for USB mass storage (Phase 31-02). For v0.7.0, we need to **distinguish USB-attached disks from internal fixed disks** in the `GUID_DEVINTERFACE_DISK` handler:
 
----
+**Decision logic in `on_disk_device_arrival`:**
+```rust
+fn on_disk_device_arrival(detector: &UsbDetector, device_path: &str) {
+    // Existing Phase 31-02 logic: walk PnP tree to find USB ancestor
+    let usb_ancestor = find_usb_ancestor(device_path);
 
-## 4. New Database Tables
+    if usb_ancestor.is_some() {
+        // This is a USB-bridged disk (e.g., NVMe in USB enclosure).
+        // Hand off to existing USB enforcement pipeline.
+        apply_usb_tier_enforcement(...);
+    } else {
+        // No USB ancestor found -- this is an internal fixed disk (SATA/NVMe).
+        // Hand off to NEW disk enforcement pipeline.
+        let instance_id = extract_instance_id(device_path);
+        let drive_letter = resolve_drive_letter(device_path);
+        disk_enforcer.on_disk_arrival(&instance_id, drive_letter);
+    }
+}
+```
 
-### `device_registry`
+**Critical insight:** The Phase 31-02 PnP tree walk already distinguishes USB from non-USB disks. When `CM_Get_Parent` walks up the tree and finds no ancestor with an instance ID starting with `USB\`, the disk is internal (SATA/NVMe/SCSI). This is the exact hook point for disk exfiltration prevention.
+
+### 4. `dlp-server` DB Schema
+
+Add a `disk_registry` table (analogous to `device_registry` for USB):
+
 ```sql
-CREATE TABLE IF NOT EXISTS device_registry (
-    vid           INTEGER NOT NULL,
-    pid           INTEGER NOT NULL,
-    serial        TEXT    NOT NULL DEFAULT '',
-    description   TEXT    NOT NULL DEFAULT '',
-    manufacturer  TEXT    NOT NULL DEFAULT '',
-    trust_tier    TEXT    NOT NULL DEFAULT 'blocked'
-                  CHECK (trust_tier IN ('blocked', 'read_only', 'full_access')),
-    owner_user    TEXT,
-    registered_at TEXT    NOT NULL,
-    expires_at    TEXT,
-    registered_by TEXT    NOT NULL DEFAULT 'admin',
-    PRIMARY KEY (vid, pid, serial)
+CREATE TABLE disk_registry (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    bus_type TEXT CHECK (bus_type IN ('SATA', 'NVMe', 'SCSI', 'USB', 'Other')),
+    encrypted_at_install BOOLEAN NOT NULL DEFAULT 0,
+    install_letter TEXT,
+    model TEXT,
+    registered_at TEXT NOT NULL,
+    UNIQUE(agent_id, instance_id)
 );
 ```
 
-No single-row constraint — this is a multi-row registry. No `INSERT OR IGNORE` seed needed.
+Add admin API routes:
+- `GET /admin/disk-registry` -- list registered disks per agent
+- `POST /admin/disk-registry` -- add a disk to the allowlist
+- `DELETE /admin/disk-registry/{id}` -- remove a disk
 
-### `managed_origins`
-```sql
-CREATE TABLE IF NOT EXISTS managed_origins (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    domain      TEXT NOT NULL UNIQUE,
-    description TEXT NOT NULL DEFAULT '',
-    added_at    TEXT NOT NULL,
-    added_by    TEXT NOT NULL DEFAULT 'admin'
-);
-```
+### 5. `dlp-admin-cli` TUI
 
-### Migration for `audit_events`
-```sql
--- Run in run_migrations() -- idempotent, guarded by duplicate-column check
-ALTER TABLE audit_events ADD COLUMN source_application TEXT;
-ALTER TABLE audit_events ADD COLUMN destination_application TEXT;
-ALTER TABLE audit_events ADD COLUMN device_info TEXT;
-ALTER TABLE audit_events ADD COLUMN source_origin TEXT;
-ALTER TABLE audit_events ADD COLUMN destination_origin TEXT;
-```
-Store as nullable JSON text. Consistent with the existing pattern of storing `conditions` in `policies` as JSON text.
+Add a "Disk Registry" screen under the System menu (following the pattern of Device Registry, Managed Origins, SIEM Config, Alert Config).
 
 ---
 
-## 5. New Admin API Routes
+## Patterns to Follow
 
-All routes follow existing patterns: JWT-protected under the admin auth layer, JSON body, same `AppState` extractor.
+### Pattern 1: Pre-ABAC Enforcement Layer
+**What:** Evaluate disk allowlist before ABAC, skip ABAC if blocked.
+**When:** For coarse-grained, device-level decisions that do not need user/context attributes.
+**Example:** The existing USB enforcement in `run_event_loop` (lines 89-162) already does this. Disk enforcement follows the same pattern.
 
-### Device Registry
-```
-GET    /admin/device-registry                      -> list all registered devices
-POST   /admin/device-registry                      -> register a new device
-PUT    /admin/device-registry/:vid/:pid/:serial    -> update trust_tier or metadata
-DELETE /admin/device-registry/:vid/:pid/:serial    -> remove device registration
-```
+### Pattern 2: Static + Runtime Cache
+**What:** Load allowlist from TOML at startup into an `RwLock<HashSet>`. Runtime arrivals check against the in-memory set.
+**When:** Fast I/O-time lookups are required; disk identity does not change frequently.
+**Example:** The existing `DeviceRegistryCache` for USB (Phase 24) follows this pattern.
 
-### Managed Origins (Browser Boundary)
-```
-GET    /admin/managed-origins          -> list all managed web origins
-POST   /admin/managed-origins          -> add an origin (body: domain, description)
-DELETE /admin/managed-origins/:id      -> remove an origin
-```
+### Pattern 3: Installer-Time One-Shot Enumeration
+**What:** Run disk enumeration once during MSI installation or first agent startup, persist results to TOML.
+**When:** The set of "legitimate" internal disks is stable; new disks are exceptional events.
+**Why not runtime enumeration?** Internal disks are present at boot; there is no "arrival" event for boot disks. Install-time enumeration captures the baseline.
 
-### Chrome Enterprise Connector
-```
-POST   /browser/chrome-connector/scan  -> Chrome Enterprise DLP scan endpoint
-```
-
-Chrome Connector does NOT use the admin JWT (Chrome submits its own connector token). It is a separate router branch with its own shared-secret middleware. The connector secret is stored in a new single-row config table or as an entry in `agent_credentials`.
+### Pattern 4: PnP Tree Walk for Bus Type Classification
+**What:** Use `CM_Get_Parent` + `CM_Get_Device_IDW` to walk the PnP tree and find the USB ancestor.
+**When:** Distinguishing USB-bridged disks from internal SATA/NVMe disks that both fire `GUID_DEVINTERFACE_DISK`.
+**Example:** Phase 31-02 `on_disk_device_arrival` already implements this walk. The absence of a `USB\` ancestor means the disk is internal.
 
 ---
 
-## 6. Data Flow Diagrams
+## Anti-Patterns to Avoid
 
-### SEED-001: App-Aware Clipboard Flow (v0.6.0)
+### Anti-Pattern 1: Using `CM_Disable_DevNode` on Internal Boot Disks
+**What:** Calling `CM_Disable_DevNode` on the system boot disk or active data disks.
+**Why bad:** Disabling the boot disk causes an immediate system crash (BSOD). Disabling a data disk may corrupt open file handles and crash applications.
+**Instead:** Use **volume-level I/O blocking** (filter `FileAction` events in `DiskEnforcer::check`) rather than PnP disable for internal fixed disks. The `DeviceController` pattern (Phase 31) is ONLY safe for USB devices.
 
-```
-[User copies text in Word]
-        |
-        | WM_CLIPBOARDUPDATE fires in dlp-user-ui message loop
-        v
-clipboard_monitor::handle_clipboard_change(session_id, last_hash)
-        |
-        |-- GetClipboardOwner() -> source HWND
-        |-- GetWindowThreadProcessId(source_hwnd) -> source PID
-        |-- OpenProcess + QueryFullProcessImageNameW -> source image path
-        |-- WinVerifyTrust -> signature state
-        |-- AppIdentity { canonical_path, publisher, signature_state }
-        |                            = source_application
-        |
-        |-- GetForegroundWindow() -> destination HWND (current focused window)
-        |-- GetWindowThreadProcessId(dest_hwnd) -> destination PID
-        |-- OpenProcess + QueryFullProcessImageNameW -> dest image path
-        |-- WinVerifyTrust -> signature state
-        |                            = destination_application
-        |
-        |-- read_clipboard() -> text content
-        |-- classify_text(text) -> Classification (T1..T4)
-        |
-        | [if T2+]
-        v
-pipe3::send_clipboard_alert(session_id, tier, preview, text_len,
-                             source_application, destination_application)
-        |
-        | Pipe 3 (UI -> Agent, JSON frame)
-        v
-dlp-agent ipc/pipe3.rs::route(Pipe3UiMsg::ClipboardAlert { ... })
-        |
-        |-- Build EvaluateRequest {
-        |       action: PASTE,
-        |       resource.classification: tier,
-        |       source_application: ...,
-        |       destination_application: ...,
-        |   }
-        |-- POST /evaluate -> dlp-server PolicyStore::evaluate()
-        |       PolicyCondition::SourceApplication match
-        |       PolicyCondition::DestinationApplication match
-        |-- Decision: ALLOW / DENY / DenyWithAlert
-        |
-        |-- Build AuditEvent with source_application, destination_application
-        |-- POST /audit/events -> dlp-server
-        |
-        | [if DENY]
-        v
-Pipe 2: Toast -> dlp-user-ui -> notifications.rs -> Win32 balloon
-```
+### Anti-Pattern 2: Treating Disk Identity as ABAC Subject Attribute
+**What:** Adding `disk: Option<DiskIdentity>` to `AbacContext` and `Subject`.
+**Why bad:** Disk identity is a **resource attribute** (the disk being written to), not a subject attribute (the user or their device). Conflating them violates the ABAC model from CLAUDE.md.
+**Instead:** Keep disk enforcement as a **separate pre-ABAC layer**, analogous to USB enforcement. If ABAC integration is needed later, add a `destination_storage` field to `Resource`, not `Subject`.
+
+### Anti-Pattern 3: Relying on Drive Letter as Disk Identity
+**What:** Using `C:` or `D:` as the disk identifier in the allowlist.
+**Why bad:** Drive letters are not stable. A disk may be reassigned (e.g., if another disk is removed, `D:` may become `E:`). This creates a bypass opportunity.
+**Instead:** Use the **device instance ID** (from SetupDi) as the canonical identity. Drive letters are stored as informational metadata only.
+
+### Anti-Pattern 4: Blocking All `DRIVE_FIXED` Disks by Default
+**What:** Treating every `GetDriveTypeW == DRIVE_FIXED` disk as suspicious.
+**Why bad:** The system boot disk and legitimate internal data disks are `DRIVE_FIXED`. Blocking them by default would brick the system.
+**Instead:** Use an **allowlist** (not a blocklist). Only disks NOT in the install-time allowlist are blocked. The default posture for known internal disks is ALLOW.
+
+### Anti-Pattern 5: Using `GetDriveTypeW` Alone to Detect USB-Bridged SATA
+**What:** Relying on `DRIVE_REMOVABLE` vs `DRIVE_FIXED` to distinguish USB from internal.
+**Why bad:** USB-bridged SATA/NVMe enclosures (common exfiltration vector) report as `DRIVE_FIXED` because the USB-SATA bridge chip presents a fixed disk signature to Windows.
+**Instead:** Use the **PnP tree walk** (`CM_Get_Parent` to find `USB\` ancestor) to determine the true bus topology. This is what Phase 31-02 already does.
 
 ---
 
-### SEED-002: Chrome Enterprise Connector Flow (v0.6.0 Path B only)
+## Scalability Considerations
 
-```
-[User pastes in Chrome tab]
-        |
-        | Chrome Enterprise Connector intercepts paste event
-        | Chrome POSTs to configured DLP scan endpoint
-        v
-dlp-server POST /browser/chrome-connector/scan
-        |
-        |-- Parse Chrome DLP scan payload:
-        |       { content_type, content, source_url, destination_url }
-        |-- Lookup source_url against managed_origins table
-        |-- Lookup destination_url against managed_origins table
-        |-- classify_text(content) -> Classification
-        |-- Build EvaluateRequest {
-        |       action: PASTE,
-        |       source_origin: source_url host,
-        |       destination_origin: destination_url host,
-        |       resource.classification: tier,
-        |   }
-        |-- PolicyStore::evaluate() -> Decision
-        |-- Build AuditEvent with source_origin, destination_origin
-        |-- store_events_sync(event)
-        |-- Return { action: "block" | "allow" } to Chrome
-        v
-Chrome honors the response (blocks or allows the paste)
-```
-
-This flow is entirely server-side. No agent involvement. No Pipe IPC. Chrome blocks synchronously while awaiting the server response.
+| Concern | At 1 endpoint | At 10K endpoints | At 100K endpoints |
+|---------|--------------|------------------|-------------------|
+| Disk allowlist storage | Single TOML file (~1 KB) | Server DB table with 10K rows | Server DB table with 100K rows; consider partitioning by agent_id |
+| Install-time enumeration | ~100 ms per endpoint | N/A (per-endpoint operation) | N/A |
+| Runtime I/O check | O(1) HashSet lookup | O(1) per endpoint | O(1) per endpoint |
+| Server sync | One POST at install | Batch inserts during mass deployment | Use agent config push (existing) to distribute allowlists |
+| Audit event volume | Low (only on block) | Medium | High -- ensure audit buffer batching is configured |
 
 ---
 
-### SEED-003: USB Device Identity Flow (v0.6.0)
+## Blocking Strategy Comparison
 
-```
-[User inserts USB drive]
-        |
-        | WM_DEVICECHANGE / DBT_DEVICEARRIVAL fires in dlp-agent message pump
-        v
-detection/usb.rs::on_drive_arrival(drive_letter)
-        |
-        |-- SetupDiGetClassDevsW(GUID_DEVINTERFACE_DISK)
-        |-- SetupDiEnumDeviceInfo -> enumerate device instances
-        |-- SetupDiGetDeviceRegistryPropertyW(SPDRP_HARDWAREID) -> "USB\VID_xxxx&PID_yyyy"
-        |-- Parse VID, PID
-        |-- SetupDiGetDeviceRegistryPropertyW(SPDRP_SERIALNUMBER) -> serial
-        |-- SetupDiGetDeviceRegistryPropertyW(SPDRP_DEVICEDESC) -> description
-        |-- Lookup (VID, PID, Serial) in device_registry_cache
-        |       -> UsbTrustTier: Blocked | ReadOnly | FullAccess | Unknown (default=Blocked)
-        |
-        |-- Store DeviceIdentity in Arc<RwLock<HashMap<char, DeviceIdentity>>>
-        |
-        | [if Blocked or Unknown]
-        |-- Pipe 2: UsbBlockNotify { description, vid, pid, trust_tier: "blocked", ... }
-        |        -> dlp-user-ui notifications.rs -> Toast to user
-        |-- Emit AuditEvent { event_type: Block, device: DeviceIdentity, ... }
-        |
-        | [if ReadOnly or FullAccess]
-        |-- Drive is allowed to mount
-        v
-[User writes to USB drive]
-        |
-        | NtWriteFile / NtCreateFile interception in file_monitor.rs
-        v
-interception/file_monitor.rs::on_write_attempt(path, classification)
-        |
-        |-- Extract drive letter from path
-        |-- Lookup drive letter in device_identity_map -> DeviceIdentity
-        |-- Build EvaluateRequest { device: DeviceIdentity, action: WRITE, ... }
-        |-- PolicyStore::evaluate() -> Decision
-        |
-        | [if ReadOnly tier AND write operation]
-        |-- Decision = DENY (trust tier overrides policy for writes)
-        |-- Emit AuditEvent with device fields
-        |-- Pipe 2: UsbBlockNotify -> dlp-user-ui -> Toast
-        |
-        v
-AuditEvent -> dlp-server -> SIEM relay + alert_router
-```
+| Mechanism | USB (v0.6.0) | Fixed Disk (v0.7.0) | Rationale |
+|-----------|-------------|---------------------|-----------|
+| PnP disable (`CM_Disable_DevNode`) | Yes | **No** | Unsafe for boot/data disks |
+| Volume DACL modification | Yes (ReadOnly tier) | **Possible** | Can remove write ACEs for non-allowlisted disks |
+| I/O event filtering (`FileAction` drop) | Yes (fallback) | **Primary** | Safe for all disk types; no system instability |
+| Device instance ID matching | VID/PID/Serial | Instance ID + BusType | USB uses descriptor IDs; internal disks use PnP IDs |
+| Enumeration timing | Runtime (plug-in) | Install-time + runtime arrival | Internal disks are present at boot; USB is hot-plugged |
+
+**Recommended blocking strategy for v0.7.0:**
+1. **Primary:** I/O event filtering in `DiskEnforcer::check` -- drop `FileAction::Created`/`Written`/`Moved` events targeting unregistered fixed disks.
+2. **Secondary (optional):** Volume DACL modification on arrival for unregistered disks -- strip write/delete ACEs. Restore on removal. This provides defense-in-depth even if the file monitor misses an event.
 
 ---
 
-## 7. Component Boundaries Summary
+## Integration Points Summary
 
-```
-                     dlp-common (shared types — Phase 22 foundation)
-                    /      |      |      \
-         dlp-agent    dlp-user-ui  dlp-server  dlp-admin-cli
-              |             |           |
-              +---Pipe3---->+           |
-              |<---Pipe2----+           |
-              |                        |
-              +---HTTP /evaluate------->|
-              +---HTTP /audit/events--->|
-                                        |
-              dlp-admin-cli ---HTTP admin API---+
-
-New in v0.6.0:
-  dlp-user-ui:   adds detection/app_identity.rs, detection/destination_app.rs
-  dlp-agent:     adds detection/device_registry_cache.rs
-  dlp-server:    adds chrome_connector.rs, db/repositories/device_registry.rs,
-                 db/repositories/managed_origins.rs
-  dlp-admin-cli: adds screens/device_registry.rs, screens/managed_origins.rs
-```
+| Integration Point | Existing Code | New Code | Change Type |
+|-------------------|--------------|----------|-------------|
+| `run_event_loop` | `UsbEnforcer::check` then ABAC | Add `DiskEnforcer::check` before USB | Modified |
+| `usb_wndproc` | Handles `GUID_DEVINTERFACE_DISK` for USB | Add branch for non-USB (internal) disks | Modified |
+| `AgentConfig` | TOML with `monitored_paths`, `excluded_paths` | Add `disk_allowlist: DiskAllowlistConfig` | Modified |
+| `agent-config.toml` | Existing fields | Add `[disk_allowlist]` section | Modified (schema) |
+| `dlp-server` DB | `device_registry` table for USB | Add `disk_registry` table | New |
+| `dlp-server` API | `/admin/device-registry` | Add `/admin/disk-registry` | New |
+| `dlp-admin-cli` TUI | Device Registry screen | Add Disk Registry screen | New |
+| `AuditEvent` | USB block events | Disk block events (same schema, different `reason`) | No change (reuses existing) |
 
 ---
 
-## 8. Recommended Phase Build Order
+## Build Order Recommendation
 
-The dependency graph mandates this sequence. Each phase produces output the next phase consumes.
+Based on dependency analysis:
 
-```
-Phase 22: dlp-common type foundation
-  - New: AppIdentity, SignatureState, DeviceIdentity, UsbTrustTier structs
-  - Modified: PolicyCondition (5 new variants), EvaluateRequest (5 new fields),
-              AuditEvent (5 new fields + builders), Pipe3UiMsg::ClipboardAlert (2 new fields),
-              Pipe2AgentMsg::UsbBlockNotify (new variant)
-  - Output: all shared types compile; all downstream crates see new types
-  - Must come BEFORE: all of 23, 24, 25, 26, 27, 28, 29
+1. **Phase 32-A: Disk types + BitLocker checker** (dlp-common + dlp-agent)
+   - Add `DiskIdentity`, `StorageBusType` to `dlp-common`
+   - Create `BitLockerChecker` in `dlp-agent/src/disk/bitlocker.rs`
+   - No dependencies on other v0.7.0 work
 
-Phase 23: USB device identity enumeration  [dlp-agent, SEED-003 Phase A]
-  - Modified: detection/usb.rs -- SetupDi enumeration on DBT_DEVICEARRIVAL
-  - New: detection/device_registry_cache.rs -- Arc<RwLock<HashMap>> keyed by drive letter
-  - Output: agent captures and logs VID/PID/Serial/Description; no enforcement change yet
-  - Depends on: Phase 22
-  - Can run in parallel with: Phase 24, Phase 25
+2. **Phase 32-B: DiskEnumerator** (dlp-agent)
+   - Create `DiskEnumerator` using `SetupDi` + `IOCTL_STORAGE_QUERY_PROPERTY`
+   - Depends on Phase 32-A
 
-Phase 24: Device registry DB + admin API  [dlp-server, SEED-003 Phase B]
-  - New: device_registry table, db/repositories/device_registry.rs
-  - New: GET/POST/PUT/DELETE /admin/device-registry routes in admin_api.rs
-  - Output: server stores and serves device registry over API
-  - Depends on: Phase 22
-  - Can run in parallel with: Phase 23, Phase 25
+3. **Phase 32-C: DiskAllowlist + TOML persistence** (dlp-agent)
+   - Create `DiskAllowlist` with `RwLock<HashSet<DiskIdentity>>`
+   - Add TOML serialization to `AgentConfig`
+   - Depends on Phase 32-A, 32-B
 
-Phase 25: App identity capture in clipboard monitor  [dlp-user-ui, SEED-001]
-  - New: detection/app_identity.rs -- Win32 process identity resolution
-  - New: detection/destination_app.rs -- GetForegroundWindow capture
-  - Modified: clipboard_monitor.rs -- capture source + destination at WM_CLIPBOARDUPDATE
-  - Modified: ipc/pipe3.rs::send_clipboard_alert -- include AppIdentity fields
-  - Output: ClipboardAlert IPC messages now carry source_application + destination_application
-  - Depends on: Phase 22 (AppIdentity type)
-  - Can run in parallel with: Phase 23, Phase 24
+4. **Phase 32-D: DiskEnforcer + I/O integration** (dlp-agent)
+   - Create `DiskEnforcer` with `check()`, `on_disk_arrival()`, `on_disk_removal()`
+   - Wire into `run_event_loop` before `UsbEnforcer`
+   - Wire into `usb_wndproc` for non-USB `GUID_DEVINTERFACE_DISK` arrivals
+   - Depends on Phase 32-C
 
-Phase 26: ABAC enforcement -- app identity + USB read-only  [dlp-agent + dlp-server]
-  - Modified: ipc/pipe3.rs::route(ClipboardAlert) -- build EvaluateRequest with app identity
-  - Modified: interception/file_monitor.rs -- USB trust tier enforcement at I/O time
-  - Modified: detection/usb.rs -- consult device_registry_cache; send UsbBlockNotify via Pipe 2
-  - Modified: policy_store.rs::evaluate -- handle SourceApplication, DestinationApplication,
-              UsbDevice, SourceOrigin, DestinationOrigin condition variants
-  - Audit events populated: source_application, destination_application, device fields
-  - Output: ABAC decisions use app identity and USB device identity (APP-01/02/03, USB-03)
-  - Depends on: Phase 22, 23, 24, 25 (all must complete before integration phase)
+5. **Phase 32-E: Server-side disk registry** (dlp-server)
+   - Add `disk_registry` table, repository, admin API routes
+   - Depends on Phase 32-C (needs `DiskIdentity` serialization)
 
-Phase 27: User notifications for USB blocks  [dlp-user-ui, SEED-003 Phase E]
-  - Modified: notifications.rs -- handle Pipe2AgentMsg::UsbBlockNotify, render structured toast
-  - Output: User sees Toast when USB is blocked with device description and policy name (USB-04)
-  - Depends on: Phase 22 (UsbBlockNotify variant), Phase 26 (agent emits the message)
+6. **Phase 32-F: Admin TUI Disk Registry screen** (dlp-admin-cli)
+   - Add System menu entry, list/add/delete screens
+   - Depends on Phase 32-E
 
-Phase 28: Admin TUI screens  [dlp-admin-cli, SEED-003 Phase C + SEED-001 APP-04]
-  - New: screens/device_registry.rs -- list/add/edit/remove devices with trust tier
-  - New: screens/managed_origins.rs -- list/add/remove managed web origins
-  - Modified: screens/dispatch.rs::handle_system_menu -- add entries 5 and 6
-  - Modified: screens/mod.rs, screens/render.rs -- new Screen variants
-  - Modified: ConditionsBuilder picker -- add SourceApplication, DestinationApplication,
-              UsbDevice condition types (APP-04)
-  - Output: Admin can author device-aware and app-aware policies in TUI
-  - Depends on: Phase 24 (server API must exist); Phase 26 (conditions must evaluate)
-
-Phase 29: Chrome Enterprise Connector  [dlp-server, SEED-002 Path B]
-  - New: chrome_connector.rs -- POST /browser/chrome-connector/scan
-  - New: managed_origins table, db/repositories/managed_origins.rs
-  - Modified: admin_api.rs -- GET/POST/DELETE /admin/managed-origins routes
-  - Modified: policy_store.rs::evaluate -- SourceOrigin, DestinationOrigin condition evaluation
-  - Output: Chrome Enterprise customers can block paste into unmanaged origins (BRW-01/02/03)
-  - Depends on: Phase 22 (origin types), Phase 28 (admin can manage origins list)
-  - Note: Can be parallelized with Phase 27-28 on the server side; sequence after Phase 26
-    to avoid shipping browser enforcement before OS-level app enforcement is proven
-```
-
-### Build Order Summary (dependency graph)
-
-```
-Phase 22 (dlp-common foundation)
-  |
-  +---> Phase 23 (USB enumeration, dlp-agent)     \
-  |                                                |
-  +---> Phase 24 (device registry DB, dlp-server) +---> Phase 26 (ABAC enforcement) ---> Phase 27 (toast)
-  |                                                |                                  \
-  +---> Phase 25 (app identity, dlp-user-ui)      /                                   --> Phase 28 (TUI)
-                                                                                                |
-                                                                                                v
-                                                                                       Phase 29 (Chrome connector)
-```
-
-Phases 23, 24, and 25 can be developed in parallel after Phase 22 lands (different crates). Phase 26 is the convergence point. Phases 27 and 28 can also overlap since they target different crates. Phase 29 sequences after Phase 28.
+7. **Phase 32-G: Installer integration** (installer)
+   - Add disk enumeration step to MSI installer
+   - Write `disk_allowlist` section to `agent-config.toml`
+   - Depends on Phase 32-B, 32-C
 
 ---
 
-## 9. Key Design Decisions
+## Key Questions Answered
 
-| Decision | Rationale |
-|----------|-----------|
-| `AppIdentity` lives in `dlp-common`, not `dlp-user-ui` | `dlp-agent` must receive it over Pipe 3 and embed it in `EvaluateRequest`; keeping it in common avoids a crate cycle |
-| Source app captured at `WM_CLIPBOARDUPDATE`, not at paste time | `GetClipboardOwner()` returns the window that called `SetClipboardData`; that window may have closed by paste time (SEED-001 risk 3 — ownership race) |
-| Destination app captured at same `WM_CLIPBOARDUPDATE` moment | `GetForegroundWindow()` at change time approximates paste destination; better than no capture; documented as best-effort |
-| USB device registry in server DB, NOT agent TOML | Operator-config-in-DB pattern (established v0.3.0, enforced by project memory). Hot-reload without restart. TUI-manageable. |
-| USB trust tier enforcement: I/O-time, not mount-time | Mount-time blocking requires a filesystem filter driver (major new subsystem). I/O-time reuses existing `file_monitor.rs` detour. Documented as limitation (drive letter appears, writes fail). |
-| Chrome Connector as Path B first | Path B ships in one phase with no browser extension. Path A (native extension) is a separate milestone. Path B delivers immediate value for enterprise Chrome/Edge customers. |
-| `UsbBlockNotify` as typed Pipe 2 variant | Allows `notifications.rs` to render a structured toast with device name, VID/PID, and policy name rather than parsing a freeform generic Toast body string. |
-| All new dlp-common types ship in one phase (Phase 22) | One breaking change across all crates instead of sequential partial breakage. Downstream crates update in the same PR window. |
+### Where does disk enumeration run?
+**Answer:** Primarily at **install time** (MSI installer) or **first agent startup**. The installer runs `DiskEnumerator::enumerate_fixed_disks()`, writes results to `agent-config.toml`, and sends to dlp-server. The agent loads the allowlist from TOML at startup. Runtime arrival of new fixed disks is handled by `disk_wndproc` (hooked into the existing `GUID_DEVINTERFACE_DISK` notification path).
+
+### How does the disk allowlist flow?
+**Answer:** **Bidirectional**. The installer/agent writes to TOML (local persistence) AND sends to dlp-server (central registry). The agent loads from TOML at startup. Admin can modify the allowlist server-side; the agent polls for updates via the existing config push mechanism. The TOML is the source of truth for offline operation.
+
+### What Windows event signals a new fixed disk arrival?
+**Answer:** `WM_DEVICECHANGE` with `wParam == DBT_DEVICEARRIVAL` and `dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE` with `classguid == GUID_DEVINTERFACE_DISK`. The existing Phase 31-02 code already registers for this notification. The v0.7.0 work adds a branch in the handler for disks that do NOT have a USB ancestor in the PnP tree.
+
+### How to block unregistered fixed disks?
+**Answer:** **NOT** with `CM_Disable_DevNode` (unsafe for internal disks). Instead:
+1. **Primary:** Filter `FileAction` events in `DiskEnforcer::check` -- deny writes/creates/moves to unregistered fixed disks.
+2. **Secondary (optional):** Volume DACL modification -- strip write ACEs on arrival for unregistered disks.
+
+### Should disk identity be an ABAC subject attribute?
+**Answer:** **No.** Disk identity is a **resource attribute** (the storage being written to), not a subject attribute. Keep it as a separate pre-ABAC enforcement layer, following the same pattern as USB enforcement in v0.6.0. If ABAC integration is needed in the future, add `destination_storage` to `Resource`, not `Subject`.
+
+### What is the integration with existing file_monitor?
+**Answer:** The `file_monitor` already watches all drive roots (including new fixed disks) via the `watch_rx` channel. The `DiskEnforcer::check` is called from `run_event_loop` for every `FileAction` event. If the path is on an unregistered fixed disk, the event is dropped (operation blocked) before reaching ABAC evaluation.
 
 ---
 
-## 10. Anti-Spoofing (APP-06)
+## Sources
 
-`WinVerifyTrust` (Authenticode) verification lives in `detection/app_identity.rs` in `dlp-user-ui`. It is the only viable defense against a renamed binary attack (e.g., `notepad.exe` renamed to `excel.exe`). The `SignatureState` enum carries this into `AppIdentity`. Policy conditions can express "publisher = Microsoft Corporation AND signature_state = Signed". Without this field, an attacker can bypass an allowlist by renaming their binary. The initial Phase 25 implementation may mark `SignatureState::Unknown` while the Win32 verification call is wired up; the policy evaluator should treat `Unknown` as `Unsigned` for safety.
-
----
-
-## 11. Gaps and Open Questions for Phase Planning
-
-1. **Destination app capture accuracy:** `GetForegroundWindow()` at copy time is a proxy for paste destination. A user who copies, then switches windows, then pastes defeats this. The correct fix is hooking `WM_PASTE` globally via `WH_CALLWNDPROC` (requires DLL injection — significant complexity). Document the limitation; defer global paste hook to a future milestone.
-
-2. **UWP app identity:** `QueryFullProcessImageNameW` returns a generic host process path for packaged apps. AUMID resolution requires `GetApplicationUserModelId` via COM. Phase 25 should return `canonical_path` as the host path with `aumid: None`; add a follow-up issue for UWP-specific resolution.
-
-3. **Browser origin coverage gap:** SEED-001 detects "this is chrome.exe" at the process level. SEED-002 Path B (Chrome Connector) detects "this paste came from origin X" but only when the IT admin has configured Chrome Enterprise policy. Unmanaged Chrome instances are handled only by the coarse "destination = browser process" SEED-001 policy. Phase 29 should document this coverage boundary.
-
-4. **USB mount-time vs I/O-time trade-off:** Architecture here assumes I/O-time enforcement (lower risk, reuses existing infrastructure). If mount-time blocking is required, a kernel-mode filter driver phase is needed and is out of scope for v0.6.0.
-
-5. **`audit_events` schema growth:** Five new nullable columns added via migration. This is acceptable technical debt for v0.6.0 given the existing precedent. Long-term, a `audit_event_metadata` key-value side table may be preferable.
-
-6. **Chrome Connector shared secret storage:** The connector token that Chrome sends for authentication needs a storage home. Options: (a) new single-row `chrome_connector_config` table, (b) entry in existing `agent_credentials` table (key = "chrome_connector_secret"). Option (b) avoids a new table and follows an existing pattern.
+- [Microsoft Docs: WM_DEVICECHANGE and DBT_DEVICEARRIVAL](https://docs.microsoft.com/zh-cn/windows-hardware/drivers/kernel/processing-an-application-notification) -- HIGH confidence (official docs)
+- [Microsoft Docs: Device Control Overview](https://github.com/MicrosoftDocs/defender-docs/blob/public/defender-endpoint/device-control-overview.md) -- HIGH confidence (official docs). Confirms Defender Device Control does NOT support fixed/internal hard disks -- only removable media, CD/DVD, WPD, printers.
+- [Microsoft Docs: Win32_EncryptableVolume WMI class](https://learn.microsoft.com/en-us/windows/win32/secprov/win32-encryptablevolume) -- HIGH confidence (official WMI docs)
+- [Microsoft Docs: IOCTL_STORAGE_QUERY_PROPERTY](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddstor/ni-ntddstor-ioctl_storage_query_property) -- HIGH confidence (official DDK docs)
+- [Phase 31-02 PLAN.md](.planning/phases/31-usb-cm-blocking/31-02-PLAN.md) -- HIGH confidence (direct codebase). Documents the `GUID_DEVINTERFACE_DISK` PnP tree walk pattern that distinguishes USB from internal disks.
+- [dlp-agent/src/detection/usb.rs](dlp-agent/src/detection/usb.rs) -- HIGH confidence (direct codebase). The existing `on_disk_device_arrival` function already walks the PnP tree; absence of `USB\` ancestor means internal disk.
+- [dlp-agent/src/interception/mod.rs](dlp-agent/src/interception/mod.rs) -- HIGH confidence (direct codebase). Shows the pre-ABAC USB enforcement integration point where disk enforcement will be added.
+- [dlp-agent/src/config.rs](dlp-agent/src/config.rs) -- HIGH confidence (direct codebase). Shows existing TOML config structure.
+- [dlp-server/src/db/repositories/device_registry.rs](dlp-server/src/db/repositories/device_registry.rs) -- HIGH confidence (direct codebase). Reference pattern for the new `disk_registry` repository.
+- [dlp-common/src/endpoint.rs](dlp-common/src/endpoint.rs) -- HIGH confidence (direct codebase). Shows `DeviceIdentity`, `UsbTrustTier` patterns to follow for `DiskIdentity`.
