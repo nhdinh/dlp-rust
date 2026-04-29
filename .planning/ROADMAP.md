@@ -39,7 +39,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 - [x] **Phase 26: ABAC Enforcement Convergence** (complete 2026-04-22) -- Evaluator enforces app-identity and USB trust-tier conditions; USB I/O enforcement hot path in file_monitor.rs
 - [x] **Phase 27: USB Toast Notification** -- UsbBlockResult + 30s cooldown + Pipe2AgentMsg::Toast broadcast wired into USB block handler (complete 2026-04-22)
 - [ ] **Phase 28: Admin TUI Screens** -- App identity condition picker, Device Registry screen, managed-origins screen in dlp-admin-cli
-- [ ] **Phase 29: Chrome Enterprise Connector** -- Named-pipe server in dlp-agent; protobuf decode; browser clipboard block + audit
+- [x] **Phase 29: Chrome Enterprise Connector** (complete 2026-04-29) -- Named-pipe server in dlp-agent; protobuf decode; browser clipboard block + audit
 
 ## Phase Details
 
@@ -164,10 +164,10 @@ Plans:
   4. A block event produces an audit entry with `source_origin` and `destination_origin` fields visible in the audit log
 **Plans**: 4 plans
 Plans:
-- [ ] 29-01-PLAN.md -- Protobuf types + frame protocol + chrome module scaffolding
-- [ ] 29-02-PLAN.md -- ManagedOriginsCache + server client + audit fields
-- [ ] 29-03-PLAN.md -- Chrome pipe server + HKLM registration
-- [ ] 29-04-PLAN.md -- Unit tests + integration tests + zero-warning build gate
+- [x] 29-01-PLAN.md -- Protobuf types + frame protocol + chrome module scaffolding
+- [x] 29-02-PLAN.md -- ManagedOriginsCache + server client + audit fields
+- [x] 29-03-PLAN.md -- Chrome pipe server + HKLM registration
+- [x] 29-04-PLAN.md -- Unit tests + integration tests + zero-warning build gate
 
 ### Phase 30: Automated UAT Infrastructure
 **Goal**: Replace manual human UAT checkpoints with automated verification scripts and environment setup so deferred UAT items from Phases 4, 6, 24, and 28 are verified without relying on manual human testing
@@ -226,7 +226,7 @@ Plans:
 | 26 | ABAC Enforcement Convergence | v0.6.0 | 5/5 | Complete | 2026-04-22 |
 | 27 | USB Toast Notification | v0.6.0 | 2/2 | Complete | 2026-04-22 |
 | 28 | Admin TUI Screens | v0.6.0 | 4/5 | Planned | - |
-| 29 | Chrome Enterprise Connector | v0.6.0 | 4/4 | Planned | - |
+| 29 | Chrome Enterprise Connector | v0.6.0 | 4/4 | Complete | 2026-04-29 |
 | 30 | Automated UAT Infrastructure | v0.6.0 | 0/10 | Not started | - |
 | 99 | Refactor DB Layer to Repository + Unit of Work | v0.3.0 | 3/3 | Complete | 2026-04-15 |
 
