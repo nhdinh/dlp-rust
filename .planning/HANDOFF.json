@@ -1,29 +1,34 @@
 {
   "version": "1.0",
-  "timestamp": "2026-04-29T00:38:11.149Z",
-  "phase": "29",
-  "phase_name": "chrome-enterprise-connector",
-  "phase_dir": ".planning/phases/29-chrome-enterprise-connector",
+  "timestamp": "2026-04-29T14:42:38.182Z",
+  "phase": "32",
+  "phase_name": "usb-scan-register-cli",
+  "phase_dir": ".planning/phases/32-usb-scan-register-cli",
   "plan": 2,
-  "task": 0,
-  "total_tasks": 4,
+  "task": 2,
+  "total_tasks": 10,
   "status": "paused",
   "completed_tasks": [
-    {"id": 1, "name": "29-01: Protobuf + Frame Protocol + Module Scaffolding", "status": "done", "commit": "c8547c3"},
-    {"id": 2, "name": "29-02: ManagedOriginsCache + Server Client + Audit Fields", "status": "done", "commit": "a111532"}
+    {"id": 1, "name": "32-01 Task 1: Add Win32_Devices_DeviceAndDriverInstallation feature", "status": "done", "commit": "42baa1b"},
+    {"id": 2, "name": "32-01 Task 2: Create dlp-common/src/usb.rs with parse/lookup/enumeration", "status": "done", "commit": "45c3ab4"},
+    {"id": 3, "name": "32-01 Task 3: Refactor dlp-agent to import shared helpers", "status": "done", "commit": "24a70c5"},
+    {"id": 4, "name": "32-01 SUMMARY.md", "status": "done", "commit": "3c8f7cd"},
+    {"id": 5, "name": "32-02 Task 1: Add TierPickerCaller, UsbScanEntry, Screen::UsbScan types", "status": "done", "commit": "8044849"},
+    {"id": 6, "name": "32-02 Task 2: Compile-fix dispatch.rs and render.rs", "status": "done", "commit": "8044849"}
   ],
   "remaining_tasks": [
-    {"id": 3, "name": "29-03: Chrome Pipe Server + HKLM Registration + Service Wiring", "status": "not_started"},
-    {"id": 4, "name": "29-04: Tests + Zero-Warning Build Gate", "status": "not_started"}
+    {"id": 7, "name": "32-02 Task 3: draw_usb_scan + 3-item DevicesMenu + render tests", "status": "not_started"},
+    {"id": 8, "name": "32-03 Task 1: handle_usb_scan + action_open_usb_scan + action_usb_scan stub", "status": "not_started"},
+    {"id": 9, "name": "32-03 Task 2: action_usb_scan real concurrent scan + merge helpers + tests", "status": "not_started"},
+    {"id": 10, "name": "32-03 Task 3: handle_device_tier_picker caller routing + wiremock + 4 routing tests", "status": "not_started"}
   ],
   "blockers": [],
   "human_actions_pending": [],
   "decisions": [
-    {"decision": "Use prost + prost-build with vendored .proto", "rationale": "Standard Rust protobuf stack, no gRPC needed", "phase": "29"},
-    {"decision": "Pipe name: \\\\.\\\\pipe\\brcm_chrm_cas", "rationale": "Matches Chrome Enterprise SDK demo agent base name", "phase": "29"},
-    {"decision": "ManagedOriginsCache mirrors DeviceRegistryCache exactly", "rationale": "Proven pattern, atomic HashSet replacement", "phase": "29"}
+    {"decision": "Switched from parallel subagent execution to inline sequential execution", "rationale": "First gsd-executor subagent (Wave 1, 32-01) ran for 35+ minutes with zero changes in its worktree. Subagent approach unreliable for this phase.", "phase": "32"},
+    {"decision": "dlp-common usb.rs already existed from prior session commits", "rationale": "Commits 42baa1b and 45c3ab4 were already on master. Only Task 3 (agent refactor) needed execution for 32-01.", "phase": "32"}
   ],
   "uncommitted_files": [],
-  "next_action": "/gsd-execute-phase 29 --wave 2",
-  "context_notes": "Wave 1 complete and merged. Wave 2 plans (29-03, 29-04) ready to execute. No blockers. All code compiles."
+  "next_action": "Execute 32-02 Task 3: Add draw_usb_scan to render.rs with 5-column Table, update DevicesMenu to 3 items, add TestBackend render tests",
+  "context_notes": "Phase 32-01 is fully complete with SUMMARY.md. Phase 32-02 has types and compile-fixes done. The next work is rendering (draw_usb_scan) then dispatch wiring (32-03). Use inline sequential execution — do NOT spawn subagents."
 }
