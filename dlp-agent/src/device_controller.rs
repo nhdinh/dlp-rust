@@ -136,7 +136,8 @@ impl DeviceController {
         }
 
         // SAFETY: `dev_inst` is a valid device instance handle returned by CM_Locate_DevNodeW.
-        let cr = unsafe { CM_Disable_DevNode(dev_inst, 0) };
+        const CM_DISABLE_ABSOLUTE: u32 = 0x00000001;
+        let cr = unsafe { CM_Disable_DevNode(dev_inst, CM_DISABLE_ABSOLUTE) };
         if cr.0 != 0 {
             return Err(DeviceControllerError::ConfigManager(cr.0));
         }
