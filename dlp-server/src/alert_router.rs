@@ -272,6 +272,7 @@ impl AlertRouter {
             access_context: dlp_common::AuditAccessContext::Local,
             correlation_id: Some(uuid::Uuid::new_v4().to_string()),
             application_path: None,
+            discovered_disks: None,
             application_hash: None,
             resource_owner: None,
             source_application: None,
@@ -660,6 +661,7 @@ mod tests {
             device_identity: None,
             source_origin: None,
             destination_origin: None,
+            discovered_disks: None,
         };
 
         let cfg = WebhookConfig {
@@ -737,6 +739,7 @@ mod tests {
             device_identity: None,
             source_origin: None,
             destination_origin: None,
+            discovered_disks: None,
         };
 
         let err = router
