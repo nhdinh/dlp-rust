@@ -34,7 +34,8 @@ use windows::Win32::Foundation::LocalFree;
 use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
 #[cfg(windows)]
 use windows::Win32::Security::{
-    GetFileSecurityW, SetFileSecurityW, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    GetFileSecurityW, SetFileSecurityW, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
 };
 
 /// Error type for device controller operations.
@@ -240,12 +241,16 @@ impl DeviceController {
         let path_pcwstr = windows::core::PCWSTR(wide.as_ptr());
 
         // Query the existing security descriptor to cache it.
+        // Include DACL, owner, and group so restoration is complete (CR-03).
+        let info = DACL_SECURITY_INFORMATION.0
+            | OWNER_SECURITY_INFORMATION.0
+            | GROUP_SECURITY_INFORMATION.0;
         let mut required_len: u32 = 0;
         // SAFETY: first call with null buffer gets the required size.
         let _ = unsafe {
             GetFileSecurityW(
                 path_pcwstr,
-                DACL_SECURITY_INFORMATION.0,
+                info,
                 PSECURITY_DESCRIPTOR(std::ptr::null_mut()),
                 0,
                 &mut required_len,
@@ -264,7 +269,7 @@ impl DeviceController {
         let ok = unsafe {
             GetFileSecurityW(
                 path_pcwstr,
-                DACL_SECURITY_INFORMATION.0,
+                info,
                 PSECURITY_DESCRIPTOR(sd_buf.as_mut_ptr() as *mut std::ffi::c_void),
                 required_len,
                 &mut returned_len,
@@ -363,10 +368,23 @@ impl DeviceController {
             .collect();
         let path_pcwstr = windows::core::PCWSTR(wide.as_ptr());
 
-        let p_sd = PSECURITY_DESCRIPTOR(sd_buf.as_ptr() as *mut _);
+        // Use the same info mask that was queried in set_volume_readonly (CR-03).
+        let info = DACL_SECURITY_INFORMATION.0
+            | OWNER_SECURITY_INFORMATION.0
+            | GROUP_SECURITY_INFORMATION.0;
+        let mut sd_buf = sd_buf; // take ownership so we can get a mutable pointer
+        let p_sd = PSECURITY_DESCRIPTOR(sd_buf.as_mut_ptr() as *mut _);
         // SAFETY: `p_sd` points to valid security descriptor bytes we cached earlier.
         // `path_pcwstr` is a valid null-terminated wide string.
-        let ok = unsafe { SetFileSecurityW(path_pcwstr, DACL_SECURITY_INFORMATION, p_sd) };
+        // `SetFileSecurityW` only reads the descriptor; we use as_mut_ptr because
+        // the Win32 API signature requires PSECURITY_DESCRIPTOR (mutable pointer).
+        let ok = unsafe {
+            SetFileSecurityW(
+                path_pcwstr,
+                windows::Win32::Security::OBJECT_SECURITY_INFORMATION(info),
+                p_sd,
+            )
+        };
 
         if ok == windows::Win32::Foundation::BOOL(0) {
             return Err(DeviceControllerError::Win32(
