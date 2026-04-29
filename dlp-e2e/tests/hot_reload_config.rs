@@ -57,8 +57,7 @@ async fn get_config(app: &mut Router, path: &str) -> (StatusCode, serde_json::Va
     let body_bytes = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read body");
-    let json: serde_json::Value =
-        serde_json::from_slice(&body_bytes).expect("parse JSON response");
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).expect("parse JSON response");
     (status, json)
 }
 
@@ -91,11 +90,19 @@ async fn test_siem_config_hot_reload() {
     });
 
     let put_status = put_config(&mut app, "/admin/siem-config", put_payload.clone()).await;
-    assert_eq!(put_status, StatusCode::OK, "PUT siem-config should return 200");
+    assert_eq!(
+        put_status,
+        StatusCode::OK,
+        "PUT siem-config should return 200"
+    );
 
     // Step 3: GET again and assert exact matching
     let (status, fetched) = get_config(&mut app, "/admin/siem-config").await;
-    assert_eq!(status, StatusCode::OK, "GET siem-config after PUT should return 200");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "GET siem-config after PUT should return 200"
+    );
     assert_eq!(
         fetched["splunk_url"],
         "https://splunk.example.com/services/collector/event"
@@ -139,11 +146,19 @@ async fn test_alert_config_hot_reload() {
     });
 
     let put_status = put_config(&mut app, "/admin/alert-config", put_payload.clone()).await;
-    assert_eq!(put_status, StatusCode::OK, "PUT alert-config should return 200");
+    assert_eq!(
+        put_status,
+        StatusCode::OK,
+        "PUT alert-config should return 200"
+    );
 
     // Step 3: GET again and assert values match (password masked)
     let (status, fetched) = get_config(&mut app, "/admin/alert-config").await;
-    assert_eq!(status, StatusCode::OK, "GET alert-config after PUT should return 200");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "GET alert-config after PUT should return 200"
+    );
     assert_eq!(fetched["smtp_host"], "smtp.example.com");
     assert_eq!(fetched["smtp_port"], 587);
     assert_eq!(fetched["smtp_username"], "dlp-alerts");
@@ -183,11 +198,19 @@ async fn test_agent_config_hot_reload() {
     });
 
     let put_status = put_config(&mut app, "/admin/agent-config", put_payload.clone()).await;
-    assert_eq!(put_status, StatusCode::OK, "PUT agent-config should return 200");
+    assert_eq!(
+        put_status,
+        StatusCode::OK,
+        "PUT agent-config should return 200"
+    );
 
     // Step 3: GET again and assert exact matching
     let (status, fetched) = get_config(&mut app, "/admin/agent-config").await;
-    assert_eq!(status, StatusCode::OK, "GET agent-config after PUT should return 200");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "GET agent-config after PUT should return 200"
+    );
     assert_eq!(fetched["monitored_paths"], json!(["C:\\\\Restricted\\\\"]));
     assert_eq!(fetched["excluded_paths"], json!(["C:\\\\Temp\\\\"]));
     assert_eq!(fetched["heartbeat_interval_secs"], 60);
@@ -243,7 +266,11 @@ async fn test_policy_store_hot_reload() {
         .body(Body::from(policy_payload.to_string()))
         .expect("build POST request");
 
-    let create_resp: axum::http::Response<axum::body::Body> = app.clone().oneshot(create_req).await.expect("send POST request");
+    let create_resp: axum::http::Response<axum::body::Body> = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("send POST request");
     assert_eq!(
         create_resp.status(),
         StatusCode::CREATED,
@@ -283,8 +310,16 @@ async fn test_policy_store_hot_reload() {
         ))
         .expect("build eval request");
 
-    let eval_resp: axum::http::Response<axum::body::Body> = app.clone().oneshot(eval_req_http).await.expect("send eval request");
-    assert_eq!(eval_resp.status(), StatusCode::OK, "POST /evaluate should return 200");
+    let eval_resp: axum::http::Response<axum::body::Body> = app
+        .clone()
+        .oneshot(eval_req_http)
+        .await
+        .expect("send eval request");
+    assert_eq!(
+        eval_resp.status(),
+        StatusCode::OK,
+        "POST /evaluate should return 200"
+    );
     let eval_bytes = to_bytes(eval_resp.into_body(), usize::MAX)
         .await
         .expect("read eval body");
@@ -321,7 +356,11 @@ async fn test_policy_store_hot_reload() {
         .body(Body::from(update_payload.to_string()))
         .expect("build PUT request");
 
-    let update_resp: axum::http::Response<axum::body::Body> = app.clone().oneshot(update_req).await.expect("send PUT request");
+    let update_resp: axum::http::Response<axum::body::Body> = app
+        .clone()
+        .oneshot(update_req)
+        .await
+        .expect("send PUT request");
     assert_eq!(
         update_resp.status(),
         StatusCode::OK,
@@ -339,7 +378,11 @@ async fn test_policy_store_hot_reload() {
         ))
         .expect("build eval request");
 
-    let eval_resp2: axum::http::Response<axum::body::Body> = app.clone().oneshot(eval_req2_http).await.expect("send eval request");
+    let eval_resp2: axum::http::Response<axum::body::Body> = app
+        .clone()
+        .oneshot(eval_req2_http)
+        .await
+        .expect("send eval request");
     assert_eq!(
         eval_resp2.status(),
         StatusCode::OK,

@@ -5,17 +5,25 @@ use dlp_admin_cli::screens::handle_event;
 use dlp_e2e::helpers;
 use tokio::net::TcpListener;
 
-fn setup_test_app() -> (App, std::sync::Arc<dlp_server::db::Pool>, std::net::SocketAddr) {
+fn setup_test_app() -> (
+    App,
+    std::sync::Arc<dlp_server::db::Pool>,
+    std::net::SocketAddr,
+) {
     let (router, pool) = helpers::server::build_test_app();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("create local runtime");
     let addr = rt.block_on(async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind TCP listener");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind TCP listener");
         let addr = listener.local_addr().expect("get local addr");
         tokio::spawn(async move {
-            axum::serve(listener, router).await.expect("mock server serve");
+            axum::serve(listener, router)
+                .await
+                .expect("mock server serve");
         });
         addr
     });

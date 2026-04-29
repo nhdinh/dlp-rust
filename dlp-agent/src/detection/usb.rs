@@ -255,9 +255,8 @@ static REGISTRY_CLIENT: std::sync::OnceLock<crate::server_client::ServerClient> 
 /// is required because `std::sync::mpsc::Sender<T>` is `Send` but not `Sync`
 /// and therefore cannot be stored in an `OnceLock`.
 #[cfg(windows)]
-static WATCH_PATH_TX: parking_lot::Mutex<
-    Option<std::sync::mpsc::Sender<std::path::PathBuf>>,
-> = parking_lot::Mutex::new(None);
+static WATCH_PATH_TX: parking_lot::Mutex<Option<std::sync::mpsc::Sender<std::path::PathBuf>>> =
+    parking_lot::Mutex::new(None);
 
 /// Sets the global registry cache reference.
 ///

@@ -47,7 +47,10 @@ pub fn harden_agent_process() {
     // which requires PROCESS_TERMINATE access. Hardening blocks this for
     // non-privileged callers.
     if std::env::var("DLP_SKIP_HARDENING").is_ok_and(|v| v == "1") {
-        info!(pid = std::process::id(), "agent process DACL hardening skipped (DLP_SKIP_HARDENING=1)");
+        info!(
+            pid = std::process::id(),
+            "agent process DACL hardening skipped (DLP_SKIP_HARDENING=1)"
+        );
         return;
     }
     // SAFETY: `GetCurrentProcess()` returns a pseudo-handle (-1) that is

@@ -13,9 +13,9 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use dlp_admin_cli::app::{App, ConditionAttribute, Screen};
-use dlp_common::abac::{AppField, PolicyCondition};
 use dlp_admin_cli::event::AppEvent;
 use dlp_admin_cli::screens::handle_event;
+use dlp_common::abac::{AppField, PolicyCondition};
 use dlp_e2e::helpers::{server, tui};
 use ratatui::buffer::Buffer;
 use tokio::net::TcpListener;
@@ -28,7 +28,11 @@ use tokio::net::TcpListener;
 /// `App` wired to it.
 ///
 /// Returns `(app, pool, socket_addr)` so callers can verify DB state directly.
-fn setup_test_app() -> (App, std::sync::Arc<dlp_server::db::Pool>, std::net::SocketAddr) {
+fn setup_test_app() -> (
+    App,
+    std::sync::Arc<dlp_server::db::Pool>,
+    std::net::SocketAddr,
+) {
     let (router, pool) = server::build_test_app();
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -37,10 +41,14 @@ fn setup_test_app() -> (App, std::sync::Arc<dlp_server::db::Pool>, std::net::Soc
         .expect("create local runtime");
 
     let addr = rt.block_on(async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind TCP listener");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind TCP listener");
         let addr = listener.local_addr().expect("get local addr");
         tokio::spawn(async move {
-            axum::serve(listener, router).await.expect("mock server serve");
+            axum::serve(listener, router)
+                .await
+                .expect("mock server serve");
         });
         addr
     });

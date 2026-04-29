@@ -45,10 +45,14 @@ fn setup_test_app() -> (
         .expect("create multi-threaded runtime");
 
     let addr = rt.block_on(async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind TCP listener");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind TCP listener");
         let addr = listener.local_addr().expect("get local addr");
         tokio::spawn(async move {
-            axum::serve(listener, router).await.expect("mock server serve");
+            axum::serve(listener, router)
+                .await
+                .expect("mock server serve");
         });
         // Brief pause to let the server start accepting connections.
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -151,7 +155,10 @@ fn test_add_managed_origin() {
     // Type the origin URL character by character.
     let origin_url = "https://company.sharepoint.com/*";
     for ch in origin_url.chars() {
-        inject(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        inject(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+        );
     }
     // Confirm with Enter.
     inject(&mut app, enter);
@@ -216,7 +223,10 @@ fn test_remove_managed_origin() {
     inject(&mut app, char_a);
 
     for ch in origin_url.chars() {
-        inject(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        inject(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+        );
     }
     inject(&mut app, enter);
 

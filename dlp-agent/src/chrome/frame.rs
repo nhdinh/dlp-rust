@@ -8,7 +8,10 @@
 //! The payload is a protobuf-encoded message (not JSON).
 
 use anyhow::{Context, Result};
+
+#[cfg(windows)]
 use windows::Win32::Foundation::HANDLE;
+#[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{FlushFileBuffers, ReadFile, WriteFile};
 
 /// Maximum allowed protobuf payload size (4 MiB).
@@ -25,6 +28,7 @@ const MAX_PAYLOAD: usize = 4 * 1024 * 1024;
 /// Returns an error if the pipe is broken, the frame header cannot be
 /// read, the declared payload exceeds [`MAX_PAYLOAD`], or fewer bytes
 /// than declared are received.
+#[cfg(windows)]
 pub fn read_frame(pipe: HANDLE) -> Result<Vec<u8>> {
     let mut length_buf = [0u8; 4];
     read_exact(pipe, &mut length_buf).context("read frame length")?;
@@ -49,6 +53,7 @@ pub fn read_frame(pipe: HANDLE) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// Returns an error if the pipe is broken or the write is partial.
+#[cfg(windows)]
 pub fn write_frame(pipe: HANDLE, payload: &[u8]) -> Result<()> {
     let length_buf = (payload.len() as u32).to_le_bytes();
     write_all(pipe, &length_buf).context("write frame length")?;
@@ -58,6 +63,7 @@ pub fn write_frame(pipe: HANDLE, payload: &[u8]) -> Result<()> {
 }
 
 /// Like [`std::io::Read::read_exact`] but for Win32 [`HANDLE`].
+#[cfg(windows)]
 fn read_exact(pipe: HANDLE, buf: &mut [u8]) -> Result<()> {
     let mut remaining = buf.len();
 
@@ -97,6 +103,7 @@ fn read_exact(pipe: HANDLE, buf: &mut [u8]) -> Result<()> {
 }
 
 /// Like [`std::io::Write::write_all`] but for Win32 [`HANDLE`].
+#[cfg(windows)]
 fn write_all(pipe: HANDLE, buf: &[u8]) -> Result<()> {
     let mut remaining = buf.len();
 
@@ -135,9 +142,17 @@ fn write_all(pipe: HANDLE, buf: &[u8]) -> Result<()> {
 }
 
 /// Flushes write buffers for a pipe handle.
+#[cfg(windows)]
 fn flush(pipe: HANDLE) -> Result<()> {
-    unsafe {
-        FlushFileBuffers(pipe)
-            .map_err(|e| anyhow::anyhow!("FlushFileBuffers failed: {}", e))
+    unsafe { FlushFileBuffers(pipe).map_err(|e| anyhow::anyhow!("FlushFileBuffers failed: {}", e)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_max_payload_is_4_mib() {
+        assert_eq!(MAX_PAYLOAD, 4 * 1024 * 1024);
     }
 }

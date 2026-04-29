@@ -66,8 +66,7 @@ impl ManagedOriginsCache {
     pub async fn refresh(&self, client: &ServerClient) {
         match client.fetch_managed_origins().await {
             Ok(entries) => {
-                let new_set: HashSet<String> =
-                    entries.into_iter().map(|e| e.origin).collect();
+                let new_set: HashSet<String> = entries.into_iter().map(|e| e.origin).collect();
                 let count = new_set.len();
                 *self.cache.write() = new_set;
                 debug!(count, "managed origins cache refreshed");
@@ -149,14 +148,20 @@ mod tests {
     #[test]
     fn test_is_managed_known_origin_returns_true() {
         let cache = ManagedOriginsCache::new();
-        cache.cache.write().insert("https://sharepoint.com".to_string());
+        cache
+            .cache
+            .write()
+            .insert("https://sharepoint.com".to_string());
         assert!(cache.is_managed("https://sharepoint.com"));
     }
 
     #[test]
     fn test_is_managed_unknown_origin_returns_false() {
         let cache = ManagedOriginsCache::new();
-        cache.cache.write().insert("https://sharepoint.com".to_string());
+        cache
+            .cache
+            .write()
+            .insert("https://sharepoint.com".to_string());
         assert!(!cache.is_managed("https://example.com"));
     }
 
