@@ -166,9 +166,9 @@ impl UsbEnforcer {
         // Registered devices are handled at the PnP level by DeviceController
         // (disable for Blocked, DACL modification for ReadOnly). Unregistered
         // devices default to deny at the I/O level as defence-in-depth.
-        let is_registered = self
-            .registry
-            .has_device(&identity.vid, &identity.pid, &identity.serial);
+        let is_registered =
+            self.registry
+                .has_device(&identity.vid, &identity.pid, &identity.serial);
 
         if is_registered {
             // Registered device: active enforcement is handled by DeviceController.

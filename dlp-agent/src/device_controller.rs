@@ -229,10 +229,7 @@ impl DeviceController {
     /// Returns `Err` on any Win32 failure. The original DACL is only cached
     /// after a successful query.
     #[cfg(windows)]
-    pub fn set_volume_readonly(
-        &self,
-        drive_letter: char,
-    ) -> Result<(), DeviceControllerError> {
+    pub fn set_volume_readonly(&self, drive_letter: char) -> Result<(), DeviceControllerError> {
         let volume_path = format!(r"\\.\{}:", drive_letter);
         let wide: Vec<u16> = volume_path
             .encode_utf16()
@@ -273,11 +270,15 @@ impl DeviceController {
         };
 
         if ok == windows::Win32::Foundation::BOOL(0) {
-            return Err(DeviceControllerError::Win32(windows::core::Error::from_win32()));
+            return Err(DeviceControllerError::Win32(
+                windows::core::Error::from_win32(),
+            ));
         }
 
         // Cache the original DACL bytes.
-        self.original_dacls.lock().insert(drive_letter, sd_buf.clone());
+        self.original_dacls
+            .lock()
+            .insert(drive_letter, sd_buf.clone());
 
         // Build a restrictive DACL SDDL string.
         // This DACL:
@@ -315,7 +316,9 @@ impl DeviceController {
         }
 
         if set_ok == windows::Win32::Foundation::BOOL(0) {
-            return Err(DeviceControllerError::Win32(windows::core::Error::from_win32()));
+            return Err(DeviceControllerError::Win32(
+                windows::core::Error::from_win32(),
+            ));
         }
 
         info!(drive = %drive_letter, "volume set to read-only");
@@ -337,10 +340,7 @@ impl DeviceController {
     /// Returns `Ok(())` even if no cached DACL exists (logs a warning).
     /// Returns `Err` only if `SetFileSecurityW` fails.
     #[cfg(windows)]
-    pub fn restore_volume_acl(
-        &self,
-        drive_letter: char,
-    ) -> Result<(), DeviceControllerError> {
+    pub fn restore_volume_acl(&self, drive_letter: char) -> Result<(), DeviceControllerError> {
         let sd_buf = {
             let mut cache = self.original_dacls.lock();
             cache.remove(&drive_letter)
@@ -367,7 +367,9 @@ impl DeviceController {
         let ok = unsafe { SetFileSecurityW(path_pcwstr, DACL_SECURITY_INFORMATION, p_sd) };
 
         if ok == windows::Win32::Foundation::BOOL(0) {
-            return Err(DeviceControllerError::Win32(windows::core::Error::from_win32()));
+            return Err(DeviceControllerError::Win32(
+                windows::core::Error::from_win32(),
+            ));
         }
 
         info!(drive = %drive_letter, "volume ACL restored");
@@ -399,7 +401,10 @@ mod tests {
         let fake_dacl = vec![0x01, 0x00, 0x04, 0x80, 0x14, 0x00, 0x00, 0x00];
 
         // Insert fake DACL into cache directly (simulating set_volume_readonly).
-        controller.original_dacls.lock().insert(drive, fake_dacl.clone());
+        controller
+            .original_dacls
+            .lock()
+            .insert(drive, fake_dacl.clone());
 
         // Verify it's in the cache.
         {
