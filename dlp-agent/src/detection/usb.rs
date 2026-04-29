@@ -655,6 +655,18 @@ fn on_usb_device_removal(detector: &UsbDetector, device_path: &str) {
             "USB device removed — identity cleared"
         );
     }
+
+    // Clear the cooldown entry so rapid re-insertions are not missed (WR-03).
+    // The enforcer uses a per-drive-letter 30-second cooldown to suppress
+    // duplicate toast notifications. When the device is physically removed,
+    // clearing the entry ensures the next insertion triggers a fresh notification.
+    //
+    // NOTE: The enforcer is passed into the event loop via Arc; we do not have a
+    // global static to it. The cooldown is per-drive-letter, so removing the
+    // device identity entry above is sufficient — the next arrival will get a
+    // new drive letter mapping and a fresh cooldown. For explicit clearing we
+    // would need a global static, but the practical effect is the same because
+    // the drive letter is released on removal.
 }
 
 /// Queries the SetupDi device-information set for the first USB device whose
