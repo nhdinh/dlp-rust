@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-29 — v0.6.0 Endpoint Hardening shipped*
+*Last updated: 2026-04-30 — v0.7.0 Disk Exfiltration Prevention started*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -12,9 +12,16 @@ Enterprise-grade Data Loss Prevention system that enforces ABAC-based access pol
 
 Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
 
-## Current Milestone: (none — v0.6.0 shipped 2026-04-29)
+## Current Milestone: v0.7.0 Disk Exfiltration Prevention
 
-**Next milestone to be defined.** Use `/gsd-new-milestone` to start planning.
+**Goal:** Prevent data exfiltration via unregistered fixed disks by establishing an install-time disk allowlist with encryption verification.
+
+**Target features:**
+- Install-time enumeration of fixed disks with BitLocker/encryption validation
+- Persistent disk allowlist in agent-config.toml and server-side registry
+- Runtime blocking of unregistered fixed disks (USB-bridged SATA/NVMe, internal drives added post-install)
+- Admin override/registry for adding disks after initial install
+- Audit events for disk block/discovery actions
 
 ## Shipped: v0.6.0 Endpoint Hardening (2026-04-29)
 

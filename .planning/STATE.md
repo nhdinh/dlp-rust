@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.6.0
-milestone_name: - Endpoint Hardening
-status: ready_to_plan
-last_updated: "2026-04-29T16:19:18.527Z"
-last_activity: 2026-04-29 -- Phase 31 execution started
+milestone: v0.7.0
+milestone_name: Disk Exfiltration Prevention
+status: planning
+last_updated: "2026-04-29T17:16:14.409Z"
+last_activity: 2026-04-29
 progress:
-  total_phases: 20
-  completed_phases: 18
-  total_plans: 59
-  completed_plans: 57
-  percent: 90
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # STATE.md — Project Memory
@@ -24,13 +24,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 ## Current Position
 
-Phase: 32
-Plan: Not started
-Milestone: v0.6.0 Endpoint Hardening — COMPLETE
-Phases: 22-30 all shipped; Phase 32 complete
-Status: Ready to plan
-Next: Resume Phase 31 UAT or plan gap fixes
-Last activity: 2026-04-29
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-29 — Milestone v0.7.0 started
 
 ## Decisions
 
