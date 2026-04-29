@@ -230,7 +230,7 @@ impl DeviceController {
     /// after a successful query.
     #[cfg(windows)]
     pub fn set_volume_readonly(&self, drive_letter: char) -> Result<(), DeviceControllerError> {
-        let volume_path = format!(r"\\.\{}:", drive_letter);
+        let volume_path = format!(r"{}:\", drive_letter);
         let wide: Vec<u16> = volume_path
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -354,7 +354,7 @@ impl DeviceController {
             return Ok(());
         };
 
-        let volume_path = format!(r"\\.\{}:", drive_letter);
+        let volume_path = format!(r"{}:\", drive_letter);
         let wide: Vec<u16> = volume_path
             .encode_utf16()
             .chain(std::iter::once(0))
