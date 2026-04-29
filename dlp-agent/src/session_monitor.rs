@@ -157,6 +157,7 @@ fn handle_session_start(session_id: u32) -> anyhow::Result<()> {
     match ui_spawner::spawn_ui_in_session(session_id, &binary) {
         Ok(handle) => {
             info!(session_id, pid = handle.pid, "Session monitor: UI spawned");
+            ui_spawner::insert_handle(session_id, handle);
             Ok(())
         }
         Err(e) => {
