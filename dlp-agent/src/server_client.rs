@@ -474,24 +474,20 @@ impl ServerClient {
 
 /// A single entry from the `GET /admin/device-registry` response.
 ///
-/// Matches the `DeviceRegistryResponse` shape returned by `dlp-server`.
-/// Fields mirror the `device_registry` table columns (Phase 24 Plan 01).
+/// Matches the `PublicDeviceEntry` shape returned by `dlp-server`. Only the
+/// fields needed for cache keying and tier enforcement are present; admin-only
+/// fields (`id`, `description`, `created_at`) are intentionally omitted from
+/// the unauthenticated endpoint.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct DeviceRegistryEntry {
-    /// Server-generated UUID for the registry row.
-    pub id: String,
     /// USB Vendor ID hex string (e.g., `"0951"`).
     pub vid: String,
     /// USB Product ID hex string (e.g., `"1666"`).
     pub pid: String,
     /// Device serial number, or `"(none)"` for devices without one.
     pub serial: String,
-    /// Human-readable device description from the USB descriptor.
-    pub description: String,
     /// Trust tier string: `"blocked"`, `"read_only"`, or `"full_access"`.
     pub trust_tier: String,
-    /// ISO-8601 creation timestamp.
-    pub created_at: String,
 }
 
 // ---------------------------------------------------------------------------
