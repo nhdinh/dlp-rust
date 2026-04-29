@@ -10,23 +10,23 @@
 
 ### Application-Aware DLP (SEED-001)
 
-- [ ] **APP-01**: Agent captures destination process image path and publisher at paste time — `GetForegroundWindow` → `GetWindowThreadProcessId` → `QueryFullProcessImageNameW` in `dlp-user-ui` (user session only)
-- [ ] **APP-02**: Agent captures source process identity at clipboard-change time — `GetClipboardOwner` called synchronously inside `WM_CLIPBOARDUPDATE` handler before source window closes
+- [x] **APP-01**: Agent captures destination process image path and publisher at paste time — `GetForegroundWindow` → `GetWindowThreadProcessId` → `QueryFullProcessImageNameW` in `dlp-user-ui` (user session only)
+- [x] **APP-02**: Agent captures source process identity at clipboard-change time — `GetClipboardOwner` called synchronously inside `WM_CLIPBOARDUPDATE` handler before source window closes
 - [x] **APP-03**: Evaluator enforces allow/deny decisions based on `source_application` and `destination_application` ABAC attributes — `AbacContext` gains both fields; `PolicyStore::evaluate` honors them
-- [ ] **APP-04**: Admin can author app-identity conditions in TUI using a structured picker (publisher, image path, trust tier) — no raw JSON
-- [ ] **APP-05**: Audit events include `source_application` and `destination_application` fields populated on clipboard block
-- [ ] **APP-06**: Authenticode publisher extraction via `WinVerifyTrust` prevents renamed-binary bypass — result cached per process path, non-blocking (routed through `spawn_blocking`)
+- [x] **APP-04**: Admin can author app-identity conditions in TUI using a structured picker (publisher, image path, trust tier) — no raw JSON
+- [x] **APP-05**: Audit events include `source_application` and `destination_application` fields populated on clipboard block
+- [x] **APP-06**: Authenticode publisher extraction via `WinVerifyTrust` prevents renamed-binary bypass — result cached per process path, non-blocking (routed through `spawn_blocking`)
 
 ### Browser Boundary (SEED-002)
 
-- [ ] **BRW-01**: `dlp-agent` registers as a Chrome Content Analysis agent — named-pipe server at `\\.\pipe\brcm_chrm_cas` with protobuf frame serialization; Chrome POSTs clipboard scan events to it
-- [ ] **BRW-02**: Admin can manage the managed-origins list (trusted web domains) via TUI screen and admin API — DB-backed, hot-reload, same pattern as SIEM/alert config
-- [ ] **BRW-03**: Paste from a managed/protected origin to an unmanaged origin is blocked; audit event emitted with `source_origin` and `destination_origin` fields
+- [x] **BRW-01**: `dlp-agent` registers as a Chrome Content Analysis agent — named-pipe server at `\\.\pipe\brcm_chrm_cas` with protobuf frame serialization; Chrome POSTs clipboard scan events to it
+- [x] **BRW-02**: Admin can manage the managed-origins list (trusted web domains) via TUI screen and admin API — DB-backed, hot-reload, same pattern as SIEM/alert config
+- [x] **BRW-03**: Paste from a managed/protected origin to an unmanaged origin is blocked; audit event emitted with `source_origin` and `destination_origin` fields
 
 ### USB Device Control (SEED-003)
 
-- [ ] **USB-01**: Agent captures VID, PID, Serial Number, and device description on `DBT_DEVICEARRIVAL` via `SetupDiGetClassDevsW` / `SetupDiGetDeviceInstanceIdW`
-- [ ] **USB-02**: Admin can register and deregister USB devices with a trust tier (`blocked` / `read_only` / `full_access`) via TUI screen and admin API (`GET/POST/DELETE /admin/device-registry`)
+- [x] **USB-01**: Agent captures VID, PID, Serial Number, and device description on `DBT_DEVICEARRIVAL` via `SetupDiGetClassDevsW` / `SetupDiGetDeviceInstanceIdW`
+- [x] **USB-02**: Admin can register and deregister USB devices with a trust tier (`blocked` / `read_only` / `full_access`) via TUI screen and admin API (`GET/POST/DELETE /admin/device-registry`)
 - [x] **USB-03**: Agent enforces trust tier at I/O level: `blocked` denies all access; `read_only` allows reads and denies writes — trust tier cached in `RwLock<HashMap>` per device, invalidated on removal or registry update
 - [x] **USB-04**: User receives a toast notification on USB block containing the device name and policy explanation — runs in `dlp-user-ui` (user session), reuses `winrt-notification`
 
@@ -59,16 +59,16 @@
 
 | REQ-ID | Phase | Status |
 |--------|-------|--------|
-| APP-01 | Phase 25 | Pending |
-| APP-02 | Phase 25 | Pending |
+| APP-01 | Phase 25 | Complete |
+| APP-02 | Phase 25 | Complete |
 | APP-03 | Phase 26 | Complete |
-| APP-04 | Phase 28 | Pending |
-| APP-05 | Phase 25 | Pending |
-| APP-06 | Phase 25 | Pending |
-| BRW-01 | Phase 29 | Pending |
-| BRW-02 | Phase 28 | Pending |
-| BRW-03 | Phase 29 | Pending |
-| USB-01 | Phase 23 | Pending |
-| USB-02 | Phase 24 | Pending |
+| APP-04 | Phase 28 | Complete |
+| APP-05 | Phase 25 | Complete |
+| APP-06 | Phase 25 | Complete |
+| BRW-01 | Phase 29 | Complete |
+| BRW-02 | Phase 28 | Complete |
+| BRW-03 | Phase 29 | Complete |
+| USB-01 | Phase 23 | Complete |
+| USB-02 | Phase 24 | Complete |
 | USB-03 | Phase 26 | Complete |
 | USB-04 | Phase 27 | Complete |
