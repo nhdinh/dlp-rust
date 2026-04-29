@@ -39,6 +39,10 @@ use parking_lot::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 #[cfg(windows)]
+use windows::Win32::Devices::DeviceAndDriverInstallation::{
+    CM_Get_Device_IDW, CM_Get_Parent, CM_Locate_DevNodeW, CM_LOCATE_DEVNODE_NORMAL,
+};
+#[cfg(windows)]
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -76,6 +80,9 @@ pub struct UsbDetector {
     /// (i.e., no drive letter was available yet).  `handle_volume_event` pops
     /// this slot when the drive letter appears and applies tier enforcement.
     pub(crate) pending_identity: Mutex<Option<DeviceIdentity>>,
+    /// Map from disk device instance ID to USB identity for removal lookup
+    /// when the PnP tree walk fails (device already gone from the PnP tree).
+    pub disk_to_identity: RwLock<HashMap<String, DeviceIdentity>>,
 }
 
 impl UsbDetector {
@@ -210,6 +217,17 @@ const GUID_DEVINTERFACE_USB_DEVICE: windows::core::GUID = windows::core::GUID::f
     [0x90, 0x1F, 0x00, 0xC0, 0x4F, 0xB9, 0x51, 0xED],
 );
 
+/// GUID for disk drive device interface — fires reliably for USB mass storage.
+/// Used as a fallback when GUID_DEVINTERFACE_USB_DEVICE does not fire.
+/// Windows SDK value: {0x53F56307,0xB6BF,0x11D0,{0x94,0xF2,0x00,0xA0,0xC9,0x1E,0xFB,0x8B}}
+#[cfg(windows)]
+const GUID_DEVINTERFACE_DISK: windows::core::GUID = windows::core::GUID::from_values(
+    0x53F56307,
+    0xB6BF,
+    0x11D0,
+    [0x94, 0xF2, 0x00, 0xA0, 0xC9, 0x1E, 0xFB, 0x8B],
+);
+
 /// Global reference to the `UsbDetector` shared with the device notification handlers.
 /// Protected by a `Mutex` so it can be cleared on unregister.
 #[cfg(windows)]
@@ -219,8 +237,10 @@ static DRIVE_DETECTOR: parking_lot::Mutex<Option<&'static UsbDetector>> =
 /// Registered device notification handles for cleanup (CR-04).
 /// Set during `register_usb_notifications` and consumed during `unregister_usb_notifications`.
 /// Stored as raw isize values because HDEVNOTIFY is not Send/Sync.
+/// Third element is the DISK interface handle added in 31-02.
 #[cfg(windows)]
-static NOTIFY_HANDLES: parking_lot::Mutex<Option<(isize, isize)>> = parking_lot::Mutex::new(None);
+static NOTIFY_HANDLES: parking_lot::Mutex<Option<(isize, isize, isize)>> =
+    parking_lot::Mutex::new(None);
 
 /// Global registry cache reference, set from `service.rs` before the USB window
 /// thread is spawned. Allows `usb_wndproc` (an `unsafe extern "system"` callback
@@ -404,6 +424,14 @@ unsafe extern "system" fn usb_wndproc(
                                 }
                             } else {
                                 on_usb_device_removal(detector, &device_path);
+                            }
+                        } else if classguid == GUID_DEVINTERFACE_DISK {
+                            // SAFETY: di is valid for this callback duration.
+                            let device_path = unsafe { read_dbcc_name(di) };
+                            if event_type == DBT_DEVICEARRIVAL {
+                                on_disk_device_arrival(detector, &device_path);
+                            } else {
+                                on_disk_device_removal(detector, &device_path);
                             }
                         }
                     }
@@ -699,6 +727,270 @@ fn on_usb_device_removal(detector: &UsbDetector, device_path: &str) {
     // the drive letter is released on removal.
 }
 
+/// Extracts the device instance ID from a GUID_DEVINTERFACE_DISK `dbcc_name`.
+///
+/// The disk notification's `dbcc_name` is a device interface path like
+/// `\\?\USBSTOR#Disk&Ven_Kingston&Prod_DataTraveler_3.0#...#{53f56307-b6bf-11d0-94f2-00a0c91efb8b}`.
+/// This function strips the `\\?\` prefix and the `#{GUID}` suffix, then
+/// replaces `#` with `\` to produce the actual instance ID.
+fn disk_path_to_instance_id(device_path: &str) -> String {
+    let without_prefix = device_path.strip_prefix(r"\\?\").unwrap_or(device_path);
+    let without_guid = without_prefix.split("#{").next().unwrap_or(without_prefix);
+    without_guid.replace("#", r"\")
+}
+
+/// Handles GUID_DEVINTERFACE_DISK arrival by walking the PnP tree to find
+/// a USB ancestor, then applying tier enforcement.
+///
+/// This is the fallback path for USB mass storage devices that do not fire
+/// GUID_DEVINTERFACE_USB_DEVICE (the primary path handled by
+/// `on_usb_device_arrival`).
+#[cfg(windows)]
+fn on_disk_device_arrival(detector: &UsbDetector, device_path: &str) {
+    let disk_instance_id = disk_path_to_instance_id(device_path);
+    if disk_instance_id.is_empty() {
+        debug!("disk arrival: empty instance ID — skipping");
+        return;
+    }
+
+    // Locate the disk device in the PnP tree.
+    let wide: Vec<u16> = disk_instance_id
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut dev_inst: u32 = 0;
+    let cr = unsafe {
+        CM_Locate_DevNodeW(
+            &mut dev_inst,
+            windows::core::PCWSTR(wide.as_ptr()),
+            CM_LOCATE_DEVNODE_NORMAL,
+        )
+    };
+    if cr.0 != 0 {
+        const CR_NO_SUCH_DEVNODE: u32 = 0x0000000D;
+        if cr.0 == CR_NO_SUCH_DEVNODE {
+            warn!("CM_Locate_DevNodeW: disk device not found — may have been removed");
+        } else {
+            warn!("CM_Locate_DevNodeW failed: {:#010x}", cr.0);
+        }
+        return;
+    }
+
+    // Walk up the PnP tree to find a USB ancestor.
+    let mut usb_identity: Option<DeviceIdentity> = None;
+    let mut current_devinst = dev_inst;
+    for _ in 0..16 {
+        let mut parent_devinst: u32 = 0;
+        let cr = unsafe { CM_Get_Parent(&mut parent_devinst, current_devinst, 0) };
+        if cr.0 != 0 {
+            break;
+        }
+
+        let mut id_buf = [0u16; 256];
+        let cr = unsafe { CM_Get_Device_IDW(parent_devinst, &mut id_buf, 0) };
+        if cr.0 == 0 {
+            let id = String::from_utf16_lossy(
+                &id_buf
+                    .iter()
+                    .copied()
+                    .take_while(|&w| w != 0)
+                    .collect::<Vec<u16>>(),
+            );
+            if id.starts_with("USB\\") {
+                let reshaped = format!(r"\\?\{}", id.replace("\\", "#"));
+                let identity = parse_usb_device_path(&reshaped);
+                if !identity.vid.is_empty() && !identity.pid.is_empty() {
+                    let mut identity_with_desc = identity;
+                    identity_with_desc.description = setupdi_description_for_device(&reshaped);
+                    usb_identity = Some(identity_with_desc);
+                }
+                break;
+            }
+        }
+        current_devinst = parent_devinst;
+    }
+
+    let Some(identity) = usb_identity else {
+        debug!(
+            instance_id = %disk_instance_id,
+            "disk arrival: no USB ancestor found — not a USB mass storage device"
+        );
+        return;
+    };
+
+    // Find the drive letter by scanning for a removable drive not yet tracked.
+    let existing: HashSet<char> = detector.device_identities.read().keys().copied().collect();
+    let letter_opt = ('A'..='Z').find(|l| detector.is_removable_drive(*l) && !existing.contains(l));
+
+    match letter_opt {
+        Some(letter) => {
+            info!(
+                drive = %letter,
+                vid = %identity.vid,
+                pid = %identity.pid,
+                serial = %identity.serial,
+                description = %identity.description,
+                "USB disk arrived — identity captured via PnP tree walk"
+            );
+            detector
+                .device_identities
+                .write()
+                .insert(letter, identity.clone());
+            detector
+                .disk_to_identity
+                .write()
+                .insert(disk_instance_id.clone(), identity.clone());
+            apply_tier_enforcement(letter, &identity);
+        }
+        None => {
+            // No drive letter yet — park the identity for reconciliation.
+            // Only park if the slot is empty to avoid clobbering a pending
+            // identity from a different device (T-31-02-01).
+            if detector.pending_identity.lock().is_none() {
+                info!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    description = %identity.description,
+                    "USB disk arrived — identity captured (no drive letter yet)"
+                );
+                *detector.pending_identity.lock() = Some(identity.clone());
+            }
+            detector
+                .disk_to_identity
+                .write()
+                .insert(disk_instance_id, identity);
+        }
+    }
+}
+
+/// Handles GUID_DEVINTERFACE_DISK removal by cleaning up the device identity
+/// and restoring any modified volume ACLs.
+#[cfg(windows)]
+fn on_disk_device_removal(detector: &UsbDetector, device_path: &str) {
+    let disk_instance_id = disk_path_to_instance_id(device_path);
+    if disk_instance_id.is_empty() {
+        debug!("disk removal: empty instance ID — skipping");
+        return;
+    }
+
+    // Try to locate the disk device and walk up to find the USB ancestor.
+    let wide: Vec<u16> = disk_instance_id
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut dev_inst: u32 = 0;
+    let cr = unsafe {
+        CM_Locate_DevNodeW(
+            &mut dev_inst,
+            windows::core::PCWSTR(wide.as_ptr()),
+            CM_LOCATE_DEVNODE_NORMAL,
+        )
+    };
+
+    let mut parsed_identity: Option<DeviceIdentity> = None;
+
+    if cr.0 == 0 {
+        // Walk up the PnP tree to find a USB ancestor.
+        let mut current_devinst = dev_inst;
+        for _ in 0..16 {
+            let mut parent_devinst: u32 = 0;
+            let cr = unsafe { CM_Get_Parent(&mut parent_devinst, current_devinst, 0) };
+            if cr.0 != 0 {
+                break;
+            }
+
+            let mut id_buf = [0u16; 256];
+            let cr = unsafe { CM_Get_Device_IDW(parent_devinst, &mut id_buf, 0) };
+            if cr.0 == 0 {
+                let id = String::from_utf16_lossy(
+                    &id_buf
+                        .iter()
+                        .copied()
+                        .take_while(|&w| w != 0)
+                        .collect::<Vec<u16>>(),
+                );
+                if id.starts_with("USB\\") {
+                    let reshaped = format!(r"\\?\{}", id.replace("\\", "#"));
+                    let identity = parse_usb_device_path(&reshaped);
+                    if !identity.vid.is_empty() && !identity.pid.is_empty() {
+                        parsed_identity = Some(identity);
+                    }
+                    break;
+                }
+            }
+            current_devinst = parent_devinst;
+        }
+    }
+
+    // If PnP walk failed (device already gone), fall back to disk_to_identity map.
+    if parsed_identity.is_none() {
+        if let Some(identity) = detector.disk_to_identity.read().get(&disk_instance_id) {
+            parsed_identity = Some(identity.clone());
+        }
+    }
+
+    let Some(parsed) = parsed_identity else {
+        warn!(
+            instance_id = %disk_instance_id,
+            "disk removal: could not resolve USB identity — skipping cleanup"
+        );
+        return;
+    };
+
+    // Match by VID/PID/serial against the in-memory map.
+    let letter_opt = {
+        let read_guard = detector.device_identities.read();
+        read_guard
+            .iter()
+            .find(|(_, id)| {
+                id.vid == parsed.vid && id.pid == parsed.pid && id.serial == parsed.serial
+            })
+            .map(|(letter, _)| *letter)
+    };
+
+    if let Some(letter) = letter_opt {
+        if let Some(controller) = DEVICE_CONTROLLER.get() {
+            if let Err(e) = controller.restore_volume_acl(letter) {
+                warn!(
+                    drive = %letter,
+                    error = %e,
+                    "failed to restore volume ACL on disk removal"
+                );
+            }
+            if let Err(e) = controller.enable_usb_device(&parsed.vid, &parsed.pid, &parsed.serial) {
+                warn!(
+                    vid = %parsed.vid,
+                    pid = %parsed.pid,
+                    serial = %parsed.serial,
+                    error = %e,
+                    "failed to re-enable USB device on disk removal"
+                );
+            } else {
+                info!(
+                    drive = %letter,
+                    vid = %parsed.vid,
+                    pid = %parsed.pid,
+                    "USB device re-enabled on disk removal"
+                );
+            }
+        }
+
+        detector.device_identities.write().remove(&letter);
+        detector.disk_to_identity.write().remove(&disk_instance_id);
+        info!(
+            drive = %letter,
+            vid = %parsed.vid,
+            pid = %parsed.pid,
+            serial = %parsed.serial,
+            "USB disk removed — identity cleared"
+        );
+    } else {
+        // Identity not in device_identities — clean up disk_to_identity anyway.
+        detector.disk_to_identity.write().remove(&disk_instance_id);
+    }
+}
+
 /// Registers for USB volume device notifications and starts a message loop on
 /// a dedicated thread.
 ///
@@ -825,10 +1117,33 @@ pub fn register_usb_notifications(
                 return;
             }
 
+            // Step 3c: register for DISK device notifications (USB mass storage fallback).
+            let mut disk_buf: Vec<u8> = vec![0u8; db_size];
+            let dbc_disk = disk_buf.as_mut_ptr() as *mut DEV_BROADCAST_DEVICEINTERFACE_W;
+
+            // SAFETY: dbc_disk points to db_size bytes that we own and are properly aligned.
+            unsafe {
+                (*dbc_disk).dbcc_size = db_size as u32;
+                (*dbc_disk).dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE.0;
+                (*dbc_disk).dbcc_reserved = 0;
+                (*dbc_disk).dbcc_classguid = GUID_DEVINTERFACE_DISK;
+            }
+
+            // SAFETY: hwnd is valid; dbc_disk points to an initialized struct.
+            let disk_handle = unsafe {
+                RegisterDeviceNotificationW(hwnd, dbc_disk as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
+            };
+            if let Err(e) = disk_handle {
+                let _ = unsafe { DestroyWindow(hwnd) };
+                let _ = hwnd_tx.send(Err(e));
+                return;
+            }
+
             // Store notification handles for later cleanup (CR-04).
             let vol_h = vol_handle.unwrap();
             let usb_h = usb_handle.unwrap();
-            *NOTIFY_HANDLES.lock() = Some((vol_h.0 as isize, usb_h.0 as isize));
+            let disk_h = disk_handle.unwrap();
+            *NOTIFY_HANDLES.lock() = Some((vol_h.0 as isize, usb_h.0 as isize, disk_h.0 as isize));
 
             // Signal the caller with the HWND value. Transmit as usize because
             // HWND is !Send; the caller reconstructs it from the raw pointer value.
@@ -860,7 +1175,7 @@ pub fn register_usb_notifications(
     // immediately after a successful CreateWindowExW call.
     let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
 
-    info!("USB device notifications registered (volume + device interface)");
+    info!("USB device notifications registered (volume + device + disk interface)");
     Ok((hwnd, thread))
 }
 
@@ -872,13 +1187,16 @@ pub fn register_usb_notifications(
 #[cfg(windows)]
 pub fn unregister_usb_notifications(hwnd: HWND, thread: std::thread::JoinHandle<()>) {
     // Unregister device notifications before destroying the window.
-    if let Some((h_vol, h_usb)) = NOTIFY_HANDLES.lock().take() {
+    if let Some((h_vol, h_usb, h_disk)) = NOTIFY_HANDLES.lock().take() {
         unsafe {
             let _ = UnregisterDeviceNotification(
                 windows::Win32::UI::WindowsAndMessaging::HDEVNOTIFY(h_vol as *mut _),
             );
             let _ = UnregisterDeviceNotification(
                 windows::Win32::UI::WindowsAndMessaging::HDEVNOTIFY(h_usb as *mut _),
+            );
+            let _ = UnregisterDeviceNotification(
+                windows::Win32::UI::WindowsAndMessaging::HDEVNOTIFY(h_disk as *mut _),
             );
         }
     }
@@ -1063,5 +1381,94 @@ mod tests {
         assert!(detector.blocked_drives.read().contains(&'E'));
         detector.on_drive_removal('e');
         assert!(detector.blocked_drive_letters().is_empty());
+    }
+
+    // ── Tests added in Phase 31 Plan 02 ────────────────────────────────────
+
+    /// Verify extraction of device instance ID from a GUID_DEVINTERFACE_DISK dbcc_name.
+    #[test]
+    fn test_disk_path_to_instance_id_extraction() {
+        let path = r"\\?\USBSTOR#Disk&Ven_Kingston&Prod_DataTraveler_3.0#12345678&0#{53f56307-b6bf-11d0-94f2-00a0c91efb8b}";
+        let instance_id = disk_path_to_instance_id(path);
+        assert_eq!(
+            instance_id,
+            r"USBSTOR\Disk&Ven_Kingston&Prod_DataTraveler_3.0\12345678&0"
+        );
+    }
+
+    /// Verify that a non-USBSTOR disk path still extracts correctly (generic logic).
+    #[test]
+    fn test_disk_path_non_usbstor() {
+        let path =
+            r"\\?\SCSI#Disk&Ven_WDC&Prod_WD10EZEX#ABC123#{53f56307-b6bf-11d0-94f2-00a0c91efb8b}";
+        let instance_id = disk_path_to_instance_id(path);
+        assert_eq!(instance_id, r"SCSI\Disk&Ven_WDC&Prod_WD10EZEX\ABC123");
+    }
+
+    /// Verify that disk arrival stores identity in disk_to_identity for removal fallback.
+    #[test]
+    fn test_disk_to_identity_populated_on_arrival() {
+        let detector = UsbDetector::new();
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN42".into(),
+            description: "Test Device".into(),
+        };
+        detector
+            .disk_to_identity
+            .write()
+            .insert("USBSTOR\\Test".into(), identity.clone());
+        assert_eq!(
+            detector.disk_to_identity.read().get("USBSTOR\\Test"),
+            Some(&identity)
+        );
+    }
+
+    /// Verify removal lookup via disk_to_identity fallback.
+    #[test]
+    fn test_disk_to_identity_removal_fallback() {
+        let detector = UsbDetector::new();
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN42".into(),
+            description: "Test Device".into(),
+        };
+        detector
+            .disk_to_identity
+            .write()
+            .insert("USBSTOR\\Test".into(), identity.clone());
+        let retrieved = detector
+            .disk_to_identity
+            .read()
+            .get("USBSTOR\\Test")
+            .cloned();
+        assert_eq!(retrieved, Some(identity));
+        detector.disk_to_identity.write().remove("USBSTOR\\Test");
+        assert!(detector.disk_to_identity.read().is_empty());
+    }
+
+    /// Verify that a dbcc_name missing the \\?\ prefix is handled gracefully.
+    #[test]
+    fn test_dbcc_name_malformed_missing_prefix() {
+        let path = r"USBSTOR#Disk&Ven_Kingston#123#{53f56307-b6bf-11d0-94f2-00a0c91efb8b}";
+        let instance_id = disk_path_to_instance_id(path);
+        assert_eq!(instance_id, r"USBSTOR\Disk&Ven_Kingston\123");
+    }
+
+    /// Verify that a dbcc_name without the #{GUID} suffix is handled.
+    #[test]
+    fn test_dbcc_name_without_guid_suffix() {
+        let path = r"\\?\USBSTOR#Disk&Ven_Kingston#123";
+        let instance_id = disk_path_to_instance_id(path);
+        assert_eq!(instance_id, r"USBSTOR\Disk&Ven_Kingston\123");
+    }
+
+    /// Verify that an empty dbcc_name is handled without panic.
+    #[test]
+    fn test_dbcc_name_empty() {
+        let instance_id = disk_path_to_instance_id("");
+        assert_eq!(instance_id, "");
     }
 }
