@@ -72,6 +72,24 @@ impl DeviceRegistryCache {
             .unwrap_or(UsbTrustTier::Blocked)
     }
 
+    /// Returns `true` if the given device identity triple is present in the
+    /// registry cache (i.e., the device has been explicitly registered).
+    ///
+    /// Used by [`UsbEnforcer::check`](crate::usb_enforcer::UsbEnforcer::check)
+    /// to distinguish "registered as Blocked" (handled by DeviceController at
+    /// PnP level) from "unregistered" (default-deny at I/O level).
+    ///
+    /// # Arguments
+    ///
+    /// * `vid` - USB Vendor ID hex string.
+    /// * `pid` - USB Product ID hex string.
+    /// * `serial` - Device serial number string.
+    #[must_use]
+    pub fn has_device(&self, vid: &str, pid: &str, serial: &str) -> bool {
+        let key = (vid.to_string(), pid.to_string(), serial.to_string());
+        self.cache.read().contains_key(&key)
+    }
+
     /// Fetches the current device registry from the server and replaces the cache.
     ///
     /// On success: atomically replaces the entire map with new entries.

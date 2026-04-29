@@ -10,12 +10,24 @@
 //! 2. Look up the [`DeviceIdentity`] for that drive letter in the USB detector's map.
 //! 3. Look up the [`UsbTrustTier`] from the device registry using the VID/PID/serial.
 //! 4. Return a [`UsbBlockResult`] carrying the decision, identity, tier, and toast flag:
-//!    - [`UsbTrustTier::Blocked`]: deny all operations; `notify` per 30-second cooldown.
-//!    - [`UsbTrustTier::ReadOnly`]: deny write-class operations; `notify` per cooldown.
+//!    - [`UsbTrustTier::Blocked`]: return `None` — device is disabled at the PnP
+//!      level by [`DeviceController`](crate::device_controller::DeviceController),
+//!      so no file events are expected.
+//!    - [`UsbTrustTier::ReadOnly`]: return `None` — volume DACL is modified by
+//!      [`DeviceController`](crate::device_controller::DeviceController) on arrival,
+//!      so NTFS enforces the restriction.
 //!    - [`UsbTrustTier::FullAccess`]: return `None` (fall through to ABAC engine).
 //!
 //! UNC paths (`\\server\share\...`) are not USB drives and return `None` immediately.
 //! Paths on drives not present in the USB detector return `None` (not a USB drive).
+//!
+//! ## Architecture note (Phase 31)
+//!
+//! Active blocking (device disable for Blocked, DACL modification for ReadOnly)
+//! is now handled by [`DeviceController`](crate::device_controller::DeviceController)
+//! firing from `usb_wndproc` on device arrival. This module only handles the
+//! fallback case: unregistered devices (unknown VID/PID/serial) still default
+//! to deny at the file I/O level as a defence-in-depth measure.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -97,14 +109,13 @@ impl UsbEnforcer {
     /// Evaluates whether the given file operation should be blocked based on the
     /// USB trust tier of the drive the file resides on.
     ///
-    /// Returns `Some(UsbBlockResult)` if the operation must be blocked, carrying
-    /// the decision, device identity, trust tier, and a toast notification flag.
-    /// Returns `None` if the path is not on a USB drive or the device has full access
-    /// (caller should proceed to ABAC evaluation).
-    ///
-    /// The `notify` field in the result is `true` on the first block within a
-    /// 30-second window for a given drive letter; subsequent calls within the same
-    /// window return `notify: false`. The block decision is always `DENY` regardless.
+    /// Returns `Some(UsbBlockResult)` only for unregistered devices (default-deny
+    /// fallback). All registered devices return `None` because active enforcement
+    /// is now handled at the PnP level by [`DeviceController`](crate::device_controller::DeviceController):
+    /// - `Blocked` devices are disabled on arrival and generate no file events.
+    /// - `ReadOnly` devices have their volume DACL modified on arrival; NTFS
+    ///   enforces the restriction.
+    /// - `FullAccess` devices fall through to ABAC evaluation.
     ///
     /// # Arguments
     ///
@@ -113,10 +124,10 @@ impl UsbEnforcer {
     ///
     /// # Returns
     ///
-    /// - `Some(UsbBlockResult)` — operation must be blocked; see struct fields for detail.
-    /// - `None` — not a USB path, or USB path with full access; proceed to ABAC.
+    /// - `Some(UsbBlockResult)` — unregistered device; default-deny at I/O level.
+    /// - `None` — not a USB path, or registered device; proceed to ABAC or OS-level enforcement.
     #[must_use]
-    pub fn check(&self, path: &str, action: &FileAction) -> Option<UsbBlockResult> {
+    pub fn check(&self, path: &str, _action: &FileAction) -> Option<UsbBlockResult> {
         // D-09: Extract drive letter — first character, must be ASCII alphabetic.
         // UNC paths start with `\\` and have no drive letter; return None immediately.
         let drive = extract_drive_letter(path)?;
@@ -151,38 +162,28 @@ impl UsbEnforcer {
             }
         };
 
-        // Look up the trust tier from the device registry using the device triple.
-        let tier = self
+        // Check if the device is explicitly registered in the device registry.
+        // Registered devices are handled at the PnP level by DeviceController
+        // (disable for Blocked, DACL modification for ReadOnly). Unregistered
+        // devices default to deny at the I/O level as defence-in-depth.
+        let is_registered = self
             .registry
-            .trust_tier_for(&identity.vid, &identity.pid, &identity.serial);
+            .has_device(&identity.vid, &identity.pid, &identity.serial);
 
-        match tier {
-            // Blocked: deny all operations regardless of action type.
-            UsbTrustTier::Blocked => {
-                let notify = self.should_notify(drive);
-                Some(UsbBlockResult {
-                    decision: Decision::DENY,
-                    identity,
-                    tier: UsbTrustTier::Blocked,
-                    notify,
-                })
-            }
-            // ReadOnly: deny write-class operations; allow reads (D-08).
-            UsbTrustTier::ReadOnly => {
-                if is_write_class(action) {
-                    let notify = self.should_notify(drive);
-                    Some(UsbBlockResult {
-                        decision: Decision::DENY,
-                        identity,
-                        tier: UsbTrustTier::ReadOnly,
-                        notify,
-                    })
-                } else {
-                    None
-                }
-            }
-            // FullAccess: no USB-level enforcement; fall through to ABAC engine.
-            UsbTrustTier::FullAccess => None,
+        if is_registered {
+            // Registered device: active enforcement is handled by DeviceController.
+            // Blocked → disabled on arrival; ReadOnly → DACL modified on arrival;
+            // FullAccess → no action. All cases return None.
+            None
+        } else {
+            // Unregistered device: default deny at the I/O level (fail-safe).
+            let notify = self.should_notify(drive);
+            Some(UsbBlockResult {
+                decision: Decision::DENY,
+                identity,
+                tier: UsbTrustTier::Blocked,
+                notify,
+            })
         }
     }
 }
@@ -204,22 +205,6 @@ fn extract_drive_letter(path: &str) -> Option<char> {
     } else {
         None
     }
-}
-
-/// Returns `true` if the [`FileAction`] is a write-class operation (D-08).
-///
-/// Write-class operations are blocked on `ReadOnly` USB devices.
-/// The only allowed action on a `ReadOnly` device is `Read`.
-///
-/// D-08 write-class variants: `Written`, `Created`, `Deleted`, `Moved` (Renamed).
-fn is_write_class(action: &FileAction) -> bool {
-    matches!(
-        action,
-        FileAction::Written { .. }
-            | FileAction::Created { .. }
-            | FileAction::Deleted { .. }
-            | FileAction::Moved { .. }
-    )
 }
 
 #[cfg(test)]
@@ -308,70 +293,33 @@ mod tests {
     }
 
     #[test]
-    fn test_blocked_device_denies_all_actions() {
+    fn test_blocked_device_returns_none() {
+        // Phase 31: Blocked devices are disabled at the PnP level by DeviceController.
+        // UsbEnforcer::check() returns None for all registered tiers.
         let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
         let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::Blocked);
         let enforcer = UsbEnforcer::new(detector, registry);
 
-        // Written — blocked tier, first call so notify=true.
-        let result = enforcer.check("E:\\file.txt", &written_action());
-        assert!(result.is_some());
-        let r = result.unwrap();
-        assert_eq!(r.decision, Decision::DENY);
-        assert_eq!(r.tier, UsbTrustTier::Blocked);
-        assert_eq!(r.identity.description, "Test Device");
-
-        // Read — same drive, cooldown window active, notify=false but still DENY.
-        let result = enforcer.check("E:\\file.txt", &read_action());
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().decision, Decision::DENY);
-
-        let result = enforcer.check("E:\\file.txt", &created_action());
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().decision, Decision::DENY);
-
-        let result = enforcer.check("E:\\file.txt", &deleted_action());
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().decision, Decision::DENY);
-
-        let result = enforcer.check("E:\\file.txt", &moved_action());
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().decision, Decision::DENY);
-    }
-
-    #[test]
-    fn test_readonly_device_denies_write_class() {
-        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
-        let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::ReadOnly);
-        let enforcer = UsbEnforcer::new(detector, registry);
-
-        // Written — first write, notify=true, decision DENY.
-        let result = enforcer.check("E:\\file.txt", &written_action());
-        assert!(result.is_some());
-        let r = result.unwrap();
-        assert_eq!(r.decision, Decision::DENY);
-        assert_eq!(r.tier, UsbTrustTier::ReadOnly);
-
-        let result = enforcer.check("E:\\file.txt", &created_action());
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().decision, Decision::DENY);
-
-        let result = enforcer.check("E:\\file.txt", &deleted_action());
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().decision, Decision::DENY);
-
-        let result = enforcer.check("E:\\file.txt", &moved_action());
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().decision, Decision::DENY);
-    }
-
-    #[test]
-    fn test_readonly_device_allows_read() {
-        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
-        let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::ReadOnly);
-        let enforcer = UsbEnforcer::new(detector, registry);
-
+        assert_eq!(enforcer.check("E:\\file.txt", &written_action()), None);
         assert_eq!(enforcer.check("E:\\file.txt", &read_action()), None);
+        assert_eq!(enforcer.check("E:\\file.txt", &created_action()), None);
+        assert_eq!(enforcer.check("E:\\file.txt", &deleted_action()), None);
+        assert_eq!(enforcer.check("E:\\file.txt", &moved_action()), None);
+    }
+
+    #[test]
+    fn test_readonly_device_returns_none() {
+        // Phase 31: ReadOnly devices have volume DACL modified by DeviceController.
+        // UsbEnforcer::check() returns None for all registered tiers.
+        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
+        let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::ReadOnly);
+        let enforcer = UsbEnforcer::new(detector, registry);
+
+        assert_eq!(enforcer.check("E:\\file.txt", &written_action()), None);
+        assert_eq!(enforcer.check("E:\\file.txt", &read_action()), None);
+        assert_eq!(enforcer.check("E:\\file.txt", &created_action()), None);
+        assert_eq!(enforcer.check("E:\\file.txt", &deleted_action()), None);
+        assert_eq!(enforcer.check("E:\\file.txt", &moved_action()), None);
     }
 
     #[test]
@@ -473,40 +421,6 @@ mod tests {
         );
     }
 
-    /// D-02 (USB-04): Per-drive cooldown suppresses repeat toasts without
-    /// suppressing the block decision.
-    ///
-    /// First call within a 30-second window: notify=true, decision=DENY.
-    /// Second call within the same window: notify=false, decision=DENY.
-    /// The block is always enforced; only the toast is gated by the cooldown.
-    #[test]
-    fn test_cooldown_suppresses_second_toast() {
-        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
-        let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::Blocked);
-        let enforcer = UsbEnforcer::new(detector, registry);
-
-        // First call: cooldown map is empty, so notify=true.
-        let first = enforcer
-            .check("E:\\file.txt", &written_action())
-            .expect("first check must return Some for Blocked device");
-        assert_eq!(first.decision, Decision::DENY, "first call must still deny");
-        assert!(first.notify, "first call must request toast notification");
-
-        // Immediate second call: cooldown is active (< 30s elapsed), notify=false.
-        let second = enforcer
-            .check("E:\\file.txt", &written_action())
-            .expect("second check must return Some for Blocked device");
-        assert_eq!(
-            second.decision,
-            Decision::DENY,
-            "second call must still deny"
-        );
-        assert!(
-            !second.notify,
-            "second call within cooldown window must suppress toast"
-        );
-    }
-
     /// Defence-in-depth: a drive letter known to be USB (via `scan_existing_drives`)
     /// but missing from `device_identities` (VID/PID/serial never captured) must still
     /// be denied on all operations. Without this guard, the enforcer would return `None`
@@ -545,11 +459,11 @@ mod tests {
         }
     }
 
-    /// Blocked drive without identity: first call returns notify=true and default identity.
+    /// Blocked drive without identity: returns default-deny with Blocked tier.
     ///
     /// When a drive is in `blocked_drives` but has no `DeviceIdentity` entry,
-    /// the enforcer must still deny all operations with a default identity
-    /// (empty strings) and request toast notification on the first call.
+    /// the enforcer still denies all operations with a default identity
+    /// (empty strings) as a defence-in-depth fallback.
     #[test]
     fn test_blocked_drive_without_identity_returns_blocked() {
         let detector = Arc::new(UsbDetector {
@@ -567,18 +481,6 @@ mod tests {
         assert!(r.notify); // first call
     }
 
-    /// ReadOnly device: write-class actions are denied, read action is allowed.
-    ///
-    /// Combines the write-denial and read-allowance into a single test for clarity.
-    #[test]
-    fn test_readonly_device_write_denied_read_allowed() {
-        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
-        let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::ReadOnly);
-        let enforcer = UsbEnforcer::new(detector, registry);
-        assert!(enforcer.check("E:\\file.txt", &written_action()).is_some());
-        assert_eq!(enforcer.check("E:\\file.txt", &read_action()), None);
-    }
-
     /// FullAccess device: all actions are allowed (fall through to ABAC).
     ///
     /// Verifies that Written, Read, and Created actions all return None
@@ -593,29 +495,10 @@ mod tests {
         assert_eq!(enforcer.check("E:\\file.txt", &created_action()), None);
     }
 
-    /// Blocked device denies read actions too.
-    ///
-    /// A Blocked tier must deny ALL operations, including reads which are
-    /// normally allowed on ReadOnly devices.
-    #[test]
-    fn test_blocked_device_denies_reads_too() {
-        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
-        let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::Blocked);
-        let enforcer = UsbEnforcer::new(detector, registry);
-        assert!(enforcer.check("E:\\file.txt", &read_action()).is_some());
-        assert_eq!(
-            enforcer
-                .check("E:\\file.txt", &read_action())
-                .unwrap()
-                .decision,
-            Decision::DENY
-        );
-    }
-
     /// Per-drive isolation: different drives can have different trust tiers.
     ///
-    /// Drive E is Blocked, drive F is FullAccess. Operations on each drive
-    /// must be evaluated independently against their respective tier.
+    /// Drive E is unregistered (default Blocked → I/O-level deny), drive F is FullAccess.
+    /// Operations on each drive must be evaluated independently.
     #[test]
     fn test_per_drive_isolation() {
         let mut map = HashMap::new();
@@ -645,10 +528,12 @@ mod tests {
             device_identities: RwLock::new(map),
         });
         let registry = Arc::new(DeviceRegistryCache::new());
-        registry.seed_for_test("0951", "1666", "SN001", UsbTrustTier::Blocked);
+        // E is NOT seeded → default-deny at I/O level (unregistered device fallback).
         registry.seed_for_test("0951", "1667", "SN002", UsbTrustTier::FullAccess);
         let enforcer = UsbEnforcer::new(detector, registry);
+        // E is unregistered → default deny (defence-in-depth).
         assert!(enforcer.check("E:\\file.txt", &written_action()).is_some());
+        // F is FullAccess → fall through to ABAC.
         assert_eq!(enforcer.check("F:\\file.txt", &written_action()), None);
     }
 }
