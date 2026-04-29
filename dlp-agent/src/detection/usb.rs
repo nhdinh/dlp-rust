@@ -312,7 +312,9 @@ pub fn set_registry_runtime_handle(handle: tokio::runtime::Handle) {
 ///
 /// * `controller` - The `Arc<DeviceController>` to store globally.
 #[cfg(windows)]
-pub fn set_device_controller(controller: std::sync::Arc<crate::device_controller::DeviceController>) {
+pub fn set_device_controller(
+    controller: std::sync::Arc<crate::device_controller::DeviceController>,
+) {
     let _ = DEVICE_CONTROLLER.set(controller);
 }
 
@@ -506,7 +508,10 @@ fn on_usb_device_arrival(detector: &UsbDetector, device_path: &str) {
                 description = %identity.description,
                 "USB device arrived — identity captured"
             );
-            detector.device_identities.write().insert(letter, identity.clone());
+            detector
+                .device_identities
+                .write()
+                .insert(letter, identity.clone());
 
             // Active PnP enforcement: look up trust tier and apply device control.
             if let Some(controller) = DEVICE_CONTROLLER.get() {
