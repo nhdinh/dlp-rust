@@ -522,6 +522,8 @@ fn on_usb_device_arrival(detector: &UsbDetector, device_path: &str) {
                 .insert(letter, identity.clone());
 
             // Active PnP enforcement: look up trust tier and apply device control.
+            // Minimize lock scope: clone needed data and drop locks before calling
+            // into DeviceController to avoid potential deadlock (WR-01).
             if let Some(controller) = DEVICE_CONTROLLER.get() {
                 let tier = if let Some(cache) = REGISTRY_CACHE.get() {
                     cache.trust_tier_for(&identity.vid, &identity.pid, &identity.serial)
