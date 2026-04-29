@@ -44,14 +44,15 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     SETUP_DI_REGISTRY_PROPERTY, SP_DEVINFO_DATA,
 };
 #[cfg(windows)]
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, PostQuitMessage,
-    RegisterClassW, RegisterDeviceNotificationW, TranslateMessage, DBT_DEVICEARRIVAL,
-    DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE,
-    DEV_BROADCAST_DEVICEINTERFACE_W, DEV_BROADCAST_HDR, MSG, WINDOW_STYLE, WM_DESTROY,
-    WM_DEVICECHANGE, WNDCLASSW, WS_EX_NOACTIVATE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, PostMessageW,
+    PostQuitMessage, RegisterClassW, RegisterDeviceNotificationW, TranslateMessage,
+    UnregisterDeviceNotification, DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE,
+    DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W,
+    DEV_BROADCAST_HDR, MSG, WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_DEVICECHANGE, WNDCLASSW,
+    WS_EX_NOACTIVATE,
 };
 
 /// Registry property ID for device friendly name (e.g., "Kingston DataTraveler 3.0").
@@ -223,6 +224,13 @@ const GUID_DEVINTERFACE_USB_DEVICE: windows::core::GUID = windows::core::GUID::f
 /// Protected by a `Mutex` so it can be cleared on unregister.
 #[cfg(windows)]
 static DRIVE_DETECTOR: parking_lot::Mutex<Option<&'static UsbDetector>> =
+    parking_lot::Mutex::new(None);
+
+/// Registered device notification handles for cleanup (CR-04).
+/// Set during `register_usb_notifications` and consumed during `unregister_usb_notifications`.
+/// Stored as raw isize values because HDEVNOTIFY is not Send/Sync.
+#[cfg(windows)]
+static NOTIFY_HANDLES: parking_lot::Mutex<Option<(isize, isize)>> =
     parking_lot::Mutex::new(None);
 
 /// Global registry cache reference, set from `service.rs` before the USB window
@@ -888,6 +896,11 @@ pub fn register_usb_notifications(
         return Err(e);
     }
 
+    // Store notification handles for later cleanup (CR-04).
+    let vol_h = vol_handle.unwrap();
+    let usb_h = usb_handle.unwrap();
+    *NOTIFY_HANDLES.lock() = Some((vol_h.0 as isize, usb_h.0 as isize));
+
     // Step 4: run message loop on a thread.
     let thread = std::thread::Builder::new()
         .name("usb-notification".into())
@@ -912,18 +925,36 @@ pub fn register_usb_notifications(
 
 /// Stops the USB notification window and cleans up resources.
 ///
-/// Destroys the window (which implicitly unregisters device notifications),
-/// waits for the notification thread to finish, and clears the global detector.
+/// Unregisters device notifications, posts WM_CLOSE to break the message loop,
+/// waits for the thread to exit, destroys the window, and clears the global
+/// detector reference.
 #[cfg(windows)]
-pub fn unregister_usb_notifications(hwnd: HWND, _thread: std::thread::JoinHandle<()>) {
-    // The USB notification thread runs a blocking GetMessageW loop.
-    // Cross-thread DestroyWindow and PostMessageW(WM_QUIT) are unreliable
-    // for message-only windows.  Since this is only called during service
-    // shutdown, we skip the join — the OS reclaims all resources (window,
-    // device notification handle, thread) when the process exits.
-    let _ = hwnd; // suppress unused warning
+pub fn unregister_usb_notifications(hwnd: HWND, thread: std::thread::JoinHandle<()>) {
+    // Unregister device notifications before destroying the window.
+    if let Some((h_vol, h_usb)) = NOTIFY_HANDLES.lock().take() {
+        unsafe {
+            let _ = UnregisterDeviceNotification(windows::Win32::UI::WindowsAndMessaging::HDEVNOTIFY(h_vol as *mut _));
+            let _ = UnregisterDeviceNotification(windows::Win32::UI::WindowsAndMessaging::HDEVNOTIFY(h_usb as *mut _));
+        }
+    }
+
+    // Post WM_CLOSE to the hidden window to break the message loop.
+    unsafe {
+        let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+
+    // Wait for the thread to exit.
+    if let Err(e) = thread.join() {
+        warn!("USB notification thread panicked: {:?}", e);
+    }
+
+    // Destroy the window.
+    unsafe {
+        let _ = DestroyWindow(hwnd);
+    }
+
     *DRIVE_DETECTOR.lock() = None;
-    debug!("USB device notifications cleanup skipped (process exit imminent)");
+    debug!("USB device notifications cleaned up");
 }
 
 /// Parses a USB device interface path into a best-effort `DeviceIdentity`.
