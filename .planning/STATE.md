@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.6.0
 milestone_name: - Endpoint Hardening
-status: Post-milestone; two phases queued
-last_updated: "2026-04-29T14:55:10.412Z"
-last_activity: 2026-04-29
+status: ready_to_plan
+last_updated: "2026-04-29T16:19:18.527Z"
+last_activity: 2026-04-29 -- Phase 31 execution started
 progress:
   total_phases: 20
-  completed_phases: 17
-  total_plans: 58
-  completed_plans: 55
-  percent: 95
+  completed_phases: 18
+  total_plans: 59
+  completed_plans: 57
+  percent: 90
 ---
 
 # STATE.md — Project Memory
@@ -20,15 +20,15 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** Phase 31 — usb-cm-blocking (UAT paused — deferred pending root cause fix); Phase 32 — USB Scan & Register CLI (COMPLETE)
+**Current focus:** Phase 31 — usb-cm-blocking
 
 ## Current Position
 
-Phase: 31 (UAT paused — deferred pending root cause fix), 32 (COMPLETE)
-Plan: Not started (Phase 31 gap closure)
+Phase: 32
+Plan: Not started
 Milestone: v0.6.0 Endpoint Hardening — COMPLETE
 Phases: 22-30 all shipped; Phase 32 complete
-Status: Post-milestone; Phase 31 queued for UAT completion
+Status: Ready to plan
 Next: Resume Phase 31 UAT or plan gap fixes
 Last activity: 2026-04-29
 
