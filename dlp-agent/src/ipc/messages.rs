@@ -235,4 +235,22 @@ mod tests {
         assert!(!json.contains("source_application"));
         assert!(!json.contains("destination_application"));
     }
+
+    #[test]
+    fn ping_roundtrip() {
+        let msg = Pipe1AgentMsg::Ping;
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"Ping\""), "json was: {json}");
+        let decoded: Pipe1AgentMsg = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, Pipe1AgentMsg::Ping));
+    }
+
+    #[test]
+    fn pong_roundtrip() {
+        let msg = Pipe1UiMsg::Pong;
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"Pong\""), "json was: {json}");
+        let decoded: Pipe1UiMsg = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, Pipe1UiMsg::Pong));
+    }
 }
