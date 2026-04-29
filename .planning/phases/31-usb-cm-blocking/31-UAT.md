@@ -1,15 +1,15 @@
 ---
-status: partial
+status: diagnosed
 phase: 31-usb-cm-blocking
 source:
   - 31-01-SUMMARY.md
 started: "2026-04-29T15:15:00Z"
-updated: "2026-04-29T15:55:00Z"
+updated: "2026-04-29T16:20:00Z"
 ---
 
 ## Current Test
 
-[testing paused — deferred pending root cause fix]
+[diagnosis complete — 1 root cause identified, ready for fix planning]
 
 ## Tests
 
@@ -114,5 +114,16 @@ skipped: 7
   reason: "User reported: Device still shown in Windows Explorer, writable. No USB arrival logs visible. dlp-server offline so registry cache is empty."
   severity: major
   test: 6
-  artifacts: []
-  missing: []
+  root_cause: "GUID_DEVINTERFACE_USB_DEVICE notification is unreliable for USB mass storage devices. The code registers for GUID_DEVINTERFACE_USB_DEVICE to trigger identity capture and tier enforcement, but many USB storage devices only fire GUID_DEVINTERFACE_DISK / GUID_DEVINTERFACE_VOLUME and never fire the USB_DEVICE notification. Phase 32 fixed this same issue by switching to GUID_DEVINTERFACE_DISK + PnP tree walk."
+  artifacts:
+    - path: "dlp-agent/src/detection/usb.rs"
+      issue: "register_usb_notifications only registers for GUID_DEVINTERFACE_VOLUME and GUID_DEVINTERFACE_USB_DEVICE; usb_wndproc only calls on_usb_device_arrival for GUID_DEVINTERFACE_USB_DEVICE"
+    - path: "dlp-common/src/usb.rs"
+      issue: "Phase 32 already contains the correct GUID_DEVINTERFACE_DISK + CM_Get_Parent approach but only for point-in-time enumeration, not event-driven notifications"
+  missing:
+    - "Add GUID_DEVINTERFACE_DISK registration alongside existing notifications"
+    - "Implement disk arrival handler that walks PnP tree (CM_Get_Parent) to find USB ancestor"
+    - "Parse VID/PID/serial from USB ancestor instance ID (same logic as Phase 32 enumerate_connected_usb_devices)"
+    - "Call apply_tier_enforcement from the disk arrival path"
+    - "Handle removal for both GUID_DEVINTERFACE_USB_DEVICE and GUID_DEVINTERFACE_DISK"
+  debug_session: ".planning/debug/usb-device-notification-not-firing.md"
