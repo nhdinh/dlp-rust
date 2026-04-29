@@ -619,6 +619,18 @@ async fn run_loop(
     // Initialise the clipboard listener's audit emit context.
     crate::clipboard::listener::init_emit_context(audit_ctx.clone());
 
+    // ── Disk Enumeration (Phase 33) ───────────────────────────────────────
+    // Initialize the DiskEnumerator and spawn the background enumeration task.
+    // This runs after USB setup so both detectors are available for Phase 36.
+    let disk_enumerator = Arc::new(crate::detection::DiskEnumerator::new());
+    crate::detection::disk::set_disk_enumerator(Arc::clone(&disk_enumerator));
+    crate::detection::disk::spawn_disk_enumeration_task(
+        tokio::runtime::Handle::current(),
+        audit_ctx.clone(),
+        None, // Phase 35 will pass the allowlist TOML path here
+    );
+    info!("disk enumeration task spawned");
+
     let offline_ev = offline.clone();
     let ctx_ev = audit_ctx.clone();
     let session_map_ev = session_map.clone();
