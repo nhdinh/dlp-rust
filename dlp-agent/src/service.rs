@@ -118,6 +118,12 @@ pub fn run_service() -> Result<()> {
     if let Some(ref path) = ui_binary {
         info!(path = %path.display(), "UI binary path resolved");
         crate::ui_spawner::set_ui_binary(path.clone());
+    } else {
+        warn!(
+            "UI binary (dlp-user-ui.exe) not found — toast notifications will not work. \
+             Searched: same directory as agent, DLP_UI_BINARY env var. \
+             Install the UI binary or set DLP_UI_BINARY environment variable."
+        );
     }
 
     // ── Start the health monitor first ───────────────────────────────
@@ -1086,6 +1092,19 @@ pub fn run_console() -> Result<()> {
     // Register as Chrome Content Analysis agent in HKLM (best-effort).
     if let Err(e) = crate::chrome::registry::register_agent() {
         warn!(error = %e, "Chrome HKLM registration failed — continuing");
+    }
+
+    // ── Configure the UI binary path (console mode) ────────────────────────
+    let ui_binary = resolve_ui_binary();
+    if let Some(ref path) = ui_binary {
+        info!(path = %path.display(), "UI binary path resolved");
+        crate::ui_spawner::set_ui_binary(path.clone());
+    } else {
+        warn!(
+            "UI binary (dlp-user-ui.exe) not found — toast notifications will not work. \
+             Searched: same directory as agent, DLP_UI_BINARY env var. \
+             Install the UI binary or set DLP_UI_BINARY environment variable."
+        );
     }
 
     // ── Health monitor first (sets ROUTER state before Pipe 3 clients connect) ──
