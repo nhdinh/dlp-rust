@@ -153,7 +153,12 @@ impl UsbEnforcer {
                     let notify = self.should_notify(drive);
                     return Some(UsbBlockResult {
                         decision: Decision::DENY,
-                        identity: DeviceIdentity::default(),
+                        identity: DeviceIdentity {
+                            vid: "unknown".into(),
+                            pid: "unknown".into(),
+                            serial: "unknown".into(),
+                            description: format!("USB drive {} (identity not captured)", drive),
+                        },
                         tier: UsbTrustTier::Blocked,
                         notify,
                     });
@@ -478,7 +483,10 @@ mod tests {
         let r = result.unwrap();
         assert_eq!(r.decision, Decision::DENY);
         assert_eq!(r.tier, UsbTrustTier::Blocked);
-        assert_eq!(r.identity, DeviceIdentity::default());
+        assert_eq!(r.identity.vid, "unknown");
+        assert_eq!(r.identity.pid, "unknown");
+        assert_eq!(r.identity.serial, "unknown");
+        assert!(r.identity.description.contains("USB drive E"));
         assert!(r.notify); // first call
     }
 
