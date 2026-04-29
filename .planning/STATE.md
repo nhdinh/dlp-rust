@@ -20,16 +20,16 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** Phase 31 — usb-cm-blocking; Phase 32 — USB Scan & Register CLI (context gathered)
+**Current focus:** Phase 31 — usb-cm-blocking (UAT paused — deferred pending root cause fix); Phase 32 — USB Scan & Register CLI (COMPLETE)
 
 ## Current Position
 
-Phase: 31 (in progress), 32 (context ready)
-Plan: Not started (either phase)
+Phase: 31 (UAT paused — deferred pending root cause fix), 32 (COMPLETE)
+Plan: Not started (Phase 31 gap closure)
 Milestone: v0.6.0 Endpoint Hardening — COMPLETE
-Phases: 22-30 all shipped
-Status: Post-milestone; two phases queued
-Next: Plan Phase 31 (`/gsd-plan-phase 31`) or Phase 32 (`/gsd-plan-phase 32`)
+Phases: 22-30 all shipped; Phase 32 complete
+Status: Post-milestone; Phase 31 queued for UAT completion
+Next: Resume Phase 31 UAT or plan gap fixes
 Last activity: 2026-04-29
 
 ## Decisions
