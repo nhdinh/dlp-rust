@@ -44,7 +44,7 @@ Add a "Scan & Register USB" feature to `dlp-admin-cli`: when an admin opens the 
 - **D-07:** Create `dlp-common/src/usb.rs` with `pub fn enumerate_connected_usb_devices() -> Vec<DeviceIdentity>`. This is the single canonical USB scanner shared across crates.
 - **D-08:** The function is `#[cfg(windows)]` only. On non-Windows it returns `vec![]` via a stub. Add `windows` crate features for SetupDi (`Win32_Devices_DeviceAndDriverInstallation`) under `[target.'cfg(windows)'.dependencies]` in `dlp-common/Cargo.toml`.
 - **D-09:** Refactor `parse_usb_device_path` and `setupdi_description_for_device` out of `dlp-agent/src/detection/usb.rs` into this new module. The agent then delegates to `dlp_common::usb::enumerate_connected_usb_devices()` or the shared helpers rather than duplicating them.
-- **D-10:** Enumerate USB mass storage only — use `GUID_DEVINTERFACE_DISK` filtered to removable media (same class the agent tracks), not all USB devices. This avoids listing hubs, HID, audio, etc.
+- **D-10:** Enumerate USB mass storage only — use `GUID_DEVINTERFACE_USB_DEVICE` (the existing proven GUID used by the agent). Research confirmed `GUID_DEVINTERFACE_DISK` paths have a different format incompatible with `parse_usb_device_path`; filter to devices with non-empty VID+PID to exclude hubs and HID devices. This GUID is used in `dlp-agent` today and is tested.
 
 ### Data Fetching
 - **D-11:** On `r` keypress, run two operations concurrently (via `tokio::join!`): `GET /admin/device-registry` (fetch registered devices) and `enumerate_connected_usb_devices()` (local scan). Merge: build a `HashMap<(vid, pid, serial), Option<String>>` where the value is the trust_tier if registered. Display once both complete.

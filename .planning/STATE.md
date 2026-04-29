@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.6.0
 milestone_name: - Endpoint Hardening
-status: completed
-last_updated: "2026-04-29T11:47:55.644Z"
+status: Post-milestone; two phases queued
+last_updated: "2026-04-29T14:55:10.412Z"
 last_activity: 2026-04-29
 progress:
-  total_phases: 19
+  total_phases: 20
   completed_phases: 17
-  total_plans: 55
-  completed_plans: 54
-  percent: 98
+  total_plans: 58
+  completed_plans: 55
+  percent: 95
 ---
 
 # STATE.md — Project Memory

@@ -191,7 +191,6 @@ impl UsbEnforcer {
             })
         }
     }
-
 }
 
 /// Extracts the uppercase drive letter from a Windows file path.

@@ -20,14 +20,20 @@ const PONG_JSON: &str = r#"{"type":"Pong"}"#;
 fn agent_ping_serializes_to_expected_wire_format() {
     let msg = Pipe1AgentMsg::Ping;
     let json = serde_json::to_string(&msg).expect("serialize Ping");
-    assert_eq!(json, PING_JSON, "Ping wire format changed — UI may not recognise it");
+    assert_eq!(
+        json, PING_JSON,
+        "Ping wire format changed — UI may not recognise it"
+    );
 }
 
 #[test]
 fn ui_pong_serializes_to_expected_wire_format() {
     let msg = Pipe1UiMsg::Pong;
     let json = serde_json::to_string(&msg).expect("serialize Pong");
-    assert_eq!(json, PONG_JSON, "Pong wire format changed — agent may not recognise it");
+    assert_eq!(
+        json, PONG_JSON,
+        "Pong wire format changed — agent may not recognise it"
+    );
 }
 
 #[test]
