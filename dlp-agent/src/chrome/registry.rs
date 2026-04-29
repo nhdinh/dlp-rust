@@ -1,47 +1,60 @@
-//! Chrome Enterprise Connector registry helpers.
+//! Chrome Content Analysis agent HKLM self-registration.
 //!
-//! Manages the Windows registry keys that Chrome uses to discover the
-//! Content Analysis agent pipe name and configuration.
+//! Writes the pipe name to the registry so Chrome discovers the agent on
+//! startup.  Registration is idempotent — safe to write on every service
+//! startup.  Failures are logged but never block service start.
 
-#[cfg(windows)]
-use anyhow::{Context, Result};
-
-#[cfg(windows)]
+use anyhow::Result;
+use tracing::{info, warn};
+use windows::core::PCWSTR;
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
-    RegCloseKey, RegCreateKeyExW, RegSetValueExW,
+    RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY_LOCAL_MACHINE, KEY_WRITE,
+    REG_OPTION_NON_VOLATILE, REG_SZ,
 };
 
-#[cfg(windows)]
-use windows::core::PCWSTR;
-
-/// Registry path where Chrome Enterprise Connector settings are stored.
-#[cfg(windows)]
-const CHROME_ENTERPRISE_KEY: &str =
-    r"SOFTWARE\Policies\Google\Chrome\ContentAnalysis\Default";
-
-/// Enables the Chrome Enterprise Content Analysis connector.
+/// Registry subkey path for Chrome third-party CAS agents.
 ///
-/// Writes the `Enabled` DWORD (1) and `PipeName` string to the Chrome
-/// policy registry key so Chrome knows to connect to the agent pipe.
+/// This path may need adjustment based on the exact Chrome Enterprise
+/// version.  See 29-RESEARCH.md Assumption A1 for discussion.
+const REG_KEY_PATH: &str = r"SOFTWARE\Google\Chrome\3rdparty\cas_agents";
+
+/// Registry value name that stores the pipe name.
+const REG_VALUE_NAME: &str = "pipe_name";
+
+/// The pipe name Chrome should connect to.
+const PIPE_NAME: &str = r"\\.\pipe\brcm_chrm_cas";
+
+/// Registers this agent as a Chrome Content Analysis agent in HKLM.
+///
+/// If the `DLP_SKIP_CHROME_REG` environment variable is set to `"1"`,
+/// registration is skipped (used in tests to avoid requiring elevated
+/// privileges).
 ///
 /// # Errors
 ///
-/// Returns an error if the registry key cannot be created or the values
-/// cannot be written.
+/// Returns `Ok(())` even if the registry write fails — service startup
+/// must never be blocked by a registration failure.
 #[cfg(windows)]
-pub fn enable_connector(pipe_name: &str) -> Result<()> {
-    let key_path: Vec<u16> = CHROME_ENTERPRISE_KEY
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-
-    let mut hkey = HKEY::default();
+pub fn register_agent() -> Result<()> {
+    if std::env::var("DLP_SKIP_CHROME_REG").is_ok_and(|v| v == "1") {
+        info!("Chrome registry registration skipped (DLP_SKIP_CHROME_REG=1)");
+        return Ok(());
+    }
 
     unsafe {
-        RegCreateKeyExW(
+        let subkey_wide: Vec<u16> =
+            REG_KEY_PATH.encode_utf16().chain(std::iter::once(0)).collect();
+        let name_wide: Vec<u16> =
+            REG_VALUE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+        let value_wide: Vec<u16> =
+            PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+        let value_bytes: &[u8] =
+            std::slice::from_raw_parts(value_wide.as_ptr().cast(), value_wide.len() * 2);
+
+        let mut hkey = windows::Win32::System::Registry::HKEY::default();
+        let result = RegCreateKeyExW(
             HKEY_LOCAL_MACHINE,
-            PCWSTR::from_raw(key_path.as_ptr()),
+            PCWSTR::from_raw(subkey_wide.as_ptr()),
             0,
             None,
             REG_OPTION_NON_VOLATILE,
@@ -49,95 +62,39 @@ pub fn enable_connector(pipe_name: &str) -> Result<()> {
             None,
             &mut hkey,
             None,
-        )
-        .ok()
-        .context("create Chrome Enterprise registry key")?;
+        );
+        if result.is_err() {
+            warn!(
+                "RegCreateKeyExW failed for HKLM\\{}: {:?} — continuing without registration",
+                REG_KEY_PATH, result
+            );
+            return Ok(());
+        }
 
-        // Write Enabled = 1 (DWORD)
-        let enabled: u32 = 1;
-        let enabled_name: Vec<u16> = "Enabled".encode_utf16().chain(std::iter::once(0)).collect();
-        RegSetValueExW(
+        let result = RegSetValueExW(
             hkey,
-            PCWSTR::from_raw(enabled_name.as_ptr()),
-            0,
-            windows::Win32::System::Registry::REG_DWORD,
-            Some(&enabled.to_le_bytes()),
-        )
-        .ok()
-        .context("write Enabled registry value")?;
-
-        // Write PipeName (REG_SZ)
-        let pipe_name_wide: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
-        let pipe_name_bytes: &[u8] =
-            std::slice::from_raw_parts(pipe_name_wide.as_ptr().cast(), pipe_name_wide.len() * 2);
-        let pipe_name_reg: Vec<u16> = "PipeName".encode_utf16().chain(std::iter::once(0)).collect();
-        RegSetValueExW(
-            hkey,
-            PCWSTR::from_raw(pipe_name_reg.as_ptr()),
+            PCWSTR::from_raw(name_wide.as_ptr()),
             0,
             REG_SZ,
-            Some(pipe_name_bytes),
-        )
-        .ok()
-        .context("write PipeName registry value")?;
-
+            Some(value_bytes),
+        );
         let _ = RegCloseKey(hkey);
+
+        if result.is_err() {
+            warn!(
+                "RegSetValueExW failed for Chrome pipe name: {:?} — continuing without registration",
+                result
+            );
+            return Ok(());
+        }
     }
 
-    Ok(())
-}
-
-/// Disables the Chrome Enterprise Content Analysis connector.
-///
-/// Writes `Enabled` = 0 to the Chrome policy registry key.
-#[cfg(windows)]
-pub fn disable_connector() -> Result<()> {
-    let key_path: Vec<u16> = CHROME_ENTERPRISE_KEY
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-
-    let mut hkey = HKEY::default();
-
-    unsafe {
-        RegCreateKeyExW(
-            HKEY_LOCAL_MACHINE,
-            PCWSTR::from_raw(key_path.as_ptr()),
-            0,
-            None,
-            REG_OPTION_NON_VOLATILE,
-            KEY_WRITE,
-            None,
-            &mut hkey,
-            None,
-        )
-        .ok()
-        .context("open Chrome Enterprise registry key")?;
-
-        let enabled: u32 = 0;
-        let enabled_name: Vec<u16> = "Enabled".encode_utf16().chain(std::iter::once(0)).collect();
-        RegSetValueExW(
-            hkey,
-            PCWSTR::from_raw(enabled_name.as_ptr()),
-            0,
-            windows::Win32::System::Registry::REG_DWORD,
-            Some(&enabled.to_le_bytes()),
-        )
-        .ok()
-        .context("write Enabled=0 registry value")?;
-
-        let _ = RegCloseKey(hkey);
-    }
-
+    info!("Chrome Content Analysis agent registered in HKLM");
     Ok(())
 }
 
 #[cfg(not(windows))]
-pub fn enable_connector(_pipe_name: &str) -> anyhow::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(windows))]
-pub fn disable_connector() -> anyhow::Result<()> {
+pub fn register_agent() -> Result<()> {
+    // No-op on non-Windows platforms (tests).
     Ok(())
 }
