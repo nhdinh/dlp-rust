@@ -10,8 +10,8 @@
 
 ### DISK -- Disk Enumeration, Allowlist, and Blocking
 
-- [ ] **DISK-01**: Agent can enumerate all fixed disks (`DRIVE_FIXED`) at install time or first startup, capturing device instance ID, bus type, model, and drive letter.
-- [ ] **DISK-02**: Agent can distinguish USB-bridged fixed disks (SATA/NVMe in USB enclosures) from genuine internal SATA/NVMe disks via `IOCTL_STORAGE_QUERY_PROPERTY` or PnP tree walk.
+- [x] **DISK-01**: Agent can enumerate all fixed disks (`DRIVE_FIXED`) at install time or first startup, capturing device instance ID, bus type, model, and drive letter.
+- [x] **DISK-02**: Agent can distinguish USB-bridged fixed disks (SATA/NVMe in USB enclosures) from genuine internal SATA/NVMe disks via `IOCTL_STORAGE_QUERY_PROPERTY` or PnP tree walk.
 - [ ] **DISK-03**: Agent persists the disk allowlist to `agent-config.toml` with device instance ID as canonical key; drive letter is informational only.
 - [ ] **DISK-04**: Agent blocks I/O (`FileAction::Create`/`Write`/`Move`) to unregistered fixed disks at runtime via pre-ABAC enforcement in `run_event_loop`.
 - [ ] **DISK-05**: Agent handles `WM_DEVICECHANGE` `DBT_DEVICEARRIVAL`/`DBT_DEVICEREMOVECOMPLETE` for `GUID_DEVINTERFACE_DISK` to detect new fixed disk arrivals and removals.
@@ -30,7 +30,7 @@
 
 ### AUDIT -- Audit Events and Compliance
 
-- [ ] **AUDIT-01**: Disk discovery events are emitted at install time, capturing all enumerated disks with their identity and encryption status.
+- [x] **AUDIT-01**: Disk discovery events are emitted at install time, capturing all enumerated disks with their identity and encryption status.
 - [ ] **AUDIT-02**: Disk block events include disk identity fields (instance_id, bus_type, model, drive letter) when an unregistered fixed disk is blocked.
 - [ ] **AUDIT-03**: Admin override actions (add/remove disk from registry) are emitted as `EventType::AdminAction` audit events.
 
@@ -60,8 +60,8 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DISK-01 | 33 | Pending |
-| DISK-02 | 33 | Pending |
+| DISK-01 | 33 | Complete |
+| DISK-02 | 33 | Complete |
 | DISK-03 | 35 | Pending |
 | DISK-04 | 36 | Pending |
 | DISK-05 | 36 | Pending |
@@ -71,7 +71,7 @@
 | ADMIN-02 | 37 | Pending |
 | ADMIN-03 | 37 | Pending |
 | ADMIN-04 | 38 | Pending |
-| AUDIT-01 | 33 | Pending |
+| AUDIT-01 | 33 | Complete |
 | AUDIT-02 | 36 | Pending |
 | AUDIT-03 | 37 | Pending |
 
