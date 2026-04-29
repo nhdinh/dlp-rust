@@ -1,29 +1,23 @@
 ---
 slug: usb-blocked-not-enforced
 status: resolved
-trigger: "a USB registered as blocked would still allow read/write"
+trigger: "USB enforcement not triggers"
 created: 2026-04-23
 updated: 2026-04-25
 source_phase: 28-admin-tui-screens (UAT check 1)
 ---
 
-# Debug Session: USB blocked tier not enforced
+# Debug Session: USB blocked/readonly tier not enforced
 
 ## Symptoms
 
 <!-- DATA_START -->
+
 - expected: A USB registered via the Phase 28 TUI with trust_tier=blocked prevents all read/write/delete operations on the agent host.
 - actual: The USB device is registered successfully, but after the dlp-agent re-polls the registry, the device is still usable for read, write, AND delete — as if the registration had no effect.
 - error_messages: None reported. No block dialog, no agent log entry noting the blocked device.
 - timeline: Surfaced during Phase 28 UAT on 2026-04-23. Phase 28 is the first release to add a TUI-driven USB registration flow (Main Menu → Devices & Origins → Device Registry → `r`).
-- reproduction:
-    1. Start dlp-server and dlp-admin-cli. Log in.
-    2. Navigate: Main Menu → Devices & Origins → Device Registry → press `r`.
-    3. Enter VID `0951`, PID `1666`, serial `TEST001`, description `Test USB Drive`.
-    4. On DeviceTierPicker, select `blocked` (index 0) — Enter.
-    5. Wait for dlp-agent to re-poll the registry (or restart the agent).
-    6. Plug in the matching USB device and attempt read / write / delete.
-    7. Observed: all three actions succeed. Expected: all three blocked.
+- reproduction: 1. Start dlp-server and dlp-admin-cli. Log in. 2. Navigate: Main Menu → Devices & Origins → Device Registry → press `r`. 3. Enter VID `0951`, PID `1666`, serial `TEST001`, description `Test USB Drive`. 4. On DeviceTierPicker, select `blocked` (index 0) — Enter. 5. Wait for dlp-agent to re-poll the registry (or restart the agent). 6. Plug in the matching USB device and attempt read / write / delete. 7. Observed: all three actions succeed. Expected: all three blocked.
 <!-- DATA_END -->
 
 ## Current Focus

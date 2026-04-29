@@ -71,6 +71,14 @@ function Write-Status {
     }
 }
 
+function Purge-Log {
+    <# Deletes all files in the log directory. #>
+    if (Test-Path $LogDir) {
+        Get-ChildItem -Path $LogDir -File | Remove-Item -Force
+        Write-Status "Purged log directory: $LogDir" -Level INFO
+    }
+}
+
 function Get-CurrentService {
     <# Returns a ServiceController or $null if not installed. #>
     Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -113,6 +121,7 @@ function Wait-ForServiceState {
 
 $ConfigDir = "$env:ProgramData\DLP"
 $ConfigFile = "$ConfigDir\agent-config.toml"
+$LogDir = "$ConfigDir\logs"
 
 function Write-AgentConfig {
     <# Writes or updates agent-config.toml with the server URL. #>
@@ -200,6 +209,9 @@ function Start-DlpAgentService {
         Write-Status "Service is already running (PID $($svc.ServiceName))." -Level INFO
         return
     }
+
+    # delete log before starting so it's fresh for the new session — avoids confusion from old logs and ensures we have write permissions to the log dir before starting the service.
+    Purge-Log
 
     Write-Status "Starting service '$ServiceName'..." -Level INFO
     $null = Start-Service -Name $ServiceName -ErrorAction Stop
