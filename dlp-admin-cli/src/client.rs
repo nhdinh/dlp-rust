@@ -124,6 +124,7 @@ impl EngineClient {
     ///
     /// Unlike [`for_test`], this allows the caller to specify a real mock
     /// server address (e.g. `http://127.0.0.1:12345`).
+    #[allow(dead_code)]
     pub fn for_test_with_url(base_url: String) -> Self {
         let inner = Client::builder()
             .build()
