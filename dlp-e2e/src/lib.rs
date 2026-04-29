@@ -122,7 +122,9 @@ pub mod mock_engine {
             post(move |Json(_): Json<EvaluateRequest>| async move { Json(response.clone()) }),
         );
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock server");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock server");
         let addr = listener.local_addr().expect("get local addr");
         let handle = tokio::spawn(async move {
             axum::serve(listener, app).await.expect("mock server serve");
@@ -155,7 +157,9 @@ pub mod mock_engine {
             }),
         );
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock server");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock server");
         let addr = listener.local_addr().expect("get local addr");
         let handle = tokio::spawn(async move {
             axum::serve(listener, app).await.expect("mock server serve");

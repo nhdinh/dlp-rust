@@ -158,10 +158,7 @@ fn register_blocked_device(app: &mut App) {
 
     // Now at DeviceTierPicker with selected == 0 (blocked).
     assert!(
-        matches!(
-            app.screen,
-            Screen::DeviceTierPicker { selected: 0, .. }
-        ),
+        matches!(app.screen, Screen::DeviceTierPicker { selected: 0, .. }),
         "expected DeviceTierPicker at index 0 (blocked) after entering description"
     );
 

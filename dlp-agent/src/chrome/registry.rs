@@ -6,7 +6,10 @@
 
 use anyhow::Result;
 use tracing::{info, warn};
+
+#[cfg(windows)]
 use windows::core::PCWSTR;
+#[cfg(windows)]
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY_LOCAL_MACHINE, KEY_WRITE,
     REG_OPTION_NON_VOLATILE, REG_SZ,
@@ -42,12 +45,15 @@ pub fn register_agent() -> Result<()> {
     }
 
     unsafe {
-        let subkey_wide: Vec<u16> =
-            REG_KEY_PATH.encode_utf16().chain(std::iter::once(0)).collect();
-        let name_wide: Vec<u16> =
-            REG_VALUE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
-        let value_wide: Vec<u16> =
-            PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+        let subkey_wide: Vec<u16> = REG_KEY_PATH
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let name_wide: Vec<u16> = REG_VALUE_NAME
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let value_wide: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
         let value_bytes: &[u8] =
             std::slice::from_raw_parts(value_wide.as_ptr().cast(), value_wide.len() * 2);
 
@@ -97,4 +103,20 @@ pub fn register_agent() -> Result<()> {
 pub fn register_agent() -> Result<()> {
     // No-op on non-Windows platforms (tests).
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_register_agent_skipped_with_env_var() {
+        // Setting the env var should cause register_agent to return Ok
+        // immediately without touching the registry.
+        std::env::set_var("DLP_SKIP_CHROME_REG", "1");
+        let result = register_agent();
+        assert!(result.is_ok());
+        // Clean up.
+        std::env::remove_var("DLP_SKIP_CHROME_REG");
+    }
 }

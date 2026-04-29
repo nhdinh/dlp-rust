@@ -617,12 +617,10 @@ mod tests {
 
         let mock_app = axum::Router::new().route(
             "/webhook",
-            axum::routing::post(
-                move |Json(body): Json<serde_json::Value>| async move {
-                    let _ = tx.send(body).await;
-                    StatusCode::OK
-                },
-            ),
+            axum::routing::post(move |Json(body): Json<serde_json::Value>| async move {
+                let _ = tx.send(body).await;
+                StatusCode::OK
+            }),
         );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");

@@ -9,15 +9,21 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use prost::Message;
 use tracing::{debug, error, info, warn};
+
+#[cfg(windows)]
 use windows::core::PCWSTR;
+#[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
 use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+#[cfg(windows)]
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, NAMED_PIPE_MODE,
     PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 
 use super::cache::ManagedOriginsCache;
+#[cfg(windows)]
 use super::frame::{read_frame, write_frame};
 use super::proto::{ContentAnalysisRequest, ContentAnalysisResponse};
 
@@ -49,6 +55,7 @@ pub fn set_origins_cache(cache: Arc<ManagedOriginsCache>) {
 /// Blocks the calling thread indefinitely (or until a fatal error).  This
 /// function is intended to be run on a dedicated `std::thread` (not a
 /// Tokio task) because `ConnectNamedPipeW` and `ReadFile` are synchronous.
+#[cfg(windows)]
 pub fn serve() -> Result<()> {
     info!(pipe = CHROME_PIPE_NAME, "Chrome pipe server starting");
     let first_pipe = create_pipe()?;
@@ -56,12 +63,14 @@ pub fn serve() -> Result<()> {
 }
 
 /// Combines the pipe-mode flags into a single `NAMED_PIPE_MODE` value.
+#[cfg(windows)]
 fn pipe_mode() -> NAMED_PIPE_MODE {
     PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT
 }
 
 /// Accept loop: waits for Chrome clients, handles them, then creates a new
 /// pipe instance for the next client.
+#[cfg(windows)]
 fn accept_loop(first_pipe: HANDLE) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
@@ -97,12 +106,14 @@ fn accept_loop(first_pipe: HANDLE) -> Result<()> {
 }
 
 /// Creates a new named pipe instance with the standard IPC DACL.
+#[cfg(windows)]
 fn create_pipe() -> Result<HANDLE> {
-    let name_wide: Vec<u16> =
-        CHROME_PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+    let name_wide: Vec<u16> = CHROME_PIPE_NAME
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
 
-    let sec = crate::ipc::pipe_security::PipeSecurity::new()
-        .context("pipe security descriptor")?;
+    let sec = crate::ipc::pipe_security::PipeSecurity::new().context("pipe security descriptor")?;
 
     let pipe = unsafe {
         CreateNamedPipeW(
@@ -127,6 +138,7 @@ fn create_pipe() -> Result<HANDLE> {
 }
 
 /// Handles a single Chrome client connection.
+#[cfg(windows)]
 fn handle_client(pipe: HANDLE) -> Result<()> {
     loop {
         let frame = match read_frame(pipe) {
@@ -164,6 +176,7 @@ fn handle_client(pipe: HANDLE) -> Result<()> {
 }
 
 /// Closes and disconnects a pipe handle.
+#[cfg(windows)]
 fn cleanup_pipe(pipe: HANDLE) -> Result<()> {
     unsafe {
         let _ = DisconnectNamedPipe(pipe);
@@ -225,16 +238,13 @@ fn dispatch_request(request: &ContentAnalysisRequest) -> ContentAnalysisResponse
         return response;
     }
 
-    let source_url = request
-        .request_data
-        .as_ref()
-        .and_then(|d| d.url.as_ref());
+    let source_url = request.request_data.as_ref().and_then(|d| d.url.as_ref());
     let source_origin = source_url.and_then(|u| to_origin(u));
 
-    let should_block = source_origin.as_ref().map_or(false, |origin| {
+    let should_block = source_origin.as_ref().is_some_and(|origin| {
         ORIGINS_CACHE
             .get()
-            .map_or(false, |cache| cache.is_managed(origin))
+            .is_some_and(|cache| cache.is_managed(origin))
     });
 
     if should_block {
@@ -281,10 +291,7 @@ fn make_result_block() -> super::proto::content_analysis_response::Result {
 ///
 /// The event carries `source_origin` and `destination_origin` fields.
 /// Clipboard content (`text_content`) is NEVER logged.
-fn emit_chrome_block_audit(
-    source_origin: &Option<String>,
-    destination_origin: Option<String>,
-) {
+fn emit_chrome_block_audit(source_origin: &Option<String>, destination_origin: Option<String>) {
     let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Block,
         "CHROME".to_string(),
@@ -300,8 +307,7 @@ fn emit_chrome_block_audit(
     .with_destination_origin(destination_origin);
 
     let ctx = crate::audit_emitter::EmitContext {
-        agent_id: std::env::var("DLP_AGENT_ID")
-            .unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
+        agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
         session_id: 0,
         user_sid: "CHROME".to_string(),
         user_name: "CHROME".to_string(),
@@ -309,4 +315,166 @@ fn emit_chrome_block_audit(
     };
 
     crate::audit_emitter::emit_audit(&ctx, &mut event);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ------------------------------------------------------------------
+    // to_origin
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_to_origin_basic_https() {
+        assert_eq!(
+            to_origin("https://company.sharepoint.com/path?x=1"),
+            Some("https://company.sharepoint.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_to_origin_uppercase_normalised() {
+        assert_eq!(
+            to_origin("HTTPS://EXAMPLE.COM/"),
+            Some("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_to_origin_strips_port() {
+        assert_eq!(
+            to_origin("https://example.com:443/foo"),
+            Some("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_to_origin_no_scheme_returns_none() {
+        assert_eq!(to_origin("example.com/path"), None);
+    }
+
+    #[test]
+    fn test_to_origin_empty_string_returns_none() {
+        assert_eq!(to_origin(""), None);
+    }
+
+    // ------------------------------------------------------------------
+    // dispatch_request — allow cases
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_dispatch_non_clipboard_allows() {
+        let request = ContentAnalysisRequest {
+            request_token: Some("tok-1".to_string()),
+            analysis_connector: Some(3), // BULK_DATA_ENTRY
+            request_data: None,
+            tags: vec![],
+            reason: Some(2), // DRAG_AND_DROP — not clipboard
+            content_data: None,
+        };
+        let response = dispatch_request(&request);
+        assert_eq!(response.request_token, Some("tok-1".to_string()));
+        assert_eq!(response.results.len(), 1);
+        let rule = &response.results[0].triggered_rules[0];
+        assert_eq!(rule.action, Some(1)); // REPORT_ONLY = allow
+    }
+
+    #[test]
+    fn test_dispatch_clipboard_no_url_allows() {
+        let request = ContentAnalysisRequest {
+            request_token: Some("tok-2".to_string()),
+            analysis_connector: Some(3),
+            request_data: Some(super::super::proto::ContentMetaData {
+                url: None,
+                filename: None,
+                digest: None,
+                email: None,
+                tab_title: None,
+            }),
+            tags: vec![],
+            reason: Some(1), // CLIPBOARD_PASTE
+            content_data: None,
+        };
+        let response = dispatch_request(&request);
+        assert_eq!(response.results.len(), 1);
+        let rule = &response.results[0].triggered_rules[0];
+        assert_eq!(rule.action, Some(1)); // allow
+    }
+
+    // ------------------------------------------------------------------
+    // dispatch_request — block case (with seeded cache)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_dispatch_managed_origin_blocks() {
+        let cache = Arc::new(ManagedOriginsCache::new());
+        cache.seed_for_test("https://sharepoint.com");
+        let _ = ORIGINS_CACHE.set(cache);
+
+        let request = ContentAnalysisRequest {
+            request_token: Some("tok-3".to_string()),
+            analysis_connector: Some(3),
+            request_data: Some(super::super::proto::ContentMetaData {
+                url: Some("https://sharepoint.com/documents/file.xlsx".to_string()),
+                filename: None,
+                digest: None,
+                email: None,
+                tab_title: None,
+            }),
+            tags: vec![],
+            reason: Some(1), // CLIPBOARD_PASTE
+            content_data: None,
+        };
+        let response = dispatch_request(&request);
+        assert_eq!(response.results.len(), 1);
+        let rule = &response.results[0].triggered_rules[0];
+        assert_eq!(rule.action, Some(3)); // BLOCK = 3
+    }
+
+    #[test]
+    fn test_dispatch_unmanaged_origin_allows() {
+        let cache = Arc::new(ManagedOriginsCache::new());
+        cache.seed_for_test("https://sharepoint.com");
+        let _ = ORIGINS_CACHE.set(cache);
+
+        let request = ContentAnalysisRequest {
+            request_token: Some("tok-4".to_string()),
+            analysis_connector: Some(3),
+            request_data: Some(super::super::proto::ContentMetaData {
+                url: Some("https://example.com/page.html".to_string()),
+                filename: None,
+                digest: None,
+                email: None,
+                tab_title: None,
+            }),
+            tags: vec![],
+            reason: Some(1), // CLIPBOARD_PASTE
+            content_data: None,
+        };
+        let response = dispatch_request(&request);
+        assert_eq!(response.results.len(), 1);
+        let rule = &response.results[0].triggered_rules[0];
+        assert_eq!(rule.action, Some(1)); // allow
+    }
+
+    // ------------------------------------------------------------------
+    // make_result helpers
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_make_result_allow_has_report_only_action() {
+        let result = make_result_allow();
+        assert_eq!(result.status, Some(1)); // SUCCESS
+        assert_eq!(result.triggered_rules.len(), 1);
+        assert_eq!(result.triggered_rules[0].action, Some(1)); // REPORT_ONLY
+    }
+
+    #[test]
+    fn test_make_result_block_has_block_action() {
+        let result = make_result_block();
+        assert_eq!(result.status, Some(1)); // SUCCESS
+        assert_eq!(result.triggered_rules.len(), 1);
+        assert_eq!(result.triggered_rules[0].action, Some(3)); // BLOCK
+    }
 }

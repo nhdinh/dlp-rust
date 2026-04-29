@@ -433,10 +433,10 @@ mod tests {
     ///
     /// The device triple is present in the USB detector's drive-letter map
     /// (the drive letter IS known), but the VID/PID/serial are NOT in the
-    /// device registry cache. `trust_tier_for` returns `ReadOnly` as the
-    /// default — reads are allowed, writes are denied.
+    /// device registry cache. `trust_tier_for` returns `Blocked` as the
+    /// default — all operations are denied (CLAUDE.md section 3.1, Zero Trust).
     #[test]
-    fn test_unregistered_device_defaults_to_read_only() {
+    fn test_unregistered_device_defaults_to_blocked() {
         // Detector knows about drive E (device identity present), but the
         // registry has never been seeded with this VID/PID/serial.
         let detector = make_detector(vec![('E', "DEAD", "BEEF", "UNREGISTERED")]);
@@ -449,9 +449,10 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(result.unwrap().decision, Decision::DENY);
 
-        // Read must be allowed.
-        let result = enforcer.check("E:\\file.txt", &read_action());
-        assert!(result.is_none());
+        // Read must also be denied (default-deny for unknown devices).
+        let result = enforcer.check("E:\\file.txt", &read_action()).unwrap();
+        assert_eq!(result.decision, Decision::DENY);
+        assert_eq!(result.tier, UsbTrustTier::Blocked);
     }
 
     /// D-09: path starting with a non-ASCII-alphabetic character returns None.
@@ -603,7 +604,10 @@ mod tests {
         let enforcer = UsbEnforcer::new(detector, registry);
         assert!(enforcer.check("E:\\file.txt", &read_action()).is_some());
         assert_eq!(
-            enforcer.check("E:\\file.txt", &read_action()).unwrap().decision,
+            enforcer
+                .check("E:\\file.txt", &read_action())
+                .unwrap()
+                .decision,
             Decision::DENY
         );
     }

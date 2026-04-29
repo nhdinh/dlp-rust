@@ -447,13 +447,11 @@ async fn run_loop(
     crate::chrome::handler::set_origins_cache(Arc::clone(&origins_cache));
     let (origins_shutdown_tx, origins_shutdown_rx) = tokio::sync::watch::channel(false);
     let _origins_poll_handle = if let Some(ref sc) = server_client {
-        Some(
-            crate::chrome::cache::ManagedOriginsCache::spawn_poll_task(
-                Arc::clone(&origins_cache),
-                sc.clone(),
-                origins_shutdown_rx,
-            ),
-        )
+        Some(crate::chrome::cache::ManagedOriginsCache::spawn_poll_task(
+            Arc::clone(&origins_cache),
+            sc.clone(),
+            origins_shutdown_rx,
+        ))
     } else {
         drop(origins_shutdown_rx);
         None
@@ -1173,13 +1171,11 @@ async fn async_run_console() -> Result<()> {
     crate::chrome::handler::set_origins_cache(Arc::clone(&origins_cache));
     let (origins_shutdown_tx, origins_shutdown_rx) = tokio::sync::watch::channel(false);
     let _origins_poll_handle = if let Some(ref sc) = server_client {
-        Some(
-            crate::chrome::cache::ManagedOriginsCache::spawn_poll_task(
-                Arc::clone(&origins_cache),
-                sc.clone(),
-                origins_shutdown_rx,
-            ),
-        )
+        Some(crate::chrome::cache::ManagedOriginsCache::spawn_poll_task(
+            Arc::clone(&origins_cache),
+            sc.clone(),
+            origins_shutdown_rx,
+        ))
     } else {
         drop(origins_shutdown_rx);
         None
