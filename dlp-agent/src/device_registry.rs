@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use dlp_common::UsbTrustTier;
 use parking_lot::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 // Only import ServerClient on Windows (where server_client module exists).
 #[cfg(windows)]
@@ -63,7 +63,14 @@ impl DeviceRegistryCache {
     /// The [`UsbTrustTier`] for the device, or [`UsbTrustTier::Blocked`] if unknown.
     #[must_use]
     pub fn trust_tier_for(&self, vid: &str, pid: &str, serial: &str) -> UsbTrustTier {
-        let key = (vid.to_string(), pid.to_string(), serial.to_string());
+        // Normalise to lowercase to match parse_usb_device_path (which lowercases
+        // VID/PID but leaves serial as-is from dbcc_name) and handle users who
+        // typed the serial in uppercase in the admin TUI.
+        let key = (
+            vid.to_ascii_lowercase(),
+            pid.to_ascii_lowercase(),
+            serial.to_ascii_lowercase(),
+        );
         self.cache
             .read()
             .get(&key)
@@ -86,7 +93,11 @@ impl DeviceRegistryCache {
     /// * `serial` - Device serial number string.
     #[must_use]
     pub fn has_device(&self, vid: &str, pid: &str, serial: &str) -> bool {
-        let key = (vid.to_string(), pid.to_string(), serial.to_string());
+        let key = (
+            vid.to_ascii_lowercase(),
+            pid.to_ascii_lowercase(),
+            serial.to_ascii_lowercase(),
+        );
         self.cache.read().contains_key(&key)
     }
 
@@ -119,13 +130,20 @@ impl DeviceRegistryCache {
                                 return None;
                             }
                         };
-                        Some(((e.vid, e.pid, e.serial), tier))
+                        Some((
+                            (
+                                e.vid.to_ascii_lowercase(),
+                                e.pid.to_ascii_lowercase(),
+                                e.serial.to_ascii_lowercase(),
+                            ),
+                            tier,
+                        ))
                     })
                     .collect();
                 let count = new_map.len();
                 // Atomic replacement: write lock held only for the swap.
                 *self.cache.write() = new_map;
-                debug!(count, "device registry cache refreshed");
+                info!(count, "device registry cache refreshed");
             }
             Err(e) => {
                 // Fail-safe: retain stale cache on server error (D-10).
@@ -199,10 +217,44 @@ impl DeviceRegistryCache {
     /// * `serial` - Device serial number string.
     /// * `tier` - Trust tier to associate with this device key.
     #[doc(hidden)]
-    pub fn seed_for_test(&self, vid: &str, pid: &str, serial: &str, tier: UsbTrustTier) {
+    /// Returns all registered serials for a given VID/PID pair (both lowercase).
+    ///
+    /// Used only for diagnostic logging when a device arrives but its serial is
+    /// not found in the cache — helps surface registration mismatches without
+    /// requiring the operator to query the admin TUI.
+    #[must_use]
+    pub fn serials_for_vid_pid(&self, vid: &str, pid: &str) -> Vec<String> {
+        let vid_lc = vid.to_ascii_lowercase();
+        let pid_lc = pid.to_ascii_lowercase();
         self.cache
-            .write()
-            .insert((vid.to_string(), pid.to_string(), serial.to_string()), tier);
+            .read()
+            .keys()
+            .filter(|(v, p, _)| *v == vid_lc && *p == pid_lc)
+            .map(|(_, _, s)| s.clone())
+            .collect()
+    }
+
+    /// Returns the number of entries currently in the cache.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.cache.read().len()
+    }
+
+    /// Returns `true` if the cache contains no entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.cache.read().is_empty()
+    }
+
+    pub fn seed_for_test(&self, vid: &str, pid: &str, serial: &str, tier: UsbTrustTier) {
+        self.cache.write().insert(
+            (
+                vid.to_ascii_lowercase(),
+                pid.to_ascii_lowercase(),
+                serial.to_ascii_lowercase(),
+            ),
+            tier,
+        );
     }
 }
 
@@ -223,13 +275,10 @@ mod tests {
 
     #[test]
     fn test_trust_tier_for_known_device_returns_tier() {
-        // Arrange: seed a known device
+        // Arrange: seed a known device (keys are stored lowercase per cache invariant)
         let cache = DeviceRegistryCache::new();
-        cache.cache.write().insert(
-            ("0951".to_string(), "1666".to_string(), "ABC".to_string()),
-            UsbTrustTier::ReadOnly,
-        );
-        // Act + Assert: known device returns its tier
+        cache.seed_for_test("0951", "1666", "ABC", UsbTrustTier::ReadOnly);
+        // Act + Assert: lookup normalises caller's case to match stored key
         assert_eq!(
             cache.trust_tier_for("0951", "1666", "ABC"),
             UsbTrustTier::ReadOnly
@@ -240,10 +289,7 @@ mod tests {
     fn test_trust_tier_for_unknown_device_returns_blocked() {
         // Arrange: seed a device, then look up a different serial
         let cache = DeviceRegistryCache::new();
-        cache.cache.write().insert(
-            ("0951".to_string(), "1666".to_string(), "ABC".to_string()),
-            UsbTrustTier::FullAccess,
-        );
+        cache.seed_for_test("0951", "1666", "ABC", UsbTrustTier::FullAccess);
         // Act + Assert: different serial -> Blocked (not in cache)
         assert_eq!(
             cache.trust_tier_for("0951", "1666", "DIFFERENT"),
