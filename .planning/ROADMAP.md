@@ -7,6 +7,7 @@
 - v0.4.0 Policy Authoring -- Phases 13-17 (shipped 2026-04-20)
 - v0.5.0 Boolean Logic -- Phases 18-21 (shipped 2026-04-21)
 - v0.6.0 Endpoint Hardening -- Phases 22-30 (shipped 2026-04-29)
+- v0.7.0 Disk Exfiltration Prevention -- Phases 33-38 (in progress)
 
 ## Phases
 
@@ -31,6 +32,84 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 
 Phase details and requirement outcomes archived at `.planning/milestones/v0.6.0-ROADMAP.md` and `.planning/milestones/v0.6.0-REQUIREMENTS.md`. Application-aware DLP (APP-01..06), Chrome Enterprise Connector browser boundary (BRW-01..03), USB device control with toast notification (USB-01..04), and Automated UAT Infrastructure (Phase 30) -- all 13 requirements delivered across 9 phases (22-30).
 </details>
+
+## v0.7.0 - Disk Exfiltration Prevention (In Progress)
+
+**Milestone Goal:** Prevent data exfiltration via unregistered fixed disks by establishing an install-time disk allowlist with encryption verification.
+
+- [ ] **Phase 33: Disk Enumeration** - Agent discovers and accurately classifies all fixed disks with device identity and bus type
+- [ ] **Phase 34: BitLocker Verification** - Agent verifies BitLocker encryption status for each enumerated fixed disk
+- [ ] **Phase 35: Disk Allowlist Persistence** - Agent persists disk allowlist to TOML and loads it across restarts
+- [ ] **Phase 36: Disk Enforcement** - Agent blocks I/O to unregistered fixed disks and handles device arrivals/removals
+- [ ] **Phase 37: Server-Side Disk Registry** - Admin can centrally manage disk allowlist via REST API
+- [ ] **Phase 38: Admin TUI Disk Registry** - Admin can manage disk registry through the interactive TUI
+
+## Phase Details
+
+### Phase 33: Disk Enumeration
+**Goal**: Agent can discover and accurately classify all fixed disks with device identity and bus type
+**Depends on**: Nothing (first phase of v0.7.0)
+**Requirements**: DISK-01, DISK-02, AUDIT-01
+**Success Criteria** (what must be TRUE):
+  1. Agent enumerates all fixed disks at install time or first startup, capturing device instance ID, bus type, model, and drive letter
+  2. Agent correctly distinguishes USB-bridged SATA/NVMe enclosures from genuine internal disks via IOCTL_STORAGE_QUERY_PROPERTY or PnP tree walk
+  3. Disk discovery events are emitted with full identity (instance_id, bus_type, model, drive_letter) and timestamp
+**Plans**: TBD
+
+### Phase 34: BitLocker Verification
+**Goal**: Agent can verify encryption status of all enumerated fixed disks
+**Depends on**: Phase 33
+**Requirements**: CRYPT-01, CRYPT-02
+**Success Criteria** (what must be TRUE):
+  1. Agent queries BitLocker encryption status via WMI Win32_EncryptableVolume for each enumerated fixed disk
+  2. Unencrypted disks are flagged in the audit log with a warning severity; admin decides allow/block via allowlist (not hard-coded block)
+  3. Encryption status is available for admin review via audit events
+**Plans**: TBD
+
+### Phase 35: Disk Allowlist Persistence
+**Goal**: Agent persists the disk allowlist and loads it across restarts
+**Depends on**: Phase 33
+**Requirements**: DISK-03
+**Success Criteria** (what must be TRUE):
+  1. Agent writes enumerated disks to [disk_allowlist] section in agent-config.toml with device instance ID as canonical key
+  2. Agent loads the allowlist from TOML at startup into an in-memory RwLock cache
+  3. Drive letter is stored as informational metadata only; device instance ID is the canonical identity key
+**Plans**: TBD
+
+### Phase 36: Disk Enforcement
+**Goal**: Agent blocks I/O to unregistered fixed disks and handles device arrivals/removals
+**Depends on**: Phase 35
+**Requirements**: DISK-04, DISK-05, AUDIT-02
+**Success Criteria** (what must be TRUE):
+  1. Agent blocks FileAction::Create / Write / Move to unregistered fixed disks at runtime via pre-ABAC enforcement in run_event_loop
+  2. Agent handles WM_DEVICECHANGE DBT_DEVICEARRIVAL / DBT_DEVICEREMOVECOMPLETE for GUID_DEVINTERFACE_DISK to detect new fixed disk arrivals and removals
+  3. Disk block events include disk identity fields (instance_id, bus_type, model, drive_letter) when an unregistered fixed disk is blocked
+  4. Agent evaluates newly arrived disks against the allowlist and blocks or allows based on registration status
+**Plans**: TBD
+
+### Phase 37: Server-Side Disk Registry
+**Goal**: Admin can centrally manage disk allowlist across the fleet via REST API
+**Depends on**: Phase 34
+**Requirements**: ADMIN-01, ADMIN-02, ADMIN-03, AUDIT-03
+**Success Criteria** (what must be TRUE):
+  1. Server stores disk registry in SQLite with agent_id, instance_id, bus_type, encrypted, model, and registered_at columns
+  2. Admin can list all registered disks across the fleet via GET /admin/disk-registry
+  3. Admin can add a disk to the allowlist via POST /admin/disk-registry
+  4. Admin can remove a disk from the allowlist via DELETE /admin/disk-registry/{id}
+  5. Admin override actions (add/remove disk from registry) are emitted as EventType::AdminAction audit events
+**Plans**: TBD
+
+### Phase 38: Admin TUI Disk Registry
+**Goal**: Admin can manage disk registry through the interactive TUI
+**Depends on**: Phase 37
+**Requirements**: ADMIN-04
+**Success Criteria** (what must be TRUE):
+  1. Admin can navigate to a "Disk Registry" screen under the System menu in dlp-admin-cli
+  2. Admin can view all registered disks in a scrollable table with identity and encryption status
+  3. Admin can add a new disk entry through a structured form
+  4. Admin can remove a disk entry with a confirmation prompt
+**Plans**: TBD
+**UI hint**: yes
 
 ## Progress
 
@@ -69,6 +148,12 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.6.0-
 | 29 | Chrome Enterprise Connector | v0.6.0 | 4/4 | Complete | 2026-04-29 |
 | 30 | Automated UAT Infrastructure | v0.6.0 | 10/10 | Complete | 2026-04-29 |
 | 99 | Refactor DB Layer to Repository + Unit of Work | v0.3.0 | 3/3 | Complete | 2026-04-15 |
+| 33 | Disk Enumeration | v0.7.0 | 0/TBD | Not started | - |
+| 34 | BitLocker Verification | v0.7.0 | 0/TBD | Not started | - |
+| 35 | Disk Allowlist Persistence | v0.7.0 | 0/TBD | Not started | - |
+| 36 | Disk Enforcement | v0.7.0 | 0/TBD | Not started | - |
+| 37 | Server-Side Disk Registry | v0.7.0 | 0/TBD | Not started | - |
+| 38 | Admin TUI Disk Registry | v0.7.0 | 0/TBD | Not started | - |
 
 ## v0.3.0 - Operational Hardening (Shipped)
 
