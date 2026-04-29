@@ -1,304 +1,274 @@
-# Technology Stack — v0.6.0 Endpoint Hardening
+# Technology Stack — v0.7.0 Disk Exfiltration Prevention
 
 **Project:** dlp-rust
-**Milestone:** v0.6.0 — Application-Aware DLP, Browser Boundary, USB Device Identity
-**Researched:** 2026-04-21
-**Scope:** New Win32 capabilities only — Win32 process identity, Authenticode signature verification,
-USB SetupDi enumeration, Chrome Enterprise Connector protocol, Windows toast notifications.
-Existing capabilities (axum 0.8, rusqlite, ratatui, windows 0.58, iced, JWT, r2d2) are NOT
-re-researched.
+**Milestone:** v0.7.0 — Install-Time Fixed Disk Allowlist with BitLocker Verification
+**Researched:** 2026-04-30
+**Scope:** NEW capabilities only — fixed disk enumeration, BitLocker encryption verification,
+persistent disk allowlist, runtime blocking of unregistered fixed disks.
+Existing capabilities (axum 0.8, rusqlite, ratatui, windows 0.58, prost, JWT, r2d2) are NOT re-researched.
 
 ---
 
 ## Verdict
 
-Five new capability areas. Four are covered by adding new `windows` crate feature flags to existing
-Cargo.toml entries (zero new crates for Win32 work). One new crate for protobuf (Chrome connector).
-One new crate for toast notifications is already in the project. The windows crate should be upgraded
-from 0.58 to 0.62.
+Three new capability areas. Two are covered by adding new `windows` crate feature flags to existing
+Cargo.toml entries (zero new crates for Win32 work). One new crate (`wmi-rs`) for BitLocker WMI queries.
+The `windows` crate should be upgraded from 0.58 to 0.62 to access the new feature flags.
 
 ---
 
-## windows Crate Upgrade: 0.58 → 0.62
+## windows Crate Upgrade: 0.58 -> 0.62
 
 **Current version:** `windows = "0.58"` (both `dlp-agent` and `dlp-user-ui`)
 **Target version:** `windows = "0.62"` (latest stable as of 2025-10-06, version 0.62.2)
 
-**Why upgrade:** The new feature flags needed for v0.6.0 (`Win32_Devices_DeviceAndDriverInstallation`,
-`Win32_Security_WinTrust`, `UI_Notifications`) are available in 0.62. The 0.58 codebase has reports
-of a regression with `Win32_Devices_DeviceAndDriverInstallation` not resolving correctly; 0.62 is the
-stable target all current documentation points to. The upgrade involves metadata-driven code generation
-changes, not public API redesigns — existing feature flags and function signatures are preserved.
+**Why upgrade:** The new feature flags needed for v0.7.0 (`Win32_System_Ioctl`,
+`Win32_System_Wmi`) are available in 0.62. The 0.58 codebase has reports of a regression with
+`Win32_Devices_DeviceAndDriverInstallation` not resolving correctly; 0.62 is the stable target all
+current documentation points to. The upgrade involves metadata-driven code generation changes, not
+public API redesigns — existing feature flags and function signatures are preserved.
 
 **Risk:** MEDIUM. The windows-rs project does break binary metadata between minor versions. Run
-`cargo check --workspace` after bumping to catch any signature changes in the existing `windows` API
-surface used by the current agent (predominantly `Win32_UI_WindowsAndMessaging`,
+`cargo check --workspace` after bumping to catch any signature changes in the existing `windows`
+API surface used by the current agent (predominantly `Win32_UI_WindowsAndMessaging`,
 `Win32_System_Threading`, `Win32_Storage_FileSystem`). These modules have been stable across 0.58
 through 0.62.
 
 ---
 
-## Capability 1: Win32 Process Identity Detection
+## Capability 1: Fixed Disk Enumeration (DRIVE_FIXED)
 
 **Crate:** `windows` (existing, feature additions only)
-**Feature additions to `dlp-agent/Cargo.toml` and `dlp-user-ui/Cargo.toml`:**
+**Feature additions to `dlp-agent/Cargo.toml`:**
 
 ```toml
 windows = { version = "0.62", features = [
     # --- existing features omitted for brevity ---
-    # NEW for APP-01 / APP-02 (destination + source app detection):
-    "Win32_System_Threading",   # Already present — OpenProcess, QueryFullProcessImageNameW,
-                                # GetWindowThreadProcessId, PROCESS_QUERY_LIMITED_INFORMATION
-    "Win32_UI_WindowsAndMessaging",  # Already present — GetForegroundWindow, GetClipboardOwner,
-                                    # GetWindowThreadProcessId
+    # NEW for v0.7.0 fixed disk enumeration:
+    "Win32_System_Ioctl",        # IOCTL_STORAGE_QUERY_PROPERTY, STORAGE_DEVICE_DESCRIPTOR
 ] }
 ```
 
-**No new feature flags required for core process identity.** The APIs needed —
-`GetForegroundWindow`, `GetWindowThreadProcessId`, `OpenProcess`, `QueryFullProcessImageNameW`,
-`GetClipboardOwner` — are all in `Win32_System_Threading` and `Win32_UI_WindowsAndMessaging`,
-which are already enabled in both crates.
+**Why `Win32_System_Ioctl`:** Provides `IOCTL_STORAGE_QUERY_PROPERTY`, `STORAGE_DEVICE_DESCRIPTOR`,
+`STORAGE_PROPERTY_QUERY`, and `STORAGE_BUS_TYPE` — the canonical way to query bus type (USB vs
+SATA vs NVMe) for a physical disk device. This is REQUIRED to distinguish USB-bridged fixed disks
+from genuine internal SATA/NVMe drives (both report `DRIVE_FIXED` via `GetDriveTypeW`).
 
-**API surface in `windows::Win32::System::Threading`:**
-- `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)` — opens handle with minimum rights
-- `QueryFullProcessImageNameW(handle, 0, buf, &mut size)` — returns full image path (e.g.
-  `C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE`)
-- `PROCESS_QUERY_LIMITED_INFORMATION` — constant (prefer over `PROCESS_QUERY_INFORMATION`; works
-  without admin rights on Win 8+)
+**API surface in `windows::Win32::System::Ioctl`:**
+- `STORAGE_DEVICE_DESCRIPTOR` — struct with `BusType: STORAGE_BUS_TYPE` field
+- `STORAGE_PROPERTY_QUERY` — input struct for `DeviceIoControl`
+- `IOCTL_STORAGE_QUERY_PROPERTY` — IOCTL code for `DeviceIoControl`
+- `StorageDeviceProperty` — `STORAGE_PROPERTY_ID` constant
+- `STORAGE_BUS_TYPE` — enum with `BusTypeUsb`, `BusTypeSata`, `BusTypeNvme`, `BusTypeAta`
 
-**API surface in `Win32_UI_WindowsAndMessaging`:**
-- `GetForegroundWindow()` — returns HWND of foreground window at paste time
-- `GetClipboardOwner()` — returns HWND of last `SetClipboardData` caller (capture at
-  WM_CLIPBOARDUPDATE, not at paste time — the window may be gone by paste time)
-- `GetWindowThreadProcessId(hwnd, &mut pid)` — maps HWND → PID
+**Disk enumeration strategy (two-pass):**
 
-**UWP / AUMID detection:**
-
-UWP apps (Store apps, Edge's renderer processes) do not have a meaningful Win32 image path — they
-report `C:\Windows\System32\RuntimeBroker.exe` or similar host processes. Identity comes from the
-Application User Model ID (AUMID).
-
-Add `Win32_UI_Shell` to `dlp-user-ui/Cargo.toml` (already present) and use:
-- `GetCurrentProcessExplicitAppUserModelID()` — gets the AUMID of the current process (usable from
-  within a UWP-hosted process context)
-- For enumerating the AUMID of *another* process: use `SHGetPropertyStoreForWindow` +
-  `PKEY_AppUserModel_ID` from the property store. This requires `Win32_UI_Shell_PropertiesSystem`.
-
-```toml
-# dlp-user-ui/Cargo.toml — add if not present
-"Win32_UI_Shell",                    # Already present
-"Win32_UI_Shell_PropertiesSystem",   # NEW — for SHGetPropertyStoreForWindow + PKEY_AppUserModel_ID
+Pass 1 — Logical volume scan (existing pattern, no new APIs):
+```rust
+// Iterate A..=Z, call GetDriveTypeW (already in Win32_Storage_FileSystem)
+// Filter to DRIVE_FIXED (value = 3)
+// Collect drive letters reporting as fixed
 ```
 
-**Where this code lives:** New file `dlp-user-ui/src/detection/application.rs`. Process identity
-detection MUST run in dlp-user-ui (user session), not dlp-agent (session 0). `GetForegroundWindow`
-is per-session; calling it from session 0 returns 0 (no foreground window in session 0).
+Pass 2 — Physical disk bus type verification (NEW):
+```rust
+// For each fixed drive letter, open physical drive handle:
+// CreateFileW(r"\\.\PhysicalDriveN", ...)
+// Call DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY, ...)
+// Read STORAGE_DEVICE_DESCRIPTOR.BusType
+// BusTypeUsb -> USB-bridged (treat as external / blockable)
+// BusTypeSata / BusTypeNvme -> internal (allowlist candidate)
+```
 
-**Confidence:** HIGH — function names and module paths verified against
-microsoft.github.io/windows-docs-rs.
+**Critical insight:** `GetDriveTypeW` alone is INSUFFICIENT. NVMe USB bridges (e.g., JMicron
+JMS583, ASMedia ASM2362) report `DRIVE_FIXED` (type 3) because Windows sees them through a SCSI
+translation layer. The ONLY reliable discriminator is the physical bus type from
+`IOCTL_STORAGE_QUERY_PROPERTY`.
+
+**Where this code lives:** New module `dlp-agent/src/disk_enumerator.rs`. Called once at install
+time (not continuously at runtime) to build the initial allowlist. The enumeration result is
+persisted to `agent-config.toml` and optionally synced to the server-side registry.
+
+**Confidence:** HIGH — `IOCTL_STORAGE_QUERY_PROPERTY` and `STORAGE_DEVICE_DESCRIPTOR` are
+well-documented Win32 APIs with stable signatures across Windows versions. Confirmed present in
+windows-rs 0.62 docs.
 
 ---
 
-## Capability 2: Authenticode Signature Verification (Anti-Spoofing)
+## Capability 2: BitLocker Encryption Verification
 
-**Crate:** `windows` (existing, one new feature flag)
-**Feature addition to `dlp-agent/Cargo.toml`:**
+**Crate:** `wmi-rs = "0.14"` (NEW — one crate addition)
 
-```toml
-"Win32_Security_WinTrust",  # NEW — WinVerifyTrust, WINTRUST_DATA, WINTRUST_FILE_INFO
-```
+**Why `wmi-rs` over raw `windows` crate WMI:**
+- The `windows` crate exposes `IWbemServices` and COM interfaces in `Win32_System_Wmi`, but using
+them directly requires ~200 lines of COM initialization, WQL string building, `VARIANT` handling,
+and `SafeArray` iteration. This is error-prone and verbose.
+- `wmi-rs` provides an ergonomic Rust wrapper around WMI COM that handles connection,
+authentication, query execution, and `serde`-based deserialization in ~10 lines of user code.
+- The crate is actively maintained (latest 0.14.0, MIT license, uses the modern `windows` crate
+internally, not legacy `winapi`).
 
-This depends on `Win32_Security` which is already present.
-
-**API surface in `windows::Win32::Security::WinTrust`:**
-- `WinVerifyTrust(HWND_DESKTOP, &WINTRUST_ACTION_GENERIC_VERIFY_V2, &mut data)` — verifies
-  Authenticode signature on a file
-- `WINTRUST_DATA` — top-level struct passed to `WinVerifyTrust`
-- `WINTRUST_FILE_INFO` — specifies the file path to verify
-- Return `S_OK` (0) → valid signature; `TRUST_E_NOSIGNATURE` (0x800B0100) → no sig;
-  `TRUST_E_BAD_LENGTH` / `TRUST_E_SUBJECT_FORM_UNKNOWN` → corrupted or unsigned
-
-**What it detects:** A renamed `notepad.exe → excel.exe` will have no Authenticode signature (or a
-Microsoft-signed signature that doesn't match the expected publisher for Excel). Check: (1) is file
-signed? (2) does the signer's Subject CN match the expected publisher? Publisher extraction requires
-walking the `WINTRUST_DATA` result after verification — the `pwszPublisher` field is available in
-the chain.
-
-**Important limitation — CVE-2013-3900:** On unpatched Windows, `WinVerifyTrust` can be tricked
-with an appended file. The patch (KB2893294, opt-in) enforces strict signature checking. For DLP
-purposes this is acceptable: we use signature verification as a heuristic anti-spoofing layer, not
-as a cryptographic proof. The audit trail documents the verification result. Do not rely on this as
-a sole enforcement control for T4 assets.
-
-**Where this code lives:** `dlp-user-ui/src/detection/application.rs` alongside process identity.
-Must run in user session (see above). Alternatively, the agent can verify the image path received
-via Pipe 3 — but this requires the image path to be fully-qualified and verifiable from session 0.
-Prefer user-session verification for freshness.
-
-**Confidence:** HIGH — `WinVerifyTrust` confirmed present in `windows::Win32::Security::WinTrust`
-module with the expected signature via microsoft.github.io/windows-docs-rs.
-
----
-
-## Capability 3: USB Device Identity Enumeration (SetupDi)
-
-**Crate:** `windows` (existing, one new feature flag)
-**Feature addition to `dlp-agent/Cargo.toml`:**
-
-```toml
-"Win32_Devices_DeviceAndDriverInstallation",  # NEW — SetupDi* family
-```
-
-This depends on `Win32_Devices` (added transitively). No additional parent feature needs to be
-explicitly listed.
-
-**API surface in `windows::Win32::Devices::DeviceAndDriverInstallation`:**
-- `SetupDiGetClassDevsW(None, "USB", None, DIGCF_PRESENT | DIGCF_ALLCLASSES)` — get handle to
-  device info set for all present USB devices
-- `SetupDiEnumDeviceInfo(devinfo, index, &mut devinfo_data)` — iterate device entries
-- `SetupDiGetDeviceRegistryPropertyW(devinfo, &devinfo_data, SPDRP_HARDWAREID, ...)` — returns
-  `USB\VID_xxxx&PID_yyyy&REV_zzzz` formatted Hardware ID
-- `SetupDiGetDeviceRegistryPropertyW(..., SPDRP_DEVICEDESC, ...)` — returns user-visible
-  description (e.g., "Kingston DataTraveler 3.0 USB Device")
-- `SetupDiGetDeviceRegistryPropertyW(..., SPDRP_MFG, ...)` — manufacturer string
-- `SetupDiDestroyDeviceInfoList(devinfo)` — frees the device info set
-
-**Serial number extraction:** The serial number is NOT in a standard SPDRP property. It is embedded
-in the Device Instance ID string (e.g.,
-`USB\VID_0951&PID_1666\0D8698F44A69A9B1234`). The last component after the final backslash is the
-serial number when it is a real serial (alphanumeric, 5+ chars). When Windows generates a synthetic
-ID (numeric only, e.g., `0000000000000001`), the device has no USB serial descriptor.
-
-Extract via `SetupDiGetDeviceInstanceIdW(devinfo, &devinfo_data, buf, size, &mut required)`.
-
-**Where this code lives:** Extend `dlp-agent/src/detection/usb.rs`. Hook into the existing
-`WM_DEVICECHANGE` / `DBT_DEVICEARRIVAL` handler after the existing `GetDriveTypeW` call. The
-SetupDi enumeration runs synchronously within the device-arrival callback — it is fast (milliseconds)
-for a single newly-arrived device.
-
-**Pattern:** Mirror `dlp-agent/src/detection/network_share.rs` — `Arc<RwLock<HashMap<String,
-DeviceIdentity>>>` keyed by drive letter, populated on arrival, cleared on
-`DBT_DEVICEREMOVECOMPLETE`.
-
-**Confidence:** HIGH — `SetupDiGetClassDevsW`, `SetupDiEnumDeviceInfo`,
-`SetupDiGetDeviceRegistryPropertyW`, `SetupDiDestroyDeviceInfoList` all confirmed present in
-`windows::Win32::Devices::DeviceAndDriverInstallation` module via microsoft.github.io/windows-docs-rs.
-
----
-
-## Capability 4: Chrome Enterprise Content Analysis Connector
-
-**Protocol:** Named pipe (Windows), NOT HTTPS. Chrome communicates with the local DLP agent via a
-Windows named pipe using Protocol Buffers (protobuf) serialization. The pipe is created by the agent;
-Chrome connects to it. This is a local IPC mechanism, not an HTTP endpoint.
-
-**Transport details:**
-- Pipe name format (non-user-specific): `\\.\pipe\ProtectedPrefix\Administrators\<agent_name>`
-- Pipe name format (user-specific): `\\.\pipe\<agent_name>.<user_sid>`
-- Chrome discovers the agent pipe name from the `BulkDataEntryAnalysisConnector` /
-  `OnPasteEnterpriseConnector` policy value, which specifies the `service_provider` name that
-  Chrome maps to the registered pipe name.
-- Chrome POSTs serialized `ChromeToAgent` protobuf messages; agent responds with `AgentToChrome`
-  protobuf messages.
-- Messages are framed with a 4-byte little-endian length prefix followed by serialized proto bytes.
-
-**Proto schema (from `chromium/content_analysis_sdk`):**
-- `ContentAnalysisRequest` — `request_token`, `analysis_connector` (BULK_DATA_ENTRY for paste),
-  `reason` (CLIPBOARD_PASTE), `content_data` (text_content for paste), `request_data` (tab URL,
-  etc.), `expires_at`
-- `ContentAnalysisResponse` — `request_token`, `results[]` with `TriggeredRule.action` =
-  BLOCK / WARN / REPORT_ONLY
-- `ContentAnalysisAcknowledgement` — Chrome sends back after acting on the response (ALLOW / BLOCK)
-- `ContentAnalysisCancelRequests` — Chrome cancels in-flight requests
-
-**Crate: `prost` + `prost-build`**
+**Cargo.toml addition:**
 
 ```toml
 # dlp-agent/Cargo.toml [dependencies]
-prost = "0.14"
-
-# dlp-agent/Cargo.toml [build-dependencies]
-prost-build = "0.14"
+wmi-rs = { version = "0.14", features = ["serde"] }
+# serde is already in workspace dependencies; no additional serde needed
 ```
 
-Add a `build.rs` that calls `prost_build::compile_protos(&["proto/analysis.proto"], &["proto/"])`.
-Copy `content_analysis_sdk/proto/content_analysis/sdk/analysis.proto` into
-`dlp-agent/proto/content_analysis/sdk/analysis.proto`.
+**API pattern for BitLocker status query:**
 
-**Why prost over manual JSON:** Chrome sends raw protobuf over the pipe, not JSON. There is no HTTPS
-endpoint. Using `prost` with `prost-build` is the idiomatic Rust path and matches exactly how
-Symantec/Broadcom implement this connector in their SDK.
+```rust
+use wmi_rs::{AuthLevel, WMIConnection};
+use serde::Deserialize;
 
-**Why prost 0.14 (not 0.13 or gRPC tonic):** prost 0.14 is the current stable release (2025).
-gRPC/tonic is not needed — this is raw protobuf over named pipe, not HTTP/2. `prost-build` compiles
-the `.proto` files in `build.rs`; no external `protoc` binary is required when using the bundled
-protoc approach (`prost-build` handles this).
+#[derive(Deserialize, Debug)]
+#[serde(rename = "Win32_EncryptableVolume")]
+#[serde(rename_all = "PascalCase")]
+struct EncryptableVolume {
+    device_id: String,
+    drive_letter: Option<String>,
+    protection_status: Option<u32>,  // 0=Unprotected, 1=Protected, 2=Unknown
+}
 
-**Named pipe server in Rust:** The existing agent already creates named pipes for IPC (Pipe 1/2/3 in
-`dlp-agent/src/ipc/`). Reuse the same `tokio::net::windows::named_pipe::ServerOptions` pattern. The
-Chrome connector pipe is a separate server from Pipes 1/2/3 — it lives in a new module
-`dlp-agent/src/chrome_connector.rs` that handles the Chrome protobuf protocol.
+fn query_bitlocker_status() -> Result<Vec<EncryptableVolume>, Box<dyn std::error::Error>> {
+    let wmi_con = WMIConnection::with_namespace_path(
+        r"ROOT\CIMV2\Security\MicrosoftVolumeEncryption"
+    )?;
+    wmi_con.set_proxy_blanket(AuthLevel::PktPrivacy)?;  // REQUIRED for BitLocker namespace
 
-**No new windows features needed for named pipe server:** `Win32_System_Pipes` is already enabled.
-The tokio async named pipe API does not use windows-rs directly — it wraps the OS via the tokio
-runtime.
+    let volumes: Vec<EncryptableVolume> = wmi_con.query()?;
+    Ok(volumes)
+}
+```
 
-**Policy registration:** The Chrome enterprise policy
-`BulkDataEntryAnalysisConnector` (for paste) or `OnPasteEnterpriseConnector` must be set via Group
-Policy or Intune with `"service_provider": "local_content_analysis"` and an agent name matching the
-pipe. Document this in deployment runbook; no code change needed in dlp-server for the policy push
-itself.
+**ProtectionStatus values:**
 
-**Confidence:** HIGH for protocol (verified by reading chromium/content_analysis_sdk source).
-MEDIUM for Chrome policy name exactly (`OnPasteEnterpriseConnector` vs
-`BulkDataEntryAnalysisConnector`) — Google's documentation uses both terms in different contexts.
-The proto schema itself is HIGH confidence (directly read from analysis.proto).
+| Value | Meaning | Action for Allowlist |
+|-------|---------|---------------------|
+| 0 | Unprotected (not encrypted) | Block or warn — disk is unencrypted |
+| 1 | Protected (encrypted) | Allow — disk meets encryption requirement |
+| 2 | Unknown | Block — cannot verify encryption state |
 
----
+**Critical requirements:**
+1. **Namespace:** Must use `ROOT\CIMV2\Security\MicrosoftVolumeEncryption` (NOT standard `ROOT\CIMV2`)
+2. **Authentication:** Must call `set_proxy_blanket(AuthLevel::PktPrivacy)` — without this, query fails with access denied
+3. **Privileges:** Must run as Administrator (the agent already runs as LocalSystem, so this is satisfied)
+4. **Serde attributes:** `#[serde(rename_all = "PascalCase")]` is mandatory — WMI uses PascalCase property names
 
-## Capability 5: Windows Toast Notifications
+**Extended struct for richer verification:**
 
-**Existing crate:** `winrt-notification = "0.5"` is already in `dlp-user-ui/Cargo.toml`.
+```rust
+#[derive(Deserialize, Debug)]
+#[serde(rename = "Win32_EncryptableVolume")]
+#[serde(rename_all = "PascalCase")]
+struct EncryptableVolume {
+    device_id: String,
+    drive_letter: Option<String>,
+    protection_status: Option<u32>,
+    conversion_status: Option<u32>,      // 0=FullyDecrypted, 1=FullyEncrypted, 2=EncryptionInProgress
+    encryption_method: Option<u32>,      // 0=None, 1=AES_128_WITH_DIFFUSER, 3=AES_128, 4=AES_256, 6=XTS_AES_128, 7=XTS_AES_256
+    encryption_percentage: Option<u32>,  // 0-100, only meaningful during conversion
+}
+```
 
-**Verdict: Keep `winrt-notification` for v0.6.0. Do NOT add a new toast crate.**
+**Where this code lives:** New module `dlp-agent/src/encryption_checker.rs`. Called during install-time
+enumeration (after fixed disk discovery, before allowlist persistence). Results stored alongside each
+disk entry in the allowlist.
 
-The `winrt-notification 0.5.1` crate wraps `windows::UI::Notifications::ToastNotificationManager`
-and provides a builder API (`Toast::new(app_id).title(...).text1(...).show()`). It requires an
-app ID string but does NOT require a registered COM activator for display-only toasts (no action
-callbacks). This is exactly the use case for USB block notifications: show and forget.
-
-**Why winrt-notification 0.5.1 (not win-toast-notify 0.1.6 or winrt-toast 0.1.1):**
-- `winrt-notification` is already in the dependency graph — no new crate needed
-- `winrt-toast` has a stale windows-rs dependency (`^0.39.0`) — incompatible with windows 0.62
-- `win-toast-notify 0.1.6` has only `xml` as a dependency (uses COM/WinRT via raw FFI) — more
-  complex to validate
-- `Shell_NotifyIconW` + `NIF_INFO` balloon approach is deprecated on Win 10+ and unreliable on
-  Win 11; avoid
-
-**Session constraint:** Toast notifications MUST be shown from `dlp-user-ui` (user session process),
-not from `dlp-agent` (SYSTEM session 0). This is already the established pattern in this project —
-the clipboard monitor and tray icon both run in dlp-user-ui. USB block notifications follow the same
-model: the agent sends a Pipe 1/2 IPC message to dlp-user-ui, which calls `Toast::show()`.
-
-**App ID for toasts:** Use a stable string like `"DLP.SecurityAgent"`. This does not need to match
-an installed AUMID as long as the process is not a packaged app. The `winrt-notification` examples
-use `Toast::POWERSHELL_APP_ID` as a default; use a DLP-specific string so the notification source
-is identifiable to end users.
-
-**windows crate feature for UI_Notifications:** The `winrt-notification` crate uses windows-rs
-internally but declares its own `windows` dependency at `^0.24.0`. This is a transitive dependency
-and does NOT conflict with the workspace-level `windows = "0.62"` dependency, because
-`winrt-notification` uses `windows` as a private dependency for COM activation only. Cargo resolves
-this correctly.
-
-**Confidence:** HIGH for session constraint and approach. MEDIUM for `winrt-notification` internal
-windows-rs version compatibility — the crate pins `^0.24.0`, but `winrt-notification`'s source
-confirms it uses the WinRT `windows::UI::Notifications` namespace which has been stable since
-windows 0.24. No known breakage.
+**Confidence:** HIGH — `wmi-rs` 0.14 is actively maintained, uses the official `windows` crate
+internally, and the BitLocker namespace pattern is well-documented across Microsoft docs and
+community examples. The `AuthLevel::PktPrivacy` requirement is explicitly documented in the crate.
 
 ---
 
-## Summary: Dependency Delta for v0.6.0
+## Capability 3: Disk Identity and Allowlist Persistence
+
+**No new crates needed.** Uses existing stack:
+- `serde` + `serde_json` / `toml` — for allowlist serialization
+- `uuid` (workspace) — for generating stable allowlist entry IDs
+- `dlp-common` — for shared `DeviceIdentity` type (extended with disk-specific fields)
+
+**Disk identity fields (extension to existing types):**
+
+```rust
+// In dlp-common/src/endpoint.rs — extend DeviceIdentity or create new FixedDiskIdentity
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FixedDiskIdentity {
+    /// Drive letter at install time (may change — not stable identity).
+    pub drive_letter: String,
+    /// Volume serial number from GetVolumeInformationW (stable across formats).
+    pub volume_serial: String,
+    /// Volume GUID path (most stable logical identifier).
+    pub volume_guid: String,
+    /// Physical disk path (e.g., "\\.\PhysicalDrive0").
+    pub physical_disk_path: String,
+    /// Disk model from STORAGE_DEVICE_DESCRIPTOR (e.g., "Samsung SSD 970 EVO").
+    pub model: String,
+    /// Disk serial number from STORAGE_DEVICE_DESCRIPTOR (hardware serial).
+    pub disk_serial: String,
+    /// Bus type: "SATA", "NVMe", "USB", "ATA", etc.
+    pub bus_type: String,
+    /// BitLocker protection status: 0=unprotected, 1=protected, 2=unknown.
+    pub bitlocker_status: u32,
+    /// Whether this disk was in the allowlist at install time.
+    pub is_allowed: bool,
+    /// ISO 8601 timestamp of when this entry was created.
+    pub registered_at: String,
+}
+```
+
+**Persistence strategy:**
+
+1. **Agent local:** Extend `AgentConfig` in `dlp-agent/src/config.rs` with:
+   ```toml
+   [[fixed_disk_allowlist]]
+   drive_letter = "C"
+   volume_serial = "1234ABCD"
+   volume_guid = "\\\\?\\Volume{...}\\"
+   physical_disk_path = "\\\\.\\PhysicalDrive0"
+   model = "Samsung SSD 970 EVO"
+   disk_serial = "S123456789"
+   bus_type = "NVMe"
+   bitlocker_status = 1
+   is_allowed = true
+   registered_at = "2026-04-30T10:00:00Z"
+   ```
+
+2. **Server-side:** New table `fixed_disk_registry` in dlp-server SQLite DB, mirroring the
+   `device_registry` pattern from Phase 24. Admin TUI screen for viewing/managing disk entries.
+
+3. **Runtime check:** On agent startup and on `WM_DEVICECHANGE` arrival for fixed disks,
+   compare the discovered disk against the allowlist. If not found → block I/O (same pattern as
+   USB unregistered device fallback in `UsbEnforcer`).
+
+**Confidence:** HIGH — extends existing patterns (TOML config, SQLite registry, `DeviceIdentity`
+struct) with no new dependencies.
+
+---
+
+## Capability 4: Runtime Blocking of Unregistered Fixed Disks
+
+**No new crates needed.** Reuses existing enforcement infrastructure:
+- `dlp-agent/src/interception/` — existing file I/O interception layer
+- `dlp-agent/src/usb_enforcer.rs` — pattern for drive-letter-based blocking
+- `dlp-agent/src/detection/usb.rs` — `WM_DEVICECHANGE` notification infrastructure
+
+**Integration approach:**
+
+1. Extend `UsbDetector` (or create `FixedDiskDetector`) to track fixed disk arrivals/removals.
+2. On `DBT_DEVICEARRIVAL` for `GUID_DEVINTERFACE_VOLUME` with `DRIVE_FIXED`:
+   - Query `IOCTL_STORAGE_QUERY_PROPERTY` to get bus type and identity.
+   - Check allowlist (local TOML + server cache).
+   - If not in allowlist → block all I/O to this drive letter (same `UsbBlockResult` pattern).
+3. Hook into existing `InterceptionEngine` event loop — check fixed disk block BEFORE ABAC
+   evaluation (defense in depth: NTFS ALLOW + Fixed Disk DENY = DENY).
+
+**Confidence:** HIGH — mirrors the proven USB enforcement pattern from Phases 23-26.
+
+---
+
+## Summary: Dependency Delta for v0.7.0
 
 ### `Cargo.toml` workspace — no changes needed
 
@@ -309,46 +279,26 @@ windows 0.24. No known breakage.
 # Bump existing:
 windows = { version = "0.62", features = [
     # ... all existing features ...
-    # NEW additions:
-    "Win32_Devices_DeviceAndDriverInstallation",   # SetupDi* for USB VID/PID/Serial
-    "Win32_Security_WinTrust",                     # WinVerifyTrust for Authenticode
+    # NEW additions for v0.7.0:
+    "Win32_System_Ioctl",          # IOCTL_STORAGE_QUERY_PROPERTY for bus type detection
 ] }
 
 # NEW:
-prost = "0.14"   # Chrome Content Analysis Connector protobuf deserialization
-
-[build-dependencies]
-# NEW:
-prost-build = "0.14"   # Compiles analysis.proto in build.rs
+wmi-rs = { version = "0.14", features = ["serde"] }   # BitLocker encryption status via WMI
 ```
 
 ### `dlp-user-ui/Cargo.toml`
 
-```toml
-[dependencies]
-# Bump existing:
-windows = { version = "0.62", features = [
-    # ... all existing features ...
-    # NEW addition:
-    "Win32_UI_Shell_PropertiesSystem",  # SHGetPropertyStoreForWindow for UWP AUMID
-] }
+No changes. Fixed disk enumeration and BitLocker checks run in `dlp-agent` (SYSTEM session),
+not in the user UI process.
 
-# winrt-notification = "0.5" already present — no change
-```
+### `dlp-common/Cargo.toml`
 
-### Build script addition
+No new dependencies. Add `FixedDiskIdentity` struct to `endpoint.rs`.
 
-New file `dlp-agent/build.rs`:
+### `dlp-server/Cargo.toml`
 
-```rust
-fn main() {
-    prost_build::compile_protos(
-        &["proto/content_analysis/sdk/analysis.proto"],
-        &["proto/"],
-    )
-    .expect("prost_build must compile Chrome Content Analysis proto");
-}
-```
+No new dependencies. Add `fixed_disk_registry` table migration to existing SQLite schema.
 
 ---
 
@@ -358,13 +308,15 @@ fn main() {
 |----------------|--------|
 | `winapi` crate | Legacy, unmaintained. All needed APIs are in `windows` crate. |
 | `setupapi` crate | Unmaintained thin wrapper. Use `windows` feature flag directly. |
-| `authenticode` crate | No active Rust crate for this exists with current windows-rs support. Use raw `WinVerifyTrust` via windows-rs. |
-| `tonic` / gRPC | Chrome connector is raw protobuf over named pipe, not gRPC. Tonic adds HTTP/2 overhead with no benefit. |
-| `notify-rust` | Linux-first. Does not work on Windows. |
-| `win-toast-notify` | Redundant — `winrt-notification` already in project. |
-| HTTP endpoint for Chrome connector | Chrome uses named pipe IPC, not HTTP. Adding an HTTPS endpoint would not receive Chrome connector events. |
-| `windows-service` version bump | Not required — no changes to service lifecycle for v0.6.0 features. |
-| Separate `dlp-chrome-connector` crate | Overkill — the Chrome named pipe server is a single async task in `dlp-agent/src/chrome_connector.rs`. |
+| Raw COM/WMI via `windows::Win32::System::Wmi` | Too verbose (~200 lines vs ~10 with `wmi-rs`). `wmi-rs` handles COM init, WQL, VARIANTs. |
+| `manage-bde` CLI invocation | Spawning a subprocess is slow, fragile, and requires parsing text output. WMI is the programmatic API. |
+| `bitlocker` crate (if one existed) | No actively maintained Rust crate for BitLocker. WMI is the canonical Windows API. |
+| `sysinfo` crate | Cross-platform abstraction that doesn't expose Windows-specific bus type or BitLocker info. |
+| `ntapi` crate | Overkill — `IOCTL_STORAGE_QUERY_PROPERTY` is a documented public API, not an undocumented NT syscall. |
+| Separate `dlp-disk-enumerator` crate | Overkill — disk enumeration is a single module (~200 lines) in `dlp-agent`. |
+| `Win32_System_Wmi` feature flag (raw) | Only needed if using raw COM. `wmi-rs` handles this internally via its own `windows` dependency. |
+| Volume GUID as sole identity | Volume GUID changes on format. Combine with disk serial + model for stable identity. |
+| Drive letter as identity | Drive letters are NOT stable — they change when disks are reordered or removed. |
 
 ---
 
@@ -372,12 +324,11 @@ fn main() {
 
 | New capability | Lives in | Communicates with |
 |---------------|----------|-------------------|
-| Process identity (`GetForegroundWindow`, `QueryFullProcessImageNameW`) | `dlp-user-ui/src/detection/application.rs` | Pipe 3 `ClipboardAlert` — new fields `source_app`, `dest_app` |
-| Authenticode verification (`WinVerifyTrust`) | `dlp-user-ui/src/detection/application.rs` | Same — called after process identity resolution |
-| UWP AUMID detection (`SHGetPropertyStoreForWindow`) | `dlp-user-ui/src/detection/application.rs` | Same — fallback path when image path is a host process |
-| SetupDi USB enumeration | `dlp-agent/src/detection/usb.rs` | Populates `DeviceIdentity` in `UsbDetector`; audit event via existing `audit_emitter.rs` |
-| Chrome Content Analysis named pipe | `dlp-agent/src/chrome_connector.rs` (new) | dlp-server admin API for managed origins; `ContentAnalysisResponse` with BLOCK decision |
-| USB block toast notification | `dlp-user-ui/src/notifications.rs` (new or extend) | Triggered by Pipe 1/2 message from agent on USB block event |
+| Fixed disk enumeration (`GetDriveTypeW` + `IOCTL_STORAGE_QUERY_PROPERTY`) | `dlp-agent/src/disk_enumerator.rs` (new) | `AgentConfig` (TOML persistence), server API (sync) |
+| BitLocker verification (`wmi-rs` + `Win32_EncryptableVolume`) | `dlp-agent/src/encryption_checker.rs` (new) | `disk_enumerator.rs` — called per-disk during enumeration |
+| Disk allowlist enforcement | `dlp-agent/src/interception/` (extend) | `UsbEnforcer`-style block result, audit emitter |
+| Fixed disk registry DB | `dlp-server/src/db.rs` (extend) | Admin TUI screen (mirror device registry pattern) |
+| Admin disk management TUI | `dlp-admin-cli/src/screens/` (new screen) | dlp-server API for CRUD on `fixed_disk_registry` |
 
 ---
 
@@ -385,15 +336,14 @@ fn main() {
 
 | Area | Confidence | Reason |
 |------|------------|--------|
-| Windows feature flags for SetupDi | HIGH | Confirmed in microsoft.github.io/windows-docs-rs docs |
-| Windows feature flags for WinVerifyTrust | HIGH | Confirmed in microsoft.github.io/windows-docs-rs + win32 docs |
-| Process identity API surface | HIGH | All functions confirmed in `Win32_System_Threading` / `Win32_UI_WindowsAndMessaging` |
-| UWP AUMID via shell property store | MEDIUM | `GetCurrentProcessExplicitAppUserModelID` confirmed; cross-process property store path less documented in Rust |
-| Chrome connector is named pipe (not HTTPS) | HIGH | Confirmed by reading chromium/content_analysis_sdk agent_win.cc |
-| Chrome proto schema | HIGH | Read directly from analysis.proto in chromium repo |
-| Chrome policy name exact string | MEDIUM | Google docs use multiple policy names; functional behavior confirmed, exact policy name needs validation against Chrome admin policy list |
-| winrt-notification 0.5 compat with windows 0.62 | MEDIUM | Crate pins windows ^0.24; transitive dep resolution works but not explicitly tested against 0.62 |
-| windows 0.58 → 0.62 migration risk | MEDIUM | No documented API surface breaks for used modules; metadata changes exist |
+| `IOCTL_STORAGE_QUERY_PROPERTY` API surface | HIGH | Confirmed in microsoft.github.io/windows-docs-rs for 0.62; stable Win32 API |
+| `STORAGE_BUS_TYPE` discrimination (USB vs SATA/NVMe) | HIGH | Well-documented Windows storage API; used by sysinfo and other Rust crates |
+| `wmi-rs` 0.14 for BitLocker queries | HIGH | Actively maintained, uses official `windows` crate, BitLocker namespace pattern verified |
+| `AuthLevel::PktPrivacy` requirement | HIGH | Explicitly documented in wmi-rs crate and Microsoft WMI docs |
+| `Win32_EncryptableVolume.ProtectionStatus` semantics | HIGH | Microsoft Learn documents values 0/1/2 |
+| Windows 0.58 -> 0.62 migration risk | MEDIUM | No documented API surface breaks for used modules; metadata changes exist |
+| USB bridge detection accuracy | MEDIUM-HIGH | `BusTypeUsb` catches USB bridges, but some exotic bridges may report `BusTypeScsi`. Need fallback to parent PnP tree walk (already proven in Phase 31). |
+| Disk serial number stability | MEDIUM | Some USB enclosures do not pass through disk serial; may need fallback to model + volume serial composite key |
 
 ---
 
@@ -401,16 +351,16 @@ fn main() {
 
 - [windows-rs 0.62.2 Cargo.toml feature flags (docs.rs)](https://docs.rs/crate/windows/latest/source/Cargo.toml.orig)
 - [windows-rs releases page — 0.58 through 0.62.2 dates](https://github.com/microsoft/windows-rs/releases)
-- [SetupDiGetClassDevsW in windows::Win32::Devices::DeviceAndDriverInstallation (docs-rs)](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/Devices/DeviceAndDriverInstallation/fn.SetupDiGetClassDevsW.html)
-- [WinVerifyTrust in windows::Win32::Security::WinTrust (docs-rs)](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/Security/WinTrust/fn.WinVerifyTrust.html)
-- [QueryFullProcessImageNameW in windows::Win32::System::Threading (docs-rs)](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/System/Threading/fn.QueryFullProcessImageNameW.html)
-- [ToastNotificationManager in windows::UI::Notifications (docs-rs)](https://microsoft.github.io/windows-docs-rs/doc/windows/UI/Notifications/struct.ToastNotificationManager.html)
-- [chromium/content_analysis_sdk — official Chrome DLP connector SDK](https://github.com/chromium/content_analysis_sdk)
-- [analysis.proto — ContentAnalysisRequest / ContentAnalysisResponse schema](https://raw.githubusercontent.com/chromium/content_analysis_sdk/main/proto/content_analysis/sdk/analysis.proto)
-- [common/utils_win.cc — GetPipeNameForAgent, named pipe name format](https://raw.githubusercontent.com/chromium/content_analysis_sdk/main/common/utils_win.cc)
-- [agent_win.cc — Chrome named pipe server implementation](https://raw.githubusercontent.com/chromium/content_analysis_sdk/main/agent/src/agent_win.cc)
-- [prost crate (tokio-rs/prost)](https://github.com/tokio-rs/prost)
-- [winrt-notification 0.5.1 (allenbenz)](https://github.com/allenbenz/winrt-notification)
-- [WinVerifyTrust function — Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust)
-- [SetupDiGetClassDevsW function — Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/api/setupapi/nf-setupapi-setupdigetclassdevsw)
-- [GetCurrentProcessExplicitAppUserModelID (docs-rs)](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/UI/Shell/fn.GetCurrentProcessExplicitAppUserModelID.html)
+- [IOCTL_STORAGE_QUERY_PROPERTY in windows::Win32::System::Ioctl (docs-rs)](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/System/Ioctl/constant.IOCTL_STORAGE_QUERY_PROPERTY.html)
+- [STORAGE_DEVICE_DESCRIPTOR in windows::Win32::System::Ioctl (docs-rs)](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/System/Ioctl/struct.STORAGE_DEVICE_DESCRIPTOR.html)
+- [StorageDeviceProperty in windows::Win32::System::Ioctl (docs-rs)](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/System/Ioctl/constant.StorageDeviceProperty.html)
+- [GetDriveTypeW in windows::Win32::Storage::FileSystem (docs-rs)](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/Storage/FileSystem/fn.GetDriveTypeW.html)
+- [wmi-rs crate — GitHub (ohadravid/wmi-rs)](https://github.com/ohadravid/wmi-rs)
+- [wmi-rs crate — crates.io](https://crates.io/crates/wmi-rs)
+- [Win32_EncryptableVolume class — Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/secprov/win32-encryptablevolume)
+- [Query BitLocker status PowerShell/WMI — GitHub Gist](https://gist.github.com/43309ac879db58563c63e4856f3a3a11)
+- [Win32_DiskDrive class — Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-diskdrive)
+- [MSFT_PhysicalDisk class — Windows Storage Management API](https://learn.microsoft.com/en-us/windows-hardware/drivers/storage/msft-physicaldisk)
+- [How to find out if disk is SSD — Rust Users Forum](https://users.rust-lang.org/t/how-to-find-out-if-the-disk-that-my-current-process-uses-is-ssd/76034)
+- [IOCTL_STORAGE_QUERY_PROPERTY — NtDoc](https://ntdoc.m417z.com/ioctl_storage_query_property)
+- [Managing WMI on Windows — Rust Users Forum](https://users.rust-lang.org/t/managing-wmi-on-windows/119352)
