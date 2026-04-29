@@ -146,7 +146,11 @@ pub fn setupdi_description_for_device(device_path: &str) -> String {
         };
         if ok.is_ok() {
             let instance_id = String::from_utf16_lossy(
-                &id_buf.iter().copied().take_while(|&w| w != 0).collect::<Vec<u16>>(),
+                &id_buf
+                    .iter()
+                    .copied()
+                    .take_while(|&w| w != 0)
+                    .collect::<Vec<u16>>(),
             );
             // Reshape instance ID into the dbcc_name form for parsing.
             let reshaped = format!("\\\\?\\{}", instance_id.replace('\\', "#"));
@@ -298,8 +302,7 @@ fn enumerate_connected_usb_devices_windows() -> Vec<DeviceIdentity> {
             // Avoid infinite loops — device trees are shallow (usually < 8 levels).
             let mut parent_devinst: u32 = 0;
             // SAFETY: current_devinst is a valid DEVINST returned by SetupDi.
-            let cr =
-                unsafe { CM_Get_Parent(&mut parent_devinst, current_devinst, 0) };
+            let cr = unsafe { CM_Get_Parent(&mut parent_devinst, current_devinst, 0) };
             if cr.0 != 0 {
                 // No more parents (CR_NO_SUCH_DEVNODE, CR_INVALID_DEVINST, etc.).
                 break;
