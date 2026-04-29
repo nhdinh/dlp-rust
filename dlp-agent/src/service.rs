@@ -25,7 +25,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn, Level};
@@ -105,6 +105,12 @@ pub fn run_service() -> Result<()> {
     // dlp-admin credentials.  Failures are logged but do not block startup.
     crate::protection::harden_agent_process();
 
+    // Register as Chrome Content Analysis agent in HKLM.
+    // Non-fatal: if the registry write fails, the agent still starts.
+    if let Err(e) = crate::chrome::registry::register_agent() {
+        warn!(error = %e, "Chrome HKLM registration failed — continuing");
+    }
+
     // ── Configure the UI binary path ─────────────────────────────────
     // In production: installed alongside the service binary.
     // Override with DLP_UI_BINARY env var for development.
@@ -128,6 +134,19 @@ pub fn run_service() -> Result<()> {
     // new connection.
     crate::ipc::start_all()?;
     info!("IPC pipe servers started");
+
+    // ── Start Chrome Content Analysis pipe server ────────────────
+    // Spawn as a dedicated std::thread (NOT a tokio task) because
+    // ConnectNamedPipeW and ReadFile block the calling thread.
+    let chrome_handle = std::thread::Builder::new()
+        .name("chrome-pipe".into())
+        .spawn(|| {
+            if let Err(e) = crate::chrome::handler::serve() {
+                error!(error = %e, "Chrome pipe server exited with error");
+            }
+        })
+        .context("failed to spawn Chrome pipe thread")?;
+    info!(thread_id = ?chrome_handle.thread().id(), "Chrome pipe server started");
 
     // ── Start the session monitor ──────────────────────────────────
     // session_monitor::run() calls ui_spawner::init() which enumerates
@@ -422,6 +441,24 @@ async fn run_loop(
     let detector = detector_arc.as_ref();
     detector.scan_existing_drives();
 
+    // ── Managed origins cache (D-02) ──────────────────────────────
+    let origins_cache = Arc::new(crate::chrome::cache::ManagedOriginsCache::new());
+    // Set the global cache so the chrome pipe handler can read from it.
+    crate::chrome::handler::set_origins_cache(Arc::clone(&origins_cache));
+    let (origins_shutdown_tx, origins_shutdown_rx) = tokio::sync::watch::channel(false);
+    let _origins_poll_handle = if let Some(ref sc) = server_client {
+        Some(
+            crate::chrome::cache::ManagedOriginsCache::spawn_poll_task(
+                Arc::clone(&origins_cache),
+                sc.clone(),
+                origins_shutdown_rx,
+            ),
+        )
+    } else {
+        drop(origins_shutdown_rx);
+        None
+    };
+
     // ── Device registry cache (D-07, D-08) ──────────────────────────────────
     // Polls GET /admin/device-registry every 30 s. Phase 26 enforcement reads
     // from this cache at I/O time without a server call.
@@ -653,6 +690,13 @@ async fn run_loop(
         let _ = h.await;
     }
     crate::password_stop::debug_log("run_loop: device registry poll stopped");
+
+    // Stop the managed origins poll task.
+    let _ = origins_shutdown_tx.send(true);
+    if let Some(h) = _origins_poll_handle {
+        let _ = h.await;
+    }
+    crate::password_stop::debug_log("run_loop: managed origins poll stopped");
 
     // Unregister USB device notifications (owned by run_loop since Approach A move).
     if let Some((hwnd, thread)) = usb_cleanup {
@@ -1001,6 +1045,11 @@ pub fn run_console() -> Result<()> {
     // Harden the agent process DACL — same hardening as service mode.
     crate::protection::harden_agent_process();
 
+    // Register as Chrome Content Analysis agent in HKLM (best-effort).
+    if let Err(e) = crate::chrome::registry::register_agent() {
+        warn!(error = %e, "Chrome HKLM registration failed — continuing");
+    }
+
     // ── Health monitor first (sets ROUTER state before Pipe 3 clients connect) ──
     let _health_handle = crate::health_monitor::start();
     info!(thread_id = ?_health_handle.thread().id(), "health monitor started");
@@ -1016,6 +1065,17 @@ pub fn run_console() -> Result<()> {
         crate::ipc::start_all()?;
         info!("IPC pipe servers started");
     }
+
+    // ── Start Chrome Content Analysis pipe server ────────────────
+    let chrome_handle = std::thread::Builder::new()
+        .name("chrome-pipe".into())
+        .spawn(|| {
+            if let Err(e) = crate::chrome::handler::serve() {
+                error!(error = %e, "Chrome pipe server exited with error");
+            }
+        })
+        .context("failed to spawn Chrome pipe thread")?;
+    info!(thread_id = ?chrome_handle.thread().id(), "Chrome pipe server started");
 
     // ── File system monitor + event loop on a Tokio runtime ─────────────────
     let rt = tokio::runtime::Runtime::new()?;
@@ -1107,6 +1167,23 @@ async fn async_run_console() -> Result<()> {
     // ServerClient is Clone; we need two independent owners: offline_manager and
     // the config poll loop.
     let server_client_for_config = server_client.clone();
+
+    // ── Managed origins cache (console mode) ─────────────────────
+    let origins_cache = Arc::new(crate::chrome::cache::ManagedOriginsCache::new());
+    crate::chrome::handler::set_origins_cache(Arc::clone(&origins_cache));
+    let (origins_shutdown_tx, origins_shutdown_rx) = tokio::sync::watch::channel(false);
+    let _origins_poll_handle = if let Some(ref sc) = server_client {
+        Some(
+            crate::chrome::cache::ManagedOriginsCache::spawn_poll_task(
+                Arc::clone(&origins_cache),
+                sc.clone(),
+                origins_shutdown_rx,
+            ),
+        )
+    } else {
+        drop(origins_shutdown_rx);
+        None
+    };
 
     // ── Audit buffer for server relay ────────────────────────────────────
     let (audit_shutdown_tx, audit_shutdown_rx) = tokio::sync::watch::channel(false);
@@ -1249,6 +1326,12 @@ async fn async_run_console() -> Result<()> {
     // Stop the audit buffer flush task (final flush runs inside).
     let _ = audit_shutdown_tx.send(true);
     if let Some(h) = _audit_flush_handle {
+        let _ = h.await;
+    }
+
+    // Stop the managed origins poll task.
+    let _ = origins_shutdown_tx.send(true);
+    if let Some(h) = _origins_poll_handle {
         let _ = h.await;
     }
 
