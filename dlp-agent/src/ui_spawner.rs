@@ -285,6 +285,14 @@ pub fn kill_all() {
     }
 }
 
+/// Inserts a UI handle into the global tracking map.
+///
+/// Called by `session_monitor` after spawning a UI so that `is_ui_alive`
+/// can track the process on subsequent polls.
+pub(crate) fn insert_handle(session_id: u32, handle: UiHandle) {
+    UI_HANDLES.lock().insert(session_id, handle);
+}
+
 /// Checks whether the UI process for the given session is still alive.
 ///
 /// Returns `false` if no UI is tracked for the session or if the process
