@@ -14,6 +14,7 @@
 //!                                               |- Splunk HEC / ELK HTTP Ingest
 //! ```
 
+use crate::disk::DiskIdentity;
 use crate::endpoint::{AppIdentity, DeviceIdentity};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,8 @@ pub enum EventType {
     AdminAction,
     /// A dlp-agent service stop was attempted and failed after 3 wrong passwords.
     ServiceStopFailed,
+    /// Disk discovery event emitted at agent startup with all enumerated fixed disks.
+    DiskDiscovery,
 }
 
 impl EventType {
@@ -56,6 +59,7 @@ impl EventType {
                 | Self::SessionLogoff
                 | Self::AdminAction
                 | Self::ServiceStopFailed
+                | Self::DiskDiscovery
         )
     }
 
@@ -173,6 +177,10 @@ pub struct AuditEvent {
     /// (populated by Phase 29 Chrome Enterprise Connector).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination_origin: Option<String>,
+    /// Discovered fixed disks emitted during agent startup disk enumeration
+    /// (populated by Phase 33 disk discovery).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovered_disks: Option<Vec<DiskIdentity>>,
 }
 
 impl AuditEvent {
@@ -228,6 +236,7 @@ impl AuditEvent {
             device_identity: None,
             source_origin: None,
             destination_origin: None,
+            discovered_disks: None,
         }
     }
 
@@ -311,6 +320,12 @@ impl AuditEvent {
     /// Sets the destination origin for Chrome Content Analysis events.
     pub fn with_destination_origin(mut self, origin: Option<String>) -> Self {
         self.destination_origin = origin;
+        self
+    }
+
+    /// Sets the discovered disks for a DiskDiscovery event.
+    pub fn with_discovered_disks(mut self, disks: Option<Vec<DiskIdentity>>) -> Self {
+        self.discovered_disks = disks;
         self
     }
 }
@@ -605,5 +620,100 @@ mod tests {
         );
         assert_eq!(event.application_hash, Some("a1b2c3d4e5f6".to_string()));
         assert_eq!(event.resource_owner, Some("S-1-5-21-456".to_string()));
+    }
+
+    #[test]
+    fn test_event_type_disk_discovery_routed_to_siem() {
+        assert!(EventType::DiskDiscovery.routed_to_siem());
+    }
+
+    #[test]
+    fn test_audit_event_with_discovered_disks() {
+        use crate::disk::{BusType, DiskIdentity};
+        let disks = vec![
+            DiskIdentity {
+                instance_id: "PCIIDE\\IDECHANNEL\\4&1234".to_string(),
+                bus_type: BusType::Sata,
+                model: "WDC WD10EZEX-00BN5A0".to_string(),
+                drive_letter: Some('C'),
+                serial: Some("WD-12345678".to_string()),
+                size_bytes: Some(1_000_204_886_016),
+                is_boot_disk: true,
+            },
+            DiskIdentity {
+                instance_id: "USB\\VID_1234&PID_5678&REV_0001".to_string(),
+                bus_type: BusType::Usb,
+                model: "USB External Drive".to_string(),
+                drive_letter: Some('E'),
+                serial: Some("EXT-001".to_string()),
+                size_bytes: Some(500_000_000_000),
+                is_boot_disk: false,
+            },
+        ];
+        let event = AuditEvent::new(
+            EventType::DiskDiscovery,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            "N/A".to_string(),
+            Classification::T1,
+            Action::READ,
+            Decision::ALLOW,
+            "AGENT-01".to_string(),
+            1,
+        )
+        .with_discovered_disks(Some(disks));
+
+        assert!(event.discovered_disks.is_some());
+        let d = event.discovered_disks.as_ref().unwrap();
+        assert_eq!(d.len(), 2);
+        assert_eq!(d[0].bus_type, BusType::Sata);
+        assert!(d[0].is_boot_disk);
+        assert_eq!(d[1].bus_type, BusType::Usb);
+        assert!(!d[1].is_boot_disk);
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("DISK_DISCOVERY"));
+        assert!(json.contains("discovered_disks"));
+        assert!(json.contains("WDC WD10EZEX-00BN5A0"));
+        assert!(json.contains("USB External Drive"));
+    }
+
+    #[test]
+    fn test_audit_event_backward_compat_missing_discovered_disks() {
+        // Deserializing an AuditEvent JSON that predates Phase 33 must still
+        // succeed -- discovered_disks defaults to None.
+        let legacy = r#"{
+            "timestamp": "2025-01-01T00:00:00Z",
+            "event_type": "BLOCK",
+            "user_sid": "S-1-5-21-1",
+            "user_name": "jsmith",
+            "resource_path": "C:\\Data\\x.txt",
+            "classification": "T3",
+            "action_attempted": "READ",
+            "decision": "DENY",
+            "agent_id": "AGENT-01",
+            "session_id": 1,
+            "override_granted": false,
+            "access_context": "local"
+        }"#;
+        let event: AuditEvent = serde_json::from_str(legacy).unwrap();
+        assert!(event.discovered_disks.is_none());
+    }
+
+    #[test]
+    fn test_skip_serializing_none_discovered_disks() {
+        let event = AuditEvent::new(
+            EventType::Access,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\File.txt".to_string(),
+            Classification::T2,
+            Action::READ,
+            Decision::ALLOW,
+            "AGENT-WS02-001".to_string(),
+            1,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(!json.contains("\"discovered_disks\":null"));
     }
 }
