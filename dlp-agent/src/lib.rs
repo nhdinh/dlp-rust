@@ -78,8 +78,10 @@ pub mod session_identity;
 #[cfg(windows)]
 pub mod server_client;
 
+#[cfg(windows)]
 pub mod device_controller;
 
+#[cfg(windows)]
 pub mod device_registry;
 
 pub mod chrome;
