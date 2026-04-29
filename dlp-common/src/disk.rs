@@ -21,27 +21,27 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(windows)]
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
-    CM_Get_Device_IDW, CM_Get_Parent, CM_Locate_DevNodeW, CM_LOCATE_DEVNODE_NORMAL,
-    SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-    SetupDiGetDeviceInstanceIdW, SetupDiGetDeviceRegistryPropertyW, DIGCF_DEVICEINTERFACE,
+    CM_Get_Device_IDW, CM_Get_Parent, CM_Locate_DevNodeW, SetupDiDestroyDeviceInfoList,
+    SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW,
+    SetupDiGetDeviceRegistryPropertyW, CM_LOCATE_DEVNODE_NORMAL, DIGCF_DEVICEINTERFACE,
     DIGCF_PRESENT, SETUP_DI_REGISTRY_PROPERTY, SP_DEVINFO_DATA,
 };
 #[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW,
-    GetLogicalDrives, OPEN_EXISTING,
+    CreateFileW, GetDriveTypeW, GetLogicalDrives, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 #[cfg(windows)]
 use windows::Win32::System::Ioctl::{
-    IOCTL_STORAGE_QUERY_PROPERTY, STORAGE_BUS_TYPE, STORAGE_DEVICE_DESCRIPTOR,
-    STORAGE_PROPERTY_QUERY,
+    IOCTL_STORAGE_QUERY_PROPERTY, STORAGE_DEVICE_DESCRIPTOR, STORAGE_PROPERTY_ID,
+    STORAGE_PROPERTY_QUERY, STORAGE_QUERY_TYPE,
 };
 #[cfg(windows)]
-use windows::Win32::System::IO::DeviceIoControl;
-#[cfg(windows)]
 use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+#[cfg(windows)]
+use windows::Win32::System::IO::DeviceIoControl;
 
 /// Error type for disk enumeration and identity operations.
 #[derive(Debug, thiserror::Error)]
@@ -124,10 +124,13 @@ pub struct DiskIdentity {
     /// Drive model string (e.g., `WDC WD10EZEX-00BN5A0`).
     pub model: String,
     /// Current drive letter, if assigned (volatile -- may change).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub drive_letter: Option<char>,
     /// Drive serial number (may not be available from all controllers).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub serial: Option<String>,
     /// Drive capacity in bytes (may be unavailable for some devices).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
     /// `true` if this disk hosts the system boot volume.
     /// Set at enumeration time and never user-modifiable (D-16).
@@ -303,13 +306,9 @@ fn enumerate_fixed_disks_windows() -> Result<Vec<DiskIdentity>, DiskError> {
         };
 
         // Determine drive letter by scanning fixed drives.
-        let drive_letter = find_drive_letter_for_instance_id(
-            &instance_id,
-            &out,
-        );
+        let drive_letter = find_drive_letter_for_instance_id(&instance_id, &out);
 
-        let is_boot_disk = boot_letter.is_some()
-            && drive_letter == boot_letter;
+        let is_boot_disk = boot_letter.is_some() && drive_letter == boot_letter;
 
         out.push(DiskIdentity {
             instance_id,
@@ -371,15 +370,12 @@ fn query_bus_type_ioctl(instance_id: &str) -> Result<BusType, DiskError> {
     // For simplicity, we try PhysicalDrive0 through PhysicalDrive31.
     for drive_index in 0..32u32 {
         let path = format!(r"\\.\PhysicalDrive{drive_index}");
-        let wide: Vec<u16> = path
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
 
         let handle = unsafe {
             CreateFileW(
                 windows::core::PCWSTR(wide.as_ptr()),
-                windows::Win32::Storage::FileSystem::FILE_GENERIC_READ,
+                0x8000_0000u32, // GENERIC_READ as raw u32
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 None,
                 OPEN_EXISTING,
@@ -408,13 +404,10 @@ fn query_bus_type_ioctl(instance_id: &str) -> Result<BusType, DiskError> {
 
 /// Send `IOCTL_STORAGE_QUERY_PROPERTY` to an open disk handle.
 #[cfg(windows)]
-fn query_bus_type_for_handle(
-    handle: HANDLE,
-    _instance_id: &str,
-) -> Result<BusType, DiskError> {
+fn query_bus_type_for_handle(handle: HANDLE, _instance_id: &str) -> Result<BusType, DiskError> {
     let query = STORAGE_PROPERTY_QUERY {
-        PropertyId: 0, // StorageDeviceProperty
-        QueryType: 0,  // PropertyStandardQuery
+        PropertyId: STORAGE_PROPERTY_ID(0), // StorageDeviceProperty
+        QueryType: STORAGE_QUERY_TYPE(0),   // PropertyStandardQuery
         AdditionalParameters: [0u8; 1],
     };
 
@@ -488,11 +481,7 @@ fn is_usb_bridged_windows(instance_id: &str) -> Result<bool, DiskError> {
     }
 
     // Fallback: PnP tree walk.
-    match is_usb_bridged_pnp_walk(instance_id) {
-        Ok(true) => Ok(true),
-        Ok(false) => Ok(false),
-        Err(e) => Err(e),
-    }
+    is_usb_bridged_pnp_walk(instance_id)
 }
 
 /// PnP tree walk fallback for USB-bridged detection.
@@ -563,8 +552,7 @@ fn get_boot_drive_letter_windows() -> Option<char> {
         return None;
     }
     let path = String::from_utf16_lossy(
-        &buf
-            .iter()
+        &buf.iter()
             .copied()
             .take_while(|w| *w != 0)
             .collect::<Vec<u16>>(),
@@ -597,10 +585,7 @@ fn find_drive_letter_for_instance_id(
         }
 
         let path = format!("{letter}:\\");
-        let wide: Vec<u16> = path
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
 
         let drive_type = unsafe { GetDriveTypeW(windows::core::PCWSTR(wide.as_ptr())) };
         if drive_type != DRIVE_FIXED {
@@ -761,7 +746,10 @@ mod tests {
     #[test]
     fn test_disk_error_display() {
         let e = DiskError::IoctlFailed("test error".to_string());
-        assert_eq!(format!("{e}"), "IOCTL_STORAGE_QUERY_PROPERTY failed: test error");
+        assert_eq!(
+            format!("{e}"),
+            "IOCTL_STORAGE_QUERY_PROPERTY failed: test error"
+        );
     }
 
     #[test]

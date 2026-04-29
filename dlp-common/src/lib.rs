@@ -9,6 +9,7 @@ pub mod ad_client;
 pub mod audit;
 pub mod classification;
 pub mod classifier;
+pub mod disk;
 pub mod endpoint;
 pub mod usb;
 
@@ -17,5 +18,8 @@ pub use ad_client::{get_device_trust, get_network_location, AdClient, AdClientEr
 pub use audit::*;
 pub use classification::*;
 pub use classifier::classify_text;
+pub use disk::{
+    enumerate_fixed_disks, get_boot_drive_letter, is_usb_bridged, BusType, DiskError, DiskIdentity,
+};
 pub use endpoint::{AppIdentity, AppTrustTier, DeviceIdentity, SignatureState, UsbTrustTier};
 pub use usb::{enumerate_connected_usb_devices, parse_usb_device_path};
