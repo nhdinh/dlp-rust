@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-22 — Phase 27 complete (USB-04 delivered)*
+*Last updated: 2026-04-29 — v0.6.0 Endpoint Hardening shipped*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -12,14 +12,23 @@ Enterprise-grade Data Loss Prevention system that enforces ABAC-based access pol
 
 Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
 
-## Current Milestone: v0.6.0 Endpoint Hardening
+## Current Milestone: (none — v0.6.0 shipped 2026-04-29)
 
-**Goal:** Extend the enforcement layer with application identity, browser boundary control, and USB device control — all surfaced as first-class ABAC subject attributes.
+**Next milestone to be defined.** Use `/gsd-new-milestone` to start planning.
 
-**Target features:**
-- SEED-001: Application-aware DLP — source/destination process identity for clipboard/paste flows
-- SEED-002: Protected clipboard browser boundary — managed vs. unmanaged web origins inside the browser
-- SEED-003: USB device-identity whitelist — VID/PID/Serial registry, read-only trust tier, user toast, ABAC device attributes
+## Shipped: v0.6.0 Endpoint Hardening (2026-04-29)
+
+**Delivered:** All 9 phases complete — APP-01..06, BRW-01..03, USB-01..04 all validated. Phase 30 (Automated UAT Infrastructure) closed all deferred human UAT gaps.
+
+- Phase 22: dlp-common Foundation — shared types (AppIdentity, DeviceIdentity, UsbTrustTier) gating all three tracks
+- Phase 23-24: USB Enumeration + Device Registry DB — VID/PID/Serial capture, trust-tier CRUD admin API, agent cache polling
+- Phase 25-26: App Identity Capture + ABAC Enforcement — source/dest process identity via WinVerifyTrust, Authenticode anti-spoofing, evaluator honors app-identity conditions
+- Phase 27: USB Toast Notification — per-drive 30s cooldown, winrt-notification reuse
+- Phase 28: Admin TUI Screens — Device Registry, Managed Origins, App Identity conditions builder
+- Phase 29: Chrome Enterprise Connector — named-pipe server at `\\.\pipe\brcm_chrm_cas`, protobuf frame protocol, browser clipboard block
+- Phase 30: Automated UAT Infrastructure — headless TUI tests, E2E agent TOML write-back, hot-reload verification, CI build gates
+
+## Current State — all surfaced as first-class ABAC subject attributes.
 
 ## Current State
 
@@ -38,16 +47,13 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - Phase 20: Operator Expansion — per-attribute operator sets (`gt`, `lt`, `ne`, `contains`) in evaluator and builder (POLICY-11)
 - Phase 21: In-Place Condition Editing — `'e'` key pre-fills 3-step picker, replace-at-index on save (POLICY-10)
 
-## In Progress: v0.6.0 Endpoint Hardening
-
-**Phases 22–27 complete (6/8).** USB-04 (toast notification) delivered in Phase 27 — `UsbBlockResult` carries identity+tier+notify, 30s per-drive cooldown gates repeat toasts without suppressing blocks, `Pipe2AgentMsg::Toast` broadcast wired into the USB block handler. All USB requirements (USB-01..04) now validated.
-
-**Remaining:** Phase 28 (Admin TUI Screens — APP-04, BRW-02), Phase 29 (Chrome Enterprise Connector — BRW-01, BRW-03).
-
 ## Deferred (future milestones)
 
-- **v0.5.x Server Hardening:** batch import endpoint to reduce cache invalidations, typed `Decision` action field, TOML export unblock (POLICY-F4..F6)
-- **Application-aware DLP (SEED-001):** source/destination app identity as ABAC attribute — revisit in a dedicated endpoint-hardening milestone
+- **v0.7.0 Server Hardening:** batch import endpoint to reduce cache invalidations, typed `Decision` action field, TOML export unblock (POLICY-F4..F6)
+- **Browser Extension (SEED-002 Path A):** Native Chrome/Edge Manifest V3 extension for tab-level origin control
+- **UWP App Identity (APP-07):** AUMID resolution via `IShellItem` / `GetApplicationUserModelId`
+- **USB Audit Fields (USB-05):** VID/PID/Serial/description in USB block audit events
+- **Per-User Device Registry (USB-06):** owner_user column for multi-user machines
 
 ## Architecture
 
@@ -109,22 +115,27 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - ✓ POLICY-11: Admin can pick expanded operators (`gt`, `lt`, `ne`, `contains`) where the attribute type permits; evaluator honors them — v0.5.0 (Phase 20)
 - ✓ POLICY-12: Existing v0.4.0 policies default to `mode = ALL`; backward-compat migration via `ALTER TABLE` — v0.5.0 (Phase 18)
 
-### Active (v0.6.0 Endpoint Hardening)
+### Validated (shipped in v0.6.0)
 
-- [ ] APP-01: DLP agent captures destination process image path and publisher at paste time
-- [ ] APP-02: DLP agent captures source process identity via GetClipboardOwner at clipboard-change time
-- [ ] APP-03: Evaluator enforces allow/deny based on source_application and destination_application ABAC attributes
-- [ ] APP-04: Admin can author policies using app identity conditions (publisher, image path, trust tier) in TUI
-- [ ] APP-05: Audit events include source_application and destination_application fields populated on clipboard block
-- [ ] APP-06: Anti-spoofing: Authenticode signature verification for process identity (prevents renamed binary bypass)
-- [ ] BRW-01: dlp-server exposes Chrome Enterprise Connector scan endpoint for browser clipboard events
-- [ ] BRW-02: Admin can manage managed-origins list (trusted web domains) via TUI and admin API
-- [ ] BRW-03: Paste from protected origin to unmanaged origin is blocked and audited
-- [ ] USB-01: DLP agent captures VID/PID/Serial/description on USB device arrival via SetupDi API
-- [ ] USB-02: Admin can register/deregister USB devices with trust tier (blocked/read_only/full_access) via TUI and admin API
-- [ ] USB-03: Agent enforces trust tier at I/O time (read_only: allow reads, deny writes; blocked: deny all)
-- [ ] USB-04: User receives toast notification on USB block with policy explanation
+- ✓ APP-01: DLP agent captures destination process image path and publisher at paste time — Phase 25
+- ✓ APP-02: DLP agent captures source process identity via GetClipboardOwner at clipboard-change time — Phase 25
+- ✓ APP-03: Evaluator enforces allow/deny based on source_application and destination_application ABAC attributes — Phase 26
+- ✓ APP-04: Admin can author policies using app identity conditions (publisher, image path, trust tier) in TUI — Phase 28
+- ✓ APP-05: Audit events include source_application and destination_application fields populated on clipboard block — Phase 25
+- ✓ APP-06: Anti-spoofing: Authenticode signature verification for process identity (prevents renamed binary bypass) — Phase 25
+- ✓ BRW-01: dlp-agent registers as Chrome Content Analysis agent via named pipe — Phase 29
+- ✓ BRW-02: Admin can manage managed-origins list (trusted web domains) via TUI and admin API — Phase 28
+- ✓ BRW-03: Paste from protected origin to unmanaged origin is blocked and audited — Phase 29
+- ✓ USB-01: DLP agent captures VID/PID/Serial/description on USB device arrival via SetupDi API — Phase 23
+- ✓ USB-02: Admin can register/deregister USB devices with trust tier via TUI and admin API — Phase 24
+- ✓ USB-03: Agent enforces trust tier at I/O time (read_only: allow reads, deny writes; blocked: deny all) — Phase 26
+- ✓ USB-04: User receives toast notification on USB block with policy explanation — Phase 27
+
+### Deferred to future milestones
+
 - [ ] USB-05: Audit events include device identity fields (VID, PID, serial, description) on USB block
+- [ ] USB-06: Per-user device registry (owner_user column)
+- [ ] APP-07: UWP app identity via AUMID
 
 ### Out of Scope
 

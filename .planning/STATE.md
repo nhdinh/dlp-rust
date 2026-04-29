@@ -1,15 +1,15 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.5.0
-milestone_name: - Boolean Logic
+milestone: v0.6.0
+milestone_name: Endpoint Hardening
 status: complete
-last_updated: "2026-04-29T09:46:00.000Z"
-last_activity: 2026-04-29 -- Phase 29 execution complete (all 4 plans)
+last_updated: "2026-04-29T10:40:00+07:00"
+last_activity: 2026-04-29 -- Milestone v0.6.0 archived and tagged
 progress:
-  total_phases: 18
-  completed_phases: 16
-  total_plans: 54
-  completed_plans: 55
+  total_phases: 27
+  completed_phases: 27
+  total_plans: 97
+  completed_plans: 97
   percent: 100
 ---
 
@@ -20,15 +20,15 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-21)
 
 **Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** Phase 29 — chrome-enterprise-connector (COMPLETE)
+**Current focus:** Milestone v0.6.0 complete — no active phase
 
 ## Current Position
 
-Phase: 29 (chrome-enterprise-connector) — COMPLETE
-Plan: 4 of 4
-Status: All plans executed and verified
-Next: Phase 28 verification or Phase 30 execution
-Last activity: 2026-04-29 -- Phase 29 execution complete (all 4 plans)
+Milestone: v0.6.0 Endpoint Hardening — COMPLETE
+Phases: 22-30 all shipped
+Status: All 43 plans executed and verified; 13/13 requirements validated
+Next: Define v0.7.0 milestone via `/gsd-new-milestone`
+Last activity: 2026-04-29 -- Milestone v0.6.0 archived and tagged
 
 ## Decisions
 
