@@ -319,7 +319,10 @@ impl DeviceController {
 
         // SAFETY: free the security descriptor allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
         if !p_sd.0.is_null() {
-            let _ = unsafe { LocalFree(windows::Win32::Foundation::HLOCAL(p_sd.0)) };
+            let ret = unsafe { LocalFree(windows::Win32::Foundation::HLOCAL(p_sd.0)) };
+            if !ret.0.is_null() {
+                warn!("LocalFree failed for security descriptor");
+            }
         }
 
         if set_ok == windows::Win32::Foundation::BOOL(0) {
