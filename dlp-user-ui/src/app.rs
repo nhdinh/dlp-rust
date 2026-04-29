@@ -90,9 +90,7 @@ fn spawn_ipc_tasks(session_id: u32, pipe1_connected: Arc<RwLock<bool>>) {
     // Pipe 1 -- bidirectional command pipe.
     let connected = pipe1_connected;
     tokio::spawn(async move {
-        // Mark connected BEFORE entering the blocking read loop.
-        *connected.write() = true;
-        match ipc::pipe1::connect_and_run(session_id).await {
+        match ipc::pipe1::connect_and_run(session_id, Some(connected.clone())).await {
             Ok(()) => {
                 debug!(session_id, "Pipe 1: connection closed normally")
             }

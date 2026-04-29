@@ -102,6 +102,18 @@ async fn session_loop(active_sessions: Arc<Mutex<HashSet<u32>>>) {
         let current = HashSet::from_iter(current_sessions.clone());
         let mut active = active_sessions.lock();
 
+        // Check liveness of existing UIs and respawn any that crashed while
+        // the session is still active.
+        let active_snapshot: Vec<u32> = active.iter().copied().collect();
+        for session_id in active_snapshot {
+            if !ui_spawner::is_ui_alive(session_id) {
+                warn!(session_id, "Session monitor: UI process died — respawning");
+                active.remove(&session_id);
+                let _ = handle_session_start(session_id);
+                active.insert(session_id);
+            }
+        }
+
         // Sessions that disappeared → user logged off.
         let gone: Vec<u32> = active.difference(&current).copied().collect();
         for session_id in gone {

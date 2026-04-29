@@ -60,10 +60,17 @@ fn open_pipe() -> Result<HANDLE> {
 ///
 /// Connects to Pipe 1, sends `RegisterSession`, then processes incoming
 /// agent messages in a loop until the pipe is closed.
-pub async fn connect_and_run(session_id: u32) -> Result<()> {
+pub async fn connect_and_run(
+    session_id: u32,
+    connected: Option<std::sync::Arc<parking_lot::RwLock<bool>>>,
+) -> Result<()> {
     debug!("Pipe 1: attempting to connect to {}", PIPE_NAME);
     let handle = open_pipe()?;
     info!(session_id, "Pipe 1: connected to agent");
+
+    if let Some(ref c) = connected {
+        *c.write() = true;
+    }
 
     // Send RegisterSession immediately as the first frame.
     let msg = Pipe1UiMsg::RegisterSession { session_id };
@@ -79,11 +86,19 @@ pub async fn connect_and_run(session_id: u32) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("join error: {}", e))?
 }
 
+/// Maximum time between agent messages before assuming the agent is dead.
+const HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// The blocking read loop for a Pipe 1 client.
 fn client_loop(pipe: HANDLE, session_id: u32) -> Result<()> {
+    // Initialised to a sentinel; overwritten on first successful read_frame.
+    #[allow(unused_assignments)]
+    let mut last_message: Option<std::time::Instant> = None;
+
     loop {
         match read_frame(pipe) {
             Ok(frame) => {
+                last_message = Some(std::time::Instant::now());
                 let msg: Pipe1AgentMsg = match serde_json::from_slice(&frame) {
                     Ok(m) => m,
                     Err(e) => {
@@ -95,7 +110,7 @@ fn client_loop(pipe: HANDLE, session_id: u32) -> Result<()> {
                 debug!(?msg, "Pipe 1: received from agent");
 
                 // Handle the message and optionally send a response.
-                if let Some(response) = handle_agent_msg(msg, session_id) {
+                if let Some(response) = handle_agent_msg(msg, session_id, pipe) {
                     if let Err(e) = write_frame(pipe, &response) {
                         error!(error = %e, "Pipe 1: failed to write response");
                         break;
@@ -106,6 +121,11 @@ fn client_loop(pipe: HANDLE, session_id: u32) -> Result<()> {
                 debug!(error = %e, "Pipe 1: read error — disconnecting");
                 break;
             }
+        }
+
+        if last_message.is_some_and(|t| t.elapsed() > HEARTBEAT_TIMEOUT) {
+            error!(session_id, "Pipe 1: heartbeat timeout — agent appears dead");
+            break;
         }
     }
 
@@ -144,7 +164,7 @@ fn handle_clipboard_read(request_id: String, session_id: u32) -> Option<Pipe1UiM
 }
 
 /// Handles an incoming agent message and returns an optional response.
-fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
+fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32, pipe: HANDLE) -> Option<Vec<u8>> {
     match msg {
         Pipe1AgentMsg::BlockNotify {
             reason,
@@ -221,6 +241,16 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
                 }
             };
             serialize_response(&msg, session_id, "password message")
+        }
+        Pipe1AgentMsg::Ping => {
+            debug!(session_id, "Pipe 1: Ping received — sending Pong");
+            let pong = Pipe1UiMsg::Pong;
+            if let Ok(json) = serde_json::to_vec(&pong) {
+                if write_frame(pipe, &json).is_err() {
+                    debug!(session_id, "Pipe 1: failed to write Pong");
+                }
+            }
+            None
         }
     }
 }

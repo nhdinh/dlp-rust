@@ -98,6 +98,9 @@ pub fn is_stop_confirmed() -> bool {
 /// without an AD server.  Never compiled into release binaries.
 pub fn confirm_stop_immediate() {
     info!("stop confirmed without password (debug mode)");
+    // Clear any stale pending state from a previous stop cycle so the
+    // service does not get stuck waiting for an already-resolved request.
+    reset_stop_state();
     STOP_CONFIRMED.store(true, Ordering::Release);
 }
 
