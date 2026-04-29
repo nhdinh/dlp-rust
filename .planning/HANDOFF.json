@@ -1,37 +1,29 @@
 {
   "version": "1.0",
-  "timestamp": "2026-04-29T00:20:00+07:00",
-  "phase": "30",
-  "phase_name": "automated-uat-infrastructure",
-  "phase_dir": ".planning/phases/30-automated-uat-infrastructure",
-  "plan": 10,
-  "task": 10,
-  "total_tasks": 10,
-  "status": "complete",
+  "timestamp": "2026-04-29T00:38:11.149Z",
+  "phase": "29",
+  "phase_name": "chrome-enterprise-connector",
+  "phase_dir": ".planning/phases/29-chrome-enterprise-connector",
+  "plan": 2,
+  "task": 0,
+  "total_tasks": 4,
+  "status": "paused",
   "completed_tasks": [
-    {"id": 1, "name": "dlp-e2e test harness foundation", "status": "done", "commit": "0d84496"},
-    {"id": 2, "name": "Device Registry TUI test", "status": "done", "commit": "a500117"},
-    {"id": 3, "name": "Managed Origins TUI test", "status": "done", "commit": "bc3c3b5"},
-    {"id": 4, "name": "Conditions Builder TUI test", "status": "done", "commit": "bcd6379"},
-    {"id": 5, "name": "Agent TOML write-back test", "status": "done", "commit": "6254452"},
-    {"id": 6, "name": "Hot-reload config tests", "status": "done", "commit": "ade130a"},
-    {"id": 7, "name": "USB write-protection unit tests", "status": "done", "commit": "39c6419"},
-    {"id": 8, "name": "USB UAT PowerShell script", "status": "done", "commit": "2db8a48"},
-    {"id": 9, "name": "CI build.yml test job", "status": "done", "commit": "b850b01"},
-    {"id": 10, "name": "Nightly release workflow", "status": "done", "commit": "b850b01"}
+    {"id": 1, "name": "29-01: Protobuf + Frame Protocol + Module Scaffolding", "status": "done", "commit": "c8547c3"},
+    {"id": 2, "name": "29-02: ManagedOriginsCache + Server Client + Audit Fields", "status": "done", "commit": "a111532"}
   ],
-  "remaining_tasks": [],
+  "remaining_tasks": [
+    {"id": 3, "name": "29-03: Chrome Pipe Server + HKLM Registration + Service Wiring", "status": "not_started"},
+    {"id": 4, "name": "29-04: Tests + Zero-Warning Build Gate", "status": "not_started"}
+  ],
   "blockers": [],
   "human_actions_pending": [],
   "decisions": [
-    {"decision": "Added 6 env-var overrides to dlp-agent for testability", "rationale": "Integration tests need to spawn agent binary without admin privileges", "phase": "30"},
-    {"decision": "Alert delivery tests added to dlp-server alert_router module", "rationale": "Close deferred Phase 4 UAT items for SMTP and webhook", "phase": "30"}
+    {"decision": "Use prost + prost-build with vendored .proto", "rationale": "Standard Rust protobuf stack, no gRPC needed", "phase": "29"},
+    {"decision": "Pipe name: \\\\.\\\\pipe\\brcm_chrm_cas", "rationale": "Matches Chrome Enterprise SDK demo agent base name", "phase": "29"},
+    {"decision": "ManagedOriginsCache mirrors DeviceRegistryCache exactly", "rationale": "Proven pattern, atomic HashSet replacement", "phase": "29"}
   ],
-  "uncommitted_files": [
-    ".gitignore", ".planning/ROADMAP.md", ".planning/STATE.md",
-    ".planning/debug/*.md", "CLAUDE.md", "dlp-agent/src/detection/usb.rs",
-    "dlp-agent/src/device_registry.rs", "dlp-agent/tests/device_registry_cache.rs"
-  ],
-  "next_action": "Close v0.6.0 milestone with /gsd-complete-milestone",
-  "context_notes": "Phase 30 fully complete. All 9 deferred UAT items automated. UAT passed 6/6. Working tree has pre-session unstaged changes unrelated to Phase 30 work."
+  "uncommitted_files": [],
+  "next_action": "/gsd-execute-phase 29 --wave 2",
+  "context_notes": "Wave 1 complete and merged. Wave 2 plans (29-03, 29-04) ready to execute. No blockers. All code compiles."
 }
