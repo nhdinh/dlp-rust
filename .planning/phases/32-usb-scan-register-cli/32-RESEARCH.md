@@ -581,17 +581,13 @@ pub use usb::parse_usb_device_path;
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **GUID for D-10 enumeration**
-   - What we know: Agent uses `GUID_DEVINTERFACE_USB_DEVICE` for identity capture on arrival events. D-10 says "use `GUID_DEVINTERFACE_DISK` filtered to removable media."
-   - What's unclear: Whether `GUID_DEVINTERFACE_DISK` enumeration via `SetupDiGetClassDevsW` returns usable VID/PID device instance IDs that `parse_usb_device_path` can parse. Disk interface paths have a different format than USB device paths.
-   - Recommendation: Use `GUID_DEVINTERFACE_USB_DEVICE` in the new enumeration function (it works in the agent today) with a filter to skip non-storage devices. Flag this for planner decision.
+1. **GUID for D-10 enumeration** — RESOLVED: Use `GUID_DEVINTERFACE_USB_DEVICE`
+   - Resolution: `GUID_DEVINTERFACE_DISK` device-instance paths have a different format than USB device paths and are incompatible with `parse_usb_device_path`. The agent uses `GUID_DEVINTERFACE_USB_DEVICE` today with working VID/PID parsing. D-10 in CONTEXT.md has been updated to reflect this answer. Filter to devices with non-empty parsed VID+PID to exclude hubs and HID devices.
 
-2. **EngineClient::clone() availability**
-   - What we know: `EngineClient` derives `Clone` (seen in client.rs line 14: `#[derive(Clone)]`).
-   - What's unclear: Whether cloning into the `async move` block is idiomatic or if passing a `&'async` ref is cleaner.
-   - Recommendation: Clone is correct here — the async block needs owned data; `reqwest::Client` is internally Arc-backed so clone is cheap.
+2. **EngineClient::clone() availability** — RESOLVED: Clone is correct
+   - Resolution: `EngineClient` derives `Clone` (client.rs line 14). Cloning into the `async move` block is the idiomatic pattern; `reqwest::Client` is internally `Arc`-backed so clone is cheap. Use `let client = app.client.clone()` before `block_on`.
 
 ---
 
