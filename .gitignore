@@ -43,3 +43,7 @@ installer/dist/
 
 # RTK / alternate target dirs
 target-test/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads-credential-key
