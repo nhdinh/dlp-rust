@@ -157,6 +157,34 @@ pub enum CallerScreen {
     PolicyEdit,
 }
 
+/// Identifies which screen opened `Screen::DeviceTierPicker`, used for
+/// post-registration return routing (per Phase 32 D-05).
+///
+/// Mirrors the `CallerScreen` pattern used by `ConditionsBuilder` for return
+/// routing — see `CallerScreen` above.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TierPickerCaller {
+    /// Picker opened from the manual register flow in `Screen::DeviceList`.
+    DeviceList,
+    /// Picker opened from the USB scan and register screen (`Screen::UsbScan`).
+    UsbScan,
+}
+
+/// A single row in the USB scan and register list: a locally-enumerated
+/// USB device identity cross-referenced with the server registry.
+///
+/// Constructed by Plan 03's `action_usb_scan` from the merged
+/// `dlp_common::usb::enumerate_connected_usb_devices()` output and
+/// `GET /admin/device-registry/full` response.
+#[derive(Debug, Clone)]
+pub struct UsbScanEntry {
+    /// VID, PID, serial, description from SetupDi enumeration.
+    pub identity: dlp_common::DeviceIdentity,
+    /// `None` = device not in server registry; `Some("read_only")` etc.
+    /// when registered with that trust tier (string mirrors server response).
+    pub registered_tier: Option<String>,
+}
+
 /// All state for the Policy Create / Edit form.
 ///
 /// Holds form fields and the accumulated conditions list.
@@ -551,7 +579,7 @@ pub enum Screen {
         /// Which menu opened this screen (for Esc return destination).
         caller: SimulateCaller,
     },
-    /// "Devices & Origins" submenu with 2 items: Device Registry, Managed Origins.
+    /// "Devices & Origins" submenu with 3 items: Device Registry, Managed Origins, Scan & Register USB.
     DevicesMenu { selected: usize },
 
     /// Scrollable registered-device list.
@@ -573,6 +601,21 @@ pub enum Screen {
         serial: String,
         description: String,
         /// Selected tier index: 0 = blocked, 1 = read_only, 2 = full_access.
+        selected: usize,
+        /// Which screen opened the picker (for post-registration routing).
+        caller: TierPickerCaller,
+    },
+    /// USB scan and register screen.
+    ///
+    /// Opens empty (devices = vec![]); the `r` key triggers the concurrent
+    /// USB enumeration + registry fetch (Plan 03's `action_usb_scan`).
+    /// Enter on a row transitions to `Screen::DeviceTierPicker` with
+    /// `caller: TierPickerCaller::UsbScan`.
+    /// Keybindings: r=scan, Up/Down=navigate, Enter=register, Esc=back.
+    UsbScan {
+        /// Merged local USB devices cross-referenced with the registry.
+        devices: Vec<UsbScanEntry>,
+        /// Currently highlighted row index.
         selected: usize,
     },
 
@@ -834,5 +877,40 @@ mod import_export_tests {
         assert_eq!(deserialized.priority, payload.priority);
         assert_eq!(deserialized.action, payload.action);
         assert_eq!(deserialized.enabled, payload.enabled);
+    }
+
+    #[test]
+    fn test_tier_picker_caller_variants_are_copy() {
+        let a = TierPickerCaller::DeviceList;
+        let b = a; // Copy semantics — `a` still usable below
+        assert_eq!(a, TierPickerCaller::DeviceList);
+        assert_eq!(b, TierPickerCaller::DeviceList);
+        assert_ne!(a, TierPickerCaller::UsbScan);
+    }
+
+    #[test]
+    fn test_usb_scan_entry_default_construction() {
+        let entry = UsbScanEntry {
+            identity: dlp_common::DeviceIdentity::default(),
+            registered_tier: None,
+        };
+        let clone = entry.clone();
+        assert_eq!(clone.identity.vid, "");
+        assert_eq!(clone.identity.pid, "");
+        assert_eq!(clone.identity.serial, "");
+        assert_eq!(clone.identity.description, "");
+        assert!(clone.registered_tier.is_none());
+    }
+
+    #[test]
+    fn test_screen_usbscan_variant_constructible() {
+        let s = Screen::UsbScan { devices: vec![], selected: 0 };
+        match s {
+            Screen::UsbScan { devices, selected } => {
+                assert!(devices.is_empty());
+                assert_eq!(selected, 0);
+            }
+            _ => panic!("expected Screen::UsbScan"),
+        }
     }
 }

@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use crate::app::{
     App, CallerScreen, ConditionAttribute, ConfirmPurpose, ImportCaller, ImportState, InputPurpose,
     PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState, SimulateOutcome,
-    StatusKind, ACTION_OPTIONS, ATTRIBUTES,
+    StatusKind, TierPickerCaller, ACTION_OPTIONS, ATTRIBUTES,
 };
 use crate::event::AppEvent;
 use dlp_common::abac::PolicyMode;
@@ -47,6 +47,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::DeviceList { .. } => handle_device_list(app, key),
         Screen::DeviceTierPicker { .. } => handle_device_tier_picker(app, key),
         Screen::ManagedOriginList { .. } => handle_managed_origin_list(app, key),
+        Screen::UsbScan { .. } => {}
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -325,6 +326,7 @@ fn on_text_confirmed(app: &mut App, value: &str, purpose: InputPurpose) {
                 serial,
                 description: value.to_string(),
                 selected: 0,
+                caller: TierPickerCaller::DeviceList,
             };
         }
         InputPurpose::AddManagedOrigin => {
@@ -3687,6 +3689,7 @@ fn handle_device_tier_picker(app: &mut App, key: KeyEvent) {
             serial,
             description,
             selected,
+            ..
         } => (
             vid.clone(),
             pid.clone(),
