@@ -828,103 +828,119 @@ pub fn register_usb_notifications(
 ) -> windows::core::Result<(HWND, std::thread::JoinHandle<()>)> {
     *DRIVE_DETECTOR.lock() = Some(detector);
 
-    // Step 1: register window class.
-    let class_name: Vec<u16> = "DlpUsbNotificationWindow\0".encode_utf16().collect();
-    let wc = WNDCLASSW {
-        lpfnWndProc: Some(usb_wndproc),
-        lpszClassName: windows::core::PCWSTR(class_name.as_ptr()),
-        ..Default::default()
-    };
+    // Windows message delivery is thread-affine: WM_DEVICECHANGE is posted to
+    // the queue of the thread that called CreateWindowExW. GetMessageW only
+    // dequeues messages for the calling thread's own queue. Therefore the window
+    // must be created, notifications registered, and the message loop run on the
+    // same thread. We spawn that thread first and receive the HWND back via a
+    // channel so the caller can pass it to unregister_usb_notifications later.
+    //
+    // HWND is !Send (raw pointer wrapper), so we transmit it as usize and
+    // reconstruct it on the caller side.
+    let (hwnd_tx, hwnd_rx) =
+        std::sync::mpsc::channel::<windows::core::Result<usize>>();
 
-    // SAFETY: class_name is a null-terminated wide string.
-    let atom = unsafe { RegisterClassW(&wc) };
-    if atom == 0 {
-        return Err(windows::core::Error::from_win32());
-    }
-
-    // Step 2: create message-only window.
-    // SAFETY: atom is a valid class atom returned by RegisterClassW.
-    let hwnd = unsafe {
-        CreateWindowExW(
-            WS_EX_NOACTIVATE,
-            windows::core::PCWSTR::from_raw(atom as *const u16),
-            windows::core::PCWSTR::null(),
-            WINDOW_STYLE(0),
-            0,
-            0,
-            0,
-            0,
-            None,
-            None,
-            None,
-            None,
-        )
-    }?;
-
-    // Step 3a: register for VOLUME device notifications (drive-letter tracking).
-    // DEV_BROADCAST_DEVICEINTERFACE_W is variable-size; we construct it as bytes.
-    let db_size = std::mem::size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>();
-    let mut vol_buf: Vec<u8> = vec![0u8; db_size];
-    let dbc_vol = vol_buf.as_mut_ptr() as *mut DEV_BROADCAST_DEVICEINTERFACE_W;
-
-    // SAFETY: dbc_vol points to db_size bytes that we own and are properly aligned.
-    unsafe {
-        (*dbc_vol).dbcc_size = db_size as u32;
-        (*dbc_vol).dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE.0;
-        (*dbc_vol).dbcc_reserved = 0;
-        (*dbc_vol).dbcc_classguid = GUID_DEVINTERFACE_VOLUME;
-    }
-
-    // SAFETY: hwnd is a valid window; dbc_vol points to an initialized struct.
-    let vol_handle = unsafe {
-        RegisterDeviceNotificationW(hwnd, dbc_vol as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
-    };
-
-    if let Err(e) = vol_handle {
-        let _ = unsafe { DestroyWindow(hwnd) };
-        return Err(e);
-    }
-
-    // Step 3b: register for USB_DEVICE notifications (VID/PID/serial capture).
-    // Second registration: GUID_DEVINTERFACE_USB_DEVICE for raw USB device
-    // arrival/removal. Fires independently of VOLUME notifications so we
-    // can capture VID/PID/serial from the device path (D-01, D-02).
-    let mut usb_buf: Vec<u8> = vec![0u8; db_size];
-    let dbc_usb = usb_buf.as_mut_ptr() as *mut DEV_BROADCAST_DEVICEINTERFACE_W;
-
-    // SAFETY: dbc_usb points to db_size bytes that we own and are properly aligned.
-    unsafe {
-        (*dbc_usb).dbcc_size = db_size as u32;
-        (*dbc_usb).dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE.0;
-        (*dbc_usb).dbcc_reserved = 0;
-        (*dbc_usb).dbcc_classguid = GUID_DEVINTERFACE_USB_DEVICE;
-    }
-
-    // SAFETY: hwnd is valid; dbc_usb points to an initialized struct.
-    let usb_handle = unsafe {
-        RegisterDeviceNotificationW(hwnd, dbc_usb as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
-    };
-
-    if let Err(e) = usb_handle {
-        let _ = unsafe { DestroyWindow(hwnd) };
-        return Err(e);
-    }
-
-    // Store notification handles for later cleanup (CR-04).
-    let vol_h = vol_handle.unwrap();
-    let usb_h = usb_handle.unwrap();
-    *NOTIFY_HANDLES.lock() = Some((vol_h.0 as isize, usb_h.0 as isize));
-
-    // Step 4: run message loop on a thread.
     let thread = std::thread::Builder::new()
         .name("usb-notification".into())
         .spawn(move || {
+            // Step 1: register window class on this thread.
+            let class_name: Vec<u16> = "DlpUsbNotificationWindow\0".encode_utf16().collect();
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(usb_wndproc),
+                lpszClassName: windows::core::PCWSTR(class_name.as_ptr()),
+                ..Default::default()
+            };
+
+            // SAFETY: class_name is a null-terminated wide string kept alive past
+            // RegisterClassW (only the atom is needed by CreateWindowExW below).
+            let atom = unsafe { RegisterClassW(&wc) };
+            if atom == 0 {
+                let _ = hwnd_tx.send(Err(windows::core::Error::from_win32()));
+                return;
+            }
+
+            // Step 2: create the message-only window on this thread.
+            // SAFETY: atom is a valid class atom returned by RegisterClassW.
+            let hwnd = match unsafe {
+                CreateWindowExW(
+                    WS_EX_NOACTIVATE,
+                    windows::core::PCWSTR::from_raw(atom as *const u16),
+                    windows::core::PCWSTR::null(),
+                    WINDOW_STYLE(0),
+                    0, 0, 0, 0,
+                    None, None, None, None,
+                )
+            } {
+                Ok(h) => h,
+                Err(e) => {
+                    let _ = hwnd_tx.send(Err(e));
+                    return;
+                }
+            };
+
+            // Step 3a: register for VOLUME device notifications (drive-letter tracking).
+            let db_size = std::mem::size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>();
+            let mut vol_buf: Vec<u8> = vec![0u8; db_size];
+            let dbc_vol = vol_buf.as_mut_ptr() as *mut DEV_BROADCAST_DEVICEINTERFACE_W;
+
+            // SAFETY: dbc_vol points to db_size bytes that we own and are properly aligned.
+            unsafe {
+                (*dbc_vol).dbcc_size = db_size as u32;
+                (*dbc_vol).dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE.0;
+                (*dbc_vol).dbcc_reserved = 0;
+                (*dbc_vol).dbcc_classguid = GUID_DEVINTERFACE_VOLUME;
+            }
+
+            // SAFETY: hwnd is valid on this thread; dbc_vol points to an initialized struct.
+            let vol_handle = unsafe {
+                RegisterDeviceNotificationW(hwnd, dbc_vol as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
+            };
+            if let Err(e) = vol_handle {
+                let _ = unsafe { DestroyWindow(hwnd) };
+                let _ = hwnd_tx.send(Err(e));
+                return;
+            }
+
+            // Step 3b: register for USB_DEVICE notifications (VID/PID/serial capture).
+            let mut usb_buf: Vec<u8> = vec![0u8; db_size];
+            let dbc_usb = usb_buf.as_mut_ptr() as *mut DEV_BROADCAST_DEVICEINTERFACE_W;
+
+            // SAFETY: dbc_usb points to db_size bytes that we own and are properly aligned.
+            unsafe {
+                (*dbc_usb).dbcc_size = db_size as u32;
+                (*dbc_usb).dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE.0;
+                (*dbc_usb).dbcc_reserved = 0;
+                (*dbc_usb).dbcc_classguid = GUID_DEVINTERFACE_USB_DEVICE;
+            }
+
+            // SAFETY: hwnd is valid; dbc_usb points to an initialized struct.
+            let usb_handle = unsafe {
+                RegisterDeviceNotificationW(hwnd, dbc_usb as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
+            };
+            if let Err(e) = usb_handle {
+                let _ = unsafe { DestroyWindow(hwnd) };
+                let _ = hwnd_tx.send(Err(e));
+                return;
+            }
+
+            // Store notification handles for later cleanup (CR-04).
+            let vol_h = vol_handle.unwrap();
+            let usb_h = usb_handle.unwrap();
+            *NOTIFY_HANDLES.lock() = Some((vol_h.0 as isize, usb_h.0 as isize));
+
+            // Signal the caller with the HWND value. Transmit as usize because
+            // HWND is !Send; the caller reconstructs it from the raw pointer value.
+            // SAFETY: hwnd.0 is a valid non-null HWND pointer on this process.
+            let _ = hwnd_tx.send(Ok(hwnd.0 as usize));
+
+            // Step 4: run the message loop on this same thread. WM_DEVICECHANGE
+            // events arrive here because the window was created on this thread.
             let mut msg = MSG::default();
             loop {
                 // SAFETY: msg is a valid pointer to an MSG struct.
                 let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
                 if ret.0 == 0 {
-                    break; // WM_QUIT received
+                    break; // WM_QUIT received via PostQuitMessage in WM_DESTROY handler
                 }
                 let _ = unsafe { TranslateMessage(&msg) };
                 let _ = unsafe { DispatchMessageW(&msg) };
@@ -932,6 +948,15 @@ pub fn register_usb_notifications(
             debug!("USB notification thread exiting");
         })
         .expect("usb-notification thread must spawn");
+
+    // Block until the spawned thread signals window creation success or failure.
+    let hwnd_raw = hwnd_rx
+        .recv()
+        .expect("usb-notification thread must send HWND result")?;
+
+    // SAFETY: hwnd_raw is a valid HWND pointer value sent from the spawned thread
+    // immediately after a successful CreateWindowExW call.
+    let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
 
     info!("USB device notifications registered (volume + device interface)");
     Ok((hwnd, thread))
