@@ -25,7 +25,8 @@ use windows::Win32::System::RemoteDesktop::{
     WTS_SESSION_INFOW,
 };
 use windows::Win32::System::Threading::{
-    CreateProcessAsUserW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
+    CreateProcessAsUserW, GetExitCodeProcess, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
+    STARTUPINFOW,
 };
 
 /// Wrapper that makes `HANDLE` `Send + Sync` for storage in statics.
@@ -281,5 +282,29 @@ pub fn kill_all() {
             let _ = CloseHandle(handle.handle.as_handle());
         }
         debug!(session_id, pid = handle.pid, "UI process terminated");
+    }
+}
+
+/// Checks whether the UI process for the given session is still alive.
+///
+/// Returns `false` if no UI is tracked for the session or if the process
+/// has exited.  Dead entries are automatically removed from `UI_HANDLES`
+/// and their Win32 handles are closed.
+pub fn is_ui_alive(session_id: u32) -> bool {
+    let mut handles = UI_HANDLES.lock();
+    let Some(handle) = handles.get(&session_id) else {
+        return false;
+    };
+    unsafe {
+        let mut exit_code: u32 = 0;
+        if GetExitCodeProcess(handle.handle.as_handle(), &mut exit_code).is_ok() && exit_code == 259
+        {
+            // STILL_ACTIVE
+            return true;
+        }
+        // Process has exited or the handle is invalid — clean up.
+        let _ = CloseHandle(handle.handle.as_handle());
+        handles.remove(&session_id);
+        false
     }
 }

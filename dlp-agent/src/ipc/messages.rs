@@ -33,6 +33,10 @@ pub enum Pipe1AgentMsg {
     ClipboardRead { request_id: String },
     /// The agent is requesting a password (for service stop authorization).
     PasswordDialog { request_id: String },
+    /// Heartbeat ping sent periodically to verify the UI is still responsive.
+    /// The UI should respond with `Pong` or silently continue; missing pings
+    /// trigger the watchdog self-terminate path.
+    Ping,
 }
 
 /// Messages sent FROM the UI TO the agent over Pipe 1.
@@ -55,6 +59,8 @@ pub enum Pipe1UiMsg {
     },
     /// The user cancelled the password dialog.
     PasswordCancel { request_id: String },
+    /// Heartbeat pong in response to agent `Ping`.
+    Pong,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

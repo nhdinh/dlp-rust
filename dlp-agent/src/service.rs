@@ -534,6 +534,23 @@ async fn run_loop(
         offline_hb.heartbeat_loop(shutdown_rx).await;
     });
 
+    // ── Start the Pipe 1 heartbeat ────────────────────────────────────────
+    let (pipe1_shutdown_tx, mut pipe1_shutdown_rx) = tokio::sync::watch::channel(false);
+    let _pipe1_hb_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    crate::ipc::pipe1::send_ping_to_all();
+                }
+                _ = pipe1_shutdown_rx.changed() => {
+                    debug!("Pipe 1 heartbeat shutting down");
+                    return;
+                }
+            }
+        }
+    });
+
     // ── Start the config poll loop ─────────────────────────────────────────
     let (config_shutdown_tx, config_shutdown_rx) = tokio::sync::watch::channel(false);
     let _config_poll_handle = if let Some(sc) = server_client_for_config {
@@ -675,6 +692,11 @@ async fn run_loop(
     let _ = _heartbeat_handle.await;
     crate::password_stop::debug_log("run_loop: heartbeat stopped");
 
+    // Stop the Pipe 1 heartbeat.
+    let _ = pipe1_shutdown_tx.send(true);
+    let _ = _pipe1_hb_handle.await;
+    crate::password_stop::debug_log("run_loop: Pipe 1 heartbeat stopped");
+
     // Stop the config poll loop.
     let _ = config_shutdown_tx.send(true);
     if let Some(h) = _config_poll_handle {
@@ -796,6 +818,17 @@ pub fn current_state() -> ServiceState {
 fn service_control_handler(control: ServiceControl) -> ServiceControlHandlerResult {
     match control {
         ServiceControl::Stop => {
+            // Guard against duplicate STOP controls while a stop is already in
+            // progress (e.g. `sc stop` issued twice or PowerShell wait-loop).
+            let current = *SERVICE_STATE.lock();
+            if current == ServiceState::StopPending || current == ServiceState::Stopped {
+                info!(
+                    service_name = SERVICE_NAME,
+                    "SCM: STOP ignored — already stopping"
+                );
+                return ServiceControlHandlerResult::NoError;
+            }
+
             info!(service_name = SERVICE_NAME, "SCM: STOP");
             *SERVICE_STATE.lock() = ServiceState::StopPending;
 
@@ -1215,6 +1248,23 @@ async fn async_run_console() -> Result<()> {
         offline_hb.heartbeat_loop(shutdown_rx).await;
     });
 
+    // ── Start the Pipe 1 heartbeat ────────────────────────────────────────
+    let (pipe1_shutdown_tx, mut pipe1_shutdown_rx) = tokio::sync::watch::channel(false);
+    let _pipe1_hb_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    crate::ipc::pipe1::send_ping_to_all();
+                }
+                _ = pipe1_shutdown_rx.changed() => {
+                    debug!("Pipe 1 heartbeat shutting down");
+                    return;
+                }
+            }
+        }
+    });
+
     // ── Start the config poll loop ─────────────────────────────────────────
     let (config_shutdown_tx, config_shutdown_rx) = tokio::sync::watch::channel(false);
     let _config_poll_handle = if let Some(sc) = server_client_for_config {
@@ -1312,6 +1362,10 @@ async fn async_run_console() -> Result<()> {
     drop(event_loop_handle);
     let _ = shutdown_tx.send(true);
     let _ = _heartbeat_handle.await;
+
+    // Stop the Pipe 1 heartbeat.
+    let _ = pipe1_shutdown_tx.send(true);
+    let _ = _pipe1_hb_handle.await;
 
     // Stop the config poll loop.
     let _ = config_shutdown_tx.send(true);

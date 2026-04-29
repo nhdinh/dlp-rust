@@ -33,6 +33,8 @@ pub enum Pipe1AgentMsg {
     PasswordDialog {
         request_id: String,
     },
+    /// Heartbeat ping sent periodically to verify the UI is still responsive.
+    Ping,
 }
 
 /// Messages sent FROM the UI TO the agent over Pipe 1.
@@ -59,6 +61,8 @@ pub enum Pipe1UiMsg {
     PasswordCancel {
         request_id: String,
     },
+    /// Heartbeat pong in response to agent `Ping`.
+    Pong,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

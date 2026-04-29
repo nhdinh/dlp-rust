@@ -360,6 +360,10 @@ fn dispatch(msg: Pipe1UiMsg) -> Option<Vec<u8>> {
             crate::password_stop::handle_password_cancel(&request_id);
             None
         }
+        Pipe1UiMsg::Pong => {
+            debug!("Pipe 1: Pong received");
+            None
+        }
     }
 }
 
@@ -427,4 +431,26 @@ pub fn send_password_dialog(request_id: &str) -> Result<u32> {
 /// Returns the number of currently connected Pipe 1 clients.
 pub fn connected_client_count() -> usize {
     CLIENTS.read().len()
+}
+
+/// Sends a `Ping` heartbeat to all connected Pipe 1 clients.
+///
+/// Used by the agent's heartbeat task to verify UI liveness.
+/// Clients that do not respond within the UI-side timeout will self-terminate.
+pub fn send_ping_to_all() {
+    let msg = Pipe1AgentMsg::Ping;
+    let json = match serde_json::to_vec(&msg) {
+        Ok(j) => j,
+        Err(e) => {
+            debug!(error = %e, "Pipe 1: failed to serialise Ping");
+            return;
+        }
+    };
+
+    let clients = CLIENTS.read();
+    for (sid, handle) in clients.iter() {
+        if let Err(e) = write_frame(handle.as_handle(), &json) {
+            debug!(session_id = sid, error = %e, "Pipe 1: Ping write failed");
+        }
+    }
 }
