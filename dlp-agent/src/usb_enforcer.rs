@@ -240,6 +240,7 @@ mod tests {
         Arc::new(UsbDetector {
             blocked_drives: RwLock::new(blocked),
             device_identities: RwLock::new(map),
+            ..Default::default()
         })
     }
 
@@ -443,6 +444,7 @@ mod tests {
         let detector = Arc::new(UsbDetector {
             blocked_drives: RwLock::new(blocked),
             device_identities: RwLock::new(HashMap::new()),
+            ..Default::default()
         });
         let registry = Arc::new(DeviceRegistryCache::new());
         let enforcer = UsbEnforcer::new(detector, registry);
@@ -475,6 +477,7 @@ mod tests {
         let detector = Arc::new(UsbDetector {
             blocked_drives: RwLock::new(HashSet::from(['E'])),
             device_identities: RwLock::new(HashMap::new()),
+            ..Default::default()
         });
         let registry = Arc::new(DeviceRegistryCache::new());
         let enforcer = UsbEnforcer::new(detector, registry);
@@ -535,6 +538,7 @@ mod tests {
         let detector = Arc::new(UsbDetector {
             blocked_drives: RwLock::new(blocked),
             device_identities: RwLock::new(map),
+            ..Default::default()
         });
         let registry = Arc::new(DeviceRegistryCache::new());
         // E is NOT seeded → default-deny at I/O level (unregistered device fallback).

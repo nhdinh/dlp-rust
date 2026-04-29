@@ -34,7 +34,7 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 
 use dlp_common::{Classification, DeviceIdentity, UsbTrustTier};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 #[cfg(windows)]
@@ -86,6 +86,11 @@ pub struct UsbDetector {
     /// entries directly; production code uses the arrival/removal handlers
     /// added in Plan 02.
     pub device_identities: RwLock<HashMap<char, DeviceIdentity>>,
+    /// Identity captured from a `GUID_DEVINTERFACE_USB_DEVICE` notification that
+    /// arrived before the corresponding `GUID_DEVINTERFACE_VOLUME` notification
+    /// (i.e., no drive letter was available yet).  `handle_volume_event` pops
+    /// this slot when the drive letter appears and applies tier enforcement.
+    pub(crate) pending_identity: Mutex<Option<DeviceIdentity>>,
 }
 
 impl UsbDetector {
@@ -469,6 +474,14 @@ fn handle_volume_event(detector: &UsbDetector, event_type: u32) {
     if event_type == DBT_DEVICEARRIVAL {
         for letter in now_present.difference(&before) {
             detector.on_drive_arrival(*letter);
+            // Reconcile a pending identity: the GUID_DEVINTERFACE_USB_DEVICE
+            // notification arrived before this GUID_DEVINTERFACE_VOLUME
+            // notification, so on_usb_device_arrival parked the identity without
+            // a drive letter.  Assign it now and apply tier enforcement.
+            if let Some(identity) = detector.pending_identity.lock().take() {
+                detector.device_identities.write().insert(*letter, identity.clone());
+                apply_tier_enforcement(*letter, &identity);
+            }
             // Notify the file monitor to start watching this new drive root so
             // file events on the USB drive reach UsbEnforcer::check().
             let root = std::path::PathBuf::from(format!("{}:\\", letter));
@@ -477,6 +490,92 @@ fn handle_volume_event(detector: &UsbDetector, event_type: u32) {
     } else {
         for letter in before.difference(&now_present) {
             detector.on_drive_removal(*letter);
+        }
+    }
+}
+
+/// Applies device-controller enforcement for a newly arrived USB device.
+///
+/// Looks up the device's trust tier from the registry cache (defaulting to
+/// `Blocked` when no cache is available) and applies the appropriate action:
+/// - `Blocked`: disables the device via Windows Device Manager.
+/// - `ReadOnly`: modifies the volume DACL to remove write access.
+/// - `FullAccess`: no action.
+#[cfg(windows)]
+fn apply_tier_enforcement(letter: char, identity: &DeviceIdentity) {
+    if let Some(controller) = DEVICE_CONTROLLER.get() {
+        let tier = if let Some(cache) = REGISTRY_CACHE.get() {
+            let t = cache.trust_tier_for(&identity.vid, &identity.pid, &identity.serial);
+            if cache.has_device(&identity.vid, &identity.pid, &identity.serial) {
+                debug!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    tier = ?t,
+                    "registry cache hit — applying registered tier"
+                );
+            } else {
+                let cache_size = cache.len();
+                let registered_serials = cache.serials_for_vid_pid(&identity.vid, &identity.pid);
+                if registered_serials.is_empty() {
+                    warn!(
+                        vid = %identity.vid,
+                        pid = %identity.pid,
+                        serial = %identity.serial,
+                        cache_entries = cache_size,
+                        "device not found in registry cache (no entry for this VID/PID) — applying default-deny (Blocked)"
+                    );
+                } else {
+                    warn!(
+                        vid = %identity.vid,
+                        pid = %identity.pid,
+                        hardware_serial = %identity.serial,
+                        registered_serials = ?registered_serials,
+                        cache_entries = cache_size,
+                        "device not found in registry cache (VID/PID match but serial mismatch) — applying default-deny (Blocked)"
+                    );
+                }
+            }
+            t
+        } else {
+            warn!("registry cache unavailable — applying default-deny (Blocked)");
+            UsbTrustTier::Blocked
+        };
+        match tier {
+            UsbTrustTier::Blocked => {
+                if let Err(e) =
+                    controller.disable_usb_device(&identity.vid, &identity.pid, &identity.serial)
+                {
+                    warn!(
+                        vid = %identity.vid,
+                        pid = %identity.pid,
+                        serial = %identity.serial,
+                        error = %e,
+                        "failed to disable USB device"
+                    );
+                } else {
+                    info!(
+                        drive = %letter,
+                        vid = %identity.vid,
+                        pid = %identity.pid,
+                        "USB device disabled (Blocked tier)"
+                    );
+                }
+            }
+            UsbTrustTier::ReadOnly => {
+                if let Err(e) = controller.set_volume_readonly(letter) {
+                    warn!(drive = %letter, error = %e, "failed to set volume read-only");
+                } else {
+                    info!(drive = %letter, "USB volume set to read-only (ReadOnly tier)");
+                }
+            }
+            UsbTrustTier::FullAccess => {
+                debug!(
+                    drive = %letter,
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    "USB device has FullAccess — no enforcement action"
+                );
+            }
         }
     }
 }
@@ -521,69 +620,12 @@ fn on_usb_device_arrival(detector: &UsbDetector, device_path: &str) {
                 .write()
                 .insert(letter, identity.clone());
 
-            // Active PnP enforcement: look up trust tier and apply device control.
-            // Minimize lock scope: clone needed data and drop locks before calling
-            // into DeviceController to avoid potential deadlock (WR-01).
-            if let Some(controller) = DEVICE_CONTROLLER.get() {
-                let tier = if let Some(cache) = REGISTRY_CACHE.get() {
-                    cache.trust_tier_for(&identity.vid, &identity.pid, &identity.serial)
-                } else {
-                    // No registry cache available — default deny (Blocked).
-                    UsbTrustTier::Blocked
-                };
-
-                match tier {
-                    UsbTrustTier::Blocked => {
-                        if let Err(e) = controller.disable_usb_device(
-                            &identity.vid,
-                            &identity.pid,
-                            &identity.serial,
-                        ) {
-                            warn!(
-                                vid = %identity.vid,
-                                pid = %identity.pid,
-                                serial = %identity.serial,
-                                error = %e,
-                                "failed to disable USB device"
-                            );
-                        } else {
-                            info!(
-                                drive = %letter,
-                                vid = %identity.vid,
-                                pid = %identity.pid,
-                                "USB device disabled (Blocked tier)"
-                            );
-                        }
-                    }
-                    UsbTrustTier::ReadOnly => {
-                        if let Err(e) = controller.set_volume_readonly(letter) {
-                            warn!(
-                                drive = %letter,
-                                error = %e,
-                                "failed to set volume read-only"
-                            );
-                        } else {
-                            info!(
-                                drive = %letter,
-                                "USB volume set to read-only (ReadOnly tier)"
-                            );
-                        }
-                    }
-                    UsbTrustTier::FullAccess => {
-                        // No action — device remains fully enabled.
-                        debug!(
-                            drive = %letter,
-                            vid = %identity.vid,
-                            pid = %identity.pid,
-                            "USB device has FullAccess — no enforcement action"
-                        );
-                    }
-                }
-            }
+            apply_tier_enforcement(letter, &identity);
         }
         None => {
-            // No drive letter yet (device not yet mounted or non-storage USB
-            // device). Log best-effort without a drive letter per D-04.
+            // VOLUME notification has not arrived yet — the drive letter is not
+            // assigned.  Park the identity so handle_volume_event can reconcile
+            // it and apply enforcement once the drive letter is available.
             info!(
                 vid = %identity.vid,
                 pid = %identity.pid,
@@ -591,6 +633,7 @@ fn on_usb_device_arrival(detector: &UsbDetector, device_path: &str) {
                 description = %identity.description,
                 "USB device arrived — identity captured (no drive letter yet)"
             );
+            *detector.pending_identity.lock() = Some(identity);
         }
     }
 }
