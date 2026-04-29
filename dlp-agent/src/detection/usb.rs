@@ -613,12 +613,15 @@ fn on_usb_device_arrival(detector: &UsbDetector, device_path: &str) {
     let mut identity = parse_usb_device_path(device_path);
     identity.description = setupdi_description_for_device(device_path);
 
-    // Map the USB device to a drive letter by scanning A..=Z for a removable
+    // Map the USB device to a drive letter by scanning A..=Z for a mounted
     // drive not yet tracked in device_identities. The USB_DEVICE notification
     // arrives slightly before or after the VOLUME notification, so we take
-    // the first removable letter without an existing identity entry.
+    // the first letter with an existing root path but no identity entry.
+    // NOTE: NVMe USB bridges report as DRIVE_FIXED, not DRIVE_REMOVABLE,
+    // so we check Path::exists instead of is_removable_drive.
     let existing: HashSet<char> = detector.device_identities.read().keys().copied().collect();
-    let letter_opt = ('A'..='Z').find(|l| detector.is_removable_drive(*l) && !existing.contains(l));
+    let letter_opt = ('A'..='Z')
+        .find(|l| std::path::Path::new(&format!("{}:\\", l)).exists() && !existing.contains(l));
 
     match letter_opt {
         Some(letter) => {
@@ -818,9 +821,12 @@ fn on_disk_device_arrival(detector: &UsbDetector, device_path: &str) {
         return;
     };
 
-    // Find the drive letter by scanning for a removable drive not yet tracked.
+    // Find the drive letter by scanning for a mounted drive not yet tracked.
+    // NOTE: NVMe USB bridges report as DRIVE_FIXED, not DRIVE_REMOVABLE,
+    // so we check Path::exists instead of is_removable_drive.
     let existing: HashSet<char> = detector.device_identities.read().keys().copied().collect();
-    let letter_opt = ('A'..='Z').find(|l| detector.is_removable_drive(*l) && !existing.contains(l));
+    let letter_opt = ('A'..='Z')
+        .find(|l| std::path::Path::new(&format!("{}:\\", l)).exists() && !existing.contains(l));
 
     match letter_opt {
         Some(letter) => {
