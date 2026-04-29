@@ -256,6 +256,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             );
             draw_hints(frame, area, "Enter: Confirm   Esc: Back");
         }
+        Screen::UsbScan { .. } => {}
         Screen::ManagedOriginList { origins, selected } => {
             draw_managed_origin_list(frame, area, origins, *selected);
         }
