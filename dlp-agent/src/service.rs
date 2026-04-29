@@ -482,6 +482,13 @@ async fn run_loop(
         None
     };
 
+    // ── DeviceController (Phase 31) ───────────────────────────────────────
+    // Active PnP enforcement: disables devices (Blocked tier) and modifies
+    // volume DACLs (ReadOnly tier). Set in the static before USB notifications
+    // are registered so usb_wndproc has access on first arrival.
+    let device_controller = Arc::new(crate::device_controller::DeviceController::new());
+    crate::detection::usb::set_device_controller(Arc::clone(&device_controller));
+
     // ── UsbEnforcer (D-12) ────────────────────────────────────────────────
     // Constructed after registry_cache so both backing caches are ready.
     // Always constructed (registry_cache exists even without a server_client).
@@ -492,7 +499,7 @@ async fn run_loop(
         )));
 
     // Register USB notifications NOW (after statics are set) so usb_wndproc
-    // has valid REGISTRY_CACHE / REGISTRY_CLIENT / REGISTRY_RUNTIME_HANDLE on first arrival.
+    // has valid REGISTRY_CACHE / REGISTRY_CLIENT / REGISTRY_RUNTIME_HANDLE / DEVICE_CONTROLLER on first arrival.
     let usb_cleanup = match crate::detection::usb::register_usb_notifications(detector) {
         Ok((hwnd, thread)) => {
             info!(

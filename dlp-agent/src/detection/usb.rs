@@ -33,9 +33,9 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 
-use dlp_common::{Classification, DeviceIdentity};
+use dlp_common::{Classification, DeviceIdentity, UsbTrustTier};
 use parking_lot::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[cfg(windows)]
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
@@ -258,6 +258,15 @@ static REGISTRY_CLIENT: std::sync::OnceLock<crate::server_client::ServerClient> 
 static WATCH_PATH_TX: parking_lot::Mutex<Option<std::sync::mpsc::Sender<std::path::PathBuf>>> =
     parking_lot::Mutex::new(None);
 
+/// Global device controller reference for active PnP enforcement.
+/// Set from `service.rs` before the USB window thread is spawned.
+/// Allows `usb_wndproc` to disable devices (Blocked tier) and modify
+/// volume DACLs (ReadOnly tier) on USB arrival/removal.
+#[cfg(windows)]
+static DEVICE_CONTROLLER: std::sync::OnceLock<
+    std::sync::Arc<crate::device_controller::DeviceController>,
+> = std::sync::OnceLock::new();
+
 /// Sets the global registry cache reference.
 ///
 /// Called once from `service.rs` before spawning USB notifications.
@@ -292,6 +301,19 @@ pub fn set_registry_client(client: crate::server_client::ServerClient) {
 #[cfg(windows)]
 pub fn set_registry_runtime_handle(handle: tokio::runtime::Handle) {
     let _ = REGISTRY_RUNTIME_HANDLE.set(handle);
+}
+
+/// Sets the global device controller reference.
+///
+/// Called once from `service.rs` before spawning USB notifications.
+/// Subsequent calls are silently ignored (OnceLock contract).
+///
+/// # Arguments
+///
+/// * `controller` - The `Arc<DeviceController>` to store globally.
+#[cfg(windows)]
+pub fn set_device_controller(controller: std::sync::Arc<crate::device_controller::DeviceController>) {
+    let _ = DEVICE_CONTROLLER.set(controller);
 }
 
 /// Stores the channel sender used to notify `InterceptionEngine` of newly-arrived
@@ -456,6 +478,12 @@ fn handle_volume_event(detector: &UsbDetector, event_type: u32) {
 /// SPDRP_DEVICEDESC), and stores the `DeviceIdentity` in
 /// `UsbDetector::device_identities` keyed by the first available removable
 /// drive letter not already tracked (Phase 23 D-02, D-03, D-09, SC-1).
+///
+/// After identity capture, looks up the trust tier from the device registry
+/// cache and applies active PnP enforcement via [`DeviceController`]:
+/// - `Blocked`: disables the device immediately.
+/// - `ReadOnly`: modifies the volume DACL to remove write access.
+/// - `FullAccess`: no action.
 #[cfg(windows)]
 fn on_usb_device_arrival(detector: &UsbDetector, device_path: &str) {
     let mut identity = parse_usb_device_path(device_path);
@@ -478,7 +506,65 @@ fn on_usb_device_arrival(detector: &UsbDetector, device_path: &str) {
                 description = %identity.description,
                 "USB device arrived — identity captured"
             );
-            detector.device_identities.write().insert(letter, identity);
+            detector.device_identities.write().insert(letter, identity.clone());
+
+            // Active PnP enforcement: look up trust tier and apply device control.
+            if let Some(controller) = DEVICE_CONTROLLER.get() {
+                let tier = if let Some(cache) = REGISTRY_CACHE.get() {
+                    cache.trust_tier_for(&identity.vid, &identity.pid, &identity.serial)
+                } else {
+                    // No registry cache available — default deny (Blocked).
+                    UsbTrustTier::Blocked
+                };
+
+                match tier {
+                    UsbTrustTier::Blocked => {
+                        if let Err(e) = controller.disable_usb_device(
+                            &identity.vid,
+                            &identity.pid,
+                            &identity.serial,
+                        ) {
+                            warn!(
+                                vid = %identity.vid,
+                                pid = %identity.pid,
+                                serial = %identity.serial,
+                                error = %e,
+                                "failed to disable USB device"
+                            );
+                        } else {
+                            info!(
+                                drive = %letter,
+                                vid = %identity.vid,
+                                pid = %identity.pid,
+                                "USB device disabled (Blocked tier)"
+                            );
+                        }
+                    }
+                    UsbTrustTier::ReadOnly => {
+                        if let Err(e) = controller.set_volume_readonly(letter) {
+                            warn!(
+                                drive = %letter,
+                                error = %e,
+                                "failed to set volume read-only"
+                            );
+                        } else {
+                            info!(
+                                drive = %letter,
+                                "USB volume set to read-only (ReadOnly tier)"
+                            );
+                        }
+                    }
+                    UsbTrustTier::FullAccess => {
+                        // No action — device remains fully enabled.
+                        debug!(
+                            drive = %letter,
+                            vid = %identity.vid,
+                            pid = %identity.pid,
+                            "USB device has FullAccess — no enforcement action"
+                        );
+                    }
+                }
+            }
         }
         None => {
             // No drive letter yet (device not yet mounted or non-storage USB
@@ -497,8 +583,10 @@ fn on_usb_device_arrival(detector: &UsbDetector, device_path: &str) {
 /// Removes the captured identity on USB device removal.
 ///
 /// Locates the `device_identities` entry whose VID/PID/serial matches the
-/// parsed device path and removes it. SetupDi is not called on removal
-/// because the device may already be gone by the time this runs.
+/// parsed device path and removes it. Also restores the volume ACL if the
+/// device was in ReadOnly tier, and re-enables the device if it was disabled
+/// (Blocked tier). SetupDi is not called on removal because the device may
+/// already be gone by the time this runs.
 #[cfg(windows)]
 fn on_usb_device_removal(detector: &UsbDetector, device_path: &str) {
     let parsed = parse_usb_device_path(device_path);
@@ -513,6 +601,36 @@ fn on_usb_device_removal(detector: &UsbDetector, device_path: &str) {
             .map(|(letter, _)| *letter)
     };
     if let Some(letter) = letter_opt {
+        // Restore volume ACL if it was modified (ReadOnly tier).
+        if let Some(controller) = DEVICE_CONTROLLER.get() {
+            if let Err(e) = controller.restore_volume_acl(letter) {
+                warn!(
+                    drive = %letter,
+                    error = %e,
+                    "failed to restore volume ACL on removal"
+                );
+            }
+
+            // Re-enable the device if it was disabled (Blocked tier).
+            // This is best-effort: the device may already be gone.
+            if let Err(e) = controller.enable_usb_device(&parsed.vid, &parsed.pid, &parsed.serial) {
+                warn!(
+                    vid = %parsed.vid,
+                    pid = %parsed.pid,
+                    serial = %parsed.serial,
+                    error = %e,
+                    "failed to re-enable USB device on removal"
+                );
+            } else {
+                info!(
+                    drive = %letter,
+                    vid = %parsed.vid,
+                    pid = %parsed.pid,
+                    "USB device re-enabled on removal"
+                );
+            }
+        }
+
         detector.device_identities.write().remove(&letter);
         info!(
             drive = %letter,
