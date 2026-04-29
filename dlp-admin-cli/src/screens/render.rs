@@ -10,8 +10,8 @@ use ratatui::Frame;
 
 use crate::app::{
     App, ConditionAttribute, ImportState, Screen, SimulateFormState, SimulateOutcome, StatusKind,
-    ACTION_OPTIONS, ATTRIBUTES, SIMULATE_ACCESS_CONTEXT_OPTIONS, SIMULATE_ACTION_OPTIONS,
-    SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
+    UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, SIMULATE_ACCESS_CONTEXT_OPTIONS,
+    SIMULATE_ACTION_OPTIONS, SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
     SIMULATE_NETWORK_LOCATION_OPTIONS,
 };
 use crate::screens::dispatch::condition_display;
@@ -238,7 +238,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 frame,
                 area,
                 "Devices & Origins",
-                &["Device Registry", "Managed Origins"],
+                &["Device Registry", "Managed Origins", "Scan & Register USB"],
                 *selected,
             );
             draw_hints(frame, area, "Enter: Open   Esc: Main Menu");
@@ -256,7 +256,9 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             );
             draw_hints(frame, area, "Enter: Confirm   Esc: Back");
         }
-        Screen::UsbScan { .. } => {}
+        Screen::UsbScan { devices, selected } => {
+            draw_usb_scan(frame, area, devices, *selected);
+        }
         Screen::ManagedOriginList { origins, selected } => {
             draw_managed_origin_list(frame, area, origins, *selected);
         }
@@ -1972,6 +1974,79 @@ fn draw_device_list(frame: &mut Frame, area: Rect, devices: &[serde_json::Value]
     draw_hints(frame, area, "r: Register   d: Delete   Esc: Back");
 }
 
+/// Draws the USB scan and register screen as a 5-column ratatui `Table`.
+///
+/// Columns: VID | PID | Serial | Description | Registered
+/// Already-registered devices show their current trust tier in the Registered
+/// column; unregistered devices show `-` (per Phase 32 D-04).
+/// Renders a hint footer: `r: Scan   Up/Down: Navigate   Enter: Register   Esc: Back`.
+fn draw_usb_scan(
+    frame: &mut Frame,
+    area: Rect,
+    devices: &[UsbScanEntry],
+    selected: usize,
+) {
+    let header = Row::new(vec!["VID", "PID", "Serial", "Description", "Registered"])
+        .style(Style::default().add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = devices
+        .iter()
+        .map(|e| {
+            let tier = e.registered_tier.as_deref().unwrap_or("-");
+            Row::new(vec![
+                e.identity.vid.clone(),
+                e.identity.pid.clone(),
+                e.identity.serial.clone(),
+                e.identity.description.clone(),
+                tier.to_string(),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(8),  // VID
+        Constraint::Percentage(8),  // PID
+        Constraint::Percentage(20), // Serial
+        Constraint::Percentage(44), // Description
+        Constraint::Percentage(20), // Registered
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .title(format!(" USB Scan ({}) ", devices.len()))
+                .borders(Borders::ALL),
+        )
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    // Only set selection when non-empty so an empty list does not show a
+    // highlight cursor on a phantom row.
+    let mut state = ratatui::widgets::TableState::default();
+    if !devices.is_empty() {
+        state.select(Some(selected));
+    }
+    frame.render_stateful_widget(table, area, &mut state);
+
+    // AUTHORITATIVE HINT STRING — this exact literal, including the
+    // "Up/Down: Navigate" group, is required by the plan's must_haves
+    // truth list and the Task 3 acceptance criteria. Do NOT shorten or
+    // re-order. Any draft hint string in 32-RESEARCH.md / 32-PATTERNS.md
+    // that omits "Up/Down: Navigate" is non-authoritative.
+    draw_hints(
+        frame,
+        area,
+        "r: Scan   Up/Down: Navigate   Enter: Register   Esc: Back",
+    );
+}
+
 /// Draws the Managed Origins list screen.
 ///
 /// Each origin is shown as its URL-pattern string.
@@ -2064,4 +2139,95 @@ fn draw_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     };
     let paragraph = Paragraph::new(Line::from(text).style(style));
     frame.render_widget(paragraph, area);
+}
+
+#[cfg(test)]
+mod usb_scan_render_tests {
+    use super::*;
+    use crate::app::UsbScanEntry;
+    use dlp_common::DeviceIdentity;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn sample_entry(
+        vid: &str,
+        pid: &str,
+        serial: &str,
+        desc: &str,
+        tier: Option<&str>,
+    ) -> UsbScanEntry {
+        UsbScanEntry {
+            identity: DeviceIdentity {
+                vid: vid.into(),
+                pid: pid.into(),
+                serial: serial.into(),
+                description: desc.into(),
+            },
+            registered_tier: tier.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn draw_usb_scan_renders_headers_and_row() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let entry = sample_entry("0951", "1666", "SN1234", "Kingston USB", Some("read_only"));
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_usb_scan(frame, area, &[entry.clone()], 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(s.contains("VID"), "header VID missing: {s}");
+        assert!(s.contains("PID"), "header PID missing");
+        assert!(s.contains("Serial"), "header Serial missing");
+        assert!(s.contains("Description"), "header Description missing");
+        assert!(s.contains("Registered"), "header Registered missing");
+        assert!(s.contains("0951"), "row vid missing");
+        assert!(s.contains("1666"), "row pid missing");
+        assert!(s.contains("SN1234"), "row serial missing");
+        assert!(s.contains("read_only"), "row tier missing");
+    }
+
+    #[test]
+    fn draw_usb_scan_handles_empty_list() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_usb_scan(frame, area, &[], 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(s.contains("USB Scan (0)"), "empty title missing: {s}");
+        assert!(s.contains("r: Scan"), "hints missing");
+        // Authoritative hint string check — the Up/Down: Navigate group
+        // MUST be present per this plan's must_haves.
+        assert!(
+            s.contains("Up/Down: Navigate"),
+            "Up/Down hint missing — draft shorter form leaked: {s}"
+        );
+    }
+
+    #[test]
+    fn draw_screen_devices_menu_has_three_items() {
+        let backend = TestBackend::new(80, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_menu(
+                frame,
+                area,
+                "Devices & Origins",
+                &["Device Registry", "Managed Origins", "Scan & Register USB"],
+                2,
+            );
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(s.contains("Scan & Register USB"), "3rd item missing: {s}");
+    }
 }
