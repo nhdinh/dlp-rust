@@ -200,7 +200,8 @@ impl DeviceController {
         }
 
         // SAFETY: `dev_inst` is a valid device instance handle.
-        let cr = unsafe { CM_Enable_DevNode(dev_inst, 0) };
+        const CM_ENABLE_ABSOLUTE: u32 = 0x00000001;
+        let cr = unsafe { CM_Enable_DevNode(dev_inst, CM_ENABLE_ABSOLUTE) };
         if cr.0 != 0 {
             return Err(DeviceControllerError::ConfigManager(cr.0));
         }
