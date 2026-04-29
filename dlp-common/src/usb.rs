@@ -9,8 +9,8 @@ use crate::endpoint::DeviceIdentity;
 
 #[cfg(windows)]
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
-    SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-    SetupDiGetDeviceRegistryPropertyW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
+    CM_Get_Device_IDW, CM_Get_Parent, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
+    SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
     SETUP_DI_REGISTRY_PROPERTY, SP_DEVINFO_DATA,
 };
 
@@ -30,6 +30,17 @@ const GUID_DEVINTERFACE_USB_DEVICE: windows::core::GUID = windows::core::GUID::f
     0x6530,
     0x11D2,
     [0x90, 0x1F, 0x00, 0xC0, 0x4F, 0xB9, 0x51, 0xED],
+);
+
+/// `GUID_DEVINTERFACE_DISK` — the device interface class for disk drives.
+/// Used to enumerate all disk devices, then filter to USB-attached ones by
+/// walking the PnP device tree.
+#[cfg(windows)]
+const GUID_DEVINTERFACE_DISK: windows::core::GUID = windows::core::GUID::from_values(
+    0x53F56307,
+    0xB6BF,
+    0x11D0,
+    [0x94, 0xF2, 0x00, 0xA0, 0xC9, 0x1E, 0xFB, 0x8B],
 );
 
 /// Parses a Windows USB device interface path of the form
@@ -80,14 +91,16 @@ pub fn parse_usb_device_path(dbcc_name: &str) -> DeviceIdentity {
 /// Looks up the SetupDi friendly name (or device description fallback) for
 /// the USB device whose interface path is `device_path`.
 ///
-/// Enumerates `GUID_DEVINTERFACE_USB_DEVICE` interfaces currently present and
-/// returns the description whose VID/PID substring matches the parsed VID/PID
-/// from `device_path`. Falls back to the first non-empty description seen if
-/// no VID/PID match is found.
+/// Enumerates `GUID_DEVINTERFACE_USB_DEVICE` interfaces currently present,
+/// reads each device's instance ID to extract its VID/PID/serial, and
+/// returns the description for the device whose instance ID matches the
+/// parsed identity from `device_path`.
 ///
-/// Returns an empty string on any Win32 error or if no description is available.
+/// Returns an empty string on any Win32 error or if no matching device is found.
 #[cfg(windows)]
 pub fn setupdi_description_for_device(device_path: &str) -> String {
+    use windows::Win32::Devices::DeviceAndDriverInstallation::SetupDiGetDeviceInstanceIdW;
+
     let parsed = parse_usb_device_path(device_path);
 
     // SAFETY: passing GUID_DEVINTERFACE_USB_DEVICE + null enumerator string +
@@ -106,8 +119,6 @@ pub fn setupdi_description_for_device(device_path: &str) -> String {
         Err(_) => return String::new(),
     };
 
-    let mut first_description = String::new();
-    let mut matching_description = String::new();
     let mut index: u32 = 0;
 
     loop {
@@ -121,26 +132,40 @@ pub fn setupdi_description_for_device(device_path: &str) -> String {
             break;
         }
 
-        let desc = read_string_property(hdev, &devinfo, SPDRP_FRIENDLYNAME)
-            .filter(|s| !s.is_empty())
-            .or_else(|| read_string_property(hdev, &devinfo, SPDRP_DEVICEDESC))
-            .unwrap_or_default();
+        // Read the device instance ID (e.g., `USB\VID_8087&PID_0036\5A0B047F08010`)
+        // and parse it to extract VID/PID/serial for matching.
+        let mut id_buf = [0u16; 256];
+        let mut required: u32 = 0;
+        let ok = unsafe {
+            SetupDiGetDeviceInstanceIdW(
+                hdev,
+                &devinfo,
+                Some(id_buf.as_mut_slice()),
+                Some(&mut required),
+            )
+        };
+        if ok.is_ok() {
+            let instance_id = String::from_utf16_lossy(
+                &id_buf.iter().copied().take_while(|&w| w != 0).collect::<Vec<u16>>(),
+            );
+            // Reshape instance ID into the dbcc_name form for parsing.
+            let reshaped = format!("\\\\?\\{}", instance_id.replace('\\', "#"));
+            let candidate = parse_usb_device_path(&reshaped);
 
-        if !desc.is_empty() {
-            if first_description.is_empty() {
-                first_description = desc.clone();
-            }
-            let upper = desc.to_ascii_uppercase();
-            // Prefer a description whose text mentions the device's VID or PID
-            // (e.g., "VID_0951" or "PID_1666") — the 4-hex-digit substrings are
-            // unique enough to pick the right device in most cases.
-            if (!parsed.vid.is_empty()
-                && upper.contains(&format!("VID_{}", parsed.vid.to_ascii_uppercase())))
-                || (!parsed.pid.is_empty()
-                    && upper.contains(&format!("PID_{}", parsed.pid.to_ascii_uppercase())))
+            // Match by VID + PID. Serial is also checked when present on both sides.
+            if candidate.vid == parsed.vid
+                && candidate.pid == parsed.pid
+                && (parsed.serial == "(none)"
+                    || candidate.serial == parsed.serial
+                    || candidate.serial == "(none)")
             {
-                matching_description = desc;
-                break;
+                let desc = read_string_property(hdev, &devinfo, SPDRP_FRIENDLYNAME)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| read_string_property(hdev, &devinfo, SPDRP_DEVICEDESC))
+                    .unwrap_or_default();
+                // SAFETY: hdev is a valid handle from SetupDiGetClassDevsW above.
+                let _ = unsafe { SetupDiDestroyDeviceInfoList(hdev) };
+                return desc;
             }
         }
 
@@ -154,11 +179,7 @@ pub fn setupdi_description_for_device(device_path: &str) -> String {
     // SAFETY: hdev is a valid handle obtained from SetupDiGetClassDevsW above.
     let _ = unsafe { SetupDiDestroyDeviceInfoList(hdev) };
 
-    if !matching_description.is_empty() {
-        matching_description
-    } else {
-        first_description
-    }
+    String::new()
 }
 
 /// Reads a UTF-16 string property from a `SP_DEVINFO_DATA` entry.
@@ -213,8 +234,10 @@ fn read_string_property(
 /// Enumerates currently-connected USB mass-storage devices via SetupDi.
 ///
 /// Returns a `Vec<DeviceIdentity>` populated with VID, PID, serial, and
-/// SetupDi-derived description for each device. Devices without a parseable
-/// VID and PID (hubs, root hubs, HID-only devices) are filtered out.
+/// SetupDi-derived description for each USB mass-storage device (service ==
+/// "USBSTOR"). Hubs, HID devices, Bluetooth adapters, and other non-storage
+/// USB devices are filtered out. Devices without a parseable VID and PID are
+/// also excluded.
 ///
 /// # Platform
 ///
@@ -230,17 +253,23 @@ pub fn enumerate_connected_usb_devices() -> Vec<DeviceIdentity> {
     }
 }
 
-/// Windows implementation of USB device enumeration. Mirrors the agent's
-/// existing SetupDi loop pattern (see `setupdi_description_for_device`).
+/// Windows implementation of USB mass-storage device enumeration.
+///
+/// Enumerates `GUID_DEVINTERFACE_DISK` (all disk drives) and walks the PnP
+/// device tree upward via [`CM_Get_Parent`] to find a USB ancestor node.
+/// Only disks with a USB ancestor (instance path starting with `USB\`) are
+/// included. VID/PID/serial are parsed from the USB ancestor's instance ID.
+///
+/// This approach correctly identifies USB mass-storage devices regardless of
+/// their Windows driver service name (some devices use `usbccgp`, vendor-
+/// specific drivers, or no explicit service at the USB device node level).
 #[cfg(windows)]
 fn enumerate_connected_usb_devices_windows() -> Vec<DeviceIdentity> {
-    use windows::Win32::Devices::DeviceAndDriverInstallation::SetupDiGetDeviceInstanceIdW;
-
-    // SAFETY: GUID_DEVINTERFACE_USB_DEVICE + null enumerator + DIGCF flags is
-    // a well-defined SetupDi usage selecting present USB device interfaces.
+    // SAFETY: GUID_DEVINTERFACE_DISK + null enumerator + DIGCF flags is a
+    // well-defined SetupDi usage selecting present disk device interfaces.
     let hdev = match unsafe {
         SetupDiGetClassDevsW(
-            Some(&GUID_DEVINTERFACE_USB_DEVICE),
+            Some(&GUID_DEVINTERFACE_DISK),
             windows::core::PCWSTR::null(),
             None,
             DIGCF_DEVICEINTERFACE | DIGCF_PRESENT,
@@ -262,35 +291,51 @@ fn enumerate_connected_usb_devices_windows() -> Vec<DeviceIdentity> {
             break;
         }
 
-        // Read the device instance ID (e.g., `USB\VID_0951&PID_1666\1234567890`)
-        // and reshape it into the dbcc_name form `\\?\USB#VID_0951&PID_1666#1234567890#`
-        // so parse_usb_device_path's `#`-split logic applies. Easiest: read
-        // instance id, replace '\\' with '#', prepend "\\\\?\\".
-        let mut id_buf = [0u16; 256];
-        let mut required: u32 = 0;
-        // SAFETY: id_buf is owned and sized; required is a valid u32 ptr.
-        let ok = unsafe {
-            SetupDiGetDeviceInstanceIdW(
-                hdev,
-                &devinfo,
-                Some(id_buf.as_mut_slice()),
-                Some(&mut required),
-            )
-        };
-        if ok.is_ok() {
-            let instance_id: String = id_buf
-                .iter()
-                .take_while(|&&w| w != 0)
-                .map(|&w| w as u8 as char)
-                .collect();
-            // Reshape: `USB\VID_X&PID_Y\SERIAL` -> `\\?\USB#VID_X&PID_Y#SERIAL#`.
-            let reshaped = format!("\\\\?\\{}", instance_id.replace('\\', "#"));
-            let mut identity = parse_usb_device_path(&reshaped);
-            // Filter: drop devices without a parseable VID+PID (hubs, etc.).
-            if !identity.vid.is_empty() && !identity.pid.is_empty() {
-                identity.description = setupdi_description_for_device(&reshaped);
-                out.push(identity);
+        // Walk up the PnP device tree to find a USB ancestor.
+        let mut usb_identity: Option<DeviceIdentity> = None;
+        let mut current_devinst = devinfo.DevInst;
+        for _ in 0..16 {
+            // Avoid infinite loops — device trees are shallow (usually < 8 levels).
+            let mut parent_devinst: u32 = 0;
+            // SAFETY: current_devinst is a valid DEVINST returned by SetupDi.
+            let cr =
+                unsafe { CM_Get_Parent(&mut parent_devinst, current_devinst, 0) };
+            if cr.0 != 0 {
+                // No more parents (CR_NO_SUCH_DEVNODE, CR_INVALID_DEVINST, etc.).
+                break;
             }
+
+            let mut id_buf = [0u16; 256];
+            // SAFETY: parent_devinst is a valid DEVINST; id_buf is owned.
+            let cr = unsafe { CM_Get_Device_IDW(parent_devinst, &mut id_buf, 0) };
+            if cr.0 == 0 {
+                let id = String::from_utf16_lossy(
+                    &id_buf
+                        .iter()
+                        .copied()
+                        .take_while(|&w| w != 0)
+                        .collect::<Vec<u16>>(),
+                );
+                if id.starts_with("USB\\") {
+                    // Reshape: `USB\VID_X&PID_Y\SERIAL` -> `\\?\USB#VID_X&PID_Y#SERIAL#`.
+                    let reshaped = format!("\\\\?\\{}", id.replace('\\', "#"));
+                    let identity = parse_usb_device_path(&reshaped);
+                    if !identity.vid.is_empty() && !identity.pid.is_empty() {
+                        usb_identity = Some(identity);
+                    }
+                    break;
+                }
+            }
+            current_devinst = parent_devinst;
+        }
+
+        if let Some(mut identity) = usb_identity {
+            // Read description from the disk device node (not the USB ancestor).
+            identity.description = read_string_property(hdev, &devinfo, SPDRP_FRIENDLYNAME)
+                .filter(|s| !s.is_empty())
+                .or_else(|| read_string_property(hdev, &devinfo, SPDRP_DEVICEDESC))
+                .unwrap_or_default();
+            out.push(identity);
         }
 
         index += 1;
