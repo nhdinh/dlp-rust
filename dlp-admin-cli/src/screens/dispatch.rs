@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use crate::app::{
     App, CallerScreen, ConditionAttribute, ConfirmPurpose, ImportCaller, ImportState, InputPurpose,
     PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState, SimulateOutcome,
-    StatusKind, TierPickerCaller, ACTION_OPTIONS, ATTRIBUTES,
+    StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES,
 };
 use crate::event::AppEvent;
 use dlp_common::abac::PolicyMode;
@@ -47,7 +47,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::DeviceList { .. } => handle_device_list(app, key),
         Screen::DeviceTierPicker { .. } => handle_device_tier_picker(app, key),
         Screen::ManagedOriginList { .. } => handle_managed_origin_list(app, key),
-        Screen::UsbScan { .. } => {}
+        Screen::UsbScan { .. } => handle_usb_scan(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -3566,13 +3566,14 @@ fn handle_devices_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        KeyCode::Up | KeyCode::Down => nav(selected, 2, key.code),
+        KeyCode::Up | KeyCode::Down => nav(selected, 3, key.code),
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 3 },
         KeyCode::Enter => {
             let idx = *selected;
             match idx {
                 0 => action_load_device_list(app),
                 1 => action_load_managed_origin_list(app),
+                2 => action_open_usb_scan(app),
                 _ => {}
             }
         }
@@ -3613,6 +3614,192 @@ fn action_load_managed_origin_list(app: &mut App) {
         Err(e) => {
             app.set_status(format!("Error loading origins: {e}"), StatusKind::Error);
         }
+    }
+}
+
+/// Navigates to the USB scan and register screen in its initial empty state.
+///
+/// The actual concurrent scan is triggered by `r` inside `handle_usb_scan`,
+/// which calls [`action_usb_scan`]. This helper exists so DevicesMenu only
+/// needs to know the entry point — no async work happens here.
+fn action_open_usb_scan(app: &mut App) {
+    app.screen = Screen::UsbScan {
+        devices: Vec::new(),
+        selected: 0,
+    };
+    app.set_status(
+        "Press r to scan for connected USB mass storage devices.",
+        StatusKind::Info,
+    );
+}
+
+/// Builds a `(vid, pid, serial) -> trust_tier` lookup from a JSON array
+/// returned by `GET /admin/device-registry/full`.
+///
+/// Missing or non-string fields default to empty / `"blocked"` respectively
+/// (matches the existing DeviceList parsing convention).
+pub(crate) fn build_registry_map(
+    registry: &[serde_json::Value],
+) -> std::collections::HashMap<(String, String, String), String> {
+    let mut map = std::collections::HashMap::new();
+    for row in registry {
+        let vid = row["vid"].as_str().unwrap_or("").to_string();
+        let pid = row["pid"].as_str().unwrap_or("").to_string();
+        let serial = row["serial"].as_str().unwrap_or("").to_string();
+        let tier = row["trust_tier"].as_str().unwrap_or("blocked").to_string();
+        map.insert((vid, pid, serial), tier);
+    }
+    map
+}
+
+/// Merges enumerated USB devices with a registry lookup map into the
+/// per-row UsbScanEntry vector consumed by `Screen::UsbScan`.
+///
+/// USB enumeration drives row identity (only locally-present devices show);
+/// registry entries supply `registered_tier` when (vid, pid, serial) matches.
+pub(crate) fn merge_registry_with_usb(
+    registry_map: &std::collections::HashMap<(String, String, String), String>,
+    usb_devices: Vec<dlp_common::DeviceIdentity>,
+) -> Vec<UsbScanEntry> {
+    usb_devices
+        .into_iter()
+        .map(|identity| {
+            let key = (
+                identity.vid.clone(),
+                identity.pid.clone(),
+                identity.serial.clone(),
+            );
+            let registered_tier = registry_map.get(&key).cloned();
+            UsbScanEntry {
+                identity,
+                registered_tier,
+            }
+        })
+        .collect()
+}
+
+/// Formats the status-bar message for a completed USB scan per D-06.
+///
+/// `total == 0` -> the rescan hint;
+/// `total > 0`  -> `"N USB devices found (M already registered)"`.
+pub(crate) fn format_usb_scan_status(total: usize, registered: usize) -> String {
+    if total == 0 {
+        "No USB mass storage devices found. Plug in a device and press r to rescan.".to_string()
+    } else {
+        format!("{total} USB devices found ({registered} already registered)")
+    }
+}
+
+/// Runs USB enumeration and registry fetch concurrently, then populates
+/// `Screen::UsbScan` with the merged result (per D-11).
+///
+/// Architecture:
+/// - `client.clone()` -> owned by the async block. `EngineClient` is
+///   internally `Arc`-backed; clone is O(1).
+/// - `tokio::join!` runs both futures concurrently on the existing tokio runtime.
+/// - The Win32 SetupDi call is wrapped in `tokio::task::spawn_blocking` so it does
+///   not stall the async executor (per Pitfall 2 in 32-RESEARCH.md).
+/// - Outer `app.rt.block_on` blocks the synchronous TUI event loop for the
+///   duration (~100ms) — acceptable per D-02.
+/// - `JoinError` from `spawn_blocking` is treated as an empty result (a panic
+///   inside the SetupDi closure should not crash the TUI).
+/// - HTTP error: caller sees an `Error` status and an empty-registry merge
+///   (USB devices still display, just without registration tier annotations).
+fn action_usb_scan(app: &mut App) {
+    let client = app.client.clone();
+    let (registry_result, usb_join) = app.rt.block_on(async move {
+        tokio::join!(
+            client.get::<Vec<serde_json::Value>>("admin/device-registry/full"),
+            tokio::task::spawn_blocking(dlp_common::usb::enumerate_connected_usb_devices),
+        )
+    });
+
+    let usb_devices = usb_join.unwrap_or_default();
+    let (registry_devices, fetch_error_message): (Vec<serde_json::Value>, Option<String>) =
+        match registry_result {
+            Ok(rows) => (rows, None),
+            Err(e) => (
+                Vec::new(),
+                Some(format!("Error fetching device registry: {e}")),
+            ),
+        };
+
+    let registry_map = build_registry_map(&registry_devices);
+    let entries = merge_registry_with_usb(&registry_map, usb_devices);
+
+    let registered_count = entries
+        .iter()
+        .filter(|e| e.registered_tier.is_some())
+        .count();
+    let total = entries.len();
+
+    // Set status: error wins over the count line so the user sees the failure.
+    if let Some(err) = fetch_error_message {
+        app.set_status(err, StatusKind::Error);
+    } else {
+        app.set_status(
+            format_usb_scan_status(total, registered_count),
+            StatusKind::Info,
+        );
+    }
+
+    app.screen = Screen::UsbScan {
+        devices: entries,
+        selected: 0,
+    };
+}
+
+/// Handles key events for the USB scan and register screen (Phase 32).
+///
+/// Keybindings:
+/// - `r`         — trigger concurrent USB enumeration + registry fetch (D-02)
+/// - Up/Down     — navigate the rows (no-op on empty list)
+/// - Enter       — open `Screen::DeviceTierPicker` with caller = UsbScan
+/// - Esc         — return to DevicesMenu with selected = 2
+fn handle_usb_scan(app: &mut App, key: KeyEvent) {
+    let devices_len = match &app.screen {
+        Screen::UsbScan { devices, .. } => devices.len(),
+        _ => return,
+    };
+    match key.code {
+        KeyCode::Char('r') => action_usb_scan(app),
+        KeyCode::Up | KeyCode::Down => {
+            if devices_len == 0 {
+                return;
+            }
+            if let Screen::UsbScan { selected, .. } = &mut app.screen {
+                nav(selected, devices_len, key.code);
+            }
+        }
+        KeyCode::Enter => {
+            if devices_len == 0 {
+                return;
+            }
+            let (vid, pid, serial, description) = match &app.screen {
+                Screen::UsbScan { devices, selected } => {
+                    let entry = &devices[*selected];
+                    (
+                        entry.identity.vid.clone(),
+                        entry.identity.pid.clone(),
+                        entry.identity.serial.clone(),
+                        entry.identity.description.clone(),
+                    )
+                }
+                _ => return,
+            };
+            app.screen = Screen::DeviceTierPicker {
+                vid,
+                pid,
+                serial,
+                description,
+                selected: 0,
+                caller: TierPickerCaller::UsbScan,
+            };
+        }
+        KeyCode::Esc => {
+            app.screen = Screen::DevicesMenu { selected: 2 };
+        }
+        _ => {}
     }
 }
 
@@ -3682,20 +3869,21 @@ fn action_delete_device(app: &mut App, id: &str) {
 /// Handles key events for the DeviceTierPicker screen (final step of device register flow).
 fn handle_device_tier_picker(app: &mut App, key: KeyEvent) {
     // Extract all fields before mutable borrow for the nav branch.
-    let (vid, pid, serial, description, sel) = match &app.screen {
+    let (vid, pid, serial, description, sel, caller) = match &app.screen {
         Screen::DeviceTierPicker {
             vid,
             pid,
             serial,
             description,
             selected,
-            ..
+            caller,
         } => (
             vid.clone(),
             pid.clone(),
             serial.clone(),
             description.clone(),
             *selected,
+            *caller,
         ),
         _ => return,
     };
@@ -3723,10 +3911,19 @@ fn handle_device_tier_picker(app: &mut App, key: KeyEvent) {
                 app.client
                     .post::<serde_json::Value, _>("admin/device-registry", &body),
             ) {
-                Ok(_) => {
-                    app.set_status("Device registered successfully.", StatusKind::Success);
-                    action_load_device_list(app);
-                }
+                Ok(_) => match caller {
+                    TierPickerCaller::DeviceList => {
+                        app.set_status("Device registered successfully.", StatusKind::Success);
+                        action_load_device_list(app);
+                    }
+                    TierPickerCaller::UsbScan => {
+                        action_usb_scan(app);
+                        app.set_status(
+                            "Device registered successfully.",
+                            StatusKind::Success,
+                        );
+                    }
+                },
                 Err(e) => {
                     app.set_status(format!("Error registering device: {e}"), StatusKind::Error);
                     app.screen = Screen::DevicesMenu { selected: 0 };
@@ -4508,6 +4705,300 @@ mod tests {
                 assert_eq!(*edit_index, Some(0), "edit_index survives Esc");
             }
             other => panic!("expected ConditionsBuilder, got {other:?}"),
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 32 tests: USB scan dispatch.
+    // ---------------------------------------------------------------------------
+
+    fn key_event(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn opening_usb_scan_from_devices_menu_idx_2() {
+        let mut app = make_test_app(Screen::DevicesMenu { selected: 2 });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        match &app.screen {
+            Screen::UsbScan { devices, selected } => {
+                assert!(devices.is_empty());
+                assert_eq!(*selected, 0);
+            }
+            other => panic!("expected Screen::UsbScan, got {other:?}"),
+        }
+        assert!(matches!(app.status, Some((_, StatusKind::Info))));
+    }
+
+    #[test]
+    fn devices_menu_nav_wraps_with_three_items() {
+        let mut app = make_test_app(Screen::DevicesMenu { selected: 0 });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Up)));
+        match &app.screen {
+            Screen::DevicesMenu { selected } => assert_eq!(*selected, 2),
+            _ => panic!("screen mismatch"),
+        }
+    }
+
+    #[test]
+    fn usb_scan_esc_returns_to_devices_menu_idx_2() {
+        let mut app = make_test_app(Screen::UsbScan { devices: vec![], selected: 0 });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Esc)));
+        match &app.screen {
+            Screen::DevicesMenu { selected } => assert_eq!(*selected, 2),
+            _ => panic!("expected DevicesMenu"),
+        }
+    }
+
+    #[test]
+    fn usb_scan_enter_on_empty_list_is_noop() {
+        let mut app = make_test_app(Screen::UsbScan { devices: vec![], selected: 0 });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        assert!(matches!(app.screen, Screen::UsbScan { .. }));
+    }
+
+    #[test]
+    fn usb_scan_up_on_empty_list_is_noop() {
+        let mut app = make_test_app(Screen::UsbScan { devices: vec![], selected: 0 });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Up)));
+        assert!(matches!(app.screen, Screen::UsbScan { .. }));
+    }
+}
+
+#[cfg(test)]
+mod usb_scan_merge_tests {
+    use super::*;
+    use dlp_common::DeviceIdentity;
+    use serde_json::json;
+
+    fn id(vid: &str, pid: &str, serial: &str, desc: &str) -> DeviceIdentity {
+        DeviceIdentity {
+            vid: vid.into(),
+            pid: pid.into(),
+            serial: serial.into(),
+            description: desc.into(),
+        }
+    }
+
+    #[test]
+    fn build_registry_map_extracts_tier_from_row() {
+        let rows = vec![
+            json!({"vid":"0951","pid":"1666","serial":"ABC","trust_tier":"read_only"}),
+            json!({"vid":"05ac","pid":"12a8","serial":"X","trust_tier":"blocked"}),
+        ];
+        let map = build_registry_map(&rows);
+        assert_eq!(
+            map.get(&("0951".into(), "1666".into(), "ABC".into())),
+            Some(&"read_only".to_string())
+        );
+        assert_eq!(
+            map.get(&("05ac".into(), "12a8".into(), "X".into())),
+            Some(&"blocked".to_string())
+        );
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn build_registry_map_defaults_missing_tier_to_blocked() {
+        let rows = vec![json!({"vid":"0951","pid":"1666","serial":"ABC"})];
+        let map = build_registry_map(&rows);
+        assert_eq!(
+            map.get(&("0951".into(), "1666".into(), "ABC".into())),
+            Some(&"blocked".to_string())
+        );
+    }
+
+    #[test]
+    fn merge_marks_matching_devices_with_tier() {
+        let rows = vec![json!({"vid":"0951","pid":"1666","serial":"ABC","trust_tier":"read_only"})];
+        let map = build_registry_map(&rows);
+        let usb = vec![id("0951", "1666", "ABC", "Kingston")];
+        let out = merge_registry_with_usb(&map, usb);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].registered_tier.as_deref(), Some("read_only"));
+        assert_eq!(out[0].identity.description, "Kingston");
+    }
+
+    #[test]
+    fn merge_marks_unregistered_devices_with_none() {
+        let map = std::collections::HashMap::new();
+        let usb = vec![id("0951", "1666", "ABC", "Kingston")];
+        let out = merge_registry_with_usb(&map, usb);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].registered_tier.is_none());
+    }
+
+    #[test]
+    fn merge_drives_rows_from_usb_not_registry() {
+        let rows = vec![json!({"vid":"AAAA","pid":"AAAA","serial":"A","trust_tier":"read_only"})];
+        let map = build_registry_map(&rows);
+        let usb = vec![id("BBBB", "BBBB", "B", "other")];
+        let out = merge_registry_with_usb(&map, usb);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].identity.vid, "BBBB");
+        assert!(out[0].registered_tier.is_none());
+    }
+
+    #[test]
+    fn format_usb_scan_status_zero_returns_rescan_hint() {
+        let s = format_usb_scan_status(0, 0);
+        assert_eq!(
+            s,
+            "No USB mass storage devices found. Plug in a device and press r to rescan."
+        );
+    }
+
+    #[test]
+    fn format_usb_scan_status_nonzero_uses_count_template() {
+        let s = format_usb_scan_status(2, 1);
+        assert_eq!(s, "2 USB devices found (1 already registered)");
+    }
+}
+
+#[cfg(test)]
+mod usb_scan_routing_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn enter() -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        )
+    }
+
+    async fn make_app_with_mocks_ok() -> (App, MockServer) {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/admin/device-registry"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "test-id",
+                "vid": "0951",
+                "pid": "1666",
+                "serial": "ABC",
+                "description": "Kingston",
+                "trust_tier": "read_only"
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin/device-registry/full"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<serde_json::Value>::new()))
+            .mount(&server)
+            .await;
+
+        let client = crate::client::EngineClient::for_test_with_url(server.uri());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let mut app = crate::app::App::new(client, rt);
+        app.screen = Screen::MainMenu { selected: 0 };
+        (app, server)
+    }
+
+    async fn make_app_with_mocks_err() -> (App, MockServer) {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/admin/device-registry"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/admin/device-registry/full"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<serde_json::Value>::new()))
+            .mount(&server)
+            .await;
+
+        let client = crate::client::EngineClient::for_test_with_url(server.uri());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let mut app = crate::app::App::new(client, rt);
+        app.screen = Screen::MainMenu { selected: 0 };
+        (app, server)
+    }
+
+    #[test]
+    fn tier_picker_caller_devicelist_routes_to_devicelist_on_success() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut app, _server) = rt.block_on(make_app_with_mocks_ok());
+        app.screen = Screen::DeviceTierPicker {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "ABC".into(),
+            description: "Kingston".into(),
+            selected: 1,
+            caller: TierPickerCaller::DeviceList,
+        };
+        handle_event(&mut app, AppEvent::Key(enter()));
+        assert!(matches!(app.screen, Screen::DeviceList { .. }));
+        assert!(matches!(app.status, Some((_, StatusKind::Success))));
+    }
+
+    #[test]
+    fn tier_picker_caller_usbscan_routes_to_usbscan_on_success() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut app, _server) = rt.block_on(make_app_with_mocks_ok());
+        app.screen = Screen::DeviceTierPicker {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "ABC".into(),
+            description: "Kingston".into(),
+            selected: 1,
+            caller: TierPickerCaller::UsbScan,
+        };
+        handle_event(&mut app, AppEvent::Key(enter()));
+        assert!(matches!(app.screen, Screen::UsbScan { .. }));
+        let (msg, kind) = app.status.as_ref().expect("status set");
+        assert!(
+            msg.contains("registered successfully"),
+            "status was: {msg}"
+        );
+        assert_eq!(*kind, StatusKind::Success);
+    }
+
+    #[test]
+    fn tier_picker_caller_devicelist_routes_to_devices_menu_on_err() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut app, _server) = rt.block_on(make_app_with_mocks_err());
+        app.screen = Screen::DeviceTierPicker {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "ABC".into(),
+            description: "Kingston".into(),
+            selected: 1,
+            caller: TierPickerCaller::DeviceList,
+        };
+        handle_event(&mut app, AppEvent::Key(enter()));
+        match &app.screen {
+            Screen::DevicesMenu { selected } => assert_eq!(*selected, 0),
+            other => panic!("expected DevicesMenu on err, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tier_picker_caller_usbscan_routes_to_devices_menu_on_err() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut app, _server) = rt.block_on(make_app_with_mocks_err());
+        app.screen = Screen::DeviceTierPicker {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "ABC".into(),
+            description: "Kingston".into(),
+            selected: 1,
+            caller: TierPickerCaller::UsbScan,
+        };
+        handle_event(&mut app, AppEvent::Key(enter()));
+        match &app.screen {
+            Screen::DevicesMenu { selected } => assert_eq!(*selected, 0),
+            other => panic!("expected DevicesMenu on err, got {other:?}"),
         }
     }
 }

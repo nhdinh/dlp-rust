@@ -49,3 +49,6 @@ windows = { version = "0.58", features = [
     "Win32_Security",
     "Win32_Foundation",
 ] }
+
+[dev-dependencies]
+wiremock = "0.6"
