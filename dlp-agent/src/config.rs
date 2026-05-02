@@ -55,6 +55,41 @@ use tracing::{info, warn};
 /// Default config file location.
 pub const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\DLP\agent-config.toml";
 
+/// Default re-check interval for BitLocker encryption verification (D-11).
+/// 6 hours (21,600 seconds).
+pub const ENCRYPTION_RECHECK_DEFAULT_SECS: u64 = 21_600;
+
+/// Minimum valid `[encryption].recheck_interval_secs` (D-11). 5 minutes.
+/// Values below this are clamped up and a `warn!` log line is emitted at load time.
+pub const ENCRYPTION_RECHECK_MIN_SECS: u64 = 300;
+
+/// Maximum valid `[encryption].recheck_interval_secs` (D-11). 24 hours.
+/// Values above this are clamped down and a `warn!` log line is emitted at load time.
+pub const ENCRYPTION_RECHECK_MAX_SECS: u64 = 86_400;
+
+/// Phase 34 BitLocker re-check cadence (D-11).
+///
+/// Loaded from the `[encryption]` section of `agent-config.toml`. The
+/// section may be omitted entirely; defaults are applied at use site.
+///
+/// # Example
+///
+/// ```toml
+/// [encryption]
+/// recheck_interval_secs = 21600   # 6h default; clamped to [300, 86400]
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct EncryptionConfig {
+    /// Periodic BitLocker re-check interval in seconds.
+    ///
+    /// `None` implies use of [`ENCRYPTION_RECHECK_DEFAULT_SECS`] (21,600 s = 6 h).
+    /// Out-of-range values are clamped to `[ENCRYPTION_RECHECK_MIN_SECS,
+    /// ENCRYPTION_RECHECK_MAX_SECS]` and a `warn!` log is emitted at the
+    /// time `AgentConfig::resolved_recheck_interval()` is called.
+    #[serde(default)]
+    pub recheck_interval_secs: Option<u64>,
+}
+
 /// Agent runtime configuration.
 ///
 /// Controls which directories the file monitor watches and which paths
@@ -108,6 +143,13 @@ pub struct AgentConfig {
     /// Set to `"info"` for production deployments to reduce log volume.
     #[serde(default)]
     pub log_level: Option<String>,
+
+    /// Phase 34 BitLocker verification settings (D-11).
+    ///
+    /// When the `[encryption]` section is absent, defaults are applied at
+    /// use site via [`AgentConfig::resolved_recheck_interval`].
+    #[serde(default)]
+    pub encryption: EncryptionConfig,
 
     /// LDAP/AD configuration for group resolution. When `None`, AD features
     /// are disabled (fallback to placeholder identity values). Populated by
@@ -253,6 +295,45 @@ impl AgentConfig {
         }
     }
 
+    /// Returns the clamped BitLocker re-check interval as a [`std::time::Duration`].
+    ///
+    /// # Behavior (D-11)
+    ///
+    /// - `None` defaults to [`ENCRYPTION_RECHECK_DEFAULT_SECS`] (6 hours).
+    /// - In-range values pass through unchanged.
+    /// - Out-of-range values are clamped to `[ENCRYPTION_RECHECK_MIN_SECS,
+    ///   ENCRYPTION_RECHECK_MAX_SECS]` and a `warn!` log line is emitted.
+    ///   The agent does NOT refuse to start on bad input — it logs and continues
+    ///   with the clamped value (CONTEXT.md D-11 explicit).
+    ///
+    /// # Returns
+    ///
+    /// A [`std::time::Duration`] in the range `[300s, 86400s]`.
+    pub fn resolved_recheck_interval(&self) -> std::time::Duration {
+        // Unwrap the Option<u64>, defaulting to 6 hours when the field is absent.
+        // In Rust, `unwrap_or` on Option<T> returns the contained value or the
+        // provided default — analogous to Python's `value or default`.
+        let raw = self
+            .encryption
+            .recheck_interval_secs
+            .unwrap_or(ENCRYPTION_RECHECK_DEFAULT_SECS);
+
+        // `clamp` is a Rust built-in that bounds a value within [min, max],
+        // equivalent to `max(min, min(value, max))` in Python.
+        let clamped = raw.clamp(ENCRYPTION_RECHECK_MIN_SECS, ENCRYPTION_RECHECK_MAX_SECS);
+
+        if clamped != raw {
+            warn!(
+                requested = raw,
+                applied = clamped,
+                min = ENCRYPTION_RECHECK_MIN_SECS,
+                max = ENCRYPTION_RECHECK_MAX_SECS,
+                "encryption.recheck_interval_secs out of range -- clamped"
+            );
+        }
+        std::time::Duration::from_secs(clamped)
+    }
+
     /// Returns the resolved list of paths to watch.
     ///
     /// If `monitored_paths` is empty, returns all existing drive roots
@@ -349,6 +430,7 @@ mod tests {
             heartbeat_interval_secs: None,
             offline_cache_enabled: None,
             log_level: None,
+            encryption: EncryptionConfig::default(),
             ldap_config: None,
             machine_name: None,
         };
@@ -382,6 +464,7 @@ mod tests {
             heartbeat_interval_secs: Some(45),
             offline_cache_enabled: Some(true),
             log_level: Some("info".to_string()),
+            encryption: EncryptionConfig::default(),
             ldap_config: None,
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
@@ -410,6 +493,7 @@ mod tests {
             heartbeat_interval_secs: None,
             offline_cache_enabled: None,
             log_level: None,
+            encryption: EncryptionConfig::default(),
             ldap_config: None,
             machine_name: None,
         };
@@ -562,16 +646,20 @@ mod tests {
     #[test]
     fn test_encryption_recheck_interval_boundary_values_pass_through() {
         // Exactly at MIN — not clamped.
-        let toml_min =
-            format!("[encryption]\nrecheck_interval_secs = {}\n", ENCRYPTION_RECHECK_MIN_SECS);
+        let toml_min = format!(
+            "[encryption]\nrecheck_interval_secs = {}\n",
+            ENCRYPTION_RECHECK_MIN_SECS
+        );
         let config_min: AgentConfig = toml::from_str(&toml_min).expect("deserialize min");
         assert_eq!(
             config_min.resolved_recheck_interval(),
             std::time::Duration::from_secs(ENCRYPTION_RECHECK_MIN_SECS)
         );
         // Exactly at MAX — not clamped.
-        let toml_max =
-            format!("[encryption]\nrecheck_interval_secs = {}\n", ENCRYPTION_RECHECK_MAX_SECS);
+        let toml_max = format!(
+            "[encryption]\nrecheck_interval_secs = {}\n",
+            ENCRYPTION_RECHECK_MAX_SECS
+        );
         let config_max: AgentConfig = toml::from_str(&toml_max).expect("deserialize max");
         assert_eq!(
             config_max.resolved_recheck_interval(),
