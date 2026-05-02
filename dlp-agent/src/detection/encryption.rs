@@ -326,6 +326,10 @@ pub fn derive_encryption_status(
         (Some(0), Some(4)) => EncryptionStatus::Unencrypted,
         (Some(0), Some(5)) => EncryptionStatus::Unencrypted,
         (Some(2), _) => EncryptionStatus::Unknown,
+        // WR-05: ProtectionStatus=1 (Protected) but ConversionStatus=0 (FullyDecrypted).
+        // This transient WMI state appears during BitLocker key-protector re-enablement
+        // on a partially decrypted volume. Treat as Unknown per D-14 defensive policy.
+        (Some(1), Some(0)) => EncryptionStatus::Unknown,
         // Defensive fallback (D-14).
         _ => EncryptionStatus::Unknown,
     }
@@ -1166,6 +1170,14 @@ mod tests {
         assert_eq!(
             derive_encryption_status(Some(99), Some(99)),
             EncryptionStatus::Unknown
+        );
+        // WR-05: Protected + FullyDecrypted transient state (key-protector re-enablement)
+        // must map to Unknown per D-14. Explicit arm added to prevent future maintainer
+        // from assuming the catch-all is unreachable and adding a panic there.
+        assert_eq!(
+            derive_encryption_status(Some(1), Some(0)),
+            EncryptionStatus::Unknown,
+            "Protected + FullyDecrypted transient state must map to Unknown"
         );
     }
 
