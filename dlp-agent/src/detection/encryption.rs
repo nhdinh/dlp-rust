@@ -852,8 +852,22 @@ async fn run_one_verification_cycle(
             }
             Ok((id, _letter, Err(e))) => {
                 // D-01a: namespace-unavailable triggers Registry fallback (boot disk only).
+                // CR-02: try_registry_fallback calls blocking Win32 Registry APIs
+                // (RegOpenKeyExW / RegQueryValueExW). Wrap in spawn_blocking so the
+                // tokio executor thread is not stalled. Identical protection to the
+                // WMI path in check_one_disk (Pitfall A).
                 let resolved = if e.warrants_registry_fallback() {
-                    try_registry_fallback(&id, disks, Arc::clone(&backend))
+                    let backend_clone = Arc::clone(&backend);
+                    let id_clone = id.clone();
+                    let disks_vec = disks.to_vec();
+                    let fallback_task = tokio::task::spawn_blocking(move || {
+                        try_registry_fallback(&id_clone, &disks_vec, backend_clone)
+                    });
+                    match tokio::time::timeout(Duration::from_secs(2), fallback_task).await {
+                        Ok(Ok(status)) => status,
+                        Ok(Err(_join_err)) => EncryptionStatus::Unknown,
+                        Err(_elapsed) => EncryptionStatus::Unknown,
+                    }
                 } else {
                     EncryptionStatus::Unknown
                 };
