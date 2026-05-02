@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-04-30 — v0.7.0 Disk Exfiltration Prevention started*
+*Last updated: 2026-05-03 — Phase 34 complete: BitLocker verification engine built and wired*
 ---
 
 # PROJECT.md — DLP-RUST
