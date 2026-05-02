@@ -18,8 +18,8 @@
 
 ### CRYPT -- Encryption Verification
 
-- [ ] **CRYPT-01**: Agent can query BitLocker encryption status via WMI `Win32_EncryptableVolume` for each enumerated fixed disk.
-- [ ] **CRYPT-02**: Unencrypted disks are flagged in the audit log with a warning; the admin decides whether to allow or block via the allowlist (not hard-coded block).
+- [x] **CRYPT-01**: Agent can query BitLocker encryption status via WMI `Win32_EncryptableVolume` for each enumerated fixed disk.
+- [x] **CRYPT-02**: Unencrypted disks are flagged in the audit log with a warning; the admin decides whether to allow or block via the allowlist (not hard-coded block).
 
 ### ADMIN -- Server-Side Registry and Management
 
@@ -65,8 +65,8 @@
 | DISK-03 | 35 | Pending |
 | DISK-04 | 36 | Pending |
 | DISK-05 | 36 | Pending |
-| CRYPT-01 | 34 | Pending |
-| CRYPT-02 | 34 | Pending |
+| CRYPT-01 | 34 | Complete |
+| CRYPT-02 | 34 | Complete |
 | ADMIN-01 | 37 | Pending |
 | ADMIN-02 | 37 | Pending |
 | ADMIN-03 | 37 | Pending |
