@@ -81,7 +81,11 @@ Plans:
   1. Agent writes enumerated disks to [disk_allowlist] section in agent-config.toml with device instance ID as canonical key
   2. Agent loads the allowlist from TOML at startup into an in-memory RwLock cache
   3. Drive letter is stored as informational metadata only; device instance ID is the canonical identity key
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 35-01-PLAN.md -- AgentConfig.disk_allowlist field + TOML roundtrip tests
+- [ ] 35-02-PLAN.md -- spawn_disk_enumeration_task pre-load + merge + non-fatal persist; service.rs Arc<RwLock<AgentConfig>> wiring
 
 ### Phase 36: Disk Enforcement
 **Goal**: Agent blocks I/O to unregistered fixed disks and handles device arrivals/removals
@@ -157,7 +161,7 @@ Plans:
 | 99 | Refactor DB Layer to Repository + Unit of Work | v0.3.0 | 3/3 | Complete | 2026-04-15 |
 | 33 | Disk Enumeration | v0.7.0 | 0/TBD | Not started | - |
 | 34 | BitLocker Verification | v0.7.0 | 5/5 | Planned | - |
-| 35 | Disk Allowlist Persistence | v0.7.0 | 0/TBD | Not started | - |
+| 35 | Disk Allowlist Persistence | v0.7.0 | 0/2 | Planned | - |
 | 36 | Disk Enforcement | v0.7.0 | 0/TBD | Not started | - |
 | 37 | Server-Side Disk Registry | v0.7.0 | 0/TBD | Not started | - |
 | 38 | Admin TUI Disk Registry | v0.7.0 | 0/TBD | Not started | - |
