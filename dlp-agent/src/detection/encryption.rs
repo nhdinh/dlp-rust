@@ -825,7 +825,10 @@ async fn run_one_verification_cycle(
     let mut set: tokio::task::JoinSet<DiskCheckResult> = tokio::task::JoinSet::new();
 
     for disk in disks {
-        let id = disk.instance_id.clone();
+        // Wrap id in Arc so the Err(join_err) panic arm can recover the disk
+        // identity even though the id was moved into the spawned closure. (CR-01)
+        let id_arc = Arc::new(disk.instance_id.clone());
+        let id_for_panic = Arc::clone(&id_arc);
         let letter = disk.drive_letter;
         let backend_clone = Arc::clone(&backend);
         set.spawn(async move {
@@ -833,6 +836,8 @@ async fn run_one_verification_cycle(
                 Some(l) => check_one_disk(l, Arc::clone(&backend_clone)).await,
                 None => Err(EncryptionError::VolumeNotFound),
             };
+            // Unwrap Arc: only this task holds id_arc now; id_for_panic is the other ref.
+            let id = Arc::try_unwrap(id_arc).unwrap_or_else(|a| (*a).clone());
             (id, letter, result)
         });
     }
@@ -858,7 +863,14 @@ async fn run_one_verification_cycle(
                 }
             }
             Err(join_err) => {
-                error!(error = %join_err, "encryption check task panicked");
+                // CR-01: id was moved into the spawned future, but id_for_panic
+                // was Arc-cloned before spawn and remains alive here. Use it to
+                // record the disk as Unknown so it is not silently dropped from
+                // new_statuses, and encryption_checked_at is not falsely updated.
+                error!(error = %join_err, "encryption check task panicked -- disk status unknown");
+                let id = (*id_for_panic).clone();
+                new_statuses.insert(id.clone(), EncryptionStatus::Unknown);
+                failed.push((id, format!("task panicked: {join_err}")));
             }
         }
     }
@@ -876,7 +888,12 @@ async fn run_one_verification_cycle(
             if let Some(m) = new_methods.get(&d.instance_id).copied() {
                 d.encryption_method = Some(m);
             }
-            d.encryption_checked_at = Some(now);
+            // WR-01: Only update timestamp if this disk was actually checked this cycle.
+            // Disks absent from new_statuses (e.g. due to CR-01 task panic) must not
+            // receive a fresh timestamp that would falsely indicate a successful check.
+            if new_statuses.contains_key(&d.instance_id) {
+                d.encryption_checked_at = Some(now);
+            }
         }
         // Re-sync the secondary maps to keep them consistent with discovered_disks.
         for d in discovered.iter() {
@@ -899,7 +916,11 @@ async fn run_one_verification_cycle(
 
     // ── Decide whether to emit ──────────────────────────────────────────
     let transitions = compute_changed_transitions(&old_snapshot, &new_statuses);
+    // WR-02: Guard against vacuous-truth: if new_statuses is empty (all tasks
+    // panicked at the JoinSet level), .all() returns true on an empty iterator.
+    // That would emit a misleading total-failure alert with no per-disk details.
     let all_failed = !disks.is_empty()
+        && !new_statuses.is_empty()
         && new_statuses
             .values()
             .all(|s| *s == EncryptionStatus::Unknown);
