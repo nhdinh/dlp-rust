@@ -501,4 +501,81 @@ mod tests {
         std::env::remove_var("DLP_CONFIG_PATH");
         assert_eq!(path, r"C:\TestData\override.toml");
     }
+
+    // --- Phase 34 / BitLocker re-check cadence tests (D-11) ---
+
+    #[test]
+    fn test_encryption_section_absent_uses_default() {
+        // No [encryption] block in TOML → resolved_recheck_interval == 21600s.
+        let toml_str = "";
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize empty");
+        assert_eq!(config.encryption.recheck_interval_secs, None);
+        assert_eq!(
+            config.resolved_recheck_interval(),
+            std::time::Duration::from_secs(ENCRYPTION_RECHECK_DEFAULT_SECS)
+        );
+    }
+
+    #[test]
+    fn test_encryption_recheck_interval_passes_through_in_range() {
+        let toml_str = "[encryption]\nrecheck_interval_secs = 600\n";
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(config.encryption.recheck_interval_secs, Some(600));
+        assert_eq!(
+            config.resolved_recheck_interval(),
+            std::time::Duration::from_secs(600)
+        );
+    }
+
+    #[test]
+    fn test_encryption_recheck_interval_default_value_passes_through() {
+        let toml_str = "[encryption]\nrecheck_interval_secs = 21600\n";
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(
+            config.resolved_recheck_interval(),
+            std::time::Duration::from_secs(21_600)
+        );
+    }
+
+    #[test]
+    fn test_encryption_recheck_interval_clamp_low() {
+        let toml_str = "[encryption]\nrecheck_interval_secs = 0\n";
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
+        // 0 is below MIN; expect clamped UP to 300.
+        assert_eq!(
+            config.resolved_recheck_interval(),
+            std::time::Duration::from_secs(ENCRYPTION_RECHECK_MIN_SECS)
+        );
+    }
+
+    #[test]
+    fn test_encryption_recheck_interval_clamp_high() {
+        let toml_str = "[encryption]\nrecheck_interval_secs = 999999\n";
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
+        // 999999 is above MAX; expect clamped DOWN to 86400.
+        assert_eq!(
+            config.resolved_recheck_interval(),
+            std::time::Duration::from_secs(ENCRYPTION_RECHECK_MAX_SECS)
+        );
+    }
+
+    #[test]
+    fn test_encryption_recheck_interval_boundary_values_pass_through() {
+        // Exactly at MIN — not clamped.
+        let toml_min =
+            format!("[encryption]\nrecheck_interval_secs = {}\n", ENCRYPTION_RECHECK_MIN_SECS);
+        let config_min: AgentConfig = toml::from_str(&toml_min).expect("deserialize min");
+        assert_eq!(
+            config_min.resolved_recheck_interval(),
+            std::time::Duration::from_secs(ENCRYPTION_RECHECK_MIN_SECS)
+        );
+        // Exactly at MAX — not clamped.
+        let toml_max =
+            format!("[encryption]\nrecheck_interval_secs = {}\n", ENCRYPTION_RECHECK_MAX_SECS);
+        let config_max: AgentConfig = toml::from_str(&toml_max).expect("deserialize max");
+        assert_eq!(
+            config_max.resolved_recheck_interval(),
+            std::time::Duration::from_secs(ENCRYPTION_RECHECK_MAX_SECS)
+        );
+    }
 }
