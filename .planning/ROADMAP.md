@@ -69,7 +69,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.6.0-
 Plans:
 - [x] 34-01-PLAN.md -- Workspace dependency bump + EncryptionStatus/EncryptionMethod enums + DiskIdentity fields
 - [x] 34-02-PLAN.md -- AgentConfig [encryption] TOML section with clamped recheck_interval
-- [ ] 34-03-PLAN.md -- EncryptionChecker module: trait, WMI/Registry backends, orchestration loop
+- [x] 34-03-PLAN.md -- EncryptionChecker module: trait, WMI/Registry backends, orchestration loop
 - [ ] 34-04-PLAN.md -- Service wiring: singleton registration + spawn_encryption_check_task in service.rs
 - [ ] 34-05-PLAN.md -- Integration test scaffolding + validation doc sign-off
 
