@@ -594,7 +594,7 @@ impl EncryptionBackend for WindowsEncryptionBackend {
             // by drive letter. Using typed `query()` is simpler than `raw_query()`
             // and negligible overhead for <= 32 volumes per machine.
             let volumes: Vec<EncryptableVolume> =
-                conn.query().map_err(classify_wmi_connection_error)?;
+                conn.query().map_err(|e| EncryptionError::WmiQueryFailed(e.to_string()))?;
             let target = volumes
                 .iter()
                 .find(|v| {
