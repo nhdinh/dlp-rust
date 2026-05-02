@@ -789,4 +789,138 @@ mod tests {
         // the call returns a Vec (compile + runtime smoke).
         let _disks: Vec<DiskIdentity> = enumerate_fixed_disks().unwrap_or_default();
     }
+
+    #[test]
+    fn test_encryption_status_serde_round_trip() {
+        for status in [
+            EncryptionStatus::Encrypted,
+            EncryptionStatus::Suspended,
+            EncryptionStatus::Unencrypted,
+            EncryptionStatus::Unknown,
+        ] {
+            let json = serde_json::to_string(&status).expect("serialize");
+            let rt: EncryptionStatus = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(status, rt, "round-trip failed for {status:?}");
+        }
+    }
+
+    #[test]
+    fn test_encryption_status_snake_case_serde() {
+        assert_eq!(serde_json::to_string(&EncryptionStatus::Encrypted).unwrap(), "\"encrypted\"");
+        assert_eq!(serde_json::to_string(&EncryptionStatus::Suspended).unwrap(), "\"suspended\"");
+        assert_eq!(
+            serde_json::to_string(&EncryptionStatus::Unencrypted).unwrap(),
+            "\"unencrypted\""
+        );
+        assert_eq!(serde_json::to_string(&EncryptionStatus::Unknown).unwrap(), "\"unknown\"");
+    }
+
+    #[test]
+    fn test_encryption_status_default_is_unknown() {
+        assert_eq!(EncryptionStatus::default(), EncryptionStatus::Unknown);
+    }
+
+    #[test]
+    fn test_encryption_method_from_raw() {
+        assert_eq!(EncryptionMethod::from(0u32), EncryptionMethod::None);
+        assert_eq!(EncryptionMethod::from(1u32), EncryptionMethod::Aes128Diffuser);
+        assert_eq!(EncryptionMethod::from(2u32), EncryptionMethod::Aes256Diffuser);
+        assert_eq!(EncryptionMethod::from(3u32), EncryptionMethod::Aes128);
+        assert_eq!(EncryptionMethod::from(4u32), EncryptionMethod::Aes256);
+        assert_eq!(EncryptionMethod::from(5u32), EncryptionMethod::Hardware);
+        assert_eq!(EncryptionMethod::from(6u32), EncryptionMethod::XtsAes128);
+        assert_eq!(EncryptionMethod::from(7u32), EncryptionMethod::XtsAes256);
+        assert_eq!(EncryptionMethod::from(99u32), EncryptionMethod::Unknown);
+        assert_eq!(EncryptionMethod::from(u32::MAX), EncryptionMethod::Unknown);
+    }
+
+    #[test]
+    fn test_encryption_method_serde_round_trip() {
+        for method in [
+            EncryptionMethod::None,
+            EncryptionMethod::Aes128Diffuser,
+            EncryptionMethod::Aes256Diffuser,
+            EncryptionMethod::Aes128,
+            EncryptionMethod::Aes256,
+            EncryptionMethod::Hardware,
+            EncryptionMethod::XtsAes128,
+            EncryptionMethod::XtsAes256,
+            EncryptionMethod::Unknown,
+        ] {
+            let json = serde_json::to_string(&method).expect("serialize");
+            let rt: EncryptionMethod = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(method, rt, "round-trip failed for {method:?}");
+        }
+    }
+
+    #[test]
+    fn test_encryption_method_default_is_unknown() {
+        assert_eq!(EncryptionMethod::default(), EncryptionMethod::Unknown);
+    }
+
+    #[test]
+    fn test_disk_identity_backward_compat_no_encryption_fields() {
+        // Pre-Phase-34 record: no encryption fields present.
+        let legacy = r#"{
+            "instance_id": "PCIIDE\\IDECHANNEL\\4&1234",
+            "bus_type": "sata",
+            "model": "WDC WD10EZEX",
+            "is_boot_disk": true
+        }"#;
+        let disk: DiskIdentity = serde_json::from_str(legacy).expect("deserialize legacy");
+        assert!(disk.encryption_status.is_none(), "encryption_status must be None on legacy record");
+        assert!(disk.encryption_method.is_none(), "encryption_method must be None on legacy record");
+        assert!(
+            disk.encryption_checked_at.is_none(),
+            "encryption_checked_at must be None on legacy record"
+        );
+        assert_eq!(disk.instance_id, "PCIIDE\\IDECHANNEL\\4&1234");
+        assert_eq!(disk.bus_type, BusType::Sata);
+    }
+
+    #[test]
+    fn test_disk_identity_serializes_none_encryption_fields_omitted() {
+        // Pitfall D: None must be absent on the wire (skip_serializing_if).
+        let disk = DiskIdentity {
+            instance_id: "X".to_string(),
+            bus_type: BusType::Sata,
+            model: "M".to_string(),
+            drive_letter: None,
+            serial: None,
+            size_bytes: None,
+            is_boot_disk: false,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
+        };
+        let json = serde_json::to_string(&disk).expect("serialize");
+        assert!(!json.contains("encryption_status"), "None encryption_status must be skipped");
+        assert!(!json.contains("encryption_method"), "None encryption_method must be skipped");
+        assert!(
+            !json.contains("encryption_checked_at"),
+            "None encryption_checked_at must be skipped"
+        );
+    }
+
+    #[test]
+    fn test_disk_identity_serializes_some_unknown_encryption_status_present() {
+        // Pitfall D: Some(Unknown) MUST appear on the wire as "unknown" — distinct from None.
+        let disk = DiskIdentity {
+            instance_id: "X".to_string(),
+            bus_type: BusType::Sata,
+            model: "M".to_string(),
+            drive_letter: None,
+            serial: None,
+            size_bytes: None,
+            is_boot_disk: false,
+            encryption_status: Some(EncryptionStatus::Unknown),
+            encryption_method: None,
+            encryption_checked_at: None,
+        };
+        let json = serde_json::to_string(&disk).expect("serialize");
+        assert!(
+            json.contains("\"encryption_status\":\"unknown\""),
+            "Some(Unknown) must serialize as \"unknown\" on the wire (Pitfall D)"
+        );
+    }
 }
