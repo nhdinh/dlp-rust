@@ -227,6 +227,13 @@ impl EncryptionChecker {
     /// Called exactly once per verification cycle, in
     /// `run_one_verification_cycle` after all emit decisions.
     pub(crate) fn mark_first_check_complete(&self) {
+        // WR-03: Two sequential writes — not atomic. Between the two lines,
+        // is_first_check is false but check_complete is still false. A concurrent
+        // reader sees is_ready() == false, which is correct (conservative). There is
+        // no reader that observes is_first_check == false AND is_ready() == true
+        // prematurely, so this ordering is safe in a single-writer context.
+        // Write is_first_check first so readers never see is_ready() before
+        // is_first_check is cleared.
         *self.is_first_check.write() = false;
         *self.check_complete.write() = true;
     }
