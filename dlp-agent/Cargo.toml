@@ -98,11 +98,22 @@ chrono = { version = "0.4", features = ["serde"] }
 prost = "0.14"
 bytes = "1"
 
+[features]
+# Phase 34: real-Windows-only smoke tests against the live WMI namespace
+# `ROOT\CIMV2\Security\MicrosoftVolumeEncryption` and the live BitLocker
+# registry key. Default-off so CI on non-Windows runners stays green.
+# Enable manually on a BitLocker-provisioned Windows host:
+#   cargo test -p dlp-agent --features integration-tests
+integration-tests = []
+
 [dev-dependencies]
 tempfile = "3"
 axum = { version = "0.7", features = ["macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
+# Serialize integration tests that share the global EncryptionChecker/DiskEnumerator singletons.
+# Each test annotated with #[serial_test::serial] runs exclusively with no interleaving.
+serial_test = "3"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
