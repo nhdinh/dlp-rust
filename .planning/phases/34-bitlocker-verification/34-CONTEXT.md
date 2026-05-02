@@ -124,6 +124,12 @@ Agent verifies BitLocker encryption status for every fixed disk enumerated by Ph
 - **D-24:** No new `EventType` variants. Reuse `EventType::DiskDiscovery` for normal periodic / startup verification (encryption status fields ride on `DiskIdentity`). Reuse `EventType::Alert` only for the all-disks-failed-at-startup case (D-16).
 - **D-25:** When a periodic re-check fires *and* status changes, the resulting `DiskDiscovery` event sets `justification = Some("encryption status changed: ...")`. SIEM rules can filter on `event_type = DISK_DISCOVERY AND justification LIKE 'encryption status changed%'` to catch drift events.
 
+### Resolved Pre-Planning Clarifications (2026-05-02, after RESEARCH.md)
+
+- **D-21a (amends D-21):** Pin `wmi = "0.14"` is intentional. Rationale: minimize churn in Phase 34's scope; the published API at 0.14.x is sufficient for `Win32_EncryptableVolume` reads + `PktPrivacy` auth. A future maintenance phase can bump to 0.18.x once we have integration test coverage to catch breakage. Planner records this rationale in the plan that adds the dependency.
+- **D-16a (amends D-16):** "Initial startup verification fails for all disks → emit one `Alert`" fires on **every agent cold-start**. No persisted "first observed" state file is introduced in Phase 34. Trade-off accepted: if WMI is repeatedly down across reboots, the agent re-emits the Alert each cold-start. Re-evaluate if SIEM noise becomes a problem in field testing.
+- **D-01a (amends D-01):** Registry fallback fires **only on namespace-unavailable / namespace-not-found** errors from WMI (e.g., `WMI_NOT_AVAILABLE`, `WBEM_E_INVALID_NAMESPACE`). It does **NOT** fire on per-volume timeouts or transient WMI errors — those yield `EncryptionStatus::Unknown` directly. Registry is a recovery path for missing/non-installed BitLocker namespaces, not a corroboration mechanism for healthy WMI returning slow.
+
 ### Claude's Discretion
 - Exact WMI query string for `Win32_EncryptableVolume` (recommended: `SELECT DeviceID, DriveLetter, ProtectionStatus, ConversionStatus, EncryptionMethod FROM Win32_EncryptableVolume`)
 - Whether the `EncryptionChecker` exposes a global `OnceLock<Arc<...>>` like `DiskEnumerator` (recommended: yes, mirrors the existing pattern; needed for the periodic task and for Phase 36 to read state)
