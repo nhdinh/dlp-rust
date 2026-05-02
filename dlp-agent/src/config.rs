@@ -569,7 +569,7 @@ mod tests {
         // Temporarily clear the env var (if set) and verify fallback.
         // Using a separate env key to avoid interfering with running tests.
         let path = {
-            let _guard = std::env::remove_var("DLP_CONFIG_PATH");
+            std::env::remove_var("DLP_CONFIG_PATH");
             AgentConfig::effective_config_path()
         };
         assert_eq!(path, DEFAULT_CONFIG_PATH);
