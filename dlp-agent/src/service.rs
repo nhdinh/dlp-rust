@@ -577,6 +577,9 @@ async fn run_loop(
     };
 
     // ── Start the file system monitor pipeline ─────────────────────────
+    // Capture the recheck interval before agent_config is consumed by with_config below.
+    // Per CRYPT-02, the cadence must come exclusively from admin config — no hard-coded value.
+    let recheck_interval = agent_config.resolved_recheck_interval();
     let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
         .expect("file monitor initialisation always succeeds");
     let file_monitor_for_shutdown = file_monitor.clone();
@@ -630,6 +633,26 @@ async fn run_loop(
         None, // Phase 35 will pass the allowlist TOML path here
     );
     info!("disk enumeration task spawned");
+
+    // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
+    // Initialize the EncryptionChecker and spawn the background verification
+    // task. The task waits internally for `DiskEnumerator::is_ready` (D-04)
+    // before scanning, then re-checks every `recheck_interval` (D-10, D-11).
+    // Per CRYPT-02, the cadence comes exclusively from admin config — there
+    // is no hard-coded value. Per D-16, an Alert is emitted only on the
+    // initial total-failure outcome; subsequent periodic-poll failures yield
+    // `Unknown` silently.
+    let encryption_checker = Arc::new(crate::detection::encryption::EncryptionChecker::new());
+    crate::detection::encryption::set_encryption_checker(Arc::clone(&encryption_checker));
+    crate::detection::encryption::spawn_encryption_check_task(
+        tokio::runtime::Handle::current(),
+        audit_ctx.clone(),
+        recheck_interval,
+    );
+    info!(
+        recheck_interval_secs = recheck_interval.as_secs(),
+        "encryption verification task spawned"
+    );
 
     let offline_ev = offline.clone();
     let ctx_ev = audit_ctx.clone();
