@@ -64,7 +64,14 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.6.0-
   1. Agent queries BitLocker encryption status via WMI Win32_EncryptableVolume for each enumerated fixed disk
   2. Unencrypted disks are flagged in the audit log with a warning severity; admin decides allow/block via allowlist (not hard-coded block)
   3. Encryption status is available for admin review via audit events
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+- [ ] 34-01-PLAN.md -- Workspace dependency bump + EncryptionStatus/EncryptionMethod enums + DiskIdentity fields
+- [ ] 34-02-PLAN.md -- AgentConfig [encryption] TOML section with clamped recheck_interval
+- [ ] 34-03-PLAN.md -- EncryptionChecker module: trait, WMI/Registry backends, orchestration loop
+- [ ] 34-04-PLAN.md -- Service wiring: singleton registration + spawn_encryption_check_task in service.rs
+- [ ] 34-05-PLAN.md -- Integration test scaffolding + validation doc sign-off
 
 ### Phase 35: Disk Allowlist Persistence
 **Goal**: Agent persists the disk allowlist and loads it across restarts
@@ -149,7 +156,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.6.0-
 | 30 | Automated UAT Infrastructure | v0.6.0 | 10/10 | Complete | 2026-04-29 |
 | 99 | Refactor DB Layer to Repository + Unit of Work | v0.3.0 | 3/3 | Complete | 2026-04-15 |
 | 33 | Disk Enumeration | v0.7.0 | 0/TBD | Not started | - |
-| 34 | BitLocker Verification | v0.7.0 | 0/TBD | Not started | - |
+| 34 | BitLocker Verification | v0.7.0 | 5/5 | Planned | - |
 | 35 | Disk Allowlist Persistence | v0.7.0 | 0/TBD | Not started | - |
 | 36 | Disk Enforcement | v0.7.0 | 0/TBD | Not started | - |
 | 37 | Server-Side Disk Registry | v0.7.0 | 0/TBD | Not started | - |
