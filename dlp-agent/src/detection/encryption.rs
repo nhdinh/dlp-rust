@@ -825,43 +825,36 @@ async fn run_one_verification_cycle(
     let mut new_methods: HashMap<String, EncryptionMethod> = HashMap::new();
     let mut failed: Vec<(String, String)> = Vec::new();
 
-    // JoinSet collects (instance_id, drive_letter, result) from each disk task.
-    // One spawn_blocking per disk — COM is per-thread (Pitfall A).
-    // Type alias reduces clippy::type_complexity on the JoinSet declaration.
-    type DiskCheckResult = (
-        String,
-        Option<char>,
-        Result<(EncryptionStatus, Option<EncryptionMethod>), EncryptionError>,
-    );
-    let mut set: tokio::task::JoinSet<DiskCheckResult> = tokio::task::JoinSet::new();
+    // Fan-out per-disk WMI queries: one spawn per disk (COM is per-thread, Pitfall A).
+    // CR-01 fix: store instance_id alongside the JoinHandle so a task panic (which
+    // consumes the return value) cannot silently drop a disk from new_statuses. Using
+    // Vec<(id, JoinHandle)> instead of JoinSet retains the id regardless of panic.
+    type DiskHandleResult = Result<(EncryptionStatus, Option<EncryptionMethod>), EncryptionError>;
+    let mut handles: Vec<(String, Option<char>, tokio::task::JoinHandle<DiskHandleResult>)> =
+        Vec::with_capacity(disks.len());
 
     for disk in disks {
-        // Wrap id in Arc so the Err(join_err) panic arm can recover the disk
-        // identity even though the id was moved into the spawned closure. (CR-01)
-        let id_arc = Arc::new(disk.instance_id.clone());
-        let id_for_panic = Arc::clone(&id_arc);
+        let id = disk.instance_id.clone();
         let letter = disk.drive_letter;
         let backend_clone = Arc::clone(&backend);
-        set.spawn(async move {
-            let result = match letter {
+        let handle = tokio::task::spawn(async move {
+            match letter {
                 Some(l) => check_one_disk(l, Arc::clone(&backend_clone)).await,
                 None => Err(EncryptionError::VolumeNotFound),
-            };
-            // Unwrap Arc: only this task holds id_arc now; id_for_panic is the other ref.
-            let id = Arc::try_unwrap(id_arc).unwrap_or_else(|a| (*a).clone());
-            (id, letter, result)
+            }
         });
+        handles.push((id, letter, handle));
     }
 
-    while let Some(joined) = set.join_next().await {
-        match joined {
-            Ok((id, _letter, Ok((status, method)))) => {
+    for (id, _letter, handle) in handles {
+        match handle.await {
+            Ok(Ok((status, method))) => {
                 new_statuses.insert(id.clone(), status);
                 if let Some(m) = method {
                     new_methods.insert(id, m);
                 }
             }
-            Ok((id, _letter, Err(e))) => {
+            Ok(Err(e)) => {
                 // D-01a: namespace-unavailable triggers Registry fallback (boot disk only).
                 // CR-02: try_registry_fallback calls blocking Win32 Registry APIs
                 // (RegOpenKeyExW / RegQueryValueExW). Wrap in spawn_blocking so the
@@ -888,12 +881,12 @@ async fn run_one_verification_cycle(
                 }
             }
             Err(join_err) => {
-                // CR-01: id was moved into the spawned future, but id_for_panic
-                // was Arc-cloned before spawn and remains alive here. Use it to
-                // record the disk as Unknown so it is not silently dropped from
-                // new_statuses, and encryption_checked_at is not falsely updated.
+                // CR-01: The id is preserved in the outer Vec so it is always
+                // recoverable here, even when the spawned async block panics and the
+                // return value is lost. Insert Unknown so the disk is not silently
+                // dropped from new_statuses, which would cause encryption_checked_at
+                // to advance falsely (WR-01) and all_failed to misfire (WR-02).
                 error!(error = %join_err, "encryption check task panicked -- disk status unknown");
-                let id = (*id_for_panic).clone();
                 new_statuses.insert(id.clone(), EncryptionStatus::Unknown);
                 failed.push((id, format!("task panicked: {join_err}")));
             }
