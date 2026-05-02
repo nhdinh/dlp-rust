@@ -639,6 +639,9 @@ mod tests {
                 serial: Some("WD-12345678".to_string()),
                 size_bytes: Some(1_000_204_886_016),
                 is_boot_disk: true,
+                encryption_status: None,
+                encryption_method: None,
+                encryption_checked_at: None,
             },
             DiskIdentity {
                 instance_id: "USB\\VID_1234&PID_5678&REV_0001".to_string(),
@@ -648,6 +651,9 @@ mod tests {
                 serial: Some("EXT-001".to_string()),
                 size_bytes: Some(500_000_000_000),
                 is_boot_disk: false,
+                encryption_status: None,
+                encryption_method: None,
+                encryption_checked_at: None,
             },
         ];
         let event = AuditEvent::new(

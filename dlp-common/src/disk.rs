@@ -109,6 +109,96 @@ impl From<u32> for BusType {
     }
 }
 
+/// BitLocker encryption status of a fixed disk volume (D-06).
+///
+/// Derived from the `Win32_EncryptableVolume` WMI class fields
+/// `ProtectionStatus` and `ConversionStatus` (see Phase 34 RESEARCH.md
+/// §"Validation Architecture" status table).
+///
+/// # Variants
+///
+/// - `Encrypted`: `ProtectionStatus == 1` AND `ConversionStatus == 1`
+///   (active key + fully encrypted ciphertext on disk).
+/// - `Suspended`: `ProtectionStatus == 0` AND `ConversionStatus == 1`
+///   (data is ciphertext but key protectors are temporarily disabled,
+///   e.g., after `manage-bde -protectors -disable`).
+/// - `Unencrypted`: `ConversionStatus` indicates not-fully-encrypted, or
+///   no `Win32_EncryptableVolume` row exists for the volume.
+/// - `Unknown`: verification could not complete (WMI failure + Registry
+///   fallback failed, timeout, access denied). Distinct from `Unencrypted`
+///   so the admin can investigate before allowlisting (D-14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EncryptionStatus {
+    /// Active key + fully encrypted (`ProtectionStatus == 1` AND `ConversionStatus == 1`).
+    Encrypted,
+    /// Data is ciphertext but key protectors are disabled.
+    Suspended,
+    /// Volume is not encrypted, or no `Win32_EncryptableVolume` row.
+    Unencrypted,
+    /// Verification could not determine status. Default variant (D-14, A4).
+    #[default]
+    Unknown,
+}
+
+/// BitLocker encryption algorithm reported by `Win32_EncryptableVolume.EncryptionMethod` (D-07).
+///
+/// # Mapping (raw WMI value -> variant)
+///
+/// | Raw | Variant         | Notes                              |
+/// |-----|-----------------|------------------------------------|
+/// | 0   | `None`          | Volume is not BitLocker-encrypted. |
+/// | 1   | `Aes128Diffuser`| Legacy, Windows 7.                 |
+/// | 2   | `Aes256Diffuser`| Legacy, Windows 7.                 |
+/// | 3   | `Aes128`        |                                    |
+/// | 4   | `Aes256`        |                                    |
+/// | 5   | `Hardware`      | eDrive / hardware encryption.      |
+/// | 6   | `XtsAes128`     | Windows 10+.                       |
+/// | 7   | `XtsAes256`     | Windows 10+.                       |
+/// | _   | `Unknown`       | Catch-all (default).               |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EncryptionMethod {
+    /// Volume is not BitLocker-encrypted (raw 0).
+    None,
+    /// AES-128 with Elephant diffuser (raw 1, legacy).
+    Aes128Diffuser,
+    /// AES-256 with Elephant diffuser (raw 2, legacy).
+    Aes256Diffuser,
+    /// AES-128 (raw 3).
+    Aes128,
+    /// AES-256 (raw 4).
+    Aes256,
+    /// Hardware encryption / eDrive (raw 5).
+    Hardware,
+    /// XTS-AES-128 (raw 6, Windows 10+).
+    XtsAes128,
+    /// XTS-AES-256 (raw 7, Windows 10+).
+    XtsAes256,
+    /// Method could not be determined or is not recognized (default).
+    #[default]
+    Unknown,
+}
+
+impl From<u32> for EncryptionMethod {
+    /// Maps raw `Win32_EncryptableVolume.EncryptionMethod` values to the project enum.
+    ///
+    /// Any unrecognized value maps to `Unknown` per D-14 (never silently optimistic).
+    fn from(raw: u32) -> Self {
+        match raw {
+            0 => Self::None,
+            1 => Self::Aes128Diffuser,
+            2 => Self::Aes256Diffuser,
+            3 => Self::Aes128,
+            4 => Self::Aes256,
+            5 => Self::Hardware,
+            6 => Self::XtsAes128,
+            7 => Self::XtsAes256,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 /// Canonical identity of a fixed disk on the system.
 ///
 /// This struct is the shared data model for disk enumeration, allowlist
@@ -135,6 +225,24 @@ pub struct DiskIdentity {
     /// `true` if this disk hosts the system boot volume.
     /// Set at enumeration time and never user-modifiable (D-16).
     pub is_boot_disk: bool,
+    /// BitLocker encryption status (D-08, D-14).
+    ///
+    /// `None` means Phase 34 has not yet verified this record (e.g., a
+    /// pre-Phase-34 server-side row before upgrade). `Some(Unknown)` means
+    /// Phase 34 ran and could not determine the status — the disambiguation
+    /// matters for admin diagnosis (Pitfall D).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_status: Option<EncryptionStatus>,
+    /// BitLocker encryption algorithm, when known (D-08).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_method: Option<EncryptionMethod>,
+    /// UTC timestamp of the most recent verification attempt (D-08).
+    ///
+    /// Set to the time of the last *attempt*, not the last *successful* check —
+    /// admin can see "we tried at T but got Unknown" rather than a silently-stale
+    /// timestamp (CONTEXT.md Claude's Discretion §6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_checked_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// `GUID_DEVINTERFACE_DISK` -- the device interface class for disk drives.
@@ -318,6 +426,11 @@ fn enumerate_fixed_disks_windows() -> Result<Vec<DiskIdentity>, DiskError> {
             serial: None,
             size_bytes: None,
             is_boot_disk,
+            // Encryption fields are populated by Plan 34-03's EncryptionChecker
+            // after enumeration. At this stage they are None (not yet checked).
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
         });
 
         index += 1;
@@ -709,6 +822,9 @@ mod tests {
             serial: Some("WD-12345678".to_string()),
             size_bytes: Some(1_000_204_886_016),
             is_boot_disk: true,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
         };
         let json = serde_json::to_string(&original).unwrap();
         let rt: DiskIdentity = serde_json::from_str(&json).unwrap();
@@ -736,6 +852,9 @@ mod tests {
             serial: None,
             size_bytes: None,
             is_boot_disk: false,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
         };
         let json = serde_json::to_string(&d).unwrap();
         assert!(!json.contains("\"drive_letter\":null"));
@@ -806,13 +925,22 @@ mod tests {
 
     #[test]
     fn test_encryption_status_snake_case_serde() {
-        assert_eq!(serde_json::to_string(&EncryptionStatus::Encrypted).unwrap(), "\"encrypted\"");
-        assert_eq!(serde_json::to_string(&EncryptionStatus::Suspended).unwrap(), "\"suspended\"");
+        assert_eq!(
+            serde_json::to_string(&EncryptionStatus::Encrypted).unwrap(),
+            "\"encrypted\""
+        );
+        assert_eq!(
+            serde_json::to_string(&EncryptionStatus::Suspended).unwrap(),
+            "\"suspended\""
+        );
         assert_eq!(
             serde_json::to_string(&EncryptionStatus::Unencrypted).unwrap(),
             "\"unencrypted\""
         );
-        assert_eq!(serde_json::to_string(&EncryptionStatus::Unknown).unwrap(), "\"unknown\"");
+        assert_eq!(
+            serde_json::to_string(&EncryptionStatus::Unknown).unwrap(),
+            "\"unknown\""
+        );
     }
 
     #[test]
@@ -823,8 +951,14 @@ mod tests {
     #[test]
     fn test_encryption_method_from_raw() {
         assert_eq!(EncryptionMethod::from(0u32), EncryptionMethod::None);
-        assert_eq!(EncryptionMethod::from(1u32), EncryptionMethod::Aes128Diffuser);
-        assert_eq!(EncryptionMethod::from(2u32), EncryptionMethod::Aes256Diffuser);
+        assert_eq!(
+            EncryptionMethod::from(1u32),
+            EncryptionMethod::Aes128Diffuser
+        );
+        assert_eq!(
+            EncryptionMethod::from(2u32),
+            EncryptionMethod::Aes256Diffuser
+        );
         assert_eq!(EncryptionMethod::from(3u32), EncryptionMethod::Aes128);
         assert_eq!(EncryptionMethod::from(4u32), EncryptionMethod::Aes256);
         assert_eq!(EncryptionMethod::from(5u32), EncryptionMethod::Hardware);
@@ -868,8 +1002,14 @@ mod tests {
             "is_boot_disk": true
         }"#;
         let disk: DiskIdentity = serde_json::from_str(legacy).expect("deserialize legacy");
-        assert!(disk.encryption_status.is_none(), "encryption_status must be None on legacy record");
-        assert!(disk.encryption_method.is_none(), "encryption_method must be None on legacy record");
+        assert!(
+            disk.encryption_status.is_none(),
+            "encryption_status must be None on legacy record"
+        );
+        assert!(
+            disk.encryption_method.is_none(),
+            "encryption_method must be None on legacy record"
+        );
         assert!(
             disk.encryption_checked_at.is_none(),
             "encryption_checked_at must be None on legacy record"
@@ -894,8 +1034,14 @@ mod tests {
             encryption_checked_at: None,
         };
         let json = serde_json::to_string(&disk).expect("serialize");
-        assert!(!json.contains("encryption_status"), "None encryption_status must be skipped");
-        assert!(!json.contains("encryption_method"), "None encryption_method must be skipped");
+        assert!(
+            !json.contains("encryption_status"),
+            "None encryption_status must be skipped"
+        );
+        assert!(
+            !json.contains("encryption_method"),
+            "None encryption_method must be skipped"
+        );
         assert!(
             !json.contains("encryption_checked_at"),
             "None encryption_checked_at must be skipped"

@@ -1093,7 +1093,11 @@ pub fn register_usb_notifications(
 
             // SAFETY: hwnd is valid on this thread; dbc_vol points to an initialized struct.
             let vol_handle = unsafe {
-                RegisterDeviceNotificationW(hwnd.into(), dbc_vol as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
+                RegisterDeviceNotificationW(
+                    hwnd.into(),
+                    dbc_vol as *const _,
+                    DEVICE_NOTIFY_WINDOW_HANDLE,
+                )
             };
             if let Err(e) = vol_handle {
                 let _ = unsafe { DestroyWindow(hwnd) };
@@ -1115,7 +1119,11 @@ pub fn register_usb_notifications(
 
             // SAFETY: hwnd is valid; dbc_usb points to an initialized struct.
             let usb_handle = unsafe {
-                RegisterDeviceNotificationW(hwnd.into(), dbc_usb as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
+                RegisterDeviceNotificationW(
+                    hwnd.into(),
+                    dbc_usb as *const _,
+                    DEVICE_NOTIFY_WINDOW_HANDLE,
+                )
             };
             if let Err(e) = usb_handle {
                 let _ = unsafe { DestroyWindow(hwnd) };
@@ -1137,7 +1145,11 @@ pub fn register_usb_notifications(
 
             // SAFETY: hwnd is valid; dbc_disk points to an initialized struct.
             let disk_handle = unsafe {
-                RegisterDeviceNotificationW(hwnd.into(), dbc_disk as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
+                RegisterDeviceNotificationW(
+                    hwnd.into(),
+                    dbc_disk as *const _,
+                    DEVICE_NOTIFY_WINDOW_HANDLE,
+                )
             };
             if let Err(e) = disk_handle {
                 let _ = unsafe { DestroyWindow(hwnd) };

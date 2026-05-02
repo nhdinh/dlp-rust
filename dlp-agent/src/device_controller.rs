@@ -270,7 +270,9 @@ impl DeviceController {
             GetFileSecurityW(
                 path_pcwstr,
                 info,
-                Some(PSECURITY_DESCRIPTOR(sd_buf.as_mut_ptr() as *mut std::ffi::c_void)),
+                Some(PSECURITY_DESCRIPTOR(
+                    sd_buf.as_mut_ptr() as *mut std::ffi::c_void
+                )),
                 required_len,
                 &mut returned_len,
             )
