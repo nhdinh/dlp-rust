@@ -238,11 +238,6 @@ impl Default for EncryptionChecker {
     }
 }
 
-// SAFETY: EncryptionChecker contains only RwLock<T> where T: Send + Sync.
-// It is safe to share across threads because all mutable access is gated
-// behind the RwLock.
-unsafe impl Send for EncryptionChecker {}
-unsafe impl Sync for EncryptionChecker {}
 
 /// Global `EncryptionChecker` reference, set once during service startup.
 static ENCRYPTION_CHECKER: OnceLock<Arc<EncryptionChecker>> = OnceLock::new();
