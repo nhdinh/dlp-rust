@@ -1049,7 +1049,7 @@ pub fn register_usb_notifications(
             // RegisterClassW (only the atom is needed by CreateWindowExW below).
             let atom = unsafe { RegisterClassW(&wc) };
             if atom == 0 {
-                let _ = hwnd_tx.send(Err(windows::core::Error::from_win32()));
+                let _ = hwnd_tx.send(Err(windows::core::Error::from_thread()));
                 return;
             }
 
@@ -1093,7 +1093,7 @@ pub fn register_usb_notifications(
 
             // SAFETY: hwnd is valid on this thread; dbc_vol points to an initialized struct.
             let vol_handle = unsafe {
-                RegisterDeviceNotificationW(hwnd, dbc_vol as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
+                RegisterDeviceNotificationW(hwnd.into(), dbc_vol as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
             };
             if let Err(e) = vol_handle {
                 let _ = unsafe { DestroyWindow(hwnd) };
@@ -1115,7 +1115,7 @@ pub fn register_usb_notifications(
 
             // SAFETY: hwnd is valid; dbc_usb points to an initialized struct.
             let usb_handle = unsafe {
-                RegisterDeviceNotificationW(hwnd, dbc_usb as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
+                RegisterDeviceNotificationW(hwnd.into(), dbc_usb as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
             };
             if let Err(e) = usb_handle {
                 let _ = unsafe { DestroyWindow(hwnd) };
@@ -1137,7 +1137,7 @@ pub fn register_usb_notifications(
 
             // SAFETY: hwnd is valid; dbc_disk points to an initialized struct.
             let disk_handle = unsafe {
-                RegisterDeviceNotificationW(hwnd, dbc_disk as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
+                RegisterDeviceNotificationW(hwnd.into(), dbc_disk as *const _, DEVICE_NOTIFY_WINDOW_HANDLE)
             };
             if let Err(e) = disk_handle {
                 let _ = unsafe { DestroyWindow(hwnd) };
@@ -1209,7 +1209,7 @@ pub fn unregister_usb_notifications(hwnd: HWND, thread: std::thread::JoinHandle<
 
     // Post WM_CLOSE to the hidden window to break the message loop.
     unsafe {
-        let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+        let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
     }
 
     // Wait for the thread to exit.

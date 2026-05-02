@@ -251,7 +251,7 @@ impl DeviceController {
             GetFileSecurityW(
                 path_pcwstr,
                 info,
-                PSECURITY_DESCRIPTOR(std::ptr::null_mut()),
+                Some(PSECURITY_DESCRIPTOR(std::ptr::null_mut())),
                 0,
                 &mut required_len,
             )
@@ -270,15 +270,15 @@ impl DeviceController {
             GetFileSecurityW(
                 path_pcwstr,
                 info,
-                PSECURITY_DESCRIPTOR(sd_buf.as_mut_ptr() as *mut std::ffi::c_void),
+                Some(PSECURITY_DESCRIPTOR(sd_buf.as_mut_ptr() as *mut std::ffi::c_void)),
                 required_len,
                 &mut returned_len,
             )
         };
 
-        if ok == windows::Win32::Foundation::BOOL(0) {
+        if ok.ok().is_err() {
             return Err(DeviceControllerError::Win32(
-                windows::core::Error::from_win32(),
+                windows::core::Error::from_thread(),
             ));
         }
 
@@ -319,15 +319,15 @@ impl DeviceController {
 
         // SAFETY: free the security descriptor allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
         if !p_sd.0.is_null() {
-            let ret = unsafe { LocalFree(windows::Win32::Foundation::HLOCAL(p_sd.0)) };
+            let ret = unsafe { LocalFree(Some(windows::Win32::Foundation::HLOCAL(p_sd.0))) };
             if !ret.0.is_null() {
                 warn!("LocalFree failed for security descriptor");
             }
         }
 
-        if set_ok == windows::Win32::Foundation::BOOL(0) {
+        if set_ok.ok().is_err() {
             return Err(DeviceControllerError::Win32(
-                windows::core::Error::from_win32(),
+                windows::core::Error::from_thread(),
             ));
         }
 
@@ -389,9 +389,9 @@ impl DeviceController {
             )
         };
 
-        if ok == windows::Win32::Foundation::BOOL(0) {
+        if ok.ok().is_err() {
             return Err(DeviceControllerError::Win32(
-                windows::core::Error::from_win32(),
+                windows::core::Error::from_thread(),
             ));
         }
 

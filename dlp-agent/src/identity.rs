@@ -344,9 +344,9 @@ impl IdentityResolver {
             LookupAccountSidW(
                 None,
                 psid_ptr,
-                windows::core::PWSTR(name_buf.as_mut_ptr()),
+                Some(windows::core::PWSTR(name_buf.as_mut_ptr())),
                 &mut name_len,
-                windows::core::PWSTR(domain_buf.as_mut_ptr()),
+                Some(windows::core::PWSTR(domain_buf.as_mut_ptr())),
                 &mut domain_len,
                 &mut use_,
             )
@@ -354,7 +354,7 @@ impl IdentityResolver {
 
         // Free the SID allocated by ConvertStringSidToSidW.
         // SAFETY: psid_ptr was allocated by ConvertStringSidToSidW and has not been freed.
-        let _ = unsafe { LocalFree(HLOCAL(psid_ptr.0)) };
+        let _ = unsafe { LocalFree(Some(HLOCAL(psid_ptr.0))) };
 
         if ok.is_ok() && name_len > 0 {
             let name = String::from_utf16_lossy(&name_buf[..name_len as usize]);

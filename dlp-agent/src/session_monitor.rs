@@ -206,7 +206,7 @@ fn enumerate_active_sessions() -> anyhow::Result<Vec<u32>> {
         let mut session_count: u32 = 0;
 
         let result = WTSEnumerateSessionsW(
-            WTS_CURRENT_SERVER_HANDLE,
+            Some(WTS_CURRENT_SERVER_HANDLE),
             0,
             1,
             &mut session_info,

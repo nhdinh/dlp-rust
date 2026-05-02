@@ -123,7 +123,7 @@ fn enumerate_active_sessions() -> Result<Vec<u32>> {
         let mut session_count: u32 = 0;
 
         let result = WTSEnumerateSessionsW(
-            WTS_CURRENT_SERVER_HANDLE,
+            Some(WTS_CURRENT_SERVER_HANDLE),
             0,
             1,
             &mut session_info,
@@ -194,9 +194,9 @@ pub(crate) fn spawn_ui_in_session(session_id: u32, binary: &Path) -> Result<UiHa
 
     unsafe {
         let create_result = CreateProcessAsUserW(
-            user_token,
+            Some(user_token),
             PCWSTR::null(),
-            windows::core::PWSTR::from_raw(binary_wide.as_ptr() as _),
+            Some(windows::core::PWSTR::from_raw(binary_wide.as_ptr() as _)),
             None,
             None,
             false,

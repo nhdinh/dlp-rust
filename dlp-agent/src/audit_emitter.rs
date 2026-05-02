@@ -72,7 +72,7 @@ mod audit_enrichment {
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
             let mut buf = [0u16; 520];
-            let len = GetModuleFileNameExW(handle, HMODULE::default(), &mut buf);
+            let len = GetModuleFileNameExW(Some(handle), Some(HMODULE::default()), &mut buf);
             let _ = CloseHandle(handle);
 
             if len == 0 {
@@ -127,7 +127,7 @@ mod audit_enrichment {
 
             // Free the security descriptor allocated by GetNamedSecurityInfoW.
             if !sd.0.is_null() {
-                let _ = LocalFree(windows::Win32::Foundation::HLOCAL(sd.0));
+                let _ = LocalFree(Some(windows::Win32::Foundation::HLOCAL(sd.0)));
             }
 
             if ok.is_none() {
@@ -139,9 +139,9 @@ mod audit_enrichment {
 
             // Free the SID string allocated by ConvertSidToStringSidW.
             if !sid_str.is_null() {
-                let _ = LocalFree(windows::Win32::Foundation::HLOCAL(
-                    sid_str.as_ptr() as *mut _
-                ));
+                let _ = LocalFree(Some(windows::Win32::Foundation::HLOCAL(
+                    sid_str.as_ptr() as *mut _,
+                )));
             }
 
             result

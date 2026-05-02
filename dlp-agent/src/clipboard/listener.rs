@@ -250,7 +250,7 @@ impl ClipboardListener {
                 let hook = unsafe {
                     // SAFETY: hook_procedure is a valid extern "system" fn matching HOOKPROC signature.
                     // HOOKPROC = Option<unsafe extern "system" fn(i32, WPARAM, LPARAM) -> LRESULT>.
-                    SetWindowsHookExW(WH_GETMESSAGE, Some(hook_procedure), module, 0)
+                    SetWindowsHookExW(WH_GETMESSAGE, Some(hook_procedure), Some(module.into()), 0)
                 };
 
                 let hhook = match hook {

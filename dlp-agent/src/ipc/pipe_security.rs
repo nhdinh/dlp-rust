@@ -91,8 +91,8 @@ impl Drop for PipeSecurity {
             // ConvertStringSecurityDescriptorToSecurityDescriptorW
             // via LocalAlloc.
             unsafe {
-                let _ = windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
-                    self.sd_ptr.0,
+                let _ = windows::Win32::Foundation::LocalFree(Some(
+                    windows::Win32::Foundation::HLOCAL(self.sd_ptr.0),
                 ));
             }
         }

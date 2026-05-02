@@ -61,7 +61,7 @@ pub fn register_agent() -> Result<()> {
         let result = RegCreateKeyExW(
             HKEY_LOCAL_MACHINE,
             PCWSTR::from_raw(subkey_wide.as_ptr()),
-            0,
+            Some(0),
             None,
             REG_OPTION_NON_VOLATILE,
             KEY_WRITE,
@@ -80,7 +80,7 @@ pub fn register_agent() -> Result<()> {
         let result = RegSetValueExW(
             hkey,
             PCWSTR::from_raw(name_wide.as_ptr()),
-            0,
+            Some(0),
             REG_SZ,
             Some(value_bytes),
         );
