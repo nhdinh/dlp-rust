@@ -9,6 +9,8 @@ pub mod disk;
 pub mod network_share;
 pub mod usb;
 
-pub use disk::{DiskEnumerator, get_disk_enumerator, set_disk_enumerator, spawn_disk_enumeration_task};
+pub use disk::{
+    get_disk_enumerator, set_disk_enumerator, spawn_disk_enumeration_task, DiskEnumerator,
+};
 pub use network_share::{NetworkShareDetector, SmbMonitor, SmbShareEvent};
 pub use usb::UsbDetector;

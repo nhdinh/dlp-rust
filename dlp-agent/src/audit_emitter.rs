@@ -140,7 +140,7 @@ mod audit_enrichment {
             // Free the SID string allocated by ConvertSidToStringSidW.
             if !sid_str.is_null() {
                 let _ = LocalFree(Some(windows::Win32::Foundation::HLOCAL(
-                    sid_str.as_ptr() as *mut _,
+                    sid_str.as_ptr() as *mut _
                 )));
             }
 

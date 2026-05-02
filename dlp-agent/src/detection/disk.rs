@@ -22,7 +22,7 @@
 //! enforcement) never contend with each other; the writer (enumeration task)
 //! acquires an exclusive lock only once per successful enumeration.
 
-use dlp_common::{DiskIdentity, enumerate_fixed_disks, get_boot_drive_letter};
+use dlp_common::{enumerate_fixed_disks, get_boot_drive_letter, DiskIdentity};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -237,8 +237,8 @@ pub fn spawn_disk_enumeration_task(
 /// Uses `EventType::DiskDiscovery` with `Classification::T1` and
 /// `Decision::ALLOW` since discovery is an informational event.
 fn emit_disk_discovery(ctx: &crate::audit_emitter::EmitContext, disks: &[DiskIdentity]) {
-    use dlp_common::{Action, Classification, Decision, EventType};
     use dlp_common::AuditEvent;
+    use dlp_common::{Action, Classification, Decision, EventType};
 
     let mut event = AuditEvent::new(
         EventType::DiskDiscovery,
@@ -260,8 +260,8 @@ fn emit_disk_discovery(ctx: &crate::audit_emitter::EmitContext, disks: &[DiskIde
 /// Uses `EventType::Alert` (triggers SIEM routing) with `Classification::T4`
 /// and `Decision::DENY` to signal the fail-closed state.
 fn emit_disk_enumeration_failed(ctx: &crate::audit_emitter::EmitContext, error: &str) {
-    use dlp_common::{Action, Classification, Decision, EventType};
     use dlp_common::AuditEvent;
+    use dlp_common::{Action, Classification, Decision, EventType};
 
     let mut event = AuditEvent::new(
         EventType::Alert,
@@ -310,6 +310,9 @@ mod tests {
                 serial: Some("WD-12345678".to_string()),
                 size_bytes: Some(1_000_204_886_016),
                 is_boot_disk: true,
+                encryption_status: None,
+                encryption_method: None,
+                encryption_checked_at: None,
             },
             DiskIdentity {
                 instance_id: "USB\\VID_1234&PID_5678&REV_0001".to_string(),
@@ -319,6 +322,9 @@ mod tests {
                 serial: Some("EXT-001".to_string()),
                 size_bytes: Some(500_000_000_000),
                 is_boot_disk: false,
+                encryption_status: None,
+                encryption_method: None,
+                encryption_checked_at: None,
             },
         ];
 
@@ -389,8 +395,8 @@ mod tests {
         // with the correct fields. We cannot call emit_audit directly (it writes
         // to a file), so we verify the event construction logic by building the
         // same event and inspecting its fields.
-        use dlp_common::{Action, Classification, Decision, EventType};
         use dlp_common::AuditEvent;
+        use dlp_common::{Action, Classification, Decision, EventType};
 
         let ctx = crate::audit_emitter::EmitContext {
             agent_id: "AGENT-TEST-001".to_string(),
@@ -408,6 +414,9 @@ mod tests {
             serial: Some("WD-12345678".to_string()),
             size_bytes: Some(1_000_204_886_016),
             is_boot_disk: true,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
         }];
 
         let event = AuditEvent::new(
@@ -442,8 +451,8 @@ mod tests {
 
     #[test]
     fn test_emit_disk_enumeration_failed_builds_correct_event() {
-        use dlp_common::{Action, Classification, Decision, EventType};
         use dlp_common::AuditEvent;
+        use dlp_common::{Action, Classification, Decision, EventType};
 
         let ctx = crate::audit_emitter::EmitContext {
             agent_id: "AGENT-TEST-001".to_string(),
@@ -465,7 +474,9 @@ mod tests {
             ctx.agent_id.clone(),
             ctx.session_id,
         )
-        .with_justification(format!("Disk enumeration failed after 3 retries: {error_msg}"));
+        .with_justification(format!(
+            "Disk enumeration failed after 3 retries: {error_msg}"
+        ));
 
         assert_eq!(event.event_type, EventType::Alert);
         assert_eq!(event.classification, Classification::T4);
