@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v0.7.0
 milestone_name: - Disk Exfiltration Prevention
 status: planning
-stopped_at: context exhaustion at 75% (2026-05-02)
-last_updated: "2026-05-02T20:04:17.902Z"
+stopped_at: Phase 35 context gathered
+last_updated: "2026-05-02T22:07:11.768Z"
 last_activity: 2026-05-02
 progress:
   total_phases: 6
@@ -90,6 +90,6 @@ Items from previous milestones carried forward:
 
 ## Session Continuity
 
-Last session: 2026-05-02T20:04:17.896Z
-Stopped at: context exhaustion at 75% (2026-05-02)
-Resume file: None
+Last session: 2026-05-02T22:07:11.758Z
+Stopped at: Phase 35 context gathered
+Resume file: .planning/phases/35-disk-allowlist-persistence/35-CONTEXT.md
