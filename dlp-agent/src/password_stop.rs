@@ -379,9 +379,9 @@ fn spawn_process_in_session(session_id: u32, cmd: &str) -> Result<u32> {
 
     unsafe {
         let result = CreateProcessAsUserW(
-            token,
+            Some(token),
             PCWSTR::null(),
-            windows::core::PWSTR::from_raw(cmd_wide.as_mut_ptr()),
+            Some(windows::core::PWSTR::from_raw(cmd_wide.as_mut_ptr())),
             None,
             None,
             false,
@@ -481,7 +481,7 @@ fn read_registry_string(subkey: &str, name: &str) -> Result<String> {
         let result = RegOpenKeyExW(
             HKEY_LOCAL_MACHINE,
             PCWSTR::from_raw(subkey_wide.as_ptr()),
-            0,
+            Some(0),
             KEY_READ,
             &mut hkey,
         );
@@ -697,7 +697,7 @@ fn write_registry_auth_hash(hash: &str) -> Result<()> {
         let result = RegCreateKeyExW(
             HKEY_LOCAL_MACHINE,
             PCWSTR::from_raw(subkey_wide.as_ptr()),
-            0,
+            Some(0),
             None,
             REG_OPTION_NON_VOLATILE,
             KEY_WRITE,
@@ -716,7 +716,7 @@ fn write_registry_auth_hash(hash: &str) -> Result<()> {
         let result = RegSetValueExW(
             hkey,
             PCWSTR::from_raw(name_wide.as_ptr()),
-            0,
+            Some(0),
             REG_SZ,
             Some(value_bytes),
         );
@@ -761,7 +761,7 @@ fn dpapi_unprotect(protected: &[u8]) -> anyhow::Result<Vec<u8>> {
             .context("CryptUnprotectData failed")?;
 
         let plaintext = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
-        let _ = LocalFree(HLOCAL(output.pbData as *mut _));
+        let _ = LocalFree(Some(HLOCAL(output.pbData as *mut _)));
         Ok(plaintext)
     }
 }

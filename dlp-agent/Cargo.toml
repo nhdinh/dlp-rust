@@ -33,7 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 
 # Windows Service
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     # identity.rs: ConvertSidToStringSidW, ConvertStringSidToSidW (Authorization submodule)
     "Win32_Security",
@@ -66,6 +66,12 @@ windows = { version = "0.58", features = [
     # SetupDiGetDeviceRegistryPropertyW for device friendly-name lookup.
     "Win32_Devices_DeviceAndDriverInstallation",
 ] }
+
+# WMI for BitLocker queries (Phase 34 - Win32_EncryptableVolume in
+# ROOT\CIMV2\Security\MicrosoftVolumeEncryption). Pinned at 0.14 per D-21a;
+# rationale: minimize churn in Phase 34's scope. Future maintenance phase may
+# bump to 0.18 once integration test coverage exists.
+wmi = { version = "0.14", features = ["chrono"] }
 
 # Password hashing: bcrypt for dlp-admin stop-password verification
 bcrypt = "0.16"

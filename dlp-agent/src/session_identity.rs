@@ -477,7 +477,7 @@ fn sid_to_string(psid: windows::Win32::Security::PSID) -> Result<String, Session
     // Free the buffer allocated by ConvertSidToStringSidW.
     // SAFETY: sid_pwstr was allocated by ConvertSidToStringSidW.
     unsafe {
-        let _ = LocalFree(HLOCAL(sid_pwstr.0.cast()));
+        let _ = LocalFree(Some(HLOCAL(sid_pwstr.0.cast())));
     }
 
     Ok(result)
@@ -516,9 +516,9 @@ fn lookup_account_name(
         LookupAccountSidW(
             None,
             psid,
-            PWSTR::null(),
+            Some(PWSTR::null()),
             &mut name_len,
-            PWSTR::null(),
+            Some(PWSTR::null()),
             &mut domain_len,
             &mut sid_type,
         )
@@ -539,9 +539,9 @@ fn lookup_account_name(
         LookupAccountSidW(
             None,
             psid,
-            PWSTR(name_buf.as_mut_ptr()),
+            Some(PWSTR(name_buf.as_mut_ptr())),
             &mut name_len,
-            PWSTR(domain_buf.as_mut_ptr()),
+            Some(PWSTR(domain_buf.as_mut_ptr())),
             &mut domain_len,
             &mut sid_type,
         )
