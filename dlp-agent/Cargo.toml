@@ -106,6 +106,7 @@ bytes = "1"
 #   cargo test -p dlp-agent --features integration-tests
 integration-tests = []
 
+
 [dev-dependencies]
 tempfile = "3"
 axum = { version = "0.7", features = ["macros"] }

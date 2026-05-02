@@ -166,12 +166,51 @@ pub use audit_enrichment::{get_application_metadata, get_resource_owner};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use dlp_common::AuditEvent;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
+
+// ---------------------------------------------------------------------------
+// In-process event capture sink (Option C per Plan 34-05 §Step D)
+// ---------------------------------------------------------------------------
+//
+// Always compiled so integration tests (separate Rust binaries that do NOT
+// inherit `cfg(test)` from the library crate) can call `enable_test_capture`
+// and `drain_test_events` without a cargo feature flag.
+//
+// Production code never calls `enable_test_capture`, so `TEST_CAPTURE_ENABLED`
+// stays `false` forever.  The only overhead on the hot emit path is a single
+// `Relaxed` atomic load -- effectively free.
+
+/// Whether the in-process capture sink is active.  `false` by default.
+static TEST_CAPTURE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// In-process event capture buffer.
+static TEST_EVENT_SINK: Lazy<Mutex<Vec<AuditEvent>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+/// Enable the in-process audit event capture sink.
+///
+/// Call at the start of any test that needs to assert on emitted events.
+/// No production code path calls this function, so the sink is disabled in
+/// all production service runs.  Call [`drain_test_events`] to retrieve and
+/// reset the accumulated events.
+pub fn enable_test_capture() {
+    TEST_CAPTURE_ENABLED.store(true, AtomicOrdering::SeqCst);
+}
+
+/// Drain and return all events captured since the last [`enable_test_capture`].
+///
+/// Disables the capture sink before draining so the next `emit_audit` call
+/// reverts to the fast-path `Relaxed` load.  Returns an empty `Vec` if
+/// capture was never enabled or no events were emitted during the window.
+pub fn drain_test_events() -> Vec<AuditEvent> {
+    TEST_CAPTURE_ENABLED.store(false, AtomicOrdering::SeqCst);
+    TEST_EVENT_SINK.lock().drain(..).collect()
+}
 
 #[cfg(windows)]
 use crate::server_client::AuditBuffer;
@@ -286,6 +325,13 @@ pub fn emit_audit(ctx: &EmitContext, event: &mut AuditEvent) {
             path = %event.resource_path,
             "audit emission failed -- event dropped"
         );
+    }
+
+    // In-process capture sink. Enabled only when a test calls
+    // `enable_test_capture()`. The atomic check is a single relaxed load on
+    // the production hot path -- negligible overhead when disabled.
+    if TEST_CAPTURE_ENABLED.load(AtomicOrdering::Relaxed) {
+        TEST_EVENT_SINK.lock().push(event.clone());
     }
 
     // Best-effort relay to dlp-server via the audit buffer.

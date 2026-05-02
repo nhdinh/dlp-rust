@@ -17,8 +17,9 @@ pub use disk::{
     get_disk_enumerator, set_disk_enumerator, spawn_disk_enumeration_task, DiskEnumerator,
 };
 pub use encryption::{
-    get_encryption_checker, set_encryption_checker, spawn_encryption_check_task, EncryptionBackend,
-    EncryptionChecker, EncryptionError,
+    get_encryption_checker, set_encryption_checker, spawn_encryption_check_task,
+    spawn_encryption_check_task_with_backend, EncryptionBackend, EncryptionChecker,
+    EncryptionError,
 };
 pub use network_share::{NetworkShareDetector, SmbMonitor, SmbShareEvent};
 pub use usb::UsbDetector;
