@@ -70,8 +70,8 @@ Plans:
 - [x] 34-01-PLAN.md -- Workspace dependency bump + EncryptionStatus/EncryptionMethod enums + DiskIdentity fields
 - [x] 34-02-PLAN.md -- AgentConfig [encryption] TOML section with clamped recheck_interval
 - [x] 34-03-PLAN.md -- EncryptionChecker module: trait, WMI/Registry backends, orchestration loop
-- [ ] 34-04-PLAN.md -- Service wiring: singleton registration + spawn_encryption_check_task in service.rs
-- [ ] 34-05-PLAN.md -- Integration test scaffolding + validation doc sign-off
+- [x] 34-04-PLAN.md -- Service wiring: singleton registration + spawn_encryption_check_task in service.rs
+- [x] 34-05-PLAN.md -- Integration test scaffolding + validation doc sign-off
 
 ### Phase 35: Disk Allowlist Persistence
 **Goal**: Agent persists the disk allowlist and loads it across restarts
