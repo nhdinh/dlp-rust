@@ -49,6 +49,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use dlp_common::DiskIdentity;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -150,6 +151,21 @@ pub struct AgentConfig {
     /// use site via [`AgentConfig::resolved_recheck_interval`].
     #[serde(default)]
     pub encryption: EncryptionConfig,
+
+    /// Disk allowlist persisted across agent restarts (Phase 35 / DISK-03 / D-03).
+    ///
+    /// Loaded from `[[disk_allowlist]]` TOML array of tables. Each entry is a
+    /// [`DiskIdentity`] keyed canonically by `instance_id`. `drive_letter` is
+    /// stored as informational metadata only — it is NOT a key.
+    ///
+    /// When the section is absent (first run, or pre-Phase-35 config files),
+    /// `#[serde(default)]` yields an empty `Vec` (D-08, backwards compat).
+    ///
+    /// Phase 36 enforcement reads from `DiskEnumerator.instance_id_map`; this
+    /// field is the persistence backing for that map. Disconnected disks are
+    /// retained per D-06 (allowlist is additive — admin removes via Phase 37/38).
+    #[serde(default)]
+    pub disk_allowlist: Vec<DiskIdentity>,
 
     /// LDAP/AD configuration for group resolution. When `None`, AD features
     /// are disabled (fallback to placeholder identity values). Populated by
@@ -431,6 +447,7 @@ mod tests {
             offline_cache_enabled: None,
             log_level: None,
             encryption: EncryptionConfig::default(),
+            disk_allowlist: Vec::new(),
             ldap_config: None,
             machine_name: None,
         };
@@ -465,6 +482,7 @@ mod tests {
             offline_cache_enabled: Some(true),
             log_level: Some("info".to_string()),
             encryption: EncryptionConfig::default(),
+            disk_allowlist: Vec::new(),
             ldap_config: None,
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
@@ -494,6 +512,7 @@ mod tests {
             offline_cache_enabled: None,
             log_level: None,
             encryption: EncryptionConfig::default(),
+            disk_allowlist: Vec::new(),
             ldap_config: None,
             machine_name: None,
         };
@@ -616,7 +635,10 @@ mod tests {
         assert_eq!(loaded.disk_allowlist.len(), 2);
         // Note: TOML save+load may reorder entries depending on serde HashMap
         // semantics, but Vec serialization preserves order. Assert by index.
-        assert_eq!(loaded.disk_allowlist[0].instance_id, "PCIIDE\\IDECHANNEL\\4&1234");
+        assert_eq!(
+            loaded.disk_allowlist[0].instance_id,
+            "PCIIDE\\IDECHANNEL\\4&1234"
+        );
         assert_eq!(loaded.disk_allowlist[0].drive_letter, Some('C'));
         assert_eq!(loaded.disk_allowlist[0].bus_type, BusType::Sata);
         assert!(loaded.disk_allowlist[0].is_boot_disk);
@@ -665,9 +687,12 @@ mod tests {
             "TOML should not contain encryption_checked_at when None; got:\n{serialized}"
         );
         // Sanity: required fields are present.
+        // Note: the toml 0.8 crate serializes strings containing backslashes using
+        // TOML literal strings (single-quoted), where backslashes are NOT escaped.
+        // So `USB\VID_1234&PID_5678\001` appears verbatim in the output.
         assert!(serialized.contains("[[disk_allowlist]]"));
         assert!(serialized.contains("instance_id"));
-        assert!(serialized.contains("USB\\\\VID_1234&PID_5678\\\\001"));
+        assert!(serialized.contains("USB\\VID_1234&PID_5678\\001"));
     }
 
     #[test]
