@@ -558,6 +558,119 @@ mod tests {
     }
 
     #[test]
+    fn test_disk_allowlist_backwards_compat() {
+        // A TOML config from before Phase 35 (no [[disk_allowlist]] section)
+        // must still parse and yield an empty allowlist.
+        let toml_str = r#"
+            monitored_paths = ['C:\Restricted\']
+        "#;
+        let config: AgentConfig = toml::from_str(toml_str).expect("backwards-compat parse");
+        assert!(config.disk_allowlist.is_empty());
+        // Sanity: existing fields still parse correctly.
+        assert_eq!(config.monitored_paths, vec![r"C:\Restricted\"]);
+    }
+
+    #[test]
+    fn test_disk_allowlist_toml_roundtrip() {
+        // Round-trip an AgentConfig with two DiskIdentity entries through TOML.
+        // Covers Pitfall 3 (drive_letter Option<char> in TOML) and D-06
+        // (disconnected disk -- drive_letter is None).
+        use dlp_common::{BusType, DiskIdentity};
+
+        let original = AgentConfig {
+            disk_allowlist: vec![
+                DiskIdentity {
+                    instance_id: "PCIIDE\\IDECHANNEL\\4&1234".to_string(),
+                    bus_type: BusType::Sata,
+                    model: "WDC WD10EZEX-00BN5A0".to_string(),
+                    drive_letter: Some('C'),
+                    serial: Some("WD-12345678".to_string()),
+                    size_bytes: Some(1_000_204_886_016),
+                    is_boot_disk: true,
+                    encryption_status: None,
+                    encryption_method: None,
+                    encryption_checked_at: None,
+                },
+                DiskIdentity {
+                    // Disconnected disk: drive_letter = None per D-06.
+                    instance_id: "NVME\\GEN31X4\\5&ABC".to_string(),
+                    bus_type: BusType::Nvme,
+                    model: "Samsung SSD 980 Pro".to_string(),
+                    drive_letter: None,
+                    serial: None,
+                    size_bytes: None,
+                    is_boot_disk: false,
+                    encryption_status: None,
+                    encryption_method: None,
+                    encryption_checked_at: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let tmp_path = std::env::temp_dir().join("test_disk_allowlist_toml_roundtrip.toml");
+        original.save(&tmp_path).expect("save should succeed");
+        let loaded = AgentConfig::load(&tmp_path);
+        let _ = std::fs::remove_file(&tmp_path);
+
+        assert_eq!(loaded.disk_allowlist.len(), 2);
+        // Note: TOML save+load may reorder entries depending on serde HashMap
+        // semantics, but Vec serialization preserves order. Assert by index.
+        assert_eq!(loaded.disk_allowlist[0].instance_id, "PCIIDE\\IDECHANNEL\\4&1234");
+        assert_eq!(loaded.disk_allowlist[0].drive_letter, Some('C'));
+        assert_eq!(loaded.disk_allowlist[0].bus_type, BusType::Sata);
+        assert!(loaded.disk_allowlist[0].is_boot_disk);
+
+        assert_eq!(loaded.disk_allowlist[1].instance_id, "NVME\\GEN31X4\\5&ABC");
+        assert_eq!(loaded.disk_allowlist[1].drive_letter, None);
+        assert_eq!(loaded.disk_allowlist[1].bus_type, BusType::Nvme);
+        assert!(!loaded.disk_allowlist[1].is_boot_disk);
+    }
+
+    #[test]
+    fn test_disk_allowlist_omits_none_encryption_fields() {
+        // Verifies the existing #[serde(skip_serializing_if = "Option::is_none")]
+        // on DiskIdentity's encryption fields propagates correctly through the
+        // [[disk_allowlist]] array of tables (D-08 + Phase 35 specifics block).
+        use dlp_common::{BusType, DiskIdentity};
+
+        let cfg = AgentConfig {
+            disk_allowlist: vec![DiskIdentity {
+                instance_id: "USB\\VID_1234&PID_5678\\001".to_string(),
+                bus_type: BusType::Usb,
+                model: "USB External Drive".to_string(),
+                drive_letter: Some('E'),
+                serial: None,
+                size_bytes: None,
+                is_boot_disk: false,
+                encryption_status: None,
+                encryption_method: None,
+                encryption_checked_at: None,
+            }],
+            ..Default::default()
+        };
+
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        // Encryption fields must be ABSENT in the TOML output when None.
+        assert!(
+            !serialized.contains("encryption_status"),
+            "TOML should not contain encryption_status when None; got:\n{serialized}"
+        );
+        assert!(
+            !serialized.contains("encryption_method"),
+            "TOML should not contain encryption_method when None; got:\n{serialized}"
+        );
+        assert!(
+            !serialized.contains("encryption_checked_at"),
+            "TOML should not contain encryption_checked_at when None; got:\n{serialized}"
+        );
+        // Sanity: required fields are present.
+        assert!(serialized.contains("[[disk_allowlist]]"));
+        assert!(serialized.contains("instance_id"));
+        assert!(serialized.contains("USB\\\\VID_1234&PID_5678\\\\001"));
+    }
+
+    #[test]
     fn test_log_level_roundtrip_toml() {
         let toml_str = "log_level = 'debug'\n";
         let config: AgentConfig = toml::from_str(toml_str).expect("parse");
