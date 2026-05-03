@@ -540,6 +540,18 @@ async fn run_loop(
     // (paths are fixed; live path hot-reload is out of scope for this phase).
     let config_arc = Arc::new(parking_lot::Mutex::new(agent_config.clone()));
 
+    // ── Phase 35: Arc<RwLock<AgentConfig>> for disk allowlist persistence ──
+    // The disk enumeration task (D-04) needs a write-capable shared reference
+    // to AgentConfig so it can update `disk_allowlist` after merge and call
+    // `save(config_path)`. RwLock is used (not Mutex) because future Phase
+    // 36/37 readers may need concurrent read access to the allowlist.
+    //
+    // CRITICAL: must be constructed BEFORE `InterceptionEngine::with_config`
+    // moves `agent_config` (Pitfall 2). The window is between this point and
+    // the `with_config(agent_config)` call below.
+    let disk_config_arc = Arc::new(parking_lot::RwLock::new(agent_config.clone()));
+    let config_path = std::path::PathBuf::from(crate::config::AgentConfig::effective_config_path());
+
     // ── Start the Policy Engine heartbeat ─────────────────────────────────
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let offline_hb = offline.clone();
@@ -630,7 +642,8 @@ async fn run_loop(
     crate::detection::disk::spawn_disk_enumeration_task(
         tokio::runtime::Handle::current(),
         audit_ctx.clone(),
-        None, // Phase 35 will pass the allowlist TOML path here
+        Arc::clone(&disk_config_arc),
+        config_path.clone(),
     );
     info!("disk enumeration task spawned");
 

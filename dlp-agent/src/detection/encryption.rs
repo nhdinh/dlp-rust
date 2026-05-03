@@ -245,7 +245,6 @@ impl Default for EncryptionChecker {
     }
 }
 
-
 /// Global `EncryptionChecker` reference, set once during service startup.
 static ENCRYPTION_CHECKER: OnceLock<Arc<EncryptionChecker>> = OnceLock::new();
 
@@ -599,8 +598,9 @@ impl EncryptionBackend for WindowsEncryptionBackend {
             // `query()` fetches all Win32_EncryptableVolume rows; we then filter
             // by drive letter. Using typed `query()` is simpler than `raw_query()`
             // and negligible overhead for <= 32 volumes per machine.
-            let volumes: Vec<EncryptableVolume> =
-                conn.query().map_err(|e| EncryptionError::WmiQueryFailed(e.to_string()))?;
+            let volumes: Vec<EncryptableVolume> = conn
+                .query()
+                .map_err(|e| EncryptionError::WmiQueryFailed(e.to_string()))?;
             let target = volumes
                 .iter()
                 .find(|v| {
@@ -830,8 +830,11 @@ async fn run_one_verification_cycle(
     // consumes the return value) cannot silently drop a disk from new_statuses. Using
     // Vec<(id, JoinHandle)> instead of JoinSet retains the id regardless of panic.
     type DiskHandleResult = Result<(EncryptionStatus, Option<EncryptionMethod>), EncryptionError>;
-    let mut handles: Vec<(String, Option<char>, tokio::task::JoinHandle<DiskHandleResult>)> =
-        Vec::with_capacity(disks.len());
+    let mut handles: Vec<(
+        String,
+        Option<char>,
+        tokio::task::JoinHandle<DiskHandleResult>,
+    )> = Vec::with_capacity(disks.len());
 
     for disk in disks {
         let id = disk.instance_id.clone();
