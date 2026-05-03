@@ -22,9 +22,11 @@
 //! enforcement) never contend with each other; the writer (enumeration task)
 //! acquires an exclusive lock only once per successful enumeration.
 
+use crate::config::AgentConfig;
 use dlp_common::{enumerate_fixed_disks, get_boot_drive_letter, DiskIdentity};
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -136,24 +138,66 @@ pub fn get_disk_enumerator() -> Option<Arc<DiskEnumerator>> {
 
 /// Spawns the disk enumeration background task.
 ///
-/// The task enumerates fixed disks with retry logic, then emits an aggregated
-/// `DiskDiscovery` audit event. On final failure, it emits a high-severity
-/// failure event and leaves `enumeration_complete` as `false` (fail-closed per
-/// D-04).
+/// The task pre-loads any persisted disk allowlist from the supplied
+/// [`AgentConfig`] (D-11), then enumerates fixed disks with retry logic.
+/// On success, the live enumeration is merged with the TOML snapshot
+/// (live wins for present disks per D-07; disconnected TOML entries are
+/// retained per D-06), the merged list is written back to
+/// `agent_config.disk_allowlist`, and `AgentConfig::save(config_path)`
+/// is called. TOML write failure is non-fatal -- the in-memory state
+/// in `DiskEnumerator` is authoritative.
+///
+/// On final enumeration failure, a high-severity audit event is emitted
+/// and `enumeration_complete` remains `false` (fail-closed per D-04).
+/// Pre-loaded TOML entries remain in `instance_id_map` after a final
+/// failure, but the readiness flag is NOT set (D-12).
 ///
 /// # Arguments
 ///
-/// * `runtime_handle` — tokio runtime `Handle` for spawning sub-tasks from
-///   non-async contexts.
-/// * `audit_ctx` — [`EmitContext`] for audit event emission.
-/// * `_agent_config_path` — Optional path to existing allowlist TOML (Phase 35
-///   will use this).
+/// * `runtime_handle` -- tokio runtime `Handle` for spawning sub-tasks
+///   from non-async contexts.
+/// * `audit_ctx` -- [`EmitContext`] for audit event emission.
+/// * `agent_config` -- shared `Arc<parking_lot::RwLock<AgentConfig>>`
+///   bound at service startup (D-04). Pre-load reads `disk_allowlist`;
+///   persist writes `disk_allowlist` and calls `save(config_path)`.
+/// * `config_path` -- destination for `AgentConfig::save()`. Typically
+///   resolved via `AgentConfig::effective_config_path()`.
 pub fn spawn_disk_enumeration_task(
     runtime_handle: tokio::runtime::Handle,
     audit_ctx: crate::audit_emitter::EmitContext,
-    _agent_config_path: Option<String>,
+    agent_config: Arc<parking_lot::RwLock<AgentConfig>>,
+    config_path: PathBuf,
 ) {
     runtime_handle.spawn(async move {
+        // --- Pre-load TOML allowlist into DiskEnumerator (D-11) ---
+        // Read lock held only long enough to clone the Vec; released before any
+        // other work to keep contention minimal.
+        let toml_disks: Vec<DiskIdentity> = {
+            let cfg = agent_config.read();
+            cfg.disk_allowlist.clone()
+        };
+
+        if !toml_disks.is_empty() {
+            if let Some(enumerator) = get_disk_enumerator() {
+                // Pre-populate discovered_disks and instance_id_map only.
+                // drive_letter_map is INTENTIONALLY left empty here:
+                // disconnected TOML entries may carry stale drive letters,
+                // and pre-populating would route I/O to phantom disks.
+                let mut discovered = enumerator.discovered_disks.write();
+                let mut instance_map = enumerator.instance_id_map.write();
+                *discovered = toml_disks.clone();
+                for disk in &toml_disks {
+                    instance_map.insert(disk.instance_id.clone(), disk.clone());
+                }
+            }
+            info!(
+                count = toml_disks.len(),
+                "pre-loaded disk allowlist from TOML"
+            );
+        }
+        // enumeration_complete remains FALSE (D-12) -- the readiness signal
+        // requires successful live enumeration, not the TOML warm-up.
+
         let retry_delays = [
             Duration::from_millis(200),
             Duration::from_millis(1000),
@@ -179,29 +223,64 @@ pub fn spawn_disk_enumeration_task(
                         }
                     }
 
-                    // Update the global DiskEnumerator.
+                    // --- Step 2: Merge live disks with TOML snapshot (D-06, D-07) ---
+                    // Start the merge from TOML entries so disconnected disks survive
+                    // (D-06). Then overwrite with live data for any disk whose
+                    // instance_id matches a live entry (D-07 -- live wins).
+                    let mut merged: HashMap<String, DiskIdentity> = toml_disks
+                        .iter()
+                        .map(|d| (d.instance_id.clone(), d.clone()))
+                        .collect();
+                    for disk in &disks {
+                        merged.insert(disk.instance_id.clone(), disk.clone());
+                    }
+                    let mut updated_list: Vec<DiskIdentity> = merged.into_values().collect();
+                    // Stable sort for deterministic TOML output and stable audit diffs.
+                    updated_list.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+
+                    // --- Step 3: Update DiskEnumerator (all locks scoped to this block) ---
+                    // CRITICAL: All DiskEnumerator write locks MUST be released before
+                    // the AgentConfig write lock is acquired in Step 4. Lock-order
+                    // discipline prevents deadlock (Pitfall 4).
                     if let Some(enumerator) = get_disk_enumerator() {
                         let mut discovered = enumerator.discovered_disks.write();
                         let mut drive_map = enumerator.drive_letter_map.write();
                         let mut instance_map = enumerator.instance_id_map.write();
                         let mut complete = enumerator.enumeration_complete.write();
 
-                        *discovered = disks.clone();
+                        *discovered = updated_list.clone();
                         drive_map.clear();
                         instance_map.clear();
-                        for disk in &disks {
+                        for disk in &updated_list {
                             if let Some(letter) = disk.drive_letter {
                                 drive_map.insert(letter, disk.clone());
                             }
                             instance_map.insert(disk.instance_id.clone(), disk.clone());
                         }
                         *complete = true;
+                        // All DiskEnumerator write locks released at end of this block.
                     }
 
-                    // Emit aggregated disk discovery audit event.
-                    emit_disk_discovery(&audit_ctx, &disks);
+                    // --- Step 4: Persist allowlist to TOML (non-fatal) ---
+                    // AgentConfig write lock acquired AFTER DiskEnumerator locks are
+                    // released. Save failures are logged via tracing::error! and do
+                    // NOT fail enumeration -- in-memory state is authoritative.
+                    {
+                        let mut cfg = agent_config.write();
+                        cfg.disk_allowlist = updated_list.clone();
+                        if let Err(e) = cfg.save(&config_path) {
+                            tracing::error!(
+                                error = %e,
+                                path = %config_path.display(),
+                                "failed to persist disk allowlist to TOML -- in-memory state remains authoritative"
+                            );
+                        }
+                        // AgentConfig write lock released at end of this block.
+                    }
 
-                    info!(disk_count = disks.len(), "fixed disk enumeration complete");
+                    // --- Step 5: Emit audit event and exit ---
+                    emit_disk_discovery(&audit_ctx, &updated_list);
+                    info!(disk_count = updated_list.len(), "fixed disk enumeration complete");
                     return;
                 }
                 Err(e) => {
@@ -507,5 +586,193 @@ mod tests {
         let enumerator: DiskEnumerator = Default::default();
         assert!(enumerator.all_disks().is_empty());
         assert!(!enumerator.is_ready());
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 35 (DISK-03) tests: TOML pre-load, merge, non-fatal persist
+    // -----------------------------------------------------------------
+
+    /// Helper to build a DiskIdentity test fixture with all fields specified.
+    fn make_disk(
+        instance_id: &str,
+        bus: BusType,
+        drive_letter: Option<char>,
+        is_boot: bool,
+    ) -> DiskIdentity {
+        DiskIdentity {
+            instance_id: instance_id.to_string(),
+            bus_type: bus,
+            model: format!("MODEL-{instance_id}"),
+            drive_letter,
+            serial: None,
+            size_bytes: None,
+            is_boot_disk: is_boot,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
+        }
+    }
+
+    /// Pre-load semantics: TOML entries land in instance_id_map and
+    /// discovered_disks; enumeration_complete stays false (D-11, D-12).
+    #[test]
+    fn test_pre_load_populates_instance_map() {
+        let enumerator = DiskEnumerator::new();
+        let toml_disks = vec![
+            make_disk("PCIIDE\\IDECHANNEL\\4&1234", BusType::Sata, Some('C'), true),
+            make_disk(
+                "USB\\VID_1234&PID_5678\\001",
+                BusType::Usb,
+                Some('E'),
+                false,
+            ),
+        ];
+
+        // Mirror the pre-load block from spawn_disk_enumeration_task.
+        {
+            let mut discovered = enumerator.discovered_disks.write();
+            let mut instance_map = enumerator.instance_id_map.write();
+            *discovered = toml_disks.clone();
+            for disk in &toml_disks {
+                instance_map.insert(disk.instance_id.clone(), disk.clone());
+            }
+        }
+
+        assert!(enumerator
+            .disk_for_instance_id("PCIIDE\\IDECHANNEL\\4&1234")
+            .is_some());
+        assert!(enumerator
+            .disk_for_instance_id("USB\\VID_1234&PID_5678\\001")
+            .is_some());
+        assert_eq!(enumerator.all_disks().len(), 2);
+        // D-12: pre-load alone must NOT mark enumeration complete.
+        assert!(!enumerator.is_ready());
+    }
+
+    /// Merge: live data overwrites TOML for the same instance_id (D-07).
+    #[test]
+    fn test_merge_live_wins_over_toml() {
+        let toml_disks = vec![make_disk("ID-A", BusType::Sata, Some('C'), false)];
+        let live_disks = vec![make_disk("ID-A", BusType::Sata, Some('D'), true)]; // updated
+
+        // Mirror the merge algorithm from spawn_disk_enumeration_task.
+        let mut merged: HashMap<String, DiskIdentity> = toml_disks
+            .into_iter()
+            .map(|d| (d.instance_id.clone(), d))
+            .collect();
+        for disk in &live_disks {
+            merged.insert(disk.instance_id.clone(), disk.clone());
+        }
+        let mut updated: Vec<DiskIdentity> = merged.into_values().collect();
+        updated.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].instance_id, "ID-A");
+        // Live wins.
+        assert_eq!(updated[0].drive_letter, Some('D'));
+        assert!(updated[0].is_boot_disk);
+    }
+
+    /// Merge: disconnected TOML disks are retained (D-06).
+    #[test]
+    fn test_merge_disconnected_disk_retained() {
+        let disconnected = make_disk("ID-DISCONNECTED", BusType::Nvme, None, false);
+        let toml_disks = vec![
+            make_disk("ID-PRESENT", BusType::Sata, Some('C'), true),
+            disconnected.clone(),
+        ];
+        let live_disks = vec![make_disk("ID-PRESENT", BusType::Sata, Some('C'), true)];
+
+        let mut merged: HashMap<String, DiskIdentity> = toml_disks
+            .into_iter()
+            .map(|d| (d.instance_id.clone(), d))
+            .collect();
+        for disk in &live_disks {
+            merged.insert(disk.instance_id.clone(), disk.clone());
+        }
+        let mut updated: Vec<DiskIdentity> = merged.into_values().collect();
+        updated.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+
+        assert_eq!(updated.len(), 2);
+        // Disconnected entry survived with its TOML values intact.
+        let recovered = updated
+            .iter()
+            .find(|d| d.instance_id == "ID-DISCONNECTED")
+            .expect("disconnected disk must be preserved per D-06");
+        assert_eq!(recovered.drive_letter, None);
+        assert_eq!(recovered.bus_type, BusType::Nvme);
+        assert_eq!(recovered.model, disconnected.model);
+    }
+
+    /// Merge result is sorted by instance_id for deterministic TOML output.
+    #[test]
+    fn test_merge_sorts_by_instance_id() {
+        let toml_disks = vec![
+            make_disk("ZZZ-LATER", BusType::Sata, None, false),
+            make_disk("AAA-FIRST", BusType::Nvme, None, false),
+        ];
+        let live_disks: Vec<DiskIdentity> = Vec::new();
+
+        let mut merged: HashMap<String, DiskIdentity> = toml_disks
+            .into_iter()
+            .map(|d| (d.instance_id.clone(), d))
+            .collect();
+        for disk in &live_disks {
+            merged.insert(disk.instance_id.clone(), disk.clone());
+        }
+        let mut updated: Vec<DiskIdentity> = merged.into_values().collect();
+        updated.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+
+        assert_eq!(updated.len(), 2);
+        assert_eq!(updated[0].instance_id, "AAA-FIRST");
+        assert_eq!(updated[1].instance_id, "ZZZ-LATER");
+    }
+
+    /// TOML save failure must NOT crash the enumeration task -- in-memory
+    /// state is authoritative. We simulate a save failure by passing a
+    /// path under a directory that does not exist; std::fs::write returns Err
+    /// but the in-memory cfg.disk_allowlist is still updated.
+    #[test]
+    fn test_persist_save_failure_is_non_fatal() {
+        use crate::config::AgentConfig;
+        use std::path::PathBuf;
+
+        // Path under a guaranteed-nonexistent directory.
+        // On Windows: C:\dlp_phase35_nonexistent_<random>\config.toml.
+        // On other targets the test still exercises the same control flow.
+        let bad_path = PathBuf::from(format!(
+            "{}{}{}_phase35_nonexistent_dir_xyz123abc{}config.toml",
+            std::env::temp_dir().display(),
+            std::path::MAIN_SEPARATOR,
+            "dlp",
+            std::path::MAIN_SEPARATOR,
+        ));
+        // Verify our chosen path's parent directory does not exist.
+        assert!(
+            !bad_path.parent().map(|p| p.exists()).unwrap_or(false),
+            "test precondition: parent of {bad_path:?} must not exist"
+        );
+
+        let agent_config = Arc::new(parking_lot::RwLock::new(AgentConfig::default()));
+        let updated_list = vec![make_disk("ID-PERSIST", BusType::Sata, Some('C'), true)];
+
+        // Mirror Step 4 from spawn_disk_enumeration_task: write the in-memory
+        // field even if save() fails, log via tracing::error! (we cannot
+        // assert the log here, but the operation must not panic).
+        let save_result;
+        {
+            let mut cfg = agent_config.write();
+            cfg.disk_allowlist = updated_list.clone();
+            save_result = cfg.save(&bad_path);
+        }
+
+        // Save MUST fail (path under nonexistent directory).
+        assert!(save_result.is_err(), "save to nonexistent dir must fail");
+        // In-memory state MUST be updated regardless.
+        assert_eq!(agent_config.read().disk_allowlist.len(), 1);
+        assert_eq!(
+            agent_config.read().disk_allowlist[0].instance_id,
+            "ID-PERSIST"
+        );
     }
 }
