@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-05-03 — Phase 34 complete: BitLocker verification engine built and wired*
+*Last updated: 2026-05-03 — Phase 35 complete: Disk allowlist persistence wired end-to-end (DISK-03)*
 ---
 
 # PROJECT.md — DLP-RUST
