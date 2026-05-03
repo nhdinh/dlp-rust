@@ -84,8 +84,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 35-01-PLAN.md -- AgentConfig.disk_allowlist field + TOML roundtrip tests
-- [ ] 35-02-PLAN.md -- spawn_disk_enumeration_task pre-load + merge + non-fatal persist; service.rs Arc<RwLock<AgentConfig>> wiring
+- [x] 35-01-PLAN.md -- AgentConfig.disk_allowlist field + TOML roundtrip tests
+- [x] 35-02-PLAN.md -- spawn_disk_enumeration_task pre-load + merge + non-fatal persist; service.rs Arc<RwLock<AgentConfig>> wiring
 
 ### Phase 36: Disk Enforcement
 **Goal**: Agent blocks I/O to unregistered fixed disks and handles device arrivals/removals
