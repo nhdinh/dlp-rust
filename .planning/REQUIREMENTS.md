@@ -12,7 +12,7 @@
 
 - [x] **DISK-01**: Agent can enumerate all fixed disks (`DRIVE_FIXED`) at install time or first startup, capturing device instance ID, bus type, model, and drive letter.
 - [x] **DISK-02**: Agent can distinguish USB-bridged fixed disks (SATA/NVMe in USB enclosures) from genuine internal SATA/NVMe disks via `IOCTL_STORAGE_QUERY_PROPERTY` or PnP tree walk.
-- [ ] **DISK-03**: Agent persists the disk allowlist to `agent-config.toml` with device instance ID as canonical key; drive letter is informational only.
+- [x] **DISK-03**: Agent persists the disk allowlist to `agent-config.toml` with device instance ID as canonical key; drive letter is informational only.
 - [ ] **DISK-04**: Agent blocks I/O (`FileAction::Create`/`Write`/`Move`) to unregistered fixed disks at runtime via pre-ABAC enforcement in `run_event_loop`.
 - [ ] **DISK-05**: Agent handles `WM_DEVICECHANGE` `DBT_DEVICEARRIVAL`/`DBT_DEVICEREMOVECOMPLETE` for `GUID_DEVINTERFACE_DISK` to detect new fixed disk arrivals and removals.
 
@@ -62,7 +62,7 @@
 |-------------|-------|--------|
 | DISK-01 | 33 | Complete |
 | DISK-02 | 33 | Complete |
-| DISK-03 | 35 | Pending |
+| DISK-03 | 35 | Complete |
 | DISK-04 | 36 | Pending |
 | DISK-05 | 36 | Pending |
 | CRYPT-01 | 34 | Complete |
