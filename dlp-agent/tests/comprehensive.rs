@@ -361,6 +361,7 @@ mod config_edge_cases {
             ldap_config: None,
             machine_name: None,
             encryption: Default::default(),
+            disk_allowlist: Vec::new(),
         };
         let paths = config.resolve_watch_paths();
         assert_eq!(paths.len(), 2);
@@ -382,6 +383,7 @@ mod config_edge_cases {
             ldap_config: None,
             machine_name: None,
             encryption: Default::default(),
+            disk_allowlist: Vec::new(),
         };
         let b = a.clone();
         assert_eq!(a, b);
