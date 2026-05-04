@@ -39,14 +39,12 @@ blocked: 0
   reason: "User reported: External USB-C NVMe enclosure (Lexar E6) and USB NVMe enclosure (SanDisk Extreme) both reported as nvme. PnP tree walk fallback not detecting USB NVMe bridges on this multi-disk system."
   severity: major
   test: 1
-  root_cause: "query_bus_type_ioctl iterates PhysicalDrive0-31 and returns the first successful IOCTL result without validating the handle matches the requested instance_id. The _instance_id param in query_bus_type_for_handle is intentionally unused (underscore prefix). Internal NVMe (PhysicalDrive0) responds first with BusTypeNvme, poisoning results for all disks. USB NVMe bridges (UAS/uaspstor) also report BusTypeNvme via STORAGE_DEVICE_DESCRIPTOR — physical USB ancestry is only visible via PnP tree. PnP fallback only runs on Err(_), so it is permanently bypassed when IOCTL returns wrong-but-successful result."
+  root_cause: "IOCTL_STORAGE_QUERY_PROPERTY (STORAGE_DEVICE_DESCRIPTOR.BusType) reports the tunneled storage PROTOCOL (NVMe), not the physical connection (USB). Windows Get-Disk correctly shows Lexar E6 and SanDisk Extreme as BusType=USB, but the DLP agent's IOCTL path returns NVMe for all three disks. This is a fundamental API limitation — the IOCTL will always misclassify USB NVMe bridges. Additionally, query_bus_type_ioctl iterates PhysicalDrive0-31 returning the first successful handle without instance_id correlation, compounding the error. PnP fallback (is_usb_bridged_pnp_walk) is correct and would produce the right answer, but only runs on Err(_) — bypassed when IOCTL returns wrong-but-successful result."
+  hardware_evidence: "Get-Disk: Lexar E6 = USB (2TB), SanDisk Extreme 55AE = USB (1TB), PVC10 SK hynix = NVMe (512GB). DLP audit: all three as nvme. Confirms IOCTL fundamentally cannot distinguish USB NVMe bridges from native NVMe."
   artifacts:
     - path: "dlp-common/src/disk.rs"
-      issue: "query_bus_type_ioctl (lines 480-516): iterates PhysicalDriveN, returns first successful IOCTL without instance_id correlation"
+      issue: "enumerate_fixed_disks_windows (lines 405-413): PnP fallback only on Err — bypassed when IOCTL returns wrong-but-successful BusTypeNvme for USB NVMe bridges"
     - path: "dlp-common/src/disk.rs"
-      issue: "query_bus_type_for_handle (lines 520-581): _instance_id param accepted but never used — no identity validation"
-    - path: "dlp-common/src/disk.rs"
-      issue: "enumerate_fixed_disks_windows (lines 405-413): PnP fallback only on Err, never reached when IOCTL returns wrong result"
+      issue: "query_bus_type_ioctl (lines 480-516): IOCTL_STORAGE_QUERY_PROPERTY reports tunneled protocol (NVMe), not physical bus (USB) — fundamental API limitation for USB NVMe bridges"
   missing:
-    - "Run PnP walk unconditionally alongside IOCTL — if PnP says USB, override IOCTL result (short-term fix)"
-    - "OR correlate PhysicalDriveN handle to instance_id via IOCTL_STORAGE_GET_DEVICE_NUMBER before accepting IOCTL bus type (accurate fix)"
+    - "Run is_usb_bridged_pnp_walk unconditionally alongside IOCTL — if PnP confirms USB ancestor, override IOCTL result with BusType::Usb"
