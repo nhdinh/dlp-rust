@@ -91,3 +91,20 @@ pub mod disk_enforcer;
 
 #[cfg(windows)]
 pub mod usb_enforcer;
+
+/// Shared test helpers for modules that mutate the global DiskEnumerator OnceLock.
+///
+/// The global `DISK_ENUMERATOR` is a process-wide OnceLock. Tests in
+/// `disk_enforcer::tests` and `detection::disk::tests` both reset the
+/// enumerator's RwLock-protected fields between test cases. Without a shared
+/// serialization lock, these tests race against each other when cargo runs
+/// them in parallel threads. `DISK_TEST_LOCK` provides the coordination point.
+#[cfg(test)]
+pub mod test_helpers {
+    use parking_lot::Mutex;
+
+    /// Acquire this lock in any test that reads or writes the global
+    /// `DiskEnumerator` maps (`drive_letter_map`, `instance_id_map`,
+    /// `enumeration_complete`). Holds across the full arrange-act-assert cycle.
+    pub static DISK_TEST_LOCK: Mutex<()> = Mutex::new(());
+}

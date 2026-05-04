@@ -565,6 +565,10 @@ fn emit_disk_discovery_for_arrival(ctx: &crate::audit_emitter::EmitContext, disk
 mod tests {
     use super::*;
     use dlp_common::{BusType, DiskIdentity};
+    // Shared lock for tests that mutate the global DiskEnumerator OnceLock.
+    // disk_enforcer::tests holds the same lock so neither module races the other.
+    #[cfg(windows)]
+    use crate::test_helpers::DISK_TEST_LOCK;
 
     #[test]
     fn test_disk_enumerator_default_empty() {
@@ -773,12 +777,23 @@ mod tests {
     #[test]
     fn test_global_static_get_set() {
         // Ensure we can set and get the global DiskEnumerator.
+        // OnceLock only accepts the first set per process — disk_enforcer tests
+        // may have already installed an enumerator, so ptr_eq is only checked
+        // when this test wins the race to be first.
         let enumerator = Arc::new(DiskEnumerator::new());
+        let was_empty = get_disk_enumerator().is_none();
         set_disk_enumerator(Arc::clone(&enumerator));
         let retrieved = get_disk_enumerator();
-        assert!(retrieved.is_some());
-        // Verify it points to the same instance by checking Arc pointer equality.
-        assert!(Arc::ptr_eq(&enumerator, &retrieved.unwrap()));
+        assert!(retrieved.is_some(), "get_disk_enumerator must return Some after set");
+        if was_empty {
+            // We installed the enumerator — verify it's the same instance.
+            assert!(Arc::ptr_eq(&enumerator, &retrieved.unwrap()));
+        }
+        // If the OnceLock was already populated by another test module (e.g.,
+        // disk_enforcer::tests::ensure_enumerator), set_disk_enumerator is a
+        // no-op and the retrieved Arc will be the pre-existing one. The
+        // important invariant — get_disk_enumerator() returns Some — is still
+        // verified above.
     }
 
     #[test]
@@ -985,6 +1000,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_on_disk_arrival_inner_updates_drive_letter_map_only() {
+        // Acquire the shared cross-module lock to prevent disk_enforcer::tests
+        // from resetting the global DiskEnumerator maps concurrently.
+        let _guard = DISK_TEST_LOCK.lock();
         // The global DiskEnumerator OnceLock is process-wide; set_disk_enumerator is
         // a no-op after the first call. We must use get_disk_enumerator() to obtain
         // the actual installed instance and reset its fields directly (same approach
@@ -1032,6 +1050,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_on_disk_arrival_inner_skips_already_tracked() {
+        let _guard = DISK_TEST_LOCK.lock();
         let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
         let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
         enumerator.drive_letter_map.write().clear();
@@ -1090,6 +1109,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_on_disk_removal_clears_drive_letter_map_only() {
+        let _guard = DISK_TEST_LOCK.lock();
         let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
         let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
         enumerator.drive_letter_map.write().clear();
@@ -1137,6 +1157,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_on_disk_removal_unknown_id_is_noop() {
+        let _guard = DISK_TEST_LOCK.lock();
         let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
         let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
         enumerator.drive_letter_map.write().clear();
