@@ -1954,47 +1954,40 @@ async fn delete_disk_registry_handler(
         .map_err(AppError::from)?
         .0;
 
-    // (3) Read agent_id/instance_id (for audit resource) THEN delete in one
-    //     spawn_blocking. Use explicit conn scope to release the read conn
-    //     before re-acquiring for write (avoids max_size=1 pool deadlock).
+    // (3) Atomic DELETE RETURNING: fetches audit metadata and deletes the row in
+    //     a single statement, eliminating the TOCTOU window that a two-step
+    //     SELECT + DELETE would introduce. Requires SQLite 3.35+ (bundled rusqlite).
     let pool = Arc::clone(&state.pool);
     let disk_id = id.clone();
     let result = tokio::task::spawn_blocking(
-        move || -> Result<Option<(String, String, usize)>, AppError> {
-            // Read: fetch agent_id + instance_id for the audit resource string.
-            let (agent_id, instance_id) = {
-                let conn = pool.get().map_err(AppError::from)?;
-                match conn.query_row(
-                    "SELECT agent_id, instance_id FROM disk_registry WHERE id = ?1",
-                    rusqlite::params![disk_id],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-                ) {
-                    Ok(t) => t,
-                    Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-                    Err(e) => return Err(AppError::Database(e)),
-                }
-            }; // read conn returned to pool here
-
-            // Write: delete the row in a fresh conn + UoW.
+        move || -> Result<Option<(String, String)>, AppError> {
             let mut conn = pool.get().map_err(AppError::from)?;
             let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-            let n =
-                DiskRegistryRepository::delete_by_id(&uow, &disk_id).map_err(AppError::Database)?;
-            uow.commit().map_err(AppError::Database)?;
-            Ok(Some((agent_id, instance_id, n)))
+            // RETURNING makes the DELETE and the metadata read atomic in one
+            // statement; no race window between SELECT and DELETE.
+            let row: rusqlite::Result<(String, String)> = uow.tx.query_row(
+                "DELETE FROM disk_registry WHERE id = ?1 \
+                 RETURNING agent_id, instance_id",
+                rusqlite::params![disk_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            );
+            match row {
+                Ok(t) => {
+                    uow.commit().map_err(AppError::Database)?;
+                    Ok(Some(t))
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(AppError::Database(e)),
+            }
         },
     )
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    let (agent_id_for_audit, instance_id_for_audit, rows_deleted) = match result {
+    let (agent_id_for_audit, instance_id_for_audit) = match result {
         Some(t) => t,
         None => return Err(AppError::NotFound(format!("disk entry {id} not found"))),
     };
-    if rows_deleted == 0 {
-        // Race: row existed at SELECT but was deleted by another caller before our DELETE.
-        return Err(AppError::NotFound(format!("disk entry {id} not found")));
-    }
 
     // (4) Second spawn_blocking: audit emission (D-10, T-37-07).
     //     Audit failure must NOT roll back the delete — it is best-effort (D-10).
