@@ -1341,18 +1341,12 @@ fn disk_row_to_identity(row: DiskRegistryRow) -> dlp_common::DiskIdentity {
         _ => dlp_common::BusType::Unknown,
     };
 
-    // EncryptionStatus DB values differ from serde names -- manual mapping required.
-    // DB: "fully_encrypted" / "partially_encrypted" / "unencrypted" / "unknown"
-    // Enum: Encrypted / Suspended / Unencrypted / Unknown
+    // EncryptionStatus: DB stores canonical serde names ("encrypted", "suspended",
+    // "unencrypted", "unknown") matching EncryptionStatus's #[serde(rename_all =
+    // "snake_case")]. Round-trip via JSON to deserialise. Any unrecognised DB value
+    // (e.g., from a pre-migration row) falls back to None (treat as unverified).
     let encryption_status: Option<dlp_common::EncryptionStatus> =
-        match row.encryption_status.as_str() {
-            "fully_encrypted" => Some(dlp_common::EncryptionStatus::Encrypted),
-            "partially_encrypted" => Some(dlp_common::EncryptionStatus::Suspended),
-            "unencrypted" => Some(dlp_common::EncryptionStatus::Unencrypted),
-            "unknown" => Some(dlp_common::EncryptionStatus::Unknown),
-            // Guard: any unexpected value maps to None (treat as unverified).
-            _ => None,
-        };
+        serde_json::from_str(&format!("\"{}\"", row.encryption_status)).ok();
 
     dlp_common::DiskIdentity {
         instance_id: row.instance_id,
@@ -1786,8 +1780,10 @@ async fn list_disk_registry_handler(
 /// `POST /admin/disk-registry` -- ADMIN-03 + AUDIT-03. JWT-protected.
 ///
 /// Pure INSERT (D-05). Returns 409 Conflict on duplicate `(agent_id, instance_id)`.
-/// Returns 422 if `encryption_status` is outside the four-value allowlist or exceeds
-/// the maximum length. Emits an `AdminAction(DiskRegistryAdd)` audit event AFTER
+/// Returns 422 if any field fails validation: `encryption_status` must be one of
+/// `encrypted`, `suspended`, `unencrypted`, `unknown`; `bus_type` must be one of
+/// `usb`, `sata`, `nvme`, `scsi`, `unknown`; `agent_id`/`instance_id` ≤ 512 bytes;
+/// `model` ≤ 256 bytes.  Emits an `AdminAction(DiskRegistryAdd)` audit event AFTER
 /// the registry commit (D-10).
 ///
 /// # Errors
@@ -1810,23 +1806,19 @@ async fn insert_disk_registry_handler(
         .map_err(AppError::from)?;
 
     // (3) Length guard before heap allocation (T-37-05). Valid values are at
-    //     most 21 chars ("partially_encrypted"); 32 is a generous ceiling.
+    //     most 11 chars ("unencrypted"); 32 is a generous ceiling.
     if body.encryption_status.len() > 32 {
         return Err(AppError::UnprocessableEntity(
             "encryption_status exceeds maximum length".to_string(),
         ));
     }
-    // (4) Allowlist check before any DB access (D-12, T-37-05).
-    const VALID_STATUSES: &[&str] = &[
-        "fully_encrypted",
-        "partially_encrypted",
-        "unencrypted",
-        "unknown",
-    ];
+    // (4) Allowlist check before any DB access (D-12, T-37-05). Values MUST be
+    //     the canonical EncryptionStatus serde names to match the DB CHECK constraint.
+    const VALID_STATUSES: &[&str] = &["encrypted", "suspended", "unencrypted", "unknown"];
     if !VALID_STATUSES.contains(&body.encryption_status.as_str()) {
         return Err(AppError::UnprocessableEntity(format!(
-            "invalid encryption_status '{}'; must be one of: fully_encrypted, \
-             partially_encrypted, unencrypted, unknown",
+            "invalid encryption_status '{}'; must be one of: encrypted, suspended, \
+             unencrypted, unknown",
             body.encryption_status
         )));
     }
