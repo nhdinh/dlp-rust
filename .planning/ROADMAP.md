@@ -116,7 +116,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 37-01-PLAN.md -- dlp-common Action enum extension + disk_registry table DDL + DiskRegistryRepository (pure INSERT, no upsert)
+- [x] 37-01-PLAN.md -- dlp-common Action enum extension + disk_registry table DDL + DiskRegistryRepository (pure INSERT, no upsert)
 - [ ] 37-02-PLAN.md -- Admin REST handlers (GET/POST/DELETE), AUDIT-03 events, AgentConfigPayload disk_allowlist propagation
 - [ ] 37-03-PLAN.md -- Agent live reload: AgentConfigPayload mirror + config_poll_loop merge into DiskEnumerator.instance_id_map
 
@@ -131,6 +131,18 @@ Plans:
   4. Admin can remove a disk entry with a confirmation prompt
 **Plans**: TBD
 **UI hint**: yes
+
+### Phase 38.1: LDAP Config TUI (INSERTED)
+**Goal**: Admin can configure Active Directory connection parameters through the interactive TUI
+**Depends on**: Phase 7 (LDAP backend already complete)
+**Requirements**: ADMIN-05
+**Success Criteria** (what must be TRUE):
+  1. Admin can navigate to an "LDAP Config" screen under the System menu in dlp-admin-cli
+  2. Admin can view and edit all five LDAP connection parameters: `ldap_url`, `base_dn`, `require_tls`, `cache_ttl_secs`, `vpn_subnets`
+  3. Admin can save the configuration via `PUT /admin/ldap-config`; a success or error status message is displayed
+  4. The `cache_ttl_secs` field rejects values outside [60, 3600] with an inline error
+  5. The `require_tls` field renders as a boolean toggle (`[x]` / `[ ]`)
+**Plans**: TBD
 
 ## Progress
 
@@ -175,6 +187,7 @@ Plans:
 | 36 | Disk Enforcement | v0.7.0 | 0/3 | Planned | - |
 | 37 | Server-Side Disk Registry | v0.7.0 | 0/3 | Planned | - |
 | 38 | Admin TUI Disk Registry | v0.7.0 | 0/TBD | Not started | - |
+| 38.1 | LDAP Config TUI | v0.7.0 | 0/TBD | Not started | - |
 
 ## v0.3.0 - Operational Hardening (Shipped)
 

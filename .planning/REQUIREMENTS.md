@@ -27,6 +27,7 @@
 - [ ] **ADMIN-02**: Admin can list all registered disks across the fleet via `GET /admin/disk-registry`.
 - [ ] **ADMIN-03**: Admin can add a disk to the allowlist via `POST /admin/disk-registry` and remove via `DELETE /admin/disk-registry/{id}`.
 - [ ] **ADMIN-04**: Admin TUI shows a "Disk Registry" screen under the System menu for listing, adding, and removing disk entries.
+- [ ] **ADMIN-05**: Admin TUI has an "LDAP Config" screen under the System menu for configuring AD connection parameters (`ldap_url`, `base_dn`, `require_tls`, `cache_ttl_secs`, `vpn_subnets`) via `GET`/`PUT /admin/ldap-config`.
 
 ### AUDIT -- Audit Events and Compliance
 
