@@ -1330,10 +1330,16 @@ async fn update_alert_config_handler(
 /// Unknown or unparseable values fall back to the safest defaults (`BusType::Unknown`,
 /// `EncryptionStatus::Unknown`).
 fn disk_row_to_identity(row: DiskRegistryRow) -> dlp_common::DiskIdentity {
-    // BusType uses `#[serde(rename_all = "snake_case")]` -- round-trip via JSON string.
-    // "usb" -> BusType::Usb, "sata" -> BusType::Sata, etc.
-    let bus_type: dlp_common::BusType =
-        serde_json::from_str(&format!("\"{}\"", row.bus_type)).unwrap_or_default();
+    // Map bus_type string to BusType enum via direct match to avoid JSON
+    // injection from unsanitized DB values. Any unrecognised value falls back
+    // to BusType::Unknown (safe default).
+    let bus_type = match row.bus_type.as_str() {
+        "usb" => dlp_common::BusType::Usb,
+        "sata" => dlp_common::BusType::Sata,
+        "nvme" => dlp_common::BusType::Nvme,
+        "scsi" => dlp_common::BusType::Scsi,
+        _ => dlp_common::BusType::Unknown,
+    };
 
     // EncryptionStatus DB values differ from serde names -- manual mapping required.
     // DB: "fully_encrypted" / "partially_encrypted" / "unencrypted" / "unknown"
