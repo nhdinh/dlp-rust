@@ -155,7 +155,7 @@ impl DiskEnforcer {
                         drive_letter: letter_opt,
                         ..Default::default()
                     },
-                    notify: letter_opt.map_or(false, |l| self.should_notify(l)),
+                    notify: letter_opt.is_some_and(|l| self.should_notify(l)),
                 });
             }
         };
@@ -169,7 +169,7 @@ impl DiskEnforcer {
                     drive_letter: letter_opt,
                     ..Default::default()
                 },
-                notify: letter_opt.map_or(false, |l| self.should_notify(l)),
+                notify: letter_opt.is_some_and(|l| self.should_notify(l)),
             });
         }
 
