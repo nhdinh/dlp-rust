@@ -226,6 +226,25 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 id     TEXT PRIMARY KEY,
                 origin TEXT NOT NULL UNIQUE
             );
+
+            -- disk_registry: server-side disk allowlist managed by dlp-admin (Phase 37, ADMIN-01).
+            -- Entries are scoped per (agent_id, instance_id) pair -- a disk allowed on
+            -- machine-A is NOT allowed on machine-B (physical relocation attack prevention, D-01).
+            -- UNIQUE(agent_id, instance_id) enforces one allowlist entry per machine-disk pair (D-04).
+            -- encryption_status CHECK constraint enforces only valid EncryptionStatus values at the DB layer (D-11).
+            CREATE TABLE IF NOT EXISTS disk_registry (
+                id                 TEXT PRIMARY KEY,
+                agent_id           TEXT NOT NULL,
+                instance_id        TEXT NOT NULL,
+                bus_type           TEXT NOT NULL,
+                encryption_status  TEXT NOT NULL
+                                   CHECK(encryption_status IN
+                                         ('fully_encrypted', 'partially_encrypted',
+                                          'unencrypted', 'unknown')),
+                model              TEXT NOT NULL DEFAULT '',
+                registered_at      TEXT NOT NULL,
+                UNIQUE(agent_id, instance_id)
+            );
             ",
     )
     .context("failed to initialize database tables")?;
@@ -597,5 +616,126 @@ mod tests {
             )
             .expect("re-read mode column");
         assert_eq!(mode2, "ALL", "mode must persist after re-run");
+    }
+
+    #[test]
+    fn test_disk_registry_table_exists() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='disk_registry'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query sqlite_master");
+        assert_eq!(count, 1, "disk_registry table must exist after init");
+    }
+
+    #[test]
+    fn test_disk_registry_columns() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(disk_registry)")
+            .expect("prepare pragma")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query pragma")
+            .filter_map(Result::ok)
+            .collect();
+
+        for col in &["id", "agent_id", "instance_id", "bus_type", "encryption_status", "model",
+                     "registered_at"] {
+            assert!(
+                columns.contains(&col.to_string()),
+                "disk_registry must have column '{col}'; found {columns:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_disk_registry_check_constraint() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        // 'bad_value' is not in the allowed set — must fail the CHECK constraint.
+        let result = conn.execute(
+            "INSERT INTO disk_registry \
+             (id, agent_id, instance_id, bus_type, encryption_status, model, registered_at) \
+             VALUES ('id1', 'agent-A', 'disk-1', 'usb', 'bad_value', '', '2026-01-01T00:00:00Z')",
+            [],
+        );
+        assert!(
+            result.is_err(),
+            "invalid encryption_status must be rejected by CHECK constraint"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("CHECK constraint failed"),
+            "error must mention CHECK constraint; got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_disk_registry_unique_constraint() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        conn.execute(
+            "INSERT INTO disk_registry \
+             (id, agent_id, instance_id, bus_type, encryption_status, model, registered_at) \
+             VALUES ('id1', 'agent-A', 'disk-1', 'usb', 'unencrypted', '', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("first insert must succeed");
+
+        let result = conn.execute(
+            "INSERT INTO disk_registry \
+             (id, agent_id, instance_id, bus_type, encryption_status, model, registered_at) \
+             VALUES ('id2', 'agent-A', 'disk-1', 'usb', 'fully_encrypted', '', '2026-01-02T00:00:00Z')",
+            [],
+        );
+        assert!(
+            result.is_err(),
+            "duplicate (agent_id, instance_id) must fail UNIQUE constraint"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("UNIQUE constraint failed"),
+            "error must mention UNIQUE constraint; got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_disk_registry_accepts_all_four_statuses() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        // Each of the four allowed encryption_status values must succeed.
+        for (i, status) in ["fully_encrypted", "partially_encrypted", "unencrypted", "unknown"]
+            .iter()
+            .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO disk_registry \
+                 (id, agent_id, instance_id, bus_type, encryption_status, model, registered_at) \
+                 VALUES (?1, 'agent-A', ?2, 'usb', ?3, '', '2026-01-01T00:00:00Z')",
+                rusqlite::params![
+                    format!("id{i}"),
+                    format!("disk-{i}"),
+                    status,
+                ],
+            )
+            .unwrap_or_else(|e| {
+                panic!("INSERT with encryption_status='{status}' must succeed; got: {e}");
+            });
+        }
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM disk_registry", [], |r| r.get(0))
+            .expect("count rows");
+        assert_eq!(count, 4, "all four valid statuses must insert without error");
     }
 }

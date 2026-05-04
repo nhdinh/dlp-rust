@@ -30,6 +30,10 @@ pub enum Action {
     PolicyDelete,
     /// Admin changed own password via the admin API.
     PasswordChange,
+    /// Admin added a disk to the server-side disk allowlist (Phase 37, AUDIT-03).
+    DiskRegistryAdd,
+    /// Admin removed a disk from the server-side disk allowlist (Phase 37, AUDIT-03).
+    DiskRegistryRemove,
 }
 
 /// The access context describes how the file operation originated.
@@ -689,6 +693,55 @@ mod tests {
                 .as_ref()
                 .map(|a| a.publisher.as_str()),
             Some("Adobe Inc.")
+        );
+    }
+}
+
+#[cfg(test)]
+mod phase37_action_tests {
+    use super::Action;
+
+    /// Verify `DiskRegistryAdd` serializes to its literal variant name (no rename).
+    #[test]
+    fn test_disk_registry_add_serializes_as_variant_name() {
+        let json = serde_json::to_string(&Action::DiskRegistryAdd)
+            .expect("serialize DiskRegistryAdd");
+        assert_eq!(
+            json, "\"DiskRegistryAdd\"",
+            "DiskRegistryAdd must serialize as its literal variant name per D-08"
+        );
+    }
+
+    /// Verify `DiskRegistryRemove` serializes to its literal variant name (no rename).
+    #[test]
+    fn test_disk_registry_remove_serializes_as_variant_name() {
+        let json = serde_json::to_string(&Action::DiskRegistryRemove)
+            .expect("serialize DiskRegistryRemove");
+        assert_eq!(
+            json, "\"DiskRegistryRemove\"",
+            "DiskRegistryRemove must serialize as its literal variant name per D-08"
+        );
+    }
+
+    /// Verify `"DiskRegistryAdd"` deserializes back to the correct variant.
+    #[test]
+    fn test_disk_registry_add_deserializes_from_variant_name() {
+        let action: Action = serde_json::from_str("\"DiskRegistryAdd\"")
+            .expect("deserialize DiskRegistryAdd");
+        assert_eq!(
+            action,
+            Action::DiskRegistryAdd,
+            "\"DiskRegistryAdd\" must deserialize to Action::DiskRegistryAdd"
+        );
+    }
+
+    /// Sanity-check that the two new variants are distinct (PartialEq).
+    #[test]
+    fn test_disk_registry_variants_are_distinct() {
+        assert_ne!(
+            Action::DiskRegistryAdd,
+            Action::DiskRegistryRemove,
+            "DiskRegistryAdd and DiskRegistryRemove must be distinct variants"
         );
     }
 }
