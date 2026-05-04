@@ -273,6 +273,7 @@ impl AlertRouter {
             correlation_id: Some(uuid::Uuid::new_v4().to_string()),
             application_path: None,
             discovered_disks: None,
+            blocked_disk: None,
             application_hash: None,
             resource_owner: None,
             source_application: None,
