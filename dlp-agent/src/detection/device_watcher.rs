@@ -478,15 +478,14 @@ pub fn unregister_device_watcher(hwnd: HWND, thread: std::thread::JoinHandle<()>
     }
 
     // Wait for the thread to exit.
+    // By the time join() returns, the message loop has processed WM_CLOSE ->
+    // DefWindowProcW -> DestroyWindow -> WM_DESTROY -> PostQuitMessage and the
+    // window is fully destroyed.  Do NOT call DestroyWindow again here: the
+    // HWND is already invalid, and calling DestroyWindow on it is undefined
+    // behavior (CR-02) -- Win32 can recycle the handle, causing the wrong
+    // window to be destroyed.
     if let Err(e) = thread.join() {
         warn!("device-watcher thread panicked: {:?}", e);
-    }
-
-    // Destroy the window.
-    // SAFETY: the message loop has exited (WM_DESTROY was processed);
-    // the window is no longer processing messages.
-    unsafe {
-        let _ = DestroyWindow(hwnd);
     }
 
     info!("device watcher unregistered");
