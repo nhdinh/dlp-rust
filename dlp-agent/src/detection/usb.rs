@@ -1238,6 +1238,45 @@ pub fn unregister_usb_notifications(hwnd: HWND, thread: std::thread::JoinHandle<
     debug!("USB device notifications cleaned up");
 }
 
+/// Dispatcher entry-point for `GUID_DEVINTERFACE_VOLUME` events from
+/// `device_watcher.rs`. Reads the global `DRIVE_DETECTOR` and delegates to
+/// the existing per-event handler.
+///
+/// # Arguments
+///
+/// * `event_type` -- `DBT_DEVICEARRIVAL` or `DBT_DEVICEREMOVECOMPLETE`.
+#[cfg(windows)]
+pub fn handle_volume_event_dispatch(event_type: u32) {
+    // Task 3 will populate this with the existing handle_volume_event logic.
+    let detector_opt = *DRIVE_DETECTOR.lock();
+    if let Some(detector) = detector_opt {
+        handle_volume_event(detector, event_type);
+    }
+}
+
+/// Dispatcher entry-point for `GUID_DEVINTERFACE_USB_DEVICE` arrival events
+/// from `device_watcher.rs`. Reads the global `DRIVE_DETECTOR`, calls the
+/// USB-arrival handler, and fires the registry-cache refresh.
+///
+/// # Arguments
+///
+/// * `device_path` -- the `dbcc_name` string from the `WM_DEVICECHANGE` callback.
+#[cfg(windows)]
+pub fn dispatch_usb_device_arrival(_device_path: &str) {
+    // Task 3 will populate this with REGISTRY_CACHE refresh + on_usb_device_arrival.
+}
+
+/// Dispatcher entry-point for `GUID_DEVINTERFACE_USB_DEVICE` removal events
+/// from `device_watcher.rs`.
+///
+/// # Arguments
+///
+/// * `device_path` -- the `dbcc_name` string from the `WM_DEVICECHANGE` callback.
+#[cfg(windows)]
+pub fn dispatch_usb_device_removal(_device_path: &str) {
+    // Task 3 will populate this with on_usb_device_removal.
+}
+
 /// Extracts the uppercase drive letter from a Windows path.
 ///
 /// Returns `Some('E')` for `"E:\\folder\\file.txt"`, `None` for UNC or relative paths.
