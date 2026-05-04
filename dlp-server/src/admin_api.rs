@@ -24,8 +24,8 @@ use crate::db;
 use crate::db::repositories;
 use crate::db::repositories::{
     AgentConfigRepository, AlertRouterConfigRepository, CredentialsRepository,
-    LdapConfigRepository, ManagedOriginRow, ManagedOriginsRepository, PolicyRepository,
-    SiemConfigRepository,
+    DiskRegistryRepository, DiskRegistryRow, LdapConfigRepository, ManagedOriginRow,
+    ManagedOriginsRepository, PolicyRepository, SiemConfigRepository,
 };
 use crate::exception_store;
 use crate::policy_store::mode_str;
@@ -334,6 +334,71 @@ impl From<repositories::DeviceRegistryRow> for DeviceRegistryResponse {
             created_at: row.created_at,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Disk Registry request / response types (Phase 37, ADMIN-01..03)
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /admin/disk-registry` (D-04, D-11).
+///
+/// Registers a new disk in the per-agent allowlist. The handler performs
+/// a pure INSERT (D-05) -- a duplicate `(agent_id, instance_id)` returns
+/// 409 Conflict. The UUID `id` and `registered_at` are server-generated.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiskRegistryRequest {
+    /// Identifier of the agent owning this disk allowlist entry (D-01 scope).
+    pub agent_id: String,
+    /// Device instance ID (canonical disk identity).
+    pub instance_id: String,
+    /// Bus type as the lowercase serde name (e.g., "usb", "sata", "nvme", "scsi", "unknown").
+    pub bus_type: String,
+    /// Must be one of `"fully_encrypted"`, `"partially_encrypted"`, `"unencrypted"`, `"unknown"` (D-11).
+    pub encryption_status: String,
+    /// Drive model string. Optional; defaults to empty.
+    #[serde(default)]
+    pub model: String,
+}
+
+/// Response body for `GET` and `POST /admin/disk-registry`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskRegistryResponse {
+    /// Server-generated UUID.
+    pub id: String,
+    /// Agent identifier this entry is scoped to.
+    pub agent_id: String,
+    /// Device instance ID (canonical disk identity).
+    pub instance_id: String,
+    /// Physical bus type as a lowercase string (e.g., "usb", "sata").
+    pub bus_type: String,
+    /// Encryption status: one of `"fully_encrypted"`, `"partially_encrypted"`, `"unencrypted"`, `"unknown"`.
+    pub encryption_status: String,
+    /// Drive model string (empty if unknown).
+    pub model: String,
+    /// RFC-3339 UTC timestamp of when this entry was created.
+    pub registered_at: String,
+}
+
+impl From<DiskRegistryRow> for DiskRegistryResponse {
+    fn from(row: DiskRegistryRow) -> Self {
+        Self {
+            id: row.id,
+            agent_id: row.agent_id,
+            instance_id: row.instance_id,
+            bus_type: row.bus_type,
+            encryption_status: row.encryption_status,
+            model: row.model,
+            registered_at: row.registered_at,
+        }
+    }
+}
+
+/// Optional query-string filter for `GET /admin/disk-registry` (D-07).
+#[derive(Debug, Default, Deserialize)]
+pub struct DiskRegistryFilter {
+    /// When set, restricts results to entries for the given agent.
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 /// Device entry returned by the unauthenticated `GET /admin/device-registry` endpoint.
@@ -1599,6 +1664,29 @@ async fn list_device_registry_full_handler(
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
     let response: Vec<DeviceRegistryResponse> = rows.into_iter().map(Into::into).collect();
     Ok(Json(response))
+}
+
+/// `GET /admin/disk-registry` -- ADMIN-02. JWT-protected.
+///
+/// Returns all rows ordered by `registered_at ASC`. The optional
+/// `?agent_id=<id>` query param filters to a single agent's entries (D-07).
+///
+/// # Errors
+///
+/// Returns `AppError::Internal` if pool acquisition or the blocking task fails.
+async fn list_disk_registry_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(filter): axum::extract::Query<DiskRegistryFilter>,
+) -> Result<Json<Vec<DiskRegistryResponse>>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let agent_id_filter = filter.agent_id.clone();
+    let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        DiskRegistryRepository::list_all(&pool, agent_id_filter.as_deref())
+            .map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
 
 /// Registers a new device or updates trust_tier/description for an existing one.
@@ -4219,5 +4307,152 @@ mod tests {
             .expect("build request");
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 1: list_disk_registry_handler tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a minimal DiskRegistryRow for test insertions.
+    fn make_disk_row(
+        id: &str,
+        agent_id: &str,
+        instance_id: &str,
+        registered_at: &str,
+    ) -> DiskRegistryRow {
+        DiskRegistryRow {
+            id: id.to_string(),
+            agent_id: agent_id.to_string(),
+            instance_id: instance_id.to_string(),
+            bus_type: "usb".to_string(),
+            encryption_status: "unencrypted".to_string(),
+            model: "Test Model".to_string(),
+            registered_at: registered_at.to_string(),
+        }
+    }
+
+    /// Helper: build an AppState from a shared pool (no temp-file lifetime issues).
+    fn make_state_from_pool(pool: Arc<db::Pool>) -> Arc<AppState> {
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
+        );
+        Arc::new(AppState {
+            pool,
+            policy_store,
+            siem,
+            alert,
+            ad: None,
+        })
+    }
+
+    /// GET /admin/disk-registry with no rows returns 200 with an empty array.
+    #[tokio::test]
+    async fn test_list_disk_registry_handler_empty() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(
+            crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"),
+        );
+        let state = make_state_from_pool(pool);
+
+        // Call the handler directly (routes not yet wired in Task 1).
+        let filter = DiskRegistryFilter { agent_id: None };
+        let result = list_disk_registry_handler(
+            State(Arc::clone(&state)),
+            axum::extract::Query(filter),
+        )
+        .await
+        .expect("handler must succeed");
+        assert!(result.0.is_empty(), "expected empty array");
+    }
+
+    /// GET /admin/disk-registry returns all rows ordered by registered_at ASC.
+    #[tokio::test]
+    async fn test_list_disk_registry_handler_returns_all_rows_ordered() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(
+            crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"),
+        );
+
+        // Insert two rows with deliberate out-of-order timestamps.
+        {
+            let mut conn = pool.get().expect("conn");
+            let uow = db::UnitOfWork::new(&mut conn).expect("uow");
+            // row1 has a LATER date; row2 has an EARLIER date.
+            let row1 = make_disk_row("id-1", "agent-A", "disk-1", "2026-02-01T00:00:00Z");
+            let row2 = make_disk_row("id-2", "agent-A", "disk-2", "2026-01-01T00:00:00Z");
+            DiskRegistryRepository::insert(&uow, &row1).expect("insert row1");
+            DiskRegistryRepository::insert(&uow, &row2).expect("insert row2");
+            uow.commit().expect("commit");
+        }
+
+        let state = make_state_from_pool(pool);
+        let filter = DiskRegistryFilter { agent_id: None };
+        let Json(list) = list_disk_registry_handler(
+            State(Arc::clone(&state)),
+            axum::extract::Query(filter),
+        )
+        .await
+        .expect("handler must succeed");
+
+        assert_eq!(list.len(), 2, "expected 2 rows");
+        // ASC order: 2026-01-01 before 2026-02-01
+        assert_eq!(list[0].instance_id, "disk-2");
+        assert_eq!(list[1].instance_id, "disk-1");
+    }
+
+    /// GET /admin/disk-registry?agent_id=agent-A returns only agent-A rows.
+    #[tokio::test]
+    async fn test_list_disk_registry_handler_filters_by_agent_id() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(
+            crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"),
+        );
+
+        {
+            let mut conn = pool.get().expect("conn");
+            let uow = db::UnitOfWork::new(&mut conn).expect("uow");
+            let row_a = make_disk_row("id-a", "agent-A", "disk-1", "2026-01-01T00:00:00Z");
+            let row_b = make_disk_row("id-b", "agent-B", "disk-1", "2026-01-02T00:00:00Z");
+            DiskRegistryRepository::insert(&uow, &row_a).expect("insert row-a");
+            DiskRegistryRepository::insert(&uow, &row_b).expect("insert row-b");
+            uow.commit().expect("commit");
+        }
+
+        let state = make_state_from_pool(pool);
+        let filter = DiskRegistryFilter {
+            agent_id: Some("agent-A".to_string()),
+        };
+        let Json(list) = list_disk_registry_handler(
+            State(Arc::clone(&state)),
+            axum::extract::Query(filter),
+        )
+        .await
+        .expect("handler must succeed");
+
+        assert_eq!(list.len(), 1, "expected only agent-A rows");
+        assert_eq!(list[0].agent_id, "agent-A");
+    }
+
+    /// GET /admin/disk-registry?agent_id=does-not-exist returns 200 with [].
+    #[tokio::test]
+    async fn test_list_disk_registry_handler_unknown_agent_id_returns_empty() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(
+            crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"),
+        );
+        let state = make_state_from_pool(pool);
+        let filter = DiskRegistryFilter {
+            agent_id: Some("does-not-exist".to_string()),
+        };
+        let Json(list) = list_disk_registry_handler(
+            State(Arc::clone(&state)),
+            axum::extract::Query(filter),
+        )
+        .await
+        .expect("handler must succeed");
+        assert!(list.is_empty(), "unknown agent_id must return empty array");
     }
 }
