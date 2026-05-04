@@ -211,15 +211,23 @@ mod tests {
     #[test]
     fn test_list_all_empty() {
         let pool = make_pool();
-        let rows = DiskRegistryRepository::list_all(&pool, None)
-            .expect("list_all on empty DB");
-        assert!(rows.is_empty(), "expected empty vec from fresh DB; got {rows:?}");
+        let rows = DiskRegistryRepository::list_all(&pool, None).expect("list_all on empty DB");
+        assert!(
+            rows.is_empty(),
+            "expected empty vec from fresh DB; got {rows:?}"
+        );
     }
 
     #[test]
     fn test_insert_and_list_all() {
         let pool = make_pool();
-        let row = make_row("uuid-1", "agent-A", "disk-1", "unencrypted", "2026-01-01T00:00:00Z");
+        let row = make_row(
+            "uuid-1",
+            "agent-A",
+            "disk-1",
+            "unencrypted",
+            "2026-01-01T00:00:00Z",
+        );
 
         // Explicit scope so the write connection is dropped before list_all acquires.
         {
@@ -247,9 +255,27 @@ mod tests {
 
         // Insert rows out of chronological order — list_all must return them sorted.
         let rows_to_insert = [
-            make_row("uuid-1", "agent-A", "disk-1", "unencrypted", "2026-01-01T00:00:00Z"),
-            make_row("uuid-2", "agent-A", "disk-2", "unencrypted", "2026-02-01T00:00:00Z"),
-            make_row("uuid-3", "agent-A", "disk-3", "unencrypted", "2025-12-01T00:00:00Z"),
+            make_row(
+                "uuid-1",
+                "agent-A",
+                "disk-1",
+                "unencrypted",
+                "2026-01-01T00:00:00Z",
+            ),
+            make_row(
+                "uuid-2",
+                "agent-A",
+                "disk-2",
+                "unencrypted",
+                "2026-02-01T00:00:00Z",
+            ),
+            make_row(
+                "uuid-3",
+                "agent-A",
+                "disk-3",
+                "unencrypted",
+                "2025-12-01T00:00:00Z",
+            ),
         ];
 
         for row in &rows_to_insert {
@@ -272,9 +298,27 @@ mod tests {
         let pool = make_pool();
 
         let rows_to_insert = [
-            make_row("uuid-1", "agent-A", "disk-1", "unencrypted", "2026-01-01T00:00:00Z"),
-            make_row("uuid-2", "agent-A", "disk-2", "unencrypted", "2026-01-02T00:00:00Z"),
-            make_row("uuid-3", "agent-B", "disk-3", "unencrypted", "2026-01-03T00:00:00Z"),
+            make_row(
+                "uuid-1",
+                "agent-A",
+                "disk-1",
+                "unencrypted",
+                "2026-01-01T00:00:00Z",
+            ),
+            make_row(
+                "uuid-2",
+                "agent-A",
+                "disk-2",
+                "unencrypted",
+                "2026-01-02T00:00:00Z",
+            ),
+            make_row(
+                "uuid-3",
+                "agent-B",
+                "disk-3",
+                "unencrypted",
+                "2026-01-03T00:00:00Z",
+            ),
         ];
 
         for row in &rows_to_insert {
@@ -284,25 +328,31 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        let agent_a_rows = DiskRegistryRepository::list_all(&pool, Some("agent-A"))
-            .expect("list_all agent-A");
+        let agent_a_rows =
+            DiskRegistryRepository::list_all(&pool, Some("agent-A")).expect("list_all agent-A");
         assert_eq!(agent_a_rows.len(), 2, "agent-A must have 2 entries");
         assert!(agent_a_rows.iter().all(|r| r.agent_id == "agent-A"));
 
-        let agent_b_rows = DiskRegistryRepository::list_all(&pool, Some("agent-B"))
-            .expect("list_all agent-B");
+        let agent_b_rows =
+            DiskRegistryRepository::list_all(&pool, Some("agent-B")).expect("list_all agent-B");
         assert_eq!(agent_b_rows.len(), 1, "agent-B must have 1 entry");
         assert_eq!(agent_b_rows[0].agent_id, "agent-B");
 
-        let agent_c_rows = DiskRegistryRepository::list_all(&pool, Some("agent-C"))
-            .expect("list_all agent-C");
+        let agent_c_rows =
+            DiskRegistryRepository::list_all(&pool, Some("agent-C")).expect("list_all agent-C");
         assert_eq!(agent_c_rows.len(), 0, "agent-C must have 0 entries");
     }
 
     #[test]
     fn test_insert_unique_conflict_returns_err() {
         let pool = make_pool();
-        let row = make_row("uuid-1", "agent-A", "disk-1", "unencrypted", "2026-01-01T00:00:00Z");
+        let row = make_row(
+            "uuid-1",
+            "agent-A",
+            "disk-1",
+            "unencrypted",
+            "2026-01-01T00:00:00Z",
+        );
 
         // First insert must succeed.
         {
@@ -327,7 +377,10 @@ mod tests {
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
             DiskRegistryRepository::insert(&uow, &duplicate)
         };
-        assert!(result.is_err(), "duplicate (agent_id, instance_id) must return Err");
+        assert!(
+            result.is_err(),
+            "duplicate (agent_id, instance_id) must return Err"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("UNIQUE constraint failed"),
@@ -383,7 +436,13 @@ mod tests {
     #[test]
     fn test_delete_by_id_removes_row() {
         let pool = make_pool();
-        let row = make_row("uuid-1", "agent-A", "disk-1", "unencrypted", "2026-01-01T00:00:00Z");
+        let row = make_row(
+            "uuid-1",
+            "agent-A",
+            "disk-1",
+            "unencrypted",
+            "2026-01-01T00:00:00Z",
+        );
 
         {
             let mut conn = pool.get().expect("get connection");
@@ -395,14 +454,13 @@ mod tests {
         {
             let mut conn = pool.get().expect("get connection");
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
-            let affected = DiskRegistryRepository::delete_by_id(&uow, "uuid-1")
-                .expect("delete_by_id");
+            let affected =
+                DiskRegistryRepository::delete_by_id(&uow, "uuid-1").expect("delete_by_id");
             uow.commit().expect("commit");
             assert_eq!(affected, 1, "expected 1 row deleted");
         }
 
-        let rows = DiskRegistryRepository::list_all(&pool, None)
-            .expect("list_all after delete");
+        let rows = DiskRegistryRepository::list_all(&pool, None).expect("list_all after delete");
         assert!(rows.is_empty(), "expected empty vec after delete");
     }
 
@@ -451,9 +509,27 @@ mod tests {
         // the same rows in the same order.
         let pool = make_pool();
         let rows_to_insert = [
-            make_row("uuid-1", "agent-A", "disk-1", "unencrypted", "2026-01-01T00:00:00Z"),
-            make_row("uuid-2", "agent-A", "disk-2", "fully_encrypted", "2026-01-02T00:00:00Z"),
-            make_row("uuid-3", "agent-B", "disk-3", "unencrypted", "2026-01-03T00:00:00Z"),
+            make_row(
+                "uuid-1",
+                "agent-A",
+                "disk-1",
+                "unencrypted",
+                "2026-01-01T00:00:00Z",
+            ),
+            make_row(
+                "uuid-2",
+                "agent-A",
+                "disk-2",
+                "fully_encrypted",
+                "2026-01-02T00:00:00Z",
+            ),
+            make_row(
+                "uuid-3",
+                "agent-B",
+                "disk-3",
+                "unencrypted",
+                "2026-01-03T00:00:00Z",
+            ),
         ];
 
         for row in &rows_to_insert {
@@ -463,10 +539,10 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        let via_list_all = DiskRegistryRepository::list_all(&pool, Some("agent-A"))
-            .expect("list_all(Some)");
-        let via_list_by_agent = DiskRegistryRepository::list_by_agent(&pool, "agent-A")
-            .expect("list_by_agent");
+        let via_list_all =
+            DiskRegistryRepository::list_all(&pool, Some("agent-A")).expect("list_all(Some)");
+        let via_list_by_agent =
+            DiskRegistryRepository::list_by_agent(&pool, "agent-A").expect("list_by_agent");
 
         assert_eq!(
             via_list_all.len(),
