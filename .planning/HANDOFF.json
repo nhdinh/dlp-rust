@@ -1,33 +1,32 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-04T12:08:35.852Z",
+  "timestamp": "2026-05-04T12:30:00.000Z",
   "phase": "37",
   "phase_name": "server-side-disk-registry",
   "phase_dir": ".planning/phases/37-server-side-disk-registry",
-  "plan": 2,
-  "task": 3,
-  "total_tasks": 8,
+  "plan": 3,
+  "task": 0,
+  "total_tasks": 2,
   "status": "paused",
   "completed_tasks": [
-    {"id": "37-01", "name": "disk_registry foundation (Action enum + DDL + DiskRegistryRepository)", "status": "done", "commit": "169447b", "notes": "Merged from worktree-agent-af10a9df702180572. 19/19 tests pass."},
+    {"id": "37-01", "name": "disk_registry foundation (Action enum + DDL + DiskRegistryRepository)", "status": "done", "commit": "169447b", "notes": "19/19 tests pass."},
     {"id": "37-02-T1", "name": "DiskRegistry request/response types + list_disk_registry_handler", "status": "done", "commit": "f165804"},
     {"id": "37-02-T2", "name": "insert_disk_registry_handler + delete_disk_registry_handler with audit", "status": "done", "commit": "2d30cf4"},
-    {"id": "37-02-T3", "name": "Wire disk-registry routes + extend AgentConfigPayload with disk_allowlist", "status": "done", "commit": "e02dd53"}
+    {"id": "37-02-T3", "name": "Wire disk-registry routes + extend AgentConfigPayload with disk_allowlist", "status": "done", "commit": "e02dd53"},
+    {"id": "37-02-SUMMARY", "name": "Plan 37-02 complete + merged into master", "status": "done", "commit": "0e97020", "notes": "204/204 lib tests green. Key deviation: EncryptionStatus uses manual match mapping (DB 'fully_encrypted' vs serde 'encrypted')."}
   ],
   "remaining_tasks": [
-    {"id": "37-02-SUMMARY", "name": "SUMMARY.md for plan 37-02", "status": "in_progress", "notes": "Background agent ab8033fbb4a917393 was writing this — verify worktree-agent-ab8033fbb4a917393 has it committed before merging"},
-    {"id": "37-02-merge", "name": "Merge worktree-agent-ab8033fbb4a917393 into master", "status": "not_started", "notes": "Watch for duplicate main-tree changes (happened with Wave 1 abac.rs) — discard via git checkout -- <file> before merging"},
-    {"id": "37-02-tests", "name": "Post-merge tests for Wave 2", "status": "not_started", "notes": "cargo test -p dlp-server --lib (use --lib to skip pre-existing integration test failures)"},
-    {"id": "37-02-tracking", "name": "Update ROADMAP+STATE after Wave 2", "status": "not_started"},
-    {"id": "37-03", "name": "Wave 3: Agent-side disk_allowlist sync via config_poll_loop", "status": "not_started", "plan": ".planning/phases/37-server-side-disk-registry/37-03-PLAN.md"}
+    {"id": "37-03-T1", "name": "Extend AgentConfigPayload with disk_allowlist + apply server-pushed changes in config_poll_loop", "status": "not_started"},
+    {"id": "37-03-T2", "name": "Merge allowlist into DiskEnumerator.instance_id_map without clobbering live disks (Pitfall 5)", "status": "not_started"}
   ],
   "blockers": [],
   "human_actions_pending": [],
   "decisions": [
-    {"decision": "Discard duplicate changes in main working tree before each worktree merge", "rationale": "Wave 1 executor wrote to both the worktree AND main tree (abac.rs). Must run git checkout -- <file> before merging worktree branch to avoid 'overwritten by merge' error", "phase": "37"},
-    {"decision": "Use --lib flag for dlp-server tests", "rationale": "Pre-existing integration test compile errors in dlp-server (ring/ppv_lite86 crate format, mode_end_to_end import issues) are unrelated to phase 37. Use cargo test -p dlp-server --lib for reliable unit test coverage", "phase": "37"}
+    {"decision": "Discard duplicate changes in main working tree before each worktree merge", "rationale": "Executor writes to both the worktree AND main tree. Must run git checkout -- <file> before merging worktree branch to avoid 'overwritten by merge' abort.", "phase": "37"},
+    {"decision": "Use --lib flag for dlp-server tests", "rationale": "Pre-existing integration test compile errors in dlp-server are unrelated to phase 37. Use cargo test -p dlp-server --lib.", "phase": "37"},
+    {"decision": "Bash tool CWD drifts into worktrees — always verify with pwd before git ops", "rationale": "During session, Bash CWD silently moved to .claude/worktrees/agent-ab8033fbb4a917393. git commands ran against worktree branch instead of master. Always run pwd and git branch --show-current first.", "phase": "37"}
   ],
   "uncommitted_files": [],
-  "next_action": "1. Verify worktree branch worktree-agent-ab8033fbb4a917393 has 37-02-SUMMARY.md committed. 2. Run git status — discard any duplicate file changes with git checkout -- <files>. 3. Merge worktree branch with orchestrator file protection (STATE.md/ROADMAP.md backup+restore). 4. cargo test -p dlp-server --lib to verify Wave 2. 5. gsd-sdk query roadmap.update-plan-progress 37 37-02 complete. 6. Spawn Wave 3 executor for plan 37-03.",
-  "context_notes": "Execute-phase 37 was mid-flight. Wave 1 (37-01) fully done and merged. Wave 2 (37-02) code complete in worktree (3 commits), SUMMARY.md was being written by background agent ab8033fbb4a917393 when paused. Wave 3 (agent-side allowlist sync) not started. Integration test failures in dlp-server are pre-existing and NOT caused by phase 37 — always use --lib flag when testing."
+  "next_action": "Execute Wave 3 (plan 37-03): spawn gsd-executor for plan 37-03 using worktree isolation. Files: dlp-agent/src/server_client.rs + dlp-agent/src/service.rs. Critical: read 37-RESEARCH.md Pitfall 5 before implementing allowlist merge logic.",
+  "context_notes": "Waves 1 and 2 of phase 37 are fully complete and merged into master (HEAD=4cc6b3e). Only Wave 3 remains: agent-side disk_allowlist sync. The server now delivers disk_allowlist in GET /agent-config/{id} (done in Wave 2). The agent side needs to receive and apply it in config_poll_loop. Key risk: merging server-pushed allowlist into DiskEnumerator.instance_id_map without clobbering live-enumerated disks (Pitfall 5 in 37-RESEARCH.md)."
 }
