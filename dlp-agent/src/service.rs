@@ -97,7 +97,14 @@ pub fn run_service() -> Result<()> {
         None,
     )?;
 
-    // Acquire single-instance mutex.
+    // Acquire single-instance mutex.  The handle MUST be kept alive until
+    // service shutdown; dropping it releases the named mutex and allows a
+    // second instance to start.  On non-Windows targets the call is a no-op
+    // that returns (), so we use cfg to keep the binding type consistent.
+    #[cfg(windows)]
+    let _instance_mutex = acquire_instance_mutex()
+        .context("failed to acquire single-instance mutex")?;
+    #[cfg(not(windows))]
     acquire_instance_mutex();
 
     // Harden the agent process DACL — deny PROCESS_TERMINATE etc. to Everyone.
@@ -1000,21 +1007,63 @@ fn report_scm_status(state: ServiceState, controls: ServiceControlAccept, wait_h
 // Single-instance enforcement
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Acquires the global single-instance mutex — anonymous mutex prevents
-/// a second agent instance from starting on the same machine.
-fn acquire_instance_mutex() {
-    match std::sync::Mutex::new(()).try_lock() {
-        Ok(_guard) => info!(
+/// Acquires a Windows named mutex to enforce single-instance operation.
+///
+/// Creates a kernel-named mutex (`Global\DlpAgentSingleInstance`) that persists
+/// for the lifetime of the process.  If another agent instance already holds the
+/// mutex, this function logs an error and terminates the process immediately.
+///
+/// The returned [`windows::Win32::Foundation::HANDLE`] must remain alive for
+/// the entire service lifetime — dropping it releases the mutex and allows a
+/// second instance to start.  Callers should store it in a variable that lives
+/// until service shutdown.
+///
+/// # Errors
+///
+/// Calls `std::process::exit(1)` when another instance is detected.
+/// Returns `Err` on unexpected Win32 API failures.
+#[cfg(windows)]
+fn acquire_instance_mutex() -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+    use windows::Win32::Foundation::{GetLastError, WIN32_ERROR};
+    use windows::Win32::System::Threading::CreateMutexW;
+    use windows::core::PCWSTR;
+
+    // Null-terminated UTF-16 name in the Global kernel namespace.
+    let name: Vec<u16> = "Global\\DlpAgentSingleInstance\0"
+        .encode_utf16()
+        .collect();
+
+    // SAFETY: `name` is a valid null-terminated UTF-16 string; the handle is
+    // immediately checked and stored for the service lifetime.
+    let handle = unsafe {
+        CreateMutexW(
+            None,  // default security — inheritable by child processes
+            true,  // bInitialOwner: this instance claims ownership immediately
+            PCWSTR(name.as_ptr()),
+        )?
+    };
+
+    // ERROR_ALREADY_EXISTS (183) means another instance holds the named mutex.
+    // SAFETY: no preconditions for GetLastError.
+    if unsafe { GetLastError() } == WIN32_ERROR(183) {
+        error!(
             service_name = SERVICE_NAME,
-            "single-instance mutex acquired"
-        ),
-        Err(_) => {
-            info!(
-                service_name = SERVICE_NAME,
-                "previous instance detected — SCM serialises starts"
-            )
-        }
+            "another DLP agent instance is already running — aborting"
+        );
+        std::process::exit(1);
     }
+
+    info!(
+        service_name = SERVICE_NAME,
+        "single-instance named mutex acquired"
+    );
+    Ok(handle)
+}
+
+/// No-op stub for non-Windows targets (tests, cross-compilation).
+#[cfg(not(windows))]
+fn acquire_instance_mutex() {
+    info!(service_name = SERVICE_NAME, "single-instance check skipped (non-Windows)");
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
