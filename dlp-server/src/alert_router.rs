@@ -25,12 +25,18 @@ use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use reqwest::Client;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::db;
 use crate::db::repositories::AlertRouterConfigRepository;
 
 /// SMTP email alert configuration.
-#[derive(Debug, Clone)]
+///
+/// The `password` field is wrapped in [`SecretString`] to prevent it from
+/// appearing in `Debug` output, log files, or crash dumps.  Use
+/// [`ExposeSecret::expose_secret`] only at the call site that constructs
+/// SMTP [`Credentials`].
+#[derive(Clone)]
 pub struct SmtpConfig {
     /// SMTP server hostname.
     pub host: String,
@@ -38,12 +44,25 @@ pub struct SmtpConfig {
     pub port: u16,
     /// SMTP username for authentication.
     pub username: String,
-    /// SMTP password for authentication.
-    pub password: String,
+    /// SMTP password — stored as [`SecretString`] to prevent accidental logging.
+    pub password: SecretString,
     /// Sender email address.
     pub from: String,
     /// List of recipient email addresses.
     pub to: Vec<String>,
+}
+
+impl std::fmt::Debug for SmtpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("from", &self.from)
+            .field("to", &self.to)
+            .finish()
+    }
 }
 
 /// Webhook alert configuration.
@@ -56,18 +75,38 @@ pub struct WebhookConfig {
 }
 
 /// Snapshot of the single `alert_router_config` row loaded from the database.
-#[derive(Debug, Clone)]
+///
+/// `smtp_password` is stored as [`SecretString`] so it does not appear in
+/// `Debug` output or log files.  The manual `Debug` impl redacts it.
+#[derive(Clone)]
 struct AlertRouterConfigRow {
     smtp_host: String,
     smtp_port: u16,
     smtp_username: String,
-    smtp_password: String,
+    smtp_password: SecretString,
     smtp_from: String,
     smtp_to: String,
     smtp_enabled: bool,
     webhook_url: String,
     webhook_secret: String,
     webhook_enabled: bool,
+}
+
+impl std::fmt::Debug for AlertRouterConfigRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AlertRouterConfigRow")
+            .field("smtp_host", &self.smtp_host)
+            .field("smtp_port", &self.smtp_port)
+            .field("smtp_username", &self.smtp_username)
+            .field("smtp_password", &"[REDACTED]")
+            .field("smtp_from", &self.smtp_from)
+            .field("smtp_to", &self.smtp_to)
+            .field("smtp_enabled", &self.smtp_enabled)
+            .field("webhook_url", &self.webhook_url)
+            .field("webhook_secret", &self.webhook_secret)
+            .field("webhook_enabled", &self.webhook_enabled)
+            .finish()
+    }
 }
 
 /// Routes real-time alerts to email and/or webhook destinations.
@@ -160,7 +199,7 @@ impl AlertRouter {
             smtp_host: repo_row.smtp_host,
             smtp_port: repo_row.smtp_port,
             smtp_username: repo_row.smtp_username,
-            smtp_password: repo_row.smtp_password,
+            smtp_password: SecretString::new(repo_row.smtp_password.into()),
             smtp_from: repo_row.smtp_from,
             smtp_to: repo_row.smtp_to,
             smtp_enabled: repo_row.smtp_enabled != 0,
@@ -322,8 +361,12 @@ impl AlertRouter {
         // parking_lot::RwLock<Option<(CacheKey, AsyncSmtpTransport<_>)>> cache
         // keyed by (host, port, username) if alert volume grows. See 04-REVIEW.md
         // HI-02 for Option A implementation notes.
-        // TODO(followup): cache SMTP transport keyed by config hash.
-        let creds = Credentials::new(config.username.clone(), config.password.clone());
+        // expose_secret() is the only sanctioned call site for the SMTP password.
+        // Do not log or store the exposed value beyond constructing Credentials.
+        let creds = Credentials::new(
+            config.username.clone(),
+            config.password.expose_secret().to_string(),
+        );
         let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.host)
             .map_err(|e| AlertError::Email(format!("SMTP relay error: {e}")))?
             .port(config.port)
@@ -417,7 +460,7 @@ mod tests {
             host: "smtp.example.com".to_string(),
             port: 587,
             username: "user".to_string(),
-            password: "pass".to_string(),
+            password: SecretString::new("pass".into()),
             from: "dlp@example.com".to_string(),
             to: vec!["admin@example.com".to_string()],
         };
@@ -495,7 +538,7 @@ mod tests {
         assert_eq!(row.smtp_host, "smtp.example.com");
         assert_eq!(row.smtp_port, 465);
         assert_eq!(row.smtp_username, "user");
-        assert_eq!(row.smtp_password, "pass");
+        assert_eq!(row.smtp_password.expose_secret(), "pass");
         assert_eq!(row.smtp_from, "dlp@example.com");
         assert_eq!(row.smtp_to, "a@example.com, b@example.com");
         assert!(row.smtp_enabled);
@@ -539,7 +582,7 @@ mod tests {
             host: "smtp.example.com".to_string(),
             port: 587,
             username: "u".to_string(),
-            password: "p".to_string(),
+            password: SecretString::new("p".into()),
             from: "dlp@example.com".to_string(),
             // First address is invalid; second is invalid; neither reaches
             // the network. Both MUST be attempted — the old short-circuit
@@ -708,7 +751,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 1, // guaranteed closed — forces a connection error
             username: "testuser".to_string(),
-            password: "testpass".to_string(),
+            password: SecretString::new("testpass".into()),
             from: "dlp@test.local".to_string(),
             to: vec!["admin@test.local".to_string()],
         };
