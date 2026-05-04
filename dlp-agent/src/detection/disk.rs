@@ -26,7 +26,6 @@ use crate::config::AgentConfig;
 use dlp_common::{enumerate_fixed_disks, get_boot_drive_letter, DiskIdentity};
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -429,28 +428,32 @@ fn on_disk_arrival_inner(
         }
     };
 
-    // Snapshot current drive_letter_map keys; release the read lock before any
-    // write lock acquisitions (Pitfall 2: lock order discipline).
-    let existing_letters: HashSet<char> =
-        enumerator.drive_letter_map.read().keys().copied().collect();
-
     // Disks newly visible since the last enumeration -- D-13 step 2.
+    //
+    // CR-01 fix: the check-and-insert MUST be atomic under the write lock to
+    // eliminate the TOCTOU gap between the former snapshot read and the per-disk
+    // write-lock acquisition.  A concurrent arrival (rapid unplug-replug) can
+    // race the stale snapshot, causing two threads to both pass the exists check
+    // and insert -- the last writer wins non-deterministically with the wrong
+    // DiskIdentity.  contains_key inside the write lock closes the gap.
     for disk in live_disks {
         let Some(letter) = disk.drive_letter else {
             continue;
         };
-        if existing_letters.contains(&letter) {
-            continue;
-        }
 
         // D-10: update drive_letter_map ONLY. instance_id_map is the frozen
         // allowlist (D-09) -- never mutated by arrival handlers.
         //
-        // Lock-scope discipline: hold the write lock just long enough to
-        // insert; release before any further work.
+        // CR-01: acquire the write lock first, then check -- the
+        // check-and-insert is now atomic under the lock.  Drop the write lock
+        // explicitly before the audit/allowlist work below to minimize hold time.
         {
             let mut map = enumerator.drive_letter_map.write();
+            if map.contains_key(&letter) {
+                continue;
+            }
             map.insert(letter, disk.clone());
+            // Write lock released here (end of block).
         }
 
         // D-13 step 4: if the disk's instance_id is NOT in the frozen
