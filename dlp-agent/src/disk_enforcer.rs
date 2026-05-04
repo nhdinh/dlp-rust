@@ -141,28 +141,35 @@ impl DiskEnforcer {
         let enumerator = match get_disk_enumerator() {
             Some(e) => e,
             None => {
-                let letter = drive_letter_from_path(path).unwrap_or('?');
+                // WR-06: when the drive letter cannot be resolved (UNC, empty,
+                // or malformed path), do not insert the '?' sentinel into the
+                // per-drive cooldown map.  All unresolvable paths share the
+                // same sentinel which would suppress toast notifications for
+                // distinct paths after the first 30-second window.  Use
+                // notify:false instead — the user cannot act on a path-less
+                // notification anyway.
+                let letter_opt = drive_letter_from_path(path);
                 return Some(DiskBlockResult {
                     decision: Decision::DENY,
                     disk: DiskIdentity {
-                        drive_letter: Some(letter),
+                        drive_letter: letter_opt,
                         ..Default::default()
                     },
-                    notify: self.should_notify(letter),
+                    notify: letter_opt.map_or(false, |l| self.should_notify(l)),
                 });
             }
         };
 
         // D-06 fail-closed: enumeration not yet complete -- block all writes.
         if !enumerator.is_ready() {
-            let letter = drive_letter_from_path(path).unwrap_or('?');
+            let letter_opt = drive_letter_from_path(path);
             return Some(DiskBlockResult {
                 decision: Decision::DENY,
                 disk: DiskIdentity {
-                    drive_letter: Some(letter),
+                    drive_letter: letter_opt,
                     ..Default::default()
                 },
-                notify: self.should_notify(letter),
+                notify: letter_opt.map_or(false, |l| self.should_notify(l)),
             });
         }
 
