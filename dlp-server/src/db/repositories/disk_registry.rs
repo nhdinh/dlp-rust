@@ -1,7 +1,7 @@
 //! Repository for the `disk_registry` table (Phase 37, ADMIN-01..03).
 //!
 //! Encapsulates all SQL for disk registry CRUD. Unlike `device_registry`,
-//! the insert is a PURE INSERT (no `ON CONFLICT DO UPDATE`) -- security
+//! the insert is a PURE INSERT without any conflict-update clause -- security
 //! allowlists must fail loudly on duplicates (D-05). The handler in
 //! `admin_api.rs` maps the rusqlite UNIQUE error to HTTP 409 Conflict.
 
@@ -123,7 +123,7 @@ impl DiskRegistryRepository {
 
     /// Inserts a new disk registry entry.
     ///
-    /// This is a PURE INSERT with NO `ON CONFLICT` clause. If a row with the
+    /// This is a PURE INSERT with no conflict-update clause. If a row with the
     /// same `(agent_id, instance_id)` already exists, rusqlite returns
     /// `Err(SqliteFailure(...))` with the UNIQUE constraint error string.
     /// The calling handler must map this to HTTP 409 Conflict (D-05).
