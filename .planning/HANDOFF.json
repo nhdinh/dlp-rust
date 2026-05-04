@@ -1,46 +1,33 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-02T16:04:46.513Z",
-  "phase": "34",
-  "phase_name": "bitlocker-verification",
-  "phase_dir": ".planning/phases/34-bitlocker-verification",
-  "workflow": "plan-phase",
-  "stage": "init-complete-research-not-started",
+  "timestamp": "2026-05-04T12:08:35.852Z",
+  "phase": "37",
+  "phase_name": "server-side-disk-registry",
+  "phase_dir": ".planning/phases/37-server-side-disk-registry",
+  "plan": 2,
+  "task": 3,
+  "total_tasks": 8,
   "status": "paused",
-  "pause_reason": "context exhaustion at 78% before spawning researcher/planner/checker subagents",
   "completed_tasks": [
-    {"id": 1, "name": "discuss-phase: 4 gray areas resolved + suspended-state sub-question", "status": "done"},
-    {"id": 2, "name": "34-CONTEXT.md written with 25 decisions across 6 sections", "status": "done", "commit": "5c296d7"},
-    {"id": 3, "name": "34-DISCUSSION-LOG.md written (audit trail of alternatives)", "status": "done", "commit": "5c296d7"},
-    {"id": 4, "name": "plan-phase init: phase validated, CONTEXT.md confirmed loadable", "status": "done"}
+    {"id": "37-01", "name": "disk_registry foundation (Action enum + DDL + DiskRegistryRepository)", "status": "done", "commit": "169447b", "notes": "Merged from worktree-agent-af10a9df702180572. 19/19 tests pass."},
+    {"id": "37-02-T1", "name": "DiskRegistry request/response types + list_disk_registry_handler", "status": "done", "commit": "f165804"},
+    {"id": "37-02-T2", "name": "insert_disk_registry_handler + delete_disk_registry_handler with audit", "status": "done", "commit": "2d30cf4"},
+    {"id": "37-02-T3", "name": "Wire disk-registry routes + extend AgentConfigPayload with disk_allowlist", "status": "done", "commit": "e02dd53"}
   ],
   "remaining_tasks": [
-    {"id": 5, "name": "Spawn gsd-phase-researcher with CONTEXT.md decisions -> 34-RESEARCH.md", "status": "not_started"},
-    {"id": 6, "name": "Create 34-VALIDATION.md (Nyquist gate strategy)", "status": "not_started"},
-    {"id": 7, "name": "Spawn gsd-pattern-mapper -> 34-PATTERNS.md", "status": "not_started"},
-    {"id": 8, "name": "Spawn gsd-planner -> 34-NN-PLAN.md task breakdowns", "status": "not_started"},
-    {"id": 9, "name": "Spawn gsd-plan-checker; iterate revision loop up to 3 times", "status": "not_started"},
-    {"id": 10, "name": "Run requirements coverage gate (CRYPT-01, CRYPT-02)", "status": "not_started"},
-    {"id": 11, "name": "Run decision coverage gate (25 D-XX entries from CONTEXT.md)", "status": "not_started"},
-    {"id": 12, "name": "gsd-sdk query state.planned-phase 34", "status": "not_started"},
-    {"id": 13, "name": "gsd-sdk query roadmap.annotate-dependencies 34", "status": "not_started"},
-    {"id": 14, "name": "Commit plan artifacts", "status": "not_started"}
+    {"id": "37-02-SUMMARY", "name": "SUMMARY.md for plan 37-02", "status": "in_progress", "notes": "Background agent ab8033fbb4a917393 was writing this — verify worktree-agent-ab8033fbb4a917393 has it committed before merging"},
+    {"id": "37-02-merge", "name": "Merge worktree-agent-ab8033fbb4a917393 into master", "status": "not_started", "notes": "Watch for duplicate main-tree changes (happened with Wave 1 abac.rs) — discard via git checkout -- <file> before merging"},
+    {"id": "37-02-tests", "name": "Post-merge tests for Wave 2", "status": "not_started", "notes": "cargo test -p dlp-server --lib (use --lib to skip pre-existing integration test failures)"},
+    {"id": "37-02-tracking", "name": "Update ROADMAP+STATE after Wave 2", "status": "not_started"},
+    {"id": "37-03", "name": "Wave 3: Agent-side disk_allowlist sync via config_poll_loop", "status": "not_started", "plan": ".planning/phases/37-server-side-disk-registry/37-03-PLAN.md"}
   ],
-  "blockers": [
-    "Context budget exhausted at 78% before spawning expensive researcher/planner/checker subagents. Subagent spawns must happen in a fresh session to avoid mid-flight compaction."
-  ],
+  "blockers": [],
   "human_actions_pending": [],
   "decisions": [
-    {"decision": "Detection method: WMI primary + Registry fallback (HKLM\\SYSTEM\\...\\BitLockerStatus\\BootStatus)", "rationale": "False-positive Encrypted is dangerous; false-negative is benign. WMI handles common case, Registry covers WMI-in-SYSTEM flakiness flagged in STATE.md. FVE API rejected as undocumented.", "phase": "34"},
-    {"decision": "Four-state encryption status: Encrypted / Suspended / Unencrypted / Unknown", "rationale": "Honors CRYPT-02 verbatim - admin sees Unknown and decides via allowlist instead of system silently labeling.", "phase": "34"},
-    {"decision": "Extend Phase 33 DiskIdentity with Option<EncryptionStatus>, Option<EncryptionMethod>, Option<DateTime<Utc>>", "rationale": "Follows Phase 33 is_boot_disk precedent. Option<> keeps schema additive; old serialized records stay readable.", "phase": "34"},
-    {"decision": "Re-verification: startup + 6-hour periodic poll, emit-on-change, configurable via agent-config.toml", "rationale": "Six hours balances post-install BitLocker disablement detection against SIEM noise. Event-log subscription parked to v0.7.1.", "phase": "34"},
-    {"decision": "wmi-rs 0.14 added to dlp-agent only", "rationale": "Recommended in STACK.md; dlp-common stays pure-data.", "phase": "34"},
-    {"decision": "Bump dlp-agent windows crate 0.58 -> 0.62", "rationale": "Aligns with dlp-common (already 0.61). Phase 34 is first phase needing Win32 Registry APIs in dlp-agent - clean trigger for the bump.", "phase": "34"},
-    {"decision": "WMI auth: AuthLevel::PktPrivacy, 5s per-volume timeout, parallel via tokio JoinSet", "rationale": "PktPrivacy required for MicrosoftVolumeEncryption namespace. Default 60s timeout flagged as too long for startup path. JoinSet ensures one hung volume doesn't stall the rest.", "phase": "34"},
-    {"decision": "Module location: dlp-agent/src/detection/encryption.rs; reuse EventType::DiskDiscovery audit variant", "rationale": "Sibling to disk.rs, mirrors Phase 33 module shape. Encryption fields ride on DiskIdentity so no new audit variants needed; SIEM filters on justification LIKE 'encryption status changed%'.", "phase": "34"}
+    {"decision": "Discard duplicate changes in main working tree before each worktree merge", "rationale": "Wave 1 executor wrote to both the worktree AND main tree (abac.rs). Must run git checkout -- <file> before merging worktree branch to avoid 'overwritten by merge' error", "phase": "37"},
+    {"decision": "Use --lib flag for dlp-server tests", "rationale": "Pre-existing integration test compile errors in dlp-server (ring/ppv_lite86 crate format, mode_end_to_end import issues) are unrelated to phase 37. Use cargo test -p dlp-server --lib for reliable unit test coverage", "phase": "37"}
   ],
   "uncommitted_files": [],
-  "next_action": "/clear, then /gsd-plan-phase 34 (init step will reload 34-CONTEXT.md and proceed into research)",
-  "context_notes": "Phase 34 discuss-phase is fully committed (5c296d7). Plan-phase init succeeded but stopped before spawning researcher to avoid mid-flight compaction. The 34-CONTEXT.md captures 25 explicit decisions; the researcher should treat them as locked and investigate only the technical execution details (WMI query syntax, Registry key parse, ProtectionStatus/ConversionStatus mapping table validation). Resume in a fresh session via /gsd-plan-phase 34."
+  "next_action": "1. Verify worktree branch worktree-agent-ab8033fbb4a917393 has 37-02-SUMMARY.md committed. 2. Run git status — discard any duplicate file changes with git checkout -- <files>. 3. Merge worktree branch with orchestrator file protection (STATE.md/ROADMAP.md backup+restore). 4. cargo test -p dlp-server --lib to verify Wave 2. 5. gsd-sdk query roadmap.update-plan-progress 37 37-02 complete. 6. Spawn Wave 3 executor for plan 37-03.",
+  "context_notes": "Execute-phase 37 was mid-flight. Wave 1 (37-01) fully done and merged. Wave 2 (37-02) code complete in worktree (3 commits), SUMMARY.md was being written by background agent ab8033fbb4a917393 when paused. Wave 3 (agent-side allowlist sync) not started. Integration test failures in dlp-server are pre-existing and NOT caused by phase 37 — always use --lib flag when testing."
 }
