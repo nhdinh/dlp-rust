@@ -212,12 +212,156 @@ pub fn run_service() -> Result<()> {
 // Config poll loop
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Data returned by `apply_payload_to_config` for a deferred `instance_id_map` merge.
+///
+/// Contains:
+/// - The set of `instance_id` strings that were in the OLD `cfg.disk_allowlist`
+///   (needed to determine which entries to remove from the map).
+/// - The new `Vec<DiskIdentity>` from the server payload (entries to insert/overwrite).
+///
+/// `None` is returned when `disk_allowlist` did not change (no merge needed).
+type DiskMergeData = Option<(std::collections::HashSet<String>, Vec<dlp_common::DiskIdentity>)>;
+
+/// Diffs a server-pushed `AgentConfigPayload` against in-memory `AgentConfig`
+/// and applies all detected changes including the `disk_allowlist` merge.
+///
+/// Extracted as a standalone synchronous function so tests can invoke the
+/// diff/merge logic directly without spinning up a full async polling loop.
+///
+/// # Design: config lock BEFORE enumerator lock (T-37-13)
+///
+/// This function expects that the config mutex is already held by the caller
+/// and that the enumerator is accessed AFTER the function returns (i.e., AFTER
+/// the config lock is released). To preserve this invariant the function returns
+/// any data needed for the deferred enumerator merge: the old instance_id set
+/// and the new list. The caller then does the map merge with the config lock dropped.
+///
+/// # Arguments
+///
+/// * `cfg` — mutable borrow of the in-memory agent config (config mutex held
+///   by the caller).
+/// * `payload` — server-pushed payload from `GET /agent-config/{id}`.
+///
+/// # Returns
+///
+/// A tuple of:
+/// 1. `Vec<&'static str>` — field names that changed (empty = no update needed).
+/// 2. `Option<(HashSet<String>, Vec<DiskIdentity>)>` — when `disk_allowlist`
+///    changed: `(old_instance_ids, new_allowlist)` for the deferred map merge.
+///    `None` when `disk_allowlist` did not change.
+fn apply_payload_to_config(
+    cfg: &mut crate::config::AgentConfig,
+    payload: &crate::server_client::AgentConfigPayload,
+) -> (Vec<&'static str>, DiskMergeData) {
+    let mut changed_fields: Vec<&'static str> = Vec::new();
+    let mut disk_merge_data: DiskMergeData = None;
+
+    if cfg.monitored_paths != payload.monitored_paths {
+        changed_fields.push("monitored_paths");
+        cfg.monitored_paths = payload.monitored_paths.clone();
+    }
+    if cfg.heartbeat_interval_secs != Some(payload.heartbeat_interval_secs) {
+        changed_fields.push("heartbeat_interval_secs");
+        cfg.heartbeat_interval_secs = Some(payload.heartbeat_interval_secs);
+    }
+    if cfg.offline_cache_enabled != Some(payload.offline_cache_enabled) {
+        changed_fields.push("offline_cache_enabled");
+        cfg.offline_cache_enabled = Some(payload.offline_cache_enabled);
+    }
+    if cfg.ldap_config != payload.ldap_config {
+        changed_fields.push("ldap_config");
+        cfg.ldap_config = payload.ldap_config.clone();
+    }
+    if cfg.excluded_paths != payload.excluded_paths {
+        changed_fields.push("excluded_paths");
+        cfg.excluded_paths = payload.excluded_paths.clone();
+    }
+
+    // Phase 37 (D-03): apply server-pushed disk allowlist.
+    //
+    // PartialEq on DiskIdentity compares all fields including encryption_status,
+    // so the diff catches both additions/removals AND field-level updates from
+    // the server (e.g., a re-verified encryption_status after a re-scan).
+    if cfg.disk_allowlist != payload.disk_allowlist {
+        changed_fields.push("disk_allowlist");
+
+        // Capture the OLD allowlist's instance_ids BEFORE overwriting cfg.
+        // The deferred map merge needs these to know which entries to remove
+        // (entries that were previously allowlisted but are now de-allowlisted).
+        let old_instance_ids: std::collections::HashSet<String> = cfg
+            .disk_allowlist
+            .iter()
+            .map(|d| d.instance_id.clone())
+            .collect();
+
+        // Update cfg.disk_allowlist. The save() call triggered by the caller
+        // (when !changed_fields.is_empty()) will serialize this to the
+        // [[disk_allowlist]] TOML section.
+        cfg.disk_allowlist = payload.disk_allowlist.clone();
+
+        // Return the merge data. The CALLER must drop the config mutex before
+        // calling merge_disk_allowlist_into_map() — T-37-13 lock-order invariant.
+        disk_merge_data = Some((old_instance_ids, payload.disk_allowlist.clone()));
+    }
+
+    (changed_fields, disk_merge_data)
+}
+
+/// Applies the disk_allowlist merge into `DiskEnumerator.instance_id_map`.
+///
+/// Called AFTER the config mutex has been released (T-37-13 lock-order invariant).
+///
+/// # Merge semantics (Pitfall 5 from 37-RESEARCH.md)
+///
+/// - REMOVE entries whose `instance_id` was in `old_ids` but is absent from
+///   `new_list`. These are admin-deleted entries.
+/// - INSERT/OVERWRITE entries from `new_list` with the server-supplied
+///   `DiskIdentity` so `encryption_status` / `model` fields stay in sync.
+/// - PRESERVE live-enumerated entries whose `instance_id` is NOT in `old_ids`.
+///   These were discovered by Phase 33 enumeration and are NOT in
+///   `cfg.disk_allowlist` — removing them would break Phase 36 enforcement
+///   for currently-connected disks that have not been server-registered yet.
+///
+/// # Arguments
+///
+/// * `enumerator` — shared reference to the `DiskEnumerator` (no config lock).
+/// * `old_ids` — instance_ids that were in the previous `cfg.disk_allowlist`.
+/// * `new_list` — the new allowlist from the server payload.
+fn merge_disk_allowlist_into_map(
+    enumerator: &crate::detection::disk::DiskEnumerator,
+    old_ids: &std::collections::HashSet<String>,
+    new_list: &[dlp_common::DiskIdentity],
+) {
+    let new_ids: std::collections::HashSet<&str> =
+        new_list.iter().map(|d| d.instance_id.as_str()).collect();
+
+    let mut map = enumerator.instance_id_map.write();
+
+    // Step 1: Remove de-allowlisted entries (in old, absent from new).
+    // We ONLY remove entries that were in the previous server allowlist.
+    // Live-enumerated entries (not in old_ids) are preserved (Pitfall 5).
+    let to_remove: Vec<String> = old_ids
+        .iter()
+        .filter(|id| !new_ids.contains(id.as_str()))
+        .cloned()
+        .collect();
+    for id in to_remove {
+        map.remove(&id);
+    }
+
+    // Step 2: Insert/overwrite entries from the new server allowlist.
+    for disk in new_list {
+        map.insert(disk.instance_id.clone(), disk.clone());
+    }
+}
+
 /// Periodically polls the server for updated agent config.
 ///
 /// Runs on a separate timer independent of heartbeat. On each tick:
 /// 1. Fetch resolved config from `GET /agent-config/{agent_id}`.
-/// 2. Compare the three pushed fields against in-memory state.
-/// 3. If changed: update in-memory, write to TOML, log field names only.
+/// 2. Diff all pushed fields (including `disk_allowlist`) against in-memory state.
+/// 3. If changed: update in-memory, merge into `DiskEnumerator.instance_id_map`,
+///    write to TOML, log field names only.
 /// 4. Re-arm timer using the *previously applied* interval (not the new one)
 ///    to prevent tight-loop on interval reduction.
 ///
@@ -237,8 +381,6 @@ async fn config_poll_loop(
     //
     // After the initial fetch, the interval-based loop takes over with the
     // heartbeat_interval_secs value returned by the server (or 30 s default).
-    // Helper closure: fetch, diff, and persist config. Returns the previous
-    // interval (before the update), which is used to re-arm the timer.
     // Defined as a macro because async closures are not stable and we share
     // `config` and `server_client` by reference across .await points.
     macro_rules! do_poll {
@@ -251,50 +393,42 @@ async fn config_poll_loop(
 
             match server_client.fetch_agent_config().await {
                 Ok(payload) => {
-                    let mut changed_fields: Vec<&str> = Vec::new();
-                    {
+                    // Phase 37 (T-37-13): apply_payload_to_config runs INSIDE the
+                    // config lock scope and returns any disk_merge_data needed for
+                    // the deferred instance_id_map merge. The map merge must happen
+                    // AFTER the config lock is released (lock-order invariant).
+                    let (changed_fields, disk_merge_data) = {
                         let mut cfg = config.lock();
+                        apply_payload_to_config(&mut cfg, &payload)
+                    };
+                    // cfg lock is now released. Safe to access instance_id_map.
 
-                        if cfg.monitored_paths != payload.monitored_paths {
-                            changed_fields.push("monitored_paths");
-                            cfg.monitored_paths = payload.monitored_paths.clone();
+                    // Apply deferred disk_allowlist merge into DiskEnumerator.
+                    if let Some((old_ids, new_list)) = disk_merge_data {
+                        if let Some(enumerator) = crate::detection::disk::get_disk_enumerator() {
+                            merge_disk_allowlist_into_map(&enumerator, &old_ids, &new_list);
                         }
-                        if cfg.heartbeat_interval_secs != Some(payload.heartbeat_interval_secs) {
-                            changed_fields.push("heartbeat_interval_secs");
-                            cfg.heartbeat_interval_secs = Some(payload.heartbeat_interval_secs);
-                        }
-                        if cfg.offline_cache_enabled != Some(payload.offline_cache_enabled) {
-                            changed_fields.push("offline_cache_enabled");
-                            cfg.offline_cache_enabled = Some(payload.offline_cache_enabled);
-                        }
-                        if cfg.ldap_config != payload.ldap_config {
-                            changed_fields.push("ldap_config");
-                            cfg.ldap_config = payload.ldap_config;
-                        }
-                        if cfg.excluded_paths != payload.excluded_paths {
-                            changed_fields.push("excluded_paths");
-                            cfg.excluded_paths = payload.excluded_paths;
-                        }
+                    }
 
-                        if !changed_fields.is_empty() {
-                            // Log field names only — never log path values (T-06-09 info disclosure).
-                            info!(
-                                fields = ?changed_fields,
-                                "agent config updated from server"
+                    if !changed_fields.is_empty() {
+                        // Log field names only — never log path values (T-06-09 info disclosure).
+                        info!(
+                            fields = ?changed_fields,
+                            "agent config updated from server"
+                        );
+                        // Write back to TOML for persistence across restarts.
+                        // Use the effective path (DLP_CONFIG_PATH env var if set, else
+                        // DEFAULT_CONFIG_PATH) so integration tests can redirect to a
+                        // temp directory without touching the production config file.
+                        let effective_path =
+                            crate::config::AgentConfig::effective_config_path();
+                        let config_path = std::path::Path::new(&effective_path);
+                        let cfg = config.lock();
+                        if let Err(e) = cfg.save(config_path) {
+                            tracing::error!(
+                                error = %e,
+                                "failed to write updated config to TOML"
                             );
-                            // Write back to TOML for persistence across restarts.
-                            // Use the effective path (DLP_CONFIG_PATH env var if set, else
-                            // DEFAULT_CONFIG_PATH) so integration tests can redirect to a
-                            // temp directory without touching the production config file.
-                            let effective_path =
-                                crate::config::AgentConfig::effective_config_path();
-                            let config_path = std::path::Path::new(&effective_path);
-                            if let Err(e) = cfg.save(config_path) {
-                                tracing::error!(
-                                    error = %e,
-                                    "failed to write updated config to TOML"
-                                );
-                            }
                         }
                     }
                 }
@@ -1064,6 +1198,232 @@ fn acquire_instance_mutex() -> windows::core::Result<windows::Win32::Foundation:
 #[cfg(not(windows))]
 fn acquire_instance_mutex() {
     info!(service_name = SERVICE_NAME, "single-instance check skipped (non-Windows)");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Tests for config_poll_loop diff + apply logic
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+    use crate::detection::disk::DiskEnumerator;
+    use crate::server_client::AgentConfigPayload;
+    use dlp_common::{BusType, DiskIdentity};
+
+    /// Helper to build a minimal `AgentConfigPayload` with all required fields.
+    fn make_payload(disk_allowlist: Vec<DiskIdentity>) -> AgentConfigPayload {
+        AgentConfigPayload {
+            monitored_paths: vec![],
+            excluded_paths: vec![],
+            heartbeat_interval_secs: 30,
+            offline_cache_enabled: true,
+            ldap_config: None,
+            disk_allowlist,
+        }
+    }
+
+    /// Helper to build a `DiskIdentity` with minimal required fields.
+    fn make_disk(instance_id: &str) -> DiskIdentity {
+        DiskIdentity {
+            instance_id: instance_id.to_string(),
+            bus_type: BusType::Sata,
+            model: format!("Test Drive {instance_id}"),
+            drive_letter: None,
+            serial: None,
+            size_bytes: None,
+            is_boot_disk: false,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
+        }
+    }
+
+    /// Test 1: First-time apply — cfg starts with empty disk_allowlist, payload
+    /// contains 2 disks; after apply cfg.disk_allowlist has 2 entries and
+    /// DiskEnumerator.instance_id_map contains both instance_ids.
+    /// changed_fields must include "disk_allowlist".
+    #[test]
+    fn test_config_poll_applies_disk_allowlist_first_time() {
+        let disk_a = make_disk("DISK\\INSTANCE\\A");
+        let disk_b = make_disk("DISK\\INSTANCE\\B");
+        let mut cfg = AgentConfig::default(); // disk_allowlist starts empty
+        let payload = make_payload(vec![disk_a.clone(), disk_b.clone()]);
+
+        let (changed_fields, disk_merge_data) = apply_payload_to_config(&mut cfg, &payload);
+
+        // Config must be updated with both disks.
+        assert_eq!(cfg.disk_allowlist.len(), 2);
+        assert!(changed_fields.contains(&"disk_allowlist"));
+
+        // Merge data must be provided for the deferred map update.
+        let (old_ids, new_list) = disk_merge_data
+            .expect("disk_merge_data must be Some when disk_allowlist changed");
+        assert!(old_ids.is_empty(), "old_ids must be empty on first-time apply");
+        assert_eq!(new_list.len(), 2);
+
+        // Apply the merge into a real DiskEnumerator.
+        let enumerator = DiskEnumerator::new();
+        merge_disk_allowlist_into_map(&enumerator, &old_ids, &new_list);
+
+        // Both disks must be in instance_id_map.
+        let map = enumerator.instance_id_map.read();
+        assert!(map.contains_key("DISK\\INSTANCE\\A"), "disk A must be in map");
+        assert!(map.contains_key("DISK\\INSTANCE\\B"), "disk B must be in map");
+    }
+
+    /// Test 2: No-change path — cfg.disk_allowlist already equals payload.disk_allowlist
+    /// (3 disks); after apply no changed_fields entry "disk_allowlist", and the
+    /// enumerator map is left untouched.
+    #[test]
+    fn test_config_poll_no_change_when_allowlist_unchanged() {
+        let disks = vec![
+            make_disk("DISK\\INSTANCE\\X1"),
+            make_disk("DISK\\INSTANCE\\X2"),
+            make_disk("DISK\\INSTANCE\\X3"),
+        ];
+        let mut cfg = AgentConfig {
+            disk_allowlist: disks.clone(),
+            ..Default::default()
+        };
+        let payload = make_payload(disks.clone());
+
+        let (changed_fields, disk_merge_data) = apply_payload_to_config(&mut cfg, &payload);
+
+        // No change: disk_allowlist must NOT appear in changed_fields.
+        assert!(
+            !changed_fields.contains(&"disk_allowlist"),
+            "disk_allowlist must not appear in changed_fields when unchanged"
+        );
+        // No merge data when nothing changed (T-37-12 spurious-update mitigation).
+        assert!(
+            disk_merge_data.is_none(),
+            "disk_merge_data must be None when disk_allowlist is unchanged"
+        );
+        // cfg.disk_allowlist unchanged.
+        assert_eq!(cfg.disk_allowlist, disks);
+    }
+
+    /// Test 3: Remove de-allowlisted disk — cfg has [disk-A, disk-B], instance_id_map
+    /// has both. Payload contains only [disk-A]. After apply cfg.disk_allowlist is
+    /// [disk-A], instance_id_map contains disk-A but NOT disk-B.
+    /// changed_fields must contain "disk_allowlist".
+    #[test]
+    fn test_config_poll_removes_deallowlisted_disk() {
+        let disk_a = make_disk("DISK\\INSTANCE\\A");
+        let disk_b = make_disk("DISK\\INSTANCE\\B");
+
+        let mut cfg = AgentConfig {
+            disk_allowlist: vec![disk_a.clone(), disk_b.clone()],
+            ..Default::default()
+        };
+        // Seed the enumerator with both disks in instance_id_map.
+        let enumerator = DiskEnumerator::new();
+        {
+            let mut map = enumerator.instance_id_map.write();
+            map.insert(disk_a.instance_id.clone(), disk_a.clone());
+            map.insert(disk_b.instance_id.clone(), disk_b.clone());
+        }
+
+        // Payload only contains disk-A (disk-B was de-allowlisted by admin).
+        let payload = make_payload(vec![disk_a.clone()]);
+
+        let (changed_fields, disk_merge_data) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(changed_fields.contains(&"disk_allowlist"));
+        assert_eq!(cfg.disk_allowlist, vec![disk_a.clone()]);
+
+        let (old_ids, new_list) = disk_merge_data.expect("merge data must be present");
+        merge_disk_allowlist_into_map(&enumerator, &old_ids, &new_list);
+
+        let map = enumerator.instance_id_map.read();
+        assert!(
+            map.contains_key("DISK\\INSTANCE\\A"),
+            "disk A must remain in map"
+        );
+        assert!(
+            !map.contains_key("DISK\\INSTANCE\\B"),
+            "de-allowlisted disk B must be removed from map"
+        );
+    }
+
+    /// Test 4 (Pitfall 5 regression): Preserve live-enumerated disks NOT in allowlist.
+    ///
+    /// instance_id_map starts with [live-disk-X (NOT in cfg.disk_allowlist)].
+    /// cfg.disk_allowlist is empty. Payload contains [allow-disk-Y].
+    /// After apply, instance_id_map must contain BOTH live-disk-X AND allow-disk-Y.
+    /// cfg.disk_allowlist is [allow-disk-Y].
+    #[test]
+    fn test_config_poll_preserves_live_enumerated_disks_not_in_allowlist() {
+        let live_disk_x = make_disk("DISK\\LIVE\\X");
+        let allow_disk_y = make_disk("DISK\\ALLOW\\Y");
+
+        // cfg starts with empty allowlist (live_disk_x is NOT in it).
+        let mut cfg = AgentConfig::default();
+
+        // Enumerator has live_disk_x from Phase 33 live enumeration.
+        let enumerator = DiskEnumerator::new();
+        {
+            let mut map = enumerator.instance_id_map.write();
+            map.insert(live_disk_x.instance_id.clone(), live_disk_x.clone());
+        }
+
+        // Payload pushes allow_disk_y only (live_disk_x is not server-registered).
+        let payload = make_payload(vec![allow_disk_y.clone()]);
+
+        let (changed_fields, disk_merge_data) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(changed_fields.contains(&"disk_allowlist"));
+        assert_eq!(cfg.disk_allowlist, vec![allow_disk_y.clone()]);
+
+        let (old_ids, new_list) = disk_merge_data.expect("merge data must be present");
+        // Pitfall 5 guard: old_ids is empty (cfg had no prior allowlist),
+        // so no entries should be removed.
+        assert!(old_ids.is_empty());
+        merge_disk_allowlist_into_map(&enumerator, &old_ids, &new_list);
+
+        let map = enumerator.instance_id_map.read();
+        assert!(
+            map.contains_key("DISK\\LIVE\\X"),
+            "live-enumerated disk X must be preserved in map (Pitfall 5)"
+        );
+        assert!(
+            map.contains_key("DISK\\ALLOW\\Y"),
+            "server-allowlisted disk Y must be inserted into map"
+        );
+    }
+
+    /// Test 5: Persist to TOML — after a successful update, calling cfg.save() and
+    /// reloading via AgentConfig::load() produces a config whose disk_allowlist
+    /// matches the new entries.
+    #[test]
+    fn test_config_poll_persists_disk_allowlist_to_toml() {
+        let disk = make_disk("DISK\\PERSIST\\001");
+
+        let mut cfg = AgentConfig::default();
+        let payload = make_payload(vec![disk.clone()]);
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+        assert!(changed_fields.contains(&"disk_allowlist"));
+
+        // Write to a temp file and reload to verify TOML roundtrip.
+        let temp_dir = tempfile::tempdir().expect("tempdir must be creatable");
+        let config_path = temp_dir.path().join("agent-config.toml");
+        cfg.save(&config_path).expect("save must succeed");
+
+        let reloaded = AgentConfig::load(&config_path);
+        assert_eq!(
+            reloaded.disk_allowlist.len(),
+            1,
+            "reloaded config must contain the persisted disk"
+        );
+        assert_eq!(
+            reloaded.disk_allowlist[0].instance_id,
+            "DISK\\PERSIST\\001",
+            "persisted instance_id must survive TOML roundtrip"
+        );
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
