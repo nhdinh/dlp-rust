@@ -462,8 +462,13 @@ async fn config_poll_loop(
 
         let next_interval = do_poll!();
 
-        // Re-arm the timer using the PREVIOUS interval, not the new one.
-        // The new interval takes effect after the *next* tick completes.
+        // Re-arm using the PREVIOUS interval value captured before do_poll!()
+        // applied the server's new config. The UPDATED interval takes effect
+        // starting from the THIRD poll cycle:
+        //   cycle N (this iteration): used the old interval to reach here.
+        //   cycle N+1: do_poll!() reads the new heartbeat_interval_secs from
+        //     the already-updated in-memory config at the top of the loop;
+        //     next tick fires after the new interval.
         interval = tokio::time::interval(Duration::from_secs(next_interval));
         interval.tick().await; // consume immediate first tick
     }
