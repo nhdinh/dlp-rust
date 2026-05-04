@@ -20,7 +20,7 @@ pub struct DiskRegistryRow {
     pub instance_id: String,
     /// Physical bus type as the lowercase serde name of `dlp_common::BusType`.
     pub bus_type: String,
-    /// One of `"fully_encrypted"`, `"partially_encrypted"`, `"unencrypted"`, `"unknown"` (D-11).
+    /// One of `"encrypted"`, `"suspended"`, `"unencrypted"`, `"unknown"` (D-11).
     pub encryption_status: String,
     /// Drive model string (may be empty when unknown).
     pub model: String,
@@ -138,7 +138,7 @@ impl DiskRegistryRepository {
     /// Returns `rusqlite::Error` if the INSERT fails, including:
     /// - UNIQUE constraint violation: `(agent_id, instance_id)` already exists.
     /// - CHECK constraint violation: `encryption_status` is not one of the four
-    ///   allowed values (`fully_encrypted`, `partially_encrypted`, `unencrypted`, `unknown`).
+    ///   allowed values (`encrypted`, `suspended`, `unencrypted`, `unknown`).
     pub fn insert(uow: &UnitOfWork<'_>, row: &DiskRegistryRow) -> rusqlite::Result<()> {
         uow.tx.execute(
             "INSERT INTO disk_registry \
@@ -369,7 +369,7 @@ mod tests {
             "uuid-2",
             "agent-A",
             "disk-1",
-            "fully_encrypted",
+            "encrypted",
             "2026-01-02T00:00:00Z",
         );
         let result = {
@@ -414,7 +414,7 @@ mod tests {
             "uuid-2",
             "agent-A",
             "disk-1",
-            "fully_encrypted",
+            "encrypted",
             "2026-01-02T00:00:00Z",
         );
         let result = {
@@ -520,7 +520,7 @@ mod tests {
                 "uuid-2",
                 "agent-A",
                 "disk-2",
-                "fully_encrypted",
+                "encrypted",
                 "2026-01-02T00:00:00Z",
             ),
             make_row(
