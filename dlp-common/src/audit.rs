@@ -181,6 +181,15 @@ pub struct AuditEvent {
     /// (populated by Phase 33 disk discovery).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discovered_disks: Option<Vec<DiskIdentity>>,
+    /// Fixed disk identity on block events from `DiskEnforcer` (AUDIT-02, Phase 36).
+    ///
+    /// Populated only for [`EventType::Block`] events emitted when an unregistered
+    /// fixed disk is blocked at I/O time. Semantically distinct from
+    /// [`AuditEvent::discovered_disks`] (which is populated for `DiskDiscovery`
+    /// enumeration events). Allows SIEM rules to filter
+    /// `event_type = BLOCK AND blocked_disk IS NOT NULL` for disk enforcement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_disk: Option<DiskIdentity>,
 }
 
 impl AuditEvent {
@@ -237,6 +246,7 @@ impl AuditEvent {
             source_origin: None,
             destination_origin: None,
             discovered_disks: None,
+            blocked_disk: None,
         }
     }
 
@@ -326,6 +336,48 @@ impl AuditEvent {
     /// Sets the discovered disks for a DiskDiscovery event.
     pub fn with_discovered_disks(mut self, disks: Option<Vec<DiskIdentity>>) -> Self {
         self.discovered_disks = disks;
+        self
+    }
+
+    /// Sets the blocked disk identity on disk enforcement block events (AUDIT-02, Phase 36).
+    ///
+    /// # Arguments
+    ///
+    /// * `disk` - the [`DiskIdentity`] from the live `drive_letter_map` at enforcement time.
+    ///
+    /// # Returns
+    ///
+    /// `self` with `blocked_disk` set to `Some(disk)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use dlp_common::{Action, AuditEvent, BusType, Classification, Decision,
+    ///     DiskIdentity, EventType};
+    /// let disk = DiskIdentity {
+    ///     instance_id: "USBSTOR\\Disk\\1".into(),
+    ///     bus_type: BusType::Usb,
+    ///     model: "Acme USB SSD".into(),
+    ///     drive_letter: Some('E'),
+    ///     ..Default::default()
+    /// };
+    /// let event = AuditEvent::new(
+    ///     EventType::Block,
+    ///     "S-1-5-21-1".into(),
+    ///     "alice".into(),
+    ///     "E:\\file.txt".into(),
+    ///     Classification::T1,
+    ///     Action::WRITE,
+    ///     Decision::DENY,
+    ///     "AGENT-1".into(),
+    ///     1,
+    /// )
+    /// .with_blocked_disk(disk.clone());
+    /// assert_eq!(event.blocked_disk, Some(disk));
+    /// ```
+    #[must_use]
+    pub fn with_blocked_disk(mut self, disk: DiskIdentity) -> Self {
+        self.blocked_disk = Some(disk);
         self
     }
 }
@@ -792,11 +844,20 @@ mod tests {
         .with_blocked_disk(disk);
 
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"blocked_disk\""), "JSON must contain blocked_disk: {json}");
+        assert!(
+            json.contains("\"blocked_disk\""),
+            "JSON must contain blocked_disk: {json}"
+        );
         assert!(json.contains("Kingston DT 50"), "model missing: {json}");
         assert!(json.contains("USBSTOR"), "instance_id missing: {json}");
-        assert!(json.contains("\"bus_type\""), "bus_type field missing: {json}");
-        assert!(json.contains("\"drive_letter\""), "drive_letter field missing: {json}");
+        assert!(
+            json.contains("\"bus_type\""),
+            "bus_type field missing: {json}"
+        );
+        assert!(
+            json.contains("\"drive_letter\""),
+            "drive_letter field missing: {json}"
+        );
     }
 
     /// AUDIT-02: skip_serializing_if removes blocked_disk from JSON when None.
@@ -845,6 +906,9 @@ mod tests {
         let event: AuditEvent = serde_json::from_str(legacy_json)
             .expect("legacy JSON without blocked_disk must deserialize");
         assert_eq!(event.event_type, EventType::Block);
-        assert!(event.blocked_disk.is_none(), "missing blocked_disk must default to None");
+        assert!(
+            event.blocked_disk.is_none(),
+            "missing blocked_disk must default to None"
+        );
     }
 }
