@@ -504,24 +504,10 @@ async fn run_loop(
             Arc::clone(&registry_cache),
         )));
 
-    // Register USB notifications NOW (after statics are set) so usb_wndproc
-    // has valid REGISTRY_CACHE / REGISTRY_CLIENT / REGISTRY_RUNTIME_HANDLE / DEVICE_CONTROLLER on first arrival.
-    let usb_cleanup = match crate::detection::usb::register_usb_notifications(detector) {
-        Ok((hwnd, thread)) => {
-            info!(
-                thread_id = ?thread.thread().id(),
-                "USB notifications registered"
-            );
-            Some((hwnd, thread))
-        }
-        Err(e) => {
-            warn!(
-                error = %e,
-                "USB detection unavailable — continuing without USB monitoring"
-            );
-            None
-        }
-    };
+    // Set the global DRIVE_DETECTOR reference before spawning the watcher so
+    // dispatch callbacks can reach the UsbDetector on first arrival.
+    // The device watcher itself is spawned below (after audit_ctx is constructed).
+    crate::detection::usb::set_drive_detector(detector);
 
     // ── Clone server client for config poll BEFORE it moves into offline_manager ──
     // server_client is an Option<ServerClient>. ServerClient is Clone.
@@ -647,6 +633,33 @@ async fn run_loop(
     );
     info!("disk enumeration task spawned");
 
+    // ── Device watcher (Phase 36 D-12) ───────────────────────────────────
+    // Spawned after audit_ctx and disk enumeration are ready so the watcher
+    // can emit DiskDiscovery events from the disk arrival handler.
+    // Replaces the old `register_usb_notifications` Win32 window.
+    let device_watcher_cleanup =
+        match crate::detection::spawn_device_watcher_task(audit_ctx.clone()) {
+            Ok((hwnd, thread)) => {
+                info!("device watcher registered (volume + USB + disk interfaces)");
+                Some((hwnd, thread))
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "device watcher unavailable — continuing without USB/disk monitoring"
+                );
+                None
+            }
+        };
+
+    // ── DiskEnforcer (Phase 36) ───────────────────────────────────────────
+    // Constructed after disk enumeration so the global OnceLock is populated.
+    // Fails closed (blocks all fixed-disk writes) until the enumeration task
+    // sets `is_ready()` (D-06).
+    let disk_enforcer_opt: Option<Arc<crate::disk_enforcer::DiskEnforcer>> =
+        Some(Arc::new(crate::disk_enforcer::DiskEnforcer::new()));
+    info!("disk enforcer constructed");
+
     // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
     // Initialize the EncryptionChecker and spawn the background verification
     // task. The task waits internally for `DiskEnumerator::is_ready` (D-04)
@@ -679,6 +692,7 @@ async fn run_loop(
             session_map_ev,
             ad_client_ev,
             usb_enforcer_opt,
+            disk_enforcer_opt,
         )
         .await;
     });
@@ -779,11 +793,11 @@ async fn run_loop(
     }
     crate::password_stop::debug_log("run_loop: managed origins poll stopped");
 
-    // Unregister USB device notifications (owned by run_loop since Approach A move).
-    if let Some((hwnd, thread)) = usb_cleanup {
-        crate::password_stop::debug_log("run_loop: unregistering USB notifications");
-        crate::detection::usb::unregister_usb_notifications(hwnd, thread);
-        crate::password_stop::debug_log("run_loop: USB unregistered");
+    // Unregister device watcher (Phase 36 D-12 replacement for register_usb_notifications).
+    if let Some((hwnd, thread)) = device_watcher_cleanup {
+        crate::password_stop::debug_log("run_loop: unregistering device watcher");
+        crate::detection::unregister_device_watcher(hwnd, thread);
+        crate::password_stop::debug_log("run_loop: device watcher unregistered");
     }
 
     // Kill all UI processes spawned by the session monitor.  Must happen before

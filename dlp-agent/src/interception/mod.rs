@@ -32,6 +32,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::audit_emitter::{self, emit_audit, EmitContext};
+use crate::disk_enforcer::DiskEnforcer;
 use crate::identity::WindowsIdentity;
 use crate::ipc::messages::{Pipe1AgentMsg, Pipe2AgentMsg};
 use crate::ipc::pipe1;
@@ -56,6 +57,7 @@ use crate::usb_enforcer::UsbEnforcer;
 /// * `session_map` — per-session identity map for resolving file owners
 /// * `ad_client` — optional AD client for group/trust/location resolution (None = fallback to placeholder)
 /// * `usb_enforcer` — optional USB trust-tier enforcer; fires before ABAC evaluation (None = USB enforcement disabled)
+/// * `disk_enforcer` — optional fixed-disk write enforcer; fires after USB, before ABAC (None = disk enforcement disabled)
 pub async fn run_event_loop(
     mut rx: mpsc::Receiver<FileAction>,
     offline: Arc<OfflineManager>,
@@ -63,6 +65,7 @@ pub async fn run_event_loop(
     session_map: Arc<SessionIdentityMap>,
     ad_client: Arc<Option<dlp_common::AdClient>>,
     usb_enforcer: Option<Arc<UsbEnforcer>>,
+    disk_enforcer: Option<Arc<DiskEnforcer>>,
 ) {
     info!("interception event loop started");
 
@@ -157,6 +160,73 @@ pub async fn run_event_loop(
                         }
                     };
                     crate::ipc::pipe2::BROADCASTER.broadcast(&Pipe2AgentMsg::Toast { title, body });
+                }
+                continue; // skip ABAC evaluation for this event
+            }
+        }
+
+        // ── Disk enforcement (pre-ABAC check) ────────────────────────────
+        // Fires after USB enforcement, before the ABAC engine. Blocks writes
+        // to unregistered fixed disks (DISK-04, D-06, D-07). Uses `continue`
+        // to skip ABAC evaluation when blocked, mirroring the USB pattern.
+        if let Some(ref enforcer) = disk_enforcer {
+            if let Some(disk_result) = enforcer.check(&path, &action) {
+                let mut audit_event = AuditEvent::new(
+                    EventType::Block,
+                    user_sid.clone(),
+                    user_name.clone(),
+                    path.clone(),
+                    // Classification not yet resolved at this stage; T1 is the
+                    // conservative public-tier placeholder (AUDIT-02).
+                    dlp_common::Classification::T1,
+                    dlp_common::Action::WRITE,
+                    disk_result.decision,
+                    ctx.agent_id.clone(),
+                    ctx.session_id,
+                )
+                .with_access_context(AuditAccessContext::Local)
+                .with_policy(
+                    String::new(),
+                    "Disk enforcement: unregistered fixed disk".to_string(),
+                )
+                .with_blocked_disk(disk_result.disk.clone());
+
+                emit_audit(&ctx, &mut audit_event);
+
+                // AUDIT-02: Pipe 1 BlockNotify for SIEM / dashboard visibility.
+                if disk_result.decision.is_denied() {
+                    if let Err(e) = pipe1::send_to_ui(
+                        ctx.session_id,
+                        &Pipe1AgentMsg::BlockNotify {
+                            reason: "Disk enforcement: unregistered fixed disk".to_string(),
+                            classification: "Disk-Unregistered".to_string(),
+                            resource_path: path.clone(),
+                            policy_id: String::new(),
+                        },
+                    ) {
+                        warn!(
+                            error = %e,
+                            session_id = ctx.session_id,
+                            "failed to send disk BlockNotify to UI"
+                        );
+                    }
+                }
+
+                // Toast notification (D-02 per-drive 30-second cooldown embedded in DiskEnforcer).
+                if disk_result.notify {
+                    let drive_part = disk_result
+                        .disk
+                        .drive_letter
+                        .map(|l| format!(" ({l}:)"))
+                        .unwrap_or_default();
+                    let body = format!(
+                        "{}{drive_part} - this disk is not registered",
+                        disk_result.disk.model
+                    );
+                    crate::ipc::pipe2::BROADCASTER.broadcast(&Pipe2AgentMsg::Toast {
+                        title: "Unregistered Disk Blocked".to_string(),
+                        body,
+                    });
                 }
                 continue; // skip ABAC evaluation for this event
             }
