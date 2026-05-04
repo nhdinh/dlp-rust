@@ -490,8 +490,7 @@ fn on_disk_arrival_inner(
 /// * `device_path` -- the `dbcc_name` from the WM_DEVICECHANGE callback.
 #[cfg(windows)]
 pub fn on_disk_removal(device_path: &str) {
-    let instance_id =
-        crate::detection::device_watcher::extract_disk_instance_id(device_path);
+    let instance_id = crate::detection::device_watcher::extract_disk_instance_id(device_path);
     if instance_id.is_empty() {
         debug!(
             device_path = %device_path,
@@ -540,10 +539,7 @@ pub fn on_disk_removal(device_path: &str) {
 /// (called from [`on_disk_arrival_inner`] when a newly visible disk is not in
 /// the frozen `instance_id_map` allowlist).
 #[cfg(windows)]
-fn emit_disk_discovery_for_arrival(
-    ctx: &crate::audit_emitter::EmitContext,
-    disk: &DiskIdentity,
-) {
+fn emit_disk_discovery_for_arrival(ctx: &crate::audit_emitter::EmitContext, disk: &DiskIdentity) {
     use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
 
     let mut event = AuditEvent::new(
@@ -1111,7 +1107,10 @@ mod tests {
             encryption_method: None,
             encryption_checked_at: None,
         };
-        enumerator.drive_letter_map.write().insert('G', disk.clone());
+        enumerator
+            .drive_letter_map
+            .write()
+            .insert('G', disk.clone());
         enumerator
             .instance_id_map
             .write()

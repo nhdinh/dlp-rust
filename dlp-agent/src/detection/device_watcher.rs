@@ -202,8 +202,7 @@ unsafe extern "system" fn device_watcher_wndproc(
                     // DEV_BROADCAST_DEVICEINTERFACE_W. Extract dbcc_classguid
                     // and dbcc_name (null-terminated wide string) here --
                     // do NOT store the pointer past this callback.
-                    let di =
-                        unsafe { &*(lparam.0 as *const DEV_BROADCAST_DEVICEINTERFACE_W) };
+                    let di = unsafe { &*(lparam.0 as *const DEV_BROADCAST_DEVICEINTERFACE_W) };
                     let classguid = di.dbcc_classguid;
 
                     if classguid == GUID_DEVINTERFACE_VOLUME {
@@ -286,8 +285,7 @@ pub fn spawn_device_watcher_task(
     //
     // HWND is !Send (raw pointer wrapper), so we transmit it as usize and
     // reconstruct it on the caller side.
-    let (hwnd_tx, hwnd_rx) =
-        std::sync::mpsc::channel::<windows::core::Result<usize>>();
+    let (hwnd_tx, hwnd_rx) = std::sync::mpsc::channel::<windows::core::Result<usize>>();
 
     let thread = std::thread::Builder::new()
         .name("device-watcher".into())
@@ -414,8 +412,7 @@ pub fn spawn_device_watcher_task(
             let vol_h = vol_handle.unwrap();
             let usb_h = usb_handle.unwrap();
             let disk_h = disk_handle.unwrap();
-            *NOTIFY_HANDLES.lock() =
-                Some((vol_h.0 as isize, usb_h.0 as isize, disk_h.0 as isize));
+            *NOTIFY_HANDLES.lock() = Some((vol_h.0 as isize, usb_h.0 as isize, disk_h.0 as isize));
 
             // Signal the caller with the HWND value. Transmit as usize because
             // HWND is !Send; the caller reconstructs it from the raw pointer value.
@@ -502,8 +499,7 @@ mod tests {
     /// Strips the `\\?\` prefix and the `#{GUID}` suffix and replaces `#` with `\`.
     #[test]
     fn test_extract_disk_instance_id_strips_prefix_and_guid() {
-        let input =
-            r"\\?\USBSTOR#Disk&Ven_Kingston#1234#{53f56307-b6bf-11d0-94f2-00a0c91efb8b}";
+        let input = r"\\?\USBSTOR#Disk&Ven_Kingston#1234#{53f56307-b6bf-11d0-94f2-00a0c91efb8b}";
         assert_eq!(
             extract_disk_instance_id(input),
             r"USBSTOR\Disk&Ven_Kingston\1234"
