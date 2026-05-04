@@ -71,9 +71,6 @@ pub struct UsbDetector {
     /// (i.e., no drive letter was available yet).  `handle_volume_event` pops
     /// this slot when the drive letter appears and applies tier enforcement.
     pub(crate) pending_identity: Mutex<Option<DeviceIdentity>>,
-    /// Map from disk device instance ID to USB identity for removal lookup
-    /// when the PnP tree walk fails (device already gone from the PnP tree).
-    pub disk_to_identity: RwLock<HashMap<String, DeviceIdentity>>,
 }
 
 impl UsbDetector {
@@ -817,47 +814,4 @@ mod tests {
     // `crate::detection::device_watcher::extract_disk_instance_id` (Phase 36 D-12
     // refactor). Instance-ID extraction tests live in device_watcher's test module.
 
-    /// Verify that disk arrival stores identity in disk_to_identity for removal fallback.
-    #[test]
-    fn test_disk_to_identity_populated_on_arrival() {
-        let detector = UsbDetector::new();
-        let identity = DeviceIdentity {
-            vid: "0951".into(),
-            pid: "1666".into(),
-            serial: "SN42".into(),
-            description: "Test Device".into(),
-        };
-        detector
-            .disk_to_identity
-            .write()
-            .insert("USBSTOR\\Test".into(), identity.clone());
-        assert_eq!(
-            detector.disk_to_identity.read().get("USBSTOR\\Test"),
-            Some(&identity)
-        );
-    }
-
-    /// Verify removal lookup via disk_to_identity fallback.
-    #[test]
-    fn test_disk_to_identity_removal_fallback() {
-        let detector = UsbDetector::new();
-        let identity = DeviceIdentity {
-            vid: "0951".into(),
-            pid: "1666".into(),
-            serial: "SN42".into(),
-            description: "Test Device".into(),
-        };
-        detector
-            .disk_to_identity
-            .write()
-            .insert("USBSTOR\\Test".into(), identity.clone());
-        let retrieved = detector
-            .disk_to_identity
-            .read()
-            .get("USBSTOR\\Test")
-            .cloned();
-        assert_eq!(retrieved, Some(identity));
-        detector.disk_to_identity.write().remove("USBSTOR\\Test");
-        assert!(detector.disk_to_identity.read().is_empty());
-    }
 }
