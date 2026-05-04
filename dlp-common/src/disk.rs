@@ -366,6 +366,43 @@ pub fn get_boot_drive_letter() -> Option<char> {
 // Windows implementation
 // ---------------------------------------------------------------------------
 
+/// Combine the IOCTL bus-type primary signal with the PnP tree-walk USB
+/// ancestry signal into a final `BusType`.
+///
+/// This helper fixes the USB-bridged NVMe/SATA enclosure regression reported
+/// in Phase 33 UAT (33-HUMAN-UAT.md test 1). The original code only consulted
+/// the PnP walk when IOCTL failed; because `query_bus_type_ioctl` returns the
+/// first successful PhysicalDriveN IOCTL response without validating the handle
+/// corresponds to the requested `instance_id`, USB NVMe bridges (UAS / uaspstor)
+/// returned `BusTypeNvme` and the PnP fallback was permanently bypassed.
+///
+/// # Truth Table
+///
+/// | `ioctl_result`   | `pnp_result`     | Output   | Rationale                                   |
+/// |------------------|------------------|----------|---------------------------------------------|
+/// | `Ok(Usb)`        | any              | `Usb`    | IOCTL already correct; idempotent override  |
+/// | `Ok(other)`      | `Ok(true)`       | `Usb`    | PnP override -- the bug fix                 |
+/// | `Ok(other)`      | `Ok(false)`      | `other`  | Preserve IOCTL primary (Sata/Nvme/Scsi)     |
+/// | `Ok(other)`      | `Err(_)`         | `other`  | PnP failure must not poison correct IOCTL   |
+/// | `Err(_)`         | `Ok(true)`       | `Usb`    | PnP rescues when IOCTL handle could not open|
+/// | `Err(_)`         | `Ok(false)`      | `Unknown`| Neither signal indicates a bus type         |
+/// | `Err(_)`         | `Err(_)`         | `Unknown`| Both signals failed; classify as unknown    |
+fn resolve_bus_type_with_pnp_override(
+    ioctl_result: Result<BusType, DiskError>,
+    pnp_result: Result<bool, DiskError>,
+) -> BusType {
+    match (ioctl_result, pnp_result) {
+        // PnP confirms USB ancestry -- always overrides any IOCTL value.
+        (_, Ok(true)) => BusType::Usb,
+        // IOCTL succeeded; PnP either disagrees (false) or failed (Err).
+        // Preserve the IOCTL primary -- PnP failures must NEVER downgrade
+        // a correct IOCTL classification.
+        (Ok(bt), _) => bt,
+        // Both signals failed.
+        (Err(_), _) => BusType::Unknown,
+    }
+}
+
 /// Windows-specific fixed disk enumeration.
 #[cfg(windows)]
 fn enumerate_fixed_disks_windows() -> Result<Vec<DiskIdentity>, DiskError> {
@@ -401,17 +438,22 @@ fn enumerate_fixed_disks_windows() -> Result<Vec<DiskIdentity>, DiskError> {
             .or_else(|| read_string_property(hdev, &devinfo, SPDRP_DEVICEDESC))
             .unwrap_or_default();
 
-        // Determine bus type via IOCTL primary + PnP fallback.
-        let bus_type = match query_bus_type_ioctl(&instance_id) {
-            Ok(bt) => bt,
-            Err(_) => {
-                // Fallback: if PnP walk finds USB ancestor, mark as USB.
-                match is_usb_bridged_pnp_walk(&instance_id) {
-                    Ok(true) => BusType::Usb,
-                    _ => BusType::Unknown,
-                }
-            }
-        };
+        // Resolve bus type with two independent signals:
+        //   1. IOCTL_STORAGE_QUERY_PROPERTY -- primary, fast, accurate for non-USB
+        //      bus types (Sata, Nvme, Scsi). Has a known correlation limitation:
+        //      returns first successful PhysicalDriveN handle without validating it
+        //      matches `instance_id` (tracked separately).
+        //   2. PnP tree walk -- authoritative for USB ancestry detection. UAS /
+        //      uaspstor NVMe bridges report `BusTypeNvme` via IOCTL but expose a
+        //      `USB\` ancestor in the PnP device tree.
+        //
+        // The PnP walk runs UNCONDITIONALLY (not only on IOCTL Err) so that USB
+        // ancestry overrides any wrong-but-successful IOCTL result. See
+        // `resolve_bus_type_with_pnp_override` for the full truth table and the
+        // 33-HUMAN-UAT.md test 1 diagnosis.
+        let ioctl_result = query_bus_type_ioctl(&instance_id);
+        let pnp_result = is_usb_bridged_pnp_walk(&instance_id);
+        let bus_type = resolve_bus_type_with_pnp_override(ioctl_result, pnp_result);
 
         // Determine drive letter by scanning fixed drives.
         let drive_letter = find_drive_letter_for_instance_id(&instance_id, &out);
@@ -473,9 +515,19 @@ fn read_instance_id(
 
 /// Query the bus type for a disk via `IOCTL_STORAGE_QUERY_PROPERTY`.
 ///
-/// Opens the disk via `\\.\PhysicalDriveN` where N is derived from the
-/// SetupDi enumeration order (0, 1, 2...). The enumeration order typically
-/// matches PhysicalDrive numbering.
+/// Iterates `\\.\PhysicalDrive0..31`, opens the first handle that succeeds,
+/// sends `IOCTL_STORAGE_QUERY_PROPERTY` with `StorageDeviceProperty`, and
+/// returns the `STORAGE_DEVICE_DESCRIPTOR.BusType` field.
+///
+/// # Known Limitation
+///
+/// This function does NOT correlate the opened PhysicalDriveN handle to
+/// the requested `instance_id`. It returns the bus type of whichever
+/// PhysicalDriveN responds first to IOCTL, which may not be the disk
+/// the caller intended. The caller MUST combine this result with
+/// `is_usb_bridged_pnp_walk` via `resolve_bus_type_with_pnp_override`
+/// so that PnP-confirmed USB ancestry overrides any wrong-but-successful
+/// IOCTL result. See Phase 33 UAT diagnosis (33-HUMAN-UAT.md test 1).
 #[cfg(windows)]
 fn query_bus_type_ioctl(instance_id: &str) -> Result<BusType, DiskError> {
     // Derive PhysicalDrive index from the instance_id hash for stable mapping.
@@ -580,10 +632,16 @@ fn query_bus_type_for_handle(handle: HANDLE, _instance_id: &str) -> Result<BusTy
     Ok(BusType::from(bus_type_raw))
 }
 
-/// Windows-specific USB-bridged detection.
+/// Windows-specific USB-bridged detection (public API path).
 ///
 /// First tries `IOCTL_STORAGE_QUERY_PROPERTY`; if that indicates USB,
 /// returns `true`. Otherwise falls back to PnP tree walk.
+///
+/// NOTE: `enumerate_fixed_disks_windows` does NOT call this function
+/// directly. It calls `query_bus_type_ioctl` and `is_usb_bridged_pnp_walk`
+/// independently and combines them via `resolve_bus_type_with_pnp_override`
+/// to ensure USB ancestry overrides wrong-but-successful IOCTL results.
+/// See Phase 33 UAT diagnosis (33-HUMAN-UAT.md test 1).
 #[cfg(windows)]
 fn is_usb_bridged_windows(instance_id: &str) -> Result<bool, DiskError> {
     // Primary: IOCTL.
@@ -1068,5 +1126,132 @@ mod tests {
             json.contains("\"encryption_status\":\"unknown\""),
             "Some(Unknown) must serialize as \"unknown\" on the wire (Pitfall D)"
         );
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // resolve_bus_type_with_pnp_override -- USB-bridge override fix (33-GAP-01)
+    //
+    // These tests pin the truth table that fixes the Phase 33 UAT regression
+    // (33-HUMAN-UAT.md test 1: USB-bridged NVMe enclosures reported as nvme).
+    //
+    // The helper is pure logic over Result values; no Win32 calls are made,
+    // so the matrix runs on every platform.
+    // ────────────────────────────────────────────────────────────────────────
+
+    fn fake_ioctl_err() -> DiskError {
+        DiskError::IoctlFailed("synthetic test error".to_string())
+    }
+
+    fn fake_pnp_err() -> DiskError {
+        DiskError::PnpWalkFailed("synthetic test error".to_string())
+    }
+
+    #[test]
+    fn test_resolve_bus_type_usb_nvme_bridge_overrides_to_usb() {
+        // Regression fix for 33-HUMAN-UAT.md test 1:
+        // UAS / uaspstor USB NVMe bridge reports BusTypeNvme via IOCTL
+        // but PnP tree walk finds USB\ ancestor -> must classify as Usb.
+        let result = resolve_bus_type_with_pnp_override(Ok(BusType::Nvme), Ok(true));
+        assert_eq!(
+            result,
+            BusType::Usb,
+            "USB-bridged NVMe enclosure must be classified as Usb when PnP confirms USB ancestry"
+        );
+    }
+
+    #[test]
+    fn test_resolve_bus_type_usb_sata_bridge_overrides_to_usb() {
+        let result = resolve_bus_type_with_pnp_override(Ok(BusType::Sata), Ok(true));
+        assert_eq!(
+            result,
+            BusType::Usb,
+            "USB-bridged SATA enclosure must be classified as Usb when PnP confirms USB ancestry"
+        );
+    }
+
+    #[test]
+    fn test_resolve_bus_type_internal_nvme_preserved() {
+        // No regression: genuine internal NVMe must remain Nvme when PnP walk
+        // confirms the disk is NOT USB-attached.
+        let result = resolve_bus_type_with_pnp_override(Ok(BusType::Nvme), Ok(false));
+        assert_eq!(
+            result,
+            BusType::Nvme,
+            "Internal NVMe must remain Nvme when PnP walk reports no USB ancestor"
+        );
+    }
+
+    #[test]
+    fn test_resolve_bus_type_internal_sata_preserved() {
+        let result = resolve_bus_type_with_pnp_override(Ok(BusType::Sata), Ok(false));
+        assert_eq!(
+            result,
+            BusType::Sata,
+            "Internal SATA must remain Sata when PnP walk reports no USB ancestor"
+        );
+    }
+
+    #[test]
+    fn test_resolve_bus_type_idempotent_when_both_signals_agree_on_usb() {
+        // Sanity: when IOCTL already says Usb and PnP also confirms Usb, the
+        // result is Usb (no double-override, no downgrade).
+        let result = resolve_bus_type_with_pnp_override(Ok(BusType::Usb), Ok(true));
+        assert_eq!(result, BusType::Usb);
+    }
+
+    #[test]
+    fn test_resolve_bus_type_pnp_failure_does_not_poison_correct_ioctl() {
+        // Critical: a PnP walk failure must NOT downgrade a correct IOCTL
+        // classification to Unknown. The IOCTL primary is preserved.
+        let result = resolve_bus_type_with_pnp_override(Ok(BusType::Nvme), Err(fake_pnp_err()));
+        assert_eq!(
+            result,
+            BusType::Nvme,
+            "PnP walk Err must NOT poison correct IOCTL Nvme classification"
+        );
+
+        let result = resolve_bus_type_with_pnp_override(Ok(BusType::Sata), Err(fake_pnp_err()));
+        assert_eq!(
+            result,
+            BusType::Sata,
+            "PnP walk Err must NOT poison correct IOCTL Sata classification"
+        );
+
+        let result = resolve_bus_type_with_pnp_override(Ok(BusType::Scsi), Err(fake_pnp_err()));
+        assert_eq!(
+            result,
+            BusType::Scsi,
+            "PnP walk Err must NOT poison correct IOCTL Scsi classification"
+        );
+    }
+
+    #[test]
+    fn test_resolve_bus_type_pnp_rescues_when_ioctl_fails() {
+        // PnP rescue path: when IOCTL cannot open any PhysicalDrive handle
+        // but PnP walk still finds USB ancestry, the disk is Usb.
+        let result = resolve_bus_type_with_pnp_override(Err(fake_ioctl_err()), Ok(true));
+        assert_eq!(
+            result,
+            BusType::Usb,
+            "PnP must rescue USB classification when IOCTL fails"
+        );
+    }
+
+    #[test]
+    fn test_resolve_bus_type_both_signals_negative_yields_unknown() {
+        // Neither signal indicates anything: classify as Unknown so the
+        // admin can investigate, never silently optimistic.
+        let result = resolve_bus_type_with_pnp_override(Err(fake_ioctl_err()), Ok(false));
+        assert_eq!(
+            result,
+            BusType::Unknown,
+            "Both signals negative -> Unknown (never silently optimistic)"
+        );
+    }
+
+    #[test]
+    fn test_resolve_bus_type_both_signals_failed_yields_unknown() {
+        let result = resolve_bus_type_with_pnp_override(Err(fake_ioctl_err()), Err(fake_pnp_err()));
+        assert_eq!(result, BusType::Unknown, "Both signals failed -> Unknown");
     }
 }
