@@ -461,47 +461,26 @@ fn on_usb_device_arrival(detector: &UsbDetector, device_path: &str) {
     let mut identity = parse_usb_device_path(device_path);
     identity.description = setupdi_description_for_device(device_path);
 
-    // Map the USB device to a drive letter by scanning A..=Z for a mounted
-    // drive not yet tracked in device_identities. The USB_DEVICE notification
-    // arrives slightly before or after the VOLUME notification, so we take
-    // the first letter with an existing root path but no identity entry.
-    // NOTE: NVMe USB bridges report as DRIVE_FIXED, not DRIVE_REMOVABLE,
-    // so we check Path::exists instead of is_removable_drive.
-    let existing: HashSet<char> = detector.device_identities.read().keys().copied().collect();
-    let letter_opt = ('A'..='Z')
-        .find(|l| std::path::Path::new(&format!("{}:\\", l)).exists() && !existing.contains(l));
-
-    match letter_opt {
-        Some(letter) => {
-            info!(
-                drive = %letter,
-                vid = %identity.vid,
-                pid = %identity.pid,
-                serial = %identity.serial,
-                description = %identity.description,
-                "USB device arrived — identity captured"
-            );
-            detector
-                .device_identities
-                .write()
-                .insert(letter, identity.clone());
-
-            apply_tier_enforcement(letter, &identity);
-        }
-        None => {
-            // VOLUME notification has not arrived yet — the drive letter is not
-            // assigned.  Park the identity so handle_volume_event can reconcile
-            // it and apply enforcement once the drive letter is available.
-            info!(
-                vid = %identity.vid,
-                pid = %identity.pid,
-                serial = %identity.serial,
-                description = %identity.description,
-                "USB device arrived — identity captured (no drive letter yet)"
-            );
-            *detector.pending_identity.lock() = Some(identity);
-        }
-    }
+    // WR-02 fix: The previous heuristic scan (A..=Z Path::exists check) was
+    // incorrect — it assigned the first drive letter whose root path existed
+    // but was not yet tracked, which on multi-disk systems could mis-assign
+    // the identity of the newly arrived USB device to a pre-existing fixed
+    // disk. It also triggered blocking file-system I/O on the Win32 message
+    // callback thread.
+    //
+    // Primary path: park the identity in pending_identity so that
+    // handle_volume_event can reconcile it with the correct drive letter when
+    // the GUID_DEVINTERFACE_VOLUME notification arrives.  This is the
+    // authoritative correlation path because the VOLUME notification carries
+    // the exact drive letter assigned by the kernel mount manager.
+    info!(
+        vid = %identity.vid,
+        pid = %identity.pid,
+        serial = %identity.serial,
+        description = %identity.description,
+        "USB device arrived — identity parked, awaiting VOLUME notification"
+    );
+    *detector.pending_identity.lock() = Some(identity);
 }
 
 /// Removes the captured identity on USB device removal.
