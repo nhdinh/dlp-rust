@@ -113,7 +113,12 @@ Plans:
   3. Admin can add a disk to the allowlist via POST /admin/disk-registry
   4. Admin can remove a disk from the allowlist via DELETE /admin/disk-registry/{id}
   5. Admin override actions (add/remove disk from registry) are emitted as EventType::AdminAction audit events
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 37-01-PLAN.md -- dlp-common Action enum extension + disk_registry table DDL + DiskRegistryRepository (pure INSERT, no upsert)
+- [ ] 37-02-PLAN.md -- Admin REST handlers (GET/POST/DELETE), AUDIT-03 events, AgentConfigPayload disk_allowlist propagation
+- [ ] 37-03-PLAN.md -- Agent live reload: AgentConfigPayload mirror + config_poll_loop merge into DiskEnumerator.instance_id_map
 
 ### Phase 38: Admin TUI Disk Registry
 **Goal**: Admin can manage disk registry through the interactive TUI
@@ -168,7 +173,7 @@ Plans:
 | 34 | BitLocker Verification | v0.7.0 | 5/5 | Planned | - |
 | 35 | Disk Allowlist Persistence | v0.7.0 | 0/2 | Planned | - |
 | 36 | Disk Enforcement | v0.7.0 | 0/3 | Planned | - |
-| 37 | Server-Side Disk Registry | v0.7.0 | 0/TBD | Not started | - |
+| 37 | Server-Side Disk Registry | v0.7.0 | 0/3 | Planned | - |
 | 38 | Admin TUI Disk Registry | v0.7.0 | 0/TBD | Not started | - |
 
 ## v0.3.0 - Operational Hardening (Shipped)
