@@ -89,6 +89,9 @@ windows = { version = "0.58", features = [
     "Win32_System_Registry",
 ] }
 
+# Sensitive data protection (SMTP password, credentials)
+secrecy = { workspace = true }
+
 # Interactive password prompt (first-run admin setup)
 rpassword = "5"
 
