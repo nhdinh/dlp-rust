@@ -231,7 +231,11 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
             -- Entries are scoped per (agent_id, instance_id) pair -- a disk allowed on
             -- machine-A is NOT allowed on machine-B (physical relocation attack prevention, D-01).
             -- UNIQUE(agent_id, instance_id) enforces one allowlist entry per machine-disk pair (D-04).
-            -- encryption_status CHECK constraint enforces only valid EncryptionStatus values at the DB layer (D-11).
+            -- encryption_status CHECK constraint enforces only canonical serde names (D-11).
+            -- Values match EncryptionStatus snake_case serialisation:
+            --   Encrypted->encrypted, Suspended->suspended, Unencrypted->unencrypted
+            -- Deployments that stored fully_encrypted/partially_encrypted must
+            -- drop + recreate disk_registry before upgrading.
             CREATE TABLE IF NOT EXISTS disk_registry (
                 id                 TEXT PRIMARY KEY,
                 agent_id           TEXT NOT NULL,
@@ -239,7 +243,7 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 bus_type           TEXT NOT NULL,
                 encryption_status  TEXT NOT NULL
                                    CHECK(encryption_status IN
-                                         ('fully_encrypted', 'partially_encrypted',
+                                         ('encrypted', 'suspended',
                                           'unencrypted', 'unknown')),
                 model              TEXT NOT NULL DEFAULT '',
                 registered_at      TEXT NOT NULL,
