@@ -713,6 +713,7 @@ mod tests {
             source_origin: None,
             destination_origin: None,
             discovered_disks: None,
+            blocked_disk: None,
         };
 
         let cfg = WebhookConfig {
@@ -791,6 +792,7 @@ mod tests {
             source_origin: None,
             destination_origin: None,
             discovered_disks: None,
+            blocked_disk: None,
         };
 
         let err = router

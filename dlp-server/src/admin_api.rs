@@ -338,9 +338,8 @@ impl From<repositories::DeviceRegistryRow> for DeviceRegistryResponse {
 
 /// Device entry returned by the unauthenticated `GET /admin/device-registry` endpoint.
 ///
-/// Includes `trust_tier` so that agents can enforce the correct policy tier
-/// (Blocked / ReadOnly / FullAccess) without needing a separate authenticated call.
-/// Admin-internal fields (`id`, `description`, `created_at`) are still omitted.
+/// Admin-internal fields (`id`, `description`, `trust_tier`, `created_at`) are omitted
+/// to prevent unauthenticated callers from enumerating privileged device tiers (CR-01).
 #[derive(Debug, Serialize)]
 struct PublicDeviceEntry {
     /// USB Vendor ID hex string.
@@ -349,8 +348,6 @@ struct PublicDeviceEntry {
     pub pid: String,
     /// Device serial number.
     pub serial: String,
-    /// Trust tier: `"blocked"`, `"read_only"`, or `"full_access"`.
-    pub trust_tier: String,
 }
 
 impl From<repositories::DeviceRegistryRow> for PublicDeviceEntry {
@@ -359,7 +356,6 @@ impl From<repositories::DeviceRegistryRow> for PublicDeviceEntry {
             vid: row.vid,
             pid: row.pid,
             serial: row.serial,
-            trust_tier: row.trust_tier,
         }
     }
 }
