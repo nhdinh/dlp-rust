@@ -87,4 +87,7 @@ pub mod device_registry;
 pub mod chrome;
 
 #[cfg(windows)]
+pub mod disk_enforcer;
+
+#[cfg(windows)]
 pub mod usb_enforcer;
