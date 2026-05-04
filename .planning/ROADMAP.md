@@ -142,7 +142,12 @@ Plans:
   3. Admin can save the configuration via `PUT /admin/ldap-config`; a success or error status message is displayed
   4. The `cache_ttl_secs` field rejects values outside [60, 3600] with an inline error
   5. The `require_tls` field renders as a boolean toggle (`[x]` / `[ ]`)
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 38.1-01-PLAN.md -- Screen::LdapConfig variant + LDAP_ROW_COUNT/SAVE/BACK constants in app.rs
+- [ ] 38.1-02-PLAN.md -- dispatch.rs: LDAP_KEYS + helpers + action_load/save_ldap_config + handle_ldap_config family + SystemMenu expansion + handle_event arm
+- [ ] 38.1-03-PLAN.md -- render.rs: LDAP_FIELD_LABELS + is_ldap_bool/numeric + draw_ldap_config + SystemMenu label expansion + draw_screen arm + manual TUI checkpoint
 
 ## Progress
 
@@ -187,7 +192,7 @@ Plans:
 | 36 | Disk Enforcement | v0.7.0 | 0/3 | Planned | - |
 | 37 | Server-Side Disk Registry | v0.7.0 | 0/3 | Planned | - |
 | 38 | Admin TUI Disk Registry | v0.7.0 | 0/TBD | Not started | - |
-| 38.1 | LDAP Config TUI | v0.7.0 | 0/TBD | Not started | - |
+| 38.1 | LDAP Config TUI | v0.7.0 | 0/3 | Planned | - |
 
 ## v0.3.0 - Operational Hardening (Shipped)
 
