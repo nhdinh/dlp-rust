@@ -10,6 +10,7 @@ pub mod alert_router_config;
 pub mod audit_events;
 pub mod credentials;
 pub mod device_registry;
+pub mod disk_registry;
 pub mod exceptions;
 pub mod ldap_config;
 pub mod managed_origins;
@@ -23,6 +24,7 @@ pub use alert_router_config::{AlertRouterConfigRepository, AlertRouterConfigRow}
 pub use audit_events::{AuditEventRepository, AuditEventRow};
 pub use credentials::CredentialsRepository;
 pub use device_registry::{DeviceRegistryRepository, DeviceRegistryRow};
+pub use disk_registry::{DiskRegistryRepository, DiskRegistryRow};
 pub use exceptions::ExceptionRepository;
 pub use ldap_config::{LdapConfigRepository, LdapConfigRow};
 pub use managed_origins::{ManagedOriginRow, ManagedOriginsRepository};
