@@ -1825,6 +1825,39 @@ async fn insert_disk_registry_handler(
         )));
     }
 
+    // (4b) Length guards for the remaining string fields (T-37-05). These
+    //      bounds prevent unbounded heap allocation in the async handler before
+    //      work is moved to spawn_blocking. 512 bytes covers all realistic
+    //      agent/disk IDs; 256 bytes covers all realistic model strings.
+    const MAX_ID_LEN: usize = 512;
+    const MAX_MODEL_LEN: usize = 256;
+    if body.agent_id.len() > MAX_ID_LEN {
+        return Err(AppError::UnprocessableEntity(
+            "agent_id exceeds maximum length".to_string(),
+        ));
+    }
+    if body.instance_id.len() > MAX_ID_LEN {
+        return Err(AppError::UnprocessableEntity(
+            "instance_id exceeds maximum length".to_string(),
+        ));
+    }
+    if body.model.len() > MAX_MODEL_LEN {
+        return Err(AppError::UnprocessableEntity(
+            "model exceeds maximum length".to_string(),
+        ));
+    }
+
+    // (4c) bus_type allowlist check. The DB has no CHECK constraint on this
+    //      column, so we enforce it here. Valid values match the BusType enum
+    //      serde names (D-12, T-37-05).
+    const VALID_BUS_TYPES: &[&str] = &["usb", "sata", "nvme", "scsi", "unknown"];
+    if !VALID_BUS_TYPES.contains(&body.bus_type.as_str()) {
+        return Err(AppError::UnprocessableEntity(format!(
+            "invalid bus_type '{}'; must be one of: usb, sata, nvme, scsi, unknown",
+            body.bus_type
+        )));
+    }
+
     // (5) Build the row with server-generated id + registered_at.
     let id = uuid::Uuid::new_v4().to_string();
     let registered_at = chrono::Utc::now().to_rfc3339();
