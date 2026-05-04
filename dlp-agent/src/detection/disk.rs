@@ -26,12 +26,13 @@ use crate::config::AgentConfig;
 use dlp_common::{enumerate_fixed_disks, get_boot_drive_letter, DiskIdentity};
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 // ---------------------------------------------------------------------------
 // DiskEnumerator
@@ -358,35 +359,206 @@ fn emit_disk_enumeration_failed(ctx: &crate::audit_emitter::EmitContext, error: 
 }
 
 // ---------------------------------------------------------------------------
-// Phase 36: WM_DEVICECHANGE handlers (DISK-05) -- stubs replaced in Task 2
+// Phase 36: WM_DEVICECHANGE handlers (DISK-05)
 // ---------------------------------------------------------------------------
 
 /// Handles `GUID_DEVINTERFACE_DISK` arrival from the device-watcher dispatcher.
 ///
-/// Updates `drive_letter_map` only (D-10 invariant) and emits a `DiskDiscovery`
-/// audit event for unregistered disks (D-13).
+/// Per CONTEXT.md D-13, this function:
+/// 1. Calls [`enumerate_fixed_disks`] to obtain the live disk list. The
+///    instance IDs returned by `SetupDiGetDeviceInstanceIdW` (via the
+///    `dlp-common` enumerator) are guaranteed to match the keys stored in
+///    `instance_id_map`, sidestepping the format mismatch documented in
+///    Pitfall 1 (Phase 36 RESEARCH.md) when comparing against
+///    `dbcc_name`-derived IDs.
+/// 2. Identifies disks whose drive letters are not yet in `drive_letter_map`.
+/// 3. Inserts those disks into `drive_letter_map` ONLY (D-10 invariant --
+///    `instance_id_map` is the frozen allowlist and is never mutated by
+///    arrival handlers).
+/// 4. For each newly visible disk whose `instance_id` is NOT in
+///    `instance_id_map`, emits a `DiskDiscovery` audit event so admins are
+///    notified of an unregistered disk arrival before any I/O occurs.
 ///
 /// # Arguments
 ///
 /// * `device_path` -- the `dbcc_name` from the WM_DEVICECHANGE callback.
-/// * `audit_ctx` -- [`EmitContext`] for audit emission.
+///   Used only for tracing context; the authoritative instance ID comes
+///   from `enumerate_fixed_disks` per Pitfall 1.
+/// * `audit_ctx` -- [`EmitContext`] for the `DiskDiscovery` audit event.
 #[cfg(windows)]
-#[allow(unused_variables)]
 pub fn on_disk_arrival(device_path: &str, audit_ctx: &crate::audit_emitter::EmitContext) {
-    // Task 2 will implement this with enumerate_fixed_disks + drive_letter_map update.
+    let live_disks = match enumerate_fixed_disks() {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(
+                error = %e,
+                device_path = %device_path,
+                "on_disk_arrival: enumerate_fixed_disks failed -- skipping map update"
+            );
+            return;
+        }
+    };
+    on_disk_arrival_inner(device_path, &live_disks, audit_ctx);
+}
+
+/// Inner helper that takes a pre-resolved live disk list.
+///
+/// Extracted so unit tests can exercise the map-update + audit-trigger branches
+/// without invoking the WMI / SetupDi enumeration that `enumerate_fixed_disks`
+/// performs.
+///
+/// # Arguments
+///
+/// * `device_path` -- the `dbcc_name` (used for tracing context only).
+/// * `live_disks` -- the current fixed disk list from `enumerate_fixed_disks`.
+/// * `audit_ctx` -- [`EmitContext`] for the `DiskDiscovery` audit event.
+#[cfg(windows)]
+fn on_disk_arrival_inner(
+    device_path: &str,
+    live_disks: &[DiskIdentity],
+    audit_ctx: &crate::audit_emitter::EmitContext,
+) {
+    let enumerator = match get_disk_enumerator() {
+        Some(e) => e,
+        None => {
+            warn!(
+                device_path = %device_path,
+                "on_disk_arrival: DiskEnumerator not yet initialized; skipping"
+            );
+            return;
+        }
+    };
+
+    // Snapshot current drive_letter_map keys; release the read lock before any
+    // write lock acquisitions (Pitfall 2: lock order discipline).
+    let existing_letters: HashSet<char> =
+        enumerator.drive_letter_map.read().keys().copied().collect();
+
+    // Disks newly visible since the last enumeration -- D-13 step 2.
+    for disk in live_disks {
+        let Some(letter) = disk.drive_letter else {
+            continue;
+        };
+        if existing_letters.contains(&letter) {
+            continue;
+        }
+
+        // D-10: update drive_letter_map ONLY. instance_id_map is the frozen
+        // allowlist (D-09) -- never mutated by arrival handlers.
+        //
+        // Lock-scope discipline: hold the write lock just long enough to
+        // insert; release before any further work.
+        {
+            let mut map = enumerator.drive_letter_map.write();
+            map.insert(letter, disk.clone());
+        }
+
+        // D-13 step 4: if the disk's instance_id is NOT in the frozen
+        // allowlist, emit a DiskDiscovery event so admins see the
+        // unregistered arrival before any write attempt fires.
+        if enumerator.disk_for_instance_id(&disk.instance_id).is_none() {
+            warn!(
+                drive = %letter,
+                instance_id = %disk.instance_id,
+                model = %disk.model,
+                bus_type = ?disk.bus_type,
+                "unregistered disk arrived -- emitting DiskDiscovery audit"
+            );
+            emit_disk_discovery_for_arrival(audit_ctx, disk);
+        } else {
+            info!(
+                drive = %letter,
+                instance_id = %disk.instance_id,
+                "registered disk reconnected -- drive_letter_map updated"
+            );
+        }
+    }
 }
 
 /// Handles `GUID_DEVINTERFACE_DISK` removal from the device-watcher dispatcher.
 ///
-/// Removes the matching entry from `drive_letter_map` only (D-10/D-14 invariant).
+/// Per CONTEXT.md D-14:
+/// 1. Resolves the instance ID from `dbcc_name` via
+///    [`crate::detection::device_watcher::extract_disk_instance_id`].
+/// 2. Removes the matching entry from `drive_letter_map` ONLY (D-10).
+///    `instance_id_map` retains the entry (D-06: disconnected allowlisted
+///    disks remain registered).
+/// 3. Emits no audit event (removal is informational; the allowlist is unchanged).
 ///
 /// # Arguments
 ///
 /// * `device_path` -- the `dbcc_name` from the WM_DEVICECHANGE callback.
 #[cfg(windows)]
-#[allow(unused_variables)]
 pub fn on_disk_removal(device_path: &str) {
-    // Task 2 will implement this with drive_letter_map removal.
+    let instance_id =
+        crate::detection::device_watcher::extract_disk_instance_id(device_path);
+    if instance_id.is_empty() {
+        debug!(
+            device_path = %device_path,
+            "on_disk_removal: empty instance ID; skipping"
+        );
+        return;
+    }
+
+    let enumerator = match get_disk_enumerator() {
+        Some(e) => e,
+        None => {
+            debug!("on_disk_removal: DiskEnumerator not yet initialized; skipping");
+            return;
+        }
+    };
+
+    // Find the drive letter whose entry matches by instance_id, then drop
+    // the read lock before acquiring the write lock (Pitfall 2).
+    let letter_opt = {
+        let map = enumerator.drive_letter_map.read();
+        map.iter()
+            .find(|(_, disk)| disk.instance_id == instance_id)
+            .map(|(letter, _)| *letter)
+    };
+
+    if let Some(letter) = letter_opt {
+        enumerator.drive_letter_map.write().remove(&letter);
+        info!(
+            drive = %letter,
+            instance_id = %instance_id,
+            "disk removed -- drive_letter_map entry cleared (instance_id_map unchanged)"
+        );
+    } else {
+        debug!(
+            instance_id = %instance_id,
+            "on_disk_removal: instance_id not in drive_letter_map"
+        );
+    }
+    // D-14: No audit event on removal.
+    // D-10: instance_id_map NOT touched -- disconnected allowlisted disks remain registered (D-06).
+}
+
+/// Emits a `DiskDiscovery` audit event for a single unregistered disk arrival.
+///
+/// Mirrors [`emit_disk_discovery`] but for the runtime-arrival code path
+/// (called from [`on_disk_arrival_inner`] when a newly visible disk is not in
+/// the frozen `instance_id_map` allowlist).
+#[cfg(windows)]
+fn emit_disk_discovery_for_arrival(
+    ctx: &crate::audit_emitter::EmitContext,
+    disk: &DiskIdentity,
+) {
+    use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+    let mut event = AuditEvent::new(
+        EventType::DiskDiscovery,
+        ctx.user_sid.clone(),
+        ctx.user_name.clone(),
+        "disk://arrival".to_string(),
+        Classification::T1,
+        Action::READ,
+        Decision::ALLOW,
+        ctx.agent_id.clone(),
+        ctx.session_id,
+    )
+    .with_discovered_disks(Some(vec![disk.clone()]));
+    crate::audit_emitter::emit_audit(ctx, &mut event);
 }
 
 // ---------------------------------------------------------------------------
@@ -806,5 +978,187 @@ mod tests {
             agent_config.read().disk_allowlist[0].instance_id,
             "ID-PERSIST"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 36 (DISK-05) tests: on_disk_arrival_inner + on_disk_removal
+    // -----------------------------------------------------------------
+
+    /// D-10/D-13: arrival inserts new drive_letter_map entry; instance_id_map
+    /// is NOT touched (frozen allowlist invariant).
+    #[cfg(windows)]
+    #[test]
+    fn test_on_disk_arrival_inner_updates_drive_letter_map_only() {
+        // The global DiskEnumerator OnceLock is process-wide; set_disk_enumerator is
+        // a no-op after the first call. We must use get_disk_enumerator() to obtain
+        // the actual installed instance and reset its fields directly (same approach
+        // as Plan 02 disk_enforcer.rs tests).
+        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
+        // Reset state via direct map access.
+        enumerator.drive_letter_map.write().clear();
+        enumerator.instance_id_map.write().clear();
+
+        let new_disk = DiskIdentity {
+            instance_id: "USBSTOR\\Disk\\1".to_string(),
+            bus_type: BusType::Usb,
+            model: "Acme".to_string(),
+            drive_letter: Some('F'),
+            serial: Some("SN-001".to_string()),
+            size_bytes: Some(64_000_000_000),
+            is_boot_disk: false,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
+        };
+
+        let ctx = crate::audit_emitter::EmitContext {
+            agent_id: "AGENT-T".into(),
+            session_id: 1,
+            user_sid: "S-1-5-18".into(),
+            user_name: "SYSTEM".into(),
+            machine_name: None,
+        };
+
+        on_disk_arrival_inner(r"\\?\USBSTOR#Disk#1", &[new_disk.clone()], &ctx);
+
+        // drive_letter_map updated.
+        let dlm = enumerator.drive_letter_map.read();
+        assert_eq!(
+            dlm.get(&'F').map(|d| d.instance_id.clone()),
+            Some("USBSTOR\\Disk\\1".to_string())
+        );
+        // instance_id_map UNCHANGED (D-09/D-10 frozen allowlist invariant).
+        assert!(enumerator.instance_id_map.read().is_empty());
+    }
+
+    /// D-13: arrival of a disk whose drive letter is already tracked is a no-op.
+    #[cfg(windows)]
+    #[test]
+    fn test_on_disk_arrival_inner_skips_already_tracked() {
+        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
+        enumerator.drive_letter_map.write().clear();
+        enumerator.instance_id_map.write().clear();
+
+        let existing = DiskIdentity {
+            instance_id: "ID-OLD".to_string(),
+            bus_type: BusType::Sata,
+            model: "Old".to_string(),
+            drive_letter: Some('E'),
+            serial: None,
+            size_bytes: None,
+            is_boot_disk: false,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
+        };
+        enumerator
+            .drive_letter_map
+            .write()
+            .insert('E', existing.clone());
+
+        let live_again = DiskIdentity {
+            instance_id: "ID-NEW".to_string(),
+            bus_type: BusType::Sata,
+            model: "Should be ignored".to_string(),
+            drive_letter: Some('E'), // same letter -> skipped
+            serial: None,
+            size_bytes: None,
+            is_boot_disk: false,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
+        };
+
+        let ctx = crate::audit_emitter::EmitContext {
+            agent_id: "AGENT-T".into(),
+            session_id: 1,
+            user_sid: "S-1-5-18".into(),
+            user_name: "SYSTEM".into(),
+            machine_name: None,
+        };
+
+        on_disk_arrival_inner(r"\\?\IRRELEVANT", &[live_again], &ctx);
+
+        // The 'E' entry must still point to the ORIGINAL disk (no clobber).
+        let dlm = enumerator.drive_letter_map.read();
+        assert_eq!(
+            dlm.get(&'E').map(|d| d.instance_id.clone()),
+            Some("ID-OLD".to_string())
+        );
+    }
+
+    /// D-10/D-14: removal clears drive_letter_map entry; instance_id_map is
+    /// NOT touched (disconnected allowlisted disks remain registered per D-06).
+    #[cfg(windows)]
+    #[test]
+    fn test_on_disk_removal_clears_drive_letter_map_only() {
+        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
+        enumerator.drive_letter_map.write().clear();
+        enumerator.instance_id_map.write().clear();
+
+        let disk = DiskIdentity {
+            instance_id: "USBSTOR\\Disk\\Removed".to_string(),
+            bus_type: BusType::Usb,
+            model: "Removed".to_string(),
+            drive_letter: Some('G'),
+            serial: None,
+            size_bytes: None,
+            is_boot_disk: false,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
+        };
+        enumerator.drive_letter_map.write().insert('G', disk.clone());
+        enumerator
+            .instance_id_map
+            .write()
+            .insert(disk.instance_id.clone(), disk.clone());
+
+        // dbcc_name uses # separators and a trailing GUID; extract_disk_instance_id
+        // converts it to the same form as the SetupDi-derived instance_id.
+        let dbcc_name = format!(
+            r"\\?\{}#{{53f56307-b6bf-11d0-94f2-00a0c91efb8b}}",
+            disk.instance_id.replace('\\', "#")
+        );
+        on_disk_removal(&dbcc_name);
+
+        // drive_letter_map cleared.
+        assert!(enumerator.drive_letter_map.read().get(&'G').is_none());
+        // instance_id_map RETAINED (D-06: disconnected allowlisted disks remain).
+        assert!(enumerator
+            .instance_id_map
+            .read()
+            .contains_key(&disk.instance_id));
+    }
+
+    /// D-14: removal with an unknown instance_id is a silent no-op.
+    #[cfg(windows)]
+    #[test]
+    fn test_on_disk_removal_unknown_id_is_noop() {
+        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
+        enumerator.drive_letter_map.write().clear();
+
+        let known = DiskIdentity {
+            instance_id: "KNOWN".to_string(),
+            bus_type: BusType::Sata,
+            model: "K".to_string(),
+            drive_letter: Some('H'),
+            serial: None,
+            size_bytes: None,
+            is_boot_disk: false,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
+        };
+        enumerator.drive_letter_map.write().insert('H', known);
+
+        on_disk_removal(r"\\?\UNKNOWN#Disk#999#{53f56307-b6bf-11d0-94f2-00a0c91efb8b}");
+
+        // The known entry MUST still be present (no collateral removal).
+        assert!(enumerator.drive_letter_map.read().contains_key(&'H'));
     }
 }
