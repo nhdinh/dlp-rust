@@ -698,7 +698,7 @@ mod tests {
         let result = conn.execute(
             "INSERT INTO disk_registry \
              (id, agent_id, instance_id, bus_type, encryption_status, model, registered_at) \
-             VALUES ('id2', 'agent-A', 'disk-1', 'usb', 'fully_encrypted', '', '2026-01-02T00:00:00Z')",
+             VALUES ('id2', 'agent-A', 'disk-1', 'usb', 'encrypted', '', '2026-01-02T00:00:00Z')",
             [],
         );
         assert!(
@@ -717,8 +717,8 @@ mod tests {
         let pool = new_pool(":memory:").expect("create pool");
         let conn = pool.get().expect("acquire connection");
 
-        // Each of the four allowed encryption_status values must succeed.
-        for (i, status) in ["fully_encrypted", "partially_encrypted", "unencrypted", "unknown"]
+        // Each of the four allowed encryption_status values (canonical serde names) must succeed.
+        for (i, status) in ["encrypted", "suspended", "unencrypted", "unknown"]
             .iter()
             .enumerate()
         {

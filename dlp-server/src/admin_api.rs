@@ -359,7 +359,7 @@ pub struct DiskRegistryRequest {
     pub instance_id: String,
     /// Bus type as the lowercase serde name (e.g., "usb", "sata", "nvme", "scsi", "unknown").
     pub bus_type: String,
-    /// Must be one of `"fully_encrypted"`, `"partially_encrypted"`, `"unencrypted"`, `"unknown"` (D-11).
+    /// Must be one of `"encrypted"`, `"suspended"`, `"unencrypted"`, `"unknown"` (D-11).
     pub encryption_status: String,
     /// Drive model string. Optional; defaults to empty.
     #[serde(default)]
@@ -377,7 +377,7 @@ pub struct DiskRegistryResponse {
     pub instance_id: String,
     /// Physical bus type as a lowercase string (e.g., "usb", "sata").
     pub bus_type: String,
-    /// Encryption status: one of `"fully_encrypted"`, `"partially_encrypted"`, `"unencrypted"`, `"unknown"`.
+    /// Encryption status: one of `"encrypted"`, `"suspended"`, `"unencrypted"`, `"unknown"`.
     pub encryption_status: String,
     /// Drive model string (empty if unknown).
     pub model: String,
@@ -1322,10 +1322,9 @@ async fn update_alert_config_handler(
 /// Converts a `DiskRegistryRow` from the server-side registry into a
 /// `dlp_common::DiskIdentity` for inclusion in the agent config payload.
 ///
-/// `bus_type` is parsed from its serde-lowercase name (e.g., `"usb"`) using a JSON
-/// roundtrip, which is correct because `BusType` has `#[serde(rename_all = "snake_case")]`.
-/// `encryption_status` is mapped manually because the DB stores `"fully_encrypted"` /
-/// `"partially_encrypted"` but the Rust enum serializes as `"encrypted"` / `"suspended"`.
+/// `bus_type` is mapped via a direct match on the stored lowercase string (e.g., `"usb"`).
+/// `encryption_status` is round-tripped through serde JSON because the DB now stores the
+/// canonical serde names (`"encrypted"`, `"suspended"`, `"unencrypted"`, `"unknown"`).
 ///
 /// Unknown or unparseable values fall back to the safest defaults (`BusType::Unknown`,
 /// `EncryptionStatus::Unknown`).
@@ -4691,20 +4690,37 @@ mod tests {
         })
     }
 
+    /// Helper: build a GET /admin/disk-registry request with an optional agent_id
+    /// filter and a JWT Bearer token.
+    fn make_list_request(
+        agent_id_filter: Option<&str>,
+        token: &str,
+    ) -> axum::http::Request<axum::body::Body> {
+        let uri = match agent_id_filter {
+            Some(id) => format!("/admin/disk-registry?agent_id={id}"),
+            None => "/admin/disk-registry".to_string(),
+        };
+        axum::http::Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::empty())
+            .expect("build GET request")
+    }
+
     /// GET /admin/disk-registry with no rows returns 200 with an empty array.
     #[tokio::test]
     async fn test_list_disk_registry_handler_empty() {
         let tmp = tempfile::NamedTempFile::new().expect("create temp db");
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         let state = make_state_from_pool(pool);
+        let token = mint_admin_jwt();
 
-        // Call the handler directly (routes not yet wired in Task 1).
-        let filter = DiskRegistryFilter { agent_id: None };
-        let result =
-            list_disk_registry_handler(State(Arc::clone(&state)), axum::extract::Query(filter))
-                .await
-                .expect("handler must succeed");
-        assert!(result.0.is_empty(), "expected empty array");
+        let req = make_list_request(None, &token);
+        let Json(list) = list_disk_registry_handler(State(Arc::clone(&state)), req)
+            .await
+            .expect("handler must succeed");
+        assert!(list.is_empty(), "expected empty array");
     }
 
     /// GET /admin/disk-registry returns all rows ordered by registered_at ASC.
@@ -4726,11 +4742,11 @@ mod tests {
         }
 
         let state = make_state_from_pool(pool);
-        let filter = DiskRegistryFilter { agent_id: None };
-        let Json(list) =
-            list_disk_registry_handler(State(Arc::clone(&state)), axum::extract::Query(filter))
-                .await
-                .expect("handler must succeed");
+        let token = mint_admin_jwt();
+        let req = make_list_request(None, &token);
+        let Json(list) = list_disk_registry_handler(State(Arc::clone(&state)), req)
+            .await
+            .expect("handler must succeed");
 
         assert_eq!(list.len(), 2, "expected 2 rows");
         // ASC order: 2026-01-01 before 2026-02-01
@@ -4755,13 +4771,11 @@ mod tests {
         }
 
         let state = make_state_from_pool(pool);
-        let filter = DiskRegistryFilter {
-            agent_id: Some("agent-A".to_string()),
-        };
-        let Json(list) =
-            list_disk_registry_handler(State(Arc::clone(&state)), axum::extract::Query(filter))
-                .await
-                .expect("handler must succeed");
+        let token = mint_admin_jwt();
+        let req = make_list_request(Some("agent-A"), &token);
+        let Json(list) = list_disk_registry_handler(State(Arc::clone(&state)), req)
+            .await
+            .expect("handler must succeed");
 
         assert_eq!(list.len(), 1, "expected only agent-A rows");
         assert_eq!(list[0].agent_id, "agent-A");
@@ -4773,13 +4787,11 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().expect("create temp db");
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         let state = make_state_from_pool(pool);
-        let filter = DiskRegistryFilter {
-            agent_id: Some("does-not-exist".to_string()),
-        };
-        let Json(list) =
-            list_disk_registry_handler(State(Arc::clone(&state)), axum::extract::Query(filter))
-                .await
-                .expect("handler must succeed");
+        let token = mint_admin_jwt();
+        let req = make_list_request(Some("does-not-exist"), &token);
+        let Json(list) = list_disk_registry_handler(State(Arc::clone(&state)), req)
+            .await
+            .expect("handler must succeed");
         assert!(list.is_empty(), "unknown agent_id must return empty array");
     }
 
@@ -4935,7 +4947,7 @@ mod tests {
         // Second POST with same (agent_id, instance_id) -- different status to prove
         // the original is not modified.
         let req_body2 = DiskRegistryRequest {
-            encryption_status: "fully_encrypted".to_string(),
+            encryption_status: "encrypted".to_string(),
             ..req_body.clone()
         };
         let req2 = make_insert_request(&req_body2, &token);
@@ -4975,7 +4987,7 @@ mod tests {
             agent_id: "agent-X".to_string(),
             instance_id: "disk-Z".to_string(),
             bus_type: "nvme".to_string(),
-            encryption_status: "fully_encrypted".to_string(),
+            encryption_status: "encrypted".to_string(),
             model: "NVMe Pro".to_string(),
         };
         let req = make_insert_request(&req_body, &token);
@@ -5175,7 +5187,7 @@ mod tests {
                 agent_id: "agent-X".to_string(),
                 instance_id: "disk-2".to_string(),
                 bus_type: "sata".to_string(),
-                encryption_status: "fully_encrypted".to_string(),
+                encryption_status: "encrypted".to_string(),
                 model: "SATA SSD".to_string(),
                 registered_at: "2026-01-02T00:00:00Z".to_string(),
             };
