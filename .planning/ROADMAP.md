@@ -40,7 +40,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.6.0-
 - [ ] **Phase 33: Disk Enumeration** - Agent discovers and accurately classifies all fixed disks with device identity and bus type
 - [ ] **Phase 34: BitLocker Verification** - Agent verifies BitLocker encryption status for each enumerated fixed disk
 - [ ] **Phase 35: Disk Allowlist Persistence** - Agent persists disk allowlist to TOML and loads it across restarts
-- [ ] **Phase 36: Disk Enforcement** - Agent blocks I/O to unregistered fixed disks and handles device arrivals/removals
+- [x] **Phase 36: Disk Enforcement** - Agent blocks I/O to unregistered fixed disks and handles device arrivals/removals (Complete 2026-05-04)
 - [ ] **Phase 37: Server-Side Disk Registry** - Admin can centrally manage disk allowlist via REST API
 - [ ] **Phase 38: Admin TUI Disk Registry** - Admin can manage disk registry through the interactive TUI
 
@@ -99,9 +99,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 36-01-PLAN.md -- AuditEvent.blocked_disk field + with_blocked_disk builder (AUDIT-02)
-- [ ] 36-02-PLAN.md -- DiskEnforcer module: compound allowlist check + 30s toast cooldown + DISK-04 unit tests
-- [ ] 36-03-PLAN.md -- device_watcher.rs refactor + disk::on_disk_arrival/removal + run_event_loop / service.rs wiring (DISK-04, DISK-05, AUDIT-02)
+- [x] 36-01-PLAN.md -- AuditEvent.blocked_disk field + with_blocked_disk builder (AUDIT-02)
+- [x] 36-02-PLAN.md -- DiskEnforcer module: compound allowlist check + 30s toast cooldown + DISK-04 unit tests
+- [x] 36-03-PLAN.md -- device_watcher.rs refactor + disk::on_disk_arrival/removal + run_event_loop / service.rs wiring (DISK-04, DISK-05, AUDIT-02)
 
 ### Phase 37: Server-Side Disk Registry
 **Goal**: Admin can centrally manage disk allowlist across the fleet via REST API
