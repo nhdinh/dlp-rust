@@ -96,7 +96,12 @@ Plans:
   2. Agent handles WM_DEVICECHANGE DBT_DEVICEARRIVAL / DBT_DEVICEREMOVECOMPLETE for GUID_DEVINTERFACE_DISK to detect new fixed disk arrivals and removals
   3. Disk block events include disk identity fields (instance_id, bus_type, model, drive_letter) when an unregistered fixed disk is blocked
   4. Agent evaluates newly arrived disks against the allowlist and blocks or allows based on registration status
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 36-01-PLAN.md -- AuditEvent.blocked_disk field + with_blocked_disk builder (AUDIT-02)
+- [ ] 36-02-PLAN.md -- DiskEnforcer module: compound allowlist check + 30s toast cooldown + DISK-04 unit tests
+- [ ] 36-03-PLAN.md -- device_watcher.rs refactor + disk::on_disk_arrival/removal + run_event_loop / service.rs wiring (DISK-04, DISK-05, AUDIT-02)
 
 ### Phase 37: Server-Side Disk Registry
 **Goal**: Admin can centrally manage disk allowlist across the fleet via REST API
@@ -162,7 +167,7 @@ Plans:
 | 33 | Disk Enumeration | v0.7.0 | 0/TBD | Not started | - |
 | 34 | BitLocker Verification | v0.7.0 | 5/5 | Planned | - |
 | 35 | Disk Allowlist Persistence | v0.7.0 | 0/2 | Planned | - |
-| 36 | Disk Enforcement | v0.7.0 | 0/TBD | Not started | - |
+| 36 | Disk Enforcement | v0.7.0 | 0/3 | Planned | - |
 | 37 | Server-Side Disk Registry | v0.7.0 | 0/TBD | Not started | - |
 | 38 | Admin TUI Disk Registry | v0.7.0 | 0/TBD | Not started | - |
 
