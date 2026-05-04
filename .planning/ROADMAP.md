@@ -41,7 +41,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.6.0-
 - [ ] **Phase 34: BitLocker Verification** - Agent verifies BitLocker encryption status for each enumerated fixed disk
 - [ ] **Phase 35: Disk Allowlist Persistence** - Agent persists disk allowlist to TOML and loads it across restarts
 - [x] **Phase 36: Disk Enforcement** - Agent blocks I/O to unregistered fixed disks and handles device arrivals/removals (Complete 2026-05-04)
-- [ ] **Phase 37: Server-Side Disk Registry** - Admin can centrally manage disk allowlist via REST API
+- [x] **Phase 37: Server-Side Disk Registry** - Admin can centrally manage disk allowlist via REST API (Complete 2026-05-04)
 - [ ] **Phase 38: Admin TUI Disk Registry** - Admin can manage disk registry through the interactive TUI
 
 ## Phase Details
@@ -118,7 +118,7 @@ Plans:
 Plans:
 - [x] 37-01-PLAN.md -- dlp-common Action enum extension + disk_registry table DDL + DiskRegistryRepository (pure INSERT, no upsert)
 - [x] 37-02-PLAN.md -- Admin REST handlers (GET/POST/DELETE), AUDIT-03 events, AgentConfigPayload disk_allowlist propagation
-- [ ] 37-03-PLAN.md -- Agent live reload: AgentConfigPayload mirror + config_poll_loop merge into DiskEnumerator.instance_id_map
+- [x] 37-03-PLAN.md -- Agent live reload: AgentConfigPayload mirror + config_poll_loop merge into DiskEnumerator.instance_id_map
 
 ### Phase 38: Admin TUI Disk Registry
 **Goal**: Admin can manage disk registry through the interactive TUI

@@ -1,96 +1,58 @@
----
-gsd_state_version: 1.0
-milestone: v0.7.0
-milestone_name: - Disk Exfiltration Prevention
-status: executing
-stopped_at: context exhaustion at 76% (2026-05-04)
-last_updated: "2026-05-04T12:00:18.339Z"
-last_activity: 2026-05-04 -- Phase 38.1 planning complete
-progress:
-  total_phases: 7
-  completed_phases: 4
-  total_plans: 19
-  completed_plans: 14
-  percent: 74
----
-
-# STATE.md -- Project Memory
+# Project State
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-04-30)
+**Project**: DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
+**Core Value**: Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
+**Current Focus**: v0.7.0 Disk Exfiltration Prevention — Phase 38 next
 
-**Core value:** Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
-**Current focus:** Phase 37 — server-side-disk-registry
+---
 
 ## Current Position
 
-Phase: 37 (server-side-disk-registry) — EXECUTING
-Plan: 1 of 3
-Status: Ready to execute
-Last activity: 2026-05-04 -- Phase 38.1 planning complete
+- **Milestone**: v0.7.0 — Disk Exfiltration Prevention (In Progress)
+- **Phase**: Phase 37 COMPLETE — advancing to Phase 38 (Admin TUI Disk Registry)
+- **Plan**: all plans complete
+- **Status**: Phase 37 fully merged and verified (2026-05-04)
 
-Progress: [████████████████████] 100% (Phase 36)
+---
 
-## Performance Metrics
+## Progress
 
-**Velocity:**
+v0.7.0 [Phase 33 done | Phase 34 done | Phase 35 done | Phase 36 done | Phase 37 done | Phase 38 pending | Phase 38.1 pending]
 
-- Total plans completed: 12
-- Average duration: --
-- Total execution time: --
+---
 
-**By Phase:**
+## Recent Decisions
 
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 33 | 3 | - | - |
-| 34 | 5 | - | - |
-| 35 | 2 | - | - |
+1. EncryptionStatus serde mapping is manual: DB stores fully_encrypted/partially_encrypted; Rust enum serializes as encrypted/suspended.
+2. Before merging any worktree branch: git status --short + git checkout -- <file> to discard duplicate main-tree changes.
+3. Always use cargo test -p dlp-server --lib (pre-existing integration test binaries fail on Windows paging file).
+4. Bash CWD can silently drift into a worktree; verify with pwd + git branch --show-current before git ops.
+5. Lock-order invariant: config mutex MUST be acquired and released BEFORE acquiring instance_id_map.write() (T-37-13).
 
-**Recent Trend:**
-
-- Last 5 plans: --
-- Trend: --
-
-*Updated after each plan completion*
-
-## Accumulated Context
-
-### Decisions
-
-See PROJECT.md Key Decisions table for full log.
-
-Recent decisions affecting current work:
-
-- [Phase 31-02]: PnP tree walk (CM_Get_Parent to find USB\ ancestor) proven for USB-bridged disk detection -- reuse in Phase 33
-- [Phase 31-02]: Path::exists for drive letter detection (NVMe USB bridges report as DRIVE_FIXED)
-
-### Pending Todos
-
-None yet.
-
-### Blockers/Concerns
-
-- **windows crate 0.58 -> 0.62 upgrade**: Win32_System_Ioctl feature flag needed for IOCTL_STORAGE_QUERY_PROPERTY. Run `cargo check --workspace` immediately after bump to catch signature changes.
-- **USB bridge chip edge cases**: Some exotic bridges report BusTypeScsi instead of BusTypeUsb. PnP tree walk is fallback but needs physical hardware validation during Phase 36 testing.
-- **WMI in SYSTEM context**: BitLocker queries via wmi-rs with AuthLevel::PktPrivacy need validation in MSI installer / service context.
-
-## Deferred Items
-
-Items from previous milestones carried forward:
-
-| Category | Item | Status | Deferred At |
-|----------|------|--------|-------------|
-| server | POLICY-F4: TOML export format | deferred | v0.5.0 |
-| server | POLICY-F5: Batch import endpoint | deferred | v0.5.0 |
-| server | POLICY-F6: Typed Decision action field | deferred | v0.5.0 |
-| usb | USB-05: VID/PID/Serial in USB block audit | deferred | v0.6.0 |
-| usb | USB-06: Per-user device registry | deferred | v0.6.0 |
-| app | APP-07: UWP app identity via AUMID | deferred | v0.6.0 |
+---
 
 ## Session Continuity
 
-Last session: 2026-05-04T09:39:24.173Z
-Stopped at: context exhaustion at 76% (2026-05-04)
-Resume file: None
+Last session: 2026-05-04
+Stopped at: Phase 37 complete — all 3 plans merged and verified; 261 dlp-agent tests pass
+Resume file: none (Phase 37 complete; Phase 38 plan TBD)
+
+---
+
+## Pending Todos
+
+None captured.
+
+---
+
+## Recent Achievements (Phase 37)
+
+- Plan 37-01: `Action::DiskRegistryAdd/Remove` + `disk_registry` SQLite table + `DiskRegistryRepository` (19 tests)
+- Plan 37-02: REST GET/POST/DELETE `/admin/disk-registry` + AUDIT-03 `AdminAction` events + `AgentConfigPayload.disk_allowlist` server-side (204 lib tests)
+- Plan 37-03: Agent-side `AgentConfigPayload.disk_allowlist` + `apply_payload_to_config()` helper + `merge_disk_allowlist_into_map()` with Pitfall 5 protection (261 total dlp-agent tests)
+
+## Blockers
+
+None. Phase 37 complete and verified.
