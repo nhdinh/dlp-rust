@@ -358,6 +358,38 @@ fn emit_disk_enumeration_failed(ctx: &crate::audit_emitter::EmitContext, error: 
 }
 
 // ---------------------------------------------------------------------------
+// Phase 36: WM_DEVICECHANGE handlers (DISK-05) -- stubs replaced in Task 2
+// ---------------------------------------------------------------------------
+
+/// Handles `GUID_DEVINTERFACE_DISK` arrival from the device-watcher dispatcher.
+///
+/// Updates `drive_letter_map` only (D-10 invariant) and emits a `DiskDiscovery`
+/// audit event for unregistered disks (D-13).
+///
+/// # Arguments
+///
+/// * `device_path` -- the `dbcc_name` from the WM_DEVICECHANGE callback.
+/// * `audit_ctx` -- [`EmitContext`] for audit emission.
+#[cfg(windows)]
+#[allow(unused_variables)]
+pub fn on_disk_arrival(device_path: &str, audit_ctx: &crate::audit_emitter::EmitContext) {
+    // Task 2 will implement this with enumerate_fixed_disks + drive_letter_map update.
+}
+
+/// Handles `GUID_DEVINTERFACE_DISK` removal from the device-watcher dispatcher.
+///
+/// Removes the matching entry from `drive_letter_map` only (D-10/D-14 invariant).
+///
+/// # Arguments
+///
+/// * `device_path` -- the `dbcc_name` from the WM_DEVICECHANGE callback.
+#[cfg(windows)]
+#[allow(unused_variables)]
+pub fn on_disk_removal(device_path: &str) {
+    // Task 2 will implement this with drive_letter_map removal.
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
