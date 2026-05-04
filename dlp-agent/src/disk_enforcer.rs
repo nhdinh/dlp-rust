@@ -237,15 +237,11 @@ mod tests {
     use std::sync::OnceLock;
 
     use dlp_common::{BusType, DiskIdentity};
-    use parking_lot::Mutex;
 
     use crate::detection::disk::{get_disk_enumerator, set_disk_enumerator, DiskEnumerator};
-
-    /// Serializes test execution because the global DiskEnumerator OnceLock
-    /// is process-wide. Each test resets the enumerator's locked fields
-    /// (drive_letter_map, instance_id_map, enumeration_complete) inside this
-    /// guard so subsequent tests start from a known state.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    // Shared process-wide lock that serializes all tests touching the global
+    // DiskEnumerator OnceLock (disk_enforcer::tests + detection::disk::tests).
+    use crate::test_helpers::DISK_TEST_LOCK;
 
     /// Returns the global DiskEnumerator, installing one if absent.
     ///
@@ -360,7 +356,7 @@ mod tests {
     // ---------- DISK-04: Read action passes through ----------
     #[test]
     fn test_read_action_returns_none() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = DISK_TEST_LOCK.lock();
         let enumerator = ensure_enumerator();
         reset_enumerator(&enumerator);
         // Even with an unregistered disk on E:, Read must pass through.
@@ -377,7 +373,7 @@ mod tests {
     // ---------- DISK-04: Deleted action passes through ----------
     #[test]
     fn test_deleted_action_returns_none() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = DISK_TEST_LOCK.lock();
         let enumerator = ensure_enumerator();
         reset_enumerator(&enumerator);
         let live = make_disk("ID-UNREGISTERED", Some('E'), Some("SN-LIVE"));
@@ -401,7 +397,7 @@ mod tests {
     // not yet ready in the 4-second startup window per Phase 33 D-04.
     #[test]
     fn test_write_blocked_when_not_ready_fail_closed() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = DISK_TEST_LOCK.lock();
         let enumerator = ensure_enumerator();
         reset_enumerator(&enumerator); // enumeration_complete = false
 
@@ -419,7 +415,7 @@ mod tests {
     // ---------- D-07 step 2: not-tracked drive letter -> pass through ----------
     #[test]
     fn test_path_not_in_drive_letter_map_passes() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = DISK_TEST_LOCK.lock();
         let enumerator = ensure_enumerator();
         reset_enumerator(&enumerator);
         // Seed E only; enforcer is asked about Z.
@@ -440,7 +436,7 @@ mod tests {
     // ---------- D-07 step 3: unregistered disk -> block ----------
     #[test]
     fn test_unregistered_disk_blocked_on_create_write_move() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = DISK_TEST_LOCK.lock();
         let enumerator = ensure_enumerator();
         reset_enumerator(&enumerator);
         // E is in drive_letter_map but instance_id_map is empty -- unregistered.
@@ -466,7 +462,7 @@ mod tests {
     // ---------- D-07 step 4: serial mismatch (physical-swap) -> block ----------
     #[test]
     fn test_serial_mismatch_blocked() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = DISK_TEST_LOCK.lock();
         let enumerator = ensure_enumerator();
         reset_enumerator(&enumerator);
         // Same instance_id but different serial -- physical swap.
@@ -490,7 +486,7 @@ mod tests {
     // ---------- D-07 step 5: allowlisted, serials match -> pass through ----------
     #[test]
     fn test_allowlisted_disk_passes() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = DISK_TEST_LOCK.lock();
         let enumerator = ensure_enumerator();
         reset_enumerator(&enumerator);
         let registered = make_disk("ID-MATCH", Some('E'), Some("SN-MATCH"));
@@ -524,7 +520,7 @@ mod tests {
     // ---------- D-02: 30-second cooldown per drive letter ----------
     #[test]
     fn test_should_notify_cooldown() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = DISK_TEST_LOCK.lock();
         let enumerator = ensure_enumerator();
         reset_enumerator(&enumerator);
         // Force a block path so should_notify is exercised by check.
@@ -555,7 +551,7 @@ mod tests {
     // ---------- UNC path passes through ----------
     #[test]
     fn test_unc_path_returns_none() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = DISK_TEST_LOCK.lock();
         let enumerator = ensure_enumerator();
         reset_enumerator(&enumerator);
         *enumerator.enumeration_complete.write() = true; // ready, but UNC has no letter
