@@ -1749,11 +1749,23 @@ async fn list_device_registry_full_handler(
 ///
 /// # Errors
 ///
+/// Returns `AppError::Unauthorized` if the JWT is missing or invalid (T-37-04).
 /// Returns `AppError::Internal` if pool acquisition or the blocking task fails.
 async fn list_disk_registry_handler(
     State(state): State<Arc<AppState>>,
-    axum::extract::Query(filter): axum::extract::Query<DiskRegistryFilter>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<Vec<DiskRegistryResponse>>, AppError> {
+    // Defense-in-depth: extract admin username from JWT even though the
+    // middleware layer already guards this route. This ensures the handler
+    // remains protected if the route is ever moved to a different sub-router
+    // without the auth middleware (T-37-04).
+    let _username = AdminUsername::extract_from_headers(req.headers())?;
+
+    // Extract query params after consuming headers (body is empty for GET).
+    let filter = axum::extract::Query::<DiskRegistryFilter>::from_request(req, &state)
+        .await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
     let pool = Arc::clone(&state.pool);
     let agent_id_filter = filter.agent_id.clone();
     let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
