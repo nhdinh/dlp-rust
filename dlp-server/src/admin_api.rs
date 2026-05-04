@@ -1877,7 +1877,7 @@ async fn insert_disk_registry_handler(
         0,
     );
     let pool = Arc::clone(&state.pool);
-    tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
         audit_store::store_events_sync(&uow, &[audit_event])?;
@@ -1885,7 +1885,12 @@ async fn insert_disk_registry_handler(
         Ok(())
     })
     .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
+    .and_then(|r| r)
+    {
+        // Best-effort: log the failure but do not surface it to the caller (D-10).
+        tracing::warn!(error = %e, "audit emission failed for DiskRegistryAdd (best-effort)");
+    }
 
     tracing::info!(
         agent_id = %body.agent_id,
@@ -1961,6 +1966,7 @@ async fn delete_disk_registry_handler(
     }
 
     // (4) Second spawn_blocking: audit emission (D-10, T-37-07).
+    //     Audit failure must NOT roll back the delete — it is best-effort (D-10).
     let audit_event = dlp_common::AuditEvent::new(
         dlp_common::EventType::AdminAction,
         String::new(),
@@ -1973,7 +1979,7 @@ async fn delete_disk_registry_handler(
         0,
     );
     let pool = Arc::clone(&state.pool);
-    tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
         audit_store::store_events_sync(&uow, &[audit_event])?;
@@ -1981,7 +1987,12 @@ async fn delete_disk_registry_handler(
         Ok(())
     })
     .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
+    .and_then(|r| r)
+    {
+        // Best-effort: log the failure but do not surface it to the caller (D-10).
+        tracing::warn!(error = %e, "audit emission failed for DiskRegistryRemove (best-effort)");
+    }
 
     tracing::info!(
         agent_id = %agent_id_for_audit,
