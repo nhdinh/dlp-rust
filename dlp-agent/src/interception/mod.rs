@@ -105,11 +105,12 @@ pub async fn run_event_loop(
                     ctx.agent_id.clone(),
                     ctx.session_id,
                 )
-                .with_access_context(AuditAccessContext::Local)
-                .with_policy(
-                    String::new(),
-                    "USB enforcement: device blocked or read-only".to_string(),
-                );
+                .with_access_context(AuditAccessContext::Local);
+                // WR-03: no policy matched this enforcement — leave policy_id as None
+                // so SIEM rules that test `policy_id IS NOT NULL` are not misled.
+                // Set only policy_name to convey the enforcement reason.
+                audit_event.policy_name =
+                    Some("USB enforcement: device blocked or read-only".to_string());
 
                 emit_audit(&ctx, &mut audit_event);
 
@@ -185,11 +186,12 @@ pub async fn run_event_loop(
                     ctx.session_id,
                 )
                 .with_access_context(AuditAccessContext::Local)
-                .with_policy(
-                    String::new(),
-                    "Disk enforcement: unregistered fixed disk".to_string(),
-                )
                 .with_blocked_disk(disk_result.disk.clone());
+                // WR-03: no policy matched this enforcement — leave policy_id as None
+                // so SIEM rules that test `policy_id IS NOT NULL` are not misled.
+                // Set only policy_name to convey the enforcement reason.
+                audit_event.policy_name =
+                    Some("Disk enforcement: unregistered fixed disk".to_string());
 
                 emit_audit(&ctx, &mut audit_event);
 
