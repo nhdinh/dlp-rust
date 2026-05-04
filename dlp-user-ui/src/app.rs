@@ -38,15 +38,9 @@ struct UiState {
 ///
 /// # Examples
 ///
-/// ```
-/// let mut ever = false;
-/// // Not yet connected — should not exit.
-/// assert!(!watchdog_should_exit(false, &mut ever));
-/// // First successful connection — latch fires, still no exit.
-/// assert!(!watchdog_should_exit(true,  &mut ever));
-/// assert!(ever);
-/// // Connection dropped after latch — should exit.
-/// assert!(watchdog_should_exit(false, &mut ever));
+/// ```no_run
+/// // watchdog_should_exit is module-private; examples are illustrative only.
+/// // Equivalent unit tests live in the #[cfg(test)] module below.
 /// ```
 fn watchdog_should_exit(currently_connected: bool, ever_connected: &mut bool) -> bool {
     if currently_connected {

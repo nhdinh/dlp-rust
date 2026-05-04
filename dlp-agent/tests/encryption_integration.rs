@@ -260,8 +260,10 @@ async fn run_one_cycle() {
     // OS threads join.  The call stack is:
     //   spawned task -> JoinSet::spawn (per disk) -> spawn_blocking -> waker
     // With `current_thread`, each layer requires the reactor to be polled at
-    // least once.  50 yields provides a comfortable margin even for slow CI.
-    for _ in 0..50 {
+    // least once.  100 yields provides a comfortable margin: when tests run
+    // sequentially, the OS thread pool may be busy with the previous test's
+    // blocking tasks, delaying completion for the current test.
+    for _ in 0..100 {
         tokio::task::yield_now().await;
     }
 }
@@ -447,6 +449,22 @@ async fn status_change_emits_disk_discovery_event() {
         backend,
     );
     run_one_cycle().await;
+
+    // The checker map is updated *before* the emit inside run_one_verification_cycle.
+    // Poll until the map reflects Suspended so we know the emit has already fired,
+    // regardless of how long the spawn_blocking OS thread takes on this machine.
+    for _ in 0..200 {
+        let done = get_encryption_checker()
+            .map(|c| {
+                c.encryption_status_map.read().get("T3-DISK-E").copied()
+                    == Some(EncryptionStatus::Suspended)
+            })
+            .unwrap_or(false);
+        if done {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
 
     // Assert: at least one DiskDiscovery event with "encryption status changed:"
     let events = drain_test_events();

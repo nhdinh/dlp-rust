@@ -192,15 +192,9 @@ fn cleanup_pipe(pipe: HANDLE) -> Result<()> {
 ///
 /// # Examples
 ///
-/// ```
-/// assert_eq!(
-///     to_origin("https://company.sharepoint.com/path?x=1"),
-///     Some("https://company.sharepoint.com".to_string())
-/// );
-/// assert_eq!(
-///     to_origin("HTTPS://EXAMPLE.COM/"),
-///     Some("https://example.com".to_string())
-/// );
+/// ```no_run
+/// // to_origin is module-private; examples are illustrative only.
+/// // Equivalent unit tests live in the #[cfg(test)] module below.
 /// ```
 fn to_origin(url: &str) -> Option<String> {
     let url = url.trim().to_lowercase();
