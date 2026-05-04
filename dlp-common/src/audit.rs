@@ -722,4 +722,129 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(!json.contains("\"discovered_disks\":null"));
     }
+
+    /// AUDIT-02: with_blocked_disk populates the blocked_disk field with the given DiskIdentity.
+    #[test]
+    fn test_audit_event_with_blocked_disk() {
+        use crate::BusType;
+        let disk = DiskIdentity {
+            instance_id: "USBSTOR\\Disk&Ven_Kingston\\001".to_string(),
+            bus_type: BusType::Usb,
+            model: "Kingston DT 50".to_string(),
+            drive_letter: Some('E'),
+            serial: Some("SN-001".to_string()),
+            size_bytes: Some(64_000_000_000),
+            is_boot_disk: false,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
+        };
+        let event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-123".to_string(),
+            "alice".to_string(),
+            r"E:\\secret.docx".to_string(),
+            Classification::T1,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-1".to_string(),
+            1,
+        )
+        .with_blocked_disk(disk.clone());
+
+        assert_eq!(event.blocked_disk, Some(disk.clone()));
+        assert_eq!(event.event_type, EventType::Block);
+        assert_eq!(event.decision, Decision::DENY);
+
+        // Discovered disks must remain None -- these fields are semantically distinct.
+        assert!(event.discovered_disks.is_none());
+    }
+
+    /// AUDIT-02: JSON serialization of a populated blocked_disk includes the
+    /// DiskIdentity fields required by AUDIT-02 (instance_id, bus_type, model,
+    /// drive_letter).
+    #[test]
+    fn test_blocked_disk_json_contains_identity_fields() {
+        use crate::BusType;
+        let disk = DiskIdentity {
+            instance_id: "USBSTOR\\Disk&Ven_Kingston\\001".to_string(),
+            bus_type: BusType::Usb,
+            model: "Kingston DT 50".to_string(),
+            drive_letter: Some('E'),
+            serial: Some("SN-001".to_string()),
+            size_bytes: Some(64_000_000_000),
+            is_boot_disk: false,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
+        };
+        let event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-123".to_string(),
+            "alice".to_string(),
+            r"E:\\secret.docx".to_string(),
+            Classification::T1,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-1".to_string(),
+            1,
+        )
+        .with_blocked_disk(disk);
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"blocked_disk\""), "JSON must contain blocked_disk: {json}");
+        assert!(json.contains("Kingston DT 50"), "model missing: {json}");
+        assert!(json.contains("USBSTOR"), "instance_id missing: {json}");
+        assert!(json.contains("\"bus_type\""), "bus_type field missing: {json}");
+        assert!(json.contains("\"drive_letter\""), "drive_letter field missing: {json}");
+    }
+
+    /// AUDIT-02: skip_serializing_if removes blocked_disk from JSON when None.
+    #[test]
+    fn test_skip_serializing_none_blocked_disk() {
+        let event = AuditEvent::new(
+            EventType::Access,
+            "S-1-5-21-123".to_string(),
+            "alice".to_string(),
+            r"C:\\Users\\alice\\file.txt".to_string(),
+            Classification::T1,
+            Action::READ,
+            Decision::ALLOW,
+            "AGENT-1".to_string(),
+            1,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            !json.contains("\"blocked_disk\""),
+            "None blocked_disk must be omitted: {json}"
+        );
+        assert!(
+            !json.contains("\"blocked_disk\":null"),
+            "must not serialize as null: {json}"
+        );
+    }
+
+    /// AUDIT-02: legacy JSON without blocked_disk deserializes successfully -- the
+    /// field defaults to None for backward compatibility.
+    #[test]
+    fn test_backward_compat_missing_blocked_disk() {
+        // Legacy JSON intentionally lacks blocked_disk to simulate audit logs
+        // written by pre-Phase-36 agents.
+        let legacy_json = r#"{
+            "timestamp": "2026-04-01T00:00:00Z",
+            "event_type": "BLOCK",
+            "user_sid": "S-1-5-21-1",
+            "user_name": "alice",
+            "resource_path": "E:\\\\file.txt",
+            "classification": "T1",
+            "action_attempted": "WRITE",
+            "decision": "DENY",
+            "agent_id": "AGENT-1",
+            "session_id": 1
+        }"#;
+        let event: AuditEvent = serde_json::from_str(legacy_json)
+            .expect("legacy JSON without blocked_disk must deserialize");
+        assert_eq!(event.event_type, EventType::Block);
+        assert!(event.blocked_disk.is_none(), "missing blocked_disk must default to None");
+    }
 }
