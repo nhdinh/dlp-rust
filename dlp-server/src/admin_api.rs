@@ -24,8 +24,8 @@ use crate::db;
 use crate::db::repositories;
 use crate::db::repositories::{
     AgentConfigRepository, AlertRouterConfigRepository, CredentialsRepository,
-    LdapConfigRepository, ManagedOriginRow, ManagedOriginsRepository, PolicyRepository,
-    SiemConfigRepository,
+    DiskRegistryRepository, DiskRegistryRow, LdapConfigRepository, ManagedOriginRow,
+    ManagedOriginsRepository, PolicyRepository, SiemConfigRepository,
 };
 use crate::exception_store;
 use crate::policy_store::mode_str;
@@ -274,6 +274,12 @@ pub struct AgentConfigPayload {
     pub heartbeat_interval_secs: u64,
     /// Whether offline caching is active.
     pub offline_cache_enabled: bool,
+    /// Phase 37 (D-02/D-03): per-agent disk allowlist queried from `disk_registry`.
+    ///
+    /// Agents apply this list to `DiskEnumerator.instance_id_map` on the next poll cycle.
+    /// Defaults to empty for backward compatibility with payloads from earlier server builds.
+    #[serde(default)]
+    pub disk_allowlist: Vec<dlp_common::DiskIdentity>,
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +340,71 @@ impl From<repositories::DeviceRegistryRow> for DeviceRegistryResponse {
             created_at: row.created_at,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Disk Registry request / response types (Phase 37, ADMIN-01..03)
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /admin/disk-registry` (D-04, D-11).
+///
+/// Registers a new disk in the per-agent allowlist. The handler performs
+/// a pure INSERT (D-05) -- a duplicate `(agent_id, instance_id)` returns
+/// 409 Conflict. The UUID `id` and `registered_at` are server-generated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskRegistryRequest {
+    /// Identifier of the agent owning this disk allowlist entry (D-01 scope).
+    pub agent_id: String,
+    /// Device instance ID (canonical disk identity).
+    pub instance_id: String,
+    /// Bus type as the lowercase serde name (e.g., "usb", "sata", "nvme", "scsi", "unknown").
+    pub bus_type: String,
+    /// Must be one of `"fully_encrypted"`, `"partially_encrypted"`, `"unencrypted"`, `"unknown"` (D-11).
+    pub encryption_status: String,
+    /// Drive model string. Optional; defaults to empty.
+    #[serde(default)]
+    pub model: String,
+}
+
+/// Response body for `GET` and `POST /admin/disk-registry`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskRegistryResponse {
+    /// Server-generated UUID.
+    pub id: String,
+    /// Agent identifier this entry is scoped to.
+    pub agent_id: String,
+    /// Device instance ID (canonical disk identity).
+    pub instance_id: String,
+    /// Physical bus type as a lowercase string (e.g., "usb", "sata").
+    pub bus_type: String,
+    /// Encryption status: one of `"fully_encrypted"`, `"partially_encrypted"`, `"unencrypted"`, `"unknown"`.
+    pub encryption_status: String,
+    /// Drive model string (empty if unknown).
+    pub model: String,
+    /// RFC-3339 UTC timestamp of when this entry was created.
+    pub registered_at: String,
+}
+
+impl From<DiskRegistryRow> for DiskRegistryResponse {
+    fn from(row: DiskRegistryRow) -> Self {
+        Self {
+            id: row.id,
+            agent_id: row.agent_id,
+            instance_id: row.instance_id,
+            bus_type: row.bus_type,
+            encryption_status: row.encryption_status,
+            model: row.model,
+            registered_at: row.registered_at,
+        }
+    }
+}
+
+/// Optional query-string filter for `GET /admin/disk-registry` (D-07).
+#[derive(Debug, Default, Deserialize)]
+pub struct DiskRegistryFilter {
+    /// When set, restricts results to entries for the given agent.
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 /// Device entry returned by the unauthenticated `GET /admin/device-registry` endpoint.
@@ -611,6 +682,15 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route(
             "/admin/device-registry/{id}",
             delete(delete_device_registry_handler),
+        )
+        // Phase 37: disk-registry endpoints (JWT-protected per T-37-08)
+        .route(
+            "/admin/disk-registry",
+            get(list_disk_registry_handler).post(insert_disk_registry_handler),
+        )
+        .route(
+            "/admin/disk-registry/{id}",
+            delete(delete_disk_registry_handler),
         )
         .route(
             "/admin/managed-origins",
@@ -1239,6 +1319,49 @@ async fn update_alert_config_handler(
 // Agent config handlers
 // ---------------------------------------------------------------------------
 
+/// Converts a `DiskRegistryRow` from the server-side registry into a
+/// `dlp_common::DiskIdentity` for inclusion in the agent config payload.
+///
+/// `bus_type` is parsed from its serde-lowercase name (e.g., `"usb"`) using a JSON
+/// roundtrip, which is correct because `BusType` has `#[serde(rename_all = "snake_case")]`.
+/// `encryption_status` is mapped manually because the DB stores `"fully_encrypted"` /
+/// `"partially_encrypted"` but the Rust enum serializes as `"encrypted"` / `"suspended"`.
+///
+/// Unknown or unparseable values fall back to the safest defaults (`BusType::Unknown`,
+/// `EncryptionStatus::Unknown`).
+fn disk_row_to_identity(row: DiskRegistryRow) -> dlp_common::DiskIdentity {
+    // BusType uses `#[serde(rename_all = "snake_case")]` -- round-trip via JSON string.
+    // "usb" -> BusType::Usb, "sata" -> BusType::Sata, etc.
+    let bus_type: dlp_common::BusType =
+        serde_json::from_str(&format!("\"{}\"", row.bus_type)).unwrap_or_default();
+
+    // EncryptionStatus DB values differ from serde names -- manual mapping required.
+    // DB: "fully_encrypted" / "partially_encrypted" / "unencrypted" / "unknown"
+    // Enum: Encrypted / Suspended / Unencrypted / Unknown
+    let encryption_status: Option<dlp_common::EncryptionStatus> =
+        match row.encryption_status.as_str() {
+            "fully_encrypted" => Some(dlp_common::EncryptionStatus::Encrypted),
+            "partially_encrypted" => Some(dlp_common::EncryptionStatus::Suspended),
+            "unencrypted" => Some(dlp_common::EncryptionStatus::Unencrypted),
+            "unknown" => Some(dlp_common::EncryptionStatus::Unknown),
+            // Guard: any unexpected value maps to None (treat as unverified).
+            _ => None,
+        };
+
+    dlp_common::DiskIdentity {
+        instance_id: row.instance_id,
+        bus_type,
+        model: row.model,
+        drive_letter: None,
+        serial: None,
+        size_bytes: None,
+        is_boot_disk: false,
+        encryption_status,
+        encryption_method: None,
+        encryption_checked_at: None,
+    }
+}
+
 /// `GET /agent-config/:id` — returns the resolved config for a specific agent.
 ///
 /// Tries per-agent override first; falls back to global default if no override
@@ -1251,27 +1374,41 @@ async fn get_agent_config_for_agent(
     let id = agent_id.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
     let payload = tokio::task::spawn_blocking(move || -> Result<AgentConfigPayload, AppError> {
+        // Phase 37 (D-02/D-03): query the disk allowlist for this agent once.
+        // unwrap_or_default so a query failure returns an empty list rather than a 500.
+        let disk_allowlist: Vec<dlp_common::DiskIdentity> =
+            DiskRegistryRepository::list_by_agent(&pool, &id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(disk_row_to_identity)
+                .collect();
+
         // Try per-agent override first via repository.
-        match AgentConfigRepository::get_override(&pool, &id) {
-            Ok(row) => Ok(AgentConfigPayload {
+        let mut payload = match AgentConfigRepository::get_override(&pool, &id) {
+            Ok(row) => AgentConfigPayload {
                 monitored_paths: serde_json::from_str(&row.monitored_paths).unwrap_or_default(),
                 excluded_paths: serde_json::from_str(&row.excluded_paths).unwrap_or_default(),
                 heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs).unwrap_or(30),
                 offline_cache_enabled: row.offline_cache_enabled != 0,
-            }),
+                disk_allowlist: Vec::new(),
+            },
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // Fall back to global default.
                 let row = AgentConfigRepository::get_global(&pool).map_err(AppError::Database)?;
-                Ok(AgentConfigPayload {
+                AgentConfigPayload {
                     monitored_paths: serde_json::from_str(&row.monitored_paths).unwrap_or_default(),
                     excluded_paths: serde_json::from_str(&row.excluded_paths).unwrap_or_default(),
                     heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs)
                         .unwrap_or(30),
                     offline_cache_enabled: row.offline_cache_enabled != 0,
-                })
+                    disk_allowlist: Vec::new(),
+                }
             }
-            Err(e) => Err(AppError::Database(e)),
-        }
+            Err(e) => return Err(AppError::Database(e)),
+        };
+        // Populate disk_allowlist after the config branch is resolved (D-02/D-03).
+        payload.disk_allowlist = disk_allowlist;
+        Ok(payload)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -1374,6 +1511,8 @@ async fn get_global_agent_config_handler(
         excluded_paths: serde_json::from_str(&row.excluded_paths).unwrap_or_default(),
         heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs).unwrap_or(30),
         offline_cache_enabled: row.offline_cache_enabled != 0,
+        // disk_allowlist is not relevant for admin-config GET (only agents poll /agent-config/{id}).
+        disk_allowlist: Vec::new(),
     }))
 }
 
@@ -1443,6 +1582,8 @@ async fn get_agent_config_override_handler(
         excluded_paths: serde_json::from_str(&row.excluded_paths).unwrap_or_default(),
         heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs).unwrap_or(30),
         offline_cache_enabled: row.offline_cache_enabled != 0,
+        // disk_allowlist is not relevant for admin-config GET (only agents poll /agent-config/{id}).
+        disk_allowlist: Vec::new(),
     }))
 }
 
@@ -1599,6 +1740,243 @@ async fn list_device_registry_full_handler(
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
     let response: Vec<DeviceRegistryResponse> = rows.into_iter().map(Into::into).collect();
     Ok(Json(response))
+}
+
+/// `GET /admin/disk-registry` -- ADMIN-02. JWT-protected.
+///
+/// Returns all rows ordered by `registered_at ASC`. The optional
+/// `?agent_id=<id>` query param filters to a single agent's entries (D-07).
+///
+/// # Errors
+///
+/// Returns `AppError::Internal` if pool acquisition or the blocking task fails.
+async fn list_disk_registry_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(filter): axum::extract::Query<DiskRegistryFilter>,
+) -> Result<Json<Vec<DiskRegistryResponse>>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let agent_id_filter = filter.agent_id.clone();
+    let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        DiskRegistryRepository::list_all(&pool, agent_id_filter.as_deref())
+            .map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
+}
+
+/// `POST /admin/disk-registry` -- ADMIN-03 + AUDIT-03. JWT-protected.
+///
+/// Pure INSERT (D-05). Returns 409 Conflict on duplicate `(agent_id, instance_id)`.
+/// Returns 422 if `encryption_status` is outside the four-value allowlist or exceeds
+/// the maximum length. Emits an `AdminAction(DiskRegistryAdd)` audit event AFTER
+/// the registry commit (D-10).
+///
+/// # Errors
+///
+/// Returns `AppError::Unauthorized` if the JWT is missing or invalid (T-37-04).
+/// Returns `AppError::UnprocessableEntity` on validation failure (T-37-05).
+/// Returns `AppError::Conflict` on duplicate `(agent_id, instance_id)` (T-37-06).
+/// Returns `AppError::Internal` on pool or blocking task failure.
+async fn insert_disk_registry_handler(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<(StatusCode, Json<DiskRegistryResponse>), AppError> {
+    // (1) Authenticate the admin via JWT extraction (T-37-04).
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+
+    // (2) Deserialize the body. Must follow username extraction so the headers
+    //     are available before the body is consumed.
+    let Json(body) = Json::<DiskRegistryRequest>::from_request(req, &state)
+        .await
+        .map_err(AppError::from)?;
+
+    // (3) Length guard before heap allocation (T-37-05). Valid values are at
+    //     most 21 chars ("partially_encrypted"); 32 is a generous ceiling.
+    if body.encryption_status.len() > 32 {
+        return Err(AppError::UnprocessableEntity(
+            "encryption_status exceeds maximum length".to_string(),
+        ));
+    }
+    // (4) Allowlist check before any DB access (D-12, T-37-05).
+    const VALID_STATUSES: &[&str] = &[
+        "fully_encrypted",
+        "partially_encrypted",
+        "unencrypted",
+        "unknown",
+    ];
+    if !VALID_STATUSES.contains(&body.encryption_status.as_str()) {
+        return Err(AppError::UnprocessableEntity(format!(
+            "invalid encryption_status '{}'; must be one of: fully_encrypted, \
+             partially_encrypted, unencrypted, unknown",
+            body.encryption_status
+        )));
+    }
+
+    // (5) Build the row with server-generated id + registered_at.
+    let id = uuid::Uuid::new_v4().to_string();
+    let registered_at = chrono::Utc::now().to_rfc3339();
+    let row = DiskRegistryRow {
+        id: id.clone(),
+        agent_id: body.agent_id.clone(),
+        instance_id: body.instance_id.clone(),
+        bus_type: body.bus_type.clone(),
+        encryption_status: body.encryption_status.clone(),
+        model: body.model.clone(),
+        registered_at: registered_at.clone(),
+    };
+
+    // (6) First spawn_blocking: pure INSERT. Map UNIQUE conflict -> 409 (T-37-06).
+    let pool = Arc::clone(&state.pool);
+    let row_for_insert = row.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        DiskRegistryRepository::insert(&uow, &row_for_insert).map_err(|e| {
+            // SQLite extended error code 2067 = SQLITE_CONSTRAINT_UNIQUE.
+            if let rusqlite::Error::SqliteFailure(ref fe, _) = e {
+                if fe.extended_code == 2067 {
+                    return AppError::Conflict(format!(
+                        "disk (agent_id={}, instance_id={}) already registered",
+                        row_for_insert.agent_id, row_for_insert.instance_id
+                    ));
+                }
+            }
+            AppError::Database(e)
+        })?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    // (7) Second spawn_blocking: emit audit event AFTER first commit (D-10, T-37-07).
+    //     Audit failure must NOT roll back the registry write — it is a separate
+    //     transaction and any error here is logged but does not affect the 201 response.
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username,
+        format!("disk:{}@{}", body.instance_id, body.agent_id),
+        dlp_common::Classification::T3,
+        dlp_common::Action::DiskRegistryAdd,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let pool = Arc::clone(&state.pool);
+    tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(
+        agent_id = %body.agent_id,
+        instance_id = %body.instance_id,
+        "disk registry add"
+    );
+    Ok((StatusCode::CREATED, Json(DiskRegistryResponse::from(row))))
+}
+
+/// `DELETE /admin/disk-registry/{id}` -- ADMIN-03 + AUDIT-03. JWT-protected.
+///
+/// Returns 204 on success, 404 if the UUID does not exist. Emits
+/// `AdminAction(DiskRegistryRemove)` AFTER the delete commit (D-10).
+/// Audit failure does NOT roll back the delete (D-10, T-37-07).
+///
+/// # Errors
+///
+/// Returns `AppError::Unauthorized` if the JWT is missing or invalid (T-37-04).
+/// Returns `AppError::NotFound` if the UUID does not exist.
+/// Returns `AppError::Internal` on pool or blocking task failure.
+async fn delete_disk_registry_handler(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<StatusCode, AppError> {
+    // (1) Authenticate.
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+    // (2) Extract path param.
+    let id = Path::<String>::from_request(req, &state)
+        .await
+        .map_err(AppError::from)?
+        .0;
+
+    // (3) Read agent_id/instance_id (for audit resource) THEN delete in one
+    //     spawn_blocking. Use explicit conn scope to release the read conn
+    //     before re-acquiring for write (avoids max_size=1 pool deadlock).
+    let pool = Arc::clone(&state.pool);
+    let disk_id = id.clone();
+    let result = tokio::task::spawn_blocking(
+        move || -> Result<Option<(String, String, usize)>, AppError> {
+            // Read: fetch agent_id + instance_id for the audit resource string.
+            let (agent_id, instance_id) = {
+                let conn = pool.get().map_err(AppError::from)?;
+                match conn.query_row(
+                    "SELECT agent_id, instance_id FROM disk_registry WHERE id = ?1",
+                    rusqlite::params![disk_id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                ) {
+                    Ok(t) => t,
+                    Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                    Err(e) => return Err(AppError::Database(e)),
+                }
+            }; // read conn returned to pool here
+
+            // Write: delete the row in a fresh conn + UoW.
+            let mut conn = pool.get().map_err(AppError::from)?;
+            let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+            let n =
+                DiskRegistryRepository::delete_by_id(&uow, &disk_id).map_err(AppError::Database)?;
+            uow.commit().map_err(AppError::Database)?;
+            Ok(Some((agent_id, instance_id, n)))
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    let (agent_id_for_audit, instance_id_for_audit, rows_deleted) = match result {
+        Some(t) => t,
+        None => return Err(AppError::NotFound(format!("disk entry {id} not found"))),
+    };
+    if rows_deleted == 0 {
+        // Race: row existed at SELECT but was deleted by another caller before our DELETE.
+        return Err(AppError::NotFound(format!("disk entry {id} not found")));
+    }
+
+    // (4) Second spawn_blocking: audit emission (D-10, T-37-07).
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username,
+        format!("disk:{}@{}", instance_id_for_audit, agent_id_for_audit),
+        dlp_common::Classification::T3,
+        dlp_common::Action::DiskRegistryRemove,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let pool = Arc::clone(&state.pool);
+    tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(
+        agent_id = %agent_id_for_audit,
+        instance_id = %instance_id_for_audit,
+        "disk registry remove"
+    );
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Registers a new device or updates trust_tier/description for an existing one.
@@ -3100,6 +3478,7 @@ mod tests {
             excluded_paths: vec![],
             heartbeat_interval_secs: 60,
             offline_cache_enabled: false,
+            disk_allowlist: Vec::new(),
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -3175,6 +3554,7 @@ mod tests {
             excluded_paths: vec![r"C:\Temp\".to_string()],
             heartbeat_interval_secs: 60,
             offline_cache_enabled: true,
+            disk_allowlist: Vec::new(),
         };
 
         // PUT the new global config.
@@ -3219,6 +3599,7 @@ mod tests {
             excluded_paths: vec![],
             heartbeat_interval_secs: 5,
             offline_cache_enabled: true,
+            disk_allowlist: Vec::new(),
         };
         let req = Request::builder()
             .method("PUT")
@@ -3261,6 +3642,7 @@ mod tests {
             excluded_paths: vec![r"D:\Secret\Temp\".to_string()],
             heartbeat_interval_secs: 15,
             offline_cache_enabled: false,
+            disk_allowlist: Vec::new(),
         };
 
         // PUT per-agent override.
@@ -3324,6 +3706,7 @@ mod tests {
             excluded_paths: vec![],
             heartbeat_interval_secs: 20,
             offline_cache_enabled: false,
+            disk_allowlist: Vec::new(),
         };
         let put_req = Request::builder()
             .method("PUT")
@@ -3393,6 +3776,7 @@ mod tests {
             excluded_paths: vec![],
             heartbeat_interval_secs: 30,
             offline_cache_enabled: true,
+            disk_allowlist: Vec::new(),
         };
         let req = Request::builder()
             .method("PUT")
@@ -4219,5 +4603,813 @@ mod tests {
             .expect("build request");
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 1: list_disk_registry_handler tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a minimal DiskRegistryRow for test insertions.
+    fn make_disk_row(
+        id: &str,
+        agent_id: &str,
+        instance_id: &str,
+        registered_at: &str,
+    ) -> DiskRegistryRow {
+        DiskRegistryRow {
+            id: id.to_string(),
+            agent_id: agent_id.to_string(),
+            instance_id: instance_id.to_string(),
+            bus_type: "usb".to_string(),
+            encryption_status: "unencrypted".to_string(),
+            model: "Test Model".to_string(),
+            registered_at: registered_at.to_string(),
+        }
+    }
+
+    /// Helper: build an AppState from a shared pool (no temp-file lifetime issues).
+    fn make_state_from_pool(pool: Arc<db::Pool>) -> Arc<AppState> {
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
+        );
+        Arc::new(AppState {
+            pool,
+            policy_store,
+            siem,
+            alert,
+            ad: None,
+        })
+    }
+
+    /// GET /admin/disk-registry with no rows returns 200 with an empty array.
+    #[tokio::test]
+    async fn test_list_disk_registry_handler_empty() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let state = make_state_from_pool(pool);
+
+        // Call the handler directly (routes not yet wired in Task 1).
+        let filter = DiskRegistryFilter { agent_id: None };
+        let result =
+            list_disk_registry_handler(State(Arc::clone(&state)), axum::extract::Query(filter))
+                .await
+                .expect("handler must succeed");
+        assert!(result.0.is_empty(), "expected empty array");
+    }
+
+    /// GET /admin/disk-registry returns all rows ordered by registered_at ASC.
+    #[tokio::test]
+    async fn test_list_disk_registry_handler_returns_all_rows_ordered() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+
+        // Insert two rows with deliberate out-of-order timestamps.
+        {
+            let mut conn = pool.get().expect("conn");
+            let uow = db::UnitOfWork::new(&mut conn).expect("uow");
+            // row1 has a LATER date; row2 has an EARLIER date.
+            let row1 = make_disk_row("id-1", "agent-A", "disk-1", "2026-02-01T00:00:00Z");
+            let row2 = make_disk_row("id-2", "agent-A", "disk-2", "2026-01-01T00:00:00Z");
+            DiskRegistryRepository::insert(&uow, &row1).expect("insert row1");
+            DiskRegistryRepository::insert(&uow, &row2).expect("insert row2");
+            uow.commit().expect("commit");
+        }
+
+        let state = make_state_from_pool(pool);
+        let filter = DiskRegistryFilter { agent_id: None };
+        let Json(list) =
+            list_disk_registry_handler(State(Arc::clone(&state)), axum::extract::Query(filter))
+                .await
+                .expect("handler must succeed");
+
+        assert_eq!(list.len(), 2, "expected 2 rows");
+        // ASC order: 2026-01-01 before 2026-02-01
+        assert_eq!(list[0].instance_id, "disk-2");
+        assert_eq!(list[1].instance_id, "disk-1");
+    }
+
+    /// GET /admin/disk-registry?agent_id=agent-A returns only agent-A rows.
+    #[tokio::test]
+    async fn test_list_disk_registry_handler_filters_by_agent_id() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+
+        {
+            let mut conn = pool.get().expect("conn");
+            let uow = db::UnitOfWork::new(&mut conn).expect("uow");
+            let row_a = make_disk_row("id-a", "agent-A", "disk-1", "2026-01-01T00:00:00Z");
+            let row_b = make_disk_row("id-b", "agent-B", "disk-1", "2026-01-02T00:00:00Z");
+            DiskRegistryRepository::insert(&uow, &row_a).expect("insert row-a");
+            DiskRegistryRepository::insert(&uow, &row_b).expect("insert row-b");
+            uow.commit().expect("commit");
+        }
+
+        let state = make_state_from_pool(pool);
+        let filter = DiskRegistryFilter {
+            agent_id: Some("agent-A".to_string()),
+        };
+        let Json(list) =
+            list_disk_registry_handler(State(Arc::clone(&state)), axum::extract::Query(filter))
+                .await
+                .expect("handler must succeed");
+
+        assert_eq!(list.len(), 1, "expected only agent-A rows");
+        assert_eq!(list[0].agent_id, "agent-A");
+    }
+
+    /// GET /admin/disk-registry?agent_id=does-not-exist returns 200 with [].
+    #[tokio::test]
+    async fn test_list_disk_registry_handler_unknown_agent_id_returns_empty() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let state = make_state_from_pool(pool);
+        let filter = DiskRegistryFilter {
+            agent_id: Some("does-not-exist".to_string()),
+        };
+        let Json(list) =
+            list_disk_registry_handler(State(Arc::clone(&state)), axum::extract::Query(filter))
+                .await
+                .expect("handler must succeed");
+        assert!(list.is_empty(), "unknown agent_id must return empty array");
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2: insert_disk_registry_handler and delete_disk_registry_handler
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a POST request to /admin/disk-registry with a JWT auth header.
+    fn make_insert_request(
+        body: &DiskRegistryRequest,
+        token: &str,
+    ) -> axum::http::Request<axum::body::Body> {
+        let json_body = serde_json::to_vec(body).expect("serialize body");
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/admin/disk-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(json_body))
+            .expect("build request")
+    }
+
+    /// Helper: build a DELETE request for a given disk UUID with JWT auth.
+    fn make_delete_request(id: &str, token: &str) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::builder()
+            .method("DELETE")
+            .uri(format!("/admin/disk-registry/{id}"))
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::empty())
+            .expect("build request")
+    }
+
+    /// Successful POST returns 201 + JSON body with server-generated UUID and RFC-3339 timestamp.
+    #[tokio::test]
+    async fn test_insert_disk_registry_handler_success() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let state = make_state_from_pool(Arc::clone(&pool));
+        let token = mint_admin_jwt();
+        let req_body = DiskRegistryRequest {
+            agent_id: "agent-A".to_string(),
+            instance_id: "disk-1".to_string(),
+            bus_type: "usb".to_string(),
+            encryption_status: "unencrypted".to_string(),
+            model: "Test Model".to_string(),
+        };
+        let req = make_insert_request(&req_body, &token);
+
+        let (status, Json(resp)) = insert_disk_registry_handler(State(Arc::clone(&state)), req)
+            .await
+            .expect("handler must succeed");
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(!resp.id.is_empty(), "id must be non-empty UUID");
+        // RFC-3339 timestamp must parse without error.
+        chrono::DateTime::parse_from_rfc3339(&resp.registered_at)
+            .expect("registered_at must be valid RFC-3339");
+        assert_eq!(resp.agent_id, "agent-A");
+        assert_eq!(resp.instance_id, "disk-1");
+        assert_eq!(resp.bus_type, "usb");
+        assert_eq!(resp.encryption_status, "unencrypted");
+    }
+
+    /// POST with an invalid encryption_status returns 422 and no DB write.
+    #[tokio::test]
+    async fn test_insert_disk_registry_handler_invalid_status_returns_422() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let state = make_state_from_pool(Arc::clone(&pool));
+        let token = mint_admin_jwt();
+        let req_body = DiskRegistryRequest {
+            agent_id: "agent-A".to_string(),
+            instance_id: "disk-1".to_string(),
+            bus_type: "usb".to_string(),
+            encryption_status: "not_a_status".to_string(),
+            model: String::new(),
+        };
+        let req = make_insert_request(&req_body, &token);
+
+        let err = insert_disk_registry_handler(State(Arc::clone(&state)), req)
+            .await
+            .expect_err("must return error for invalid status");
+
+        assert!(
+            matches!(err, AppError::UnprocessableEntity(_)),
+            "expected UnprocessableEntity, got: {err:?}"
+        );
+        // Verify DB has no rows.
+        let count: i64 = pool
+            .get()
+            .expect("conn")
+            .query_row("SELECT COUNT(*) FROM disk_registry", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 0, "no DB row must be written on 422");
+    }
+
+    /// POST with encryption_status > 32 chars returns 422 BEFORE allowlist check.
+    #[tokio::test]
+    async fn test_insert_disk_registry_handler_too_long_status_returns_422() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let state = make_state_from_pool(Arc::clone(&pool));
+        let token = mint_admin_jwt();
+        // 33-char string that would otherwise pass the allowlist check if shortened.
+        let long_status = "a".repeat(33);
+        let req_body = DiskRegistryRequest {
+            agent_id: "agent-A".to_string(),
+            instance_id: "disk-1".to_string(),
+            bus_type: "usb".to_string(),
+            encryption_status: long_status,
+            model: String::new(),
+        };
+        let req = make_insert_request(&req_body, &token);
+
+        let err = insert_disk_registry_handler(State(Arc::clone(&state)), req)
+            .await
+            .expect_err("must return error for oversized status");
+
+        assert!(
+            matches!(err, AppError::UnprocessableEntity(_)),
+            "expected UnprocessableEntity, got: {err:?}"
+        );
+        let count: i64 = pool
+            .get()
+            .expect("conn")
+            .query_row("SELECT COUNT(*) FROM disk_registry", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 0, "no DB row must be written on 422");
+    }
+
+    /// Duplicate (agent_id, instance_id) returns 409; DB still has only the first row.
+    #[tokio::test]
+    async fn test_insert_disk_registry_handler_duplicate_returns_409() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let state = make_state_from_pool(Arc::clone(&pool));
+        let token = mint_admin_jwt();
+        let req_body = DiskRegistryRequest {
+            agent_id: "agent-A".to_string(),
+            instance_id: "disk-1".to_string(),
+            bus_type: "usb".to_string(),
+            encryption_status: "unencrypted".to_string(),
+            model: "Original".to_string(),
+        };
+
+        // First POST must succeed.
+        let req1 = make_insert_request(&req_body, &token);
+        let (status1, _) = insert_disk_registry_handler(State(Arc::clone(&state)), req1)
+            .await
+            .expect("first POST must succeed");
+        assert_eq!(status1, StatusCode::CREATED);
+
+        // Second POST with same (agent_id, instance_id) -- different status to prove
+        // the original is not modified.
+        let req_body2 = DiskRegistryRequest {
+            encryption_status: "fully_encrypted".to_string(),
+            ..req_body.clone()
+        };
+        let req2 = make_insert_request(&req_body2, &token);
+        let err = insert_disk_registry_handler(State(Arc::clone(&state)), req2)
+            .await
+            .expect_err("duplicate POST must return error");
+
+        assert!(
+            matches!(err, AppError::Conflict(_)),
+            "expected Conflict, got: {err:?}"
+        );
+        // DB must have exactly one row with the ORIGINAL encryption_status.
+        let (count, status): (i64, String) = pool
+            .get()
+            .expect("conn")
+            .query_row(
+                "SELECT COUNT(*), encryption_status FROM disk_registry WHERE agent_id='agent-A' AND instance_id='disk-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("query");
+        assert_eq!(count, 1, "only one row must exist");
+        assert_eq!(
+            status, "unencrypted",
+            "status must not be changed by duplicate POST"
+        );
+    }
+
+    /// Successful POST emits exactly one audit event with correct fields.
+    #[tokio::test]
+    async fn test_insert_disk_registry_handler_emits_audit_event() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let state = make_state_from_pool(Arc::clone(&pool));
+        let token = mint_admin_jwt();
+        let req_body = DiskRegistryRequest {
+            agent_id: "agent-X".to_string(),
+            instance_id: "disk-Z".to_string(),
+            bus_type: "nvme".to_string(),
+            encryption_status: "fully_encrypted".to_string(),
+            model: "NVMe Pro".to_string(),
+        };
+        let req = make_insert_request(&req_body, &token);
+        let _ = insert_disk_registry_handler(State(Arc::clone(&state)), req)
+            .await
+            .expect("handler must succeed");
+
+        // Verify audit_events table has exactly one row with the expected fields.
+        let conn = pool.get().expect("conn");
+        let (event_type, action, resource_path, classification, decision, machine, pid): (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT event_type, action_attempted, resource_path, classification, \
+                 decision, agent_id, session_id FROM audit_events",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .expect("audit_events must have one row");
+
+        assert_eq!(event_type, "\"ADMIN_ACTION\"");
+        assert_eq!(action, "\"DiskRegistryAdd\"");
+        assert_eq!(resource_path, "disk:disk-Z@agent-X");
+        assert!(
+            classification.contains("T3"),
+            "classification must be T3; got: {classification}"
+        );
+        assert!(
+            decision.contains("ALLOW"),
+            "decision must be ALLOW; got: {decision}"
+        );
+        assert_eq!(machine, "server");
+        assert_eq!(pid, 0);
+    }
+
+    /// DELETE on an existing UUID returns 204 and removes the row.
+    #[tokio::test]
+    async fn test_delete_disk_registry_handler_success_returns_204() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let token = mint_admin_jwt();
+
+        // Insert via repository directly.
+        let row = make_disk_row("uuid-del-1", "agent-A", "disk-1", "2026-01-01T00:00:00Z");
+        {
+            let mut conn = pool.get().expect("conn");
+            let uow = db::UnitOfWork::new(&mut conn).expect("uow");
+            DiskRegistryRepository::insert(&uow, &row).expect("insert");
+            uow.commit().expect("commit");
+        }
+
+        // Path extraction requires the handler to be invoked via a matched router.
+        // Use a minimal router pre-wired with just the delete route for isolation.
+        let app = {
+            crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+            let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+            let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+            let ps = Arc::new(
+                crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
+            );
+            let s = Arc::new(AppState {
+                pool: Arc::clone(&pool),
+                policy_store: ps,
+                siem,
+                alert,
+                ad: None,
+            });
+            // Minimal router with just the disk-registry delete route for isolation.
+            axum::Router::new()
+                .route(
+                    "/admin/disk-registry/{id}",
+                    delete(delete_disk_registry_handler),
+                )
+                .route_layer(crate::rate_limiter::default_config())
+                .layer(axum::middleware::from_fn(crate::admin_auth::require_auth))
+                .with_state(s)
+        };
+        use tower::ServiceExt;
+        let req = make_delete_request("uuid-del-1", &token);
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Verify row is gone.
+        let count: i64 = pool
+            .get()
+            .expect("conn")
+            .query_row("SELECT COUNT(*) FROM disk_registry", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 0, "row must be deleted");
+    }
+
+    /// DELETE on a non-existent UUID returns 404; no audit event emitted.
+    #[tokio::test]
+    async fn test_delete_disk_registry_handler_not_found_returns_404() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let app = {
+            crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+            let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+            let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+            let ps = Arc::new(
+                crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
+            );
+            let s = Arc::new(AppState {
+                pool: Arc::clone(&pool),
+                policy_store: ps,
+                siem,
+                alert,
+                ad: None,
+            });
+            axum::Router::new()
+                .route(
+                    "/admin/disk-registry/{id}",
+                    delete(delete_disk_registry_handler),
+                )
+                .route_layer(crate::rate_limiter::default_config())
+                .layer(axum::middleware::from_fn(crate::admin_auth::require_auth))
+                .with_state(s)
+        };
+        use tower::ServiceExt;
+        let token = mint_admin_jwt();
+        let req = make_delete_request("00000000-0000-0000-0000-000000000000", &token);
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // No audit event must be written.
+        let count: i64 = pool
+            .get()
+            .expect("conn")
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 0, "no audit event must be written for 404");
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 3: AgentConfigPayload.disk_allowlist and route wiring tests
+    // -----------------------------------------------------------------------
+
+    /// AgentConfigPayload without disk_allowlist in JSON deserializes as empty vec.
+    #[test]
+    fn test_agent_config_payload_disk_allowlist_default_empty() {
+        // JSON payload from an old server build that has no disk_allowlist field.
+        let json = r#"{
+            "monitored_paths": [],
+            "excluded_paths": [],
+            "heartbeat_interval_secs": 30,
+            "offline_cache_enabled": false
+        }"#;
+        let payload: AgentConfigPayload = serde_json::from_str(json).expect("deserialize");
+        assert!(
+            payload.disk_allowlist.is_empty(),
+            "missing disk_allowlist must default to empty vec"
+        );
+    }
+
+    /// GET /agent-config/{id} returns disk_allowlist populated from disk_registry.
+    #[tokio::test]
+    async fn test_get_agent_config_for_agent_includes_disk_allowlist() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+
+        // Insert two disk_registry rows for agent-X.
+        {
+            let mut conn = pool.get().expect("conn");
+            let uow = db::UnitOfWork::new(&mut conn).expect("uow");
+            let row1 = DiskRegistryRow {
+                id: "id-1".to_string(),
+                agent_id: "agent-X".to_string(),
+                instance_id: "disk-1".to_string(),
+                bus_type: "usb".to_string(),
+                encryption_status: "unencrypted".to_string(),
+                model: "USB Drive".to_string(),
+                registered_at: "2026-01-01T00:00:00Z".to_string(),
+            };
+            let row2 = DiskRegistryRow {
+                id: "id-2".to_string(),
+                agent_id: "agent-X".to_string(),
+                instance_id: "disk-2".to_string(),
+                bus_type: "sata".to_string(),
+                encryption_status: "fully_encrypted".to_string(),
+                model: "SATA SSD".to_string(),
+                registered_at: "2026-01-02T00:00:00Z".to_string(),
+            };
+            DiskRegistryRepository::insert(&uow, &row1).expect("insert row1");
+            DiskRegistryRepository::insert(&uow, &row2).expect("insert row2");
+            uow.commit().expect("commit");
+        }
+
+        let state = make_state_from_pool(pool);
+        let app = admin_router(Arc::clone(&state));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/agent-config/agent-X")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let payload: AgentConfigPayload = serde_json::from_slice(&body).expect("parse body");
+
+        assert_eq!(payload.disk_allowlist.len(), 2, "expected 2 disk entries");
+        // Verify instance_ids are present (order is registered_at ASC).
+        let ids: Vec<&str> = payload
+            .disk_allowlist
+            .iter()
+            .map(|d| d.instance_id.as_str())
+            .collect();
+        assert!(ids.contains(&"disk-1"), "disk-1 must be in allowlist");
+        assert!(ids.contains(&"disk-2"), "disk-2 must be in allowlist");
+        // Verify bus_type conversion.
+        let disk1 = payload
+            .disk_allowlist
+            .iter()
+            .find(|d| d.instance_id == "disk-1")
+            .unwrap();
+        let disk2 = payload
+            .disk_allowlist
+            .iter()
+            .find(|d| d.instance_id == "disk-2")
+            .unwrap();
+        assert_eq!(disk1.bus_type, dlp_common::BusType::Usb);
+        assert_eq!(disk2.bus_type, dlp_common::BusType::Sata);
+    }
+
+    /// GET /agent-config/agent-X does NOT include agent-Y's disks.
+    #[tokio::test]
+    async fn test_get_agent_config_for_agent_excludes_other_agents_disks() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+
+        {
+            let mut conn = pool.get().expect("conn");
+            let uow = db::UnitOfWork::new(&mut conn).expect("uow");
+            let row_x = make_disk_row("id-x", "agent-X", "disk-x", "2026-01-01T00:00:00Z");
+            let row_y = make_disk_row("id-y", "agent-Y", "disk-y", "2026-01-02T00:00:00Z");
+            DiskRegistryRepository::insert(&uow, &row_x).expect("insert x");
+            DiskRegistryRepository::insert(&uow, &row_y).expect("insert y");
+            uow.commit().expect("commit");
+        }
+
+        let state = make_state_from_pool(pool);
+        let app = admin_router(Arc::clone(&state));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/agent-config/agent-X")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let payload: AgentConfigPayload = serde_json::from_slice(&body).expect("parse body");
+
+        assert_eq!(
+            payload.disk_allowlist.len(),
+            1,
+            "only agent-X disk must be returned"
+        );
+        assert_eq!(payload.disk_allowlist[0].instance_id, "disk-x");
+    }
+
+    /// GET /agent-config/{id} for an agent with no disk_registry rows returns disk_allowlist: [].
+    #[tokio::test]
+    async fn test_get_agent_config_for_agent_no_disks_returns_empty_allowlist() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = make_state_from_pool(Arc::new(
+            crate::db::new_pool(":memory:").expect("build pool"),
+        ));
+        let app = admin_router(Arc::clone(&state));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/agent-config/no-disks-agent")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let payload: AgentConfigPayload = serde_json::from_slice(&body).expect("parse body");
+        assert!(
+            payload.disk_allowlist.is_empty(),
+            "no disk_registry rows -> disk_allowlist must be empty vec (not null or missing)"
+        );
+    }
+
+    /// admin_router registers /admin/disk-registry GET+POST and /admin/disk-registry/{id} DELETE.
+    /// Verifies by sending requests without auth and expecting 401 (proves the routes are protected).
+    #[tokio::test]
+    async fn test_admin_router_disk_registry_routes_registered() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = make_state_from_pool(Arc::new(
+            crate::db::new_pool(":memory:").expect("build pool"),
+        ));
+
+        // GET without auth -- should hit protected_routes and return 401, not 404.
+        let app_get = admin_router(Arc::clone(&state));
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/disk-registry")
+            .body(Body::empty())
+            .expect("build GET");
+        let resp = app_get.oneshot(req).await.expect("oneshot GET");
+        assert_ne!(
+            resp.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "GET must be registered on /admin/disk-registry"
+        );
+        assert_ne!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "GET must not return 404 -- route must be wired"
+        );
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "GET without JWT must be 401"
+        );
+
+        // POST without auth -- should return 401 (route registered and protected).
+        let app_post = admin_router(Arc::clone(&state));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/disk-registry")
+            .header("Content-Type", "application/json")
+            .body(Body::from("{}"))
+            .expect("build POST");
+        let resp = app_post.oneshot(req).await.expect("oneshot POST");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "POST without JWT must be 401"
+        );
+
+        // DELETE without auth -- should return 401.
+        let app_del = admin_router(Arc::clone(&state));
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/admin/disk-registry/some-uuid")
+            .body(Body::empty())
+            .expect("build DELETE");
+        let resp = app_del.oneshot(req).await.expect("oneshot DELETE");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "DELETE without JWT must be 401"
+        );
+    }
+
+    /// GET /admin/disk-registry without an Authorization header returns 401 (T-37-08).
+    #[tokio::test]
+    async fn test_get_admin_disk_registry_requires_jwt() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = make_state_from_pool(Arc::new(
+            crate::db::new_pool(":memory:").expect("build pool"),
+        ));
+        let app = admin_router(Arc::clone(&state));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/disk-registry")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "unauthenticated GET /admin/disk-registry must return 401 (T-37-08)"
+        );
+    }
+
+    /// Successful DELETE emits exactly one audit event with DiskRegistryRemove action.
+    #[tokio::test]
+    async fn test_delete_disk_registry_handler_emits_audit_event() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+
+        // Insert a row directly.
+        let row = make_disk_row(
+            "uuid-audit-del",
+            "agent-B",
+            "disk-99",
+            "2026-01-01T00:00:00Z",
+        );
+        {
+            let mut conn = pool.get().expect("conn");
+            let uow = db::UnitOfWork::new(&mut conn).expect("uow");
+            DiskRegistryRepository::insert(&uow, &row).expect("insert");
+            uow.commit().expect("commit");
+        }
+
+        let app = {
+            crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+            let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
+            let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+            let ps = Arc::new(
+                crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
+            );
+            let s = Arc::new(AppState {
+                pool: Arc::clone(&pool),
+                policy_store: ps,
+                siem,
+                alert,
+                ad: None,
+            });
+            axum::Router::new()
+                .route(
+                    "/admin/disk-registry/{id}",
+                    delete(delete_disk_registry_handler),
+                )
+                .route_layer(crate::rate_limiter::default_config())
+                .layer(axum::middleware::from_fn(crate::admin_auth::require_auth))
+                .with_state(s)
+        };
+        use tower::ServiceExt;
+        let token = mint_admin_jwt();
+        let req = make_delete_request("uuid-audit-del", &token);
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Verify audit event.
+        let conn = pool.get().expect("conn");
+        let (event_type, action, resource_path, classification, decision): (
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT event_type, action_attempted, resource_path, classification, decision \
+                 FROM audit_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .expect("audit_events must have one row");
+
+        assert_eq!(event_type, "\"ADMIN_ACTION\"");
+        assert_eq!(action, "\"DiskRegistryRemove\"");
+        assert_eq!(resource_path, "disk:disk-99@agent-B");
+        assert!(
+            classification.contains("T3"),
+            "classification must be T3; got: {classification}"
+        );
+        assert!(
+            decision.contains("ALLOW"),
+            "decision must be ALLOW; got: {decision}"
+        );
     }
 }

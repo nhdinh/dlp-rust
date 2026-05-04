@@ -199,7 +199,7 @@ impl AlertRouter {
             smtp_host: repo_row.smtp_host,
             smtp_port: repo_row.smtp_port,
             smtp_username: repo_row.smtp_username,
-            smtp_password: SecretString::new(repo_row.smtp_password.into()),
+            smtp_password: SecretString::new(repo_row.smtp_password),
             smtp_from: repo_row.smtp_from,
             smtp_to: repo_row.smtp_to,
             smtp_enabled: repo_row.smtp_enabled != 0,
