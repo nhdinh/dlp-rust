@@ -70,10 +70,15 @@ pub enum DiskError {
 ///
 /// Maps Windows `STORAGE_BUS_TYPE` values to a project-specific subset.
 /// Exotic bus types (SataExpress, SD, MMC, etc.) map to `Unknown`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+///
+/// Serialization uses `snake_case` string representations.
+/// Deserialization is forward-compatible: any unrecognized string maps to
+/// `Unknown` rather than failing. This ensures that future bus type values
+/// from newer server builds do not break older agents during a rolling deploy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BusType {
-    /// Bus type could not be determined.
+    /// Bus type could not be determined, or an unrecognized value was received.
     #[default]
     Unknown,
     /// Serial ATA.
@@ -84,6 +89,30 @@ pub enum BusType {
     Usb,
     /// SCSI or SAS.
     Scsi,
+}
+
+// Manual `Deserialize` implementation for `BusType`.
+//
+// The derived implementation would reject unknown string variants with an error.
+// This custom implementation maps any unrecognized value to `BusType::Unknown`,
+// providing forward compatibility when new bus types are added to the server.
+impl<'de> serde::Deserialize<'de> for BusType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Deserialize as a borrowed string then match known snake_case names.
+        // Any unknown string becomes Unknown rather than an error.
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "sata" => Self::Sata,
+            "nvme" => Self::Nvme,
+            "usb" => Self::Usb,
+            "scsi" => Self::Scsi,
+            // "unknown" or any future value: default to Unknown.
+            _ => Self::Unknown,
+        })
+    }
 }
 
 impl From<u32> for BusType {

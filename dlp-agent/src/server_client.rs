@@ -129,6 +129,13 @@ pub struct AgentConfigPayload {
     pub offline_cache_enabled: bool,
     /// LDAP/AD configuration for group resolution (optional).
     pub ldap_config: Option<LdapConfigPayload>,
+    /// Phase 37 (D-02/D-03): per-agent disk allowlist pushed by the server's
+    /// `disk_registry` table. The agent merges this list into
+    /// `DiskEnumerator.instance_id_map` on the next poll cycle. Defaults to
+    /// empty for backward compatibility with older server builds that do
+    /// not emit the field.
+    #[serde(default)]
+    pub disk_allowlist: Vec<dlp_common::DiskIdentity>,
 }
 
 // ---------------------------------------------------------------------------
@@ -792,6 +799,7 @@ mod tests {
             heartbeat_interval_secs: 60,
             offline_cache_enabled: false,
             ldap_config: None,
+            disk_allowlist: vec![],
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -813,12 +821,118 @@ mod tests {
             heartbeat_interval_secs: 60,
             offline_cache_enabled: false,
             ldap_config: Some(ldap),
+            disk_allowlist: vec![],
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(
             rt.ldap_config.as_ref().map(|c| &c.ldap_url),
             Some(&"ldaps://dc.corp.internal:636".to_string())
+        );
+    }
+
+    /// Verify that JSON missing the `disk_allowlist` field deserializes to an
+    /// empty list (backward compatibility with older server builds).
+    #[test]
+    fn test_agent_config_payload_disk_allowlist_default_when_missing() {
+        // Construct JSON without the disk_allowlist field (simulates an older server).
+        let json = r#"{
+            "monitored_paths": [],
+            "excluded_paths": [],
+            "heartbeat_interval_secs": 30,
+            "offline_cache_enabled": false,
+            "ldap_config": null
+        }"#;
+        let payload: AgentConfigPayload =
+            serde_json::from_str(json).expect("deserialization must succeed without disk_allowlist");
+        // #[serde(default)] must yield an empty Vec when the field is absent.
+        assert!(
+            payload.disk_allowlist.is_empty(),
+            "disk_allowlist must default to empty when absent from server JSON"
+        );
+    }
+
+    /// Verify that a `disk_allowlist` with two entries survives a serialize/deserialize
+    /// roundtrip with all fields intact (PartialEq on DiskIdentity).
+    #[test]
+    fn test_agent_config_payload_disk_allowlist_roundtrip() {
+        use dlp_common::{BusType, DiskIdentity, EncryptionStatus};
+
+        let disks = vec![
+            DiskIdentity {
+                instance_id: "DISK\\INSTANCE\\0001".to_string(),
+                bus_type: BusType::Sata,
+                model: "Samsung SSD 870".to_string(),
+                drive_letter: Some('C'),
+                serial: Some("S123".to_string()),
+                size_bytes: Some(500_107_862_016),
+                is_boot_disk: true,
+                encryption_status: Some(EncryptionStatus::Encrypted),
+                encryption_method: None,
+                encryption_checked_at: None,
+            },
+            DiskIdentity {
+                instance_id: "DISK\\INSTANCE\\0002".to_string(),
+                bus_type: BusType::Nvme,
+                model: "WD Black SN850".to_string(),
+                drive_letter: Some('D'),
+                serial: None,
+                size_bytes: None,
+                is_boot_disk: false,
+                encryption_status: Some(EncryptionStatus::Unencrypted),
+                encryption_method: None,
+                encryption_checked_at: None,
+            },
+        ];
+        let payload = AgentConfigPayload {
+            monitored_paths: vec![],
+            excluded_paths: vec![],
+            heartbeat_interval_secs: 30,
+            offline_cache_enabled: false,
+            ldap_config: None,
+            disk_allowlist: disks.clone(),
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
+        // PartialEq on DiskIdentity covers all fields including encryption_status.
+        assert_eq!(rt.disk_allowlist, disks, "disk_allowlist must survive roundtrip unchanged");
+    }
+
+    /// Verify that a JSON payload containing a `disk_allowlist` entry with an
+    /// unknown `bus_type` value (from a future server build) deserializes without
+    /// panicking, and the unknown variant becomes `BusType::Unknown`.
+    ///
+    /// This exercises the `#[serde(other)]` marker added to `BusType::Unknown`
+    /// in dlp-common for forward compatibility (Pitfall 5 guard).
+    #[test]
+    fn test_agent_config_payload_disk_allowlist_with_unknown_bus_type() {
+        // `"future_bus"` is not a valid BusType variant today; it must map to Unknown.
+        let json = r#"{
+            "monitored_paths": [],
+            "excluded_paths": [],
+            "heartbeat_interval_secs": 30,
+            "offline_cache_enabled": false,
+            "ldap_config": null,
+            "disk_allowlist": [
+                {
+                    "instance_id": "DISK\\INSTANCE\\FUTURE",
+                    "bus_type": "future_bus",
+                    "model": "FutureDrive X1",
+                    "is_boot_disk": false
+                }
+            ]
+        }"#;
+        let payload: AgentConfigPayload =
+            serde_json::from_str(json).expect("must not fail on unknown bus_type");
+        assert_eq!(
+            payload.disk_allowlist.len(),
+            1,
+            "disk_allowlist must contain the entry with the unknown bus_type"
+        );
+        assert_eq!(
+            payload.disk_allowlist[0].bus_type,
+            dlp_common::BusType::Unknown,
+            "unknown bus_type string must deserialize to BusType::Unknown via #[serde(other)]"
         );
     }
 
