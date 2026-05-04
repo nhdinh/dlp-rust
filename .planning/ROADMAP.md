@@ -117,7 +117,7 @@ Plans:
 
 Plans:
 - [x] 37-01-PLAN.md -- dlp-common Action enum extension + disk_registry table DDL + DiskRegistryRepository (pure INSERT, no upsert)
-- [ ] 37-02-PLAN.md -- Admin REST handlers (GET/POST/DELETE), AUDIT-03 events, AgentConfigPayload disk_allowlist propagation
+- [x] 37-02-PLAN.md -- Admin REST handlers (GET/POST/DELETE), AUDIT-03 events, AgentConfigPayload disk_allowlist propagation
 - [ ] 37-03-PLAN.md -- Agent live reload: AgentConfigPayload mirror + config_poll_loop merge into DiskEnumerator.instance_id_map
 
 ### Phase 38: Admin TUI Disk Registry
