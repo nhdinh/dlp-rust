@@ -242,23 +242,36 @@ pub fn spawn_disk_enumeration_task(
                     // CRITICAL: All DiskEnumerator write locks MUST be released before
                     // the AgentConfig write lock is acquired in Step 4. Lock-order
                     // discipline prevents deadlock (Pitfall 4).
+                    //
+                    // WR-01 fix: acquire, mutate, and release each lock individually
+                    // in scoped blocks rather than holding all four simultaneously.
+                    // Holding multiple write locks at once is fragile: a future
+                    // refactor that consolidates state (or any transitive re-acquisition
+                    // of an already-held lock) would silently deadlock.
                     if let Some(enumerator) = get_disk_enumerator() {
-                        let mut discovered = enumerator.discovered_disks.write();
-                        let mut drive_map = enumerator.drive_letter_map.write();
-                        let mut instance_map = enumerator.instance_id_map.write();
-                        let mut complete = enumerator.enumeration_complete.write();
-
-                        *discovered = updated_list.clone();
-                        drive_map.clear();
-                        instance_map.clear();
-                        for disk in &updated_list {
-                            if let Some(letter) = disk.drive_letter {
-                                drive_map.insert(letter, disk.clone());
-                            }
-                            instance_map.insert(disk.instance_id.clone(), disk.clone());
+                        {
+                            *enumerator.discovered_disks.write() = updated_list.clone();
                         }
-                        *complete = true;
-                        // All DiskEnumerator write locks released at end of this block.
+                        {
+                            let mut drive_map = enumerator.drive_letter_map.write();
+                            drive_map.clear();
+                            for disk in &updated_list {
+                                if let Some(letter) = disk.drive_letter {
+                                    drive_map.insert(letter, disk.clone());
+                                }
+                            }
+                        }
+                        {
+                            let mut instance_map = enumerator.instance_id_map.write();
+                            instance_map.clear();
+                            for disk in &updated_list {
+                                instance_map.insert(disk.instance_id.clone(), disk.clone());
+                            }
+                        }
+                        // Mark enumeration complete last — enforcement reads this flag
+                        // to exit the fail-closed window, so all maps must be populated
+                        // before flipping it.
+                        *enumerator.enumeration_complete.write() = true;
                     }
 
                     // --- Step 4: Persist allowlist to TOML (non-fatal) ---
