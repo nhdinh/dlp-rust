@@ -427,22 +427,29 @@ impl AlertRouter {
 
     /// Sends an alert payload to a webhook endpoint via HTTP POST.
     ///
-    /// Non-2xx responses are treated as silent successes at this layer.
-    /// The caller (`send_alert`) logs failures at `warn` via the
-    /// reqwest error path when the request itself fails. Per-status-code
-    /// logging is deferred to a dedicated observability phase (TM-04).
+    /// Returns an error for both network failures and non-2xx HTTP responses.
+    /// Silently ignoring non-2xx responses would mask misconfigured or
+    /// unreachable webhook endpoints, leaving alert delivery gaps invisible
+    /// in the audit trail (WR-05).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AlertError::Webhook`] if the request fails or the server
+    /// returns a non-2xx status code.
     async fn send_webhook(
         &self,
         config: &WebhookConfig,
         event: &AuditEvent,
     ) -> Result<(), AlertError> {
-        let _ = self
-            .client
+        // `error_for_status` converts non-2xx responses into a reqwest::Error,
+        // which is then mapped to AlertError::Webhook by the `?` operator.
+        self.client
             .post(&config.url)
             .header("Content-Type", "application/json")
             .json(event)
             .send()
-            .await?;
+            .await?
+            .error_for_status()?;
 
         tracing::info!("sent webhook alert");
         Ok(())
