@@ -51,3 +51,24 @@ target-test/
 # Beads / Dolt files (added by bd init)
 .dolt/
 .beads-credential-key
+
+# ── GSD baseline (auto-generated) ──
+.gsd
+.gsd-id
+.mcp.json
+.bg-shell/
+*~
+*.code-workspace
+!.env.example
+node_modules/
+.next/
+dist/
+build/
+__pycache__/
+*.pyc
+.venv/
+venv/
+vendor/
+coverage/
+.cache/
+tmp/
