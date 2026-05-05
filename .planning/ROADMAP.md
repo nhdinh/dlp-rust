@@ -162,7 +162,7 @@ Plans:
 **Plans**: 3 plans in 2 waves
 
 Plans:
-- [ ] 38.2-01-PLAN.md -- Add `set_volume_deny_all` to `DeviceController`, wire into `apply_tier_enforcement` for Blocked tier (DACL defense-in-depth layer)
+- [x] 38.2-01-PLAN.md -- Add `set_volume_deny_all` to `DeviceController`, wire into `apply_tier_enforcement` for Blocked tier (DACL defense-in-depth layer)
 - [ ] 38.2-02-PLAN.md -- Fix WR-01 race in `usb.rs` + fix startup enforcement gap (`scan_existing_usb_identities`)
 - [ ] 38.2-03-PLAN.md -- Fix drive-letter mislabel in `dlp-common/src/disk.rs` (proper instance_id-to-drive-letter correlation)
 
