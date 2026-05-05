@@ -5,7 +5,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use crate::app::{
     App, CallerScreen, ConditionAttribute, ConfirmPurpose, ImportCaller, ImportState, InputPurpose,
     PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState, SimulateOutcome,
-    StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES,
+    StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, LDAP_BACK_ROW,
+    LDAP_ROW_COUNT, LDAP_SAVE_ROW,
 };
 use crate::event::AppEvent;
 use dlp_common::abac::PolicyMode;
@@ -38,6 +39,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::Confirm { .. } => handle_confirm(app, key),
         Screen::SiemConfig { .. } => handle_siem_config(app, key),
         Screen::AlertConfig { .. } => handle_alert_config(app, key),
+        Screen::LdapConfig { .. } => handle_ldap_config(app, key),
         Screen::ConditionsBuilder { .. } => handle_conditions_builder(app, key),
         Screen::PolicyCreate { .. } => handle_policy_create(app, key),
         Screen::PolicyEdit { .. } => handle_policy_edit(app, key),
@@ -203,13 +205,15 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        KeyCode::Up | KeyCode::Down => nav(selected, 5, key.code),
+        // Phase 38.1: expanded from 5 to 6 items — added "LDAP Config" at index 4.
+        KeyCode::Up | KeyCode::Down => nav(selected, 6, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
             2 => action_load_siem_config(app),
             3 => action_load_alert_config(app),
-            4 => app.screen = Screen::MainMenu { selected: 2 },
+            4 => action_load_ldap_config(app),
+            5 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
@@ -1229,6 +1233,255 @@ fn handle_alert_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
             app.screen = Screen::SystemMenu { selected: 3 };
         }
         _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LDAP Config screen (Phase 38.1)
+// ---------------------------------------------------------------------------
+
+/// JSON keys for the LDAP config form, indexed by row (5 editable fields).
+///
+/// Must match `LdapConfigPayload` field names in `dlp-server/src/admin_api.rs`
+/// exactly so the PUT round-trip deserializes.
+const LDAP_KEYS: [&str; 5] = [
+    "ldap_url",
+    "base_dn",
+    "require_tls",
+    "cache_ttl_secs",
+    "vpn_subnets",
+];
+
+/// Returns `true` if the row index is the boolean `require_tls` toggle.
+fn ldap_is_bool(index: usize) -> bool {
+    matches!(index, 2)
+}
+
+/// Returns `true` if the row index is the numeric `cache_ttl_secs` field.
+fn ldap_is_numeric(index: usize) -> bool {
+    matches!(index, 3)
+}
+
+/// Fetches the current LDAP config from the server and switches to the
+/// `LdapConfig` screen.
+///
+/// Mirrors the Phase 3.1 SIEM / Phase 28 Alert pattern: uses the generic
+/// `client.get::<serde_json::Value>` helper rather than a typed wrapper.
+fn action_load_ldap_config(app: &mut App) {
+    match app
+        .rt
+        .block_on(app.client.get::<serde_json::Value>("admin/ldap-config"))
+    {
+        Ok(config) => {
+            app.screen = Screen::LdapConfig {
+                config,
+                selected: 0,
+                editing: false,
+                buffer: String::new(),
+            };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Persists the in-memory LDAP config to the server.
+///
+/// On success, returns the user to the SystemMenu with the LDAP Config row
+/// (index 4) highlighted.
+fn action_save_ldap_config(app: &mut App) {
+    let payload = match &app.screen {
+        Screen::LdapConfig { config, .. } => config.clone(),
+        _ => return,
+    };
+    match app.rt.block_on(
+        app.client
+            .put::<serde_json::Value, _>("admin/ldap-config", &payload),
+    ) {
+        Ok(_) => {
+            app.set_status("LDAP config saved", StatusKind::Success);
+            app.screen = Screen::SystemMenu { selected: 4 };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Handles key events while the LDAP config form is active.
+fn handle_ldap_config(app: &mut App, key: KeyEvent) {
+    let (selected, editing) = match &app.screen {
+        Screen::LdapConfig {
+            selected, editing, ..
+        } => (*selected, *editing),
+        _ => return,
+    };
+
+    if editing {
+        handle_ldap_config_editing(app, key, selected);
+    } else {
+        handle_ldap_config_nav(app, key, selected);
+    }
+}
+
+/// Handles key events while editing a text/numeric field in the LDAP config form.
+///
+/// The numeric branch (row 3, `cache_ttl_secs`) parses the buffer as `u64` and
+/// rejects any value outside the inclusive range [60, 3600]. On parse failure
+/// or out-of-range, the function sets a status error and stays in edit mode so
+/// the user can correct the value without losing input.
+fn handle_ldap_config_editing(app: &mut App, key: KeyEvent, selected: usize) {
+    match key.code {
+        KeyCode::Char(c) => {
+            if let Screen::LdapConfig { buffer, .. } = &mut app.screen {
+                buffer.push(c);
+            }
+        }
+        KeyCode::Backspace => {
+            if let Screen::LdapConfig { buffer, .. } = &mut app.screen {
+                buffer.pop();
+            }
+        }
+        KeyCode::Enter => {
+            if ldap_is_numeric(selected) {
+                let buffer_copy = match &app.screen {
+                    Screen::LdapConfig { buffer, .. } => buffer.clone(),
+                    _ => return,
+                };
+                match buffer_copy.trim().parse::<u64>() {
+                    Ok(ttl) if (60..=3600).contains(&ttl) => {
+                        if let Screen::LdapConfig {
+                            config,
+                            buffer,
+                            editing,
+                            ..
+                        } = &mut app.screen
+                        {
+                            let key_name = LDAP_KEYS[selected];
+                            config[key_name] =
+                                serde_json::Value::Number(serde_json::Number::from(ttl));
+                            buffer.clear();
+                            *editing = false;
+                        }
+                    }
+                    _ => {
+                        app.set_status(
+                            "Cache TTL must be between 60 and 3600 seconds",
+                            StatusKind::Error,
+                        );
+                    }
+                }
+            } else if let Screen::LdapConfig {
+                config,
+                buffer,
+                editing,
+                ..
+            } = &mut app.screen
+            {
+                let key_name = LDAP_KEYS[selected];
+                config[key_name] = serde_json::Value::String(buffer.clone());
+                buffer.clear();
+                *editing = false;
+            }
+        }
+        KeyCode::Esc => {
+            if let Screen::LdapConfig {
+                buffer, editing, ..
+            } = &mut app.screen
+            {
+                buffer.clear();
+                *editing = false;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events while navigating the LDAP config form.
+fn handle_ldap_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::LdapConfig { selected: sel, .. } = &mut app.screen {
+                nav(sel, LDAP_ROW_COUNT, key.code);
+            }
+        }
+        KeyCode::Enter => {
+            if selected == LDAP_SAVE_ROW {
+                action_save_ldap_config(app);
+            } else if selected == LDAP_BACK_ROW {
+                app.screen = Screen::SystemMenu { selected: 4 };
+            } else if ldap_is_bool(selected) {
+                if let Screen::LdapConfig { config, .. } = &mut app.screen {
+                    let key_name = LDAP_KEYS[selected];
+                    let cur = config[key_name].as_bool().unwrap_or(false);
+                    config[key_name] = serde_json::Value::Bool(!cur);
+                }
+            } else if ldap_is_numeric(selected) {
+                if let Screen::LdapConfig {
+                    config,
+                    editing,
+                    buffer,
+                    ..
+                } = &mut app.screen
+                {
+                    let key_name = LDAP_KEYS[selected];
+                    let n = config[key_name].as_u64().unwrap_or(300);
+                    *buffer = n.to_string();
+                    *editing = true;
+                }
+            } else {
+                if let Screen::LdapConfig {
+                    config,
+                    editing,
+                    buffer,
+                    ..
+                } = &mut app.screen
+                {
+                    let key_name = LDAP_KEYS[selected];
+                    *buffer = config[key_name].as_str().unwrap_or("").to_string();
+                    *editing = true;
+                }
+            }
+        }
+        KeyCode::Esc => {
+            app.screen = Screen::SystemMenu { selected: 4 };
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod ldap_config_tests {
+    use super::*;
+
+    #[test]
+    fn ldap_keys_match_payload_field_order() {
+        assert_eq!(LDAP_KEYS.len(), 5);
+        assert_eq!(LDAP_KEYS[0], "ldap_url");
+        assert_eq!(LDAP_KEYS[1], "base_dn");
+        assert_eq!(LDAP_KEYS[2], "require_tls");
+        assert_eq!(LDAP_KEYS[3], "cache_ttl_secs");
+        assert_eq!(LDAP_KEYS[4], "vpn_subnets");
+    }
+
+    #[test]
+    fn ldap_row_constants_are_consistent() {
+        assert_eq!(LDAP_ROW_COUNT, 7);
+        assert_eq!(LDAP_SAVE_ROW, 5);
+        assert_eq!(LDAP_BACK_ROW, 6);
+        assert!(LDAP_SAVE_ROW < LDAP_ROW_COUNT);
+        assert!(LDAP_BACK_ROW < LDAP_ROW_COUNT);
+    }
+
+    #[test]
+    fn ldap_is_bool_only_matches_require_tls_row() {
+        for i in 0..LDAP_ROW_COUNT {
+            assert_eq!(ldap_is_bool(i), i == 2);
+        }
+    }
+
+    #[test]
+    fn ldap_is_numeric_only_matches_cache_ttl_row() {
+        for i in 0..LDAP_ROW_COUNT {
+            assert_eq!(ldap_is_numeric(i), i == 3);
+        }
     }
 }
 
