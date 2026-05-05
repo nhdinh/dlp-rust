@@ -1,0 +1,2 @@
+{"id":"49ccf6bb-0486-45f3-ba06-fe38ed54c34f","ts":"2026-05-05T20:23:15.728Z","severity":"info","message":"Writing .gsd directory…","source":"notify","read":true}
+{"id":"5f3f3aa0-09a0-4460-bd9f-e6cf21e0dcad","ts":"2026-05-05T20:23:15.744Z","severity":"info","message":"✓ Migration complete — 13 file(s) written to .gsd/","source":"notify","read":true}

@@ -49,6 +49,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::DeviceList { .. } => handle_device_list(app, key),
         Screen::DeviceTierPicker { .. } => handle_device_tier_picker(app, key),
         Screen::ManagedOriginList { .. } => handle_managed_origin_list(app, key),
+        Screen::DiskRegistryList { .. } => handle_disk_registry_list(app, key),
         Screen::UsbScan { .. } => handle_usb_scan(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
@@ -260,6 +261,13 @@ fn handle_text_input(app: &mut App, key: KeyEvent) {
                     Screen::DevicesMenu { selected: 0 }
                 }
                 InputPurpose::AddManagedOrigin => Screen::DevicesMenu { selected: 1 },
+                InputPurpose::AddDiskRegistryAgentId
+                | InputPurpose::AddDiskRegistryInstanceId { .. }
+                | InputPurpose::AddDiskRegistryBusType { .. }
+                | InputPurpose::AddDiskRegistryEncryption { .. }
+                | InputPurpose::AddDiskRegistryModel { .. } => {
+                    Screen::DevicesMenu { selected: 3 }
+                }
                 _ => Screen::PolicyMenu { selected: 0 },
             };
         }
@@ -346,6 +354,86 @@ fn on_text_confirmed(app: &mut App, value: &str, purpose: InputPurpose) {
                 Err(e) => {
                     app.set_status(format!("Error adding origin: {e}"), StatusKind::Error);
                     app.screen = Screen::DevicesMenu { selected: 1 };
+                }
+            }
+        }
+        // -- Disk registry 5-field add flow: each step chains to the next prompt --
+        InputPurpose::AddDiskRegistryAgentId => {
+            app.screen = Screen::TextInput {
+                prompt: "Instance ID:".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::AddDiskRegistryInstanceId {
+                    agent_id: value.to_string(),
+                },
+            };
+        }
+        InputPurpose::AddDiskRegistryInstanceId { agent_id } => {
+            app.screen = Screen::TextInput {
+                prompt: "Bus type (usb/sata/nvme/scsi/unknown):".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::AddDiskRegistryBusType {
+                    agent_id: agent_id.clone(),
+                    instance_id: value.to_string(),
+                },
+            };
+        }
+        InputPurpose::AddDiskRegistryBusType {
+            agent_id,
+            instance_id,
+        } => {
+            app.screen = Screen::TextInput {
+                prompt: "Encryption status (encrypted/suspended/unencrypted/unknown):".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::AddDiskRegistryEncryption {
+                    agent_id: agent_id.clone(),
+                    instance_id: instance_id.clone(),
+                    bus_type: value.to_string(),
+                },
+            };
+        }
+        InputPurpose::AddDiskRegistryEncryption {
+            agent_id,
+            instance_id,
+            bus_type,
+        } => {
+            app.screen = Screen::TextInput {
+                prompt: "Model (or leave empty):".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::AddDiskRegistryModel {
+                    agent_id: agent_id.clone(),
+                    instance_id: instance_id.clone(),
+                    bus_type: bus_type.clone(),
+                    encryption_status: value.to_string(),
+                },
+            };
+        }
+        InputPurpose::AddDiskRegistryModel {
+            agent_id,
+            instance_id,
+            bus_type,
+            encryption_status,
+        } => {
+            let body = serde_json::json!({
+                "agent_id": agent_id,
+                "instance_id": instance_id,
+                "bus_type": bus_type,
+                "encryption_status": encryption_status,
+                "model": value,
+            });
+            match app.rt.block_on(
+                app.client
+                    .post::<serde_json::Value, _>("admin/disk-registry", &body),
+            ) {
+                Ok(_) => {
+                    app.set_status("Disk registry entry added.", StatusKind::Success);
+                    action_load_disk_registry_list(app);
+                }
+                Err(e) => {
+                    app.set_status(
+                        format!("Error adding disk entry: {e}"),
+                        StatusKind::Error,
+                    );
+                    app.screen = Screen::DevicesMenu { selected: 3 };
                 }
             }
         }
@@ -472,6 +560,7 @@ fn on_confirm_yes(app: &mut App, purpose: &ConfirmPurpose) {
         ConfirmPurpose::DeletePolicy { id } => action_delete_policy(app, id),
         ConfirmPurpose::DeleteDevice { id } => action_delete_device(app, id),
         ConfirmPurpose::DeleteManagedOrigin { id } => action_delete_managed_origin(app, id),
+        ConfirmPurpose::DeleteDiskRegistry { id } => action_delete_disk_registry(app, id),
     }
 }
 
@@ -483,6 +572,7 @@ fn on_confirm_cancel(app: &mut App, purpose: &ConfirmPurpose) {
         // Device/origin delete cancel: return to the respective list.
         ConfirmPurpose::DeleteDevice { .. } => action_load_device_list(app),
         ConfirmPurpose::DeleteManagedOrigin { .. } => action_load_managed_origin_list(app),
+        ConfirmPurpose::DeleteDiskRegistry { .. } => action_load_disk_registry_list(app),
     }
 }
 
@@ -3819,7 +3909,7 @@ fn handle_devices_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        KeyCode::Up | KeyCode::Down => nav(selected, 3, key.code),
+        KeyCode::Up | KeyCode::Down => nav(selected, 4, key.code),
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 3 },
         KeyCode::Enter => {
             let idx = *selected;
@@ -3827,6 +3917,7 @@ fn handle_devices_menu(app: &mut App, key: KeyEvent) {
                 0 => action_load_device_list(app),
                 1 => action_load_managed_origin_list(app),
                 2 => action_open_usb_scan(app),
+                3 => action_load_disk_registry_list(app),
                 _ => {}
             }
         }
@@ -4253,6 +4344,91 @@ fn action_delete_managed_origin(app: &mut App, id: &str) {
         Err(e) => {
             app.set_status(format!("Error deleting origin: {e}"), StatusKind::Error);
             app.screen = Screen::DevicesMenu { selected: 1 };
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Disk Registry screen
+// ---------------------------------------------------------------------------
+
+/// Loads the disk registry list from the server and navigates to DiskRegistryList.
+fn action_load_disk_registry_list(app: &mut App) {
+    match app.rt.block_on(
+        app.client
+            .get::<Vec<serde_json::Value>>("admin/disk-registry"),
+    ) {
+        Ok(disks) => {
+            app.screen = Screen::DiskRegistryList {
+                disks,
+                selected: 0,
+            };
+        }
+        Err(e) => {
+            app.set_status(format!("Error loading disk registry: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+/// Handles key events for the disk registry list screen.
+fn handle_disk_registry_list(app: &mut App, key: KeyEvent) {
+    let disks_len = match &app.screen {
+        Screen::DiskRegistryList { disks, .. } => disks.len(),
+        _ => return,
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if disks_len == 0 {
+                return;
+            }
+            if let Screen::DiskRegistryList { selected, .. } = &mut app.screen {
+                nav(selected, disks_len, key.code);
+            }
+        }
+        // `a` starts the 5-field add flow.
+        KeyCode::Char('a') => {
+            app.screen = Screen::TextInput {
+                prompt: "Agent ID:".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::AddDiskRegistryAgentId,
+            };
+        }
+        // `d` opens delete confirmation for the selected entry.
+        KeyCode::Char('d') => {
+            if disks_len == 0 {
+                return;
+            }
+            let id = match &app.screen {
+                Screen::DiskRegistryList { disks, selected } => {
+                    disks[*selected]["id"].as_str().unwrap_or("").to_string()
+                }
+                _ => return,
+            };
+            if id.is_empty() {
+                return;
+            }
+            app.screen = Screen::Confirm {
+                message: format!("Delete disk registry entry {id}?"),
+                yes_selected: true,
+                purpose: ConfirmPurpose::DeleteDiskRegistry { id },
+            };
+        }
+        KeyCode::Esc => app.screen = Screen::DevicesMenu { selected: 3 },
+        _ => {}
+    }
+}
+
+/// Deletes a disk registry entry by UUID and reloads the list.
+fn action_delete_disk_registry(app: &mut App, id: &str) {
+    let path = format!("admin/disk-registry/{id}");
+    match app.rt.block_on(app.client.delete(&path)) {
+        Ok(()) => {
+            app.set_status("Disk registry entry deleted.", StatusKind::Success);
+            action_load_disk_registry_list(app);
+        }
+        Err(e) => {
+            app.set_status(format!("Error deleting disk entry: {e}"), StatusKind::Error);
+            app.screen = Screen::DevicesMenu { selected: 3 };
         }
     }
 }

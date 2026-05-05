@@ -1,0 +1,241 @@
+{
+  "version": 1,
+  "exported_at": "2026-05-05T20:38:12.651Z",
+  "milestones": [
+    {
+      "id": "M001",
+      "title": "v0.7.0 Disk Exfiltration Prevention",
+      "status": "in_progress",
+      "depends_on": [],
+      "created_at": "2026-05-05T20:33:05.641Z",
+      "completed_at": null,
+      "vision": "Prevent data exfiltration via unregistered fixed disks. Install-time disk allowlist with encryption verification, runtime I/O blocking, server-side registry, and admin TUI management. 14 of 15 requirements validated through Phases 33-38.2; one remaining: ADMIN-04 (Disk Registry TUI screen).",
+      "success_criteria": [
+        "All 15 disk exfiltration requirements validated (DISK-01..05, CRYPT-01..02, ADMIN-01..05, AUDIT-01..03)",
+        "Disk Registry TUI screen operational: list, add, remove disks from the admin CLI",
+        "No regressions in existing disk enforcement pipeline (208+ disk-related unit tests pass)",
+        "Admin can manage disk allowlist end-to-end: API + TUI"
+      ],
+      "key_risks": [
+        {
+          "risk": "TUI screen integration with existing dlp-admin-cli Screen enum and dispatch pattern",
+          "whyItMatters": "The admin CLI has a well-established pattern (Screen enum variants + dispatch + render). Adding a new screen must follow existing conventions exactly or it breaks the dispatch loop."
+        }
+      ],
+      "proof_strategy": [],
+      "verification_contract": "",
+      "verification_integration": "",
+      "verification_operational": "",
+      "verification_uat": "",
+      "definition_of_done": [],
+      "requirement_coverage": "ADMIN-04 is the sole remaining active requirement. All other 14 requirements (DISK-01..05, CRYPT-01..02, ADMIN-01..03, ADMIN-05, AUDIT-01..03) are validated through Phases 33-38.2.",
+      "boundary_map_markdown": "Not provided.",
+      "sequence": 0
+    }
+  ],
+  "slices": [
+    {
+      "milestone_id": "M001",
+      "id": "S01",
+      "title": "Disk Registry TUI Screen",
+      "status": "pending",
+      "risk": "low",
+      "depends": [],
+      "demo": "Admin navigates to System > Disk Registry, sees fleet-wide disk list, can add/remove entries",
+      "created_at": "2026-05-05T20:33:05.641Z",
+      "completed_at": null,
+      "full_summary_md": "",
+      "full_uat_md": "",
+      "goal": "Admin can navigate to Devices > Disk Registry in the TUI, see a table of fleet-wide disk entries (agent_id, instance_id, bus_type, encryption, model), add new entries via text input, and delete selected entries. Backed by existing GET/POST/DELETE /admin/disk-registry API.",
+      "success_criteria": "1. DevicesMenu shows 4 items including \"Disk Registry\" as index 3\n2. Selecting Disk Registry fetches GET /admin/disk-registry and renders a scrollable table\n3. Pressing 'a' opens a multi-field text input flow to POST a new disk entry\n4. Pressing 'd' on a selected row sends DELETE and refreshes the list\n5. Esc returns to DevicesMenu with correct selected index\n6. All existing TUI tests pass with no regressions\n7. New unit tests cover navigation, key dispatch, and render for the disk registry screen",
+      "proof_level": "unit-tests + manual TUI verification",
+      "integration_closure": "",
+      "observability_impact": "",
+      "sequence": 1,
+      "replan_triggered_at": null,
+      "is_sketch": 0,
+      "sketch_scope": ""
+    }
+  ],
+  "tasks": [
+    {
+      "milestone_id": "M001",
+      "slice_id": "S01",
+      "id": "T01",
+      "title": "Add DiskRegistryList screen variant and InputPurpose variants",
+      "status": "pending",
+      "one_liner": "",
+      "narrative": "",
+      "verification_result": "",
+      "duration": "",
+      "completed_at": null,
+      "blocker_discovered": false,
+      "deviations": "",
+      "known_issues": "",
+      "key_files": [],
+      "key_decisions": [],
+      "full_summary_md": "",
+      "description": "Add Screen::DiskRegistryList { disks: Vec<serde_json::Value>, selected: usize } to the Screen enum in app.rs. Add InputPurpose variants for the multi-field add flow (AddDiskAgentId, AddDiskInstanceId, AddDiskBusType, AddDiskModel). Add the new screen to DevicesMenu as index 3, update nav() count from 3 to 4. Wire the new variant into the exhaustive matches in dispatch.rs and render.rs with placeholder arms.",
+      "estimate": "20min",
+      "files": [
+        "dlp-admin-cli/src/app.rs",
+        "dlp-admin-cli/src/screens/dispatch.rs",
+        "dlp-admin-cli/src/screens/render.rs"
+      ],
+      "verify": "cargo build --package dlp-admin-cli compiles with no warnings",
+      "inputs": [
+        "Existing Screen enum pattern",
+        "DevicesMenu handler at dispatch.rs:3816"
+      ],
+      "expected_output": [
+        "Screen::DiskRegistryList variant in app.rs",
+        "InputPurpose::AddDisk* variants in app.rs",
+        "DevicesMenu index 3 wired to action_load_disk_registry_list stub",
+        "Placeholder match arms in render.rs and dispatch.rs"
+      ],
+      "observability_impact": "",
+      "full_plan_md": "",
+      "sequence": 0,
+      "blocker_source": "",
+      "escalation_pending": 0,
+      "escalation_awaiting_review": 0,
+      "escalation_artifact_path": null,
+      "escalation_override_applied_at": null
+    },
+    {
+      "milestone_id": "M001",
+      "slice_id": "S01",
+      "id": "T02",
+      "title": "Implement load, delete, and add actions with dispatch handlers",
+      "status": "pending",
+      "one_liner": "",
+      "narrative": "",
+      "verification_result": "",
+      "duration": "",
+      "completed_at": null,
+      "blocker_discovered": false,
+      "deviations": "",
+      "known_issues": "",
+      "key_files": [],
+      "key_decisions": [],
+      "full_summary_md": "",
+      "description": "Implement action_load_disk_registry_list() calling client.get('admin/disk-registry'). Implement handle_disk_registry_list() dispatching Up/Down for navigation, 'd' for delete (client.delete with row's id field, then reload), 'a' to enter TextInput chain for adding a disk (5 fields: agent_id, instance_id, bus_type, encryption_status, model), Esc to return to DevicesMenu { selected: 3 }. Implement the TextInput completion handler for AddDisk* purposes that chains fields then POSTs to admin/disk-registry. Follow the ManagedOriginList add/delete pattern closely.",
+      "estimate": "45min",
+      "files": [
+        "dlp-admin-cli/src/screens/dispatch.rs",
+        "dlp-admin-cli/src/app.rs"
+      ],
+      "verify": "cargo build --package dlp-admin-cli compiles with no warnings; cargo clippy --package dlp-admin-cli -- -D warnings passes",
+      "inputs": [
+        "action_load_device_list pattern at dispatch.rs:3838",
+        "action_load_managed_origin_list pattern at dispatch.rs:3856",
+        "handle_managed_origin_list delete/add pattern",
+        "POST /admin/disk-registry expects: agent_id, instance_id, bus_type, encryption_status, model"
+      ],
+      "expected_output": [
+        "action_load_disk_registry_list() function",
+        "handle_disk_registry_list() function with Up/Down/d/a/Esc handlers",
+        "TextInput completion arms for AddDiskAgentId through AddDiskModel",
+        "POST body construction and reload on success"
+      ],
+      "observability_impact": "",
+      "full_plan_md": "",
+      "sequence": 0,
+      "blocker_source": "",
+      "escalation_pending": 0,
+      "escalation_awaiting_review": 0,
+      "escalation_artifact_path": null,
+      "escalation_override_applied_at": null
+    },
+    {
+      "milestone_id": "M001",
+      "slice_id": "S01",
+      "id": "T03",
+      "title": "Implement draw_disk_registry_list render function",
+      "status": "pending",
+      "one_liner": "",
+      "narrative": "",
+      "verification_result": "",
+      "duration": "",
+      "completed_at": null,
+      "blocker_discovered": false,
+      "deviations": "",
+      "known_issues": "",
+      "key_files": [],
+      "key_decisions": [],
+      "full_summary_md": "",
+      "description": "Add draw_disk_registry_list(frame, area, disks, selected) to render.rs. Display a table with columns: Agent ID, Instance ID, Bus Type, Encrypted, Model. Use the same table rendering pattern as draw_device_list or draw_managed_origin_list. Highlight the selected row. Show hints: 'a: Add  d: Delete  Esc: Back'. Handle empty list with a centered message. Wire the DiskRegistryList match arm in draw_screen() to call this function.",
+      "estimate": "30min",
+      "files": [
+        "dlp-admin-cli/src/screens/render.rs"
+      ],
+      "verify": "cargo build --package dlp-admin-cli compiles; cargo clippy --package dlp-admin-cli -- -D warnings passes",
+      "inputs": [
+        "draw_device_list pattern in render.rs",
+        "draw_managed_origin_list pattern in render.rs",
+        "DiskRegistryResponse fields: id, agent_id, instance_id, bus_type, encryption_status, model, registered_at"
+      ],
+      "expected_output": [
+        "draw_disk_registry_list() function in render.rs",
+        "Table with 5 columns rendering disk entries",
+        "Hint bar showing available keybindings",
+        "Empty-state message when no disks exist"
+      ],
+      "observability_impact": "",
+      "full_plan_md": "",
+      "sequence": 0,
+      "blocker_source": "",
+      "escalation_pending": 0,
+      "escalation_awaiting_review": 0,
+      "escalation_artifact_path": null,
+      "escalation_override_applied_at": null
+    },
+    {
+      "milestone_id": "M001",
+      "slice_id": "S01",
+      "id": "T04",
+      "title": "Add unit tests for disk registry TUI screen",
+      "status": "pending",
+      "one_liner": "",
+      "narrative": "",
+      "verification_result": "",
+      "duration": "",
+      "completed_at": null,
+      "blocker_discovered": false,
+      "deviations": "",
+      "known_issues": "",
+      "key_files": [],
+      "key_decisions": [],
+      "full_summary_md": "",
+      "description": "Add unit tests in dispatch.rs and render.rs test modules covering: (1) DevicesMenu now has 4 items and index 3 opens DiskRegistryList, (2) DiskRegistryList Esc returns to DevicesMenu { selected: 3 }, (3) DevicesMenu nav wraps at 4 (update existing wrap test), (4) draw_disk_registry_list renders without panic for empty and non-empty disk lists, (5) handle_disk_registry_list Up/Down navigation. Follow existing test patterns (make_test_app, simulate_key).",
+      "estimate": "30min",
+      "files": [
+        "dlp-admin-cli/src/screens/dispatch.rs",
+        "dlp-admin-cli/src/screens/render.rs"
+      ],
+      "verify": "cargo test --package dlp-admin-cli passes all tests including new ones",
+      "inputs": [
+        "Existing DevicesMenu test patterns at dispatch.rs:4973",
+        "Existing render test patterns",
+        "make_test_app helper"
+      ],
+      "expected_output": [
+        "Test: devices_menu_idx_3_opens_disk_registry",
+        "Test: disk_registry_esc_returns_to_devices_menu",
+        "Test: devices_menu_nav_wraps_with_four_items (updated)",
+        "Test: draw_disk_registry_list_empty and draw_disk_registry_list_nonempty",
+        "Test: disk_registry_nav_up_down"
+      ],
+      "observability_impact": "",
+      "full_plan_md": "",
+      "sequence": 0,
+      "blocker_source": "",
+      "escalation_pending": 0,
+      "escalation_awaiting_review": 0,
+      "escalation_artifact_path": null,
+      "escalation_override_applied_at": null
+    }
+  ],
+  "decisions": [],
+  "verification_evidence": []
+}
