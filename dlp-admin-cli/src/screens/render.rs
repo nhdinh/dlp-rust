@@ -2106,43 +2106,67 @@ fn draw_managed_origin_list(
     draw_hints(frame, area, "a: Add   d: Delete   Esc: Back");
 }
 
-/// Draws the disk-registry list screen.
+/// Draws the disk-registry list screen as a 5-column ratatui `Table`.
 ///
-/// Columns: Agent ID, Instance ID, Bus Type, Encrypted, Model.
-/// T03 will flesh out full table rendering; this is the placeholder
-/// that compiles and renders a basic list.
+/// Columns: Agent ID | Instance ID | Bus Type | Encrypted | Model.
 fn draw_disk_registry_list(
     frame: &mut Frame,
     area: Rect,
     disks: &[serde_json::Value],
     selected: usize,
 ) {
-    let items: Vec<ListItem> = if disks.is_empty() {
-        vec![ListItem::new(Line::from(
-            "No disk registry entries.".to_string(),
-        ))]
-    } else {
-        disks
-            .iter()
-            .map(|d| {
-                let agent = d["agent_id"].as_str().unwrap_or("-");
-                let inst = d["instance_id"].as_str().unwrap_or("-");
-                let bus = d["bus_type"].as_str().unwrap_or("-");
-                let enc = d["encryption_status"].as_str().unwrap_or("-");
-                let model = d["model"].as_str().unwrap_or("");
-                let line = format!("[{bus}] {agent} | {inst} | {enc} | {model}");
-                ListItem::new(Line::from(line))
-            })
-            .collect()
-    };
+    if disks.is_empty() {
+        let paragraph = Paragraph::new("No disk registry entries.")
+            .block(
+                Block::default()
+                    .title(" Disk Registry (0) ")
+                    .borders(Borders::ALL),
+            )
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(paragraph, area);
+        draw_hints(frame, area, "a: Add   Esc: Back");
+        return;
+    }
 
-    let list = List::new(items)
+    let header = Row::new(vec![
+        "Agent ID",
+        "Instance ID",
+        "Bus Type",
+        "Encrypted",
+        "Model",
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD))
+    .bottom_margin(1);
+
+    let rows: Vec<Row> = disks
+        .iter()
+        .map(|d| {
+            Row::new(vec![
+                d["agent_id"].as_str().unwrap_or("-").to_string(),
+                d["instance_id"].as_str().unwrap_or("-").to_string(),
+                d["bus_type"].as_str().unwrap_or("-").to_string(),
+                d["encryption_status"].as_str().unwrap_or("-").to_string(),
+                d["model"].as_str().unwrap_or("").to_string(),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(20), // Agent ID
+        Constraint::Percentage(25), // Instance ID
+        Constraint::Percentage(12), // Bus Type
+        Constraint::Percentage(13), // Encrypted
+        Constraint::Percentage(30), // Model
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
         .block(
             Block::default()
                 .title(format!(" Disk Registry ({}) ", disks.len()))
                 .borders(Borders::ALL),
         )
-        .highlight_style(
+        .row_highlight_style(
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
@@ -2150,11 +2174,9 @@ fn draw_disk_registry_list(
         )
         .highlight_symbol("> ");
 
-    let mut state = ratatui::widgets::ListState::default();
-    if !disks.is_empty() {
-        state.select(Some(selected));
-    }
-    frame.render_stateful_widget(list, area, &mut state);
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(table, area, &mut state);
 
     draw_hints(frame, area, "a: Add   d: Delete   Esc: Back");
 }
