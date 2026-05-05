@@ -405,6 +405,7 @@ fn apply_tier_enforcement(letter: char, identity: &DeviceIdentity) {
         };
         match tier {
             UsbTrustTier::Blocked => {
+                // Layer 1: PnP disable (primary enforcement).
                 if let Err(e) =
                     controller.disable_usb_device(&identity.vid, &identity.pid, &identity.serial)
                 {
@@ -422,6 +423,12 @@ fn apply_tier_enforcement(letter: char, identity: &DeviceIdentity) {
                         pid = %identity.pid,
                         "USB device disabled (Blocked tier)"
                     );
+                }
+                // Layer 2: DACL deny-all (defense-in-depth fallback).
+                if let Err(e) = controller.set_volume_deny_all(letter) {
+                    warn!(drive = %letter, error = %e, "failed to set volume deny-all");
+                } else {
+                    info!(drive = %letter, "volume set to deny-all (Blocked tier defense-in-depth)");
                 }
             }
             UsbTrustTier::ReadOnly => {
