@@ -43,6 +43,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.6.0-
 - [x] **Phase 36: Disk Enforcement** - Agent blocks I/O to unregistered fixed disks and handles device arrivals/removals (Complete 2026-05-04)
 - [x] **Phase 37: Server-Side Disk Registry** - Admin can centrally manage disk allowlist via REST API (Complete 2026-05-04)
 - [ ] **Phase 38: Admin TUI Disk Registry** - Admin can manage disk registry through the interactive TUI
+- [ ] **Phase 38.2: USB Enforcement Fix — Blocked Device I/O (INSERTED)** — Fix registered blocked USB devices where DENY is logged but writes still succeed
 
 ## Phase Details
 
@@ -149,6 +150,17 @@ Plans:
 - [x] 38.1-02-PLAN.md -- dispatch.rs: LDAP_KEYS + helpers + action_load/save_ldap_config + handle_ldap_config family + SystemMenu expansion + handle_event arm
 - [x] 38.1-03-PLAN.md -- render.rs: LDAP_FIELD_LABELS + is_ldap_bool/numeric + draw_ldap_config + SystemMenu label expansion + draw_screen arm + manual TUI checkpoint
 
+### Phase 38.2: USB Enforcement Fix — Blocked Device I/O (INSERTED)
+**Goal**: Fix the USB enforcement gap where registered blocked devices log DENY decisions but writes still succeed. Ensure DeviceController::disable_usb_device fires at PnP level for all registered blocked USB devices, preventing file I/O before it reaches the filesystem.
+**Depends on**: Phase 31
+**Requirements**: USB-03
+**Success Criteria** (what must be TRUE):
+  1. When a USB device registered with trust_tier=blocked is plugged in, DeviceController::disable_usb_device is called synchronously in the arrival handler
+  2. The device is disabled at the PnP level (CM_Disable_DevNode with CM_DISABLE_ABSOLUTE) before any file I/O can reach the volume
+  3. File writes to the blocked device fail with an OS-level access-denied error instead of succeeding silently
+  4. Audit BLOCK/DENY events still fire as before, but now reflect actual enforcement rather than audit-only observation
+**Plans**: TBD
+
 ## Progress
 
 | Phase | Name | Milestone | Plans | Status | Completed |
@@ -193,6 +205,7 @@ Plans:
 | 37 | Server-Side Disk Registry | v0.7.0 | 0/3 | Planned | - |
 | 38 | Admin TUI Disk Registry | v0.7.0 | 0/TBD | Not started | - |
 | 38.1 | LDAP Config TUI | v0.7.0 | 0/3 | Planned | - |
+| 38.2 | USB Enforcement Fix | v0.7.0 | 0/TBD | Inserted | - |
 
 ## v0.3.0 - Operational Hardening (Shipped)
 
