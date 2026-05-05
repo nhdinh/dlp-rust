@@ -285,6 +285,17 @@ pub const SIMULATE_ROW_COUNT: usize = 10;
 pub const SIMULATE_SUBMIT_ROW: usize = 9;
 
 // ---------------------------------------------------------------------------
+// LDAP Config supporting constants (Phase 38.1)
+// ---------------------------------------------------------------------------
+
+/// Total row count for the LDAP config form: 5 editable fields + Save + Back = 7.
+pub const LDAP_ROW_COUNT: usize = 7;
+/// Row index of the [ Save ] action button.
+pub const LDAP_SAVE_ROW: usize = 5;
+/// Row index of the [ Back ] action button.
+pub const LDAP_BACK_ROW: usize = 6;
+
+// ---------------------------------------------------------------------------
 // Import / Export supporting types
 // ---------------------------------------------------------------------------
 
@@ -445,6 +456,31 @@ pub enum Screen {
         /// Currently loaded config as a JSON object.
         config: serde_json::Value,
         /// Index of the selected row (0..=11).
+        selected: usize,
+        /// Whether the selected text field is in edit mode.
+        editing: bool,
+        /// Buffered input while editing.
+        buffer: String,
+    },
+    /// LDAP / Active Directory configuration form.
+    ///
+    /// Navigable list of 7 rows (5 editable fields + Save + Back). When
+    /// `editing` is true, keystrokes append to `buffer`; Enter commits the
+    /// buffer into the selected field of `config`. Row 3 (`cache_ttl_secs`) is
+    /// the only numeric field; it is parsed as `u64` on commit and validated
+    /// to be in the inclusive range [60, 3600].
+    ///
+    /// Editable field order (row index -> JSON key):
+    /// 0: ldap_url, 1: base_dn, 2: require_tls (bool toggle),
+    /// 3: cache_ttl_secs (numeric), 4: vpn_subnets.
+    /// Row 5 = [ Save ], Row 6 = [ Back ].
+    ///
+    /// Round-trips through `GET`/`PUT /admin/ldap-config`, deserializing into
+    /// the server's `LdapConfigPayload` shape (see `dlp-server/src/admin_api.rs`).
+    LdapConfig {
+        /// Currently loaded config as a JSON object.
+        config: serde_json::Value,
+        /// Index of the selected row (0..=6).
         selected: usize,
         /// Whether the selected text field is in edit mode.
         editing: bool,
