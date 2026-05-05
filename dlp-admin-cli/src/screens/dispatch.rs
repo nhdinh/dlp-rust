@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use crate::app::{
     App, CallerScreen, ConditionAttribute, ConfirmPurpose, ImportCaller, ImportState, InputPurpose,
+    LDAP_BACK_ROW, LDAP_ROW_COUNT, LDAP_SAVE_ROW,
     PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState, SimulateOutcome,
     StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES,
 };
@@ -38,6 +39,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::Confirm { .. } => handle_confirm(app, key),
         Screen::SiemConfig { .. } => handle_siem_config(app, key),
         Screen::AlertConfig { .. } => handle_alert_config(app, key),
+        Screen::LdapConfig { .. } => handle_ldap_config(app, key),
         Screen::ConditionsBuilder { .. } => handle_conditions_builder(app, key),
         Screen::PolicyCreate { .. } => handle_policy_create(app, key),
         Screen::PolicyEdit { .. } => handle_policy_edit(app, key),
@@ -203,13 +205,15 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        KeyCode::Up | KeyCode::Down => nav(selected, 5, key.code),
+        // Phase 38.1: expanded from 5 to 6 items — added "LDAP Config" at index 4.
+        KeyCode::Up | KeyCode::Down => nav(selected, 6, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
             2 => action_load_siem_config(app),
             3 => action_load_alert_config(app),
-            4 => app.screen = Screen::MainMenu { selected: 2 },
+            4 => action_load_ldap_config(app),
+            5 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
