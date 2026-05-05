@@ -1989,12 +1989,7 @@ fn draw_device_list(frame: &mut Frame, area: Rect, devices: &[serde_json::Value]
 /// Already-registered devices show their current trust tier in the Registered
 /// column; unregistered devices show `-` (per Phase 32 D-04).
 /// Renders a hint footer: `r: Scan   Up/Down: Navigate   Enter: Register   Esc: Back`.
-fn draw_usb_scan(
-    frame: &mut Frame,
-    area: Rect,
-    devices: &[UsbScanEntry],
-    selected: usize,
-) {
+fn draw_usb_scan(frame: &mut Frame, area: Rect, devices: &[UsbScanEntry], selected: usize) {
     let header = Row::new(vec!["VID", "PID", "Serial", "Description", "Registered"])
         .style(Style::default().add_modifier(Modifier::BOLD))
         .bottom_margin(1);
@@ -2148,6 +2143,155 @@ fn draw_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     };
     let paragraph = Paragraph::new(Line::from(text).style(style));
     frame.render_widget(paragraph, area);
+}
+
+// ---------------------------------------------------------------------------
+// LDAP Config (Phase 38.1)
+// ---------------------------------------------------------------------------
+
+/// Display labels for each row of the LDAP config form (in display order).
+///
+/// 5 editable fields + Save + Back = 7 total rows. The order MUST match
+/// `LDAP_KEYS` in `dlp-admin-cli/src/screens/dispatch.rs` so each row's
+/// label aligns with the JSON key it edits.
+const LDAP_FIELD_LABELS: [&str; 7] = [
+    "LDAP URL",
+    "Base DN",
+    "Require TLS",
+    "Cache TTL (secs)",
+    "VPN Subnets",
+    "[ Save ]",
+    "[ Back ]",
+];
+
+/// Returns `true` when a row index corresponds to the boolean `require_tls` field.
+fn is_ldap_bool(index: usize) -> bool {
+    matches!(index, 2)
+}
+
+/// Returns `true` when a row index corresponds to the numeric `cache_ttl_secs` field.
+fn is_ldap_numeric(index: usize) -> bool {
+    matches!(index, 3)
+}
+
+/// Draws the LDAP / Active Directory configuration form.
+///
+/// # Arguments
+///
+/// * `frame` - ratatui frame to render into
+/// * `area` - screen area allocated to the form
+/// * `config` - current config payload as a JSON object (loaded from the server)
+/// * `selected` - index of the currently highlighted row (0..=6)
+/// * `editing` - `true` when the highlighted text/numeric field is in edit mode
+/// * `buffer` - edit buffer contents (only meaningful when `editing` is `true`)
+fn draw_ldap_config(
+    frame: &mut Frame,
+    area: Rect,
+    config: &serde_json::Value,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+) {
+    // Map row index -> JSON key for editable fields. The 5 keys here match
+    // the on-wire `LdapConfigPayload` field names from
+    // `dlp-server/src/admin_api.rs` exactly.
+    const KEYS: [&str; 5] = [
+        "ldap_url",
+        "base_dn",
+        "require_tls",
+        "cache_ttl_secs",
+        "vpn_subnets",
+    ];
+
+    let mut items: Vec<ListItem> = Vec::with_capacity(LDAP_FIELD_LABELS.len());
+    for (i, label) in LDAP_FIELD_LABELS.iter().enumerate() {
+        let line = if i < KEYS.len() {
+            let key = KEYS[i];
+            let value_display = if editing && i == selected {
+                // Show buffer with trailing cursor marker.
+                format!("[{buffer}_]")
+            } else if is_ldap_bool(i) {
+                let b = config[key].as_bool().unwrap_or(false);
+                if b {
+                    "[x]".to_string()
+                } else {
+                    "[ ]".to_string()
+                }
+            } else if is_ldap_numeric(i) {
+                // cache_ttl_secs is stored as a JSON number; default to 300 if absent.
+                let n = config[key].as_u64().unwrap_or(300);
+                n.to_string()
+            } else {
+                let v = config[key].as_str().unwrap_or("");
+                if v.is_empty() {
+                    "(empty)".to_string()
+                } else {
+                    v.to_string()
+                }
+            };
+            format!("{label}: {value_display}")
+        } else {
+            // Save / Back action rows.
+            (*label).to_string()
+        };
+        items.push(ListItem::new(Line::from(line)));
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" LDAP Config ")
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut state);
+
+    let hints = if editing {
+        "Type to edit | Enter: commit | Esc: cancel"
+    } else {
+        "Up/Down: navigate | Enter: edit/toggle | Esc: back"
+    };
+    draw_hints(frame, area, hints);
+}
+
+#[cfg(test)]
+mod ldap_render_tests {
+    use super::*;
+
+    #[test]
+    fn ldap_field_labels_are_seven_in_order() {
+        assert_eq!(LDAP_FIELD_LABELS.len(), 7);
+        assert_eq!(LDAP_FIELD_LABELS[0], "LDAP URL");
+        assert_eq!(LDAP_FIELD_LABELS[1], "Base DN");
+        assert_eq!(LDAP_FIELD_LABELS[2], "Require TLS");
+        assert_eq!(LDAP_FIELD_LABELS[3], "Cache TTL (secs)");
+        assert_eq!(LDAP_FIELD_LABELS[4], "VPN Subnets");
+        assert_eq!(LDAP_FIELD_LABELS[5], "[ Save ]");
+        assert_eq!(LDAP_FIELD_LABELS[6], "[ Back ]");
+    }
+
+    #[test]
+    fn is_ldap_bool_only_matches_row_2() {
+        for i in 0..LDAP_FIELD_LABELS.len() {
+            assert_eq!(is_ldap_bool(i), i == 2);
+        }
+    }
+
+    #[test]
+    fn is_ldap_numeric_only_matches_row_3() {
+        for i in 0..LDAP_FIELD_LABELS.len() {
+            assert_eq!(is_ldap_numeric(i), i == 3);
+        }
+    }
 }
 
 #[cfg(test)]
