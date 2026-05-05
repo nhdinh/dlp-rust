@@ -91,6 +91,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                     "Agent List",
                     "SIEM Config",
                     "Alert Config",
+                    "LDAP Config",
                     "Back",
                 ],
                 *selected,
@@ -140,6 +141,14 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             buffer,
         } => {
             draw_alert_config(frame, area, config, *selected, *editing, buffer);
+        }
+        Screen::LdapConfig {
+            config,
+            selected,
+            editing,
+            buffer,
+        } => {
+            draw_ldap_config(frame, area, config, *selected, *editing, buffer);
         }
         Screen::ConditionsBuilder {
             step,
