@@ -1,0 +1,71 @@
+{
+  "phase": "38.2",
+  "phase_name": "usb-enforcement-fix-blocked-device-io",
+  "timestamp": "2026-05-05T05:50:00Z",
+  "areas_completed": ["Wiring failure mode"],
+  "areas_remaining": ["AGENT-UNKNOWN scope", "Re-plug & tier-change semantics", "Drive-letter mislabel"],
+  "decisions": {
+    "Wiring failure mode": [
+      {
+        "question": "Which is THE root cause of disable_usb_device not firing?",
+        "answer": "Other / let's discuss",
+        "options_presented": ["Startup race", "Registry cache race", "Missing dispatch", "Other"],
+        "follow_up": "User wants outcome-driven framing, not root-cause picking. Reframed."
+      },
+      {
+        "question": "What's the success criterion for Phase 38.2?",
+        "answer": "Defense in depth (initially)",
+        "options_presented": ["Bulletproof PnP", "Defense in depth", "Minimum viable fix"]
+      },
+      {
+        "question": "Re-scoping check — ROADMAP only covers PnP. Match your intent?",
+        "answer": "Expand 38.2 scope (initially)",
+        "options_presented": ["Bulletproof PnP + DACL fallback", "Bulletproof PnP only", "Expand 38.2 scope"]
+      },
+      {
+        "question": "Which I/O interception layer for 38.2?",
+        "answer": "API hooking (initially) — then redirected to PnP+DACL after pitfalls explained",
+        "options_presented": ["Volume DACL deny-all", "Minifilter driver", "API hooking", "Step back — PnP + DACL only"]
+      },
+      {
+        "question": "After hearing API hooking pitfalls, do you still want it?",
+        "answer": "Asked clarifying question: 'do PnP + DACL provide realtime defending?'",
+        "options_presented": ["Keep API hooking", "Switch to PnP + DACL", "Switch to PnP + DACL, defer minifilter"]
+      },
+      {
+        "question": "Does PnP + DACL meet your real-time-defense requirement?",
+        "answer": "PnP + DACL (real-time, both layers)",
+        "options_presented": ["PnP + DACL", "Stick with API hooking", "PnP + DACL now, defer minifilter"]
+      }
+    ]
+  },
+  "locked_decisions": {
+    "scope": "Bulletproof PnP enforcement + Volume DACL deny-all as second OS-enforced layer. Two real-time, OS-enforced layers. No kernel driver, no DLL injection, no signing infrastructure beyond what already exists.",
+    "researcher_focus": "Enumerate every USB plug-in timing path (plug-before-agent, plug-during-startup-window, plug-while-running, server-disconnected, agent-restart-while-plugged) and prove enforcement covers all. Investigate the WR-01 USB_DEVICE↔VOLUME notification race already flagged in Phase 31 verification.",
+    "primary_layer": "PnP — CM_Disable_DevNode with CM_DISABLE_ABSOLUTE (already implemented in device_controller.rs:101)",
+    "secondary_layer": "DACL deny-all on volume root for Blocked tier. Extend the existing set_volume_readonly() pattern; reuse restore_volume_acl() for tier-change cleanup.",
+    "audit_only_pipeline": "The notify-based file watcher remains as observability ONLY. Not relied on for enforcement. May still emit BLOCK events for visibility but the ACTUAL enforcement happens at PnP + DACL layers before file I/O reaches the volume.",
+    "rejected_with_rationale": {
+      "user_mode_API_hooking": "Rejected. Concrete blockers: EDR conflict (Defender/CrowdStrike/SentinelOne detect third-party hooking as malware), PPL processes can't be injected, WoW64 split, AppInit_DLLs deprecated, trivially bypassed via cmd.exe/PowerShell, doesn't catch SYSTEM/kernel I/O, CET shadow-stack incompatibility on Win11. NOT real defense in depth — actually weaker than DACL.",
+      "windows_minifilter": "Deferred to a future phase (likely v0.8.0 or later). Multi-week scope: WDK install, kernel debugging, test signing → EV signing for production, INF/CAT installer, BSOD risk during dev, IPC channel from driver to agent. Out of 38.2 scope per roadmap."
+    }
+  },
+  "deferred_ideas": [
+    "Windows minifilter driver (FltMgr) for kernel-level I/O interception — true defense-in-depth on top of PnP + DACL. Future phase candidate (v0.8.0+).",
+    "Per-process exception lists — minifilter would enable allowing specific processes through (e.g., admin tooling). Out of scope for 38.2."
+  ],
+  "canonical_refs": [
+    ".planning/ROADMAP.md (Phase 38.2 entry, lines 153-162)",
+    ".planning/REQUIREMENTS.md (USB-03)",
+    ".planning/phases/26-abac-enforcement-convergence/26-CONTEXT.md (D-07..D-12 original USB enforcer design)",
+    ".planning/phases/31-usb-cm-blocking/31-01-PLAN.md (PnP wiring plan)",
+    ".planning/phases/31-usb-cm-blocking/31-02-PLAN.md (handler wiring plan)",
+    ".planning/phases/31-usb-cm-blocking/31-VERIFICATION.md (wired confirmation, anti-patterns WR-01..WR-04 and CR-01..CR-02)",
+    ".planning/debug/usb-deny-logged-but-write-succeeds.md (root-cause analysis of the live bug)",
+    "dlp-agent/src/usb_enforcer.rs (UsbEnforcer::check; line 152 known-USB-without-identity branch fires today)",
+    "dlp-agent/src/device_controller.rs (CM_Disable_DevNode and DACL machinery — both layers already implemented)",
+    "dlp-agent/src/detection/usb.rs (Win32 PnP arrival/removal handlers; pending_identity reconciliation; apply_tier_enforcement)",
+    "dlp-agent/src/service.rs (startup wiring of DEVICE_CONTROLLER, REGISTRY_CACHE, USB notifications)",
+    "docs/OPERATIONAL.md (DLP_AGENT_ID env var; lines 60-63, 531)"
+  ]
+}

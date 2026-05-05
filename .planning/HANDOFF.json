@@ -1,45 +1,41 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-05T05:22:29.364Z",
+  "timestamp": "2026-05-05T05:55:00Z",
   "phase": "38.2",
   "phase_name": "usb-enforcement-fix-blocked-device-io",
   "phase_dir": ".planning/phases/38.2-usb-enforcement-fix-blocked-device-io",
   "plan": null,
-  "task": null,
-  "total_tasks": null,
+  "task": "discuss-phase paused after Area 1 locked, 3 areas remaining",
+  "total_tasks": 4,
   "status": "paused",
   "completed_tasks": [
-    {"id": "discuss-step-1", "name": "initialize — loaded init JSON", "status": "done"},
-    {"id": "discuss-step-2", "name": "check_blocking_antipatterns — none in phase dir", "status": "done"},
-    {"id": "discuss-step-3", "name": "check_spec — no SPEC.md", "status": "done"},
-    {"id": "discuss-step-4", "name": "check_existing — no CONTEXT.md, no checkpoint, no plans", "status": "done"},
-    {"id": "discuss-step-5", "name": "load_prior_context — read PROJECT.md, REQUIREMENTS.md, STATE.md, Phase 26 CONTEXT.md", "status": "done"},
-    {"id": "discuss-step-6", "name": "cross_reference_todos — 0 matches", "status": "done"},
-    {"id": "discuss-step-7", "name": "scout_codebase — read usb_enforcer.rs, device_controller.rs end-to-end", "status": "done"},
-    {"id": "discuss-step-8", "name": "analyze_phase — identified 4 phase-specific gray areas", "status": "done"},
-    {"id": "debug-doc-read", "name": "Pre-session: read .planning/debug/usb-deny-logged-but-write-succeeds.md (root cause documented)", "status": "done"}
+    {"id": "discuss-area-1", "name": "Wiring failure mode — LOCKED: PnP + Volume DACL deny-all as two real-time OS-enforced layers; API hooking rejected; minifilter deferred", "status": "done"}
   ],
   "remaining_tasks": [
-    {"id": "discuss-step-9", "name": "present_gray_areas — present the 4 gray areas via AskUserQuestion (multiSelect)", "status": "not_started"},
-    {"id": "discuss-step-10", "name": "discuss_areas — default mode: 4 single-question turns per selected area", "status": "not_started"},
-    {"id": "discuss-step-11", "name": "write_context — write 38.2-CONTEXT.md from template", "status": "not_started"},
-    {"id": "discuss-step-12", "name": "git_commit — write 38.2-DISCUSSION-LOG.md, commit both", "status": "not_started"},
+    {"id": "discuss-area-2", "name": "AGENT-UNKNOWN scope — likely 1 question (in/out of 38.2 scope)", "status": "not_started"},
+    {"id": "discuss-area-3", "name": "Re-plug & tier-change semantics — 2 questions (when enable_usb_device fires; DACL restore on tier change)", "status": "not_started"},
+    {"id": "discuss-area-4", "name": "Drive-letter mislabel — likely 1 question (in/out of 38.2; it's a Phase 33 disk-enum bug)", "status": "not_started"},
+    {"id": "discuss-step-11", "name": "write_context — write 38.2-CONTEXT.md from template (must include locked Area 1 decisions)", "status": "not_started"},
+    {"id": "discuss-step-12", "name": "git_commit — write 38.2-DISCUSSION-LOG.md, commit, delete checkpoint", "status": "not_started"},
     {"id": "discuss-step-13", "name": "update_state — record session in STATE.md", "status": "not_started"},
     {"id": "next-workflow", "name": "/gsd-plan-phase 38.2 (research → plan → verify)", "status": "not_started"}
   ],
   "blockers": [
-    {"description": "Context budget exhaustion mid-flow at 77%. No technical blockers — pre-analysis is captured in .continue-here.md so the next session can skip steps 1-7.", "type": "external", "workaround": "Resume in fresh session; re-read 5 priority files; jump to present_gray_areas with 4 pre-identified areas."}
+    {"description": "Context budget at 70%. Paused at clean state — Area 1 locked and checkpointed; 3 areas remaining + CONTEXT.md write.", "type": "external", "workaround": "Resume in fresh session; read 38.2-DISCUSS-CHECKPOINT.json (Area 1 already locked); continue at Area 2."}
   ],
   "human_actions_pending": [],
   "decisions": [
-    {"decision": "Run /gsd-discuss-phase before /gsd-plan-phase for Phase 38.2", "rationale": "User chose explicit design lock-in over reusing the rich debug doc as context. They want each gray area discussed, not auto-resolved.", "phase": "38.2"},
-    {"decision": "Research enabled for the eventual plan-phase", "rationale": "User explicitly chose 'Research first (Recommended)' over --skip-research at the plan-phase gate.", "phase": "38.2"}
+    {"decision": "Phase 38.2 scope: Bulletproof PnP enforcement (CM_Disable_DevNode) + Volume DACL deny-all as second real-time OS-enforced layer. Two independent layers. No kernel driver, no DLL injection.", "rationale": "Both layers are real-time and OS-enforced. PnP blocks at device tree (lowest layer); DACL blocks at NTFS check. Combined, every plug-in timing race window is covered.", "phase": "38.2"},
+    {"decision": "User-mode API hooking REJECTED with concrete rationale", "rationale": "EDR conflict (Defender/CrowdStrike/SentinelOne detect third-party hooking as malware), PPL processes inaccessible, WoW64 split, AppInit_DLLs deprecated, trivially bypassed via cmd.exe/PowerShell, doesn't catch SYSTEM/kernel I/O, CET incompatibility on Win11. NOT real defense in depth.", "phase": "38.2"},
+    {"decision": "Windows minifilter DEFERRED to future phase (v0.8.0+)", "rationale": "Multi-week kernel work, signing infrastructure (test → EV), BSOD risk during dev, IPC channel design. Out of 38.2 scope per ROADMAP wording.", "phase": "deferred"},
+    {"decision": "notify-based file watcher demoted to observability ONLY", "rationale": "It's a passive watcher (observe AFTER write); cannot block. PnP + DACL handle real enforcement.", "phase": "38.2"}
   ],
   "uncommitted_files": [
     ".planning/STATE.md",
+    ".planning/HANDOFF.json",
     ".planning/phases/38.2-usb-enforcement-fix-blocked-device-io/.continue-here.md",
-    ".planning/HANDOFF.json"
+    ".planning/phases/38.2-usb-enforcement-fix-blocked-device-io/38.2-DISCUSS-CHECKPOINT.json"
   ],
-  "next_action": "Run /gsd-discuss-phase 38.2 in fresh session. The resuming agent must: (1) read .planning/phases/38.2-usb-enforcement-fix-blocked-device-io/.continue-here.md FIRST — pre-analysis is complete; (2) re-read the 5 Required Reading files in order (debug doc, Phase 26 CONTEXT, Phase 31 plans + verification, usb_enforcer.rs, device_controller.rs); (3) grep dlp-agent/src/detection/usb.rs and service.rs for usb_wndproc/DeviceController to identify Phase 31's actual wiring point; (4) resume at the present_gray_areas step with the 4 pre-identified areas (wiring failure mode, AGENT-UNKNOWN scope, re-plug/tier-change semantics, drive-letter mislabel scope); (5) write 38.2-CONTEXT.md and 38.2-DISCUSSION-LOG.md; (6) update STATE.md.",
-  "context_notes": "Mid-discuss-phase for Phase 38.2 (URGENT bug fix — registered blocked USB devices log DENY but writes still succeed). Goal verbatim from ROADMAP: fix the gap where registered blocked devices log DENY but writes succeed; ensure DeviceController::disable_usb_device fires at PnP level for all registered blocked USB devices. Phase requirement: USB-03. Pre-analysis (steps 1-8) is complete and captured in the phase's .continue-here.md. The 4 gray areas are listed there with sub-questions for the user. Highest-impact area is #1 (wiring failure mode) — the next agent should grep for usb_wndproc/DeviceController in detection/usb.rs and service.rs BEFORE asking the user, so concrete code evidence drives the discussion. The notify-based watcher is observe-only; treating its events as enforcement is the live bug. Also surfaced but possibly out of scope for 38.2: AGENT-UNKNOWN agent_id in audit logs, and DISK_DISCOVERY drive-letter mislabel ('C' for a device plugged at F:)."
+  "next_action": "Run /gsd-discuss-phase 38.2 in fresh session. The resuming agent must: (1) read 38.2-DISCUSS-CHECKPOINT.json FIRST — Area 1 is locked and the locked outcome is non-negotiable; (2) read .continue-here.md for the 3 remaining areas' framings; (3) re-read 5 priority files (checkpoint json, .continue-here, debug doc, device_controller.rs, service.rs:759); (4) resume at discuss_areas for Area 2 (AGENT-UNKNOWN), then Area 3 (re-plug semantics), Area 4 (drive-letter mislabel) — these are mostly scoping decisions, 1–2 questions each; (5) write 38.2-CONTEXT.md and 38.2-DISCUSSION-LOG.md; (6) delete checkpoint; (7) update STATE.md.",
+  "context_notes": "Mid-discuss-phase for Phase 38.2 (URGENT bug fix). Area 1 LOCKED with major scope decision: PnP-disable + Volume DACL deny-all (two real-time OS-enforced layers). API hooking REJECTED with rationale; minifilter DEFERRED. 3 areas remaining are scoping decisions, not architecture debates — should be fast. Critical: do NOT re-litigate Area 1. The 38.2-DISCUSS-CHECKPOINT.json contains the full locked-decisions structure that downstream researcher and planner will rely on."
 }
