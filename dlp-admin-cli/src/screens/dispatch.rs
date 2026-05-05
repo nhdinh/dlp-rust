@@ -5160,11 +5160,11 @@ mod tests {
     }
 
     #[test]
-    fn devices_menu_nav_wraps_with_three_items() {
+    fn devices_menu_nav_wraps_with_four_items() {
         let mut app = make_test_app(Screen::DevicesMenu { selected: 0 });
         handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Up)));
         match &app.screen {
-            Screen::DevicesMenu { selected } => assert_eq!(*selected, 2),
+            Screen::DevicesMenu { selected } => assert_eq!(*selected, 3),
             _ => panic!("screen mismatch"),
         }
     }
@@ -5191,6 +5191,88 @@ mod tests {
         let mut app = make_test_app(Screen::UsbScan { devices: vec![], selected: 0 });
         handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Up)));
         assert!(matches!(app.screen, Screen::UsbScan { .. }));
+    }
+
+    #[test]
+    fn devices_menu_idx_3_opens_disk_registry() {
+        let mut app = make_test_app(Screen::DevicesMenu { selected: 3 });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        // action_load_disk_registry_list issues an HTTP GET; with the test client
+        // pointing at a closed port, it returns an error status confirming the route.
+        assert!(
+            matches!(app.status, Some((_, StatusKind::Error)))
+                || matches!(app.screen, Screen::DiskRegistryList { .. }),
+            "expected DiskRegistryList or error status from network call, got {:?}",
+            app.screen,
+        );
+    }
+
+    #[test]
+    fn disk_registry_esc_returns_to_devices_menu() {
+        let mut app = make_test_app(Screen::DiskRegistryList {
+            disks: vec![],
+            selected: 0,
+        });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Esc)));
+        match &app.screen {
+            Screen::DevicesMenu { selected } => assert_eq!(*selected, 3),
+            other => panic!("expected DevicesMenu {{ selected: 3 }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn disk_registry_nav_up_down() {
+        use serde_json::json;
+        let disks = vec![
+            json!({"id": "1", "agent_id": "a1", "instance_id": "i1", "bus_type": "SATA", "encryption_status": "encrypted", "model": "Model A"}),
+            json!({"id": "2", "agent_id": "a2", "instance_id": "i2", "bus_type": "NVMe", "encryption_status": "none", "model": "Model B"}),
+            json!({"id": "3", "agent_id": "a3", "instance_id": "i3", "bus_type": "USB", "encryption_status": "encrypted", "model": "Model C"}),
+        ];
+        let mut app = make_test_app(Screen::DiskRegistryList {
+            disks,
+            selected: 0,
+        });
+
+        // Down from 0 -> 1
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Down)));
+        match &app.screen {
+            Screen::DiskRegistryList { selected, .. } => assert_eq!(*selected, 1),
+            other => panic!("expected DiskRegistryList, got {other:?}"),
+        }
+
+        // Down from 1 -> 2
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Down)));
+        match &app.screen {
+            Screen::DiskRegistryList { selected, .. } => assert_eq!(*selected, 2),
+            other => panic!("expected DiskRegistryList, got {other:?}"),
+        }
+
+        // Down from 2 wraps to 0
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Down)));
+        match &app.screen {
+            Screen::DiskRegistryList { selected, .. } => assert_eq!(*selected, 0),
+            other => panic!("expected DiskRegistryList, got {other:?}"),
+        }
+
+        // Up from 0 wraps to 2
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Up)));
+        match &app.screen {
+            Screen::DiskRegistryList { selected, .. } => assert_eq!(*selected, 2),
+            other => panic!("expected DiskRegistryList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn disk_registry_nav_on_empty_is_noop() {
+        let mut app = make_test_app(Screen::DiskRegistryList {
+            disks: vec![],
+            selected: 0,
+        });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Down)));
+        match &app.screen {
+            Screen::DiskRegistryList { selected, .. } => assert_eq!(*selected, 0),
+            other => panic!("expected DiskRegistryList, got {other:?}"),
+        }
     }
 }
 

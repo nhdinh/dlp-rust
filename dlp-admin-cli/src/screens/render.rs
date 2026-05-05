@@ -2448,7 +2448,7 @@ mod usb_scan_render_tests {
     }
 
     #[test]
-    fn draw_screen_devices_menu_has_three_items() {
+    fn draw_screen_devices_menu_has_four_items() {
         let backend = TestBackend::new(80, 20);
         let mut term = Terminal::new(backend).expect("test terminal");
         term.draw(|frame| {
@@ -2457,13 +2457,93 @@ mod usb_scan_render_tests {
                 frame,
                 area,
                 "Devices & Origins",
-                &["Device Registry", "Managed Origins", "Scan & Register USB"],
-                2,
+                &[
+                    "Device Registry",
+                    "Managed Origins",
+                    "Scan & Register USB",
+                    "Disk Registry",
+                ],
+                3,
             );
         })
         .expect("draw");
         let buf = term.backend().buffer().clone();
         let s: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(s.contains("Scan & Register USB"), "3rd item missing: {s}");
+        assert!(s.contains("Disk Registry"), "4th item missing: {s}");
+    }
+}
+
+#[cfg(test)]
+mod disk_registry_render_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use serde_json::json;
+
+    #[test]
+    fn draw_disk_registry_list_empty() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_disk_registry_list(frame, area, &[], 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("Disk Registry (0)"),
+            "empty title missing: {s}"
+        );
+        assert!(
+            s.contains("No disk registry entries."),
+            "empty message missing: {s}"
+        );
+        assert!(s.contains("a: Add"), "add hint missing: {s}");
+        assert!(s.contains("Esc: Back"), "esc hint missing: {s}");
+    }
+
+    #[test]
+    fn draw_disk_registry_list_nonempty() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let disks = vec![
+            json!({
+                "id": "uuid-1",
+                "agent_id": "agent-001",
+                "instance_id": "disk-xyz",
+                "bus_type": "NVMe",
+                "encryption_status": "encrypted",
+                "model": "Samsung 980 Pro"
+            }),
+            json!({
+                "id": "uuid-2",
+                "agent_id": "agent-002",
+                "instance_id": "disk-abc",
+                "bus_type": "SATA",
+                "encryption_status": "none",
+                "model": "WD Blue"
+            }),
+        ];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_disk_registry_list(frame, area, &disks, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(s.contains("Disk Registry (2)"), "title count missing: {s}");
+        assert!(s.contains("Agent ID"), "header Agent ID missing: {s}");
+        assert!(s.contains("Instance ID"), "header Instance ID missing: {s}");
+        assert!(s.contains("Bus Type"), "header Bus Type missing: {s}");
+        assert!(s.contains("Encrypted"), "header Encrypted missing: {s}");
+        assert!(s.contains("Model"), "header Model missing: {s}");
+        assert!(s.contains("agent-001"), "row agent_id missing: {s}");
+        assert!(s.contains("disk-xyz"), "row instance_id missing: {s}");
+        assert!(s.contains("NVMe"), "row bus_type missing: {s}");
+        assert!(s.contains("encrypted"), "row encryption missing: {s}");
+        assert!(s.contains("a: Add"), "add hint missing: {s}");
+        assert!(s.contains("d: Delete"), "delete hint missing: {s}");
     }
 }

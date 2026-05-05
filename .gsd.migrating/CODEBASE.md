@@ -1,7 +1,7 @@
 # Codebase Map
 
-Generated: 2026-05-05T20:26:34Z | Files: 284 | Described: 0/284
-<!-- gsd:codebase-meta {"generatedAt":"2026-05-05T20:26:34Z","fingerprint":"5232234548c7f7985c9bb3c73ff49989c96a74d7","fileCount":284,"truncated":false} -->
+Generated: 2026-05-05T20:49:02Z | Files: 326 | Described: 0/326
+<!-- gsd:codebase-meta {"generatedAt":"2026-05-05T20:49:02Z","fingerprint":"d5b3dd5ce21f4fa2979bd0234cb3be2990f7e737","fileCount":326,"truncated":false} -->
 
 ### (root)/
 - `.gitignore`
@@ -37,6 +37,88 @@ Generated: 2026-05-05T20:26:34Z | Files: 284 | Described: 0/284
 ### .gitnexus/
 - `.gitnexus/lbug`
 - `.gitnexus/meta.json`
+
+### .gsd.migrating/
+- `.gsd.migrating/CODEBASE.md`
+- `.gsd.migrating/DECISIONS.md`
+- `.gsd.migrating/event-log.jsonl`
+- `.gsd.migrating/KNOWLEDGE.md`
+- `.gsd.migrating/last-snapshot.md`
+- `.gsd.migrating/notifications.jsonl`
+- `.gsd.migrating/PROJECT.md`
+- `.gsd.migrating/REQUIREMENTS.md`
+- `.gsd.migrating/state-manifest.json`
+- `.gsd.migrating/STATE.md`
+
+### .gsd.migrating/audit/
+- `.gsd.migrating/audit/events.jsonl`
+
+### .gsd.migrating/journal/
+- `.gsd.migrating/journal/2026-05-05.jsonl`
+
+### .gsd.migrating/milestones/M001/
+- `.gsd.migrating/milestones/M001/M001-CONTEXT.md`
+- `.gsd.migrating/milestones/M001/M001-RESEARCH.md`
+- `.gsd.migrating/milestones/M001/M001-ROADMAP.md`
+
+### .gsd.migrating/milestones/M001/slices/S01/
+- `.gsd.migrating/milestones/M001/slices/S01/S01-CONTINUE.md`
+- `.gsd.migrating/milestones/M001/slices/S01/S01-PLAN.md`
+
+### .gsd.migrating/milestones/M001/slices/S01/tasks/
+- `.gsd.migrating/milestones/M001/slices/S01/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M001/slices/S01/tasks/T02-PLAN.md`
+- `.gsd.migrating/milestones/M001/slices/S01/tasks/T03-PLAN.md`
+- `.gsd.migrating/milestones/M001/slices/S01/tasks/T04-PLAN.md`
+
+### .gsd.migrating/milestones/M002/
+- `.gsd.migrating/milestones/M002/M002-CONTEXT.md`
+- `.gsd.migrating/milestones/M002/M002-ROADMAP.md`
+
+### .gsd.migrating/milestones/M003/
+- `.gsd.migrating/milestones/M003/M003-CONTEXT.md`
+- `.gsd.migrating/milestones/M003/M003-ROADMAP.md`
+
+### .gsd.migrating/milestones/M004/
+- `.gsd.migrating/milestones/M004/M004-CONTEXT.md`
+- `.gsd.migrating/milestones/M004/M004-ROADMAP.md`
+
+### .gsd.migrating/milestones/M005/
+- `.gsd.migrating/milestones/M005/M005-CONTEXT.md`
+- `.gsd.migrating/milestones/M005/M005-RESEARCH.md`
+- `.gsd.migrating/milestones/M005/M005-ROADMAP.md`
+
+### .gsd.migrating/milestones/M005/slices/S01/
+- `.gsd.migrating/milestones/M005/slices/S01/S01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M005/slices/S02/
+- `.gsd.migrating/milestones/M005/slices/S02/S02-SUMMARY.md`
+
+### .gsd.migrating/milestones/M005/slices/S03/
+- `.gsd.migrating/milestones/M005/slices/S03/S03-SUMMARY.md`
+
+### .gsd.migrating/milestones/M005/slices/S04/
+- `.gsd.migrating/milestones/M005/slices/S04/S04-SUMMARY.md`
+
+### .gsd.migrating/milestones/M005/slices/S05/
+- `.gsd.migrating/milestones/M005/slices/S05/S05-SUMMARY.md`
+
+### .gsd.migrating/milestones/M005/slices/S06/
+- `.gsd.migrating/milestones/M005/slices/S06/S06-SUMMARY.md`
+
+### .gsd.migrating/milestones/M005/slices/S07/
+- `.gsd.migrating/milestones/M005/slices/S07/S07-SUMMARY.md`
+
+### .gsd.migrating/milestones/M005/slices/S08/
+- `.gsd.migrating/milestones/M005/slices/S08/S08-PLAN.md`
+
+### .gsd.migrating/milestones/M006/
+- `.gsd.migrating/milestones/M006/M006-CONTEXT.md`
+- `.gsd.migrating/milestones/M006/M006-ROADMAP.md`
+
+### .gsd.migrating/runtime/
+- `.gsd.migrating/runtime/uok-parity.jsonl`
+- `.gsd.migrating/runtime/uok-writer-sequence.json`
 
 ### .rtk/
 - `.rtk/filters.toml`
