@@ -7,7 +7,8 @@
     "code_review_depth": "standard",
     "tests": true,
     "docs_update": true,
-    "_auto_chain_active": false
+    "_auto_chain_active": false,
+    "plan_chunked": true
   },
   "graphify": {
     "enabled": true
