@@ -153,6 +153,47 @@ impl UsbDetector {
         self.device_identities.read().get(&letter).cloned()
     }
 
+    /// Reconciles a USB device identity with an unmapped drive letter.
+    ///
+    /// The "unmapped drive" heuristic finds drive letters that are in
+    /// `blocked_drives` (known USB mass storage) but not yet in
+    /// `device_identities` (no identity captured). When exactly one such drive
+    /// exists, the identity is assigned to it and tier enforcement is applied.
+    ///
+    /// This handles the WR-01 race where `GUID_DEVINTERFACE_VOLUME` arrives
+    /// before `GUID_DEVINTERFACE_USB_DEVICE`, leaving the drive letter blocked
+    /// but without an identity.
+    ///
+    /// # Returns
+    ///
+    /// `Some(letter)` when exactly one unmapped drive was found and the identity
+    /// was assigned. `None` when zero or multiple unmapped drives exist (ambiguous).
+    #[cfg(windows)]
+    pub fn reconcile_identity_with_unmapped_drive(
+        &self,
+        identity: &DeviceIdentity,
+    ) -> Option<char> {
+        let unmapped: Vec<char> = {
+            let blocked = self.blocked_drives.read();
+            let ids = self.device_identities.read();
+            blocked
+                .iter()
+                .filter(|letter| !ids.contains_key(letter))
+                .copied()
+                .collect()
+        };
+        if unmapped.len() == 1 {
+            let letter = unmapped[0];
+            self.device_identities
+                .write()
+                .insert(letter, identity.clone());
+            apply_tier_enforcement(letter, identity);
+            Some(letter)
+        } else {
+            None
+        }
+    }
+
     /// Queries `GetDriveTypeW` for the given drive letter to determine if it
     /// is a removable drive (USB mass storage).
     fn is_removable_drive(&self, letter: char) -> bool {
@@ -468,18 +509,23 @@ fn on_usb_device_arrival(detector: &UsbDetector, device_path: &str) {
     let mut identity = parse_usb_device_path(device_path);
     identity.description = setupdi_description_for_device(device_path);
 
-    // WR-02 fix: The previous heuristic scan (A..=Z Path::exists check) was
-    // incorrect — it assigned the first drive letter whose root path existed
-    // but was not yet tracked, which on multi-disk systems could mis-assign
-    // the identity of the newly arrived USB device to a pre-existing fixed
-    // disk. It also triggered blocking file-system I/O on the Win32 message
-    // callback thread.
-    //
-    // Primary path: park the identity in pending_identity so that
-    // handle_volume_event can reconcile it with the correct drive letter when
-    // the GUID_DEVINTERFACE_VOLUME notification arrives.  This is the
-    // authoritative correlation path because the VOLUME notification carries
-    // the exact drive letter assigned by the kernel mount manager.
+    // WR-01 fix: If VOLUME arrived before USB_DEVICE, the drive letter is already
+    // in blocked_drives but device_identities has no entry. Check for exactly one
+    // un-identity'd USB drive and reconcile immediately.
+    if let Some(letter) = detector.reconcile_identity_with_unmapped_drive(&identity) {
+        info!(
+            vid = %identity.vid,
+            pid = %identity.pid,
+            serial = %identity.serial,
+            drive = %letter,
+            "USB identity reconciled with existing volume (VOLUME-arrived-first race)"
+        );
+        // Clear any stale pending_identity — this device is now fully reconciled.
+        *detector.pending_identity.lock() = None;
+        return;
+    }
+
+    // Normal path: park identity for reconciliation when VOLUME arrives later.
     info!(
         vid = %identity.vid,
         pid = %identity.pid,
@@ -799,5 +845,134 @@ mod tests {
     // NOTE: disk_path_to_instance_id has been moved to
     // `crate::detection::device_watcher::extract_disk_instance_id` (Phase 36 D-12
     // refactor). Instance-ID extraction tests live in device_watcher's test module.
+
+    // ── Tests for WR-01 race fix (Phase 38.2 Plan 02) ──────────────────────
+
+    /// When exactly one unmapped drive exists in blocked_drives, the identity
+    /// should be reconciled immediately (VOLUME-arrived-first race).
+    #[test]
+    #[cfg(not(windows))]
+    fn test_usb_device_arrival_reconciles_when_volume_first() {
+        let detector = UsbDetector::new();
+        // Simulate VOLUME arrived first: drive letter is blocked but no identity.
+        detector.blocked_drives.write().insert('F');
+        assert!(detector.device_identities.read().is_empty());
+
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN42".into(),
+            description: "Test Device".into(),
+        };
+
+        // reconcile_identity_with_unmapped_drive should fire because exactly
+        // one unmapped drive exists.
+        let result = detector.reconcile_identity_with_unmapped_drive(&identity);
+        assert_eq!(result, Some('F'));
+
+        // device_identities should now contain the mapped identity.
+        assert_eq!(
+            detector.device_identity_for_drive('F'),
+            Some(identity.clone())
+        );
+
+        // pending_identity should be None (not parked).
+        assert!(detector.pending_identity.lock().is_none());
+    }
+
+    /// When no drives are in blocked_drives, the identity should be parked
+    /// in pending_identity (normal arrival path).
+    #[test]
+    fn test_usb_device_arrival_parks_when_no_volume_yet() {
+        let detector = UsbDetector::new();
+        // blocked_drives is empty — no volume has arrived yet.
+        assert!(detector.blocked_drives.read().is_empty());
+
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN42".into(),
+            description: "Test Device".into(),
+        };
+
+        // reconcile should return None because no unmapped drives exist.
+        let result = detector.reconcile_identity_with_unmapped_drive(&identity);
+        assert_eq!(result, None);
+
+        // device_identities should still be empty.
+        assert!(detector.device_identities.read().is_empty());
+
+        // pending_identity should contain the parked identity.
+        // (We test this by directly parking, since on_usb_device_arrival is
+        // #[cfg(windows)] and calls reconcile then parks.)
+        *detector.pending_identity.lock() = Some(identity.clone());
+        assert_eq!(
+            detector.pending_identity.lock().as_ref().unwrap().serial,
+            "SN42"
+        );
+    }
+
+    /// When multiple unmapped drives exist, the heuristic should NOT fire
+    /// (ambiguous — cannot disambiguate which identity belongs to which drive).
+    #[test]
+    #[cfg(not(windows))]
+    fn test_usb_device_arrival_parks_when_multiple_unmapped() {
+        let detector = UsbDetector::new();
+        // Simulate two USB drives plugged in but neither has an identity yet.
+        detector.blocked_drives.write().insert('E');
+        detector.blocked_drives.write().insert('F');
+        assert!(detector.device_identities.read().is_empty());
+
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN42".into(),
+            description: "Test Device".into(),
+        };
+
+        // reconcile should return None because multiple unmapped drives exist.
+        let result = detector.reconcile_identity_with_unmapped_drive(&identity);
+        assert_eq!(result, None);
+
+        // device_identities should still be empty.
+        assert!(detector.device_identities.read().is_empty());
+
+        // pending_identity should be parked.
+        *detector.pending_identity.lock() = Some(identity.clone());
+        assert!(detector.pending_identity.lock().is_some());
+    }
+
+    /// When the drive already has an identity, reconcile should return None
+    /// (already mapped — no action needed).
+    #[test]
+    #[cfg(not(windows))]
+    fn test_reconcile_returns_none_when_already_mapped() {
+        let detector = UsbDetector::new();
+        detector.blocked_drives.write().insert('F');
+        let existing = DeviceIdentity {
+            vid: "1111".into(),
+            pid: "2222".into(),
+            serial: "OLD".into(),
+            description: "Existing".into(),
+        };
+        detector.device_identities.write().insert('F', existing);
+
+        let new_identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN42".into(),
+            description: "New Device".into(),
+        };
+
+        // 'F' is already mapped, so no unmapped drives exist.
+        let result = detector.reconcile_identity_with_unmapped_drive(&new_identity);
+        assert_eq!(result, None);
+
+        // Existing identity should not be overwritten.
+        assert_eq!(
+            detector.device_identity_for_drive('F').unwrap().serial,
+            "OLD"
+        );
+    }
 
 }
