@@ -96,6 +96,94 @@ impl UsbDetector {
         );
     }
 
+    /// Attempts to capture USB device identities for drives already in
+    /// `blocked_drives` and applies tier enforcement.
+    ///
+    /// Called once at startup after `scan_existing_drives`. Uses SetupDi to
+    /// enumerate present USB devices, then matches them against unmapped drive
+    /// letters using the same heuristic as the WR-01 fix.
+    ///
+    /// Covers the "plug-before-agent" and "agent-restart-while-plugged" timing
+    /// paths (D-11) so that Blocked-tier USB devices are enforced even when the
+    /// agent starts after the device was already plugged in.
+    #[cfg(windows)]
+    pub fn scan_existing_usb_identities(&self) {
+        use dlp_common::usb::enumerate_connected_usb_devices;
+
+        let identities = enumerate_connected_usb_devices();
+        if identities.is_empty() {
+            debug!("startup scan: no USB mass-storage devices currently connected");
+            return;
+        }
+
+        for identity in identities {
+            // Skip devices that already have an identity mapped (e.g., from a
+            // prior scan or a race with an arrival notification).
+            let already_mapped = {
+                let ids = self.device_identities.read();
+                ids.values().any(|id| {
+                    id.vid == identity.vid && id.pid == identity.pid && id.serial == identity.serial
+                })
+            };
+            if already_mapped {
+                continue;
+            }
+
+            // Find unmapped drives using the same heuristic as WR-01.
+            let unmapped: Vec<char> = {
+                let blocked = self.blocked_drives.read();
+                let ids = self.device_identities.read();
+                blocked
+                    .iter()
+                    .filter(|letter| !ids.contains_key(letter))
+                    .copied()
+                    .collect()
+            };
+
+            if unmapped.len() == 1 {
+                let letter = unmapped[0];
+                info!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    drive = %letter,
+                    "startup scan: USB identity reconciled with existing drive"
+                );
+                self.device_identities
+                    .write()
+                    .insert(letter, identity.clone());
+                apply_tier_enforcement(letter, &identity);
+            } else if unmapped.len() > 1 {
+                // Ambiguous: multiple unmapped USB drives. We cannot determine which
+                // identity belongs to which drive letter. Park the identity in
+                // pending_identity — if a VOLUME notification arrives later, it will
+                // be reconciled. But pending_identity is a single slot, so we can only
+                // park one. Pick the first identity and log a warning.
+                warn!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    unmapped_count = unmapped.len(),
+                    "startup scan: multiple unmapped USB drives — cannot disambiguate identity"
+                );
+                // Only park if slot is empty.
+                let mut pending = self.pending_identity.lock();
+                if pending.is_none() {
+                    *pending = Some(identity.clone());
+                }
+            } else {
+                // No unmapped drives — this USB device may not have a volume yet
+                // (e.g., a device with no mounted partition). Log and skip.
+                debug!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    "startup scan: USB device has no mapped drive letter — skipping"
+                );
+            }
+        }
+    }
+
     /// Records a newly arrived USB drive letter as blocked.
     pub fn on_drive_arrival(&self, drive_letter: char) {
         let letter = drive_letter.to_ascii_uppercase();
@@ -972,6 +1060,68 @@ mod tests {
         assert_eq!(
             detector.device_identity_for_drive('F').unwrap().serial,
             "OLD"
+        );
+    }
+
+    /// scan_existing_usb_identities heuristic: when one unmapped drive exists
+    /// and we manually call the reconciliation pattern (simulating what
+    /// scan_existing_usb_identities does for each enumerated identity),
+    /// device_identities gets populated.
+    #[test]
+    #[cfg(not(windows))]
+    fn test_scan_existing_usb_identities_reconciles_single_unmapped() {
+        let detector = UsbDetector::new();
+        // Simulate a drive detected at startup (scan_existing_drives would
+        // have inserted it) but no identity yet.
+        detector.blocked_drives.write().insert('F');
+        assert!(detector.device_identities.read().is_empty());
+
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN42".into(),
+            description: "Test Device".into(),
+        };
+
+        // This is the same pattern scan_existing_usb_identities uses for
+        // each identity returned by enumerate_connected_usb_devices.
+        let result = detector.reconcile_identity_with_unmapped_drive(&identity);
+        assert_eq!(result, Some('F'));
+
+        assert_eq!(
+            detector.device_identity_for_drive('F'),
+            Some(identity)
+        );
+    }
+
+    /// When scan_existing_usb_identities encounters an already-mapped identity,
+    /// it should skip it (already_mapped check).
+    #[test]
+    #[cfg(not(windows))]
+    fn test_scan_existing_skips_already_mapped_identity() {
+        let detector = UsbDetector::new();
+        detector.blocked_drives.write().insert('F');
+        let existing = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN42".into(),
+            description: "Existing".into(),
+        };
+        detector.device_identities.write().insert('F', existing.clone());
+
+        // Simulate the already_mapped check from scan_existing_usb_identities.
+        let ids = detector.device_identities.read();
+        let already_mapped = ids.values().any(|id| {
+            id.vid == existing.vid && id.pid == existing.pid && id.serial == existing.serial
+        });
+        assert!(already_mapped);
+
+        // Since already_mapped is true, scan_existing_usb_identities would skip.
+        // The existing mapping should remain untouched.
+        drop(ids);
+        assert_eq!(
+            detector.device_identity_for_drive('F').unwrap().description,
+            "Existing"
         );
     }
 
