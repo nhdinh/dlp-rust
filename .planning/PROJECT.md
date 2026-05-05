@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-05-03 — Phase 35 complete: Disk allowlist persistence wired end-to-end (DISK-03)*
+*Last updated: 2026-05-05 — Phase 38.1 complete: LDAP Config TUI screen wired end-to-end (ADMIN-05)*
 ---
 
 # PROJECT.md — DLP-RUST
