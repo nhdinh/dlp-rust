@@ -55,6 +55,30 @@ pub enum InputPurpose {
     },
     /// Prompts for a URL-pattern string to add as a managed origin.
     AddManagedOrigin,
+    /// Step 1 of disk registry add flow: prompts for agent ID.
+    AddDiskRegistryAgentId,
+    /// Step 2: carries agent_id; prompts for instance ID.
+    AddDiskRegistryInstanceId {
+        agent_id: String,
+    },
+    /// Step 3: carries agent_id + instance_id; prompts for bus type.
+    AddDiskRegistryBusType {
+        agent_id: String,
+        instance_id: String,
+    },
+    /// Step 4: carries previous fields; prompts for encryption status.
+    AddDiskRegistryEncryption {
+        agent_id: String,
+        instance_id: String,
+        bus_type: String,
+    },
+    /// Step 5: carries previous fields; prompts for model string.
+    AddDiskRegistryModel {
+        agent_id: String,
+        instance_id: String,
+        bus_type: String,
+        encryption_status: String,
+    },
 }
 
 /// What happens when the user confirms a yes/no dialog.
@@ -74,6 +98,10 @@ pub enum ConfirmPurpose {
     },
     /// Confirm deletion of a managed origin entry by UUID.
     DeleteManagedOrigin {
+        id: String,
+    },
+    /// Confirm deletion of a disk registry entry by UUID.
+    DeleteDiskRegistry {
         id: String,
     },
 }
@@ -615,7 +643,8 @@ pub enum Screen {
         /// Which menu opened this screen (for Esc return destination).
         caller: SimulateCaller,
     },
-    /// "Devices & Origins" submenu with 3 items: Device Registry, Managed Origins, Scan & Register USB.
+    /// "Devices & Origins" submenu with 4 items: Device Registry, Managed Origins,
+    /// Scan & Register USB, Disk Registry.
     DevicesMenu { selected: usize },
 
     /// Scrollable registered-device list.
@@ -661,6 +690,16 @@ pub enum Screen {
     ManagedOriginList {
         /// All managed origins as raw JSON objects from the API.
         origins: Vec<serde_json::Value>,
+        /// Currently highlighted row index.
+        selected: usize,
+    },
+
+    /// Scrollable disk-registry list (per-agent disk allowlist).
+    ///
+    /// Keyboard shortcuts: `a` add (5-field flow), `d` delete selected, Esc back to DevicesMenu.
+    DiskRegistryList {
+        /// All disk registry entries as raw JSON objects from the API.
+        disks: Vec<serde_json::Value>,
         /// Currently highlighted row index.
         selected: usize,
     },

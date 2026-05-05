@@ -247,7 +247,12 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 frame,
                 area,
                 "Devices & Origins",
-                &["Device Registry", "Managed Origins", "Scan & Register USB"],
+                &[
+                    "Device Registry",
+                    "Managed Origins",
+                    "Scan & Register USB",
+                    "Disk Registry",
+                ],
                 *selected,
             );
             draw_hints(frame, area, "Enter: Open   Esc: Main Menu");
@@ -270,6 +275,9 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         }
         Screen::ManagedOriginList { origins, selected } => {
             draw_managed_origin_list(frame, area, origins, *selected);
+        }
+        Screen::DiskRegistryList { disks, selected } => {
+            draw_disk_registry_list(frame, area, disks, *selected);
         }
     }
 }
@@ -2091,6 +2099,59 @@ fn draw_managed_origin_list(
 
     let mut state = ratatui::widgets::ListState::default();
     if !origins.is_empty() {
+        state.select(Some(selected));
+    }
+    frame.render_stateful_widget(list, area, &mut state);
+
+    draw_hints(frame, area, "a: Add   d: Delete   Esc: Back");
+}
+
+/// Draws the disk-registry list screen.
+///
+/// Columns: Agent ID, Instance ID, Bus Type, Encrypted, Model.
+/// T03 will flesh out full table rendering; this is the placeholder
+/// that compiles and renders a basic list.
+fn draw_disk_registry_list(
+    frame: &mut Frame,
+    area: Rect,
+    disks: &[serde_json::Value],
+    selected: usize,
+) {
+    let items: Vec<ListItem> = if disks.is_empty() {
+        vec![ListItem::new(Line::from(
+            "No disk registry entries.".to_string(),
+        ))]
+    } else {
+        disks
+            .iter()
+            .map(|d| {
+                let agent = d["agent_id"].as_str().unwrap_or("-");
+                let inst = d["instance_id"].as_str().unwrap_or("-");
+                let bus = d["bus_type"].as_str().unwrap_or("-");
+                let enc = d["encryption_status"].as_str().unwrap_or("-");
+                let model = d["model"].as_str().unwrap_or("");
+                let line = format!("[{bus}] {agent} | {inst} | {enc} | {model}");
+                ListItem::new(Line::from(line))
+            })
+            .collect()
+    };
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(format!(" Disk Registry ({}) ", disks.len()))
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::ListState::default();
+    if !disks.is_empty() {
         state.select(Some(selected));
     }
     frame.render_stateful_widget(list, area, &mut state);
