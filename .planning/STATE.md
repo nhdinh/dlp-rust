@@ -4,13 +4,13 @@ milestone: v0.5.0
 milestone_name: - Boolean Logic
 status: unknown
 stopped_at: Phase 38.2 discuss-phase complete; CONTEXT.md and DISCUSSION-LOG.md committed; ready for /gsd-plan-phase 38.2
-last_updated: "2026-05-05T09:00:36.580Z"
+last_updated: "2026-05-05T09:54:57.586Z"
 progress:
   total_phases: 27
   completed_phases: 24
   total_plans: 81
-  completed_plans: 77
-  percent: 95
+  completed_plans: 78
+  percent: 96
 ---
 
 # Project State
@@ -26,7 +26,7 @@ progress:
 ## Current Position
 
 Phase: 38.2 (usb-enforcement-fix-blocked-device-io) — EXECUTING
-Plan: 1 of 3
+Plan: 2 of 3
 
 - **Milestone**: v0.7.0 — Disk Exfiltration Prevention (In Progress)
 - **Phase**: Phase 38.2 discuss-phase COMPLETE — context locked (PnP + Volume DACL deny-all as two real-time, OS-enforced layers)
@@ -41,7 +41,7 @@ v0.7.0 [Phase 33 done | Phase 34 done | Phase 35 done | Phase 36 done | Phase 37
 
 ---
 
-## Recent Decisions
+## Decisions Made
 
 1. Phase 38.2 enforcement scope: PnP `CM_Disable_DevNode` + Volume DACL deny-all as two real-time, OS-enforced layers. API hooking REJECTED with concrete rationale; minifilter DEFERRED to v0.8.0+.
 2. Phase 38.2 tier-change semantics: `enable_usb_device` and `restore_volume_acl` both fire on physical removal only — NO new wiring in the 30s registry-cache poll path. Admin instructs users to unplug & re-plug for tier changes to take effect.
@@ -53,12 +53,13 @@ v0.7.0 [Phase 33 done | Phase 34 done | Phase 35 done | Phase 36 done | Phase 37
 8. Lock-order invariant: config mutex MUST be acquired and released BEFORE acquiring instance_id_map.write() (T-37-13).
 
 ---
+- [Phase 38.2]: Blocked tier defense-in-depth: PnP disable + DACL deny-all fire independently — If primary PnP disable fails or is bypassed, the DACL deny-all fallback still blocks all non-SYSTEM I/O
 
 ## Session Continuity
 
-Last session: 2026-05-05T07:30:00.000Z
+Last session: 2026-05-05T09:52:17.712Z
 Stopped at: Phase 38.2 discuss-phase complete; CONTEXT.md and DISCUSSION-LOG.md committed; ready for /gsd-plan-phase 38.2
-Resume file: .planning/phases/38.2-usb-enforcement-fix-blocked-device-io/38.2-CONTEXT.md (canonical)
+Resume file: None
 Resumed: 2026-05-05 — completed all 4 gray areas (Wiring failure mode, AGENT-UNKNOWN scope, Re-plug & tier-change semantics, Drive-letter mislabel)
 
 ---
