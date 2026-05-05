@@ -592,6 +592,7 @@ async fn run_loop(
     // register_usb_notifications() call sites (both accept &UsbDetector).
     let detector = detector_arc.as_ref();
     detector.scan_existing_drives();
+    detector.scan_existing_usb_identities();
 
     // ── Managed origins cache (D-02) ──────────────────────────────
     let origins_cache = Arc::new(crate::chrome::cache::ManagedOriginsCache::new());
