@@ -146,8 +146,8 @@ Plans:
 
 Plans:
 - [x] 38.1-01-PLAN.md -- Screen::LdapConfig variant + LDAP_ROW_COUNT/SAVE/BACK constants in app.rs
-- [ ] 38.1-02-PLAN.md -- dispatch.rs: LDAP_KEYS + helpers + action_load/save_ldap_config + handle_ldap_config family + SystemMenu expansion + handle_event arm
-- [ ] 38.1-03-PLAN.md -- render.rs: LDAP_FIELD_LABELS + is_ldap_bool/numeric + draw_ldap_config + SystemMenu label expansion + draw_screen arm + manual TUI checkpoint
+- [x] 38.1-02-PLAN.md -- dispatch.rs: LDAP_KEYS + helpers + action_load/save_ldap_config + handle_ldap_config family + SystemMenu expansion + handle_event arm
+- [x] 38.1-03-PLAN.md -- render.rs: LDAP_FIELD_LABELS + is_ldap_bool/numeric + draw_ldap_config + SystemMenu label expansion + draw_screen arm + manual TUI checkpoint
 
 ## Progress
 
