@@ -98,6 +98,14 @@ pub struct AppIdentity {
     pub trust_tier: AppTrustTier,
     /// Authenticode verification outcome (Phase 25).
     pub signature_state: SignatureState,
+    /// Application User Model ID (AUMID) for UWP apps, e.g. `Microsoft.Windows.Photos_8wekyb3d8bbwe!App`.
+    /// `None` for Win32 desktop applications.
+    pub aumid: Option<String>,
+    /// Package Family Name extracted from the AUMID (everything before `!`).
+    /// `None` for Win32 desktop applications.
+    pub package_family_name: Option<String>,
+    /// Whether this identity represents a UWP (Universal Windows Platform) app.
+    pub is_uwp: bool,
 }
 
 /// Sentinel value used when the application identity cannot be resolved.
@@ -110,6 +118,9 @@ pub fn agent_unknown_app() -> AppIdentity {
         publisher: "AGENT-UNKNOWN".to_string(),
         trust_tier: AppTrustTier::Unknown,
         signature_state: SignatureState::Unknown,
+        aumid: None,
+        package_family_name: None,
+        is_uwp: false,
     }
 }
 
@@ -232,6 +243,9 @@ mod tests {
             publisher: "Contoso Corporation".to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         };
         let json = serde_json::to_string(&original).unwrap();
         let round_trip: AppIdentity = serde_json::from_str(&json).unwrap();

@@ -436,6 +436,9 @@ mod tests {
             publisher: "Microsoft Corporation".to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         };
         let dest = source.clone();
         assert_eq!(source, dest, "intra-app dest must equal source clone");

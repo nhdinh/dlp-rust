@@ -16,7 +16,10 @@ fn sample_app() -> AppIdentity {
         publisher: "Contoso Corporation".to_string(),
         trust_tier: AppTrustTier::Trusted,
         signature_state: SignatureState::Valid,
-    }
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        }
 }
 
 fn sample_device() -> DeviceIdentity {
@@ -66,6 +69,9 @@ fn evaluate_request_round_trip_with_both_app_fields() {
             publisher: "Unknown".to_string(),
             trust_tier: AppTrustTier::Untrusted,
             signature_state: SignatureState::NotSigned,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         }),
         ..Default::default()
     };

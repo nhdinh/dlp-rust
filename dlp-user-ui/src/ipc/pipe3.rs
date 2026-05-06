@@ -140,7 +140,10 @@ mod tests {
                 publisher: String::new(),
                 trust_tier: AppTrustTier::Untrusted,
                 signature_state: SignatureState::NotSigned,
-            }),
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        }),
             destination_application: None,
         };
         let json = serde_json::to_string(&alert).expect("serialization must not fail");
@@ -163,7 +166,10 @@ mod tests {
                 publisher: String::new(),
                 trust_tier: AppTrustTier::Untrusted,
                 signature_state: SignatureState::NotSigned,
-            }),
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        }),
             destination_application: None,
         };
         let json = serde_json::to_string(&alert).expect("serialization must not fail");

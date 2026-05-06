@@ -164,6 +164,9 @@ mod tests {
             publisher: "Contoso".to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         };
         let msg = Pipe3UiMsg::ClipboardAlert {
             session_id: 3,
