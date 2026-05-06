@@ -13,6 +13,12 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
     SETUP_DI_REGISTRY_PROPERTY, SP_DEVINFO_DATA,
 };
+#[cfg(windows)]
+use windows::Win32::Devices::DeviceAndDriverInstallation::{
+    CM_Get_Device_Interface_PropertyW, CR_BUFFER_SMALL, CR_SUCCESS,
+};
+#[cfg(windows)]
+use windows::Win32::Devices::Properties::{DEVPKEY_Device_InstanceId, DEVPROP_TYPE_STRING, DEVPROPTYPE};
 
 /// SetupDi registry property: device friendly name (`SPDRP_FRIENDLYNAME` = 0x0C).
 #[cfg(windows)]
@@ -353,6 +359,211 @@ fn enumerate_connected_usb_devices_windows() -> Vec<DeviceIdentity> {
     out
 }
 
+/// Errors that can occur when resolving a USB device instance ID.
+#[derive(Debug)]
+#[cfg(windows)]
+pub enum UsbResolutionError {
+    /// A Configuration Manager API returned an error code.
+    ConfigManager(u32),
+    /// A Win32 API returned an error.
+    Win32(windows::core::Error),
+}
+
+#[cfg(windows)]
+impl std::fmt::Display for UsbResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UsbResolutionError::ConfigManager(cr) => write!(f, "Configuration Manager error: {cr:#010x}"),
+            UsbResolutionError::Win32(e) => write!(f, "Win32 error: {e}"),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl std::error::Error for UsbResolutionError {}
+
+/// Resolves the Configuration Manager instance ID from a `dbcc_name` device
+/// interface path using `CM_Get_Device_Interface_PropertyW`.
+///
+/// This is the primary resolution path for hot-plug events where the
+/// `dbcc_name` (e.g. `\\?\USB#VID_0951&PID_1666#SN12345#{guid}`) is
+/// available from `WM_DEVICECHANGE`.
+///
+/// # Arguments
+///
+/// * `dbcc_name` — A device interface path, typically from `DEV_BROADCAST_DEVICEINTERFACE`.
+///
+/// # Returns
+///
+/// `Ok(instance_id)` on success, e.g. `USB\VID_0951&PID_1666\SN12345`.
+/// `Err(UsbResolutionError::ConfigManager(...))` on CM API failure.
+/// `Err(UsbResolutionError::Win32(...))` on encoding or unexpected Win32 error.
+#[cfg(windows)]
+pub fn resolve_instance_id_from_dbcc_name(dbcc_name: &str) -> Result<String, UsbResolutionError> {
+    // Validate path starts with the expected prefix (ASVS V5 — reject malformed input).
+    if !dbcc_name.starts_with(r"\?\USB#") {
+        return Err(UsbResolutionError::ConfigManager(0x00000013));
+    }
+
+    // Encode dbcc_name as null-terminated UTF-16.
+    let mut wide_path: Vec<u16> = dbcc_name.encode_utf16().collect();
+    wide_path.push(0);
+
+    let mut required_size: u32 = 0;
+    let mut property_type = DEVPROPTYPE(0);
+
+    // SAFETY: wide_path is a valid null-terminated UTF-16 string.
+    // First call: query required buffer size. Accept CR_BUFFER_SMALL (26) or CR_SUCCESS (0).
+    let cr = unsafe {
+        CM_Get_Device_Interface_PropertyW(
+            windows::core::PCWSTR(wide_path.as_ptr()),
+            &DEVPKEY_Device_InstanceId,
+            &mut property_type,
+            None,
+            &mut required_size,
+            0,
+        )
+    };
+
+    if cr != CR_BUFFER_SMALL && cr != CR_SUCCESS {
+        return Err(UsbResolutionError::ConfigManager(cr.0));
+    }
+
+    // Allocate buffer: capacity = (required_size / 2) + 1 for null terminator.
+    let mut buffer: Vec<u16> = vec![0; (required_size as usize / 2) + 1];
+
+    // SAFETY: buffer is large enough (required_size bytes). PCWSTR is valid.
+    let cr = unsafe {
+        CM_Get_Device_Interface_PropertyW(
+            windows::core::PCWSTR(wide_path.as_ptr()),
+            &DEVPKEY_Device_InstanceId,
+            &mut property_type,
+            Some(buffer.as_mut_ptr() as *mut u8),
+            &mut required_size,
+            0,
+        )
+    };
+
+    if cr != CR_SUCCESS {
+        return Err(UsbResolutionError::ConfigManager(cr.0));
+    }
+
+    // Verify property type is DEVPROP_TYPE_STRING.
+    if property_type != DEVPROP_TYPE_STRING {
+        return Err(UsbResolutionError::ConfigManager(0x00000013));
+    }
+
+    // Convert null-terminated UTF-16 to Rust String.
+    let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+    let instance_id = String::from_utf16(&buffer[..len])
+        .map_err(|_e| UsbResolutionError::ConfigManager(0x0000000D))?;
+
+    Ok(instance_id)
+}
+
+/// Finds a USB device's CM instance ID by enumerating present USB devices
+/// via SetupDi and matching VID, PID, and optionally serial.
+///
+/// This is the fallback resolution path for the startup scan where no
+/// `dbcc_name` is available (only VID/PID/serial from the registry cache).
+///
+/// # Arguments
+///
+/// * `vid` — Vendor ID (hex string, e.g. "0951").
+/// * `pid` — Product ID (hex string, e.g. "1666").
+/// * `serial` — Serial number or "(none)" for devices without a serial descriptor.
+///
+/// # Returns
+///
+/// `Ok(instance_id)` when exactly one match is found.
+/// `Err(UsbResolutionError::ConfigManager(0x0D))` when zero matches found.
+/// `Err(UsbResolutionError::ConfigManager(0x0D))` when serial is "(none)" and
+/// multiple matches are found (ambiguous per D-05).
+#[cfg(windows)]
+pub fn find_instance_id_by_vid_pid_serial(
+    vid: &str,
+    pid: &str,
+    serial: &str,
+) -> Result<String, UsbResolutionError> {
+    use windows::Win32::Devices::DeviceAndDriverInstallation::SetupDiGetDeviceInstanceIdW;
+
+    // SAFETY: passing GUID_DEVINTERFACE_USB_DEVICE + null enumerator string +
+    // DIGCF_PRESENT | DIGCF_DEVICEINTERFACE is a well-defined SetupDi usage.
+    let hdev = unsafe {
+        SetupDiGetClassDevsW(
+            Some(&GUID_DEVINTERFACE_USB_DEVICE),
+            windows::core::PCWSTR::null(),
+            None,
+            DIGCF_DEVICEINTERFACE | DIGCF_PRESENT,
+        )
+    };
+    let hdev = match hdev {
+        Ok(h) => h,
+        Err(e) => return Err(UsbResolutionError::Win32(e)),
+    };
+
+    let mut matches: Vec<String> = Vec::new();
+    let mut index: u32 = 0;
+
+    loop {
+        let mut devinfo = SP_DEVINFO_DATA {
+            cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: hdev is valid; devinfo is owned stack memory with cbSize set.
+        if unsafe { SetupDiEnumDeviceInfo(hdev, index, &mut devinfo) }.is_err() {
+            break;
+        }
+
+        let mut id_buf = [0u16; 256];
+        let ok = unsafe {
+            SetupDiGetDeviceInstanceIdW(
+                hdev,
+                &devinfo,
+                Some(id_buf.as_mut_slice()),
+                None,
+            )
+        };
+        if ok.is_ok() {
+            let instance_id = String::from_utf16_lossy(
+                &id_buf.iter().copied().take_while(|&w| w != 0).collect::<Vec<u16>>(),
+            );
+            let reshaped = format!("\\\\?\\{}", instance_id.replace('\\', "#"));
+            let candidate = parse_usb_device_path(&reshaped);
+
+            if candidate.vid == vid && candidate.pid == pid {
+                if serial == "(none)" {
+                    matches.push(instance_id);
+                } else if candidate.serial == serial || candidate.serial == "(none)" {
+                    matches.push(instance_id);
+                }
+            }
+        }
+
+        index += 1;
+        if index > 1024 {
+            break;
+        }
+    }
+
+    // SAFETY: hdev is a valid handle obtained from SetupDiGetClassDevsW above.
+    let _ = unsafe { SetupDiDestroyDeviceInfoList(hdev) };
+
+    match matches.len() {
+        0 => Err(UsbResolutionError::ConfigManager(0x0000000D)), // CR_NO_SUCH_DEVNODE
+        1 => Ok(matches.into_iter().next().unwrap()),
+        _ if serial == "(none)" => {
+            // Ambiguous: multiple devices with same VID+PID and no serial.
+            Err(UsbResolutionError::ConfigManager(0x0000000D))
+        }
+        _ => {
+            // Multiple matches but serial was specific — shouldn't happen.
+            // Return first with a tracing warning is not possible here (no tracing in dlp-common).
+            Ok(matches.into_iter().next().unwrap())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,5 +642,33 @@ mod tests {
         // CI may have no USB devices; we only assert the call returns a Vec
         // (compile + runtime smoke). Length is environment-dependent.
         let _devices: Vec<DeviceIdentity> = enumerate_connected_usb_devices();
+    }
+
+    #[test]
+    fn test_resolve_instance_id_rejects_malformed_path() {
+        // Non-USB path should be rejected before CM API call.
+        #[cfg(windows)]
+        {
+            let result = resolve_instance_id_from_dbcc_name(r"\\?\NOTUSB#VID_0951&PID_1666#SN12345#{guid}");
+            assert!(result.is_err(), "Expected error for non-USB path");
+        }
+        #[cfg(not(windows))]
+        {
+            // On non-Windows, the function is not compiled; test is a no-op.
+        }
+    }
+
+    #[test]
+    fn test_find_instance_id_signature_compiles() {
+        // On Windows this function exists; on non-Windows it does not.
+        // We verify the signature is callable by type-checking only.
+        #[cfg(windows)]
+        {
+            // This will fail at runtime (no device), but it proves the signature.
+            let _ = || {
+                let _: Result<String, UsbResolutionError> =
+                    find_instance_id_by_vid_pid_serial("0951", "1666", "SN12345");
+            };
+        }
     }
 }
