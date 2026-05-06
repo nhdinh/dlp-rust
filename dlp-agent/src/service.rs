@@ -784,6 +784,12 @@ async fn run_loop(
     // Spawned after audit_ctx and disk enumeration are ready so the watcher
     // can emit DiskDiscovery events from the disk arrival handler.
     // Replaces the old `register_usb_notifications` Win32 window.
+    //
+    // Phase 38.2 GAP-01: register the tokio runtime handle BEFORE spawning
+    // so the deferred disk-arrival path (500 ms sleep) has a handle.
+    crate::detection::device_watcher::set_runtime_handle(
+        tokio::runtime::Handle::current()
+    );
     let device_watcher_cleanup =
         match crate::detection::spawn_device_watcher_task(audit_ctx.clone()) {
             Ok((hwnd, thread)) => {

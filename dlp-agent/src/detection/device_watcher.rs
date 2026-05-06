@@ -31,6 +31,7 @@
 //! synchronous), reading [`AUDIT_CTX`] for the [`EmitContext`].
 
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use tracing::{debug, info, warn};
@@ -103,6 +104,29 @@ static AUDIT_CTX: OnceLock<EmitContext> = OnceLock::new();
 #[allow(dead_code)]
 pub(crate) fn get_audit_ctx() -> Option<&'static EmitContext> {
     AUDIT_CTX.get()
+}
+
+/// Tokio runtime handle for scheduling deferred disk-arrival tasks.
+/// Set once during service startup; never updated afterwards (OnceLock contract).
+///
+/// Phase 38.2 GAP-01: `GUID_DEVINTERFACE_DISK` fires before the volume manager
+/// has mounted the volume. The deferred path sleeps 500 ms then calls
+/// [`crate::detection::disk::on_disk_arrival`] so `find_drive_letter_for_instance_id`
+/// can resolve the drive letter.
+static RUNTIME_HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+
+/// Stores the tokio runtime handle for deferred disk-arrival processing.
+///
+/// # Panics
+///
+/// Panics if called outside a tokio runtime (the handle cannot be constructed).
+///
+/// # Safety
+///
+/// Must be called BEFORE [`spawn_device_watcher_task`] so the deferred path
+/// has a handle available when the first disk arrival fires.
+pub fn set_runtime_handle(handle: tokio::runtime::Handle) {
+    let _ = RUNTIME_HANDLE.set(handle);
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +247,20 @@ unsafe extern "system" fn device_watcher_wndproc(
                         // read_dbcc_name extracts the wide string synchronously.
                         let device_path = unsafe { read_dbcc_name(di) };
                         if event_type == DBT_DEVICEARRIVAL {
-                            if let Some(ctx) = AUDIT_CTX.get() {
+                            // Phase 38.2 GAP-01: defer disk arrival by 500 ms so the
+                            // volume manager has time to mount the volume and
+                            // find_drive_letter_for_instance_id can resolve the letter.
+                            if let (Some(handle), Some(ctx)) =
+                                (RUNTIME_HANDLE.get(), AUDIT_CTX.get())
+                            {
+                                let ctx = ctx.clone();
+                                let path = device_path.clone();
+                                std::mem::drop(handle.spawn(async move {
+                                    tokio::time::sleep(Duration::from_millis(500)).await;
+                                    crate::detection::disk::on_disk_arrival(&path, &ctx);
+                                }));
+                            } else if let Some(ctx) = AUDIT_CTX.get() {
+                                // Fallback: process immediately (old behaviour).
                                 crate::detection::disk::on_disk_arrival(&device_path, ctx);
                             } else {
                                 warn!(
@@ -523,5 +560,41 @@ mod tests {
             extract_disk_instance_id(input),
             r"USBSTOR\Disk&Ven_Kingston\1234"
         );
+    }
+
+    /// Phase 38.2 GAP-01: `set_runtime_handle` stores the tokio handle in
+    /// `RUNTIME_HANDLE` so the deferred disk-arrival path can schedule tasks.
+    #[test]
+    fn test_set_runtime_handle_stores_handle() {
+        // If already set (prior test in same binary), verify it exists and exit.
+        if RUNTIME_HANDLE.get().is_some() {
+            assert!(RUNTIME_HANDLE.get().is_some());
+            return;
+        }
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let handle = rt.handle().clone();
+
+        set_runtime_handle(handle);
+        assert!(
+            RUNTIME_HANDLE.get().is_some(),
+            "RUNTIME_HANDLE should be populated after set_runtime_handle"
+        );
+    }
+
+    /// Phase 38.2 GAP-01: a tokio task spawned via the stored handle can sleep
+    /// and complete, validating the deferred-spawn pattern used for disk arrivals.
+    #[test]
+    fn test_deferred_spawn_pattern_completes() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let handle = rt.handle().clone();
+
+        let task = handle.spawn(async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            "deferred_complete"
+        });
+
+        let result = rt.block_on(task);
+        assert_eq!(result.unwrap(), "deferred_complete");
     }
 }
