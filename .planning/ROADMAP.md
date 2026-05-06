@@ -30,7 +30,11 @@ Phase numbering is continuous across milestones -- never restarts.
   3. If PnP disable fails, the failure is logged at ERROR level (not silently returning Ok)
   4. Devices with `(none)` serial are handled via fallback location-based matching
   5. File writes to blocked USB devices fail with OS-level access-denied
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 38.2-01-PLAN.md — Add Win32_Devices_Properties feature + instance ID resolution helpers in dlp-common
+- [ ] 38.2-02-PLAN.md — Fix DeviceController disable/enable with real CM instance IDs
+- [ ] 38.2-03-PLAN.md — Wire dbcc_name through enforcement pipeline + error handling
 
 ### Phase 38.3: AGENT-UNKNOWN Remediation
 **Goal:** Close audit gaps by guaranteeing non-null app identity fields with AGENT-UNKNOWN sentinel and remediation path
