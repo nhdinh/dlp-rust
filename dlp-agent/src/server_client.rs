@@ -386,7 +386,30 @@ impl ServerClient {
     pub async fn fetch_device_registry(
         &self,
     ) -> Result<Vec<DeviceRegistryEntry>, ServerClientError> {
-        let url = format!("{}/admin/device-registry", self.base_url);
+        self.fetch_device_registry_with_sid(None).await
+    }
+
+    /// Fetches the device registry with an optional owner SID filter.
+    ///
+    /// When `owner_sid` is `Some`, appends `?owner_sid={sid}` to the GET URL so the
+    /// server returns both machine-wide entries and per-user entries for that SID.
+    /// When `None`, fetches machine-wide entries only (backward-compatible).
+    ///
+    /// # Arguments
+    ///
+    /// * `owner_sid` — Optional Windows user SID to filter per-user entries.
+    ///
+    /// # Errors
+    ///
+    /// Same error variants as [`fetch_device_registry`](Self::fetch_device_registry).
+    pub async fn fetch_device_registry_with_sid(
+        &self,
+        owner_sid: Option<&str>,
+    ) -> Result<Vec<DeviceRegistryEntry>, ServerClientError> {
+        let mut url = format!("{}/admin/device-registry", self.base_url);
+        if let Some(sid) = owner_sid {
+            url = format!("{url}?owner_sid={sid}");
+        }
         let response = self
             .client
             .get(&url)
@@ -495,6 +518,14 @@ pub struct DeviceRegistryEntry {
     pub serial: String,
     /// Trust tier string: `"blocked"`, `"read_only"`, or `"full_access"`.
     pub trust_tier: String,
+    /// Owner SID for per-user device registry entries (USB-06, Phase 38.4).
+    /// `None` indicates a machine-wide entry.
+    #[serde(default)]
+    pub owner_sid: Option<String>,
+    /// Owner username for per-user device registry entries (USB-06, Phase 38.4).
+    /// `None` indicates a machine-wide entry.
+    #[serde(default)]
+    pub owner_user: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -952,6 +983,40 @@ mod tests {
         let client = unreachable_client();
         let result = client.fetch_device_registry().await;
         assert!(result.is_err(), "unreachable server must return Err");
+    }
+
+    /// Verify that a mock server response with owner_sid/owner_user fields
+    /// deserializes correctly (USB-06, Phase 38.4).
+    #[test]
+    fn test_fetch_device_registry_with_sid_includes_owner_fields() {
+        let json = r#"[{
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "SN001",
+            "trust_tier": "blocked",
+            "owner_sid": "S-1-5-21-1",
+            "owner_user": "alice"
+        }]"#;
+        let entries: Vec<DeviceRegistryEntry> = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].owner_sid, Some("S-1-5-21-1".to_string()));
+        assert_eq!(entries[0].owner_user, Some("alice".to_string()));
+    }
+
+    /// Verify backward compatibility with older servers that do not emit
+    /// owner_sid/owner_user fields (USB-06, Phase 38.4).
+    #[test]
+    fn test_fetch_device_registry_backward_compat() {
+        let json = r#"[{
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "SN001",
+            "trust_tier": "full_access"
+        }]"#;
+        let entries: Vec<DeviceRegistryEntry> = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].owner_sid, None);
+        assert_eq!(entries[0].owner_user, None);
     }
 
     #[tokio::test]
