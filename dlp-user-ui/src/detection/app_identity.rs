@@ -464,6 +464,9 @@ pub fn build_app_identity_from_path(image_path: String) -> AppIdentity {
         publisher,
         trust_tier,
         signature_state,
+        aumid: None,
+        package_family_name: None,
+        is_uwp: false,
     }
 }
 

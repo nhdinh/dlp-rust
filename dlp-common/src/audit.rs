@@ -540,6 +540,9 @@ mod tests {
             publisher: "Contoso".to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         };
         let event = AuditEvent::new(
             EventType::Block,
@@ -572,6 +575,9 @@ mod tests {
             publisher: "Unknown".to_string(),
             trust_tier: AppTrustTier::Untrusted,
             signature_state: SignatureState::NotSigned,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         };
         let dev = DeviceIdentity {
             vid: "0951".to_string(),
@@ -618,6 +624,9 @@ mod tests {
             publisher: "Contoso".to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         }))
         .with_device_identity(Some(DeviceIdentity {
             vid: "0951".to_string(),

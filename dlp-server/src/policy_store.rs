@@ -351,6 +351,18 @@ fn app_identity_matches(
                 _ => false,
             }
         }
+        AppField::Aumid => match op {
+            "eq" => app.aumid.as_deref().unwrap_or("") == value,
+            "ne" => app.aumid.as_deref().unwrap_or("") != value,
+            "contains" => app.aumid.as_deref().unwrap_or("").contains(value),
+            _ => false,
+        },
+        AppField::PackageFamilyName => match op {
+            "eq" => app.package_family_name.as_deref().unwrap_or("") == value,
+            "ne" => app.package_family_name.as_deref().unwrap_or("") != value,
+            "contains" => app.package_family_name.as_deref().unwrap_or("").contains(value),
+            _ => false,
+        },
     }
 }
 
@@ -1327,6 +1339,9 @@ mod tests {
             image_path: image_path.to_string(),
             trust_tier,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         });
         ctx
     }
@@ -1345,6 +1360,9 @@ mod tests {
             image_path: image_path.to_string(),
             trust_tier,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         });
         ctx
     }
@@ -1518,6 +1536,9 @@ mod tests {
             image_path: r"C:\Tool\tool.exe".to_string(),
             trust_tier: AppTrustTier::Unknown,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         });
         let condition = PolicyCondition::SourceApplication {
             field: AppField::TrustTier,
@@ -1792,6 +1813,9 @@ mod tests {
                 AppTrustTier::Untrusted
             },
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         }
     }
 
@@ -1851,6 +1875,9 @@ mod tests {
             image_path: r"C:\Temp\bad.exe".to_string(),
             trust_tier: AppTrustTier::Untrusted,
             signature_state: SignatureState::NotSigned,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         };
         let ctx = make_ctx_with_apps(Classification::T3, None, Some(untrusted_dest));
         let condition = PolicyCondition::DestinationApplication {

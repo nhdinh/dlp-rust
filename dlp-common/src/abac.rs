@@ -269,6 +269,10 @@ pub enum AppField {
     ImagePath,
     /// Application trust tier assigned by the Phase 25 publisher-verification pipeline.
     TrustTier,
+    /// Application User Model ID (AUMID) for UWP apps (Phase 39).
+    Aumid,
+    /// Package Family Name for UWP apps (Phase 39).
+    PackageFamilyName,
 }
 
 impl From<EvaluateRequest> for AbacContext {
@@ -423,7 +427,10 @@ mod tests {
                 publisher: "Contoso".to_string(),
                 trust_tier: AppTrustTier::Trusted,
                 signature_state: SignatureState::Valid,
-            }),
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        }),
             ..Default::default()
         };
         let json = serde_json::to_string(&ctx).unwrap();
@@ -446,13 +453,19 @@ mod tests {
                 publisher: "Adobe Inc.".to_string(),
                 trust_tier: AppTrustTier::Trusted,
                 signature_state: SignatureState::Valid,
-            }),
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        }),
             destination_application: Some(AppIdentity {
                 image_path: r"C:\dst.exe".to_string(),
                 publisher: "Unknown".to_string(),
                 trust_tier: AppTrustTier::Untrusted,
                 signature_state: SignatureState::NotSigned,
-            }),
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        }),
             ..Default::default()
         };
         let json = serde_json::to_string(&req).unwrap();
@@ -645,7 +658,10 @@ mod tests {
                 image_path: r"C:\app.exe".to_string(),
                 trust_tier: AppTrustTier::Trusted,
                 signature_state: SignatureState::Valid,
-            }),
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        }),
             ..Default::default()
         };
         let ctx: AbacContext = req.into();
@@ -680,7 +696,10 @@ mod tests {
                 image_path: r"C:\dst.exe".to_string(),
                 trust_tier: AppTrustTier::Untrusted,
                 signature_state: SignatureState::NotSigned,
-            }),
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        }),
             ..Default::default()
         };
         let ctx: AbacContext = req.into();
