@@ -72,6 +72,8 @@ windows = { version = "0.62", features = [
     "Win32_Devices_Properties",
     # Phase 40: OLE drag-and-drop interception (IDropTarget, RegisterDragDrop)
     "Win32_System_Ole",
+    # Phase 40: DragQueryFileW, HDROP for WM_DROPFILES handling
+    "Win32_UI_Shell",
     # detection/app_identity.rs: WinVerifyTrust, WINTRUST_DATA, etc.
     "Win32_Security_WinTrust",
 ] }
