@@ -20,6 +20,18 @@ Phase numbering is continuous across milestones -- never restarts.
 
 ## v0.7.1 - Operational Hardening (Planning)
 
+### Phase 38.2: USB Enforcement Fix — PnP Disable Actually Works (REOPENED)
+**Goal:** Fix the USB enforcement gap where CM_Disable_DevNode fails silently because the constructed instance ID (USB\VID_X&PID_Y\SERIAL) does not match the actual location-based CM instance ID. Ensure blocked USB devices are actually disabled at the PnP level.
+**Depends on:** Phase 31
+**Requirements:** USB-03
+**Success Criteria** (what must be TRUE):
+  1. `DeviceController::disable_usb_device` resolves the actual CM instance ID via SetupDi (not constructed from VID/PID/serial)
+  2. `CM_Disable_DevNode` succeeds with the real instance ID for blocked USB devices
+  3. If PnP disable fails, the failure is logged at ERROR level (not silently returning Ok)
+  4. Devices with `(none)` serial are handled via fallback location-based matching
+  5. File writes to blocked USB devices fail with OS-level access-denied
+**Plans**: TBD
+
 ### Phase 38.3: AGENT-UNKNOWN Remediation
 **Goal:** Close audit gaps by guaranteeing non-null app identity fields with AGENT-UNKNOWN sentinel and remediation path
 **Depends on:** Phase 25 (App Identity Capture), Phase 26 (ABAC Enforcement)
