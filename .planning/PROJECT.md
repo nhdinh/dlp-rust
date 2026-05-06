@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-05-05 — Phase 38.1 complete: LDAP Config TUI screen wired end-to-end (ADMIN-05)*
+*Last updated: 2026-05-06 — v0.7.0 Disk Exfiltration Prevention shipped. All 15 requirements validated (DISK-01..05, CRYPT-01..02, ADMIN-01..05, AUDIT-01..03).*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -12,16 +12,21 @@ Enterprise-grade Data Loss Prevention system that enforces ABAC-based access pol
 
 Real-time file/clipboard/USB interception with ABAC-based policy enforcement, centralized admin control, and SIEM/alert integration.
 
-## Current Milestone: v0.7.0 Disk Exfiltration Prevention
+## Shipped: v0.7.0 Disk Exfiltration Prevention (2026-05-06)
 
-**Goal:** Prevent data exfiltration via unregistered fixed disks by establishing an install-time disk allowlist with encryption verification.
+**Delivered:** All 15 requirements validated (DISK-01..05, CRYPT-01..02, ADMIN-01..05, AUDIT-01..03). Phases 33-38.2.
 
-**Target features:**
-- Install-time enumeration of fixed disks with BitLocker/encryption validation
-- Persistent disk allowlist in agent-config.toml and server-side registry
-- Runtime blocking of unregistered fixed disks (USB-bridged SATA/NVMe, internal drives added post-install)
-- Admin override/registry for adding disks after initial install
-- Audit events for disk block/discovery actions
+- Phase 33: Disk Enumeration — SetupDi API install-time scan, USB-bridged SATA/NVMe detection, device instance ID as canonical key
+- Phase 34: Encryption Verification — BitLocker status via WMI Win32_EncryptableVolume, PktPrivacy CoSetProxyBlanket FFI
+- Phase 35: Persistence — disk allowlist in agent-config.toml, install-time trusted / post-install blocked
+- Phase 36: Runtime Enforcement — pre-ABAC volume-level I/O blocking, WM_DEVICECHANGE handling, on_disk_arrival heuristic
+- Phase 37: Server Registry + Admin API — SQLite disk registry, GET/POST/DELETE CRUD endpoints
+- Phase 38.1: LDAP Config TUI — admin screen for LDAP configuration
+- Phase 38.2: USB Enforcement Fix — set_volume_deny_all for Blocked tier, startup scan, race condition fix, deferred disk arrival, boot drive case normalization
+
+## Current Milestone: Next
+
+**Status:** Planning next milestone.
 
 ## Shipped: v0.6.0 Endpoint Hardening (2026-04-29)
 
@@ -56,11 +61,12 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 
 ## Deferred (future milestones)
 
-- **v0.7.0 Server Hardening:** batch import endpoint to reduce cache invalidations, typed `Decision` action field, TOML export unblock (POLICY-F4..F6)
 - **Browser Extension (SEED-002 Path A):** Native Chrome/Edge Manifest V3 extension for tab-level origin control
 - **UWP App Identity (APP-07):** AUMID resolution via `IShellItem` / `GetApplicationUserModelId`
-- **USB Audit Fields (USB-05):** VID/PID/Serial/description in USB block audit events
 - **Per-User Device Registry (USB-06):** owner_user column for multi-user machines
+- **Mount-time blocking (DISK-F1):** volume lock in addition to I/O-time blocking
+- **Grace period / quarantine (DISK-F2):** configurable read-only window before hard block
+- **wmi crate upgrade:** Upgrade to wmi 0.18+ to eliminate raw CoSetProxyBlanket FFI workaround
 
 ## Architecture
 
