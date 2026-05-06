@@ -52,6 +52,8 @@ windows = { version = "0.62", features = [
     "Win32_Security_Cryptography",
     "Win32_System_Memory",
     "Win32_System_Registry",
+    # detection/app_identity.rs: GetApplicationUserModelId (UWP AUMID resolution)
+    "Win32_Storage_Packaging_Appx",
     # detection/network_share.rs: WNetOpenEnumW, WNetEnumResourceW (MPR/WNet submodule)
     "Win32_NetworkManagement_WNet",
     "Win32_System_DataExchange",
@@ -70,6 +72,8 @@ windows = { version = "0.62", features = [
     "Win32_Devices_Properties",
     # Phase 40: OLE drag-and-drop interception (IDropTarget, RegisterDragDrop)
     "Win32_System_Ole",
+    # detection/app_identity.rs: WinVerifyTrust, WINTRUST_DATA, etc.
+    "Win32_Security_WinTrust",
 ] }
 
 # WMI for BitLocker queries (Phase 34 - Win32_EncryptableVolume in
