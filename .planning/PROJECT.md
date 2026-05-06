@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-05-06 — v0.7.0 Disk Exfiltration Prevention shipped. All 15 requirements validated (DISK-01..05, CRYPT-01..02, ADMIN-01..05, AUDIT-01..03).*
+*Last updated: 2026-05-06 — Milestone v0.8.0 Application-Aware DLP in planning. v0.7.0 Disk Exfiltration Prevention shipped with all 15 requirements validated.*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -24,9 +24,15 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - Phase 38.1: LDAP Config TUI — admin screen for LDAP configuration
 - Phase 38.2: USB Enforcement Fix — set_volume_deny_all for Blocked tier, startup scan, race condition fix, deferred disk arrival, boot drive case normalization
 
-## Current Milestone: Next
+## Current Milestone: v0.8.0 Application-Aware DLP
 
-**Status:** Planning next milestone.
+**Goal:** Extend application-aware policy enforcement to UWP apps, drag-and-drop, and browser origin-specific rules.
+
+**Target features:**
+- APP-07: UWP App Identity via AUMID (`IShellItem` / `GetApplicationUserModelId`)
+- APP-08: Drag-and-drop enforcement (OLE drag-drop app-aware blocking)
+- BRW-04: Browser origin-aware clipboard policies (extend Chrome Enterprise Connector)
+- Audit enrichment: Close gaps in app identity fields across all interception paths
 
 ## Shipped: v0.6.0 Endpoint Hardening (2026-04-29)
 
@@ -62,7 +68,6 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 ## Deferred (future milestones)
 
 - **Browser Extension (SEED-002 Path A):** Native Chrome/Edge Manifest V3 extension for tab-level origin control
-- **UWP App Identity (APP-07):** AUMID resolution via `IShellItem` / `GetApplicationUserModelId`
 - **Per-User Device Registry (USB-06):** owner_user column for multi-user machines
 - **Mount-time blocking (DISK-F1):** volume lock in addition to I/O-time blocking
 - **Grace period / quarantine (DISK-F2):** configurable read-only window before hard block
