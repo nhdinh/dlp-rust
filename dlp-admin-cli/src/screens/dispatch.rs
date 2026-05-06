@@ -3126,8 +3126,15 @@ fn handle_conditions_step1(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// The AppField labels shown in picker order: Publisher (0), ImagePath (1), TrustTier (2).
-const APP_FIELD_LABELS: [&str; 3] = ["publisher", "image_path", "trust_tier"];
+/// The AppField labels shown in picker order:
+/// Publisher (0), ImagePath (1), TrustTier (2), AUMID (3), PackageFamilyName (4).
+const APP_FIELD_LABELS: [&str; 5] = [
+    "publisher",
+    "image_path",
+    "trust_tier",
+    "aumid",
+    "package_family_name",
+];
 
 /// Maps a picker index to the corresponding [`dlp_common::abac::AppField`].
 fn app_field_from_idx(idx: usize) -> dlp_common::abac::AppField {
@@ -3135,7 +3142,9 @@ fn app_field_from_idx(idx: usize) -> dlp_common::abac::AppField {
     match idx {
         0 => AppField::Publisher,
         1 => AppField::ImagePath,
-        _ => AppField::TrustTier,
+        2 => AppField::TrustTier,
+        3 => AppField::Aumid,
+        _ => AppField::PackageFamilyName,
     }
 }
 
