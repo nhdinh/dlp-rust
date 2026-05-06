@@ -532,11 +532,14 @@ fn apply_tier_enforcement(letter: char, identity: &DeviceIdentity) {
             warn!("registry cache unavailable — applying default-deny (Blocked)");
             UsbTrustTier::Blocked
         };
+        let dbcc_name = format!(
+            r"\\?\USB#VID_{}&PID_{}#{}#{{a5dcbf10-6530-11d2-901f-00c04fb951ed}}",
+            identity.vid, identity.pid, identity.serial
+        );
         match tier {
             UsbTrustTier::Blocked => {
                 // Layer 1: PnP disable (primary enforcement).
-                if let Err(e) =
-                    controller.disable_usb_device(&identity.vid, &identity.pid, &identity.serial)
+                if let Err(e) = controller.disable_usb_device(&dbcc_name, identity)
                 {
                     warn!(
                         vid = %identity.vid,
@@ -657,7 +660,11 @@ fn on_usb_device_removal(detector: &UsbDetector, device_path: &str) {
 
             // Re-enable the device if it was disabled (Blocked tier).
             // This is best-effort: the device may already be gone.
-            if let Err(e) = controller.enable_usb_device(&parsed.vid, &parsed.pid, &parsed.serial) {
+            let dbcc_name = format!(
+                r"\\?\USB#VID_{}&PID_{}#{}#{{a5dcbf10-6530-11d2-901f-00c04fb951ed}}",
+                parsed.vid, parsed.pid, parsed.serial
+            );
+            if let Err(e) = controller.enable_usb_device(&dbcc_name, &parsed) {
                 warn!(
                     vid = %parsed.vid,
                     pid = %parsed.pid,

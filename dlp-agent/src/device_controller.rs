@@ -22,7 +22,10 @@
 use std::collections::HashMap;
 
 use parking_lot::Mutex;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
+
+#[cfg(windows)]
+use dlp_common::usb::{find_instance_id_by_vid_pid_serial, resolve_instance_id_from_dbcc_name};
 
 #[cfg(windows)]
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
@@ -80,31 +83,67 @@ impl DeviceController {
         }
     }
 
-    /// Disables a USB device by its VID/PID/serial triple.
+    #[cfg(windows)]
+    fn map_resolution_error(e: dlp_common::usb::UsbResolutionError) -> DeviceControllerError {
+        match e {
+            dlp_common::usb::UsbResolutionError::ConfigManager(cr) => {
+                DeviceControllerError::ConfigManager(cr)
+            }
+            dlp_common::usb::UsbResolutionError::Win32(err) => DeviceControllerError::Win32(err),
+        }
+    }
+
+    /// Disables a USB device by resolving its actual CM instance ID.
     ///
-    /// Builds a device instance ID (`USB\VID_XXXX&PID_YYYY\SERIAL`), locates
-    /// the device node via `CM_Locate_DevNodeW`, and disables it with
-    /// `CM_Disable_DevNode` using `CM_DISABLE_ABSOLUTE`.
+    /// Primary resolution uses `dbcc_name` via `CM_Get_Device_Interface_PropertyW`.
+    /// Fallback uses SetupDi enumeration by VID/PID/serial for startup scan path.
     ///
     /// # Arguments
     ///
-    /// * `vid` — USB Vendor ID hex string (e.g., `"0951"`).
-    /// * `pid` — USB Product ID hex string (e.g., `"1666"`).
-    /// * `serial` — Device serial number string.
+    /// * `dbcc_name` — Device interface path (e.g. `\\?\USB#VID_XXXX&PID_YYYY#SERIAL#{guid}`).
+    /// * `identity` — Parsed device identity with VID, PID, serial.
     ///
     /// # Errors
     ///
-    /// Returns `Err` if the CM APIs return an unexpected error.
-    /// If the device is not found (already removed), logs a warning and
-    /// returns `Ok(())` — this is NOT treated as a failure.
+    /// Returns `Err` if instance ID resolution fails (both primary and fallback).
+    /// Returns `Ok(())` with warning if device removed after resolution but before disable.
     #[cfg(windows)]
     pub fn disable_usb_device(
         &self,
-        vid: &str,
-        pid: &str,
-        serial: &str,
+        dbcc_name: &str,
+        identity: &dlp_common::DeviceIdentity,
     ) -> Result<(), DeviceControllerError> {
-        let instance_id = format!(r"USB\VID_{vid}&PID_{pid}\{serial}");
+        let instance_id = match resolve_instance_id_from_dbcc_name(dbcc_name) {
+            Ok(id) => id,
+            Err(e) => {
+                warn!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    error = %e,
+                    "CM_Get_Device_Interface_PropertyW failed — falling back to SetupDi enumeration"
+                );
+                match find_instance_id_by_vid_pid_serial(
+                    &identity.vid,
+                    &identity.pid,
+                    &identity.serial,
+                ) {
+                    Ok(id) => id,
+                    Err(e2) => {
+                        error!(
+                            vid = %identity.vid,
+                            pid = %identity.pid,
+                            serial = %identity.serial,
+                            primary_error = %e,
+                            fallback_error = %e2,
+                            "Failed to resolve USB device instance ID — both primary and fallback failed"
+                        );
+                        return Err(Self::map_resolution_error(e2));
+                    }
+                }
+            }
+        };
+
         let wide: Vec<u16> = instance_id
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -120,16 +159,14 @@ impl DeviceController {
             )
         };
 
-        // CONFIGRET(0) is CR_SUCCESS.
         if cr.0 != 0 {
-            // CR_NO_SUCH_DEVNODE = 0x0000000D — device already removed.
             const CR_NO_SUCH_DEVNODE: u32 = 0x0000000D;
             if cr.0 == CR_NO_SUCH_DEVNODE {
                 warn!(
-                    vid = %vid,
-                    pid = %pid,
-                    serial = %serial,
-                    "CM_Locate_DevNodeW: device not found — may have been removed"
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    "CM_Locate_DevNodeW: device removed between resolution and disable"
                 );
                 return Ok(());
             }
@@ -144,9 +181,9 @@ impl DeviceController {
         }
 
         info!(
-            vid = %vid,
-            pid = %pid,
-            serial = %serial,
+            vid = %identity.vid,
+            pid = %identity.pid,
+            serial = %identity.serial,
             "USB device disabled"
         );
         Ok(())
@@ -154,23 +191,50 @@ impl DeviceController {
 
     /// Enables a previously disabled USB device.
     ///
-    /// Uses the same instance ID construction and locate logic as
-    /// [`disable_usb_device`], then calls `CM_Enable_DevNode` with
-    /// `CM_ENABLE_ABSOLUTE`.
+    /// Uses the same instance ID resolution logic as [`disable_usb_device`],
+    /// then calls `CM_Enable_DevNode` with `CM_ENABLE_ABSOLUTE`.
     ///
     /// # Arguments
     ///
-    /// * `vid` — USB Vendor ID hex string.
-    /// * `pid` — USB Product ID hex string.
-    /// * `serial` — Device serial number string.
+    /// * `dbcc_name` — Device interface path.
+    /// * `identity` — Parsed device identity with VID, PID, serial.
     #[cfg(windows)]
     pub fn enable_usb_device(
         &self,
-        vid: &str,
-        pid: &str,
-        serial: &str,
+        dbcc_name: &str,
+        identity: &dlp_common::DeviceIdentity,
     ) -> Result<(), DeviceControllerError> {
-        let instance_id = format!(r"USB\VID_{vid}&PID_{pid}\{serial}");
+        let instance_id = match resolve_instance_id_from_dbcc_name(dbcc_name) {
+            Ok(id) => id,
+            Err(e) => {
+                warn!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    error = %e,
+                    "CM_Get_Device_Interface_PropertyW failed — falling back to SetupDi enumeration"
+                );
+                match find_instance_id_by_vid_pid_serial(
+                    &identity.vid,
+                    &identity.pid,
+                    &identity.serial,
+                ) {
+                    Ok(id) => id,
+                    Err(e2) => {
+                        error!(
+                            vid = %identity.vid,
+                            pid = %identity.pid,
+                            serial = %identity.serial,
+                            primary_error = %e,
+                            fallback_error = %e2,
+                            "Failed to resolve USB device instance ID — both primary and fallback failed"
+                        );
+                        return Err(Self::map_resolution_error(e2));
+                    }
+                }
+            }
+        };
+
         let wide: Vec<u16> = instance_id
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -190,10 +254,10 @@ impl DeviceController {
             const CR_NO_SUCH_DEVNODE: u32 = 0x0000000D;
             if cr.0 == CR_NO_SUCH_DEVNODE {
                 warn!(
-                    vid = %vid,
-                    pid = %pid,
-                    serial = %serial,
-                    "CM_Locate_DevNodeW: device not found — may have been removed"
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    "CM_Locate_DevNodeW: device removed between resolution and enable"
                 );
                 return Ok(());
             }
@@ -208,9 +272,9 @@ impl DeviceController {
         }
 
         info!(
-            vid = %vid,
-            pid = %pid,
-            serial = %serial,
+            vid = %identity.vid,
+            pid = %identity.pid,
+            serial = %identity.serial,
             "USB device enabled"
         );
         Ok(())
