@@ -53,6 +53,21 @@ pub enum InputPurpose {
         pid: String,
         serial: String,
     },
+    /// Step 5: carries VID + PID + serial + description; prompts for owner SID.
+    RegisterDeviceOwnerSid {
+        vid: String,
+        pid: String,
+        serial: String,
+        description: String,
+    },
+    /// Step 6: carries all previous fields + owner_sid; prompts for owner user.
+    RegisterDeviceOwnerUser {
+        vid: String,
+        pid: String,
+        serial: String,
+        description: String,
+        owner_sid: String,
+    },
     /// Prompts for a URL-pattern string to add as a managed origin.
     AddManagedOrigin,
     /// Step 1 of disk registry add flow: prompts for agent ID.
@@ -665,6 +680,10 @@ pub enum Screen {
         pid: String,
         serial: String,
         description: String,
+        /// Optional owner SID for per-user device registration.
+        owner_sid: Option<String>,
+        /// Optional owner username for per-user device registration.
+        owner_user: Option<String>,
         /// Selected tier index: 0 = blocked, 1 = read_only, 2 = full_access.
         selected: usize,
         /// Which screen opened the picker (for post-registration routing).
@@ -979,7 +998,10 @@ mod import_export_tests {
 
     #[test]
     fn test_screen_usbscan_variant_constructible() {
-        let s = Screen::UsbScan { devices: vec![], selected: 0 };
+        let s = Screen::UsbScan {
+            devices: vec![],
+            selected: 0,
+        };
         match s {
             Screen::UsbScan { devices, selected } => {
                 assert!(devices.is_empty());

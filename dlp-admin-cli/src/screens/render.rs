@@ -1935,44 +1935,88 @@ fn draw_agent_list(frame: &mut Frame, area: Rect, agents: &[serde_json::Value], 
     draw_hints(frame, area, "Up/Down: navigate | Esc: back");
 }
 
-/// Draws the Device Registry list screen.
+/// Draws the Device Registry list screen as a 6-column ratatui `Table`.
 ///
-/// Each device is shown as a compact one-liner:
-/// `[TRUST_TIER] VID:{vid} PID:{pid} SER:{serial} "{description}"`
-///
-/// An empty list renders a single informational row.
+/// Columns: VID | PID | Serial | Owner | Tier | Description.
+/// Machine-wide entries (null owner_sid) display "(all users)" in the Owner column.
+/// Per-user entries display the owner_user if present, otherwise the SID truncated.
 fn draw_device_list(frame: &mut Frame, area: Rect, devices: &[serde_json::Value], selected: usize) {
-    let items: Vec<ListItem> = if devices.is_empty() {
-        vec![ListItem::new(Line::from(
-            "No devices registered.".to_string(),
-        ))]
-    } else {
-        devices
-            .iter()
-            .map(|d| {
-                let trust_tier = d["trust_tier"].as_str().unwrap_or("blocked");
-                let tier_tag = match trust_tier {
-                    "read_only" => "[READ_ONLY]",
-                    "full_access" => "[FULL_ACCESS]",
-                    _ => "[BLOCKED]",
-                };
-                let vid = d["vid"].as_str().unwrap_or("-");
-                let pid = d["pid"].as_str().unwrap_or("-");
-                let serial = d["serial"].as_str().unwrap_or("");
-                let description = d["description"].as_str().unwrap_or("");
-                let line = format!("{tier_tag} VID:{vid} PID:{pid} SER:{serial} \"{description}\"");
-                ListItem::new(Line::from(line))
-            })
-            .collect()
-    };
+    if devices.is_empty() {
+        let paragraph = Paragraph::new("No devices registered.")
+            .block(
+                Block::default()
+                    .title(" Device Registry (0) ")
+                    .borders(Borders::ALL),
+            )
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(paragraph, area);
+        draw_hints(frame, area, "r: Register   d: Delete   Esc: Back");
+        return;
+    }
 
-    let list = List::new(items)
+    let header = Row::new(vec!["VID", "PID", "Serial", "Owner", "Tier", "Description"])
+        .style(Style::default().add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = devices
+        .iter()
+        .map(|d| {
+            let vid = d["vid"].as_str().unwrap_or("-");
+            let pid = d["pid"].as_str().unwrap_or("-");
+            let serial = d["serial"].as_str().unwrap_or("");
+            let description = d["description"].as_str().unwrap_or("");
+            let trust_tier = d["trust_tier"].as_str().unwrap_or("blocked");
+            let tier_label = match trust_tier {
+                "read_only" => "READ_ONLY",
+                "full_access" => "FULL_ACCESS",
+                _ => "BLOCKED",
+            };
+
+            // Owner column: per D-10, machine-wide entries show "(all users)".
+            let owner_sid = d["owner_sid"].as_str();
+            let owner_user = d["owner_user"].as_str();
+            let owner = match (owner_sid, owner_user) {
+                (None, None) => "(all users)".to_string(),
+                (None, Some(user)) => format!("{user} (all users)"),
+                (Some(_), Some(user)) => user.to_string(),
+                (Some(sid), None) => {
+                    // Truncate long SIDs to avoid breaking layout (T-38.4-11 mitigation).
+                    if sid.len() > 20 {
+                        format!("{}...", &sid[..17])
+                    } else {
+                        sid.to_string()
+                    }
+                }
+            };
+
+            Row::new(vec![
+                vid.to_string(),
+                pid.to_string(),
+                serial.to_string(),
+                owner,
+                tier_label.to_string(),
+                description.to_string(),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(8),  // VID
+        Constraint::Percentage(8),  // PID
+        Constraint::Percentage(18), // Serial
+        Constraint::Percentage(18), // Owner
+        Constraint::Percentage(12), // Tier
+        Constraint::Percentage(36), // Description
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
         .block(
             Block::default()
                 .title(format!(" Device Registry ({}) ", devices.len()))
                 .borders(Borders::ALL),
         )
-        .highlight_style(
+        .row_highlight_style(
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
@@ -1980,13 +2024,9 @@ fn draw_device_list(frame: &mut Frame, area: Rect, devices: &[serde_json::Value]
         )
         .highlight_symbol("> ");
 
-    let mut state = ratatui::widgets::ListState::default();
-    // Only select a row when the list is non-empty to avoid rendering
-    // the highlight on the "No devices registered." informational row.
-    if !devices.is_empty() {
-        state.select(Some(selected));
-    }
-    frame.render_stateful_widget(list, area, &mut state);
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(table, area, &mut state);
 
     draw_hints(frame, area, "r: Register   d: Delete   Esc: Back");
 }
@@ -2475,6 +2515,180 @@ mod usb_scan_render_tests {
 }
 
 #[cfg(test)]
+mod device_list_render_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use serde_json::json;
+
+    #[test]
+    fn draw_device_list_empty_shows_message() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_device_list(frame, area, &[], 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("Device Registry (0)"),
+            "empty title missing: {s}"
+        );
+        assert!(
+            s.contains("No devices registered."),
+            "empty message missing: {s}"
+        );
+        assert!(s.contains("r: Register"), "register hint missing: {s}");
+        assert!(s.contains("Esc: Back"), "esc hint missing: {s}");
+    }
+
+    #[test]
+    fn draw_device_list_with_owner_shows_username() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let devices = vec![json!({
+            "id": "uuid-1",
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "SN1234",
+            "description": "Kingston USB",
+            "trust_tier": "read_only",
+            "owner_sid": "S-1-5-21-1",
+            "owner_user": "alice"
+        })];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_device_list(frame, area, &devices, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("Device Registry (1)"),
+            "title count missing: {s}"
+        );
+        assert!(s.contains("VID"), "header VID missing: {s}");
+        assert!(s.contains("PID"), "header PID missing: {s}");
+        assert!(s.contains("Serial"), "header Serial missing: {s}");
+        assert!(s.contains("Owner"), "header Owner missing: {s}");
+        assert!(s.contains("Tier"), "header Tier missing: {s}");
+        assert!(s.contains("Description"), "header Description missing: {s}");
+        assert!(s.contains("0951"), "row vid missing: {s}");
+        assert!(s.contains("1666"), "row pid missing: {s}");
+        assert!(s.contains("SN1234"), "row serial missing: {s}");
+        assert!(s.contains("alice"), "row owner_user missing: {s}");
+        assert!(s.contains("READ_ONLY"), "row tier missing: {s}");
+    }
+
+    #[test]
+    fn draw_device_list_machine_wide_shows_all_users() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let devices = vec![json!({
+            "id": "uuid-1",
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "SN1234",
+            "description": "Kingston USB",
+            "trust_tier": "full_access",
+            "owner_sid": null,
+            "owner_user": null
+        })];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_device_list(frame, area, &devices, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("(all users)"),
+            "machine-wide owner label missing: {s}"
+        );
+        assert!(s.contains("FULL_ACCESS"), "row tier missing: {s}");
+    }
+
+    #[test]
+    fn draw_device_list_mixed_renders_correctly() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let devices = vec![
+            json!({
+                "id": "uuid-1",
+                "vid": "0951",
+                "pid": "1666",
+                "serial": "SN1",
+                "description": "Machine-wide device",
+                "trust_tier": "blocked",
+                "owner_sid": null,
+                "owner_user": null
+            }),
+            json!({
+                "id": "uuid-2",
+                "vid": "05ac",
+                "pid": "12a8",
+                "serial": "SN2",
+                "description": "Alice's device",
+                "trust_tier": "read_only",
+                "owner_sid": "S-1-5-21-1",
+                "owner_user": "alice"
+            }),
+        ];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_device_list(frame, area, &devices, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("Device Registry (2)"),
+            "title count missing: {s}"
+        );
+        assert!(s.contains("(all users)"), "machine-wide label missing: {s}");
+        assert!(s.contains("alice"), "per-user owner missing: {s}");
+        assert!(s.contains("BLOCKED"), "blocked tier missing: {s}");
+        assert!(s.contains("READ_ONLY"), "read_only tier missing: {s}");
+    }
+
+    #[test]
+    fn draw_device_list_sid_only_truncates_long_sid() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let long_sid = "S-1-5-21-1234567890-1234567890-1234567890-1234";
+        let devices = vec![json!({
+            "id": "uuid-1",
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "SN1",
+            "description": "SID-only device",
+            "trust_tier": "blocked",
+            "owner_sid": long_sid,
+            "owner_user": null
+        })];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_device_list(frame, area, &devices, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        // Long SIDs are truncated (T-38.4-11 mitigation).
+        // The full SID is not present; a truncated prefix is shown instead.
+        assert!(
+            !s.contains(long_sid),
+            "full long SID should not appear in output: {s}"
+        );
+        assert!(
+            s.contains("S-1-5-21-12345678"),
+            "truncated SID prefix should appear: {s}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod disk_registry_render_tests {
     use super::*;
     use ratatui::backend::TestBackend;
@@ -2492,10 +2706,7 @@ mod disk_registry_render_tests {
         .expect("draw");
         let buf = term.backend().buffer().clone();
         let s: String = buf.content().iter().map(|c| c.symbol()).collect();
-        assert!(
-            s.contains("Disk Registry (0)"),
-            "empty title missing: {s}"
-        );
+        assert!(s.contains("Disk Registry (0)"), "empty title missing: {s}");
         assert!(
             s.contains("No disk registry entries."),
             "empty message missing: {s}"
