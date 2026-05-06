@@ -9,6 +9,7 @@
 //! - [`encryption`] — BitLocker verification via WMI + Registry fallback (Phase 34).
 //! - [`device_watcher`] — Hidden Win32 window + WM_DEVICECHANGE dispatcher (Phase 36).
 
+pub mod app_identity;
 pub mod device_watcher;
 pub mod disk;
 pub mod encryption;
