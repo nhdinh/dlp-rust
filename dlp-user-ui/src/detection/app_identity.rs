@@ -19,7 +19,9 @@ use tracing::{debug, warn};
 
 // Windows-only imports — HWND type is only available on Windows targets.
 #[cfg(windows)]
-use windows::Win32::Foundation::{CloseHandle, HWND};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
+#[cfg(windows)]
+use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
 
 /// Process-lifetime Authenticode result cache (D-04, D-05, D-06).
 ///
@@ -64,6 +66,7 @@ fn authenticode_cache() -> &'static Mutex<HashMap<String, (String, SignatureStat
 /// * `None` — HWND is dead (`GetWindowThreadProcessId` returns pid=0) or the
 ///   caller lacks access rights to the process.
 #[cfg(windows)]
+#[allow(dead_code)]
 pub fn hwnd_to_image_path(hwnd: HWND) -> Option<String> {
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
@@ -456,6 +459,7 @@ pub fn trust_tier_from_signature_state(state: SignatureState) -> AppTrustTier {
 /// # Arguments
 ///
 /// * `image_path` — Absolute Win32 path, e.g. `C:\Windows\notepad.exe`.
+#[allow(dead_code)]
 pub fn build_app_identity_from_path(image_path: String) -> AppIdentity {
     let (publisher, signature_state) = verify_and_cache(&image_path);
     let trust_tier = trust_tier_from_signature_state(signature_state);
@@ -467,6 +471,59 @@ pub fn build_app_identity_from_path(image_path: String) -> AppIdentity {
         aumid: None,
         package_family_name: None,
         is_uwp: false,
+    }
+}
+
+/// Pure logic: determine if an image path indicates a UWP app.
+fn is_uwp_path(image_path: &str) -> bool {
+    image_path.to_lowercase().contains("\\windowsapps\\")
+}
+
+/// Pure logic: extract PackageFamilyName from an AUMID string.
+///
+/// The AUMID format is `<PackageFamilyName>!<ApplicationId>`.
+/// For non-UWP processes or if no `!` is present, returns the input unchanged.
+fn package_family_name_from_aumid(aumid: &str) -> String {
+    aumid.split('!').next().unwrap_or(aumid).to_string()
+}
+
+/// Detect UWP app by image path and resolve AUMID + PackageFamilyName.
+///
+/// Returns `(aumid, package_family_name)` if the process is a UWP app,
+/// `None` otherwise.
+#[cfg(windows)]
+fn resolve_uwp_identity(process_handle: HANDLE, image_path: &str) -> Option<(String, String)> {
+    if !is_uwp_path(image_path) {
+        return None;
+    }
+
+    // SAFETY: GetApplicationUserModelId takes a valid process handle.
+    // First call with null buffer gets the required buffer size.
+    unsafe {
+        let mut len: u32 = 0;
+        let hr = GetApplicationUserModelId(
+            process_handle,
+            &mut len,
+            windows::core::PWSTR(std::ptr::null_mut()),
+        );
+        if hr != windows::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER {
+            return None;
+        }
+
+        let mut buf = vec![0u16; len as usize];
+        let hr = GetApplicationUserModelId(
+            process_handle,
+            &mut len,
+            windows::core::PWSTR(buf.as_mut_ptr()),
+        );
+        if hr.is_err() {
+            return None;
+        }
+
+        // `len` includes the NUL terminator; trim it.
+        let aumid = String::from_utf16_lossy(&buf[..len as usize - 1]);
+        let pfn = package_family_name_from_aumid(&aumid);
+        Some((aumid, pfn))
     }
 }
 
@@ -499,13 +556,76 @@ pub fn resolve_app_identity_from_path(path: Option<String>) -> Option<AppIdentit
 ///
 /// The distinction between `None` and `Some(AppIdentity::default())` lets the
 /// policy evaluator tell "no owner" from "resolution attempted but failed".
+///
+/// For UWP apps, the process handle is kept open until after both
+/// `QueryFullProcessImageNameW` and `GetApplicationUserModelId` complete.
 #[cfg(windows)]
 pub fn resolve_app_identity(hwnd: Option<HWND>) -> Option<AppIdentity> {
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
     let hwnd = hwnd?; // None input -> return None (D-08, source=None case)
-    match hwnd_to_image_path(hwnd) {
-        Some(path) => Some(build_app_identity_from_path(path)),
-        None => Some(AppIdentity::default()), // D-08: dead HWND -> all-Unknown
+
+    let mut pid: u32 = 0;
+    let _tid = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if pid == 0 {
+        return Some(AppIdentity::default()); // D-08: dead HWND
     }
+
+    let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
+        Ok(h) => h,
+        Err(e) => {
+            warn!(pid, error = %e, "OpenProcess failed for app identity resolution");
+            return Some(AppIdentity::default());
+        }
+    };
+
+    let mut buf = [0u16; 1024];
+    let mut size = buf.len() as u32;
+    let result = unsafe {
+        QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut size,
+        )
+    };
+
+    if result.is_err() {
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+        return Some(AppIdentity::default());
+    }
+
+    let image_path = String::from_utf16_lossy(&buf[..size as usize]);
+
+    let (aumid, package_family_name, is_uwp) =
+        if let Some((a, p)) = resolve_uwp_identity(handle, &image_path) {
+            (Some(a), Some(p), true)
+        } else {
+            (None, None, false)
+        };
+
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+
+    let (publisher, signature_state) = verify_and_cache(&image_path);
+    let trust_tier = trust_tier_from_signature_state(signature_state);
+
+    Some(AppIdentity {
+        image_path,
+        publisher,
+        trust_tier,
+        signature_state,
+        aumid,
+        package_family_name,
+        is_uwp,
+    })
 }
 
 /// Non-Windows stub for `resolve_app_identity`.
@@ -672,5 +792,70 @@ mod tests {
         // Unsigned binary -> Untrusted tier
         assert_eq!(identity.trust_tier, AppTrustTier::Untrusted);
         assert_eq!(identity.signature_state, SignatureState::NotSigned);
+    }
+
+    // -- APP-07: UWP app identity --------------------------------------------
+
+    #[test]
+    fn test_is_uwp_path_detects_windows_apps() {
+        assert!(
+            is_uwp_path("C:\\Program Files\\WindowsApps\\Microsoft.Windows.Photos_8wekyb3d8bbwe\\Photos.exe"),
+            "path under WindowsApps must be detected as UWP"
+        );
+        assert!(
+            is_uwp_path("c:\\program files\\windowsapps\\SomeApp\\app.exe"),
+            "lowercase path under WindowsApps must be detected as UWP"
+        );
+        assert!(
+            !is_uwp_path("C:\\Windows\\System32\\notepad.exe"),
+            "system path must not be detected as UWP"
+        );
+        assert!(
+            !is_uwp_path("C:\\Program Files\\Microsoft Office\\Word.exe"),
+            "regular Program Files path must not be detected as UWP"
+        );
+    }
+
+    #[test]
+    fn test_package_family_name_from_aumid() {
+        assert_eq!(
+            package_family_name_from_aumid("Microsoft.Windows.Photos_8wekyb3d8bbwe!App"),
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe",
+            "PFN must be the part before the '!',"
+        );
+        assert_eq!(
+            package_family_name_from_aumid("NoExclamationMark"),
+            "NoExclamationMark",
+            "AUMID without '!' must return the input unchanged"
+        );
+        assert_eq!(
+            package_family_name_from_aumid("MyApp!child!extra"),
+            "MyApp",
+            "PFN must be only the first segment before '!'"
+        );
+    }
+
+    #[test]
+    fn test_app_identity_with_uwp_fields() {
+        let identity = AppIdentity {
+            image_path: "C:\\Program Files\\WindowsApps\\Microsoft.Windows.Photos_8wekyb3d8bbwe\\Photos.exe".to_string(),
+            publisher: "Microsoft Corporation".to_string(),
+            trust_tier: AppTrustTier::Trusted,
+            signature_state: SignatureState::Valid,
+            aumid: Some("Microsoft.Windows.Photos_8wekyb3d8bbwe!App".to_string()),
+            package_family_name: Some("Microsoft.Windows.Photos_8wekyb3d8bbwe".to_string()),
+            is_uwp: true,
+        };
+        assert!(identity.is_uwp, "UWP flag must be true");
+        assert_eq!(
+            identity.aumid.as_deref(),
+            Some("Microsoft.Windows.Photos_8wekyb3d8bbwe!App"),
+            "AUMID must match"
+        );
+        assert_eq!(
+            identity.package_family_name.as_deref(),
+            Some("Microsoft.Windows.Photos_8wekyb3d8bbwe"),
+            "PackageFamilyName must match"
+        );
     }
 }
