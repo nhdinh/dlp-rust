@@ -191,6 +191,18 @@ pub struct AuditEvent {
     /// `event_type = BLOCK AND blocked_disk IS NOT NULL` for disk enforcement.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked_disk: Option<DiskIdentity>,
+    /// Owner SID of the per-user device registry entry that determined the
+    /// effective trust tier (USB-06, Phase 38.4).
+    ///
+    /// `None` when the decision used a machine-wide entry or default-deny.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_sid: Option<String>,
+    /// Owner username of the per-user device registry entry that determined
+    /// the effective trust tier (USB-06, Phase 38.4).
+    ///
+    /// `None` when the decision used a machine-wide entry or default-deny.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_user: Option<String>,
 }
 
 impl AuditEvent {
@@ -248,6 +260,8 @@ impl AuditEvent {
             destination_origin: None,
             discovered_disks: None,
             blocked_disk: None,
+            owner_sid: None,
+            owner_user: None,
         }
     }
 
@@ -381,6 +395,27 @@ impl AuditEvent {
         self.blocked_disk = Some(disk);
         self
     }
+
+    /// Sets the owner SID of the per-user device registry entry that
+    /// determined the effective trust tier (USB-06, Phase 38.4).
+    pub fn with_owner_sid(mut self, owner_sid: Option<String>) -> Self {
+        self.owner_sid = owner_sid;
+        self
+    }
+
+    /// Sets the owner username of the per-user device registry entry that
+    /// determined the effective trust tier (USB-06, Phase 38.4).
+    pub fn with_owner_user(mut self, owner_user: Option<String>) -> Self {
+        self.owner_user = owner_user;
+        self
+    }
+
+    /// Convenience method to set both owner SID and owner username at once.
+    pub fn with_owner(mut self, owner_sid: Option<String>, owner_user: Option<String>) -> Self {
+        self.owner_sid = owner_sid;
+        self.owner_user = owner_user;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -492,6 +527,9 @@ mod tests {
         // Phase 29 new fields must also be skipped when None.
         assert!(!json.contains("\"source_origin\":null"));
         assert!(!json.contains("\"destination_origin\":null"));
+        // Phase 38.4 owner fields must be skipped when None.
+        assert!(!json.contains("\"owner_sid\":null"));
+        assert!(!json.contains("\"owner_user\":null"));
     }
 
     #[test]
@@ -912,6 +950,90 @@ mod tests {
         assert!(
             event.blocked_disk.is_none(),
             "missing blocked_disk must default to None"
+        );
+    }
+
+    /// USB-06: AuditEvent with owner_sid and owner_user serializes both fields.
+    #[test]
+    fn test_audit_event_with_owner_fields() {
+        let event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-1".to_string(),
+            "alice".to_string(),
+            r"E:\file.txt".to_string(),
+            Classification::T3,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-01".to_string(),
+            1,
+        )
+        .with_owner(Some("S-1-5-21-1".to_string()), Some("alice".to_string()));
+
+        assert_eq!(event.owner_sid, Some("S-1-5-21-1".to_string()));
+        assert_eq!(event.owner_user, Some("alice".to_string()));
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            json.contains("\"owner_sid\""),
+            "owner_sid must be present: {json}"
+        );
+        assert!(json.contains("S-1-5-21-1"), "SID value missing: {json}");
+        assert!(
+            json.contains("\"owner_user\""),
+            "owner_user must be present: {json}"
+        );
+        assert!(json.contains("alice"), "username value missing: {json}");
+    }
+
+    /// USB-06: AuditEvent without owner fields omits them from JSON.
+    #[test]
+    fn test_audit_event_without_owner_fields_skipped() {
+        let event = AuditEvent::new(
+            EventType::Access,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\File.txt".to_string(),
+            Classification::T2,
+            Action::READ,
+            Decision::ALLOW,
+            "AGENT-WS02-001".to_string(),
+            1,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            !json.contains("\"owner_sid\""),
+            "None owner_sid must be omitted: {json}"
+        );
+        assert!(
+            !json.contains("\"owner_user\""),
+            "None owner_user must be omitted: {json}"
+        );
+    }
+
+    /// USB-06: legacy JSON without owner_sid/owner_user deserializes successfully.
+    #[test]
+    fn test_backward_compat_missing_owner_fields() {
+        let legacy_json = r#"{
+            "timestamp": "2026-04-01T00:00:00Z",
+            "event_type": "BLOCK",
+            "user_sid": "S-1-5-21-1",
+            "user_name": "alice",
+            "resource_path": "E:\\file.txt",
+            "classification": "T1",
+            "action_attempted": "WRITE",
+            "decision": "DENY",
+            "agent_id": "AGENT-1",
+            "session_id": 1
+        }"#;
+        let event: AuditEvent = serde_json::from_str(legacy_json)
+            .expect("legacy JSON without owner fields must deserialize");
+        assert!(
+            event.owner_sid.is_none(),
+            "missing owner_sid must default to None"
+        );
+        assert!(
+            event.owner_user.is_none(),
+            "missing owner_user must default to None"
         );
     }
 }
