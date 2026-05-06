@@ -531,12 +531,13 @@ pub fn find_instance_id_by_vid_pid_serial(
             let reshaped = format!("\\\\?\\{}", instance_id.replace('\\', "#"));
             let candidate = parse_usb_device_path(&reshaped);
 
-            if candidate.vid == vid && candidate.pid == pid {
-                if serial == "(none)" {
-                    matches.push(instance_id);
-                } else if candidate.serial == serial || candidate.serial == "(none)" {
-                    matches.push(instance_id);
-                }
+            if candidate.vid == vid
+                && candidate.pid == pid
+                && (serial == "(none)"
+                    || candidate.serial == serial
+                    || candidate.serial == "(none)")
+            {
+                matches.push(instance_id);
             }
         }
 

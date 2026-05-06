@@ -37,7 +37,7 @@ use std::os::windows::ffi::OsStrExt;
 use dlp_common::usb::{parse_usb_device_path, setupdi_description_for_device};
 use dlp_common::{Classification, DeviceIdentity, UsbTrustTier};
 use parking_lot::{Mutex, RwLock};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 // DBT_DEVICEARRIVAL is needed by handle_volume_event to distinguish arrival
 // from removal events. The window, registration, and wndproc live in
@@ -152,7 +152,10 @@ impl UsbDetector {
                 self.device_identities
                     .write()
                     .insert(letter, identity.clone());
-                apply_tier_enforcement(letter, &identity);
+                // Startup scan has no dbcc_name — use empty string to trigger fallback.
+                if let Err(e) = apply_tier_enforcement(letter, &identity, "") {
+                    warn!(drive = %letter, error = %e, "tier enforcement failed during startup scan");
+                }
             } else if unmapped.len() > 1 {
                 // Ambiguous: multiple unmapped USB drives. We cannot determine which
                 // identity belongs to which drive letter. Park the identity in
@@ -260,6 +263,7 @@ impl UsbDetector {
     pub fn reconcile_identity_with_unmapped_drive(
         &self,
         identity: &DeviceIdentity,
+        dbcc_name: &str,
     ) -> Option<char> {
         let unmapped: Vec<char> = {
             let blocked = self.blocked_drives.read();
@@ -275,7 +279,9 @@ impl UsbDetector {
             self.device_identities
                 .write()
                 .insert(letter, identity.clone());
-            apply_tier_enforcement(letter, identity);
+            if let Err(e) = apply_tier_enforcement(letter, identity, dbcc_name) {
+                warn!(drive = %letter, error = %e, "tier enforcement failed during reconciliation");
+            }
             Some(letter)
         } else {
             None
@@ -472,7 +478,10 @@ fn handle_volume_event(detector: &UsbDetector, event_type: u32) {
                     .device_identities
                     .write()
                     .insert(*letter, identity.clone());
-                apply_tier_enforcement(*letter, &identity);
+                // pending_identity has no dbcc_name — use empty string to trigger fallback.
+                if let Err(e) = apply_tier_enforcement(*letter, &identity, "") {
+                    warn!(drive = %letter, error = %e, "tier enforcement failed for pending identity");
+                }
             }
             // Notify the file monitor to start watching this new drive root so
             // file events on the USB drive reach UsbEnforcer::check().
@@ -494,90 +503,164 @@ fn handle_volume_event(detector: &UsbDetector, event_type: u32) {
 /// - `ReadOnly`: modifies the volume DACL to remove write access.
 /// - `FullAccess`: no action.
 #[cfg(windows)]
-fn apply_tier_enforcement(letter: char, identity: &DeviceIdentity) {
-    if let Some(controller) = DEVICE_CONTROLLER.get() {
-        let tier = if let Some(cache) = REGISTRY_CACHE.get() {
-            let t = cache.trust_tier_for(&identity.vid, &identity.pid, &identity.serial);
-            if cache.has_device(&identity.vid, &identity.pid, &identity.serial) {
-                debug!(
+fn apply_tier_enforcement(
+    letter: char,
+    identity: &DeviceIdentity,
+    dbcc_name: &str,
+) -> Result<(), String> {
+    let Some(controller) = DEVICE_CONTROLLER.get() else {
+        return Err("DeviceController not initialized".to_string());
+    };
+
+    let tier = if let Some(cache) = REGISTRY_CACHE.get() {
+        let t = cache.trust_tier_for(&identity.vid, &identity.pid, &identity.serial);
+        if cache.has_device(&identity.vid, &identity.pid, &identity.serial) {
+            debug!(
+                vid = %identity.vid,
+                pid = %identity.pid,
+                tier = ?t,
+                "registry cache hit — applying registered tier"
+            );
+        } else {
+            let cache_size = cache.len();
+            let registered_serials = cache.serials_for_vid_pid(&identity.vid, &identity.pid);
+            if registered_serials.is_empty() {
+                warn!(
                     vid = %identity.vid,
                     pid = %identity.pid,
-                    tier = ?t,
-                    "registry cache hit — applying registered tier"
+                    serial = %identity.serial,
+                    cache_entries = cache_size,
+                    "device not found in registry cache (no entry for this VID/PID) — applying default-deny (Blocked)"
                 );
             } else {
-                let cache_size = cache.len();
-                let registered_serials = cache.serials_for_vid_pid(&identity.vid, &identity.pid);
-                if registered_serials.is_empty() {
-                    warn!(
-                        vid = %identity.vid,
-                        pid = %identity.pid,
-                        serial = %identity.serial,
-                        cache_entries = cache_size,
-                        "device not found in registry cache (no entry for this VID/PID) — applying default-deny (Blocked)"
-                    );
-                } else {
-                    warn!(
-                        vid = %identity.vid,
-                        pid = %identity.pid,
-                        hardware_serial = %identity.serial,
-                        registered_serials = ?registered_serials,
-                        cache_entries = cache_size,
-                        "device not found in registry cache (VID/PID match but serial mismatch) — applying default-deny (Blocked)"
-                    );
-                }
-            }
-            t
-        } else {
-            warn!("registry cache unavailable — applying default-deny (Blocked)");
-            UsbTrustTier::Blocked
-        };
-        let dbcc_name = format!(
-            r"\\?\USB#VID_{}&PID_{}#{}#{{a5dcbf10-6530-11d2-901f-00c04fb951ed}}",
-            identity.vid, identity.pid, identity.serial
-        );
-        match tier {
-            UsbTrustTier::Blocked => {
-                // Layer 1: PnP disable (primary enforcement).
-                if let Err(e) = controller.disable_usb_device(&dbcc_name, identity)
-                {
-                    warn!(
-                        vid = %identity.vid,
-                        pid = %identity.pid,
-                        serial = %identity.serial,
-                        error = %e,
-                        "failed to disable USB device"
-                    );
-                } else {
-                    info!(
-                        drive = %letter,
-                        vid = %identity.vid,
-                        pid = %identity.pid,
-                        "USB device disabled (Blocked tier)"
-                    );
-                }
-                // Layer 2: DACL deny-all (defense-in-depth fallback).
-                if let Err(e) = controller.set_volume_deny_all(letter) {
-                    warn!(drive = %letter, error = %e, "failed to set volume deny-all");
-                } else {
-                    info!(drive = %letter, "volume set to deny-all (Blocked tier defense-in-depth)");
-                }
-            }
-            UsbTrustTier::ReadOnly => {
-                if let Err(e) = controller.set_volume_readonly(letter) {
-                    warn!(drive = %letter, error = %e, "failed to set volume read-only");
-                } else {
-                    info!(drive = %letter, "USB volume set to read-only (ReadOnly tier)");
-                }
-            }
-            UsbTrustTier::FullAccess => {
-                debug!(
-                    drive = %letter,
+                warn!(
                     vid = %identity.vid,
                     pid = %identity.pid,
-                    "USB device has FullAccess — no enforcement action"
+                    hardware_serial = %identity.serial,
+                    registered_serials = ?registered_serials,
+                    cache_entries = cache_size,
+                    "device not found in registry cache (VID/PID match but serial mismatch) — applying default-deny (Blocked)"
                 );
             }
+        }
+        t
+    } else {
+        warn!("registry cache unavailable — applying default-deny (Blocked)");
+        UsbTrustTier::Blocked
+    };
+
+    match tier {
+        UsbTrustTier::Blocked => {
+            // Layer 1: PnP disable (primary enforcement).
+            let pnp_result = controller.disable_usb_device(dbcc_name, identity);
+            let pnp_ok = pnp_result.is_ok();
+            if let Err(ref e) = pnp_result {
+                error!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    drive = %letter,
+                    tier = "Blocked",
+                    pnp_result = "err",
+                    error = %e,
+                    "PnP disable failed for blocked USB device"
+                );
+            }
+
+            // Layer 2: DACL deny-all (defense-in-depth fallback — always attempt).
+            let dacl_result = controller.set_volume_deny_all(letter);
+            let dacl_ok = dacl_result.is_ok();
+            if let Err(ref e) = dacl_result {
+                error!(
+                    drive = %letter,
+                    dacl_result = "err",
+                    error = %e,
+                    "DACL deny-all failed for blocked USB device"
+                );
+            }
+
+            // Structured outcome span (D-07).
+            if pnp_ok && dacl_ok {
+                info!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    drive = %letter,
+                    tier = "Blocked",
+                    pnp_result = "ok",
+                    dacl_result = "ok",
+                    "USB device blocked (PnP + DACL)"
+                );
+                Ok(())
+            } else if !pnp_ok && !dacl_ok {
+                error!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    drive = %letter,
+                    tier = "Blocked",
+                    pnp_result = "err",
+                    dacl_result = "err",
+                    "USB device block FAILED — both PnP disable and DACL deny-all failed"
+                );
+                Err(format!(
+                    "Both PnP disable ({}) and DACL deny-all ({}) failed",
+                    pnp_result.unwrap_err(),
+                    dacl_result.unwrap_err()
+                ))
+            } else {
+                // One succeeded, one failed — log warning but return Ok (defense-in-depth worked).
+                warn!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    drive = %letter,
+                    tier = "Blocked",
+                    pnp_result = if pnp_ok { "ok" } else { "err" },
+                    dacl_result = if dacl_ok { "ok" } else { "err" },
+                    "USB device block partially succeeded (defense-in-depth)"
+                );
+                Ok(())
+            }
+        }
+        UsbTrustTier::ReadOnly => {
+            let result = controller.set_volume_readonly(letter);
+            match result {
+                Ok(()) => {
+                    info!(
+                        vid = %identity.vid,
+                        pid = %identity.pid,
+                        serial = %identity.serial,
+                        drive = %letter,
+                        tier = "ReadOnly",
+                        "USB volume set to read-only"
+                    );
+                    Ok(())
+                }
+                Err(e) => {
+                    error!(
+                        vid = %identity.vid,
+                        pid = %identity.pid,
+                        serial = %identity.serial,
+                        drive = %letter,
+                        tier = "ReadOnly",
+                        error = %e,
+                        "Failed to set USB volume to read-only"
+                    );
+                    Err(format!("ReadOnly DACL failed: {e}"))
+                }
+            }
+        }
+        UsbTrustTier::FullAccess => {
+            debug!(
+                vid = %identity.vid,
+                pid = %identity.pid,
+                serial = %identity.serial,
+                drive = %letter,
+                tier = "FullAccess",
+                "USB device has FullAccess — no enforcement action"
+            );
+            Ok(())
         }
     }
 }
@@ -603,7 +686,7 @@ fn on_usb_device_arrival(detector: &UsbDetector, device_path: &str) {
     // WR-01 fix: If VOLUME arrived before USB_DEVICE, the drive letter is already
     // in blocked_drives but device_identities has no entry. Check for exactly one
     // un-identity'd USB drive and reconcile immediately.
-    if let Some(letter) = detector.reconcile_identity_with_unmapped_drive(&identity) {
+    if let Some(letter) = detector.reconcile_identity_with_unmapped_drive(&identity, device_path) {
         info!(
             vid = %identity.vid,
             pid = %identity.pid,
@@ -660,11 +743,7 @@ fn on_usb_device_removal(detector: &UsbDetector, device_path: &str) {
 
             // Re-enable the device if it was disabled (Blocked tier).
             // This is best-effort: the device may already be gone.
-            let dbcc_name = format!(
-                r"\\?\USB#VID_{}&PID_{}#{}#{{a5dcbf10-6530-11d2-901f-00c04fb951ed}}",
-                parsed.vid, parsed.pid, parsed.serial
-            );
-            if let Err(e) = controller.enable_usb_device(&dbcc_name, &parsed) {
+            if let Err(e) = controller.enable_usb_device(device_path, &parsed) {
                 warn!(
                     vid = %parsed.vid,
                     pid = %parsed.pid,
@@ -962,7 +1041,7 @@ mod tests {
 
         // reconcile_identity_with_unmapped_drive should fire because exactly
         // one unmapped drive exists.
-        let result = detector.reconcile_identity_with_unmapped_drive(&identity);
+        let result = detector.reconcile_identity_with_unmapped_drive(&identity, "");
         assert_eq!(result, Some('F'));
 
         // device_identities should now contain the mapped identity.
@@ -991,7 +1070,7 @@ mod tests {
         };
 
         // reconcile should return None because no unmapped drives exist.
-        let result = detector.reconcile_identity_with_unmapped_drive(&identity);
+        let result = detector.reconcile_identity_with_unmapped_drive(&identity, "");
         assert_eq!(result, None);
 
         // device_identities should still be empty.
@@ -1026,7 +1105,7 @@ mod tests {
         };
 
         // reconcile should return None because multiple unmapped drives exist.
-        let result = detector.reconcile_identity_with_unmapped_drive(&identity);
+        let result = detector.reconcile_identity_with_unmapped_drive(&identity, "");
         assert_eq!(result, None);
 
         // device_identities should still be empty.
@@ -1060,7 +1139,7 @@ mod tests {
         };
 
         // 'F' is already mapped, so no unmapped drives exist.
-        let result = detector.reconcile_identity_with_unmapped_drive(&new_identity);
+        let result = detector.reconcile_identity_with_unmapped_drive(&new_identity, "");
         assert_eq!(result, None);
 
         // Existing identity should not be overwritten.
@@ -1092,7 +1171,7 @@ mod tests {
 
         // This is the same pattern scan_existing_usb_identities uses for
         // each identity returned by enumerate_connected_usb_devices.
-        let result = detector.reconcile_identity_with_unmapped_drive(&identity);
+        let result = detector.reconcile_identity_with_unmapped_drive(&identity, "");
         assert_eq!(result, Some('F'));
 
         assert_eq!(
