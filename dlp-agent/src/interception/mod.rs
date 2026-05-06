@@ -17,9 +17,14 @@
 //!  5. Sends a [`Pipe1AgentMsg::BlockNotify`] to the UI when the engine returns
 //!     a blocking decision.
 
+pub mod drag_drop;
 pub mod file_monitor;
 pub mod policy_mapper;
 
+pub use drag_drop::{
+    init_emit_context as init_drag_drop_emit_context, install_drag_drop_hook,
+    uninstall_drag_drop_hook, DragDropEnforcer,
+};
 pub use file_monitor::{FileAction, InterceptionEngine};
 
 use std::sync::Arc;
