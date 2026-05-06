@@ -672,4 +672,17 @@ mod tests {
             };
         }
     }
+
+    /// Smoke test for `find_instance_id_by_vid_pid_serial` with `(none)` serial.
+    /// Calls with a VID/PID that is unlikely to match any real device, verifying
+    /// the function accepts the `(none)` serial parameter and returns a Result.
+    #[test]
+    #[cfg(windows)]
+    fn test_find_instance_id_by_vid_pid_serial_none_smoke() {
+        // FFFF:FFFF is unlikely to match any real USB device.
+        let result = find_instance_id_by_vid_pid_serial("FFFF", "FFFF", "(none)");
+        // Assert the function returns a Result (either Ok or Err is acceptable
+        // since we cannot control which USB devices are connected).
+        let _ = result;
+    }
 }

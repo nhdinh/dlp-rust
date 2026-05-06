@@ -712,4 +712,55 @@ mod tests {
             assert_eq!(cache.get(&'E'), None);
         }
     }
+
+    /// Verify that `map_resolution_error` correctly maps `UsbResolutionError::ConfigManager`
+    /// to `DeviceControllerError::ConfigManager`.
+    #[test]
+    #[cfg(windows)]
+    fn test_map_resolution_error_config_manager() {
+        let usb_err = dlp_common::usb::UsbResolutionError::ConfigManager(0x0D);
+        let mapped = DeviceController::map_resolution_error(usb_err);
+        match mapped {
+            DeviceControllerError::ConfigManager(0x0D) => {}
+            _ => panic!("Expected ConfigManager(0x0D), got {:?}", mapped),
+        }
+    }
+
+    /// Verify that `disable_usb_device` accepts the new signature with `dbcc_name`
+    /// and `DeviceIdentity`. This is a compile-time check; the call fails at runtime
+    /// because no real USB device matches the fake path.
+    #[test]
+    #[cfg(windows)]
+    fn test_disable_usb_device_signature_compiles() {
+        let controller = DeviceController::new();
+        let identity = dlp_common::DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN123".into(),
+            description: "Test".into(),
+        };
+        let _ = controller.disable_usb_device(
+            r"\\?\USB#VID_0951&PID_1666#SN123#{a5dcbf10-6530-11d2-901f-00c04fb951ed}",
+            &identity,
+        );
+    }
+
+    /// Verify that `enable_usb_device` accepts the new signature with `dbcc_name`
+    /// and `DeviceIdentity`. This is a compile-time check; the call fails at runtime
+    /// because no real USB device matches the fake path.
+    #[test]
+    #[cfg(windows)]
+    fn test_enable_usb_device_signature_compiles() {
+        let controller = DeviceController::new();
+        let identity = dlp_common::DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN123".into(),
+            description: "Test".into(),
+        };
+        let _ = controller.enable_usb_device(
+            r"\\?\USB#VID_0951&PID_1666#SN123#{a5dcbf10-6530-11d2-901f-00c04fb951ed}",
+            &identity,
+        );
+    }
 }

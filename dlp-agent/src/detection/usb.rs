@@ -1211,4 +1211,20 @@ mod tests {
         );
     }
 
+    /// Verify that `apply_tier_enforcement` returns an error when DEVICE_CONTROLLER
+    /// is not initialized (the early-return path that requires no hardware).
+    #[test]
+    #[cfg(windows)]
+    fn test_apply_tier_enforcement_no_controller_returns_err() {
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN42".into(),
+            description: "Test".into(),
+        };
+        let result = apply_tier_enforcement('E', &identity, "");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("DeviceController not initialized"));
+    }
+
 }
