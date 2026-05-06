@@ -502,6 +502,13 @@ fn handle_volume_event(detector: &UsbDetector, event_type: u32) {
 /// - `Blocked`: disables the device via Windows Device Manager.
 /// - `ReadOnly`: modifies the volume DACL to remove write access.
 /// - `FullAccess`: no action.
+///
+/// ## Per-user support (USB-06, Phase 38.4)
+///
+/// Resolves the current process SID and queries the cache with
+/// `trust_tier_for_with_sid`, which considers both per-user and machine-wide
+/// entries and returns the most restrictive tier. Owner identity is included
+/// in tracing spans for auditability.
 #[cfg(windows)]
 fn apply_tier_enforcement(
     letter: char,
@@ -512,13 +519,29 @@ fn apply_tier_enforcement(
         return Err("DeviceController not initialized".to_string());
     };
 
-    let tier = if let Some(cache) = REGISTRY_CACHE.get() {
-        let t = cache.trust_tier_for(&identity.vid, &identity.pid, &identity.serial);
-        if cache.has_device(&identity.vid, &identity.pid, &identity.serial) {
+    // Resolve current user SID for per-user registry lookup (T-38.4-05).
+    let current_sid = crate::identity::get_current_process_sid();
+
+    let (tier, owner_sid, owner_user) = if let Some(cache) = REGISTRY_CACHE.get() {
+        let result = cache.trust_tier_for_with_sid(
+            &identity.vid,
+            &identity.pid,
+            &identity.serial,
+            current_sid.as_deref(),
+        );
+        let t = result.tier;
+        let has_entry = cache.has_device_with_sid(
+            &identity.vid,
+            &identity.pid,
+            &identity.serial,
+            current_sid.as_deref(),
+        ) || cache.has_device(&identity.vid, &identity.pid, &identity.serial);
+        if has_entry {
             debug!(
                 vid = %identity.vid,
                 pid = %identity.pid,
                 tier = ?t,
+                owner_sid = ?result.owner_sid,
                 "registry cache hit — applying registered tier"
             );
         } else {
@@ -543,10 +566,10 @@ fn apply_tier_enforcement(
                 );
             }
         }
-        t
+        (t, result.owner_sid, result.owner_user)
     } else {
         warn!("registry cache unavailable — applying default-deny (Blocked)");
-        UsbTrustTier::Blocked
+        (UsbTrustTier::Blocked, None, None)
     };
 
     match tier {
@@ -561,6 +584,8 @@ fn apply_tier_enforcement(
                     serial = %identity.serial,
                     drive = %letter,
                     tier = "Blocked",
+                    owner_sid = ?owner_sid,
+                    owner_user = ?owner_user,
                     pnp_result = "err",
                     error = %e,
                     "PnP disable failed for blocked USB device"
@@ -587,6 +612,8 @@ fn apply_tier_enforcement(
                     serial = %identity.serial,
                     drive = %letter,
                     tier = "Blocked",
+                    owner_sid = ?owner_sid,
+                    owner_user = ?owner_user,
                     pnp_result = "ok",
                     dacl_result = "ok",
                     "USB device blocked (PnP + DACL)"
@@ -599,6 +626,8 @@ fn apply_tier_enforcement(
                     serial = %identity.serial,
                     drive = %letter,
                     tier = "Blocked",
+                    owner_sid = ?owner_sid,
+                    owner_user = ?owner_user,
                     pnp_result = "err",
                     dacl_result = "err",
                     "USB device block FAILED — both PnP disable and DACL deny-all failed"
@@ -616,6 +645,8 @@ fn apply_tier_enforcement(
                     serial = %identity.serial,
                     drive = %letter,
                     tier = "Blocked",
+                    owner_sid = ?owner_sid,
+                    owner_user = ?owner_user,
                     pnp_result = if pnp_ok { "ok" } else { "err" },
                     dacl_result = if dacl_ok { "ok" } else { "err" },
                     "USB device block partially succeeded (defense-in-depth)"
@@ -633,6 +664,8 @@ fn apply_tier_enforcement(
                         serial = %identity.serial,
                         drive = %letter,
                         tier = "ReadOnly",
+                        owner_sid = ?owner_sid,
+                        owner_user = ?owner_user,
                         "USB volume set to read-only"
                     );
                     Ok(())
@@ -644,6 +677,8 @@ fn apply_tier_enforcement(
                         serial = %identity.serial,
                         drive = %letter,
                         tier = "ReadOnly",
+                        owner_sid = ?owner_sid,
+                        owner_user = ?owner_user,
                         error = %e,
                         "Failed to set USB volume to read-only"
                     );
@@ -658,6 +693,8 @@ fn apply_tier_enforcement(
                 serial = %identity.serial,
                 drive = %letter,
                 tier = "FullAccess",
+                owner_sid = ?owner_sid,
+                owner_user = ?owner_user,
                 "USB device has FullAccess — no enforcement action"
             );
             Ok(())
@@ -1174,10 +1211,7 @@ mod tests {
         let result = detector.reconcile_identity_with_unmapped_drive(&identity, "");
         assert_eq!(result, Some('F'));
 
-        assert_eq!(
-            detector.device_identity_for_drive('F'),
-            Some(identity)
-        );
+        assert_eq!(detector.device_identity_for_drive('F'), Some(identity));
     }
 
     /// When scan_existing_usb_identities encounters an already-mapped identity,
@@ -1193,7 +1227,10 @@ mod tests {
             serial: "SN42".into(),
             description: "Existing".into(),
         };
-        detector.device_identities.write().insert('F', existing.clone());
+        detector
+            .device_identities
+            .write()
+            .insert('F', existing.clone());
 
         // Simulate the already_mapped check from scan_existing_usb_identities.
         let ids = detector.device_identities.read();
@@ -1224,7 +1261,8 @@ mod tests {
         };
         let result = apply_tier_enforcement('E', &identity, "");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("DeviceController not initialized"));
+        assert!(result
+            .unwrap_err()
+            .contains("DeviceController not initialized"));
     }
-
 }
