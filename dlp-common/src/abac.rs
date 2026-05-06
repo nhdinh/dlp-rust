@@ -782,4 +782,35 @@ mod phase37_action_tests {
             "DiskRegistryAdd and DiskRegistryRemove must be distinct variants"
         );
     }
+
+    /// Verify `DRAG_DROP` serializes as its literal variant name (no rename).
+    #[test]
+    fn test_drag_drop_serializes_as_variant_name() {
+        let json = serde_json::to_string(&Action::DRAG_DROP)
+            .expect("serialize DRAG_DROP");
+        assert_eq!(
+            json, "\"DRAG_DROP\"",
+            "DRAG_DROP must serialize as its literal variant name per APP-08"
+        );
+    }
+
+    /// Verify `"DRAG_DROP"` deserializes back to the correct variant.
+    #[test]
+    fn test_drag_drop_deserializes_from_variant_name() {
+        let action: Action = serde_json::from_str("\"DRAG_DROP\"")
+            .expect("deserialize DRAG_DROP");
+        assert_eq!(
+            action,
+            Action::DRAG_DROP,
+            "\"DRAG_DROP\" must deserialize to Action::DRAG_DROP"
+        );
+    }
+
+    /// Verify DRAG_DROP is distinct from other Action variants.
+    #[test]
+    fn test_drag_drop_is_distinct() {
+        assert_ne!(Action::DRAG_DROP, Action::PASTE);
+        assert_ne!(Action::DRAG_DROP, Action::COPY);
+        assert_ne!(Action::DRAG_DROP, Action::READ);
+    }
 }
