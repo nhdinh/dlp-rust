@@ -1,5 +1,91 @@
 # Milestones
 
+## v0.7.0 Disk Exfiltration Prevention (Shipped: 2026-05-06)
+
+**Phases completed:** 27 phases, 81 plans, 86 tasks
+
+**Key accomplishments:**
+
+- One-liner:
+- draw_conditions_builder modal overlay with 60%-width centered layout, step breadcrumb, pending conditions list with [d] hints, typed step picker (5 attributes, operators, values), MemberOf text input, and contextual hints bar — human-verified visually with 17 tests passing.
+- app.rs changes:
+- render.rs changes:
+- Substantive:
+- Phase:
+- PolicyMode field added to three admin-cli structs and wired into POST/PUT payloads, fixing the silent-drop bug where TUI always sent ALL regardless of authored mode
+- POLICY_MODE_ROW added to 9-row policy form with Enter/Space cycler, footer advisory for empty-conditions modes, and three HTTP integration tests proving ALL/ANY/NONE boolean semantics via /evaluate
+- ABAC evaluator extended with ordinal gt/lt for Classification and case-sensitive contains for MemberOf SID substring match, backed by 6 new unit tests
+- Attribute-type-aware Step 2 operator picker in conditions builder TUI, driven by `operators_for()` with SC-1 stale-operator reset and MemberOf partial-match hint
+- In-place condition editing for ConditionsBuilder TUI modal: 'e' key pre-fills 3-step picker at existing condition's attribute/op/value, saving replaces at original index, Esc leaves pending list unchanged
+- One-liner:
+- One-liner:
+- One-liner:
+- One-liner:
+- One-liner:
+- Win32 WM_DEVICECHANGE handler wired in usb_wndproc with dual GUID routing (VOLUME + USB_DEVICE), SetupDi FRIENDLYNAME fetch, and second RegisterDeviceNotificationW call — closes Phase 23 SC-1/SC-2 capture path
+- One-liner:
+- One-liner:
+- One-liner:
+- One-liner:
+- 1. [Rule 1 - Bug] windows-rs 0.58 type mismatches in extract_publisher
+- 1. [Rule 1 - Bug] WINEVENT_OUTOFCONTEXT / WINEVENT_SKIPOWNPROCESS wrong module
+- Status: Partial — awaiting human checkpoint (Task 3)
+- One-liner:
+- AppField enum + SourceApplication/DestinationApplication PolicyCondition variants + From<EvaluateRequest> for AbacContext — type contracts enabling app-identity policy matching (APP-03)
+- PolicyStore::evaluate() + condition_matches() migrated to &AbacContext; SourceApplication/DestinationApplication arms added; EvaluateRequest -> AbacContext conversion wired at HTTP boundary (APP-03)
+- Comprehensive TDD tests for SourceApplication/DestinationApplication condition arms — all AppField variants, all operators, None-identity fail-closed invariant, and evaluate() mode interactions locked at test level
+- UsbEnforcer struct bridges drive-letter map (Phase 23) and trust-tier cache (Phase 24) to enforce USB device trust tiers at file I/O time in run_event_loop, short-circuiting ABAC evaluation on blocked or read-only+write-class access
+- Added two missing edge-case tests to complete USB-03 D-08/D-09 coverage — test_unregistered_device_defaults_to_blocked (T-26-14 fail-safe) and test_non_alpha_path_returns_none (D-09); total USB enforcer tests now 11
+- UsbEnforcer::check() now returns Option<UsbBlockResult> carrying device identity, trust tier, decision, and a per-drive 30-second cooldown-gated notify flag for toast suppression
+- Cooldown-gated Pipe2AgentMsg::Toast broadcast wired into USB block handler: tier-specific title/body with device description, unreachable!() FullAccess guard
+- One-liner:
+- Task 1 — app.rs type extension:
+- One-liner:
+- ManagedOriginList TUI fully wired with origin-URL confirm messages — `a` adds via POST /admin/managed-origins, `d` deletes with human-readable confirm showing URL pattern, Esc returns to DevicesMenu(selected=1)
+- prost/protobuf codegen, length-prefixed frame I/O, and chrome module scaffolding for Chrome Content Analysis SDK integration
+- Managed-origins cache (RwLock<HashSet<String>> with 30s polling), server client fetch method, and AuditEvent origin field enrichment with backward-compat deserialization.
+- Chrome Content Analysis pipe server at \\.\pipe\brcm_chrm_cas with protobuf request dispatch, managed-origin block decisions, HKLM self-registration, and full service/console lifecycle integration.
+- dlp-e2e workspace member crate with shared test helpers for in-process server routers, mock evaluation engines, and headless TUI testing
+- 1. [Rule 3 - Blocking] Added `pub mod helpers` re-export wrapper to dlp-e2e/src/lib.rs
+- Headless TUI integration test exercising full Managed Origins screen flow via KeyEvent injection into TestBackend, with multi-threaded mock axum server
+- One-liner:
+- Full-stack integration test that spawns a real dlp-agent binary, seeds config via the admin API, and asserts exact TOML write-back within 15 seconds using env-var overrides for testability.
+- Integration tests verifying hot-reload behavior for SIEM, alert, agent, and policy store configs via in-process axum router PUT/GET round-trips
+- Extended usb_enforcer.rs test module with 5 new unit tests covering blocked-without-identity, read-only write-deny/read-allow, full-access all-actions, blocked read-denial, and per-drive isolation — all 18 tests pass.
+- Real-hardware USB write-protection verification script with WMI auto-detection,
+
+admin API registration, kernel IOCTL cleanup, and comprehensive troubleshooting documentation
+
+- GitHub Actions workflow updated with a parallel `test` job that builds the workspace with zero warnings, runs clippy, checks formatting, and executes all workspace tests on every push and PR.
+- Scheduled GitHub Actions workflow that builds the entire workspace in release mode, runs all tests against release binaries, and performs a health-check smoke test on the release dlp-server binary.
+- Active PnP-level USB enforcement replacing passive file-I/O-based blocking. DeviceController disables Blocked-tier USB devices via CM_Disable_DevNode and modifies volume DACLs for ReadOnly tier. UsbEnforcer simplified to defence-in-depth fallback for unregistered devices only.
+- Objective:
+- Shared disk enumeration module with DiskIdentity types, Win32 IOCTL + PnP USB detection, and DiskDiscovery audit events
+- Disk enumeration background task integrated into dlp-agent service startup with retry logic, audit emission, and in-memory registry for Phase 35/36 consumption.
+- 1. [Rule 1 - Bug] Fixed 34 windows 0.62 API breakages across dlp-agent
+- 1. [Rule 1 - Bug] Updated existing struct literal tests for new `encryption` field
+- BitLocker WMI/Registry verification engine with EncryptionBackend trait, 12 unit tests, and spawn_encryption_check_task targeting Plan 34-04's service.rs wiring
+- Three-line EncryptionChecker singleton registration + spawn_encryption_check_task call wired into service.rs startup immediately after the Phase-33 disk enumeration block, with recheck_interval captured before agent_config is consumed
+- Option C selected
+- 1. [Rule 1 - Bug] Fixed incorrect backslash escape assertion in plan's test code
+- Signature change:
+- One-liner:
+- 1. [Rule 1 - Bug] Fixed byte_count type in test helpers
+- Win32 WM_DEVICECHANGE dispatcher extracted to device_watcher.rs; disk hot-plug handlers wired to DiskEnforcer pre-ABAC block in run_event_loop with full audit/toast/pipe chain
+- 1. [Style] Removed ON CONFLICT phrase from doc comments
+- 1. [Rule 1 - Bug] EncryptionStatus serde roundtrip does not work -- manual match required
+- 1. [Rule 2 - Missing Critical Functionality] BusType::Deserialize forward-compatibility
+- Adds `Screen::LdapConfig { config, selected, editing, buffer }` and three public row-index constants to `dlp-admin-cli/src/app.rs`, establishing the type-level contract consumed by the parallel dispatch (38.1-02) and render (38.1-03) plans.
+- Full dispatch-layer wiring for Screen::LdapConfig: routing arm, expanded SystemMenu, GET/PUT round-trips, editing/navigation handlers with cache TTL range validation, and 4 unit tests.
+- One-liner:
+- Volume DACL deny-all secondary enforcement layer wired into Blocked-tier USB device handling, providing defense-in-depth if PnP disable fails or is bypassed
+- USB identity reconciliation heuristic fixes VOLUME-before-USB_DEVICE race and startup enforcement gap so Blocked-tier USB devices are enforced on ALL plug-in timing paths
+- Rewrote `find_drive_letter_for_instance_id` with kernel-authoritative volume-to-disk mapping, replacing the buggy heuristic that ignored `instance_id` and returned the first unassigned fixed drive letter
+- 500ms deferred `GUID_DEVINTERFACE_DISK` arrival processing via tokio runtime handle bridge, so volume manager mounts before drive letter lookup
+- Boot drive letter normalization with belt-and-suspenders case-insensitive comparison across dlp-common and dlp-agent
+
+---
+
 ## v0.2.0 Feature Completion (Shipped: 2026-04-13)
 
 **Phases completed:** 9 | **Plans:** 14 | **Days:** ~4
@@ -17,6 +103,7 @@
 **Deferred to v0.3.0:** AD LDAP (R-05), rate limiting (R-07), admin audit logging (R-09), SQLite pool (R-10), Policy Engine Separation (R-03)
 
 **Human UAT items still open:**
+
 - Live SMTP email delivery (Phase 4)
 - Live webhook POST (Phase 4)
 - Hot-reload through HTTP + TUI (Phase 4)
@@ -58,6 +145,7 @@
 **Known deferred items at close:** 3 dormant seeds (SEED-001, 002, 003 — application-aware DLP, protected clipboard browser boundary, USB device-identity whitelist). Tracked in STATE.md "Deferred Items".
 
 **Issues resolved during milestone:**
+
 - Phase 16 UAT: PolicySimulate Esc bug cleared the edit buffer (commit e1afee3)
 - Phase 17 UAT: GET /admin/policies returned 405 Method Not Allowed; routed GETs to /policies (commit 7dda578)
 
@@ -81,4 +169,3 @@
 **Deferred items at close:** 6 (3 seeds: SEED-001/002/003; 3 server: POLICY-F4/F5/F6). Tracked in STATE.md Deferred Items.
 
 ---
-
