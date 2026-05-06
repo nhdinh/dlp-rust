@@ -244,6 +244,8 @@ fn handle_text_input(app: &mut App, key: KeyEvent) {
                 purpose,
                 InputPurpose::RegisterDeviceSerial { .. }
                     | InputPurpose::RegisterDeviceDescription { .. }
+                    | InputPurpose::RegisterDeviceOwnerSid { .. }
+                    | InputPurpose::RegisterDeviceOwnerUser { .. }
             );
             if value.is_empty() && !allow_empty {
                 app.set_status("Input cannot be empty", StatusKind::Error);
@@ -257,7 +259,9 @@ fn handle_text_input(app: &mut App, key: KeyEvent) {
                 InputPurpose::RegisterDeviceVid
                 | InputPurpose::RegisterDevicePid { .. }
                 | InputPurpose::RegisterDeviceSerial { .. }
-                | InputPurpose::RegisterDeviceDescription { .. } => {
+                | InputPurpose::RegisterDeviceDescription { .. }
+                | InputPurpose::RegisterDeviceOwnerSid { .. }
+                | InputPurpose::RegisterDeviceOwnerUser { .. } => {
                     Screen::DevicesMenu { selected: 0 }
                 }
                 InputPurpose::AddManagedOrigin => Screen::DevicesMenu { selected: 1 },
@@ -265,9 +269,7 @@ fn handle_text_input(app: &mut App, key: KeyEvent) {
                 | InputPurpose::AddDiskRegistryInstanceId { .. }
                 | InputPurpose::AddDiskRegistryBusType { .. }
                 | InputPurpose::AddDiskRegistryEncryption { .. }
-                | InputPurpose::AddDiskRegistryModel { .. } => {
-                    Screen::DevicesMenu { selected: 3 }
-                }
+                | InputPurpose::AddDiskRegistryModel { .. } => Screen::DevicesMenu { selected: 3 },
                 _ => Screen::PolicyMenu { selected: 0 },
             };
         }
@@ -332,11 +334,59 @@ fn on_text_confirmed(app: &mut App, value: &str, purpose: InputPurpose) {
             };
         }
         InputPurpose::RegisterDeviceDescription { vid, pid, serial } => {
+            app.screen = Screen::TextInput {
+                prompt: "Owner SID (optional, press Enter to skip):".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::RegisterDeviceOwnerSid {
+                    vid,
+                    pid,
+                    serial,
+                    description: value.to_string(),
+                },
+            };
+        }
+        InputPurpose::RegisterDeviceOwnerSid {
+            vid,
+            pid,
+            serial,
+            description,
+        } => {
+            app.screen = Screen::TextInput {
+                prompt: "Owner User (optional, press Enter to skip):".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::RegisterDeviceOwnerUser {
+                    vid,
+                    pid,
+                    serial,
+                    description,
+                    owner_sid: value.to_string(),
+                },
+            };
+        }
+        InputPurpose::RegisterDeviceOwnerUser {
+            vid,
+            pid,
+            serial,
+            description,
+            owner_sid,
+        } => {
+            let owner_sid_opt = if owner_sid.is_empty() {
+                None
+            } else {
+                Some(owner_sid)
+            };
+            let owner_user_opt = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
             app.screen = Screen::DeviceTierPicker {
                 vid,
                 pid,
                 serial,
-                description: value.to_string(),
+                description,
+                owner_sid: owner_sid_opt,
+                owner_user: owner_user_opt,
                 selected: 0,
                 caller: TierPickerCaller::DeviceList,
             };
@@ -429,10 +479,7 @@ fn on_text_confirmed(app: &mut App, value: &str, purpose: InputPurpose) {
                     action_load_disk_registry_list(app);
                 }
                 Err(e) => {
-                    app.set_status(
-                        format!("Error adding disk entry: {e}"),
-                        StatusKind::Error,
-                    );
+                    app.set_status(format!("Error adding disk entry: {e}"), StatusKind::Error);
                     app.screen = Screen::DevicesMenu { selected: 3 };
                 }
             }
@@ -3980,6 +4027,11 @@ fn action_open_usb_scan(app: &mut App) {
 /// Builds a `(vid, pid, serial) -> trust_tier` lookup from a JSON array
 /// returned by `GET /admin/device-registry/full`.
 ///
+/// Only includes machine-wide entries (where `owner_sid` is null/None).
+/// Per-user entries are intentionally excluded because the USB scan screen
+/// runs on the admin machine, not the target user's session, so machine-wide
+/// entries are the most relevant for cross-referencing locally-connected devices.
+///
 /// Missing or non-string fields default to empty / `"blocked"` respectively
 /// (matches the existing DeviceList parsing convention).
 pub(crate) fn build_registry_map(
@@ -3987,6 +4039,11 @@ pub(crate) fn build_registry_map(
 ) -> std::collections::HashMap<(String, String, String), String> {
     let mut map = std::collections::HashMap::new();
     for row in registry {
+        // Skip per-user entries: only machine-wide entries matter for the
+        // admin-machine USB scan cross-reference.
+        if row["owner_sid"].as_str().is_some() {
+            continue;
+        }
         let vid = row["vid"].as_str().unwrap_or("").to_string();
         let pid = row["pid"].as_str().unwrap_or("").to_string();
         let serial = row["serial"].as_str().unwrap_or("").to_string();
@@ -4136,6 +4193,8 @@ fn handle_usb_scan(app: &mut App, key: KeyEvent) {
                 pid,
                 serial,
                 description,
+                owner_sid: None,
+                owner_user: None,
                 selected: 0,
                 caller: TierPickerCaller::UsbScan,
             };
@@ -4213,12 +4272,14 @@ fn action_delete_device(app: &mut App, id: &str) {
 /// Handles key events for the DeviceTierPicker screen (final step of device register flow).
 fn handle_device_tier_picker(app: &mut App, key: KeyEvent) {
     // Extract all fields before mutable borrow for the nav branch.
-    let (vid, pid, serial, description, sel, caller) = match &app.screen {
+    let (vid, pid, serial, description, owner_sid, owner_user, sel, caller) = match &app.screen {
         Screen::DeviceTierPicker {
             vid,
             pid,
             serial,
             description,
+            owner_sid,
+            owner_user,
             selected,
             caller,
         } => (
@@ -4226,6 +4287,8 @@ fn handle_device_tier_picker(app: &mut App, key: KeyEvent) {
             pid.clone(),
             serial.clone(),
             description.clone(),
+            owner_sid.clone(),
+            owner_user.clone(),
             *selected,
             *caller,
         ),
@@ -4244,11 +4307,15 @@ fn handle_device_tier_picker(app: &mut App, key: KeyEvent) {
                 1 => "read_only",
                 _ => "full_access",
             };
+            let owner_sid_opt = owner_sid.as_deref();
+            let owner_user_opt = owner_user.as_deref();
             let body = serde_json::json!({
                 "vid": vid,
                 "pid": pid,
                 "serial": serial,
                 "description": description,
+                "owner_sid": owner_sid_opt,
+                "owner_user": owner_user_opt,
                 "trust_tier": trust_tier,
             });
             match app.rt.block_on(
@@ -4262,10 +4329,7 @@ fn handle_device_tier_picker(app: &mut App, key: KeyEvent) {
                     }
                     TierPickerCaller::UsbScan => {
                         action_usb_scan(app);
-                        app.set_status(
-                            "Device registered successfully.",
-                            StatusKind::Success,
-                        );
+                        app.set_status("Device registered successfully.", StatusKind::Success);
                     }
                 },
                 Err(e) => {
@@ -4359,13 +4423,13 @@ fn action_load_disk_registry_list(app: &mut App) {
             .get::<Vec<serde_json::Value>>("admin/disk-registry"),
     ) {
         Ok(disks) => {
-            app.screen = Screen::DiskRegistryList {
-                disks,
-                selected: 0,
-            };
+            app.screen = Screen::DiskRegistryList { disks, selected: 0 };
         }
         Err(e) => {
-            app.set_status(format!("Error loading disk registry: {e}"), StatusKind::Error);
+            app.set_status(
+                format!("Error loading disk registry: {e}"),
+                StatusKind::Error,
+            );
         }
     }
 }
@@ -5171,7 +5235,10 @@ mod tests {
 
     #[test]
     fn usb_scan_esc_returns_to_devices_menu_idx_2() {
-        let mut app = make_test_app(Screen::UsbScan { devices: vec![], selected: 0 });
+        let mut app = make_test_app(Screen::UsbScan {
+            devices: vec![],
+            selected: 0,
+        });
         handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Esc)));
         match &app.screen {
             Screen::DevicesMenu { selected } => assert_eq!(*selected, 2),
@@ -5181,14 +5248,20 @@ mod tests {
 
     #[test]
     fn usb_scan_enter_on_empty_list_is_noop() {
-        let mut app = make_test_app(Screen::UsbScan { devices: vec![], selected: 0 });
+        let mut app = make_test_app(Screen::UsbScan {
+            devices: vec![],
+            selected: 0,
+        });
         handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
         assert!(matches!(app.screen, Screen::UsbScan { .. }));
     }
 
     #[test]
     fn usb_scan_up_on_empty_list_is_noop() {
-        let mut app = make_test_app(Screen::UsbScan { devices: vec![], selected: 0 });
+        let mut app = make_test_app(Screen::UsbScan {
+            devices: vec![],
+            selected: 0,
+        });
         handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Up)));
         assert!(matches!(app.screen, Screen::UsbScan { .. }));
     }
@@ -5228,10 +5301,7 @@ mod tests {
             json!({"id": "2", "agent_id": "a2", "instance_id": "i2", "bus_type": "NVMe", "encryption_status": "none", "model": "Model B"}),
             json!({"id": "3", "agent_id": "a3", "instance_id": "i3", "bus_type": "USB", "encryption_status": "encrypted", "model": "Model C"}),
         ];
-        let mut app = make_test_app(Screen::DiskRegistryList {
-            disks,
-            selected: 0,
-        });
+        let mut app = make_test_app(Screen::DiskRegistryList { disks, selected: 0 });
 
         // Down from 0 -> 1
         handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Down)));
@@ -5274,6 +5344,135 @@ mod tests {
             other => panic!("expected DiskRegistryList, got {other:?}"),
         }
     }
+
+    // ---------------------------------------------------------------------------
+    // Register flow with owner fields (Phase 38.4 Plan 03).
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn register_flow_description_to_owner_sid() {
+        let mut app = make_test_app(Screen::TextInput {
+            prompt: "Description".to_string(),
+            input: "My USB".to_string(),
+            purpose: InputPurpose::RegisterDeviceDescription {
+                vid: "0951".into(),
+                pid: "1666".into(),
+                serial: "ABC".into(),
+            },
+        });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        match &app.screen {
+            Screen::TextInput {
+                prompt, purpose, ..
+            } => {
+                assert!(
+                    prompt.contains("Owner SID"),
+                    "expected Owner SID prompt, got: {prompt}"
+                );
+                assert!(
+                    matches!(purpose, InputPurpose::RegisterDeviceOwnerSid { .. }),
+                    "expected RegisterDeviceOwnerSid"
+                );
+            }
+            other => panic!("expected TextInput for Owner SID, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn register_flow_owner_sid_to_owner_user() {
+        let mut app = make_test_app(Screen::TextInput {
+            prompt: "Owner SID".to_string(),
+            input: "S-1-5-21-1".to_string(),
+            purpose: InputPurpose::RegisterDeviceOwnerSid {
+                vid: "0951".into(),
+                pid: "1666".into(),
+                serial: "ABC".into(),
+                description: "My USB".into(),
+            },
+        });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        match &app.screen {
+            Screen::TextInput {
+                prompt, purpose, ..
+            } => {
+                assert!(
+                    prompt.contains("Owner User"),
+                    "expected Owner User prompt, got: {prompt}"
+                );
+                assert!(
+                    matches!(purpose, InputPurpose::RegisterDeviceOwnerUser { .. }),
+                    "expected RegisterDeviceOwnerUser"
+                );
+            }
+            other => panic!("expected TextInput for Owner User, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn register_flow_owner_user_to_tier_picker_with_owner() {
+        let mut app = make_test_app(Screen::TextInput {
+            prompt: "Owner User".to_string(),
+            input: "alice".to_string(),
+            purpose: InputPurpose::RegisterDeviceOwnerUser {
+                vid: "0951".into(),
+                pid: "1666".into(),
+                serial: "ABC".into(),
+                description: "My USB".into(),
+                owner_sid: "S-1-5-21-1".into(),
+            },
+        });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        match &app.screen {
+            Screen::DeviceTierPicker {
+                vid,
+                pid,
+                serial,
+                description,
+                owner_sid,
+                owner_user,
+                selected,
+                caller,
+            } => {
+                assert_eq!(vid, "0951");
+                assert_eq!(pid, "1666");
+                assert_eq!(serial, "ABC");
+                assert_eq!(description, "My USB");
+                assert_eq!(owner_sid.as_deref(), Some("S-1-5-21-1"));
+                assert_eq!(owner_user.as_deref(), Some("alice"));
+                assert_eq!(*selected, 0);
+                assert_eq!(*caller, TierPickerCaller::DeviceList);
+            }
+            other => panic!("expected DeviceTierPicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn register_flow_skipped_owner_fields_are_none() {
+        // Empty owner_sid -> None, empty owner_user -> None.
+        let mut app = make_test_app(Screen::TextInput {
+            prompt: "Owner User".to_string(),
+            input: "".to_string(),
+            purpose: InputPurpose::RegisterDeviceOwnerUser {
+                vid: "0951".into(),
+                pid: "1666".into(),
+                serial: "ABC".into(),
+                description: "My USB".into(),
+                owner_sid: "".into(),
+            },
+        });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        match &app.screen {
+            Screen::DeviceTierPicker {
+                owner_sid,
+                owner_user,
+                ..
+            } => {
+                assert!(owner_sid.is_none(), "empty owner_sid should be None");
+                assert!(owner_user.is_none(), "empty owner_user should be None");
+            }
+            other => panic!("expected DeviceTierPicker, got {other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5307,6 +5506,28 @@ mod usb_scan_merge_tests {
             Some(&"blocked".to_string())
         );
         assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn build_registry_map_skips_per_user_entries() {
+        // Machine-wide entry (no owner_sid) should be included.
+        // Per-user entry (has owner_sid) should be excluded.
+        let rows = vec![
+            json!({"vid":"0951","pid":"1666","serial":"ABC","trust_tier":"read_only"}),
+            json!({"vid":"05ac","pid":"12a8","serial":"X","trust_tier":"blocked","owner_sid":"S-1-5-21-1","owner_user":"alice"}),
+        ];
+        let map = build_registry_map(&rows);
+        assert_eq!(
+            map.get(&("0951".into(), "1666".into(), "ABC".into())),
+            Some(&"read_only".to_string()),
+            "machine-wide entry should be in map"
+        );
+        assert_eq!(
+            map.get(&("05ac".into(), "12a8".into(), "X".into())),
+            None,
+            "per-user entry should be excluded from map"
+        );
+        assert_eq!(map.len(), 1);
     }
 
     #[test]
@@ -5445,6 +5666,8 @@ mod usb_scan_routing_tests {
             pid: "1666".into(),
             serial: "ABC".into(),
             description: "Kingston".into(),
+            owner_sid: None,
+            owner_user: None,
             selected: 1,
             caller: TierPickerCaller::DeviceList,
         };
@@ -5462,16 +5685,15 @@ mod usb_scan_routing_tests {
             pid: "1666".into(),
             serial: "ABC".into(),
             description: "Kingston".into(),
+            owner_sid: None,
+            owner_user: None,
             selected: 1,
             caller: TierPickerCaller::UsbScan,
         };
         handle_event(&mut app, AppEvent::Key(enter()));
         assert!(matches!(app.screen, Screen::UsbScan { .. }));
         let (msg, kind) = app.status.as_ref().expect("status set");
-        assert!(
-            msg.contains("registered successfully"),
-            "status was: {msg}"
-        );
+        assert!(msg.contains("registered successfully"), "status was: {msg}");
         assert_eq!(*kind, StatusKind::Success);
     }
 
@@ -5484,6 +5706,8 @@ mod usb_scan_routing_tests {
             pid: "1666".into(),
             serial: "ABC".into(),
             description: "Kingston".into(),
+            owner_sid: None,
+            owner_user: None,
             selected: 1,
             caller: TierPickerCaller::DeviceList,
         };
@@ -5503,6 +5727,8 @@ mod usb_scan_routing_tests {
             pid: "1666".into(),
             serial: "ABC".into(),
             description: "Kingston".into(),
+            owner_sid: None,
+            owner_user: None,
             selected: 1,
             caller: TierPickerCaller::UsbScan,
         };
