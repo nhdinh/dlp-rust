@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-05-05 — Phase 38.1 complete: LDAP Config TUI screen wired end-to-end (ADMIN-05)*
+*Last updated: 2026-05-06 — Slice S01 complete: Disk Registry TUI screen operational (ADMIN-04 validated). All 15 disk exfiltration requirements validated.*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -16,11 +16,14 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 
 **Goal:** Prevent data exfiltration via unregistered fixed disks by establishing an install-time disk allowlist with encryption verification.
 
+**Status:** All 15 requirements validated (DISK-01..05, CRYPT-01..02, ADMIN-01..05, AUDIT-01..03). Milestone ready for validation and completion.
+
 **Target features:**
 - Install-time enumeration of fixed disks with BitLocker/encryption validation
 - Persistent disk allowlist in agent-config.toml and server-side registry
 - Runtime blocking of unregistered fixed disks (USB-bridged SATA/NVMe, internal drives added post-install)
 - Admin override/registry for adding disks after initial install
+- Admin TUI screen for Disk Registry management (list, add, remove)
 - Audit events for disk block/discovery actions
 
 ## Shipped: v0.6.0 Endpoint Hardening (2026-04-29)
@@ -34,8 +37,6 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - Phase 28: Admin TUI Screens — Device Registry, Managed Origins, App Identity conditions builder
 - Phase 29: Chrome Enterprise Connector — named-pipe server at `\\.\pipe\brcm_chrm_cas`, protobuf frame protocol, browser clipboard block
 - Phase 30: Automated UAT Infrastructure — headless TUI tests, E2E agent TOML write-back, hot-reload verification, CI build gates
-
-## Current State — all surfaced as first-class ABAC subject attributes.
 
 ## Current State
 
@@ -84,59 +85,78 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 | Agent config via TOML file at `C:\ProgramData\DLP\agent-config.toml` | Agents poll server and persist config to TOML |
 | `classify_text` in dlp-common | Shared classifier avoids duplication between agent and UI |
 | Admin audit events via `store_events_sync` inside `spawn_blocking` | Avoids async deadlock; `ingest_events` is async so cannot call from within `spawn_blocking` |
+| Disk Registry TUI follows ManagedOriginList pattern | Consistency: chained InputPurpose for add, ConfirmPurpose for delete, Table widget for display |
 
 ## Requirements
 
 ### Validated (shipped in v0.2.0)
 
-- ✓ R-01: SIEM relay integration (Splunk HEC + ELK) — DB-backed config, hot-reload — v0.2.0
-- ✓ R-02: Alert routing (email via SMTP + webhook) — DB-backed config, hot-reload — v0.2.0
-- ✓ R-04: Agent config distribution via polling — DB-backed, per-agent overrides — v0.2.0
-- ✓ R-06: Fix integration tests — 364/364 workspace tests pass — v0.2.0
-- ✓ R-08: JWT_SECRET required in production — `--dev` flag for dev only — v0.2.0
-- ✓ R-12: Comprehensive DLP test suite — 32 agent TCs + 15 server TCs + 6 E2E TCs — v0.2.0
+- R-01: SIEM relay integration (Splunk HEC + ELK) — DB-backed config, hot-reload — v0.2.0
+- R-02: Alert routing (email via SMTP + webhook) — DB-backed config, hot-reload — v0.2.0
+- R-04: Agent config distribution via polling — DB-backed, per-agent overrides — v0.2.0
+- R-06: Fix integration tests — 364/364 workspace tests pass — v0.2.0
+- R-08: JWT_SECRET required in production — `--dev` flag for dev only — v0.2.0
+- R-12: Comprehensive DLP test suite — 32 agent TCs + 15 server TCs + 6 E2E TCs — v0.2.0
 
 ### Validated (shipped in v0.3.0)
 
-- ✓ R-03: Policy Engine Separation — PolicyStore + cache invalidation + background refresh — v0.3.0
-- ✓ R-05: Active Directory LDAP integration — real ABAC attribute resolution from AD — v0.3.0
-- ✓ R-07: Rate limiting middleware — brute-force protection, per-agent event limits — v0.3.0
-- ✓ R-09: Admin operation audit logging — policy CRUD + password changes → audit_events with EventType::AdminAction — v0.3.0
-- ✓ R-10: SQLite connection pool — r2d2 pool, 220 workspace tests pass — v0.3.0
+- R-03: Policy Engine Separation — PolicyStore + cache invalidation + background refresh — v0.3.0
+- R-05: Active Directory LDAP integration — real ABAC attribute resolution from AD — v0.3.0
+- R-07: Rate limiting middleware — brute-force protection, per-agent event limits — v0.3.0
+- R-09: Admin operation audit logging — policy CRUD + password changes — v0.3.0
+- R-10: SQLite connection pool — r2d2 pool, 220 workspace tests pass — v0.3.0
 
 ### Validated (shipped in v0.4.0)
 
-- ✓ POLICY-01: Admin can list all policies with name, priority, action, and enabled state — v0.4.0 (Phase 16)
-- ✓ POLICY-02: Admin can create a new policy with name, description, priority, action, and one or more typed conditions — v0.4.0 (Phase 14)
-- ✓ POLICY-03: Admin can edit an existing policy's name, description, priority, action, enabled flag, and conditions — v0.4.0 (Phase 15)
-- ✓ POLICY-04: Admin can delete a policy with a confirmation prompt — v0.4.0 (Phase 15)
-- ✓ POLICY-05: Admin can build policy conditions using a structured picker (attribute → operator → value) — no raw JSON — v0.4.0 (Phase 13)
-- ✓ POLICY-06: Admin can simulate a policy decision by filling an EvaluateRequest form and viewing the decision + matched policy — v0.4.0 (Phase 16)
-- ✓ POLICY-07: Admin can export the full policy set to a JSON file — v0.4.0 (Phase 17). TOML deferred as POLICY-F4.
-- ✓ POLICY-08: Admin can import policies from a JSON file with conflict detection — v0.4.0 (Phase 17)
+- POLICY-01: Admin can list all policies with name, priority, action, and enabled state — v0.4.0 (Phase 16)
+- POLICY-02: Admin can create a new policy with name, description, priority, action, and one or more typed conditions — v0.4.0 (Phase 14)
+- POLICY-03: Admin can edit an existing policy's name, description, priority, action, enabled flag, and conditions — v0.4.0 (Phase 15)
+- POLICY-04: Admin can delete a policy with a confirmation prompt — v0.4.0 (Phase 15)
+- POLICY-05: Admin can build policy conditions using a structured picker (attribute > operator > value) — no raw JSON — v0.4.0 (Phase 13)
+- POLICY-06: Admin can simulate a policy decision by filling an EvaluateRequest form and viewing the decision + matched policy — v0.4.0 (Phase 16)
+- POLICY-07: Admin can export the full policy set to a JSON file — v0.4.0 (Phase 17). TOML deferred as POLICY-F4.
+- POLICY-08: Admin can import policies from a JSON file with conflict detection — v0.4.0 (Phase 17)
 
 ### Validated (shipped in v0.5.0)
 
-- ✓ POLICY-09: Admin can choose a top-level boolean mode (ALL / ANY / NONE) per policy; evaluator honors the mode across the condition list — v0.5.0 (Phase 19)
-- ✓ POLICY-10: Admin can edit an existing condition in-place in the conditions builder without deleting and recreating it — v0.5.0 (Phase 21)
-- ✓ POLICY-11: Admin can pick expanded operators (`gt`, `lt`, `ne`, `contains`) where the attribute type permits; evaluator honors them — v0.5.0 (Phase 20)
-- ✓ POLICY-12: Existing v0.4.0 policies default to `mode = ALL`; backward-compat migration via `ALTER TABLE` — v0.5.0 (Phase 18)
+- POLICY-09: Admin can choose a top-level boolean mode (ALL / ANY / NONE) per policy; evaluator honors the mode across the condition list — v0.5.0 (Phase 19)
+- POLICY-10: Admin can edit an existing condition in-place in the conditions builder without deleting and recreating it — v0.5.0 (Phase 21)
+- POLICY-11: Admin can pick expanded operators (`gt`, `lt`, `ne`, `contains`) where the attribute type permits; evaluator honors them — v0.5.0 (Phase 20)
+- POLICY-12: Existing v0.4.0 policies default to `mode = ALL`; backward-compat migration via `ALTER TABLE` — v0.5.0 (Phase 18)
 
 ### Validated (shipped in v0.6.0)
 
-- ✓ APP-01: DLP agent captures destination process image path and publisher at paste time — Phase 25
-- ✓ APP-02: DLP agent captures source process identity via GetClipboardOwner at clipboard-change time — Phase 25
-- ✓ APP-03: Evaluator enforces allow/deny based on source_application and destination_application ABAC attributes — Phase 26
-- ✓ APP-04: Admin can author policies using app identity conditions (publisher, image path, trust tier) in TUI — Phase 28
-- ✓ APP-05: Audit events include source_application and destination_application fields populated on clipboard block — Phase 25
-- ✓ APP-06: Anti-spoofing: Authenticode signature verification for process identity (prevents renamed binary bypass) — Phase 25
-- ✓ BRW-01: dlp-agent registers as Chrome Content Analysis agent via named pipe — Phase 29
-- ✓ BRW-02: Admin can manage managed-origins list (trusted web domains) via TUI and admin API — Phase 28
-- ✓ BRW-03: Paste from protected origin to unmanaged origin is blocked and audited — Phase 29
-- ✓ USB-01: DLP agent captures VID/PID/Serial/description on USB device arrival via SetupDi API — Phase 23
-- ✓ USB-02: Admin can register/deregister USB devices with trust tier via TUI and admin API — Phase 24
-- ✓ USB-03: Agent enforces trust tier at I/O time (read_only: allow reads, deny writes; blocked: deny all) — Phase 26
-- ✓ USB-04: User receives toast notification on USB block with policy explanation — Phase 27
+- APP-01: DLP agent captures destination process image path and publisher at paste time — Phase 25
+- APP-02: DLP agent captures source process identity via GetClipboardOwner at clipboard-change time — Phase 25
+- APP-03: Evaluator enforces allow/deny based on source_application and destination_application ABAC attributes — Phase 26
+- APP-04: Admin can author policies using app identity conditions (publisher, image path, trust tier) in TUI — Phase 28
+- APP-05: Audit events include source_application and destination_application fields populated on clipboard block — Phase 25
+- APP-06: Anti-spoofing: Authenticode signature verification for process identity (prevents renamed binary bypass) — Phase 25
+- BRW-01: dlp-agent registers as Chrome Content Analysis agent via named pipe — Phase 29
+- BRW-02: Admin can manage managed-origins list (trusted web domains) via TUI and admin API — Phase 28
+- BRW-03: Paste from protected origin to unmanaged origin is blocked and audited — Phase 29
+- USB-01: DLP agent captures VID/PID/Serial/description on USB device arrival via SetupDi API — Phase 23
+- USB-02: Admin can register/deregister USB devices with trust tier via TUI and admin API — Phase 24
+- USB-03: Agent enforces trust tier at I/O time (read_only: allow reads, deny writes; blocked: deny all) — Phase 26
+- USB-04: User receives toast notification on USB block with policy explanation — Phase 27
+
+### Validated (shipped in v0.7.0)
+
+- DISK-01: Agent enumerates all fixed disks at install time or first startup — Phase 33
+- DISK-02: Agent distinguishes USB-bridged fixed disks from genuine internal disks — Phase 33
+- DISK-03: Agent persists disk allowlist to agent-config.toml — Phase 35
+- DISK-04: Agent blocks I/O to unregistered fixed disks at runtime — Phase 36
+- DISK-05: Agent handles WM_DEVICECHANGE for disk arrivals and removals — Phase 36
+- CRYPT-01: Agent queries BitLocker encryption status via WMI — Phase 34
+- CRYPT-02: Unencrypted disks flagged in audit log with warning — Phase 34
+- ADMIN-01: Server stores disk registry in SQLite — Phase 37
+- ADMIN-02: Admin can list all registered disks via API — Phase 37
+- ADMIN-03: Admin can add/remove disks from allowlist via API — Phase 37
+- ADMIN-04: Admin TUI shows Disk Registry screen for listing, adding, removing disk entries — M001/S01
+- ADMIN-05: Admin TUI has an LDAP Config screen — Phase 38.1
+- AUDIT-01: Disk discovery events emitted at install time — Phase 33
+- AUDIT-02: Disk block events include disk identity fields — Phase 36
+- AUDIT-03: Admin override actions emitted as audit events — Phase 37
 
 ### Deferred to future milestones
 
@@ -157,11 +177,11 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 This document evolves at phase transitions and milestone boundaries.
 
 **After each phase transition** (via `/gsd-transition`):
-1. Requirements invalidated? → Move to Out of Scope with reason
-2. Requirements validated? → Move to Validated with phase reference
-3. New requirements emerged? → Add to Active
-4. Decisions to log? → Add to Key Decisions
-5. "What This Is" still accurate? → Update if drifted
+1. Requirements invalidated? -> Move to Out of Scope with reason
+2. Requirements validated? -> Move to Validated with phase reference
+3. New requirements emerged? -> Add to Active
+4. Decisions to log? -> Add to Key Decisions
+5. "What This Is" still accurate? -> Update if drifted
 
 **After each milestone** (via `/gsd-complete-milestone`):
 1. Full review of all sections
@@ -180,7 +200,7 @@ This document evolves at phase transitions and milestone boundaries.
 **Key decisions made during v0.3.0:**
 - Operator config (SIEM, alerts, agent config) lives in SQLite, not env vars — hot-reload + TUI manageable
 - `AppState { db, siem }` is the canonical axum state for dlp-server handlers
-- Phase 04.1 (test suite) was inserted mid-sprint as urgent work — three-wave TDD approach (unit → server → E2E)
+- Phase 04.1 (test suite) was inserted mid-sprint as urgent work — three-wave TDD approach (unit -> server -> E2E)
 - Axum 0.7.9 `.route()` calls for the same path do NOT merge methods — consolidate all HTTP verbs into one `.route()` call
 
 ## Tech Stack

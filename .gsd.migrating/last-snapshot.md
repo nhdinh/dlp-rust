@@ -1,4 +1,3 @@
-# GSD context snapshot (2026-05-05T20:52:54.879Z)
+# GSD context snapshot (2026-05-05T23:51:22.646Z)
 
-## Active context
-Active: M001 / S01 / T04 - Add unit tests for disk registry TUI screen
+_No durable memories, active context, or exec history to surface._
