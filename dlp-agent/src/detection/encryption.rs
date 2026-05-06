@@ -629,18 +629,25 @@ impl EncryptionBackend for WindowsEncryptionBackend {
 /// * `runtime_handle` — tokio runtime `Handle` for spawning the async task.
 /// * `audit_ctx` — [`EmitContext`] for audit event emission.
 /// * `recheck_interval` — how often to re-verify after the initial check (D-10/D-11).
+/// * `shutdown_rx` — shutdown signal; when `true`, the task exits cleanly.
+///
+/// # Returns
+///
+/// The spawned [`tokio::task::JoinHandle`] so the caller can await cancellation.
 pub fn spawn_encryption_check_task(
     runtime_handle: tokio::runtime::Handle,
     audit_ctx: crate::audit_emitter::EmitContext,
     recheck_interval: Duration,
-) {
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
     // Default to the production Windows backend (Task 2).
     spawn_encryption_check_task_with_backend(
         runtime_handle,
         audit_ctx,
         recheck_interval,
         Arc::new(WindowsEncryptionBackend),
-    );
+        shutdown_rx,
+    )
 }
 
 /// Same as [`spawn_encryption_check_task`] but with an injectable backend.
@@ -656,12 +663,18 @@ pub fn spawn_encryption_check_task(
 /// * `recheck_interval` — period between re-checks (D-10).
 /// * `backend` — the [`EncryptionBackend`] implementation to use (arc-shared
 ///   because the task may fan out concurrent `spawn_blocking` calls).
+/// * `shutdown_rx` — shutdown signal; when `true`, the task exits cleanly.
+///
+/// # Returns
+///
+/// The spawned [`tokio::task::JoinHandle`] so the caller can await cancellation.
 pub fn spawn_encryption_check_task_with_backend(
     runtime_handle: tokio::runtime::Handle,
     audit_ctx: crate::audit_emitter::EmitContext,
     recheck_interval: Duration,
     backend: Arc<dyn EncryptionBackend>,
-) {
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
     runtime_handle.spawn(async move {
         // ── Wait for Phase 33 enumeration to finish (D-04) ─────────────
         wait_for_disk_enumerator_ready().await;
@@ -695,7 +708,15 @@ pub fn spawn_encryption_check_task_with_backend(
         // Consume the immediate tick — initial check above already ran.
         ticker.tick().await;
         loop {
-            ticker.tick().await;
+            tokio::select! {
+                _ = ticker.tick() => {},
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        debug!("encryption check task received shutdown signal");
+                        return;
+                    }
+                }
+            }
             let disks = enumerator.all_disks();
             if disks.is_empty() {
                 debug!("periodic encryption check: no disks");
@@ -709,7 +730,7 @@ pub fn spawn_encryption_check_task_with_backend(
             )
             .await;
         }
-    });
+    })
 }
 
 /// Poll [`crate::detection::disk::get_disk_enumerator`] / `is_ready`

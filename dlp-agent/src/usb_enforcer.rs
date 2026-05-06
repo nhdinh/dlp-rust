@@ -57,6 +57,10 @@ pub struct UsbBlockResult {
     pub tier: UsbTrustTier,
     /// `true` if the UI should display a toast; `false` when cooldown suppresses it.
     pub notify: bool,
+    /// Owner SID of the per-user registry entry that determined the tier.
+    pub owner_sid: Option<String>,
+    /// Owner username of the per-user registry entry that determined the tier.
+    pub owner_user: Option<String>,
 }
 
 /// Bridges USB device identity (Phase 23) and trust-tier registry (Phase 24)
@@ -113,11 +117,14 @@ impl UsbEnforcer {
     /// # Arguments
     ///
     /// * `identity` - The [`DeviceIdentity`] to look up.
-    fn resolve_tier_for_identity(&self, identity: &DeviceIdentity) -> UsbTrustTier {
-        let result = self
-            .registry
-            .trust_tier_for_with_sid(&identity.vid, &identity.pid, &identity.serial, None);
-        result.tier
+    /// * `sid` - Optional Windows user SID for per-user registry lookup.
+    fn resolve_tier_for_identity(
+        &self,
+        identity: &DeviceIdentity,
+        sid: Option<&str>,
+    ) -> crate::device_registry::TrustTierResult {
+        self.registry
+            .trust_tier_for_with_sid(&identity.vid, &identity.pid, &identity.serial, sid)
     }
 
     /// Evaluates whether the given file operation should be blocked based on the
@@ -183,6 +190,8 @@ impl UsbEnforcer {
                         },
                         tier: UsbTrustTier::Blocked,
                         notify,
+                        owner_sid: None,
+                        owner_user: None,
                     });
                 }
                 return None;
@@ -197,20 +206,23 @@ impl UsbEnforcer {
             self.registry
                 .has_device(&identity.vid, &identity.pid, &identity.serial);
 
+        // Resolve current user SID for per-user registry lookup (USB-06).
+        let current_sid = crate::identity::get_current_process_sid();
+        let tier_result = self.resolve_tier_for_identity(&identity, current_sid.as_deref());
+
         if is_registered {
             // Registered device: active enforcement is handled by DeviceController.
             // Blocked → disabled on arrival; ReadOnly → DACL modified on arrival;
             // FullAccess → no action. All cases return None.
-            let tier = self.resolve_tier_for_identity(&identity);
             tracing::info!(
                 vid = %identity.vid,
                 pid = %identity.pid,
                 serial = %identity.serial,
                 drive = %drive,
                 action = ?std::mem::discriminant(_action),
-                tier = ?tier,
+                tier = ?tier_result.tier,
                 decision = ?Decision::ALLOW,
-                rule = %format!("registered device: {:?}", tier),
+                rule = %format!("registered device: {:?}", tier_result.tier),
                 "USB enforcement decision"
             );
             None
@@ -233,6 +245,8 @@ impl UsbEnforcer {
                 identity,
                 tier: UsbTrustTier::Blocked,
                 notify,
+                owner_sid: tier_result.owner_sid.clone(),
+                owner_user: tier_result.owner_user.clone(),
             })
         }
     }
@@ -612,7 +626,7 @@ mod tests {
             description: "Test".into(),
         };
         assert_eq!(
-            enforcer.resolve_tier_for_identity(&identity),
+            enforcer.resolve_tier_for_identity(&identity, None).tier,
             UsbTrustTier::ReadOnly
         );
     }
@@ -632,7 +646,7 @@ mod tests {
             description: "Test".into(),
         };
         assert_eq!(
-            enforcer.resolve_tier_for_identity(&identity),
+            enforcer.resolve_tier_for_identity(&identity, None).tier,
             UsbTrustTier::Blocked
         );
     }
@@ -699,7 +713,7 @@ mod tests {
             description: "Test".into(),
         };
         assert_eq!(
-            enforcer.resolve_tier_for_identity(&identity),
+            enforcer.resolve_tier_for_identity(&identity, None).tier,
             UsbTrustTier::FullAccess
         );
 
