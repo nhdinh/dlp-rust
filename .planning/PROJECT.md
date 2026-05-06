@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-05-06 — Milestone v0.8.0 Application-Aware DLP in planning. v0.7.0 Disk Exfiltration Prevention shipped with all 15 requirements validated.*
+*Last updated: 2026-05-06 — Milestone v0.7.1 Operational Hardening in planning. v0.7.0 Disk Exfiltration Prevention shipped with all 15 requirements validated.*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -23,6 +23,20 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - Phase 37: Server Registry + Admin API — SQLite disk registry, GET/POST/DELETE CRUD endpoints
 - Phase 38.1: LDAP Config TUI — admin screen for LDAP configuration
 - Phase 38.2: USB Enforcement Fix — set_volume_deny_all for Blocked tier, startup scan, race condition fix, deferred disk arrival, boot drive case normalization
+
+## Current Milestone: v0.7.1 Operational Hardening
+
+**Goal:** Close gaps and harden v0.7.0 operational quality before v0.8.0 feature work.
+
+**Target features:**
+- AUDIT-05: AGENT-UNKNOWN remediation — audit schema guarantee for missing app identity with remediation path
+- USB-06: Per-user device registry — owner_user column, per-user allowlists
+- TECH-01: WMI crate upgrade — migrate from raw CoSetProxyBlanket FFI to wmi 0.18+
+- OP-01..04: Operational hardening — error handling, logging, telemetry, config validation across v0.7.0 paths
+
+**Deferred human verification:**
+- UAT-01: Phase 34 HUMAN-UAT (unencrypted disk warning — requires physical machine)
+- UAT-02: Phase 38.2 HUMAN-UAT (drive-letter correlation — requires physical machine with multiple disks)
 
 ## Current Milestone: v0.8.0 Application-Aware DLP
 
@@ -68,10 +82,8 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 ## Deferred (future milestones)
 
 - **Browser Extension (SEED-002 Path A):** Native Chrome/Edge Manifest V3 extension for tab-level origin control
-- **Per-User Device Registry (USB-06):** owner_user column for multi-user machines
 - **Mount-time blocking (DISK-F1):** volume lock in addition to I/O-time blocking
 - **Grace period / quarantine (DISK-F2):** configurable read-only window before hard block
-- **wmi crate upgrade:** Upgrade to wmi 0.18+ to eliminate raw CoSetProxyBlanket FFI workaround
 
 ## Architecture
 
@@ -148,12 +160,44 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - ✓ USB-02: Admin can register/deregister USB devices with trust tier via TUI and admin API — Phase 24
 - ✓ USB-03: Agent enforces trust tier at I/O time (read_only: allow reads, deny writes; blocked: deny all) — Phase 26
 - ✓ USB-04: User receives toast notification on USB block with policy explanation — Phase 27
+- ✓ USB-05: Audit events include device identity fields (VID, PID, serial, description) on USB block — Phase 38.2
+
+### Validated (shipped in v0.7.0)
+
+- ✓ DISK-01: Agent enumerates all fixed disks at install time or first startup, capturing device instance ID, bus type, model, and drive letter — Phase 33
+- ✓ DISK-02: Agent correctly distinguishes USB-bridged SATA/NVMe enclosures from genuine internal disks via IOCTL_STORAGE_QUERY_PROPERTY or PnP tree walk — Phase 33
+- ✓ DISK-03: Agent writes enumerated disks to [disk_allowlist] section in agent-config.toml with device instance ID as canonical key — Phase 35
+- ✓ DISK-04: Agent blocks FileAction::Create / Write / Move to unregistered fixed disks at runtime via pre-ABAC enforcement in run_event_loop — Phase 36
+- ✓ DISK-05: Agent handles WM_DEVICECHANGE DBT_DEVICEARRIVAL / DBT_DEVICEREMOVECOMPLETE for GUID_DEVINTERFACE_DISK — Phase 36 / GAP-01
+- ✓ CRYPT-01: Agent queries BitLocker encryption status via WMI Win32_EncryptableVolume for each enumerated fixed disk — Phase 34
+- ✓ CRYPT-02: Unencrypted disks are flagged in the audit log with a warning severity; admin decides allow/block via allowlist — Phase 34
+- ✓ ADMIN-01: Server stores disk registry in SQLite with agent_id, instance_id, bus_type, encrypted, model, and registered_at columns — Phase 37
+- ✓ ADMIN-02: Admin can list all registered disks across the fleet via GET /admin/disk-registry — Phase 37
+- ✓ ADMIN-03: Admin can add/remove a disk from the allowlist via POST/DELETE /admin/disk-registry — Phase 37
+- ✓ ADMIN-04: Admin can manage disk registry through the interactive TUI — Phase 38
+- ✓ ADMIN-05: Admin can configure Active Directory connection parameters through the interactive TUI — Phase 38.1
+- ✓ AUDIT-01: Disk discovery events are emitted with full identity (instance_id, bus_type, model, drive_letter) and timestamp — Phase 33
+- ✓ AUDIT-02: Disk block events include disk identity fields when an unregistered fixed disk is blocked — Phase 36
+- ✓ AUDIT-03: Admin override actions (add/remove disk from registry) are emitted as EventType::AdminAction audit events — Phase 37
+
+### Active (v0.7.1)
+
+- [ ] AUDIT-05: Audit schema guarantees non-null app identity fields; missing identity is flagged as AGENT-UNKNOWN with remediation path
+- [ ] USB-06: Per-user device registry (owner_user column) for multi-user machines
+- [ ] TECH-01: Upgrade to wmi 0.18+ to eliminate raw CoSetProxyBlanket FFI workaround
+- [ ] OP-01: Disk enumeration handles IOCTL failures gracefully without panicking
+- [ ] OP-02: USB enforcement emits structured error traces for all block/allow decisions
+- [ ] OP-03: Agent config TOML validates field ranges at load time with descriptive errors
+- [ ] OP-04: Service shutdown gracefully cancels in-flight disk/USB enumeration tasks
 
 ### Deferred to future milestones
 
-- [ ] USB-05: Audit events include device identity fields (VID, PID, serial, description) on USB block
-- [ ] USB-06: Per-user device registry (owner_user column)
-- [ ] APP-07: UWP app identity via AUMID
+- [ ] APP-07: UWP app identity via AUMID — v0.8.0
+- [ ] APP-08: Drag-and-drop enforcement — v0.8.0
+- [ ] BRW-04: Browser origin-aware clipboard policies — v0.8.0
+- [ ] AUDIT-04: All audit events include source_application and destination_application fields — v0.8.0
+- [ ] Mount-time blocking (DISK-F1): volume lock in addition to I/O-time blocking
+- [ ] Grace period / quarantine (DISK-F2): configurable read-only window before hard block
 
 ### Out of Scope
 

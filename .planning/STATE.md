@@ -1,7 +1,7 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.8.0
-milestone_name: Application-Aware DLP
+milestone: v0.7.1
+milestone_name: Operational Hardening
 status: planning
 last_updated: "2026-05-06T07:02:50.521Z"
 last_activity: 2026-05-06
@@ -19,7 +19,7 @@ progress:
 
 **Project**: DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value**: Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus**: v0.8.0 Application-Aware DLP — Phase 39 next
+**Current Focus**: v0.7.1 Operational Hardening — Phase 38.3 next
 
 ---
 
@@ -28,11 +28,12 @@ progress:
 Phase: Not started (defining requirements)
 Plan: —
 Status: Defining requirements
-Last activity: 2026-05-06 — Milestone v0.8.0 started
+Last activity: 2026-05-06 — Milestone v0.7.1 started
 
 ## Progress
 
 v0.7.0 [Phase 33 done | Phase 34 done | Phase 35 done | Phase 36 done | Phase 37 done | Phase 38 done | Phase 38.1 done | Phase 38.2 done]
+v0.7.1 [Phase 38.3 pending | Phase 38.4 pending | Phase 38.5 pending | Phase 38.6 pending]
 v0.8.0 [Phase 39 pending | Phase 40 pending | Phase 41 pending | Phase 42 pending]
 
 ---
@@ -53,10 +54,9 @@ v0.8.0 [Phase 39 pending | Phase 40 pending | Phase 41 pending | Phase 42 pendin
 
 ## Session Continuity
 
-Last session: 2026-05-05T10:03:50.142Z
-Stopped at: Phase 38.2 discuss-phase complete; CONTEXT.md and DISCUSSION-LOG.md committed; ready for /gsd-plan-phase 38.2
+Last session: 2026-05-06T12:55:11+07:00
+Stopped at: Milestone v0.7.1 initialized; PROJECT.md, REQUIREMENTS.md, ROADMAP.md, STATE.md written; ready for /gsd-plan-phase 38.3
 Resume file: None
-Resumed: 2026-05-05 — completed all 4 gray areas (Wiring failure mode, AGENT-UNKNOWN scope, Re-plug & tier-change semantics, Drive-letter mislabel)
 
 ---
 
@@ -66,15 +66,18 @@ None captured.
 
 ---
 
-## Recent Achievements (Phase 37)
+## Recent Achievements (Phase 38.2)
 
-- Plan 37-01: `Action::DiskRegistryAdd/Remove` + `disk_registry` SQLite table + `DiskRegistryRepository` (19 tests)
-- Plan 37-02: REST GET/POST/DELETE `/admin/disk-registry` + AUDIT-03 `AdminAction` events + `AgentConfigPayload.disk_allowlist` server-side (204 lib tests)
-- Plan 37-03: Agent-side `AgentConfigPayload.disk_allowlist` + `apply_payload_to_config()` helper + `merge_disk_allowlist_into_map()` with Pitfall 5 protection (261 total dlp-agent tests)
+- Plan 38.2-01: `set_volume_deny_all` method with deny-all SDDL + original DACL caching + 2 unit tests
+- Plan 38.2-02: WR-01 race fix + startup enforcement gap fix (`scan_existing_usb_identities`) + 12 usb tests
+- Plan 38.2-03: Kernel-authoritative drive-letter correlation (`find_drive_letter_for_instance_id`) + 42 disk tests
+- GAP-01: Deferred disk-arrival processing (500ms) via tokio runtime handle
+- GAP-02: Boot drive letter case-insensitive comparison fix
+- USB-05: Audit events include DeviceIdentity fields (commit f38ce85)
 
 ## Blockers
 
-None. Phase 37 complete and verified.
+None. Phase 38.2 complete and verified. v0.7.1 is unblocked.
 
 ---
 
@@ -82,4 +85,10 @@ None. Phase 37 complete and verified.
 
 ### Roadmap Evolution
 
-- Phase 38.2 inserted after Phase 38.1 (URGENT) — USB Enforcement Fix: registered blocked USB devices log DENY but writes still succeed; root cause is PnP disable not firing. Inserted 2026-05-05.
+- v0.7.1 inserted between v0.7.0 and v0.8.0 to close gaps before feature work: AUDIT-05, USB-06, TECH-01, OP-01..04, UAT-01/02
+- v0.8.0 phases 39-42 remain unchanged in scope
+
+### Deferred Human Verification
+
+- UAT-01 (Phase 34): Unencrypted disk warning on physical Windows machine
+- UAT-02 (Phase 38.2): Drive-letter correlation on physical Windows machine with multiple disks
