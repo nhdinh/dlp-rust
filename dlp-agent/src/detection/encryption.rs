@@ -43,14 +43,8 @@ use dlp_common::{DiskIdentity, EncryptionMethod, EncryptionStatus};
 use parking_lot::RwLock;
 use tracing::{debug, error, info, warn};
 
-// wmi 0.14.x does not expose `set_proxy_blanket` / `AuthLevel::PktPrivacy` —
-// those were added in wmi 0.18. wmi 0.14 uses `windows 0.59` internally while
-// this workspace targets `windows 0.62`, making the COM interface types
-// incompatible at the Rust trait level. We call the underlying `CoSetProxyBlanket`
-// Win32 API via raw FFI, using the object's vtable pointer extracted with
-// `as_raw()` from `windows-core 0.59`. This achieves the identical auth upgrade
-// to `PktPrivacy` that wmi 0.18's `set_proxy_blanket(wmi::AuthLevel::PktPrivacy)`
-// performs. Documented as a deviation in the plan SUMMARY.
+// wmi 0.18+ exposes set_proxy_blanket(AuthLevel::PktPrivacy) natively.
+// No raw FFI needed — the crate calls CoSetProxyBlanket internally.
 
 // Windows-only Registry imports used by `WindowsEncryptionBackend`.
 #[cfg(windows)]
@@ -69,7 +63,7 @@ use windows::Win32::System::Registry::{
 /// D-01a Registry-fallback gate without string matching.
 #[derive(Debug, thiserror::Error)]
 pub enum EncryptionError {
-    /// `CoInitializeEx` / `wmi::COMLibrary::new()` failed.
+    /// COM initialization failed (wmi 0.18 auto-initializes COM internally).
     #[error("COM init failed: {0}")]
     ComInitFailed(String),
     /// `wmi::WMIConnection::with_namespace_path` or `set_proxy_blanket` failed.
@@ -461,123 +455,54 @@ struct EncryptableVolume {
     encryption_method: Option<u32>,
 }
 
-/// Upgrade a WMI proxy blanket to `PktPrivacy` authentication level (D-02).
-///
-/// `wmi 0.14` uses `windows 0.59` internally while this workspace targets
-/// `windows 0.62`. The `IWbemServices` type from 0.59 does not implement the
-/// `Interface` trait from 0.62, making `CoSetProxyBlanket` from our `windows`
-/// crate unusable. We call the underlying `ole32.dll` export directly via a raw
-/// function pointer, passing the COM object as `*mut c_void` (the stable ABI).
-///
-/// This is equivalent to `wmi 0.18`'s `set_proxy_blanket(wmi::AuthLevel::PktPrivacy)`.
-///
-/// # Safety
-///
-/// `svc_raw` must be a valid `IWbemServices` vtable pointer owned by the caller.
-/// The `CoSetProxyBlanket` Win32 function is declared `system` and does not throw.
-#[cfg(windows)]
-unsafe fn upgrade_to_pkt_privacy(svc_raw: *mut std::ffi::c_void) -> Result<(), EncryptionError> {
-    // CoSetProxyBlanket signature (ole32.dll, stable ABI since Win2000):
-    // HRESULT CoSetProxyBlanket(IUnknown*, DWORD, DWORD, OLECHAR*, DWORD, DWORD, RPC_AUTH_IDENTITY_HANDLE, DWORD)
-    #[allow(non_snake_case)]
-    #[link(name = "ole32")]
-    extern "system" {
-        fn CoSetProxyBlanket(
-            pProxy: *mut std::ffi::c_void,
-            dwAuthnSvc: u32,
-            dwAuthzSvc: u32,
-            pServerPrincName: *const u16,
-            dwAuthnLevel: u32,
-            dwImpLevel: u32,
-            pAuthInfo: *mut std::ffi::c_void,
-            dwCapabilities: u32,
-        ) -> i32; // HRESULT
-    }
-    // Constants (stable Win32 ABI values, verified against windows-core 0.62 constants).
-    const RPC_C_AUTHN_WINNT: u32 = 10; // NTLM Security Support Provider
-    const RPC_C_AUTHZ_NONE: u32 = 0; // No authorization service
-    const RPC_C_AUTHN_LEVEL_PKT_PRIVACY: u32 = 6; // Encrypt + sign (PktPrivacy)
-    const RPC_C_IMP_LEVEL_IMPERSONATE: u32 = 3; // Impersonate client
-    const EOAC_NONE: u32 = 0; // No extra proxy capabilities
-
-    let hr = CoSetProxyBlanket(
-        svc_raw,
-        RPC_C_AUTHN_WINNT,
-        RPC_C_AUTHZ_NONE,
-        std::ptr::null(), // default principal name
-        RPC_C_AUTHN_LEVEL_PKT_PRIVACY,
-        RPC_C_IMP_LEVEL_IMPERSONATE,
-        std::ptr::null_mut(), // no auth identity (use process token)
-        EOAC_NONE,
-    );
-    if hr < 0 {
-        return Err(EncryptionError::WmiConnectionFailed(format!(
-            "CoSetProxyBlanket(PktPrivacy) HRESULT 0x{hr:08X}"
-        )));
-    }
-    Ok(())
-}
-
 /// Open a WMI connection to the BitLocker namespace with `PktPrivacy`
 /// auth (D-02). Centralized per Pitfall F — every fresh connection MUST
 /// have `set_proxy_blanket(wmi::AuthLevel::PktPrivacy)` level applied or
 /// queries return ACCESS_DENIED from the `MicrosoftVolumeEncryption` namespace.
 ///
-/// Implementation note: wmi 0.14 (pinned per D-21a) does not expose
-/// `set_proxy_blanket(wmi::AuthLevel::PktPrivacy)` — those types exist only
-/// in wmi 0.18. The equivalent is achieved via [`upgrade_to_pkt_privacy`]
-/// which calls `CoSetProxyBlanket` directly on the raw COM vtable pointer.
+/// wmi 0.18+ auto-initializes COM via `CoIncrementMTAUsage` internally;
+/// no explicit `COMLibrary::new()` is required.
 ///
 /// # Errors
 ///
 /// Returns `EncryptionError::WmiNamespaceUnavailable` when the namespace is not
 /// registered (triggers Registry fallback per D-01a).
-/// Returns `EncryptionError::ComInitFailed` or `EncryptionError::WmiConnectionFailed`
-/// for other failures.
+/// Returns `EncryptionError::WmiConnectionFailed` for other failures.
 #[cfg(windows)]
 fn open_bitlocker_connection() -> Result<wmi::WMIConnection, EncryptionError> {
-    let com = wmi::COMLibrary::new().map_err(|e| EncryptionError::ComInitFailed(e.to_string()))?;
-    let conn = wmi::WMIConnection::with_namespace_path(
-        r"ROOT\CIMV2\Security\MicrosoftVolumeEncryption",
-        com,
-    )
-    .map_err(classify_wmi_connection_error)?;
-    // Upgrade from the default CALL-level set by wmi 0.14 to PktPrivacy.
-    // `conn.svc` is `pub IWbemServices` from windows 0.59; `as_raw()` yields
-    // the stable COM vtable pointer (`*mut c_void`) regardless of crate version.
-    // SAFETY: `conn` owns the IWbemServices; the object is alive for the
-    // duration of this call. The raw pointer is never stored beyond this scope.
-    // `wmi 0.14` uses `windows-core 0.59` internally; `Interface::as_raw()`
-    // returns `*mut c_void` — same stable COM ABI regardless of crate version.
-    // We import `windows_core::Interface` from the 0.59 edition (declared as a
-    // direct dep in Cargo.toml) to make `as_raw()` callable on the 0.59-typed
-    // `IWbemServices` that wmi 0.14 returns.
-    unsafe {
-        // Import windows_core 0.59 Interface trait (matches the version wmi 0.14 uses)
-        // so that `as_raw()` is available on the wmi-returned `IWbemServices`.
-        use windows_core::Interface;
-        upgrade_to_pkt_privacy(conn.svc.as_raw())?;
-    }
+    let conn =
+        wmi::WMIConnection::with_namespace_path(r"ROOT\CIMV2\Security\MicrosoftVolumeEncryption")
+            .map_err(classify_wmi_connection_error)?;
+    conn.set_proxy_blanket(wmi::AuthLevel::PktPrivacy)
+        .map_err(|e| EncryptionError::WmiConnectionFailed(e.to_string()))?;
     Ok(conn)
 }
 
 /// Classify a wmi-rs connection error. Per D-01a, only namespace-unavailable
 /// errors trigger the Registry fallback. Other connection errors yield Unknown directly.
 ///
-/// Detection heuristic: the WMI error message for `WBEM_E_INVALID_NAMESPACE`
-/// (0x8004100E) typically contains "namespace" or the hex code. This is a
-/// best-effort classification — false negatives land in `WmiConnectionFailed`
-/// which still yields `Unknown`, not a wrong positive.
+/// wmi 0.18 wraps COM errors in `WMIError::HResultError { hres }`.
+/// WBEM_E_INVALID_NAMESPACE = 0x8004100E = -2147217402 as i32.
 #[cfg(windows)]
 fn classify_wmi_connection_error(e: wmi::WMIError) -> EncryptionError {
-    let msg = e.to_string();
-    let lc = msg.to_ascii_lowercase();
-    // WBEM_E_INVALID_NAMESPACE = 0x8004100E; messages typically include
-    // "namespace" or the hex code string.
-    if lc.contains("namespace") || lc.contains("0x8004100e") || lc.contains("invalid namespace") {
-        EncryptionError::WmiNamespaceUnavailable(msg)
-    } else {
-        EncryptionError::WmiConnectionFailed(msg)
+    const WBEM_E_INVALID_NAMESPACE: i32 = -2147217402;
+    match e {
+        wmi::WMIError::HResultError { hres } if hres == WBEM_E_INVALID_NAMESPACE => {
+            EncryptionError::WmiNamespaceUnavailable(format!("HRESULT 0x{hres:08X}"))
+        }
+        other => {
+            let msg = other.to_string();
+            let lc = msg.to_ascii_lowercase();
+            // Fallback heuristic for any other error that mentions namespace.
+            if lc.contains("namespace")
+                || lc.contains("0x8004100e")
+                || lc.contains("invalid namespace")
+            {
+                EncryptionError::WmiNamespaceUnavailable(msg)
+            } else {
+                EncryptionError::WmiConnectionFailed(msg)
+            }
+        }
     }
 }
 

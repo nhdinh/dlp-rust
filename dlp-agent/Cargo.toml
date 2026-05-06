@@ -67,22 +67,12 @@ windows = { version = "0.62", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     # Phase 38.2: CM_Get_Device_Interface_PropertyW + DEVPKEY_Device_InstanceId.
     "Win32_Devices_Properties",
-    # detection/encryption.rs: CoSetProxyBlanket (PktPrivacy auth upgrade).
-    # wmi 0.14 uses windows 0.59 internally; we call CoSetProxyBlanket via raw
-    # FFI to upgrade from CALL-level (wmi default) to PktPrivacy (D-02 requirement).
-    "Win32_System_Com",
 ] }
 
 # WMI for BitLocker queries (Phase 34 - Win32_EncryptableVolume in
-# ROOT\CIMV2\Security\MicrosoftVolumeEncryption). Pinned at 0.14 per D-21a;
-# rationale: minimize churn in Phase 34's scope. Future maintenance phase may
-# bump to 0.18 once integration test coverage exists.
-wmi = { version = "0.14", features = ["chrono"] }
-
-# windows-core 0.59 is the version transitively used by wmi 0.14. We declare it
-# as a direct dependency so we can bring the `Interface` trait into scope to call
-# `IWbemServices::as_raw()` for the CoSetProxyBlanket PktPrivacy upgrade (D-02).
-windows-core = "0.59"
+# ROOT\CIMV2\Security\MicrosoftVolumeEncryption). Upgraded to 0.18+ in
+# Phase 38.5 to eliminate raw CoSetProxyBlanket FFI (TECH-01).
+wmi = { version = "0.18", features = ["chrono"] }
 
 # Password hashing: bcrypt for dlp-admin stop-password verification
 bcrypt = "0.16"
