@@ -106,6 +106,20 @@ impl UsbEnforcer {
         expired
     }
 
+    /// Resolves the trust tier for a given device identity by querying the
+    /// registry cache. Returns `UsbTrustTier::Blocked` when the device is not
+    /// registered (default-deny).
+    ///
+    /// # Arguments
+    ///
+    /// * `identity` - The [`DeviceIdentity`] to look up.
+    fn resolve_tier_for_identity(&self, identity: &DeviceIdentity) -> UsbTrustTier {
+        let result = self
+            .registry
+            .trust_tier_for_with_sid(&identity.vid, &identity.pid, &identity.serial, None);
+        result.tier
+    }
+
     /// Evaluates whether the given file operation should be blocked based on the
     /// USB trust tier of the drive the file resides on.
     ///
@@ -151,6 +165,14 @@ impl UsbEnforcer {
                 // and DENY all operations with tier=Blocked.
                 if self.detector.blocked_drives.read().contains(&drive) {
                     let notify = self.should_notify(drive);
+                    tracing::info!(
+                        drive = %drive,
+                        action = ?std::mem::discriminant(_action),
+                        tier = ?UsbTrustTier::Blocked,
+                        decision = ?Decision::DENY,
+                        rule = "default-deny: known USB without captured identity",
+                        "USB enforcement decision"
+                    );
                     return Some(UsbBlockResult {
                         decision: Decision::DENY,
                         identity: DeviceIdentity {
@@ -179,10 +201,33 @@ impl UsbEnforcer {
             // Registered device: active enforcement is handled by DeviceController.
             // Blocked → disabled on arrival; ReadOnly → DACL modified on arrival;
             // FullAccess → no action. All cases return None.
+            let tier = self.resolve_tier_for_identity(&identity);
+            tracing::info!(
+                vid = %identity.vid,
+                pid = %identity.pid,
+                serial = %identity.serial,
+                drive = %drive,
+                action = ?std::mem::discriminant(_action),
+                tier = ?tier,
+                decision = ?Decision::ALLOW,
+                rule = %format!("registered device: {:?}", tier),
+                "USB enforcement decision"
+            );
             None
         } else {
             // Unregistered device: default deny at the I/O level (fail-safe).
             let notify = self.should_notify(drive);
+            tracing::info!(
+                vid = %identity.vid,
+                pid = %identity.pid,
+                serial = %identity.serial,
+                drive = %drive,
+                action = ?std::mem::discriminant(_action),
+                tier = ?UsbTrustTier::Blocked,
+                decision = ?Decision::DENY,
+                rule = "default-deny: unregistered device",
+                "USB enforcement decision"
+            );
             Some(UsbBlockResult {
                 decision: Decision::DENY,
                 identity,
@@ -547,5 +592,118 @@ mod tests {
         assert!(enforcer.check("E:\\file.txt", &written_action()).is_some());
         // F is FullAccess → fall through to ABAC.
         assert_eq!(enforcer.check("F:\\file.txt", &written_action()), None);
+    }
+
+    // -------------------------------------------------------------------------
+    // OP-02: USB Enforcement Structured Logging (Phase 38.6)
+    // -------------------------------------------------------------------------
+
+    /// resolve_tier_for_identity returns the correct tier for registered devices.
+    #[test]
+    fn test_resolve_tier_for_identity_registered() {
+        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
+        let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::ReadOnly);
+        let enforcer = UsbEnforcer::new(detector, registry);
+
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN001".into(),
+            description: "Test".into(),
+        };
+        assert_eq!(
+            enforcer.resolve_tier_for_identity(&identity),
+            UsbTrustTier::ReadOnly
+        );
+    }
+
+    /// resolve_tier_for_identity returns Blocked for unregistered devices.
+    #[test]
+    fn test_resolve_tier_for_identity_unregistered_defaults_blocked() {
+        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
+        let registry = Arc::new(DeviceRegistryCache::new());
+        // No seed — device is unregistered.
+        let enforcer = UsbEnforcer::new(detector, registry);
+
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN001".into(),
+            description: "Test".into(),
+        };
+        assert_eq!(
+            enforcer.resolve_tier_for_identity(&identity),
+            UsbTrustTier::Blocked
+        );
+    }
+
+    /// Unregistered device block includes correct decision fields.
+    ///
+    /// Verifies that the UsbBlockResult for an unregistered device has the
+    /// expected fields populated so that tracing spans can reference them.
+    #[test]
+    fn test_unregistered_block_result_fields() {
+        let detector = make_detector(vec![('E', "DEAD", "BEEF", "UNREG")]);
+        let registry = Arc::new(DeviceRegistryCache::new());
+        let enforcer = UsbEnforcer::new(detector, registry);
+
+        let result = enforcer.check("E:\\file.txt", &written_action());
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(r.decision, Decision::DENY);
+        assert_eq!(r.tier, UsbTrustTier::Blocked);
+        assert_eq!(r.identity.vid, "DEAD");
+        assert_eq!(r.identity.pid, "BEEF");
+        assert_eq!(r.identity.serial, "UNREG");
+    }
+
+    /// Known-USB-without-identity block result has unknown fields.
+    ///
+    /// When a drive is in blocked_drives but has no DeviceIdentity, the
+    /// block result uses "unknown" for vid/pid/serial so tracing spans still
+    /// have structured data.
+    #[test]
+    fn test_known_usb_without_identity_block_result_fields() {
+        let detector = Arc::new(UsbDetector {
+            blocked_drives: RwLock::new(HashSet::from(['E'])),
+            device_identities: RwLock::new(HashMap::new()),
+            ..Default::default()
+        });
+        let registry = Arc::new(DeviceRegistryCache::new());
+        let enforcer = UsbEnforcer::new(detector, registry);
+
+        let result = enforcer.check("E:\\file.txt", &written_action());
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(r.identity.vid, "unknown");
+        assert_eq!(r.identity.pid, "unknown");
+        assert_eq!(r.identity.serial, "unknown");
+        assert!(r.identity.description.contains("USB drive E"));
+    }
+
+    /// FullAccess registered device returns None (allow path).
+    ///
+    /// Verifies that the allow path returns None and that resolve_tier_for_identity
+    /// correctly identifies the FullAccess tier.
+    #[test]
+    fn test_fullaccess_registered_returns_none_with_tier() {
+        let detector = make_detector(vec![('E', "0951", "1666", "SN001")]);
+        let registry = make_registry("0951", "1666", "SN001", UsbTrustTier::FullAccess);
+        let enforcer = UsbEnforcer::new(detector, registry);
+
+        // resolve_tier_for_identity must report FullAccess.
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN001".into(),
+            description: "Test".into(),
+        };
+        assert_eq!(
+            enforcer.resolve_tier_for_identity(&identity),
+            UsbTrustTier::FullAccess
+        );
+
+        // check() returns None for registered devices.
+        assert_eq!(enforcer.check("E:\\file.txt", &written_action()), None);
     }
 }
