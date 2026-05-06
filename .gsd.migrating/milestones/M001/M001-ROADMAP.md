@@ -11,7 +11,7 @@
 
 ## Slices
 
-- [ ] **S01: S01** `risk:low` `depends:[]`
+- [x] **S01: S01** `risk:low` `depends:[]`
   > After this: Admin navigates to System > Disk Registry, sees fleet-wide disk list, can add/remove entries
 
 ## Boundary Map

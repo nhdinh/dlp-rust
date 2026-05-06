@@ -1,7 +1,7 @@
 # Codebase Map
 
-Generated: 2026-05-05T20:49:02Z | Files: 326 | Described: 0/326
-<!-- gsd:codebase-meta {"generatedAt":"2026-05-05T20:49:02Z","fingerprint":"d5b3dd5ce21f4fa2979bd0234cb3be2990f7e737","fileCount":326,"truncated":false} -->
+Generated: 2026-05-06T00:06:10Z | Files: 339 | Described: 0/339
+<!-- gsd:codebase-meta {"generatedAt":"2026-05-06T00:06:10Z","fingerprint":"abc719f4ca69c9c1b09442ddd6735dfcea52fdce","fileCount":339,"truncated":false} -->
 
 ### (root)/
 - `.gitignore`
@@ -44,11 +44,16 @@ Generated: 2026-05-05T20:49:02Z | Files: 326 | Described: 0/326
 - `.gsd.migrating/event-log.jsonl`
 - `.gsd.migrating/KNOWLEDGE.md`
 - `.gsd.migrating/last-snapshot.md`
+- `.gsd.migrating/metrics.json`
 - `.gsd.migrating/notifications.jsonl`
 - `.gsd.migrating/PROJECT.md`
 - `.gsd.migrating/REQUIREMENTS.md`
 - `.gsd.migrating/state-manifest.json`
 - `.gsd.migrating/STATE.md`
+
+### .gsd.migrating/activity/
+- `.gsd.migrating/activity/001-reactive-execute-M001-S01-reactive+T01,T02.jsonl`
+- `.gsd.migrating/activity/002-execute-task-M001-S01-T03.jsonl`
 
 ### .gsd.migrating/audit/
 - `.gsd.migrating/audit/events.jsonl`
@@ -67,8 +72,12 @@ Generated: 2026-05-05T20:49:02Z | Files: 326 | Described: 0/326
 
 ### .gsd.migrating/milestones/M001/slices/S01/tasks/
 - `.gsd.migrating/milestones/M001/slices/S01/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M001/slices/S01/tasks/T01-SUMMARY.md`
 - `.gsd.migrating/milestones/M001/slices/S01/tasks/T02-PLAN.md`
+- `.gsd.migrating/milestones/M001/slices/S01/tasks/T02-SUMMARY.md`
 - `.gsd.migrating/milestones/M001/slices/S01/tasks/T03-PLAN.md`
+- `.gsd.migrating/milestones/M001/slices/S01/tasks/T03-SUMMARY.md`
+- `.gsd.migrating/milestones/M001/slices/S01/tasks/T03-VERIFY.json`
 - `.gsd.migrating/milestones/M001/slices/S01/tasks/T04-PLAN.md`
 
 ### .gsd.migrating/milestones/M002/
@@ -117,8 +126,16 @@ Generated: 2026-05-05T20:49:02Z | Files: 326 | Described: 0/326
 - `.gsd.migrating/milestones/M006/M006-ROADMAP.md`
 
 ### .gsd.migrating/runtime/
+- `.gsd.migrating/runtime/M001-S01-reactive.json`
 - `.gsd.migrating/runtime/uok-parity.jsonl`
+- `.gsd.migrating/runtime/uok-plan-v2-graph.json`
 - `.gsd.migrating/runtime/uok-writer-sequence.json`
+- `.gsd.migrating/runtime/write-gate-state.json`
+
+### .gsd.migrating/runtime/units/
+- `.gsd.migrating/runtime/units/execute-task-M001-S01-T03.json`
+- `.gsd.migrating/runtime/units/execute-task-M001-S01-T04.json`
+- `.gsd.migrating/runtime/units/reactive-execute-M001-S01-reactive+T01,T02.json`
 
 ### .rtk/
 - `.rtk/filters.toml`

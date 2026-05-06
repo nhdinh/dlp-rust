@@ -13,3 +13,12 @@
 {"ts":"2026-05-05T20:52:55.262Z","flowId":"ad8038eb-8af5-45ed-a1c6-7035a0da7768","seq":1,"eventType":"iteration-start","data":{"iteration":3}}
 {"ts":"2026-05-05T20:52:55.360Z","flowId":"ad8038eb-8af5-45ed-a1c6-7035a0da7768","seq":2,"eventType":"dispatch-match","rule":"executing → execute-task","data":{"unitType":"execute-task","unitId":"M001/S01/T04"}}
 {"ts":"2026-05-05T20:52:55.384Z","flowId":"ad8038eb-8af5-45ed-a1c6-7035a0da7768","seq":3,"eventType":"unit-start","data":{"unitType":"execute-task","unitId":"M001/S01/T04"}}
+{"ts":"2026-05-05T23:46:55.501Z","flowId":"auto-orchestrator-1778024815495","seq":1,"eventType":"iteration-start","data":{"source":"auto-orchestrator","name":"start"}}
+{"ts":"2026-05-05T23:46:55.665Z","flowId":"auto-orchestrator-1778024815495","seq":2,"eventType":"dispatch-stop","data":{"source":"auto-orchestrator","name":"advance-stopped","reason":"no remaining units"}}
+{"ts":"2026-05-05T23:46:55.678Z","flowId":"a2da24ab-3ce3-4327-9b82-c9510045d6e7","seq":1,"eventType":"iteration-start","data":{"iteration":1}}
+{"ts":"2026-05-05T23:46:55.789Z","flowId":"a2da24ab-3ce3-4327-9b82-c9510045d6e7","seq":2,"eventType":"dispatch-match","rule":"executing → execute-task","data":{"unitType":"execute-task","unitId":"M001/S01/T04"}}
+{"ts":"2026-05-05T23:46:55.814Z","flowId":"a2da24ab-3ce3-4327-9b82-c9510045d6e7","seq":3,"eventType":"unit-start","data":{"unitType":"execute-task","unitId":"M001/S01/T04"}}
+{"ts":"2026-05-05T23:51:22.619Z","flowId":"a2da24ab-3ce3-4327-9b82-c9510045d6e7","seq":4,"eventType":"unit-end","data":{"unitType":"execute-task","unitId":"M001/S01/T04","status":"completed","artifactVerified":true},"causedBy":{"flowId":"a2da24ab-3ce3-4327-9b82-c9510045d6e7","seq":3}}
+{"ts":"2026-05-05T23:51:23.888Z","flowId":"58a26ff3-7241-4a66-9b10-a02b53d2a0e6","seq":1,"eventType":"iteration-start","data":{"iteration":2}}
+{"ts":"2026-05-05T23:51:23.999Z","flowId":"58a26ff3-7241-4a66-9b10-a02b53d2a0e6","seq":2,"eventType":"dispatch-match","rule":"summarizing → complete-slice","data":{"unitType":"complete-slice","unitId":"M001/S01"}}
+{"ts":"2026-05-05T23:51:24.030Z","flowId":"58a26ff3-7241-4a66-9b10-a02b53d2a0e6","seq":3,"eventType":"unit-start","data":{"unitType":"complete-slice","unitId":"M001/S01"}}

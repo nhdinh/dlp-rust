@@ -38,7 +38,7 @@
   - Files: `dlp-admin-cli/src/screens/render.rs`
   - Verify: cargo build --package dlp-admin-cli compiles; cargo clippy --package dlp-admin-cli -- -D warnings passes
 
-- [ ] **T04: Add unit tests for disk registry TUI screen** `est:30min`
+- [x] **T04: Add unit tests for disk registry TUI screen** `est:30min`
   Add unit tests in dispatch.rs and render.rs test modules covering: (1) DevicesMenu now has 4 items and index 3 opens DiskRegistryList, (2) DiskRegistryList Esc returns to DevicesMenu { selected: 3 }, (3) DevicesMenu nav wraps at 4 (update existing wrap test), (4) draw_disk_registry_list renders without panic for empty and non-empty disk lists, (5) handle_disk_registry_list Up/Down navigation. Follow existing test patterns (make_test_app, simulate_key).
   - Files: `dlp-admin-cli/src/screens/dispatch.rs`, `dlp-admin-cli/src/screens/render.rs`
   - Verify: cargo test --package dlp-admin-cli passes all tests including new ones
