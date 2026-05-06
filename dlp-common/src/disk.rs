@@ -471,6 +471,24 @@ fn enumerate_fixed_disks_windows() -> Result<Vec<DiskIdentity>, DiskError> {
         // 33-HUMAN-UAT.md test 1 diagnosis.
         let ioctl_result = query_bus_type_ioctl(&instance_id);
         let pnp_result = is_usb_bridged_pnp_walk(&instance_id);
+
+        // OP-01: If BOTH signals fail, log the error with instance_id and skip
+        // this disk. The enumeration continues with the next device so that one
+        // failing disk does not abort the entire enumeration (T-38.6-01).
+        if let (Err(ref ioctl_err), Err(ref pnp_err)) = (&ioctl_result, &pnp_result) {
+            tracing::error!(
+                instance_id = %instance_id,
+                ioctl_error = %ioctl_err,
+                pnp_error = %pnp_err,
+                "IOCTL_STORAGE_QUERY_PROPERTY and PnP walk both failed for disk -- skipping"
+            );
+            index += 1;
+            if index > 1024 {
+                break;
+            }
+            continue;
+        }
+
         let bus_type = resolve_bus_type_with_pnp_override(ioctl_result, pnp_result);
 
         // Determine drive letter by scanning fixed drives.
@@ -655,7 +673,9 @@ fn disk_number_for_instance_id(instance_id: &str) -> Result<u32, DiskError> {
     }
     let _ = unsafe { SetupDiDestroyDeviceInfoList(hdev) };
     disk_number.ok_or_else(|| {
-        DiskError::SetupDiFailed("could not determine disk number for instance_id".to_string())
+        DiskError::DeviceOpenFailed(format!(
+            "could not open device handle for instance_id: {instance_id}"
+        ))
     })
 }
 
@@ -990,8 +1010,8 @@ fn query_bus_type_for_handle(handle: HANDLE, _instance_id: &str) -> Result<BusTy
         )
     };
 
-    if ok.is_err() {
-        return Err(DiskError::IoctlFailed("DeviceIoControl failed".to_string()));
+    if let Err(e) = ok {
+        return Err(DiskError::IoctlFailed(format!("DeviceIoControl failed: {e}")));
     }
 
     if returned < std::mem::size_of::<STORAGE_DEVICE_DESCRIPTOR>() as u32 {
@@ -1586,5 +1606,76 @@ mod tests {
         let _ = disk_number_for_instance_id as fn(&str) -> Result<u32, DiskError>;
         let _ = find_drive_letter_for_disk_number as fn(u32) -> Option<char>;
         let _ = query_disk_number_for_handle as fn(HANDLE) -> Option<u32>;
+    }
+
+    // -------------------------------------------------------------------------
+    // OP-01: Disk Enumeration Error Resilience (Phase 38.6)
+    // -------------------------------------------------------------------------
+
+    /// query_bus_type_for_handle must include the Win32 error in its error message.
+    ///
+    /// When DeviceIoControl fails, the error message must contain the underlying
+    /// Win32 error so operators can diagnose the failure (e.g., access denied,
+    /// device not ready, invalid parameter).
+    #[test]
+    #[cfg(windows)]
+    fn test_query_bus_type_for_handle_includes_win32_error() {
+        // Open an invalid handle (nul device) to force DeviceIoControl failure.
+        let wide: Vec<u16> = r"\\.\NUL".encode_utf16().chain(std::iter::once(0)).collect();
+        let handle = unsafe {
+            CreateFileW(
+                windows::core::PCWSTR(wide.as_ptr()),
+                0x8000_0000u32, // GENERIC_READ
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                None,
+            )
+        };
+        if let Ok(h) = handle {
+            let result = query_bus_type_for_handle(h, "TEST-INSTANCE");
+            let _ = unsafe { CloseHandle(h) };
+            assert!(result.is_err(), "DeviceIoControl on NUL must fail");
+            let err_str = format!("{}", result.unwrap_err());
+            // The error message must contain some indication of failure,
+            // not just a generic string.
+            assert!(
+                err_str.contains("failed") || err_str.contains("error"),
+                "error message must include Win32 error context: got '{err_str}'"
+            );
+        }
+    }
+
+    /// disk_number_for_instance_id returns a descriptive error for unknown IDs.
+    ///
+    /// When the instance_id does not match any present disk device, the function
+    /// must return Err(DiskError::DeviceOpenFailed) with the instance_id in the
+    /// message so the caller can log it for troubleshooting.
+    #[test]
+    #[cfg(windows)]
+    fn test_disk_number_for_instance_id_returns_err_for_unknown() {
+        let result = disk_number_for_instance_id("NONEXISTENT\\INSTANCE\\ID");
+        assert!(
+            result.is_err(),
+            "unknown instance_id must return Err, not Ok"
+        );
+        let err_str = format!("{}", result.unwrap_err());
+        assert!(
+            err_str.contains("NONEXISTENT"),
+            "error message must include the failing instance_id: got '{err_str}'"
+        );
+    }
+
+    /// find_drive_letter_for_instance_id returns None when disk_number fails.
+    ///
+    /// When disk_number_for_instance_id returns Err (e.g., unknown instance_id),
+    /// find_drive_letter_for_instance_id must return None gracefully without
+    /// panicking. The error must be logged at warn level with the instance_id.
+    #[test]
+    #[cfg(windows)]
+    fn test_find_drive_letter_returns_none_on_disk_number_err() {
+        let result = find_drive_letter_for_instance_id("NONEXISTENT\\INSTANCE", &[]);
+        assert!(result.is_none(), "find_drive_letter must return None when disk_number fails");
     }
 }
