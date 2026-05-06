@@ -26,16 +26,16 @@ progress:
 
 ## Current Position
 
-Phase: 39 (UWP App Identity)
+Phase: 40 (Drag-and-Drop Enforcement)
 Plan: —
 Status: Planning
-Last activity: 2026-05-06 — Autonomous execution starting from Phase 39
+Last activity: 2026-05-07 — Phase 39 complete, moving to Phase 40
 
 ## Progress
 
 v0.7.0 [Phase 33 done | Phase 34 done | Phase 35 done | Phase 36 done | Phase 37 done | Phase 38 done | Phase 38.1 done | Phase 38.2 done]
 v0.7.1 [Phase 38.3 done | Phase 38.4 done | Phase 38.5 done | Phase 38.6 done]
-v0.8.0 [Phase 39 pending | Phase 40 pending | Phase 41 pending | Phase 42 pending]
+v0.8.0 [Phase 39 done | Phase 40 pending | Phase 41 pending | Phase 42 pending]
 
 ---
 
@@ -46,21 +46,22 @@ v0.8.0 [Phase 39 pending | Phase 40 pending | Phase 41 pending | Phase 42 pendin
 3. Phase 38.3-38.6: v0.7.1 Operational Hardening shipped — all gaps closed.
 4. EncryptionStatus serde mapping is manual: DB stores fully_encrypted/partially_encrypted; Rust enum serializes as encrypted/suspended.
 5. Lock-order invariant: config mutex MUST be acquired and released BEFORE acquiring instance_id_map.write() (T-37-13).
+6. Phase 39: UWP App Identity complete — AUMID resolution via GetApplicationUserModelId, ABAC evaluator extended, TUI conditions builder updated.
 
 ---
 
 ## Session Continuity
 
-Last session: 2026-05-06T16:55:37.855Z
-Stopped at: context exhaustion at 75% (2026-05-06)
+Last session: 2026-05-07
+Stopped at: Phase 39 complete, beginning Phase 40
 Resume file: None
 
 ---
 
 ## Pending Todos
 
-Phase 39: UWP App Identity — discuss pending
-Phase 40: Drag-and-Drop Enforcement — not started
+Phase 39: UWP App Identity — COMPLETE
+Phase 40: Drag-and-Drop Enforcement — planning next
 Phase 41: Browser Origin Clipboard Policies — not started
 Phase 42: Audit Enrichment — App Identity Fields — not started
 
@@ -68,7 +69,7 @@ Phase 42: Audit Enrichment — App Identity Fields — not started
 
 ## Blockers
 
-None. v0.7.1 complete and verified. v0.8.0 is unblocked.
+None. Phase 39 complete. v0.8.0 Phase 40 is next.
 
 ---
 
