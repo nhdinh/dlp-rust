@@ -138,17 +138,25 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
 
             -- device_registry: USB device trust assignments managed by dlp-admin.
             -- trust_tier CHECK constraint enforces only valid tier values at the DB layer.
-            -- UNIQUE(vid, pid, serial) ensures one row per physical device identity.
+            -- UNIQUE(vid, pid, serial, owner_sid) allows multiple per-user entries for the
+            -- same physical device. Machine-wide uniqueness (NULL owner_sid) is enforced
+            -- by a coalesce-based unique index (Phase 38.4, D-02).
             CREATE TABLE IF NOT EXISTS device_registry (
                 id          TEXT PRIMARY KEY,
                 vid         TEXT NOT NULL,
                 pid         TEXT NOT NULL,
                 serial      TEXT NOT NULL,
+                owner_sid   TEXT,
+                owner_user  TEXT,
                 description TEXT NOT NULL DEFAULT '',
                 trust_tier  TEXT NOT NULL CHECK(trust_tier IN ('blocked', 'read_only', 'full_access')),
-                created_at  TEXT NOT NULL,
-                UNIQUE(vid, pid, serial)
+                created_at  TEXT NOT NULL
             );
+            -- Unique index using COALESCE to treat NULL owner_sid as empty string,
+            -- enforcing at most one machine-wide entry per (vid, pid, serial).
+            -- Per-user entries have distinct owner_sid values so they coexist.
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_device_registry_unique
+                ON device_registry(vid, pid, serial, COALESCE(owner_sid, ''));
 
             CREATE TABLE IF NOT EXISTS siem_config (
                 id              INTEGER PRIMARY KEY CHECK (id = 1),
@@ -278,6 +286,19 @@ pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
         "ALTER TABLE agent_config_overrides ADD COLUMN excluded_paths TEXT NOT NULL DEFAULT '[]'",
         "excluded_paths",
         "agent_config_overrides",
+    )?;
+    // Phase 38.4: per-user device registry columns.
+    run_alter(
+        conn,
+        "ALTER TABLE device_registry ADD COLUMN owner_sid TEXT",
+        "owner_sid",
+        "device_registry",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE device_registry ADD COLUMN owner_user TEXT",
+        "owner_user",
+        "device_registry",
     )?;
     Ok(())
 }
@@ -487,6 +508,8 @@ mod tests {
             "vid",
             "pid",
             "serial",
+            "owner_sid",
+            "owner_user",
             "description",
             "trust_tier",
             "created_at",
@@ -533,19 +556,70 @@ mod tests {
         .expect("first insert must succeed");
 
         let result = conn.execute(
-            "INSERT INTO device_registry (id, vid, pid, serial, description, trust_tier, created_at) \
-             VALUES ('id2', '0951', '1666', 'SN001', '', 'read_only', '2026-01-02')",
+            "INSERT INTO device_registry (id, vid, pid, serial, owner_sid, owner_user, description, trust_tier, created_at) \
+             VALUES ('id2', '0951', '1666', 'SN001', NULL, NULL, '', 'read_only', '2026-01-02')",
             [],
         );
         assert!(
             result.is_err(),
-            "duplicate (vid, pid, serial) must fail UNIQUE constraint"
+            "duplicate (vid, pid, serial) with NULL owner_sid must fail UNIQUE constraint"
         );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("UNIQUE constraint failed"),
             "error must mention UNIQUE constraint; got: {err_msg}"
         );
+    }
+
+    #[test]
+    fn test_device_registry_per_user_unique_constraint() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        // Machine-wide entry (NULL owner_sid) succeeds.
+        conn.execute(
+            "INSERT INTO device_registry (id, vid, pid, serial, owner_sid, owner_user, description, trust_tier, created_at) \
+             VALUES ('id1', '0951', '1666', 'SN001', NULL, NULL, '', 'blocked', '2026-01-01')",
+            [],
+        )
+        .expect("machine-wide insert must succeed");
+
+        // Per-user entry for same device with different SID succeeds (different UNIQUE key).
+        conn.execute(
+            "INSERT INTO device_registry (id, vid, pid, serial, owner_sid, owner_user, description, trust_tier, created_at) \
+             VALUES ('id2', '0951', '1666', 'SN001', 'S-1-5-21-1', 'alice', '', 'read_only', '2026-01-02')",
+            [],
+        )
+        .expect("per-user insert with different SID must succeed");
+
+        // Duplicate per-user SID for same device fails.
+        let result = conn.execute(
+            "INSERT INTO device_registry (id, vid, pid, serial, owner_sid, owner_user, description, trust_tier, created_at) \
+             VALUES ('id3', '0951', '1666', 'SN001', 'S-1-5-21-1', 'alice2', '', 'full_access', '2026-01-03')",
+            [],
+        );
+        assert!(
+            result.is_err(),
+            "duplicate (vid, pid, serial, owner_sid) must fail UNIQUE constraint"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("UNIQUE constraint failed"),
+            "error must mention UNIQUE constraint; got: {err_msg}"
+        );
+
+        // Different SID for same device succeeds.
+        conn.execute(
+            "INSERT INTO device_registry (id, vid, pid, serial, owner_sid, owner_user, description, trust_tier, created_at) \
+             VALUES ('id4', '0951', '1666', 'SN001', 'S-1-5-21-2', 'bob', '', 'full_access', '2026-01-04')",
+            [],
+        )
+        .expect("per-user insert with different SID must succeed");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM device_registry", [], |r| r.get(0))
+            .expect("count rows");
+        assert_eq!(count, 3, "expected 3 rows: 1 machine-wide + 2 per-user");
     }
 
     #[test]
@@ -650,8 +724,15 @@ mod tests {
             .filter_map(Result::ok)
             .collect();
 
-        for col in &["id", "agent_id", "instance_id", "bus_type", "encryption_status", "model",
-                     "registered_at"] {
+        for col in &[
+            "id",
+            "agent_id",
+            "instance_id",
+            "bus_type",
+            "encryption_status",
+            "model",
+            "registered_at",
+        ] {
             assert!(
                 columns.contains(&col.to_string()),
                 "disk_registry must have column '{col}'; found {columns:?}"
@@ -726,11 +807,7 @@ mod tests {
                 "INSERT INTO disk_registry \
                  (id, agent_id, instance_id, bus_type, encryption_status, model, registered_at) \
                  VALUES (?1, 'agent-A', ?2, 'usb', ?3, '', '2026-01-01T00:00:00Z')",
-                rusqlite::params![
-                    format!("id{i}"),
-                    format!("disk-{i}"),
-                    status,
-                ],
+                rusqlite::params![format!("id{i}"), format!("disk-{i}"), status,],
             )
             .unwrap_or_else(|e| {
                 panic!("INSERT with encryption_status='{status}' must succeed; got: {e}");
@@ -740,6 +817,9 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM disk_registry", [], |r| r.get(0))
             .expect("count rows");
-        assert_eq!(count, 4, "all four valid statuses must insert without error");
+        assert_eq!(
+            count, 4,
+            "all four valid statuses must insert without error"
+        );
     }
 }
