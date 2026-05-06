@@ -65,6 +65,8 @@ windows = { version = "0.62", features = [
     # detection/usb.rs Plan 02: SetupDiGetClassDevsW, SetupDiEnumDeviceInfo,
     # SetupDiGetDeviceRegistryPropertyW for device friendly-name lookup.
     "Win32_Devices_DeviceAndDriverInstallation",
+    # Phase 38.2: CM_Get_Device_Interface_PropertyW + DEVPKEY_Device_InstanceId.
+    "Win32_Devices_Properties",
     # detection/encryption.rs: CoSetProxyBlanket (PktPrivacy auth upgrade).
     # wmi 0.14 uses windows 0.59 internally; we call CoSetProxyBlanket via raw
     # FFI to upgrade from CALL-level (wmi default) to PktPrivacy (D-02 requirement).
