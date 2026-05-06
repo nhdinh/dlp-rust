@@ -1,5 +1,25 @@
 # Milestones
 
+## v0.7.1 Operational Hardening (Shipped: 2026-05-06)
+
+**Phases completed:** 6 phases, 13 plans, 23 tasks
+
+**Key accomplishments:**
+
+- Volume DACL deny-all secondary enforcement layer wired into Blocked-tier USB device handling, providing defense-in-depth if PnP disable fails or is bypassed
+- USB identity reconciliation heuristic fixes VOLUME-before-USB_DEVICE race and startup enforcement gap so Blocked-tier USB devices are enforced on ALL plug-in timing paths
+- Rewrote `find_drive_letter_for_instance_id` with kernel-authoritative volume-to-disk mapping, replacing the buggy heuristic that ignored `instance_id` and returned the first unassigned fixed drive letter
+- 500ms deferred `GUID_DEVINTERFACE_DISK` arrival processing via tokio runtime handle bridge, so volume manager mounts before drive letter lookup
+- Boot drive letter normalization with belt-and-suspenders case-insensitive comparison across dlp-common and dlp-agent
+- One-liner:
+- Agent-side per-user USB device registry lookup with most-restrictive tier merge and audit event owner identity enrichment
+- One-liner:
+- One-liner:
+- One-liner:
+- One-liner:
+
+---
+
 ## v0.7.0 Disk Exfiltration Prevention (Shipped: 2026-05-06)
 
 **Phases completed:** 27 phases, 81 plans, 86 tasks
