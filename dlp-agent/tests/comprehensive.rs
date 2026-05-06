@@ -362,6 +362,7 @@ mod config_edge_cases {
             machine_name: None,
             encryption: Default::default(),
             disk_allowlist: Vec::new(),
+            poll_interval_secs: None,
         };
         let paths = config.resolve_watch_paths();
         assert_eq!(paths.len(), 2);
@@ -384,6 +385,7 @@ mod config_edge_cases {
             machine_name: None,
             encryption: Default::default(),
             disk_allowlist: Vec::new(),
+            poll_interval_secs: None,
         };
         let b = a.clone();
         assert_eq!(a, b);
