@@ -300,6 +300,12 @@ pub struct DeviceRegistryRequest {
     pub pid: String,
     /// Device serial number, or `"(none)"` for devices without one.
     pub serial: String,
+    /// Windows Security Identifier of the owning user. `None` creates a machine-wide entry.
+    #[serde(default)]
+    pub owner_sid: Option<String>,
+    /// Human-readable username for display. `None` for machine-wide entries.
+    #[serde(default)]
+    pub owner_user: Option<String>,
     /// Human-readable device description. Optional; defaults to empty string.
     #[serde(default)]
     pub description: String,
@@ -320,6 +326,10 @@ pub struct DeviceRegistryResponse {
     pub pid: String,
     /// Device serial number.
     pub serial: String,
+    /// Windows Security Identifier of the owning user. `None` means machine-wide entry.
+    pub owner_sid: Option<String>,
+    /// Human-readable username for display. `None` means machine-wide entry.
+    pub owner_user: Option<String>,
     /// Human-readable device description (empty string if not provided).
     pub description: String,
     /// Trust tier: `"blocked"`, `"read_only"`, or `"full_access"`.
@@ -335,6 +345,8 @@ impl From<repositories::DeviceRegistryRow> for DeviceRegistryResponse {
             vid: row.vid,
             pid: row.pid,
             serial: row.serial,
+            owner_sid: row.owner_sid,
+            owner_user: row.owner_user,
             description: row.description,
             trust_tier: row.trust_tier,
             created_at: row.created_at,
@@ -411,6 +423,8 @@ pub struct DiskRegistryFilter {
 ///
 /// Admin-internal fields (`id`, `description`, `trust_tier`, `created_at`) are omitted
 /// to prevent unauthenticated callers from enumerating privileged device tiers (CR-01).
+/// Owner fields are included so agents can distinguish per-user from machine-wide entries
+/// (Phase 38.4, D-11 accepted: owner SIDs are not secrets).
 #[derive(Debug, Serialize)]
 struct PublicDeviceEntry {
     /// USB Vendor ID hex string.
@@ -419,6 +433,10 @@ struct PublicDeviceEntry {
     pub pid: String,
     /// Device serial number.
     pub serial: String,
+    /// Windows SID of the owning user. `None` means machine-wide entry.
+    pub owner_sid: Option<String>,
+    /// Human-readable username. `None` means machine-wide entry.
+    pub owner_user: Option<String>,
 }
 
 impl From<repositories::DeviceRegistryRow> for PublicDeviceEntry {
@@ -427,6 +445,8 @@ impl From<repositories::DeviceRegistryRow> for PublicDeviceEntry {
             vid: row.vid,
             pid: row.pid,
             serial: row.serial,
+            owner_sid: row.owner_sid,
+            owner_user: row.owner_user,
         }
     }
 }
@@ -1721,6 +1741,14 @@ async fn list_device_registry_handler(
     Ok(Json(response))
 }
 
+/// Optional query-string filter for `GET /admin/device-registry/full` (D-06).
+#[derive(Debug, Default, Deserialize)]
+pub struct DeviceRegistryFilter {
+    /// When set, restricts results to entries for the given SID plus machine-wide entries.
+    #[serde(default)]
+    pub owner_sid: Option<String>,
+}
+
 /// Returns the full device registry list including `trust_tier` and `description`.
 ///
 /// `GET /admin/device-registry/full` — requires JWT Bearer auth.
@@ -1728,12 +1756,26 @@ async fn list_device_registry_handler(
 /// Used by the admin TUI to display the complete device list.  Separated from
 /// the unauthenticated `GET /admin/device-registry` endpoint which omits
 /// `trust_tier` to prevent unauthenticated enumeration of privileged devices.
+///
+/// Optional `?owner_sid={sid}` query param returns entries matching that SID
+/// plus machine-wide entries (per D-06).
 async fn list_device_registry_full_handler(
     State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<Vec<DeviceRegistryResponse>>, AppError> {
+    // Extract query params.
+    let filter = axum::extract::Query::<DeviceRegistryFilter>::from_request(req, &state)
+        .await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
     let pool = Arc::clone(&state.pool);
+    let owner_sid_filter = filter.owner_sid.clone();
     let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        repositories::DeviceRegistryRepository::list_all(&pool).map_err(AppError::Database)
+        repositories::DeviceRegistryRepository::list_all_filtered(
+            &pool,
+            owner_sid_filter.as_deref(),
+        )
+        .map_err(AppError::Database)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -2066,6 +2108,8 @@ async fn upsert_device_registry_handler(
         vid: body.vid.clone(),
         pid: body.pid.clone(),
         serial: body.serial.clone(),
+        owner_sid: body.owner_sid.clone(),
+        owner_user: body.owner_user.clone(),
         description: body.description.clone(),
         trust_tier: body.trust_tier.clone(),
         created_at,
@@ -2075,8 +2119,9 @@ async fn upsert_device_registry_handler(
     let vid = body.vid.clone();
     let pid = body.pid.clone();
     let serial = body.serial.clone();
+    let owner_sid = body.owner_sid.clone();
 
-    // Upsert, then re-read by (vid, pid, serial) to get the persisted UUID.
+    // Upsert, then re-read by (vid, pid, serial, owner_sid) to get the persisted UUID.
     // On conflict the original UUID is preserved — re-reading is necessary.
     let persisted = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         {
@@ -2090,8 +2135,10 @@ async fn upsert_device_registry_handler(
                 .map_err(AppError::Database)?;
             uow.commit().map_err(AppError::Database)?;
         } // conn returned to pool here
-        repositories::DeviceRegistryRepository::get_by_device_key(&pool, &vid, &pid, &serial)
-            .map_err(AppError::Database)
+        repositories::DeviceRegistryRepository::get_by_device_key_and_owner(
+            &pool, &vid, &pid, &serial, owner_sid.as_deref(),
+        )
+        .map_err(AppError::Database)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -4426,7 +4473,7 @@ mod tests {
         );
     }
 
-    /// DeviceRegistryResponse serializes to JSON with all 7 expected fields.
+    /// DeviceRegistryResponse serializes to JSON with all expected fields.
     #[test]
     fn test_device_registry_response_serializes_all_fields() {
         let resp = DeviceRegistryResponse {
@@ -4434,6 +4481,8 @@ mod tests {
             vid: "0951".to_string(),
             pid: "1666".to_string(),
             serial: "SN001".to_string(),
+            owner_sid: Some("S-1-5-21-1".to_string()),
+            owner_user: Some("alice".to_string()),
             description: "Kingston DataTraveler".to_string(),
             trust_tier: "read_only".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -4443,6 +4492,8 @@ mod tests {
         assert!(json.contains(r#""vid":"0951""#), "vid field missing");
         assert!(json.contains(r#""pid":"1666""#), "pid field missing");
         assert!(json.contains(r#""serial":"SN001""#), "serial field missing");
+        assert!(json.contains(r#""owner_sid":"S-1-5-21-1""#), "owner_sid field missing");
+        assert!(json.contains(r#""owner_user":"alice""#), "owner_user field missing");
         assert!(
             json.contains(r#""description":"Kingston DataTraveler""#),
             "description field missing"
@@ -4464,6 +4515,16 @@ mod tests {
         let req: DeviceRegistryRequest =
             serde_json::from_str(json).expect("deserialize DeviceRegistryRequest");
         assert_eq!(req.trust_tier, "read_only");
+    }
+
+    /// DeviceRegistryRequest without owner_sid/owner_user deserializes with None defaults.
+    #[test]
+    fn test_device_registry_request_owner_fields_default_to_none() {
+        let json = r#"{"vid":"0951","pid":"1666","serial":"SN001","trust_tier":"blocked"}"#;
+        let req: DeviceRegistryRequest =
+            serde_json::from_str(json).expect("deserialize DeviceRegistryRequest");
+        assert_eq!(req.owner_sid, None, "owner_sid must default to None");
+        assert_eq!(req.owner_user, None, "owner_user must default to None");
     }
 
     // ---------------------------------------------------------------------------
