@@ -40,6 +40,11 @@ use windows_service::service_control_handler::{
 /// The Windows Service name registered with the SCM.
 pub const SERVICE_NAME: &str = "dlp-agent";
 
+/// Maximum time allowed for graceful shutdown (OP-04).
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+/// Maximum time to wait for in-flight disk enumeration to cancel (OP-04).
+const DISK_ENUM_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Global SCM status handle — set once after `register()` returns.
 ///
 /// The control handler callback cannot capture the status handle (chicken-and-egg:
@@ -772,11 +777,13 @@ async fn run_loop(
     // This runs after USB setup so both detectors are available for Phase 36.
     let disk_enumerator = Arc::new(crate::detection::DiskEnumerator::new());
     crate::detection::disk::set_disk_enumerator(Arc::clone(&disk_enumerator));
-    crate::detection::disk::spawn_disk_enumeration_task(
+    let (disk_shutdown_tx, disk_shutdown_rx) = tokio::sync::watch::channel(false);
+    let disk_enum_handle = crate::detection::disk::spawn_disk_enumeration_task(
         tokio::runtime::Handle::current(),
         audit_ctx.clone(),
         Arc::clone(&disk_config_arc),
         config_path.clone(),
+        disk_shutdown_rx,
     );
     info!("disk enumeration task spawned");
 
@@ -898,79 +905,152 @@ async fn run_loop(
         }
     }
 
-    // ── Graceful shutdown ──────────────────────────────────────────────────
-    crate::password_stop::debug_log("run_loop: starting graceful shutdown");
-    info!(
-        service_name = SERVICE_NAME,
-        "shutting down enforcement subsystems"
-    );
+    // ── Graceful shutdown with timeout (OP-04) ────────────────────────────
+    let shutdown_result = tokio::time::timeout(SHUTDOWN_TIMEOUT, async {
+        crate::password_stop::debug_log("run_loop: starting graceful shutdown");
+        info!(
+            service_name = SERVICE_NAME,
+            "shutting down enforcement subsystems"
+        );
 
-    // Stop the file monitor first so no new events arrive.
-    crate::password_stop::debug_log("run_loop: stopping file monitor");
-    file_monitor_for_shutdown.stop();
-    let _ = file_handle.await;
-    crate::password_stop::debug_log("run_loop: file monitor stopped");
+        // Stop the file monitor first so no new events arrive.
+        crate::password_stop::debug_log("run_loop: stopping file monitor");
+        file_monitor_for_shutdown.stop();
+        let _ = file_handle.await;
+        crate::password_stop::debug_log("run_loop: file monitor stopped");
 
-    // Signal the event loop to drain and exit.
-    drop(event_loop_handle);
-    crate::password_stop::debug_log("run_loop: event loop dropped");
+        // Signal the event loop to drain and exit.
+        drop(event_loop_handle);
+        crate::password_stop::debug_log("run_loop: event loop dropped");
 
-    // Stop the heartbeat loop.
-    let _ = shutdown_tx.send(true);
-    let _ = _heartbeat_handle.await;
-    crate::password_stop::debug_log("run_loop: heartbeat stopped");
+        // Stop the heartbeat loop.
+        let _ = shutdown_tx.send(true);
+        let _ = _heartbeat_handle.await;
+        crate::password_stop::debug_log("run_loop: heartbeat stopped");
 
-    // Stop the Pipe 1 heartbeat.
-    let _ = pipe1_shutdown_tx.send(true);
-    let _ = _pipe1_hb_handle.await;
-    crate::password_stop::debug_log("run_loop: Pipe 1 heartbeat stopped");
+        // Stop the Pipe 1 heartbeat.
+        let _ = pipe1_shutdown_tx.send(true);
+        let _ = _pipe1_hb_handle.await;
+        crate::password_stop::debug_log("run_loop: Pipe 1 heartbeat stopped");
 
-    // Stop the config poll loop.
-    let _ = config_shutdown_tx.send(true);
-    if let Some(h) = _config_poll_handle {
-        let _ = h.await;
+        // Stop the config poll loop.
+        let _ = config_shutdown_tx.send(true);
+        if let Some(h) = _config_poll_handle {
+            let _ = h.await;
+        }
+        crate::password_stop::debug_log("run_loop: config poll stopped");
+
+        // Stop the device registry poll task.
+        let _ = registry_shutdown_tx.send(true);
+        if let Some(h) = _registry_poll_handle {
+            let _ = h.await;
+        }
+        crate::password_stop::debug_log("run_loop: device registry poll stopped");
+
+        // Stop the managed origins poll task.
+        let _ = origins_shutdown_tx.send(true);
+        if let Some(h) = _origins_poll_handle {
+            let _ = h.await;
+        }
+        crate::password_stop::debug_log("run_loop: managed origins poll stopped");
+
+        // Cancel in-flight disk enumeration and wait up to 5s (OP-04).
+        let _ = disk_shutdown_tx.send(true);
+        match tokio::time::timeout(DISK_ENUM_CANCEL_TIMEOUT, disk_enum_handle).await {
+            Ok(Ok(())) => debug!("disk enumeration task shut down cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "disk enumeration task panicked"),
+            Err(_) => warn!("disk enumeration task did not shut down within 5s"),
+        }
+        crate::password_stop::debug_log("run_loop: disk enumeration stopped");
+
+        // Unregister device watcher (Phase 36 D-12 replacement for register_usb_notifications).
+        // USB handlers complete naturally via the device watcher thread join.
+        if let Some((hwnd, thread)) = device_watcher_cleanup {
+            crate::password_stop::debug_log("run_loop: unregistering device watcher");
+            crate::detection::unregister_device_watcher(hwnd, thread);
+            crate::password_stop::debug_log("run_loop: device watcher unregistered");
+        }
+
+        // Restore volume DACL modifications for any USB drives (OP-04).
+        // Iterate over the USB detector's known device identities and restore
+        // original DACLs so the system is not left in a permanently denied state.
+        #[cfg(windows)]
+        if let Some(controller) = crate::detection::usb::get_device_controller() {
+            let letters: Vec<char> = detector_arc
+                .device_identities
+                .read()
+                .keys()
+                .copied()
+                .collect();
+            for letter in letters {
+                if let Err(e) = controller.restore_volume_acl(letter) {
+                    debug!(
+                        drive = %letter,
+                        error = %e,
+                        "restore_volume_acl on shutdown (may be unmodified)"
+                    );
+                } else {
+                    info!(drive = %letter, "restored volume ACL on shutdown");
+                }
+            }
+        }
+
+        // Re-enable PnP-disabled USB devices on shutdown (best-effort, OP-04).
+        // Prevents devices from remaining disabled after agent restart.
+        #[cfg(windows)]
+        if let Some(controller) = crate::detection::usb::get_device_controller() {
+            let identities: Vec<(char, dlp_common::DeviceIdentity)> = detector_arc
+                .device_identities
+                .read()
+                .iter()
+                .map(|(k, v)| (*k, v.clone()))
+                .collect();
+            for (letter, identity) in identities {
+                // Empty dbcc_name as fallback; enable_usb_device resolves instance_id
+                // from the identity fields when dbcc_name is empty.
+                if let Err(e) = controller.enable_usb_device("", &identity) {
+                    debug!(
+                        drive = %letter,
+                        error = %e,
+                        "enable_usb_device on shutdown (may not be disabled)"
+                    );
+                }
+            }
+        }
+
+        // Kill all UI processes spawned by the session monitor.  Must happen before
+        // the process exits so users are not left with orphaned dlp-user-ui windows.
+        crate::password_stop::debug_log("run_loop: killing UI processes");
+        crate::ui_spawner::kill_all();
+        crate::password_stop::debug_log("run_loop: UI processes killed");
+
+        // Stop the audit buffer flush task (final flush runs inside).
+        let _ = audit_shutdown_tx.send(true);
+        if let Some(h) = _audit_flush_handle {
+            let _ = h.await;
+        }
+        crate::password_stop::debug_log("run_loop: audit buffer stopped");
+
+        crate::password_stop::debug_log("run_loop: shutdown complete");
+        info!(
+            service_name = SERVICE_NAME,
+            "enforcement subsystems stopped"
+        );
+    }).await;
+
+    match shutdown_result {
+        Ok(()) => {
+            info!(service_name = SERVICE_NAME, "graceful shutdown complete");
+        }
+        Err(_) => {
+            tracing::error!(
+                timeout_secs = SHUTDOWN_TIMEOUT.as_secs(),
+                service_name = SERVICE_NAME,
+                "graceful shutdown exceeded timeout -- force-terminating"
+            );
+        }
     }
-    crate::password_stop::debug_log("run_loop: config poll stopped");
 
-    // Stop the device registry poll task.
-    let _ = registry_shutdown_tx.send(true);
-    if let Some(h) = _registry_poll_handle {
-        let _ = h.await;
-    }
-    crate::password_stop::debug_log("run_loop: device registry poll stopped");
-
-    // Stop the managed origins poll task.
-    let _ = origins_shutdown_tx.send(true);
-    if let Some(h) = _origins_poll_handle {
-        let _ = h.await;
-    }
-    crate::password_stop::debug_log("run_loop: managed origins poll stopped");
-
-    // Unregister device watcher (Phase 36 D-12 replacement for register_usb_notifications).
-    if let Some((hwnd, thread)) = device_watcher_cleanup {
-        crate::password_stop::debug_log("run_loop: unregistering device watcher");
-        crate::detection::unregister_device_watcher(hwnd, thread);
-        crate::password_stop::debug_log("run_loop: device watcher unregistered");
-    }
-
-    // Kill all UI processes spawned by the session monitor.  Must happen before
-    // the process exits so users are not left with orphaned dlp-user-ui windows.
-    crate::password_stop::debug_log("run_loop: killing UI processes");
-    crate::ui_spawner::kill_all();
-    crate::password_stop::debug_log("run_loop: UI processes killed");
-
-    // Stop the audit buffer flush task (final flush runs inside).
-    let _ = audit_shutdown_tx.send(true);
-    if let Some(h) = _audit_flush_handle {
-        let _ = h.await;
-    }
-    crate::password_stop::debug_log("run_loop: audit buffer stopped");
-
-    crate::password_stop::debug_log("run_loop: shutdown complete");
-    info!(
-        service_name = SERVICE_NAME,
-        "enforcement subsystems stopped"
-    );
     Ok(())
 }
 
