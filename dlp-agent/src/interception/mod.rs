@@ -105,7 +105,8 @@ pub async fn run_event_loop(
                     ctx.agent_id.clone(),
                     ctx.session_id,
                 )
-                .with_access_context(AuditAccessContext::Local);
+                .with_access_context(AuditAccessContext::Local)
+                .with_device_identity(Some(usb_result.identity.clone()));
                 // WR-03: no policy matched this enforcement — leave policy_id as None
                 // so SIEM rules that test `policy_id IS NOT NULL` are not misled.
                 // Set only policy_name to convey the enforcement reason.
