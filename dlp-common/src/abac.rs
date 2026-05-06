@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// The action the user is attempting to perform on a resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[allow(non_camel_case_types)]
 pub enum Action {
     /// Read a file.
     #[default]
@@ -34,6 +35,8 @@ pub enum Action {
     DiskRegistryAdd,
     /// Admin removed a disk from the server-side disk allowlist (Phase 37, AUDIT-03).
     DiskRegistryRemove,
+    /// Drag-and-drop operation (Phase 40, APP-08).
+    DRAG_DROP,
 }
 
 /// The access context describes how the file operation originated.

@@ -122,6 +122,22 @@ pub enum Pipe3UiMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         destination_application: Option<AppIdentity>,
     },
+    /// Drag-and-drop operation blocked or alerted (Phase 40).
+    DragDropAlert {
+        /// Session ID where the drop occurred.
+        session_id: u32,
+        /// Classification tier of the dragged content.
+        classification: String,
+        /// Identity of the source application.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_application: Option<AppIdentity>,
+        /// Identity of the destination application.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination_application: Option<AppIdentity>,
+        /// Truncated preview of the dragged data.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_preview: Option<String>,
+    },
 }
 
 #[cfg(test)]
