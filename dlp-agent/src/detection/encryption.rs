@@ -470,10 +470,9 @@ struct EncryptableVolume {
 /// Returns `EncryptionError::WmiConnectionFailed` for other failures.
 #[cfg(windows)]
 fn open_bitlocker_connection() -> Result<wmi::WMIConnection, EncryptionError> {
-    let conn = wmi::WMIConnection::with_namespace_path(
-        r"ROOT\CIMV2\Security\MicrosoftVolumeEncryption",
-    )
-    .map_err(classify_wmi_connection_error)?;
+    let conn =
+        wmi::WMIConnection::with_namespace_path(r"ROOT\CIMV2\Security\MicrosoftVolumeEncryption")
+            .map_err(classify_wmi_connection_error)?;
     conn.set_proxy_blanket(wmi::AuthLevel::PktPrivacy)
         .map_err(|e| EncryptionError::WmiConnectionFailed(e.to_string()))?;
     Ok(conn)
@@ -495,7 +494,10 @@ fn classify_wmi_connection_error(e: wmi::WMIError) -> EncryptionError {
             let msg = other.to_string();
             let lc = msg.to_ascii_lowercase();
             // Fallback heuristic for any other error that mentions namespace.
-            if lc.contains("namespace") || lc.contains("0x8004100e") || lc.contains("invalid namespace") {
+            if lc.contains("namespace")
+                || lc.contains("0x8004100e")
+                || lc.contains("invalid namespace")
+            {
                 EncryptionError::WmiNamespaceUnavailable(msg)
             } else {
                 EncryptionError::WmiConnectionFailed(msg)
