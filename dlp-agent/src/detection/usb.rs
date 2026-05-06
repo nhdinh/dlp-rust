@@ -575,6 +575,15 @@ fn apply_tier_enforcement(
     match tier {
         UsbTrustTier::Blocked => {
             // Layer 1: PnP disable (primary enforcement).
+            tracing::debug!(
+                vid = %identity.vid,
+                pid = %identity.pid,
+                serial = %identity.serial,
+                drive = %letter,
+                tier = "Blocked",
+                action = "PnP disable",
+                "applying tier enforcement"
+            );
             let pnp_result = controller.disable_usb_device(dbcc_name, identity);
             let pnp_ok = pnp_result.is_ok();
             if let Err(ref e) = pnp_result {
@@ -593,11 +602,22 @@ fn apply_tier_enforcement(
             }
 
             // Layer 2: DACL deny-all (defense-in-depth fallback — always attempt).
+            tracing::debug!(
+                drive = %letter,
+                action = "DACL deny-all",
+                "applying tier enforcement defense-in-depth"
+            );
             let dacl_result = controller.set_volume_deny_all(letter);
             let dacl_ok = dacl_result.is_ok();
             if let Err(ref e) = dacl_result {
                 error!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
                     drive = %letter,
+                    tier = "Blocked",
+                    owner_sid = ?owner_sid,
+                    owner_user = ?owner_user,
                     dacl_result = "err",
                     error = %e,
                     "DACL deny-all failed for blocked USB device"
@@ -655,6 +675,11 @@ fn apply_tier_enforcement(
             }
         }
         UsbTrustTier::ReadOnly => {
+            tracing::debug!(
+                drive = %letter,
+                action = "DACL read-only",
+                "applying tier enforcement"
+            );
             let result = controller.set_volume_readonly(letter);
             match result {
                 Ok(()) => {
@@ -693,6 +718,7 @@ fn apply_tier_enforcement(
                 serial = %identity.serial,
                 drive = %letter,
                 tier = "FullAccess",
+                action = "none",
                 owner_sid = ?owner_sid,
                 owner_user = ?owner_user,
                 "USB device has FullAccess — no enforcement action"
