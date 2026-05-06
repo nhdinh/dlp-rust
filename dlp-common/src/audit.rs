@@ -158,12 +158,13 @@ pub struct AuditEvent {
     /// Populated via `GetNamedSecurityInfoW` + `ConvertSidToStringSidW`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_owner: Option<String>,
-    /// Resolved identity of the application that initiated the operation
-    /// (populated by Phase 25 for clipboard events).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Resolved identity of the application that initiated the operation.
+    /// Always present — `None` is serialized as `null` and replaced with
+    /// the `AGENT-UNKNOWN` sentinel at emission time (AUDIT-05, Phase 38.3).
     pub source_application: Option<AppIdentity>,
     /// Resolved identity of the destination application (e.g. the paste target).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Always present — `None` is serialized as `null` and replaced with
+    /// the `AGENT-UNKNOWN` sentinel at emission time (AUDIT-05, Phase 38.3).
     pub destination_application: Option<AppIdentity>,
     /// USB device identity for block events involving removable storage
     /// (populated by Phase 26/27 on USB blocks).
@@ -483,9 +484,10 @@ mod tests {
         assert!(!json.contains("\"application_path\":null"));
         assert!(!json.contains("\"application_hash\":null"));
         assert!(!json.contains("\"resource_owner\":null"));
-        // Phase 22 new fields must also be skipped when None (D-11, D-12, D-13).
-        assert!(!json.contains("\"source_application\":null"));
-        assert!(!json.contains("\"destination_application\":null"));
+        // source_application and destination_application are ALWAYS serialized
+        // (AUDIT-05, Phase 38.3) — null when not populated.
+        assert!(json.contains("\"source_application\":null"));
+        assert!(json.contains("\"destination_application\":null"));
         assert!(!json.contains("\"device_identity\":null"));
         // Phase 29 new fields must also be skipped when None.
         assert!(!json.contains("\"source_origin\":null"));
@@ -588,7 +590,8 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("source_application"));
         assert!(json.contains("device_identity"));
-        assert!(!json.contains("destination_application"));
+        // destination_application is always serialized (AUDIT-05, Phase 38.3).
+        assert!(json.contains("\"destination_application\":null"));
         let rt: AuditEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(
             rt.source_application.as_ref().map(|a| a.publisher.as_str()),

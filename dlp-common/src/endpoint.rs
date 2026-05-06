@@ -100,6 +100,19 @@ pub struct AppIdentity {
     pub signature_state: SignatureState,
 }
 
+/// Sentinel value used when the application identity cannot be resolved.
+///
+/// Guarantees non-null `source_application` / `destination_application` fields
+/// in `AuditEvent` JSON by replacing `None` at emission time (AUDIT-05, Phase 38.3).
+pub fn agent_unknown_app() -> AppIdentity {
+    AppIdentity {
+        image_path: "AGENT-UNKNOWN".to_string(),
+        publisher: "AGENT-UNKNOWN".to_string(),
+        trust_tier: AppTrustTier::Unknown,
+        signature_state: SignatureState::Unknown,
+    }
+}
+
 /// Captured identity of a USB device.
 ///
 /// Populated by Phase 23's `SetupDiGetClassDevsW` / `SetupDiGetDeviceInstanceIdW`
@@ -233,6 +246,15 @@ mod tests {
         assert_eq!(parsed.publisher, "");
         assert_eq!(parsed.trust_tier, AppTrustTier::Unknown);
         assert_eq!(parsed.signature_state, SignatureState::Unknown);
+    }
+
+    #[test]
+    fn test_agent_unknown_app_fields() {
+        let app = agent_unknown_app();
+        assert_eq!(app.image_path, "AGENT-UNKNOWN");
+        assert_eq!(app.publisher, "AGENT-UNKNOWN");
+        assert_eq!(app.trust_tier, AppTrustTier::Unknown);
+        assert_eq!(app.signature_state, SignatureState::Unknown);
     }
 
     #[test]
