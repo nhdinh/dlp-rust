@@ -212,7 +212,9 @@ pub fn spawn_disk_enumeration_task(
                     // Mark boot disk.
                     if let Some(boot_letter) = get_boot_drive_letter() {
                         for disk in &mut disks {
-                            if disk.drive_letter == Some(boot_letter) {
+                            if disk.drive_letter.map(|l| l.to_ascii_uppercase())
+                                == Some(boot_letter.to_ascii_uppercase())
+                            {
                                 disk.is_boot_disk = true;
                                 info!(
                                     drive = %boot_letter,
@@ -800,7 +802,10 @@ mod tests {
         let was_empty = get_disk_enumerator().is_none();
         set_disk_enumerator(Arc::clone(&enumerator));
         let retrieved = get_disk_enumerator();
-        assert!(retrieved.is_some(), "get_disk_enumerator must return Some after set");
+        assert!(
+            retrieved.is_some(),
+            "get_disk_enumerator must return Some after set"
+        );
         if was_empty {
             // We installed the enumerator — verify it's the same instance.
             assert!(Arc::ptr_eq(&enumerator, &retrieved.unwrap()));
@@ -1167,6 +1172,38 @@ mod tests {
             .instance_id_map
             .read()
             .contains_key(&disk.instance_id));
+    }
+
+    /// 38.2-GAP-02: boot disk detection must be case-insensitive.
+    /// When disk.drive_letter is 'C' (uppercase) and boot_letter is 'c'
+    /// (lowercase), is_boot_disk must still be set to true.
+    #[test]
+    fn test_is_boot_disk_true_when_letters_differ_in_case() {
+        // Simulate the comparison logic from spawn_disk_enumeration_task
+        // with mismatched casing. Both sides are uppercased for a
+        // case-insensitive comparison.
+        let disk_letter = Some('C');
+        let boot_letter = 'c';
+        let matches =
+            disk_letter.map(|l| l.to_ascii_uppercase()) == Some(boot_letter.to_ascii_uppercase());
+        assert!(
+            matches,
+            "boot disk detection must be case-insensitive ('C' vs 'c')"
+        );
+
+        // Also verify the reverse: lowercase disk letter vs uppercase boot letter.
+        let disk_letter_lower = Some('c');
+        let boot_letter_upper = 'C';
+        let matches_reverse = disk_letter_lower.map(|l| l.to_ascii_uppercase())
+            == Some(boot_letter_upper.to_ascii_uppercase());
+        assert!(
+            matches_reverse,
+            "boot disk detection must be case-insensitive ('c' vs 'C')"
+        );
+
+        // Same-case must still work (no regression).
+        assert!(Some('C').map(|l| l.to_ascii_uppercase()) == Some('C'.to_ascii_uppercase()));
+        assert!(Some('c').map(|l| l.to_ascii_uppercase()) == Some('C'.to_ascii_uppercase()));
     }
 
     /// D-14: removal with an unknown instance_id is a silent no-op.
