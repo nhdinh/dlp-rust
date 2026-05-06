@@ -436,6 +436,13 @@ pub fn set_device_controller(
     let _ = DEVICE_CONTROLLER.set(controller);
 }
 
+/// Returns the global device controller reference, if set.
+#[cfg(windows)]
+#[must_use]
+pub fn get_device_controller() -> Option<std::sync::Arc<crate::device_controller::DeviceController>> {
+    DEVICE_CONTROLLER.get().cloned()
+}
+
 /// Stores the channel sender used to notify `InterceptionEngine` of newly-arrived
 /// USB drive roots.
 ///

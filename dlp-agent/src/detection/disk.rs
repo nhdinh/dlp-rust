@@ -152,6 +152,22 @@ pub fn get_disk_enumerator() -> Option<Arc<DiskEnumerator>> {
 /// Pre-loaded TOML entries remain in `instance_id_map` after a final
 /// failure, but the readiness flag is NOT set (D-12).
 ///
+/// Spawns the disk enumeration background task.
+///
+/// The task pre-loads any persisted disk allowlist from the supplied
+/// [`AgentConfig`] (D-11), then enumerates fixed disks with retry logic.
+/// On success, the live enumeration is merged with the TOML snapshot
+/// (live wins for present disks per D-07; disconnected TOML entries are
+/// retained per D-06), the merged list is written back to
+/// `agent_config.disk_allowlist`, and `AgentConfig::save(config_path)`
+/// is called. TOML write failure is non-fatal -- the in-memory state
+/// in `DiskEnumerator` is authoritative.
+///
+/// On final enumeration failure, a high-severity audit event is emitted
+/// and `enumeration_complete` remains `false` (fail-closed per D-04).
+/// Pre-loaded TOML entries remain in `instance_id_map` after a final
+/// failure, but the readiness flag is NOT set (D-12).
+///
 /// # Arguments
 ///
 /// * `runtime_handle` -- tokio runtime `Handle` for spawning sub-tasks
@@ -162,12 +178,14 @@ pub fn get_disk_enumerator() -> Option<Arc<DiskEnumerator>> {
 ///   persist writes `disk_allowlist` and calls `save(config_path)`.
 /// * `config_path` -- destination for `AgentConfig::save()`. Typically
 ///   resolved via `AgentConfig::effective_config_path()`.
+/// * `shutdown_rx` -- watch receiver for cancellation (OP-04).
 pub fn spawn_disk_enumeration_task(
     runtime_handle: tokio::runtime::Handle,
     audit_ctx: crate::audit_emitter::EmitContext,
     agent_config: Arc<parking_lot::RwLock<AgentConfig>>,
     config_path: PathBuf,
-) {
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
     runtime_handle.spawn(async move {
         // --- Pre-load TOML allowlist into DiskEnumerator (D-11) ---
         // Read lock held only long enough to clone the Vec; released before any
@@ -206,6 +224,12 @@ pub fn spawn_disk_enumeration_task(
         let mut last_error: Option<String> = None;
 
         for (attempt, delay) in retry_delays.iter().enumerate() {
+            // OP-04: check for shutdown signal before each attempt.
+            if *shutdown_rx.borrow() {
+                info!("disk enumeration shutting down before attempt {}", attempt + 1);
+                return;
+            }
+
             info!(attempt = attempt + 1, "starting fixed disk enumeration");
             match enumerate_fixed_disks() {
                 Ok(mut disks) => {
@@ -319,7 +343,7 @@ pub fn spawn_disk_enumeration_task(
             "disk enumeration failed after all retries -- failing closed"
         );
         emit_disk_enumeration_failed(&audit_ctx, &error_msg);
-    });
+    })
 }
 
 // ---------------------------------------------------------------------------
