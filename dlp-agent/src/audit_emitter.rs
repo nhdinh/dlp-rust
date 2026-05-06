@@ -169,6 +169,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use dlp_common::AuditEvent;
+use dlp_common::endpoint::agent_unknown_app;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -315,6 +316,14 @@ pub fn emit_audit(ctx: &EmitContext, event: &mut AuditEvent) {
     }
     if event.user_name.is_empty() {
         event.user_name.clone_from(&ctx.user_name);
+    }
+
+    // AUDIT-05: Replace missing app identity with AGENT-UNKNOWN sentinel.
+    if event.source_application.is_none() {
+        event.source_application = Some(agent_unknown_app());
+    }
+    if event.destination_application.is_none() {
+        event.destination_application = Some(agent_unknown_app());
     }
 
     if let Err(e) = EMITTER.emit(event) {

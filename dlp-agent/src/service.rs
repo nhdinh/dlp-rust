@@ -830,10 +830,12 @@ async fn run_loop(
     // `Unknown` silently.
     let encryption_checker = Arc::new(crate::detection::encryption::EncryptionChecker::new());
     crate::detection::encryption::set_encryption_checker(Arc::clone(&encryption_checker));
-    crate::detection::encryption::spawn_encryption_check_task(
+    let (enc_shutdown_tx, enc_shutdown_rx) = tokio::sync::watch::channel(false);
+    let enc_handle = crate::detection::encryption::spawn_encryption_check_task(
         tokio::runtime::Handle::current(),
         audit_ctx.clone(),
         recheck_interval,
+        enc_shutdown_rx,
     );
     info!(
         recheck_interval_secs = recheck_interval.as_secs(),
@@ -962,6 +964,15 @@ async fn run_loop(
             Err(_) => warn!("disk enumeration task did not shut down within 5s"),
         }
         crate::password_stop::debug_log("run_loop: disk enumeration stopped");
+
+        // Cancel encryption check task (OP-04 gap closure).
+        let _ = enc_shutdown_tx.send(true);
+        match tokio::time::timeout(DISK_ENUM_CANCEL_TIMEOUT, enc_handle).await {
+            Ok(Ok(())) => debug!("encryption check task shut down cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "encryption check task panicked"),
+            Err(_) => warn!("encryption check task did not shut down within 5s"),
+        }
+        crate::password_stop::debug_log("run_loop: encryption check stopped");
 
         // Unregister device watcher (Phase 36 D-12 replacement for register_usb_notifications).
         // USB handlers complete naturally via the device watcher thread join.
