@@ -31,13 +31,13 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
 #[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
+use windows::Win32::Storage::FileSystem::IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS;
+#[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FindFirstVolumeW, FindNextVolumeW, FindVolumeClose,
-    GetVolumePathNamesForVolumeNameW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, OPEN_EXISTING,
+    GetVolumePathNamesForVolumeNameW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    OPEN_EXISTING,
 };
-#[cfg(windows)]
-use windows::Win32::Storage::FileSystem::IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS;
 #[cfg(windows)]
 use windows::Win32::System::Ioctl::{
     IOCTL_STORAGE_QUERY_PROPERTY, STORAGE_DEVICE_DESCRIPTOR, STORAGE_DEVICE_NUMBER,
@@ -512,23 +512,14 @@ fn read_instance_id(
     let mut id_buf = [0u16; 256];
     let mut required: u32 = 0;
     let ok = unsafe {
-        SetupDiGetDeviceInstanceIdW(
-            hdev,
-            devinfo,
-            Some(&mut id_buf),
-            Some(&mut required),
-        )
+        SetupDiGetDeviceInstanceIdW(hdev, devinfo, Some(&mut id_buf), Some(&mut required))
     };
     if ok.is_err() {
         return Err(DiskError::SetupDiFailed(
             "SetupDiGetDeviceInstanceIdW failed".to_string(),
         ));
     }
-    let wide: Vec<u16> = id_buf
-        .iter()
-        .copied()
-        .take_while(|&w| w != 0)
-        .collect();
+    let wide: Vec<u16> = id_buf.iter().copied().take_while(|&w| w != 0).collect();
     Ok(String::from_utf16_lossy(&wide))
 }
 
@@ -558,8 +549,7 @@ fn disk_number_for_instance_id(instance_id: &str) -> Result<u32, DiskError> {
             DIGCF_DEVICEINTERFACE | DIGCF_PRESENT,
         )
     };
-    let hdev =
-        hdev.map_err(|e| DiskError::SetupDiFailed(format!("SetupDiGetClassDevsW: {e}")))?;
+    let hdev = hdev.map_err(|e| DiskError::SetupDiFailed(format!("SetupDiGetClassDevsW: {e}")))?;
 
     let mut index: u32 = 0;
     let mut disk_number: Option<u32> = None;
@@ -605,13 +595,11 @@ fn disk_number_for_instance_id(instance_id: &str) -> Result<u32, DiskError> {
                 };
                 if required > 0 {
                     let mut buf = vec![0u8; required as usize];
-                    let detail =
-                        buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
+                    let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
                     // SAFETY: SP_DEVICE_INTERFACE_DETAIL_DATA_W starts with cbSize (u32) then DevicePath.
                     unsafe {
                         (*detail).cbSize =
-                            std::mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>()
-                                as u32;
+                            std::mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
                     }
                     let ok = unsafe {
                         SetupDiGetDeviceInterfaceDetailW(
@@ -667,9 +655,7 @@ fn disk_number_for_instance_id(instance_id: &str) -> Result<u32, DiskError> {
     }
     let _ = unsafe { SetupDiDestroyDeviceInfoList(hdev) };
     disk_number.ok_or_else(|| {
-        DiskError::SetupDiFailed(
-            "could not determine disk number for instance_id".to_string(),
-        )
+        DiskError::SetupDiFailed("could not determine disk number for instance_id".to_string())
     })
 }
 
@@ -735,8 +721,10 @@ fn find_drive_letter_for_disk_number(target_disk: u32) -> Option<char> {
         );
 
         // Open the volume for IOCTL.
-        let wide_vol: Vec<u16> =
-            volume_path.encode_utf16().chain(std::iter::once(0)).collect();
+        let wide_vol: Vec<u16> = volume_path
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let vol_handle = unsafe {
             CreateFileW(
                 windows::core::PCWSTR(wide_vol.as_ptr()),
@@ -1090,11 +1078,7 @@ fn is_usb_bridged_pnp_walk(instance_id: &str) -> Result<bool, DiskError> {
             )));
         }
 
-        let parent_id: Vec<u16> = id_buf
-            .iter()
-            .copied()
-            .take_while(|&w| w != 0)
-            .collect();
+        let parent_id: Vec<u16> = id_buf.iter().copied().take_while(|&w| w != 0).collect();
         let parent_id_str = String::from_utf16_lossy(&parent_id);
 
         if parent_id_str.starts_with("USB\\") {
@@ -1123,7 +1107,11 @@ fn get_boot_drive_letter_windows() -> Option<char> {
     }
     let path: Vec<u16> = buf.iter().copied().take_while(|&w| w != 0).collect();
     let path_str = String::from_utf16_lossy(&path);
-    path_str.chars().next().filter(|c| c.is_ascii_alphabetic())
+    path_str
+        .chars()
+        .next()
+        .filter(|c| c.is_ascii_alphabetic())
+        .map(|c| c.to_ascii_uppercase())
 }
 
 #[cfg(test)]
@@ -1266,6 +1254,22 @@ mod tests {
         let c = letter.unwrap();
         assert!(c.is_ascii_alphabetic());
         assert!(c.is_ascii_uppercase());
+    }
+
+    /// 38.2-GAP-02: get_boot_drive_letter_windows must uppercase the result
+    /// even when GetSystemDirectoryW returns a lowercase drive letter.
+    #[test]
+    #[cfg(windows)]
+    fn test_boot_drive_letter_is_uppercased() {
+        // Call the private Windows function directly; the result must be
+        // uppercase regardless of the registry's system-root casing.
+        let letter = get_boot_drive_letter_windows();
+        assert!(letter.is_some(), "boot drive letter must be discoverable");
+        let c = letter.unwrap();
+        assert!(
+            c.is_ascii_uppercase(),
+            "boot drive letter must be uppercase (got '{c}')"
+        );
     }
 
     #[test]
