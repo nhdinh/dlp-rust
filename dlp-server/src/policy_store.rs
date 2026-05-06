@@ -1900,6 +1900,92 @@ mod tests {
         assert!(!condition_matches(&condition, &ctx));
     }
 
+    // ---- APP-07: UWP app field matching ----
+
+    fn make_uwp_app_identity(
+        aumid: &str,
+        package_family_name: &str,
+    ) -> dlp_common::endpoint::AppIdentity {
+        use dlp_common::endpoint::{AppTrustTier, SignatureState};
+        dlp_common::endpoint::AppIdentity {
+            publisher: "Microsoft Corporation".to_string(),
+            image_path: r"C:\Program Files\WindowsApps\Microsoft.Windows.Photos_8wekyb3d8bbwe\Photos.exe".to_string(),
+            trust_tier: AppTrustTier::Trusted,
+            signature_state: SignatureState::Valid,
+            aumid: Some(aumid.to_string()),
+            package_family_name: Some(package_family_name.to_string()),
+            is_uwp: true,
+        }
+    }
+
+    #[test]
+    fn test_aumid_eq_match() {
+        let uwp_app = make_uwp_app_identity(
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe!App",
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe",
+        );
+        let ctx = make_ctx_with_apps(Classification::T3, Some(uwp_app), None);
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::Aumid,
+            op: "eq".to_string(),
+            value: "Microsoft.Windows.Photos_8wekyb3d8bbwe!App".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
+    }
+
+    #[test]
+    fn test_package_family_name_eq_and_contains_match() {
+        let uwp_app = make_uwp_app_identity(
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe!App",
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe",
+        );
+        let ctx = make_ctx_with_apps(Classification::T3, Some(uwp_app), None);
+
+        // eq match
+        let condition_eq = PolicyCondition::SourceApplication {
+            field: AppField::PackageFamilyName,
+            op: "eq".to_string(),
+            value: "Microsoft.Windows.Photos_8wekyb3d8bbwe".to_string(),
+        };
+        assert!(condition_matches(&condition_eq, &ctx));
+
+        // contains match (prefix substring)
+        let condition_contains = PolicyCondition::SourceApplication {
+            field: AppField::PackageFamilyName,
+            op: "contains".to_string(),
+            value: "Photos_8wekyb3d8bbwe".to_string(),
+        };
+        assert!(condition_matches(&condition_contains, &ctx));
+    }
+
+    #[test]
+    fn test_aumid_none_fails_closed() {
+        // Non-UWP app has aumid=None — must NOT match a UWP-specific condition.
+        let win32_app = make_app_identity("Microsoft", r"C:\Windows\notepad.exe", true);
+        let ctx = make_ctx_with_apps(Classification::T3, Some(win32_app), None);
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::Aumid,
+            op: "eq".to_string(),
+            value: "Microsoft.Windows.Photos_8wekyb3d8bbwe!App".to_string(),
+        };
+        assert!(!condition_matches(&condition, &ctx));
+    }
+
+    #[test]
+    fn test_aumid_ne_match() {
+        let uwp_app = make_uwp_app_identity(
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe!App",
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe",
+        );
+        let ctx = make_ctx_with_apps(Classification::T3, Some(uwp_app), None);
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::Aumid,
+            op: "ne".to_string(),
+            value: "Some.Other.App!App".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
+    }
+
     // ---- Legacy v0.4.0 payload parity (D-25) ----
 
     #[test]
