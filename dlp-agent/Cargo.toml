@@ -68,6 +68,8 @@ windows = { version = "0.62", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     # Phase 38.2: CM_Get_Device_Interface_PropertyW + DEVPKEY_Device_InstanceId.
     "Win32_Devices_Properties",
+    # Phase 40: OLE drag-and-drop interception (IDropTarget, RegisterDragDrop)
+    "Win32_System_Ole",
 ] }
 
 # WMI for BitLocker queries (Phase 34 - Win32_EncryptableVolume in
