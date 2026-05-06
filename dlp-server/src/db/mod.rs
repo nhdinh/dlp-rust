@@ -724,8 +724,15 @@ mod tests {
             .filter_map(Result::ok)
             .collect();
 
-        for col in &["id", "agent_id", "instance_id", "bus_type", "encryption_status", "model",
-                     "registered_at"] {
+        for col in &[
+            "id",
+            "agent_id",
+            "instance_id",
+            "bus_type",
+            "encryption_status",
+            "model",
+            "registered_at",
+        ] {
             assert!(
                 columns.contains(&col.to_string()),
                 "disk_registry must have column '{col}'; found {columns:?}"
@@ -800,11 +807,7 @@ mod tests {
                 "INSERT INTO disk_registry \
                  (id, agent_id, instance_id, bus_type, encryption_status, model, registered_at) \
                  VALUES (?1, 'agent-A', ?2, 'usb', ?3, '', '2026-01-01T00:00:00Z')",
-                rusqlite::params![
-                    format!("id{i}"),
-                    format!("disk-{i}"),
-                    status,
-                ],
+                rusqlite::params![format!("id{i}"), format!("disk-{i}"), status,],
             )
             .unwrap_or_else(|e| {
                 panic!("INSERT with encryption_status='{status}' must succeed; got: {e}");
@@ -814,6 +817,9 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM disk_registry", [], |r| r.get(0))
             .expect("count rows");
-        assert_eq!(count, 4, "all four valid statuses must insert without error");
+        assert_eq!(
+            count, 4,
+            "all four valid statuses must insert without error"
+        );
     }
 }

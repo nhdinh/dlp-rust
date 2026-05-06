@@ -451,10 +451,22 @@ mod tests {
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
             let machine = make_row("uuid-mw", "0951", "1666", "SN001", "read_only");
             let alice = make_row_with_owner(
-                "uuid-a", "0951", "1666", "SN001", "blocked", Some("S-1-5-21-1"), Some("alice"),
+                "uuid-a",
+                "0951",
+                "1666",
+                "SN001",
+                "blocked",
+                Some("S-1-5-21-1"),
+                Some("alice"),
             );
             let bob = make_row_with_owner(
-                "uuid-b", "0951", "1666", "SN001", "full_access", Some("S-1-5-21-2"), Some("bob"),
+                "uuid-b",
+                "0951",
+                "1666",
+                "SN001",
+                "full_access",
+                Some("S-1-5-21-2"),
+                Some("bob"),
             );
             DeviceRegistryRepository::upsert(&uow, &machine).expect("upsert machine-wide");
             DeviceRegistryRepository::upsert(&uow, &alice).expect("upsert alice");
@@ -467,7 +479,10 @@ mod tests {
             .expect("list_all_filtered");
         assert_eq!(rows.len(), 2, "expected 2 rows: alice + machine-wide");
         let sids: Vec<Option<&str>> = rows.iter().map(|r| r.owner_sid.as_deref()).collect();
-        assert!(sids.contains(&Some("S-1-5-21-1")), "alice's entry must be present");
+        assert!(
+            sids.contains(&Some("S-1-5-21-1")),
+            "alice's entry must be present"
+        );
         assert!(sids.contains(&None), "machine-wide entry must be present");
 
         // No filter: all 3 rows.
@@ -484,7 +499,13 @@ mod tests {
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
             let machine = make_row("uuid-mw", "0951", "1666", "SN001", "read_only");
             let alice = make_row_with_owner(
-                "uuid-a", "0951", "1666", "SN001", "blocked", Some("S-1-5-21-1"), Some("alice"),
+                "uuid-a",
+                "0951",
+                "1666",
+                "SN001",
+                "blocked",
+                Some("S-1-5-21-1"),
+                Some("alice"),
             );
             DeviceRegistryRepository::upsert(&uow, &machine).expect("upsert machine-wide");
             DeviceRegistryRepository::upsert(&uow, &alice).expect("upsert alice");
@@ -501,7 +522,11 @@ mod tests {
 
         // Query alice's entry.
         let user = DeviceRegistryRepository::get_by_device_key_and_owner(
-            &pool, "0951", "1666", "SN001", Some("S-1-5-21-1"),
+            &pool,
+            "0951",
+            "1666",
+            "SN001",
+            Some("S-1-5-21-1"),
         )
         .expect("get alice");
         assert_eq!(user.owner_sid, Some("S-1-5-21-1".to_string()));
@@ -517,24 +542,28 @@ mod tests {
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
             let machine = make_row("uuid-mw", "0951", "1666", "SN001", "read_only");
             let alice = make_row_with_owner(
-                "uuid-a", "0951", "1666", "SN001", "blocked", Some("S-1-5-21-1"), Some("alice"),
+                "uuid-a",
+                "0951",
+                "1666",
+                "SN001",
+                "blocked",
+                Some("S-1-5-21-1"),
+                Some("alice"),
             );
             DeviceRegistryRepository::upsert(&uow, &machine).expect("upsert machine-wide");
             DeviceRegistryRepository::upsert(&uow, &alice).expect("upsert alice");
             uow.commit().expect("commit");
         }
 
-        let rows = DeviceRegistryRepository::get_by_device_key_fallback(
-            &pool, "0951", "1666", "SN001",
-        )
-        .expect("fallback");
+        let rows =
+            DeviceRegistryRepository::get_by_device_key_fallback(&pool, "0951", "1666", "SN001")
+                .expect("fallback");
         assert_eq!(rows.len(), 2, "expected 2 rows: machine-wide + alice");
 
         // Unknown device returns empty vec.
-        let empty = DeviceRegistryRepository::get_by_device_key_fallback(
-            &pool, "9999", "9999", "NONE",
-        )
-        .expect("fallback empty");
+        let empty =
+            DeviceRegistryRepository::get_by_device_key_fallback(&pool, "9999", "9999", "NONE")
+                .expect("fallback empty");
         assert!(empty.is_empty(), "unknown device must return empty vec");
     }
 
@@ -556,7 +585,13 @@ mod tests {
             let mut conn = pool.get().expect("get connection");
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
             let alice = make_row_with_owner(
-                "uuid-a", "0951", "1666", "SN001", "blocked", Some("S-1-5-21-1"), Some("alice"),
+                "uuid-a",
+                "0951",
+                "1666",
+                "SN001",
+                "blocked",
+                Some("S-1-5-21-1"),
+                Some("alice"),
             );
             DeviceRegistryRepository::upsert(&uow, &alice).expect("upsert alice");
             uow.commit().expect("commit");

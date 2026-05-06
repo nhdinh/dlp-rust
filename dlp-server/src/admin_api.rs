@@ -2000,8 +2000,8 @@ async fn delete_disk_registry_handler(
     //     SELECT + DELETE would introduce. Requires SQLite 3.35+ (bundled rusqlite).
     let pool = Arc::clone(&state.pool);
     let disk_id = id.clone();
-    let result = tokio::task::spawn_blocking(
-        move || -> Result<Option<(String, String)>, AppError> {
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<Option<(String, String)>, AppError> {
             let mut conn = pool.get().map_err(AppError::from)?;
             let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
             // RETURNING makes the DELETE and the metadata read atomic in one
@@ -2020,10 +2020,9 @@ async fn delete_disk_registry_handler(
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(AppError::Database(e)),
             }
-        },
-    )
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+        })
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     let (agent_id_for_audit, instance_id_for_audit) = match result {
         Some(t) => t,
@@ -2136,7 +2135,11 @@ async fn upsert_device_registry_handler(
             uow.commit().map_err(AppError::Database)?;
         } // conn returned to pool here
         repositories::DeviceRegistryRepository::get_by_device_key_and_owner(
-            &pool, &vid, &pid, &serial, owner_sid.as_deref(),
+            &pool,
+            &vid,
+            &pid,
+            &serial,
+            owner_sid.as_deref(),
         )
         .map_err(AppError::Database)
     })
@@ -4492,8 +4495,14 @@ mod tests {
         assert!(json.contains(r#""vid":"0951""#), "vid field missing");
         assert!(json.contains(r#""pid":"1666""#), "pid field missing");
         assert!(json.contains(r#""serial":"SN001""#), "serial field missing");
-        assert!(json.contains(r#""owner_sid":"S-1-5-21-1""#), "owner_sid field missing");
-        assert!(json.contains(r#""owner_user":"alice""#), "owner_user field missing");
+        assert!(
+            json.contains(r#""owner_sid":"S-1-5-21-1""#),
+            "owner_sid field missing"
+        );
+        assert!(
+            json.contains(r#""owner_user":"alice""#),
+            "owner_user field missing"
+        );
         assert!(
             json.contains(r#""description":"Kingston DataTraveler""#),
             "description field missing"
@@ -4710,6 +4719,225 @@ mod tests {
             .expect("build request");
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// POST with owner_sid and owner_user returns 200 with those fields populated.
+    #[tokio::test]
+    async fn test_device_registry_post_with_owner_sid() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+        let payload = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "OWNER001",
+            "owner_sid": "S-1-5-21-1",
+            "owner_user": "alice",
+            "trust_tier": "blocked"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let row: DeviceRegistryResponse =
+            serde_json::from_slice(&body).expect("parse DeviceRegistryResponse");
+        assert_eq!(row.owner_sid, Some("S-1-5-21-1".to_string()));
+        assert_eq!(row.owner_user, Some("alice".to_string()));
+    }
+
+    /// POST without owner_sid/owner_user returns 200 with both fields as None.
+    #[tokio::test]
+    async fn test_device_registry_post_without_owner_sid() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+        let payload = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "NOOWNER001",
+            "trust_tier": "read_only"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let row: DeviceRegistryResponse =
+            serde_json::from_slice(&body).expect("parse DeviceRegistryResponse");
+        assert_eq!(row.owner_sid, None);
+        assert_eq!(row.owner_user, None);
+    }
+
+    /// GET /admin/device-registry/full?owner_sid=S-1-5-21-1 returns matching SID + machine-wide.
+    #[tokio::test]
+    async fn test_device_registry_get_filtered_by_owner_sid() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        // Seed machine-wide entry.
+        let mw = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "FILTER001",
+            "trust_tier": "read_only"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&mw).unwrap()))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot POST");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Seed per-user entry for alice.
+        let alice = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "FILTER001",
+            "owner_sid": "S-1-5-21-1",
+            "owner_user": "alice",
+            "trust_tier": "blocked"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&alice).unwrap()))
+            .expect("build POST 2");
+        let resp = app.clone().oneshot(req).await.expect("oneshot POST 2");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Seed per-user entry for bob (should NOT appear in alice's filter).
+        let bob = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "FILTER001",
+            "owner_sid": "S-1-5-21-2",
+            "owner_user": "bob",
+            "trust_tier": "full_access"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&bob).unwrap()))
+            .expect("build POST 3");
+        let resp = app.clone().oneshot(req).await.expect("oneshot POST 3");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Query with owner_sid filter for alice.
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/admin/device-registry/full?owner_sid=S-1-5-21-1")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let get_resp = app.oneshot(get_req).await.expect("oneshot GET");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let list: Vec<DeviceRegistryResponse> = serde_json::from_slice(&body).expect("parse list");
+
+        // Must return alice's entry + machine-wide entry (2 rows), NOT bob's.
+        assert_eq!(list.len(), 2, "expected 2 rows: alice + machine-wide");
+        let sids: Vec<Option<&str>> = list.iter().map(|r| r.owner_sid.as_deref()).collect();
+        assert!(
+            sids.contains(&Some("S-1-5-21-1")),
+            "alice's entry must be present"
+        );
+        assert!(sids.contains(&None), "machine-wide entry must be present");
+        assert!(
+            !sids.contains(&Some("S-1-5-21-2")),
+            "bob's entry must NOT be present"
+        );
+    }
+
+    /// Machine-wide and per-user entries for same device both succeed.
+    #[tokio::test]
+    async fn test_device_registry_unique_per_user_and_machine_wide() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        // Machine-wide entry.
+        let mw = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "UNIQUE001",
+            "trust_tier": "read_only"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&mw).unwrap()))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot POST");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Per-user entry for same device — must succeed.
+        let user = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "UNIQUE001",
+            "owner_sid": "S-1-5-21-1",
+            "owner_user": "alice",
+            "trust_tier": "blocked"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&user).unwrap()))
+            .expect("build POST 2");
+        let resp = app.clone().oneshot(req).await.expect("oneshot POST 2");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify both entries exist via full list.
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/admin/device-registry/full")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let get_resp = app.oneshot(get_req).await.expect("oneshot GET");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let list: Vec<DeviceRegistryResponse> = serde_json::from_slice(&body).expect("parse list");
+        assert_eq!(list.len(), 2, "expected 2 rows: machine-wide + per-user");
     }
 
     // -----------------------------------------------------------------------
