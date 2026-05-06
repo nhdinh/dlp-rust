@@ -34,6 +34,11 @@ use crate::server_client::ServerClient;
 /// Background poll interval for registry refresh (D-08).
 const REGISTRY_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Cache key for the device registry: (vid, pid, serial, owner_sid).
+///
+/// `owner_sid` is `None` for machine-wide entries, `Some(sid)` for per-user.
+pub type DeviceCacheKey = (String, String, String, Option<String>);
+
 /// In-memory USB device trust-tier cache.
 ///
 /// Keyed by `(vid, pid, serial, owner_sid)` — a device identity triple plus an
@@ -45,10 +50,8 @@ const REGISTRY_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// writers longer than a single lock acquisition.
 #[derive(Debug, Default)]
 pub struct DeviceRegistryCache {
-    /// Map from (vid, pid, serial, owner_sid) to trust tier.
-    ///
-    /// `owner_sid` is `None` for machine-wide entries, `Some(sid)` for per-user.
-    cache: RwLock<HashMap<(String, String, String, Option<String>), UsbTrustTier>>,
+    /// Map from [`DeviceCacheKey`] to trust tier.
+    cache: RwLock<HashMap<DeviceCacheKey, UsbTrustTier>>,
 }
 
 /// The result of a trust-tier lookup, including the effective tier and the
@@ -85,7 +88,10 @@ impl DeviceRegistryCache {
     /// # Returns
     ///
     /// The [`UsbTrustTier`] for the device, or [`UsbTrustTier::Blocked`] if unknown.
-    #[deprecated(since = "0.7.1", note = "Use trust_tier_for_with_sid for per-user support")]
+    #[deprecated(
+        since = "0.7.1",
+        note = "Use trust_tier_for_with_sid for per-user support"
+    )]
     #[must_use]
     pub fn trust_tier_for(&self, vid: &str, pid: &str, serial: &str) -> UsbTrustTier {
         self.trust_tier_for_with_sid(vid, pid, serial, None).tier
@@ -256,35 +262,34 @@ impl DeviceRegistryCache {
             Ok(entries) => {
                 // Build a new map from the server response, filtering out entries
                 // with unrecognized trust_tier values (warn and skip — never panic).
-                let new_map: HashMap<(String, String, String, Option<String>), UsbTrustTier> =
-                    entries
-                        .into_iter()
-                        .filter_map(|e| {
-                            let tier = match e.trust_tier.as_str() {
-                                "blocked" => UsbTrustTier::Blocked,
-                                "read_only" => UsbTrustTier::ReadOnly,
-                                "full_access" => UsbTrustTier::FullAccess,
-                                other => {
-                                    warn!(
-                                        trust_tier = %other,
-                                        "unknown trust_tier from server — skipping entry"
-                                    );
-                                    return None;
-                                }
-                            };
-                            // Normalize empty owner_sid to None (T-38.4-06 mitigation).
-                            let owner_sid_norm = e.owner_sid.filter(|s| !s.is_empty());
-                            Some((
-                                (
-                                    e.vid.to_ascii_lowercase(),
-                                    e.pid.to_ascii_lowercase(),
-                                    e.serial.to_ascii_lowercase(),
-                                    owner_sid_norm,
-                                ),
-                                tier,
-                            ))
-                        })
-                        .collect();
+                let new_map: HashMap<DeviceCacheKey, UsbTrustTier> = entries
+                    .into_iter()
+                    .filter_map(|e| {
+                        let tier = match e.trust_tier.as_str() {
+                            "blocked" => UsbTrustTier::Blocked,
+                            "read_only" => UsbTrustTier::ReadOnly,
+                            "full_access" => UsbTrustTier::FullAccess,
+                            other => {
+                                warn!(
+                                    trust_tier = %other,
+                                    "unknown trust_tier from server — skipping entry"
+                                );
+                                return None;
+                            }
+                        };
+                        // Normalize empty owner_sid to None (T-38.4-06 mitigation).
+                        let owner_sid_norm = e.owner_sid.filter(|s| !s.is_empty());
+                        Some((
+                            (
+                                e.vid.to_ascii_lowercase(),
+                                e.pid.to_ascii_lowercase(),
+                                e.serial.to_ascii_lowercase(),
+                                owner_sid_norm,
+                            ),
+                            tier,
+                        ))
+                    })
+                    .collect();
                 let count = new_map.len();
                 // Atomic replacement: write lock held only for the swap.
                 *self.cache.write() = new_map;
@@ -362,13 +367,7 @@ impl DeviceRegistryCache {
     /// * `serial` - Device serial number string.
     /// * `tier` - Trust tier to associate with this device key.
     #[doc(hidden)]
-    pub fn seed_for_test(
-        &self,
-        vid: &str,
-        pid: &str,
-        serial: &str,
-        tier: UsbTrustTier,
-    ) {
+    pub fn seed_for_test(&self, vid: &str, pid: &str, serial: &str, tier: UsbTrustTier) {
         self.seed_for_test_with_sid(vid, pid, serial, None, tier);
     }
 
@@ -476,7 +475,12 @@ mod tests {
         use std::thread;
         let cache = Arc::new(DeviceRegistryCache::new());
         cache.cache.write().insert(
-            ("vid".to_string(), "pid".to_string(), "ser".to_string(), None),
+            (
+                "vid".to_string(),
+                "pid".to_string(),
+                "ser".to_string(),
+                None,
+            ),
             UsbTrustTier::FullAccess,
         );
         // Act: two threads read simultaneously
