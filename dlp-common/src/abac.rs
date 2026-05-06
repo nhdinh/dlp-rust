@@ -485,6 +485,22 @@ mod tests {
     }
 
     #[test]
+    fn test_app_field_aumid_serde() {
+        let json = serde_json::to_string(&AppField::Aumid).unwrap();
+        assert_eq!(json, "\"aumid\"");
+        let rt: AppField = serde_json::from_str("\"aumid\"").unwrap();
+        assert_eq!(rt, AppField::Aumid);
+    }
+
+    #[test]
+    fn test_app_field_package_family_name_serde() {
+        let json = serde_json::to_string(&AppField::PackageFamilyName).unwrap();
+        assert_eq!(json, "\"package_family_name\"");
+        let rt: AppField = serde_json::from_str("\"package_family_name\"").unwrap();
+        assert_eq!(rt, AppField::PackageFamilyName);
+    }
+
+    #[test]
     fn test_evaluate_request_omits_none_app_identity_fields() {
         // SC-3 observable truth: default EvaluateRequest serializes without
         // the two new keys when they are None, preserving wire-compat with

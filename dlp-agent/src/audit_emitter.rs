@@ -40,6 +40,9 @@ mod audit_enrichment {
     ///
     /// Returns `(None, None)` if the process cannot be opened (e.g., PID 0
     /// from the `notify` crate which does not provide real PIDs).
+    ///
+    /// NOTE: UWP AUMID resolution is handled by `dlp-user-ui`'s `resolve_app_identity()`
+    /// for clipboard events. File/USB audit enrichment uses Win32 image path only.
     pub fn get_application_metadata(pid: u32) -> (Option<String>, Option<String>) {
         if pid == 0 {
             return (None, None);

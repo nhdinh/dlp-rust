@@ -95,6 +95,7 @@ pub enum Pipe2AgentMsg {
 /// Messages sent FROM the UI TO the agent over Pipe 3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
+#[allow(clippy::large_enum_variant)]
 pub enum Pipe3UiMsg {
     /// The UI is alive — sent in response to HEALTH_PING or periodically.
     HealthPong,
