@@ -119,6 +119,10 @@ pub async fn run_event_loop(
                 audit_event.policy_name =
                     Some("USB enforcement: device blocked or read-only".to_string());
 
+                // AUDIT-04 (Phase 42): Enrich with app identity from the initiating process.
+                crate::audit_emitter::enrich_audit_with_app_identity(&mut audit_event, pid);
+                crate::audit_emitter::set_destination_application(&mut audit_event, None);
+
                 emit_audit(&ctx, &mut audit_event);
 
                 if usb_result.decision.is_denied() {
@@ -199,6 +203,10 @@ pub async fn run_event_loop(
                 // Set only policy_name to convey the enforcement reason.
                 audit_event.policy_name =
                     Some("Disk enforcement: unregistered fixed disk".to_string());
+
+                // AUDIT-04 (Phase 42): Enrich with app identity from the initiating process.
+                crate::audit_emitter::enrich_audit_with_app_identity(&mut audit_event, pid);
+                crate::audit_emitter::set_destination_application(&mut audit_event, None);
 
                 emit_audit(&ctx, &mut audit_event);
 
@@ -317,6 +325,10 @@ pub async fn run_event_loop(
         )
         .with_access_context(AuditAccessContext::Local)
         .with_policy(policy_id_str.clone(), response_reason.clone());
+
+        // AUDIT-04 (Phase 42): Enrich with app identity from the initiating process.
+        crate::audit_emitter::enrich_audit_with_app_identity(&mut audit_event, pid);
+        crate::audit_emitter::set_destination_application(&mut audit_event, None);
 
         emit_audit(&ctx, &mut audit_event);
 

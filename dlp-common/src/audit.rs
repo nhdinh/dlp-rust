@@ -159,12 +159,12 @@ pub struct AuditEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_owner: Option<String>,
     /// Resolved identity of the application that initiated the operation.
-    /// Always present — `None` is serialized as `null` and replaced with
-    /// the `AGENT-UNKNOWN` sentinel at emission time (AUDIT-05, Phase 38.3).
+    /// Guaranteed non-null at emission time — `None` is replaced with
+    /// the `AGENT-UNKNOWN` sentinel by `emit_audit` (AUDIT-04, Phase 42).
     pub source_application: Option<AppIdentity>,
     /// Resolved identity of the destination application (e.g. the paste target).
-    /// Always present — `None` is serialized as `null` and replaced with
-    /// the `AGENT-UNKNOWN` sentinel at emission time (AUDIT-05, Phase 38.3).
+    /// Guaranteed non-null at emission time — `None` is replaced with
+    /// the `AGENT-UNKNOWN` sentinel by `emit_audit` (AUDIT-04, Phase 42).
     pub destination_application: Option<AppIdentity>,
     /// USB device identity for block events involving removable storage
     /// (populated by Phase 26/27 on USB blocks).

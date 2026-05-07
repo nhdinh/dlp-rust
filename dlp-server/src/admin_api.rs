@@ -3263,6 +3263,8 @@ mod tests {
             1,
         )
         .with_policy("pol-audit-test".to_string(), "Test block".to_string())
+        .with_source_application(Some(dlp_common::endpoint::agent_unknown_app()))
+        .with_destination_application(Some(dlp_common::endpoint::agent_unknown_app()))
     }
 
     #[tokio::test]
@@ -3443,7 +3445,9 @@ mod tests {
         .with_policy(
             "pol-alert-test".to_string(),
             "DenyWithAlert policy".to_string(),
-        );
+        )
+        .with_source_application(Some(dlp_common::endpoint::agent_unknown_app()))
+        .with_destination_application(Some(dlp_common::endpoint::agent_unknown_app()));
 
         let batch = vec![event];
         let body = serde_json::to_string(&batch).expect("serialize");
@@ -3914,7 +3918,9 @@ mod tests {
             format!("AGENT-TC-{tc_id}"),
             1,
         )
-        .with_policy(format!("pol-tc-{tc_id}"), format!("TC-{tc_id} policy"));
+        .with_policy(format!("pol-tc-{tc_id}"), format!("TC-{tc_id} policy"))
+        .with_source_application(Some(dlp_common::endpoint::agent_unknown_app()))
+        .with_destination_application(Some(dlp_common::endpoint::agent_unknown_app()));
 
         let body = serde_json::to_string(&vec![event]).map_err(|e| e.to_string())?;
         let req = Request::builder()
@@ -4123,7 +4129,9 @@ mod tests {
         .with_policy(
             "pol-tc-80".to_string(),
             "TC-80 detective policy".to_string(),
-        );
+        )
+        .with_source_application(Some(dlp_common::endpoint::agent_unknown_app()))
+        .with_destination_application(Some(dlp_common::endpoint::agent_unknown_app()));
 
         let body = serde_json::to_string(&vec![access_event]).expect("serialize");
         let ingest_req = Request::builder()
