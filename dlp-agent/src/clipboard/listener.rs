@@ -410,6 +410,9 @@ impl ClipboardListener {
             )
             .with_access_context(AuditAccessContext::Local);
             let mut audit_event = audit_event;
+            // AUDIT-04 (Phase 42): Clipboard listener does not have access to the
+            // target process PID — AGENT-UNKNOWN sentinel is applied by emit_audit.
+            tracing::debug!("Clipboard audit: source_application set to AGENT-UNKNOWN — process identity unavailable");
             emit_audit(ctx, &mut audit_event);
         }
     }
