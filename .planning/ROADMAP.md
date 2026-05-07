@@ -25,7 +25,7 @@ Phase numbering is continuous across milestones -- never restarts.
 <details>
 <summary>v0.8.0 - archived at <code>.planning/milestones/v0.8.0-ROADMAP.md</code></summary>
 
-Phase details and requirement outcomes archived at `.planning/milestones/v0.8.0-ROADMAP.md` and `.planning/milestones/v0.8.0-REQUIREMENTS.md`. UWP App Identity (APP-07), Drag-and-Drop Enforcement (APP-08), Browser Origin Clipboard Policies (BRW-04), and Audit Enrichment (AUDIT-04) — all 18 requirements delivered across 4 phases (39-42).
+Phase details and requirement outcomes archived at `.planning/milestones/v0.8.0-ROADMAP.md` and `.planning/milestones/v0.8.0-REQUIREMENTS.md`. UWP App Identity (APP-07), Drag-and-Drop Enforcement (APP-08), Browser Origin Clipboard Policies (BRW-04), and Audit Enrichment (AUDIT-04) -- all 18 requirements delivered across 4 phases (39-42).
 
 **Known gaps at v0.8.0 close:** None.
 </details>
@@ -37,7 +37,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.8.0-
 <details>
 <summary>v0.7.1 - archived at <code>.planning/milestones/v0.7.1-ROADMAP.md</code></summary>
 
-Phase details and requirement outcomes archived at `.planning/milestones/v0.7.1-ROADMAP.md` and `.planning/milestones/v0.7.1-REQUIREMENTS.md`. AGENT-UNKNOWN remediation (AUDIT-05), per-user device registry (USB-06), wmi crate upgrade (TECH-01), disk enumeration error resilience (OP-01), structured USB logging (OP-02), agent config validation (OP-03), and graceful service shutdown (OP-04) — all 7 requirements delivered across 4 phases (38.3-38.6).
+Phase details and requirement outcomes archived at `.planning/milestones/v0.7.1-ROADMAP.md` and `.planning/milestones/v0.7.1-REQUIREMENTS.md`. AGENT-UNKNOWN remediation (AUDIT-05), per-user device registry (USB-06), wmi crate upgrade (TECH-01), disk enumeration error resilience (OP-01), structured USB logging (OP-02), agent config validation (OP-03), and graceful service shutdown (OP-04) -- all 7 requirements delivered across 4 phases (38.3-38.6).
 
 **Known gaps at v0.7.1 close:** None. All gaps closed via gap-closure commit.
 </details>
@@ -47,11 +47,11 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.7.1-
 <details>
 <summary>v0.7.0 - archived at <code>.planning/milestones/v0.7.0-ROADMAP.md</code></summary>
 
-Phase details and requirement outcomes archived at `.planning/milestones/v0.7.0-ROADMAP.md` and `.planning/milestones/v0.7.0-REQUIREMENTS.md`. Disk enumeration (DISK-01/02), BitLocker verification (CRYPT-01/02), disk allowlist persistence (DISK-03), runtime disk enforcement (DISK-04/05), server-side disk registry (ADMIN-01..03), admin TUI disk registry (ADMIN-04), LDAP config TUI (ADMIN-05), and USB enforcement fix (PnP disable + Volume DACL deny-all) — all 15 requirements delivered across 8 phases (33-38.2).
+Phase details and requirement outcomes archived at `.planning/milestones/v0.7.0-ROADMAP.md` and `.planning/milestones/v0.7.0-REQUIREMENTS.md`. Disk enumeration (DISK-01/02), BitLocker verification (CRYPT-01/02), disk allowlist persistence (DISK-03), runtime disk enforcement (DISK-04/05), server-side disk registry (ADMIN-01..03), admin TUI disk registry (ADMIN-04), LDAP config TUI (ADMIN-05), and USB enforcement fix (PnP disable + Volume DACL deny-all) -- all 15 requirements delivered across 8 phases (33-38.2).
 
 **Known gaps at v0.7.0 close:**
-- Phase 34 HUMAN-UAT (unencrypted disk warning — requires physical machine)
-- Phase 38.2 HUMAN-UAT (drive-letter correlation — approved from prior session)
+- Phase 34 HUMAN-UAT (unencrypted disk warning -- requires physical machine)
+- Phase 38.2 HUMAN-UAT (drive-letter correlation -- approved from prior session)
 - AGENT-UNKNOWN remediation (split to Phase 38.3)
 - USB-06 per-user device registry (deferred to v0.7.1)
 - wmi crate upgrade (deferred to v0.7.1)
@@ -125,12 +125,11 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 | 39 | UWP App Identity | v0.8.0 | 4/4 | Complete | 2026-05-07 |
 | 40 | Drag-and-Drop Enforcement | v0.8.0 | 4/4 | Complete | 2026-05-07 |
 | 41 | Browser Origin Clipboard Policies | v0.8.0 | 4/4 | Complete | 2026-05-07 |
-| 42 | Audit Enrichment — App Identity Fields | v0.8.0 | 3/3 | Complete | 2026-05-07 |
-| 43 | USB Enforcement Fix — PnP Disable Actually Works | v0.8.1 | 0/TBD | Planned | — |
-| 44 | USB Device Description Fix | v0.8.1 | 0/TBD | Planned | — |
-| 45 | Mount-Time Blocking | v0.8.1 | 0/TBD | Planned | — |
-| 46 | Grace Period / Quarantine | v0.8.1 | 0/TBD | Planned | — |
-| 47 | UAT & Regression Validation | v0.8.1 | 0/TBD | Planned | — |
+| 42 | Audit Enrichment -- App Identity Fields | v0.8.0 | 3/3 | Complete | 2026-05-07 |
+| 43 | USB Enforcement Fix -- PnP Disable Actually Works | v0.8.1 | 5/5 | Planned | -- |
+| 44 | Mount-Time Blocking | v0.8.1 | 0/TBD | Planned | -- |
+| 45 | Grace Period / Quarantine | v0.8.1 | 0/TBD | Planned | -- |
+| 46 | UAT & Regression Validation | v0.8.1 | 0/TBD | Planned | -- |
 
 ## v0.8.1 - Deferred Items & Issue Debt (In Progress)
 
@@ -138,9 +137,18 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 
 **Requirements:** USB-07..09, DISK-06..07, UAT-05 (6 requirements)
 
-**Phase 43: USB Enforcement Fix — PnP Disable Actually Works**
+**Phase 43: USB Enforcement Fix -- PnP Disable Actually Works**
 - Goal: Fix `DeviceController::disable_usb_device` to use real CM instance IDs resolved via SetupDi; surface hard failures
 - Requirements: USB-07, USB-08, USB-09
+- **Plans:** 5 plans in 3 waves
+  - Wave 1 (parallel):
+    - [ ] `43-01-PLAN.md` -- Exact path matching for SetupDi description lookup (USB-08)
+    - [ ] `43-02-PLAN.md` -- Server-side config storage and admin API (USB-09 infrastructure)
+  - Wave 2 (parallel, depends on Wave 1):
+    - [ ] `43-03-PLAN.md` -- Agent-side config pipeline wiring (USB-09 propagation)
+  - Wave 3 (parallel, depends on Wave 2):
+    - [ ] `43-04-PLAN.md` -- Enforcement behavior: retry logic, failure mode, (none) serial policy (USB-07, USB-09)
+    - [ ] `43-05-PLAN.md` -- Admin TUI USB Enforcement Settings screen (USB-09 UI)
 - Success criteria:
   1. `CM_Disable_DevNode` receives the actual CM instance ID from device interface path
   2. Devices with `(none)` serial are handled gracefully
