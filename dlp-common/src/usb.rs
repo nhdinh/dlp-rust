@@ -25,8 +25,11 @@ pub const USB_RESOLUTION_MODES: &[&str] = &["Volume GUID resolution", "VID/PID/s
 /// Valid values for `usb_none_serial_policy`.
 /// NOTE: "Port-based disambiguation" is not yet implemented; it is kept in the
 /// constant list for forward compatibility but rejected at config-set time.
-pub const USB_NONE_SERIAL_POLICIES: &[&str] =
-    &["Always Blocked", "Port-based disambiguation", "Allow unregistered"];
+pub const USB_NONE_SERIAL_POLICIES: &[&str] = &[
+    "Always Blocked",
+    "Port-based disambiguation",
+    "Allow unregistered",
+];
 
 /// Default values for each USB config field.
 pub const DEFAULT_USB_BLOCKED_FAILURE_MODE: &str = "Warning only";

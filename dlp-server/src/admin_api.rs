@@ -32,6 +32,11 @@ use crate::policy_store::mode_str;
 use crate::rate_limiter::{self, default_config, policy_config};
 use crate::AppError;
 use dlp_common::abac::PolicyMode;
+use dlp_common::{
+    DEFAULT_USB_BLOCKED_FAILURE_MODE, DEFAULT_USB_NONE_SERIAL_POLICY,
+    DEFAULT_USB_STARTUP_RESOLUTION_MODE, USB_FAILURE_MODES, USB_NONE_SERIAL_POLICIES,
+    USB_RESOLUTION_MODES,
+};
 
 /// Parses a `PolicyMode` from its DB string representation.
 fn mode_from_str(s: &str) -> PolicyMode {
@@ -280,6 +285,25 @@ pub struct AgentConfigPayload {
     /// Defaults to empty for backward compatibility with payloads from earlier server builds.
     #[serde(default)]
     pub disk_allowlist: Vec<dlp_common::DiskIdentity>,
+    /// USB enforcement failure mode (USB-09). Default: "Warning only".
+    #[serde(default = "default_usb_blocked_failure_mode")]
+    pub usb_blocked_failure_mode: String,
+    /// USB startup scan resolution strategy (USB-07). Default: "VID/PID/serial fallback".
+    #[serde(default = "default_usb_startup_resolution_mode")]
+    pub usb_startup_resolution_mode: String,
+    /// Policy for USB devices without serial descriptors (USB-08). Default: "Always Blocked".
+    #[serde(default = "default_usb_none_serial_policy")]
+    pub usb_none_serial_policy: String,
+}
+
+fn default_usb_blocked_failure_mode() -> String {
+    DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string()
+}
+fn default_usb_startup_resolution_mode() -> String {
+    DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string()
+}
+fn default_usb_none_serial_policy() -> String {
+    DEFAULT_USB_NONE_SERIAL_POLICY.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1425,6 +1449,9 @@ async fn get_agent_config_for_agent(
                 heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs).unwrap_or(30),
                 offline_cache_enabled: row.offline_cache_enabled != 0,
                 disk_allowlist: Vec::new(),
+                usb_blocked_failure_mode: row.usb_blocked_failure_mode,
+                usb_startup_resolution_mode: row.usb_startup_resolution_mode,
+                usb_none_serial_policy: row.usb_none_serial_policy,
             },
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // Fall back to global default.
@@ -1436,6 +1463,9 @@ async fn get_agent_config_for_agent(
                         .unwrap_or(30),
                     offline_cache_enabled: row.offline_cache_enabled != 0,
                     disk_allowlist: Vec::new(),
+                    usb_blocked_failure_mode: row.usb_blocked_failure_mode.clone(),
+                    usb_startup_resolution_mode: row.usb_startup_resolution_mode.clone(),
+                    usb_none_serial_policy: row.usb_none_serial_policy.clone(),
                 }
             }
             Err(e) => return Err(AppError::Database(e)),
@@ -1547,6 +1577,9 @@ async fn get_global_agent_config_handler(
         offline_cache_enabled: row.offline_cache_enabled != 0,
         // disk_allowlist is not relevant for admin-config GET (only agents poll /agent-config/{id}).
         disk_allowlist: Vec::new(),
+        usb_blocked_failure_mode: row.usb_blocked_failure_mode,
+        usb_startup_resolution_mode: row.usb_startup_resolution_mode,
+        usb_none_serial_policy: row.usb_none_serial_policy,
     }))
 }
 
@@ -1568,6 +1601,39 @@ async fn update_global_agent_config_handler(
             "heartbeat_interval_secs must be >= 10".to_string(),
         ));
     }
+    // Validate USB config enum values.
+    if !USB_FAILURE_MODES.contains(&payload.usb_blocked_failure_mode.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "usb_blocked_failure_mode must be one of: {}",
+            USB_FAILURE_MODES.join(", ")
+        )));
+    }
+    if !USB_RESOLUTION_MODES.contains(&payload.usb_startup_resolution_mode.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "usb_startup_resolution_mode must be one of: {}",
+            USB_RESOLUTION_MODES.join(", ")
+        )));
+    }
+    if !USB_NONE_SERIAL_POLICIES.contains(&payload.usb_none_serial_policy.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "usb_none_serial_policy must be one of: {}",
+            USB_NONE_SERIAL_POLICIES.join(", ")
+        )));
+    }
+
+    // Reject unimplemented modes (review concern #7).
+    if payload.usb_startup_resolution_mode == "Volume GUID resolution" {
+        return Err(AppError::BadRequest(
+            "Volume GUID resolution is not yet implemented. Please select 'VID/PID/serial fallback'."
+                .to_string(),
+        ));
+    }
+    if payload.usb_none_serial_policy == "Port-based disambiguation" {
+        return Err(AppError::BadRequest(
+            "Port-based disambiguation is not yet implemented. Please select 'Always Blocked' or 'Allow unregistered'."
+                .to_string(),
+        ));
+    }
 
     let now = Utc::now().to_rfc3339();
     let p = payload.clone();
@@ -1584,6 +1650,9 @@ async fn update_global_agent_config_handler(
             heartbeat_interval_secs: i64::try_from(p.heartbeat_interval_secs).unwrap_or(30),
             offline_cache_enabled: if p.offline_cache_enabled { 1 } else { 0 },
             updated_at: now,
+            usb_blocked_failure_mode: p.usb_blocked_failure_mode.clone(),
+            usb_startup_resolution_mode: p.usb_startup_resolution_mode.clone(),
+            usb_none_serial_policy: p.usb_none_serial_policy.clone(),
         };
         AgentConfigRepository::update_global(&uow, &record).map_err(AppError::Database)?;
         uow.commit().map_err(AppError::Database)?;
@@ -1618,6 +1687,9 @@ async fn get_agent_config_override_handler(
         offline_cache_enabled: row.offline_cache_enabled != 0,
         // disk_allowlist is not relevant for admin-config GET (only agents poll /agent-config/{id}).
         disk_allowlist: Vec::new(),
+        usb_blocked_failure_mode: row.usb_blocked_failure_mode,
+        usb_startup_resolution_mode: row.usb_startup_resolution_mode,
+        usb_none_serial_policy: row.usb_none_serial_policy,
     }))
 }
 
@@ -1658,6 +1730,9 @@ async fn update_agent_config_override_handler(
             i64::try_from(p.heartbeat_interval_secs).unwrap_or(30),
             if p.offline_cache_enabled { 1 } else { 0 },
             &now,
+            &p.usb_blocked_failure_mode,
+            &p.usb_startup_resolution_mode,
+            &p.usb_none_serial_policy,
         )
         .map_err(AppError::Database)?;
         uow.commit().map_err(AppError::Database)?;
@@ -3594,10 +3669,116 @@ mod tests {
             heartbeat_interval_secs: 60,
             offline_cache_enabled: false,
             disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
+            usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
+            usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt, payload);
+    }
+
+    #[test]
+    fn test_agent_config_payload_usb_fields_default() {
+        // JSON without the three new fields must deserialize with defaults.
+        let json = r#"{
+            "monitored_paths": ["C:/Data/"],
+            "excluded_paths": [],
+            "heartbeat_interval_secs": 60,
+            "offline_cache_enabled": false
+        }"#;
+        let payload: AgentConfigPayload = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(
+            payload.usb_blocked_failure_mode,
+            DEFAULT_USB_BLOCKED_FAILURE_MODE
+        );
+        assert_eq!(
+            payload.usb_startup_resolution_mode,
+            DEFAULT_USB_STARTUP_RESOLUTION_MODE
+        );
+        assert_eq!(
+            payload.usb_none_serial_policy,
+            DEFAULT_USB_NONE_SERIAL_POLICY
+        );
+
+        // Roundtrip: serialize with custom values and deserialize back.
+        let full = AgentConfigPayload {
+            monitored_paths: vec![],
+            excluded_paths: vec![],
+            heartbeat_interval_secs: 30,
+            offline_cache_enabled: true,
+            disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: "Hard error".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Allow unregistered".to_string(),
+        };
+        let json = serde_json::to_string(&full).expect("serialize");
+        let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt, full);
+    }
+
+    /// Helper to run USB enum validation against a payload.
+    fn validate_usb_config(payload: &AgentConfigPayload) -> Result<(), String> {
+        if !USB_FAILURE_MODES.contains(&payload.usb_blocked_failure_mode.as_str()) {
+            return Err(format!(
+                "usb_blocked_failure_mode must be one of: {}",
+                USB_FAILURE_MODES.join(", ")
+            ));
+        }
+        if !USB_RESOLUTION_MODES.contains(&payload.usb_startup_resolution_mode.as_str()) {
+            return Err(format!(
+                "usb_startup_resolution_mode must be one of: {}",
+                USB_RESOLUTION_MODES.join(", ")
+            ));
+        }
+        if !USB_NONE_SERIAL_POLICIES.contains(&payload.usb_none_serial_policy.as_str()) {
+            return Err(format!(
+                "usb_none_serial_policy must be one of: {}",
+                USB_NONE_SERIAL_POLICIES.join(", ")
+            ));
+        }
+        if payload.usb_startup_resolution_mode == "Volume GUID resolution" {
+            return Err(                "Volume GUID resolution is not yet implemented. Please select 'VID/PID/serial fallback'."
+                    .to_string(),
+            );
+        }
+        if payload.usb_none_serial_policy == "Port-based disambiguation" {
+            return Err(                "Port-based disambiguation is not yet implemented. Please select 'Always Blocked' or 'Allow unregistered'."
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_agent_config_payload_usb_fields_enum_validation() {
+        // Valid payload passes.
+        let valid = AgentConfigPayload {
+            monitored_paths: vec![],
+            excluded_paths: vec![],
+            heartbeat_interval_secs: 30,
+            offline_cache_enabled: true,
+            disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: "Warning only".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Always Blocked".to_string(),
+        };
+        assert!(validate_usb_config(&valid).is_ok());
+
+        // Invalid enum value for failure mode.
+        let mut bad = valid.clone();
+        bad.usb_blocked_failure_mode = "Foo".to_string();
+        assert!(validate_usb_config(&bad).is_err());
+
+        // Unimplemented mode: Volume GUID resolution.
+        let mut unimplemented = valid.clone();
+        unimplemented.usb_startup_resolution_mode = "Volume GUID resolution".to_string();
+        assert!(validate_usb_config(&unimplemented).is_err());
+
+        // Unimplemented mode: Port-based disambiguation.
+        let mut unimplemented2 = valid.clone();
+        unimplemented2.usb_none_serial_policy = "Port-based disambiguation".to_string();
+        assert!(validate_usb_config(&unimplemented2).is_err());
     }
 
     // ── Task 06-01 / Task 2: Agent config handler integration tests ───────────
@@ -3670,6 +3851,9 @@ mod tests {
             heartbeat_interval_secs: 60,
             offline_cache_enabled: true,
             disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
+            usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
+            usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
         };
 
         // PUT the new global config.
@@ -3715,6 +3899,9 @@ mod tests {
             heartbeat_interval_secs: 5,
             offline_cache_enabled: true,
             disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
+            usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
+            usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
         };
         let req = Request::builder()
             .method("PUT")
@@ -3758,6 +3945,9 @@ mod tests {
             heartbeat_interval_secs: 15,
             offline_cache_enabled: false,
             disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
+            usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
+            usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
         };
 
         // PUT per-agent override.
@@ -3822,6 +4012,9 @@ mod tests {
             heartbeat_interval_secs: 20,
             offline_cache_enabled: false,
             disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
+            usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
+            usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
         };
         let put_req = Request::builder()
             .method("PUT")
@@ -3892,6 +4085,9 @@ mod tests {
             heartbeat_interval_secs: 30,
             offline_cache_enabled: true,
             disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
+            usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
+            usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
         };
         let req = Request::builder()
             .method("PUT")
