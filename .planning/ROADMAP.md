@@ -67,7 +67,12 @@ Plans:
   2. All audit events from USB interception include device identity fields (VID, PID, serial, description)
   3. All audit events from clipboard interception include both source and destination application identity
   4. Audit schema is updated to guarantee non-null app identity fields; missing identity is flagged as AGENT-UNKNOWN with remediation path
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 42-01-PLAN.md -- File interception audit enrichment with app identity
+- [ ] 42-02-PLAN.md -- Clipboard/drag-drop/USB audit enrichment verification
+- [ ] 42-03-PLAN.md -- Audit schema guarantee and AGENT-UNKNOWN fallback
 
 ## Archived Milestones
 
