@@ -10,33 +10,33 @@
 
 ### Application Identity
 
-- [ ] **APP-07**: Agent resolves UWP process identity to AUMID using `GetApplicationUserModelIdFromWindow` or equivalent Win32 API
-- [ ] **APP-07.1**: AUMID is captured as a first-class `source_application` / `destination_application` attribute alongside existing Win32 process identity
-- [ ] **APP-07.2**: UWP identity flows through the same ABAC evaluator without special-casing
-- [ ] **APP-07.3**: Admin can author policies using AUMID conditions in the TUI conditions builder
+- [x] **APP-07**: Agent resolves UWP process identity to AUMID using `GetApplicationUserModelIdFromWindow` or equivalent Win32 API
+- [x] **APP-07.1**: AUMID is captured as a first-class `source_application` / `destination_application` attribute alongside existing Win32 process identity
+- [x] **APP-07.2**: UWP identity flows through the same ABAC evaluator without special-casing
+- [x] **APP-07.3**: Admin can author policies using AUMID conditions in the TUI conditions builder
 
 ### Interception
 
-- [ ] **APP-08**: Agent intercepts OLE drag-and-drop operations (`IDropTarget`, `DoDragDrop` hooks) to identify source application
-- [ ] **APP-08.1**: Source application identity is resolved for both Win32 and UWP drag sources
-- [ ] **APP-08.2**: ABAC policy is evaluated before drop completes; denied drops are blocked with a toast notification
-- [ ] **APP-08.3**: Audit events include `source_application`, `destination_application`, and action fields for drag-and-drop blocks
+- [x] **APP-08**: Agent intercepts OLE drag-and-drop operations (`IDropTarget`, `DoDragDrop` hooks) to identify source application
+- [x] **APP-08.1**: Source application identity is resolved for both Win32 and UWP drag sources
+- [x] **APP-08.2**: ABAC policy is evaluated before drop completes; denied drops are blocked with a toast notification
+- [x] **APP-08.3**: Audit events include `source_application`, `destination_application`, and action fields for drag-and-drop blocks
 
 ### Browser
 
-- [ ] **BRW-04**: Chrome Enterprise Connector messages include tab origin (URL / domain) for clipboard read/write operations
-- [ ] **BRW-04.1**: ABAC evaluator supports `source_origin` and `destination_origin` as condition attributes
-- [ ] **BRW-04.2**: Admin can author policies that allow/deny clipboard operations based on managed-origins list and specific URL patterns
-- [ ] **BRW-04.3**: Paste from protected origin to unmanaged origin is blocked and audited with origin fields populated
+- [x] **BRW-04**: Chrome Enterprise Connector messages include tab origin (URL / domain) for clipboard read/write operations
+- [x] **BRW-04.1**: ABAC evaluator supports `source_origin` and `destination_origin` as condition attributes
+- [x] **BRW-04.2**: Admin can author policies that allow/deny clipboard operations based on managed-origins list and specific URL patterns
+- [x] **BRW-04.3**: Paste from protected origin to unmanaged origin is blocked and audited with origin fields populated
 
 ### Audit
 
-- [ ] **AUDIT-04**: All audit events from file interception include `source_application` and `destination_application` fields where applicable
-- [ ] **AUDIT-04.1**: All audit events from USB interception include device identity fields (VID, PID, serial, description)
-- [ ] **AUDIT-04.2**: All audit events from clipboard interception include both source and destination application identity
-- [ ] **AUDIT-04.3**: All audit events from drag-and-drop interception include source and destination application identity
-- [ ] **AUDIT-04.4**: All audit events from browser interception include `source_origin` and `destination_origin` fields
-- [ ] **AUDIT-04.5**: Audit schema guarantees non-null app identity fields; missing identity is flagged as `AGENT-UNKNOWN` with remediation path
+- [x] **AUDIT-04**: All audit events from file interception include `source_application` and `destination_application` fields where applicable
+- [x] **AUDIT-04.1**: All audit events from USB interception include device identity fields (VID, PID, serial, description)
+- [x] **AUDIT-04.2**: All audit events from clipboard interception include both source and destination application identity
+- [x] **AUDIT-04.3**: All audit events from drag-and-drop interception include source and destination application identity
+- [x] **AUDIT-04.4**: All audit events from browser interception include `source_origin` and `destination_origin` fields
+- [x] **AUDIT-04.5**: Audit schema guarantees non-null app identity fields; missing identity is flagged as `AGENT-UNKNOWN` with remediation path
 
 ---
 
@@ -70,24 +70,24 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| APP-07 | Phase 39 | Pending |
-| APP-07.1 | Phase 39 | Pending |
-| APP-07.2 | Phase 39 | Pending |
-| APP-07.3 | Phase 39 | Pending |
-| APP-08 | Phase 40 | Pending |
-| APP-08.1 | Phase 40 | Pending |
-| APP-08.2 | Phase 40 | Pending |
-| APP-08.3 | Phase 40 | Pending |
-| BRW-04 | Phase 41 | Pending |
-| BRW-04.1 | Phase 41 | Pending |
-| BRW-04.2 | Phase 41 | Pending |
-| BRW-04.3 | Phase 41 | Pending |
-| AUDIT-04 | Phase 42 | Pending |
-| AUDIT-04.1 | Phase 42 | Pending |
-| AUDIT-04.2 | Phase 42 | Pending |
-| AUDIT-04.3 | Phase 42 | Pending |
-| AUDIT-04.4 | Phase 42 | Pending |
-| AUDIT-04.5 | Phase 42 | Pending |
+| APP-07 | Phase 39 | Complete |
+| APP-07.1 | Phase 39 | Complete |
+| APP-07.2 | Phase 39 | Complete |
+| APP-07.3 | Phase 39 | Complete |
+| APP-08 | Phase 40 | Complete |
+| APP-08.1 | Phase 40 | Complete |
+| APP-08.2 | Phase 40 | Complete |
+| APP-08.3 | Phase 40 | Complete |
+| BRW-04 | Phase 41 | Complete |
+| BRW-04.1 | Phase 41 | Complete |
+| BRW-04.2 | Phase 41 | Complete |
+| BRW-04.3 | Phase 41 | Complete |
+| AUDIT-04 | Phase 42 | Complete |
+| AUDIT-04.1 | Phase 42 | Complete |
+| AUDIT-04.2 | Phase 42 | Complete |
+| AUDIT-04.3 | Phase 42 | Complete |
+| AUDIT-04.4 | Phase 42 | Complete |
+| AUDIT-04.5 | Phase 42 | Complete |
 
 **Coverage:**
 - v0.8.0 requirements: 18 total
@@ -96,4 +96,4 @@
 
 ---
 *Requirements defined: 2026-05-06*
-*Last updated: 2026-05-06 after milestone v0.8.0 initialization*
+*Last updated: 2026-05-07 after milestone v0.8.0 audit*
