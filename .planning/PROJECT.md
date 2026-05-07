@@ -33,15 +33,20 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - Phase 38.5: WMI Crate Upgrade — migrated from raw CoSetProxyBlanket FFI to wmi 0.18+
 - Phase 38.6: Operational Hardening Bundle — disk enumeration error resilience, structured USB logging, agent config validation, graceful service shutdown
 
-## Current Milestone: v0.8.0 Application-Aware DLP
+## Current Milestone: TBD
 
-**Goal:** Extend application-aware policy enforcement to UWP apps, drag-and-drop, and browser origin-specific rules.
+**Goal:** Planning next milestone.
 
-**Target features:**
-- APP-07: UWP App Identity via AUMID (`IShellItem` / `GetApplicationUserModelId`)
-- APP-08: Drag-and-drop enforcement (OLE drag-drop app-aware blocking)
-- BRW-04: Browser origin-aware clipboard policies (extend Chrome Enterprise Connector)
-- Audit enrichment: Close gaps in app identity fields across all interception paths
+**v0.8.0 shipped:** 2026-05-07 — Application-Aware DLP (Phases 39-42)
+
+## Shipped: v0.8.0 Application-Aware DLP (2026-05-07)
+
+**Delivered:** All 18 requirements validated (APP-07..08, BRW-04, AUDIT-04). Phases 39-42.
+
+- Phase 39: UWP App Identity — AUMID resolution, ABAC evaluator extension, TUI conditions builder
+- Phase 40: Drag-and-Drop Enforcement — WH_GETMESSAGE hook, WM_DROPFILES interception, app identity resolution, ABAC evaluation, service lifecycle integration
+- Phase 41: Browser Origin Clipboard Policies — SourceOrigin/DestinationOrigin ABAC conditions, origin condition matching, Chrome handler ABAC evaluation, admin TUI origin conditions builder
+- Phase 42: Audit Enrichment — App identity fields across all interception paths, AGENT-UNKNOWN schema guarantee, server-side validation
 
 ## Shipped: v0.6.0 Endpoint Hardening (2026-04-29)
 
@@ -185,12 +190,12 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - ✓ OP-03: Agent config TOML validates field ranges at load time with descriptive errors — Phase 38.6
 - ✓ OP-04: Service shutdown gracefully cancels in-flight disk/USB enumeration tasks — Phase 38.6
 
-### Active (v0.8.0)
+### Validated (shipped in v0.8.0)
 
-- [ ] APP-07: UWP app identity via AUMID — Phase 39
-- [ ] APP-08: Drag-and-drop enforcement — Phase 40
-- [ ] BRW-04: Browser origin-aware clipboard policies — Phase 41
-- [ ] AUDIT-04: All audit events include source_application and destination_application fields — Phase 42
+- ✓ APP-07: UWP app identity via AUMID (`GetApplicationUserModelId`) — ABAC evaluator + TUI conditions builder — Phase 39
+- ✓ APP-08: Drag-and-drop enforcement (`WH_GETMESSAGE` hook, WM_DROPFILES interception, ABAC evaluation, toast + audit) — Phase 40
+- ✓ BRW-04: Browser origin-aware clipboard policies (SourceOrigin/DestinationOrigin conditions, Chrome handler ABAC evaluation, TUI builder) — Phase 41
+- ✓ AUDIT-04: All audit events include source_application and destination_application fields with AGENT-UNKNOWN schema guarantee — Phase 42
 
 ### Deferred to future milestones
 

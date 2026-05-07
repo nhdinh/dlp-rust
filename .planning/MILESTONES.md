@@ -1,5 +1,22 @@
 # Milestones
 
+## v0.8.0 Application-Aware DLP (Shipped: 2026-05-07)
+
+**Phases completed:** 4 phases, 15 plans
+**Requirements:** 18/18 satisfied
+**Audit:** PASSED (`.planning/milestones/v0.8.0-MILESTONE-AUDIT.md`)
+
+**Key accomplishments:**
+
+- **UWP App Identity** — `GetApplicationUserModelId` AUMID resolution, `AppIdentity` extended with `aumid`/`package_family_name`/`is_uwp`, ABAC evaluator handles UWP fields without special-casing, admin TUI supports AUMID/PackageFamilyName conditions (Phase 39; APP-07)
+- **Drag-and-Drop Enforcement** — `WH_GETMESSAGE` hook intercepts `WM_DROPFILES`, resolves source/destination app identity (Win32 + UWP), evaluates ABAC policy, blocks denied drops with toast + audit, wired into service lifecycle (Phase 40; APP-08)
+- **Browser Origin Clipboard Policies** — `source_origin`/`destination_origin` PolicyCondition variants, ABAC evaluator origin matching (`eq`/`ne`/`contains`), Chrome handler evaluates paste via `POLICY_EVALUATOR` callback with thread-local test override, admin TUI origin conditions builder with free-text URL input (Phase 41; BRW-04)
+- **Audit Enrichment** — `enrich_audit_with_app_identity()` resolves process path to `AppIdentity`, `ensure_app_identity_fields()` guarantees non-null schema, server-side validation (400 Bad Request), AGENT-UNKNOWN sentinel for unresolvable identity, covers USB/disk/clipboard/drag-drop/Chrome paths (Phase 42; AUDIT-04)
+
+**Known gaps at close:** None.
+
+---
+
 ## v0.7.1 Operational Hardening (Shipped: 2026-05-06)
 
 **Phases completed:** 6 phases, 13 plans, 23 tasks
