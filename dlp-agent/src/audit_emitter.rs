@@ -539,4 +539,100 @@ mod tests {
         let emitter = AuditEmitter::open(&nested, "audit.jsonl", DEFAULT_MAX_BYTES);
         assert!(emitter.is_ok());
     }
+
+    // -- Drag-and-drop audit tests (APP-08.3, AUDIT-04.3) --------------------
+
+    #[test]
+    fn test_drag_drop_audit_event_has_app_identity() {
+        use dlp_common::endpoint::{AppIdentity, AppTrustTier, SignatureState};
+
+        let src = AppIdentity {
+            image_path: r"C:\Source\app.exe".to_string(),
+            publisher: "Contoso Ltd".to_string(),
+            trust_tier: AppTrustTier::Trusted,
+            signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        };
+        let dest = AppIdentity {
+            image_path: r"C:\Dest\app.exe".to_string(),
+            publisher: "Fabrikam Inc".to_string(),
+            trust_tier: AppTrustTier::Untrusted,
+            signature_state: SignatureState::NotSigned,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        };
+
+        let mut event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            "dragdrop://session1".to_string(),
+            Classification::T3,
+            Action::DRAG_DROP,
+            Decision::DENY,
+            "AGENT-WS02-001".to_string(),
+            1,
+        )
+        .with_source_application(Some(src))
+        .with_destination_application(Some(dest));
+
+        let ctx = EmitContext {
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 1,
+            user_sid: "S-1-5-21-TEST".to_string(),
+            user_name: "testuser".to_string(),
+            machine_name: None,
+        };
+
+        emit_audit(&ctx, &mut event);
+
+        // Verify the event has both app identities after emission.
+        assert!(event.source_application.is_some());
+        assert!(event.destination_application.is_some());
+        let src = event.source_application.unwrap();
+        let dest = event.destination_application.unwrap();
+        assert_eq!(src.image_path, r"C:\Source\app.exe");
+        assert_eq!(src.publisher, "Contoso Ltd");
+        assert_eq!(dest.image_path, r"C:\Dest\app.exe");
+        assert_eq!(dest.publisher, "Fabrikam Inc");
+        assert_eq!(event.action_attempted, Action::DRAG_DROP);
+        assert_eq!(event.decision, Decision::DENY);
+    }
+
+    #[test]
+    fn test_drag_drop_audit_event_applies_agent_unknown_when_missing() {
+        // AUDIT-05: When app identity is missing, emit_audit replaces it
+        // with the AGENT-UNKNOWN sentinel.
+        let mut event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            "dragdrop://session1".to_string(),
+            Classification::T3,
+            Action::DRAG_DROP,
+            Decision::DENY,
+            "AGENT-WS02-001".to_string(),
+            1,
+        );
+        // Deliberately do NOT set source/destination application.
+
+        let ctx = EmitContext {
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 1,
+            user_sid: "S-1-5-21-TEST".to_string(),
+            user_name: "testuser".to_string(),
+            machine_name: None,
+        };
+
+        emit_audit(&ctx, &mut event);
+
+        // Both should be AGENT-UNKNOWN.
+        let src = event.source_application.expect("source must be set");
+        let dest = event.destination_application.expect("dest must be set");
+        assert_eq!(src.image_path, "AGENT-UNKNOWN");
+        assert_eq!(dest.image_path, "AGENT-UNKNOWN");
+    }
 }
