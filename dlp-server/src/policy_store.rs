@@ -2088,4 +2088,287 @@ mod tests {
         assert!(resp_v040.matched_policy_id.is_some());
         assert!(resp_explicit.matched_policy_id.is_some());
     }
+
+    // ---- Origin condition tests (Phase 41-02) ----
+
+    /// Builds an [`AbacContext`] with the given classification and origin fields.
+    fn make_ctx_with_origin(
+        classification: Classification,
+        source_origin: Option<&str>,
+        destination_origin: Option<&str>,
+    ) -> AbacContext {
+        let mut ctx = make_request(classification);
+        ctx.source_origin = source_origin.map(|s| s.to_string());
+        ctx.destination_origin = destination_origin.map(|s| s.to_string());
+        ctx
+    }
+
+    /// Builds a single-condition `SourceOrigin` policy.
+    fn make_source_origin_policy(op: &str, value: &str, action: Decision) -> Policy {
+        Policy {
+            id: "origin-p1".to_string(),
+            name: "origin-p1".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::SourceOrigin {
+                op: op.to_string(),
+                value: value.to_string(),
+            }],
+            action,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        }
+    }
+
+    /// Builds a single-condition `DestinationOrigin` policy.
+    fn make_dest_origin_policy(op: &str, value: &str, action: Decision) -> Policy {
+        Policy {
+            id: "origin-p2".to_string(),
+            name: "origin-p2".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::DestinationOrigin {
+                op: op.to_string(),
+                value: value.to_string(),
+            }],
+            action,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        }
+    }
+
+    // -- origin_matches helper tests --
+
+    #[test]
+    fn test_origin_matches_eq_exact() {
+        assert!(origin_matches(
+            "eq",
+            "https://sharepoint.com",
+            Some("https://sharepoint.com")
+        ));
+    }
+
+    #[test]
+    fn test_origin_matches_eq_no_match() {
+        assert!(!origin_matches(
+            "eq",
+            "https://sharepoint.com",
+            Some("https://example.com")
+        ));
+    }
+
+    #[test]
+    fn test_origin_matches_ne_match() {
+        assert!(origin_matches(
+            "ne",
+            "https://sharepoint.com",
+            Some("https://example.com")
+        ));
+    }
+
+    #[test]
+    fn test_origin_matches_contains_substring() {
+        assert!(origin_matches(
+            "contains",
+            "sharepoint",
+            Some("https://sharepoint.com")
+        ));
+    }
+
+    #[test]
+    fn test_origin_matches_contains_no_match() {
+        assert!(!origin_matches(
+            "contains",
+            "evil",
+            Some("https://sharepoint.com")
+        ));
+    }
+
+    #[test]
+    fn test_origin_matches_none_fails_closed() {
+        // D-03: None origin fails closed for all operators.
+        assert!(!origin_matches("eq", "https://sharepoint.com", None));
+        assert!(!origin_matches("ne", "https://sharepoint.com", None));
+        assert!(!origin_matches("contains", "sharepoint", None));
+    }
+
+    #[test]
+    fn test_origin_matches_unknown_op_returns_false() {
+        assert!(!origin_matches(
+            "gt",
+            "https://sharepoint.com",
+            Some("https://sharepoint.com")
+        ));
+    }
+
+    // -- End-to-end evaluate() tests with origin policies --
+
+    #[test]
+    fn test_evaluate_source_origin_eq_match() {
+        let policy = make_source_origin_policy("eq", "https://sharepoint.com", Decision::DENY);
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let ctx = make_ctx_with_origin(Classification::T3, Some("https://sharepoint.com"), None);
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-p1"));
+    }
+
+    #[test]
+    fn test_evaluate_source_origin_eq_no_match() {
+        let policy = make_source_origin_policy("eq", "https://sharepoint.com", Decision::DENY);
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let ctx = make_ctx_with_origin(Classification::T2, Some("https://example.com"), None);
+        let resp = store.evaluate(&ctx);
+        // No match -> default-allow for T2
+        assert_eq!(resp.decision, Decision::ALLOW);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_source_origin_contains_match() {
+        let policy = make_source_origin_policy("contains", "sharepoint", Decision::DENY);
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let ctx =
+            make_ctx_with_origin(Classification::T3, Some("https://sharepoint.com/path"), None);
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-p1"));
+    }
+
+    #[test]
+    fn test_evaluate_destination_origin_eq_match() {
+        let policy = make_dest_origin_policy("eq", "https://example.com", Decision::DENY);
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let ctx = make_ctx_with_origin(Classification::T3, None, Some("https://example.com"));
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-p2"));
+    }
+
+    #[test]
+    fn test_evaluate_source_origin_none_fails_closed() {
+        let policy = make_source_origin_policy("eq", "https://sharepoint.com", Decision::DENY);
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let ctx = make_ctx_with_origin(Classification::T3, None, None);
+        let resp = store.evaluate(&ctx);
+        // None origin + SourceOrigin condition -> no match -> default-deny for T3
+        assert_eq!(resp.decision, Decision::DENY);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_any_mode_source_origin_and_classification() {
+        let policy = Policy {
+            id: "origin-any".to_string(),
+            name: "origin any".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::SourceOrigin {
+                    op: "eq".to_string(),
+                    value: "https://sharepoint.com".to_string(),
+                },
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ANY,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // SourceOrigin misses (wrong origin) but Classification matches -> ANY fires
+        let ctx = make_ctx_with_origin(Classification::T3, Some("https://example.com"), None);
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-any"));
+    }
+
+    #[test]
+    fn test_evaluate_all_mode_source_origin_and_classification() {
+        let policy = Policy {
+            id: "origin-all".to_string(),
+            name: "origin all".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::SourceOrigin {
+                    op: "eq".to_string(),
+                    value: "https://sharepoint.com".to_string(),
+                },
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // Both match: origin == sharepoint AND classification == T3
+        let ctx = make_ctx_with_origin(Classification::T3, Some("https://sharepoint.com"), None);
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-all"));
+    }
+
+    #[test]
+    fn test_evaluate_all_mode_source_origin_misses_classification_matches() {
+        let policy = Policy {
+            id: "origin-all".to_string(),
+            name: "origin all".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::SourceOrigin {
+                    op: "eq".to_string(),
+                    value: "https://sharepoint.com".to_string(),
+                },
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // SourceOrigin misses (wrong origin) but Classification matches -> ALL does NOT fire
+        let ctx = make_ctx_with_origin(Classification::T3, Some("https://example.com"), None);
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY); // default-deny for T3
+        assert!(resp.matched_policy_id.is_none());
+    }
 }
