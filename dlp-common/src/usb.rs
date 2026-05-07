@@ -10,8 +10,10 @@ use crate::endpoint::DeviceIdentity;
 #[cfg(windows)]
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Get_Device_IDW, CM_Get_Parent, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
-    SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
-    SETUP_DI_REGISTRY_PROPERTY, SP_DEVINFO_DATA,
+    SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW, SetupDiGetDeviceInterfaceDetailW,
+    SetupDiGetDeviceRegistryPropertyW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
+    SETUP_DI_REGISTRY_PROPERTY, SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W,
+    SP_DEVINFO_DATA,
 };
 #[cfg(windows)]
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
@@ -99,21 +101,120 @@ pub fn parse_usb_device_path(dbcc_name: &str) -> DeviceIdentity {
 /// Looks up the SetupDi friendly name (or device description fallback) for
 /// the USB device whose interface path is `device_path`.
 ///
-/// Enumerates `GUID_DEVINTERFACE_USB_DEVICE` interfaces currently present,
-/// reads each device's instance ID to extract its VID/PID/serial, and
-/// returns the description for the device whose instance ID matches the
-/// parsed identity from `device_path`.
+/// Uses a two-tier matching strategy:
+///
+/// 1. **Primary (exact path):** Enumerates `GUID_DEVINTERFACE_USB_DEVICE`
+///    interfaces via `SetupDiEnumDeviceInterfaces`, calls
+///    `SetupDiGetDeviceInterfaceDetailW` to get the actual device path for
+///    each interface, and compares it directly to `device_path` using
+///    `eq_ignore_ascii_case`. This eliminates false-positive matches when
+///    multiple devices share the same VID+PID (e.g. a Bluetooth adapter and
+///    a SanDisk flash drive both with VID_0781).
+///
+/// 2. **Fallback (VID+PID+serial):** If exact path matching fails, falls
+///    back to the legacy VID+PID+serial matching via
+///    `SetupDiEnumDeviceInfo` + `SetupDiGetDeviceInstanceIdW`. This path
+///    is needed for the startup scan where only VID/PID/serial are known.
 ///
 /// Returns an empty string on any Win32 error or if no matching device is found.
 #[cfg(windows)]
 pub fn setupdi_description_for_device(device_path: &str) -> String {
+    let description = setupdi_description_by_exact_path(device_path);
+    if !description.is_empty() {
+        return description;
+    }
+
+    // Fallback: VID+PID+serial matching for startup scan path (D-09).
+    setupdi_description_by_vid_pid_serial(device_path)
+}
+
+/// Primary match strategy: exact device interface path comparison.
+///
+/// Enumerates `GUID_DEVINTERFACE_USB_DEVICE` interfaces and compares the
+/// `DevicePath` from `SetupDiGetDeviceInterfaceDetailW` directly against
+/// `device_path` using case-insensitive ASCII comparison.
+#[cfg(windows)]
+fn setupdi_description_by_exact_path(device_path: &str) -> String {
+    // SAFETY: passing GUID_DEVINTERFACE_USB_DEVICE + null enumerator string +
+    // DIGCF_PRESENT | DIGCF_DEVICEINTERFACE is a well-defined SetupDi usage that
+    // selects currently-present USB device interfaces.
+    let hdev = unsafe {
+        SetupDiGetClassDevsW(
+            Some(&GUID_DEVINTERFACE_USB_DEVICE),
+            windows::core::PCWSTR::null(),
+            None,
+            DIGCF_DEVICEINTERFACE | DIGCF_PRESENT,
+        )
+    };
+    let hdev = match hdev {
+        Ok(h) => h,
+        Err(_) => return String::new(),
+    };
+
+    let mut index: u32 = 0;
+
+    loop {
+        let mut interface_data = SP_DEVICE_INTERFACE_DATA {
+            cbSize: std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: hdev is valid; interface_data is owned stack memory with cbSize set.
+        // Loop terminates on the first Err (ERROR_NO_MORE_ITEMS).
+        if unsafe {
+            SetupDiEnumDeviceInterfaces(
+                hdev,
+                None,
+                &GUID_DEVINTERFACE_USB_DEVICE,
+                index,
+                &mut interface_data,
+            )
+        }
+        .is_err()
+        {
+            break;
+        }
+
+        // Retrieve the device interface path and the associated SP_DEVINFO_DATA.
+        if let Some((path, devinfo)) = get_device_interface_path_and_devinfo(hdev, &interface_data)
+        {
+            // Case-insensitive comparison: Windows device paths can differ in
+            // casing (e.g. `USB#VID_0781` vs `USB#vid_0781`).
+            if path.eq_ignore_ascii_case(device_path) {
+                let desc = read_string_property(hdev, &devinfo, SPDRP_FRIENDLYNAME)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| read_string_property(hdev, &devinfo, SPDRP_DEVICEDESC))
+                    .unwrap_or_default();
+                // SAFETY: hdev is a valid handle from SetupDiGetClassDevsW above.
+                let _ = unsafe { SetupDiDestroyDeviceInfoList(hdev) };
+                return desc;
+            }
+        }
+
+        index += 1;
+        // Safety valve: bound the loop against a pathological enumeration.
+        if index > 1024 {
+            break;
+        }
+    }
+
+    // SAFETY: hdev is a valid handle obtained from SetupDiGetClassDevsW above.
+    let _ = unsafe { SetupDiDestroyDeviceInfoList(hdev) };
+
+    String::new()
+}
+
+/// Fallback match strategy: VID+PID+serial matching.
+///
+/// Used when exact path matching fails, primarily for the startup scan path
+/// where only VID/PID/serial are available (D-09).
+#[cfg(windows)]
+fn setupdi_description_by_vid_pid_serial(device_path: &str) -> String {
     use windows::Win32::Devices::DeviceAndDriverInstallation::SetupDiGetDeviceInstanceIdW;
 
     let parsed = parse_usb_device_path(device_path);
 
     // SAFETY: passing GUID_DEVINTERFACE_USB_DEVICE + null enumerator string +
-    // DIGCF_PRESENT | DIGCF_DEVICEINTERFACE is a well-defined SetupDi usage that
-    // selects currently-present USB device interfaces.
+    // DIGCF_PRESENT | DIGCF_DEVICEINTERFACE is a well-defined SetupDi usage.
     let hdev = unsafe {
         SetupDiGetClassDevsW(
             Some(&GUID_DEVINTERFACE_USB_DEVICE),
@@ -135,7 +236,6 @@ pub fn setupdi_description_for_device(device_path: &str) -> String {
             ..Default::default()
         };
         // SAFETY: hdev is valid; devinfo is owned stack memory with cbSize set.
-        // Loop terminates on the first Err (ERROR_NO_MORE_ITEMS).
         if unsafe { SetupDiEnumDeviceInfo(hdev, index, &mut devinfo) }.is_err() {
             break;
         }
@@ -192,6 +292,79 @@ pub fn setupdi_description_for_device(device_path: &str) -> String {
     let _ = unsafe { SetupDiDestroyDeviceInfoList(hdev) };
 
     String::new()
+}
+
+/// Retrieve the device interface path and associated `SP_DEVINFO_DATA` from a
+/// `SP_DEVICE_INTERFACE_DATA` entry.
+///
+/// Calls `SetupDiGetDeviceInterfaceDetailW` twice (size probe + detail fetch)
+/// and extracts the null-terminated `DevicePath` string. The `SP_DEVINFO_DATA`
+/// output from the second call is returned alongside the path so callers can
+/// read device properties (friendly name, description) on match.
+///
+/// # Arguments
+///
+/// * `hdev` -- valid `HDEVINFO` device set.
+/// * `interface_data` -- the interface data returned by `SetupDiEnumDeviceInterfaces`.
+///
+/// # Returns
+///
+/// `Some((path, devinfo))` on success, or `None` on any error.
+#[cfg(windows)]
+fn get_device_interface_path_and_devinfo(
+    hdev: windows::Win32::Devices::DeviceAndDriverInstallation::HDEVINFO,
+    interface_data: &SP_DEVICE_INTERFACE_DATA,
+) -> Option<(String, SP_DEVINFO_DATA)> {
+    let mut required: u32 = 0;
+    // SAFETY: First call with None buffer to query required size.
+    let _ = unsafe {
+        SetupDiGetDeviceInterfaceDetailW(hdev, interface_data, None, 0, Some(&mut required), None)
+    };
+    if required == 0 {
+        return None;
+    }
+
+    let mut buf = vec![0u8; required as usize];
+    let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
+    // SAFETY: SP_DEVICE_INTERFACE_DETAIL_DATA_W starts with cbSize (u32) then DevicePath.
+    unsafe {
+        (*detail).cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
+    }
+
+    let mut devinfo = SP_DEVINFO_DATA {
+        cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+        ..Default::default()
+    };
+
+    // SAFETY: Second call with allocated buffer and devinfo output.
+    let ok = unsafe {
+        SetupDiGetDeviceInterfaceDetailW(
+            hdev,
+            interface_data,
+            Some(detail),
+            required,
+            None,
+            Some(&mut devinfo),
+        )
+    };
+    if ok.is_err() {
+        return None;
+    }
+
+    // Extract the device path from the detail structure.
+    let path_wide: Vec<u16> = unsafe {
+        std::slice::from_raw_parts(
+            (*detail).DevicePath.as_ptr(),
+            (required as usize - std::mem::size_of::<u32>()) / 2,
+        )
+    }
+    .iter()
+    .copied()
+    .take_while(|&w| w != 0)
+    .collect();
+    let path = String::from_utf16_lossy(&path_wide);
+
+    Some((path, devinfo))
 }
 
 /// Reads a UTF-16 string property from a `SP_DEVINFO_DATA` entry.
@@ -708,5 +881,35 @@ mod tests {
         // Assert the function returns a Result (either Ok or Err is acceptable
         // since we cannot control which USB devices are connected).
         let _ = result;
+    }
+
+    // -------------------------------------------------------------------------
+    // setupdi_description_for_device -- exact-path matching (Phase 43-01)
+    // -------------------------------------------------------------------------
+
+    /// Calls `setupdi_description_for_device` with a known-nonexistent path and
+    /// asserts it does not panic, returning an empty string or falling back
+    /// gracefully. This is a no-crash smoke test since we cannot control which
+    /// USB devices are connected in CI.
+    #[test]
+    #[cfg(windows)]
+    fn test_setupdi_description_exact_path_no_crash() {
+        // A path that is extremely unlikely to match any real device.
+        let fake_path =
+            r"\\?\USB#VID_FFFF&PID_FFFF#NONEXISTENT#{a5dcbf10-6530-11d2-901f-00c04fb951ed}";
+        let result = setupdi_description_for_device(fake_path);
+        // Must not panic. Empty string is expected since no device matches.
+        assert_eq!(result, "");
+    }
+
+    /// Compile-time signature check for `setupdi_description_for_device`.
+    ///
+    /// On non-Windows targets the function is not compiled, so this test
+    /// asserts the function exists with the correct signature via type-checking.
+    #[test]
+    #[cfg(not(windows))]
+    fn test_setupdi_description_signature_compiles() {
+        // Type-check the function signature: fn(&str) -> String
+        let _ = setupdi_description_for_device as fn(&str) -> String;
     }
 }
