@@ -171,8 +171,8 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
-use dlp_common::AuditEvent;
 use dlp_common::endpoint::agent_unknown_app;
+use dlp_common::AuditEvent;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::sync::Arc;

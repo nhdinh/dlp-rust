@@ -233,38 +233,36 @@ impl AgentConfig {
         // Use serde_ignored to detect unknown TOML keys without aborting load (OP-03).
         let mut unknown_keys: Vec<String> = Vec::new();
         let deserializer = toml::de::Deserializer::new(content);
-        let config: AgentConfig = match serde_ignored::deserialize::<_, _, AgentConfig>(
-            deserializer,
-            |path| {
+        let config: AgentConfig =
+            match serde_ignored::deserialize::<_, _, AgentConfig>(deserializer, |path| {
                 unknown_keys.push(path.to_string());
-            },
-        ) {
-            Ok(config) => {
-                if !unknown_keys.is_empty() {
+            }) {
+                Ok(config) => {
+                    if !unknown_keys.is_empty() {
+                        warn!(
+                            path = %path.display(),
+                            keys = ?unknown_keys,
+                            "unknown TOML keys in config -- ignored"
+                        );
+                    }
+                    info!(
+                        path = %path.display(),
+                        server_url = ?config.server_url,
+                        monitored = config.monitored_paths.len(),
+                        excluded = config.excluded_paths.len(),
+                        "agent config loaded"
+                    );
+                    config
+                }
+                Err(e) => {
                     warn!(
                         path = %path.display(),
-                        keys = ?unknown_keys,
-                        "unknown TOML keys in config -- ignored"
+                        error = %e,
+                        "failed to parse config — using defaults"
                     );
+                    Self::default()
                 }
-                info!(
-                    path = %path.display(),
-                    server_url = ?config.server_url,
-                    monitored = config.monitored_paths.len(),
-                    excluded = config.excluded_paths.len(),
-                    "agent config loaded"
-                );
-                config
-            }
-            Err(e) => {
-                warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "failed to parse config — using defaults"
-                );
-                Self::default()
-            }
-        };
+            };
         config
     }
 
@@ -416,7 +414,9 @@ impl AgentConfig {
     ///   default) and a `warn!` is emitted.
     /// - In-range values pass through unchanged.
     pub fn resolved_poll_interval(&self) -> std::time::Duration {
-        let raw = self.poll_interval_secs.unwrap_or(POLL_INTERVAL_DEFAULT_SECS);
+        let raw = self
+            .poll_interval_secs
+            .unwrap_or(POLL_INTERVAL_DEFAULT_SECS);
         if raw < POLL_INTERVAL_MIN_SECS {
             warn!(
                 requested = raw,
@@ -1017,12 +1017,9 @@ mod tests {
     fn load_from_str(content: &str) -> AgentConfig {
         let mut unknown_keys: Vec<String> = Vec::new();
         let deserializer = toml::de::Deserializer::new(content);
-        match serde_ignored::deserialize::<_, _, AgentConfig>(
-            deserializer,
-            |path| {
-                unknown_keys.push(path.to_string());
-            },
-        ) {
+        match serde_ignored::deserialize::<_, _, AgentConfig>(deserializer, |path| {
+            unknown_keys.push(path.to_string());
+        }) {
             Ok(config) => config,
             Err(_) => AgentConfig::default(),
         }

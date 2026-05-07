@@ -3,15 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.8.0
 milestone_name: - Application-Aware DLP
 status: executing
-stopped_at: context exhaustion at 75% (2026-05-07)
-last_updated: "2026-05-07T01:30:51.809Z"
-last_activity: 2026-05-07 -- Phase 41 execution started
+last_updated: "2026-05-07T07:00:00.000Z"
+last_activity: 2026-05-07 -- Phase 41 complete, Phase 42 next
 progress:
   total_phases: 4
-  completed_phases: 1
+  completed_phases: 3
   total_plans: 12
-  completed_plans: 4
-  percent: 33
+  completed_plans: 10
+  percent: 75
 ---
 
 # Project State
@@ -26,16 +25,16 @@ progress:
 
 ## Current Position
 
-Phase: 41 (browser-origin-clipboard-policies) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 41
-Last activity: 2026-05-07 -- Phase 41 execution started
+Phase: 42 (audit-enrichment-app-identity) — NEXT
+Plan: TBD
+Status: Phase 41 complete — ready for Phase 42
+Last activity: 2026-05-07 -- Phase 41 completed (all 4 plans done)
 
 ## Progress
 
 v0.7.0 [Phase 33 done | Phase 34 done | Phase 35 done | Phase 36 done | Phase 37 done | Phase 38 done | Phase 38.1 done | Phase 38.2 done]
 v0.7.1 [Phase 38.3 done | Phase 38.4 done | Phase 38.5 done | Phase 38.6 done]
-v0.8.0 [Phase 39 done | Phase 40 done | Phase 41 pending | Phase 42 pending]
+v0.8.0 [Phase 39 done | Phase 40 done | Phase 41 done | Phase 42 pending]
 
 ---
 
@@ -48,13 +47,16 @@ v0.8.0 [Phase 39 done | Phase 40 done | Phase 41 pending | Phase 42 pending]
 5. Lock-order invariant: config mutex MUST be acquired and released BEFORE acquiring instance_id_map.write() (T-37-13).
 6. Phase 39: UWP App Identity complete — AUMID resolution via GetApplicationUserModelId, ABAC evaluator extended, TUI conditions builder updated.
 7. Phase 40: Drag-and-Drop Enforcement complete — WH_GETMESSAGE hook, WM_DROPFILES interception, app identity resolution, ABAC evaluation, service lifecycle integration.
+8. Phase 41: Browser Origin Clipboard Policies complete — SourceOrigin/DestinationOrigin ABAC condition variants, origin condition matching in evaluator, Chrome handler ABAC evaluation with thread-local test isolation, admin TUI origin conditions builder.
+9. Chrome Content Analysis API v1 limitation: destination_origin is always None; source_origin maps to the paste page URL.
+10. Thread-local test override (TEST_EVALUATOR_OVERRIDE) eliminates parallel test races for Chrome handler ABAC tests.
 
 ---
 
 ## Session Continuity
 
-Last session: 2026-05-07T00:49:24.128Z
-Stopped at: context exhaustion at 75% (2026-05-07)
+Last session: 2026-05-07T02:22:20.774Z
+Stopped at: context exhaustion at 100% (2026-05-07)
 Resume file: None
 
 ---
@@ -62,14 +64,14 @@ Resume file: None
 ## Pending Todos
 
 Phase 40: Drag-and-Drop Enforcement — COMPLETE
-Phase 41: Browser Origin Clipboard Policies — next
-Phase 42: Audit Enrichment — App Identity Fields — not started
+Phase 41: Browser Origin Clipboard Policies — COMPLETE
+Phase 42: Audit Enrichment — App Identity Fields — next
 
 ---
 
 ## Blockers
 
-None. Phase 40 complete. Phase 41 is next.
+None. Phase 41 complete. Phase 42 is next.
 
 ---
 
@@ -80,5 +82,5 @@ None. Phase 40 complete. Phase 41 is next.
 - v0.8.0 phases 39-42 define Application-Aware DLP:
   - Phase 39: UWP App Identity (APP-07) — DONE
   - Phase 40: Drag-and-Drop Enforcement (APP-08) — DONE
-  - Phase 41: Browser Origin Clipboard Policies (BRW-04) — NEXT
-  - Phase 42: Audit Enrichment — App Identity Fields (AUDIT-04) — pending
+  - Phase 41: Browser Origin Clipboard Policies (BRW-04) — DONE
+  - Phase 42: Audit Enrichment — App Identity Fields (AUDIT-04) — NEXT

@@ -366,7 +366,11 @@ fn app_identity_matches(
         AppField::PackageFamilyName => match op {
             "eq" => app.package_family_name.as_deref().unwrap_or("") == value,
             "ne" => app.package_family_name.as_deref().unwrap_or("") != value,
-            "contains" => app.package_family_name.as_deref().unwrap_or("").contains(value),
+            "contains" => app
+                .package_family_name
+                .as_deref()
+                .unwrap_or("")
+                .contains(value),
             _ => false,
         },
     }
@@ -1945,7 +1949,9 @@ mod tests {
         use dlp_common::endpoint::{AppTrustTier, SignatureState};
         dlp_common::endpoint::AppIdentity {
             publisher: "Microsoft Corporation".to_string(),
-            image_path: r"C:\Program Files\WindowsApps\Microsoft.Windows.Photos_8wekyb3d8bbwe\Photos.exe".to_string(),
+            image_path:
+                r"C:\Program Files\WindowsApps\Microsoft.Windows.Photos_8wekyb3d8bbwe\Photos.exe"
+                    .to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,
             aumid: Some(aumid.to_string()),
@@ -2239,8 +2245,11 @@ mod tests {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
-        let ctx =
-            make_ctx_with_origin(Classification::T3, Some("https://sharepoint.com/path"), None);
+        let ctx = make_ctx_with_origin(
+            Classification::T3,
+            Some("https://sharepoint.com/path"),
+            None,
+        );
         let resp = store.evaluate(&ctx);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-p1"));

@@ -470,10 +470,10 @@ mod tests {
                 publisher: "Contoso".to_string(),
                 trust_tier: AppTrustTier::Trusted,
                 signature_state: SignatureState::Valid,
-            aumid: None,
-            package_family_name: None,
-            is_uwp: false,
-        }),
+                aumid: None,
+                package_family_name: None,
+                is_uwp: false,
+            }),
             ..Default::default()
         };
         let json = serde_json::to_string(&ctx).unwrap();
@@ -496,19 +496,19 @@ mod tests {
                 publisher: "Adobe Inc.".to_string(),
                 trust_tier: AppTrustTier::Trusted,
                 signature_state: SignatureState::Valid,
-            aumid: None,
-            package_family_name: None,
-            is_uwp: false,
-        }),
+                aumid: None,
+                package_family_name: None,
+                is_uwp: false,
+            }),
             destination_application: Some(AppIdentity {
                 image_path: r"C:\dst.exe".to_string(),
                 publisher: "Unknown".to_string(),
                 trust_tier: AppTrustTier::Untrusted,
                 signature_state: SignatureState::NotSigned,
-            aumid: None,
-            package_family_name: None,
-            is_uwp: false,
-        }),
+                aumid: None,
+                package_family_name: None,
+                is_uwp: false,
+            }),
             ..Default::default()
         };
         let json = serde_json::to_string(&req).unwrap();
@@ -717,10 +717,10 @@ mod tests {
                 image_path: r"C:\app.exe".to_string(),
                 trust_tier: AppTrustTier::Trusted,
                 signature_state: SignatureState::Valid,
-            aumid: None,
-            package_family_name: None,
-            is_uwp: false,
-        }),
+                aumid: None,
+                package_family_name: None,
+                is_uwp: false,
+            }),
             ..Default::default()
         };
         let ctx: AbacContext = req.into();
@@ -755,10 +755,10 @@ mod tests {
                 image_path: r"C:\dst.exe".to_string(),
                 trust_tier: AppTrustTier::Untrusted,
                 signature_state: SignatureState::NotSigned,
-            aumid: None,
-            package_family_name: None,
-            is_uwp: false,
-        }),
+                aumid: None,
+                package_family_name: None,
+                is_uwp: false,
+            }),
             ..Default::default()
         };
         let ctx: AbacContext = req.into();
@@ -782,8 +782,8 @@ mod phase37_action_tests {
     /// Verify `DiskRegistryAdd` serializes to its literal variant name (no rename).
     #[test]
     fn test_disk_registry_add_serializes_as_variant_name() {
-        let json = serde_json::to_string(&Action::DiskRegistryAdd)
-            .expect("serialize DiskRegistryAdd");
+        let json =
+            serde_json::to_string(&Action::DiskRegistryAdd).expect("serialize DiskRegistryAdd");
         assert_eq!(
             json, "\"DiskRegistryAdd\"",
             "DiskRegistryAdd must serialize as its literal variant name per D-08"
@@ -804,8 +804,8 @@ mod phase37_action_tests {
     /// Verify `"DiskRegistryAdd"` deserializes back to the correct variant.
     #[test]
     fn test_disk_registry_add_deserializes_from_variant_name() {
-        let action: Action = serde_json::from_str("\"DiskRegistryAdd\"")
-            .expect("deserialize DiskRegistryAdd");
+        let action: Action =
+            serde_json::from_str("\"DiskRegistryAdd\"").expect("deserialize DiskRegistryAdd");
         assert_eq!(
             action,
             Action::DiskRegistryAdd,
@@ -826,8 +826,7 @@ mod phase37_action_tests {
     /// Verify `DRAG_DROP` serializes as its literal variant name (no rename).
     #[test]
     fn test_drag_drop_serializes_as_variant_name() {
-        let json = serde_json::to_string(&Action::DRAG_DROP)
-            .expect("serialize DRAG_DROP");
+        let json = serde_json::to_string(&Action::DRAG_DROP).expect("serialize DRAG_DROP");
         assert_eq!(
             json, "\"DRAG_DROP\"",
             "DRAG_DROP must serialize as its literal variant name per APP-08"
@@ -837,8 +836,7 @@ mod phase37_action_tests {
     /// Verify `"DRAG_DROP"` deserializes back to the correct variant.
     #[test]
     fn test_drag_drop_deserializes_from_variant_name() {
-        let action: Action = serde_json::from_str("\"DRAG_DROP\"")
-            .expect("deserialize DRAG_DROP");
+        let action: Action = serde_json::from_str("\"DRAG_DROP\"").expect("deserialize DRAG_DROP");
         assert_eq!(
             action,
             Action::DRAG_DROP,

@@ -874,8 +874,8 @@ mod tests {
             "offline_cache_enabled": false,
             "ldap_config": null
         }"#;
-        let payload: AgentConfigPayload =
-            serde_json::from_str(json).expect("deserialization must succeed without disk_allowlist");
+        let payload: AgentConfigPayload = serde_json::from_str(json)
+            .expect("deserialization must succeed without disk_allowlist");
         // #[serde(default)] must yield an empty Vec when the field is absent.
         assert!(
             payload.disk_allowlist.is_empty(),
@@ -926,7 +926,10 @@ mod tests {
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
         // PartialEq on DiskIdentity covers all fields including encryption_status.
-        assert_eq!(rt.disk_allowlist, disks, "disk_allowlist must survive roundtrip unchanged");
+        assert_eq!(
+            rt.disk_allowlist, disks,
+            "disk_allowlist must survive roundtrip unchanged"
+        );
     }
 
     /// Verify that a JSON payload containing a `disk_allowlist` entry with an

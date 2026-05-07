@@ -439,7 +439,8 @@ pub fn set_device_controller(
 /// Returns the global device controller reference, if set.
 #[cfg(windows)]
 #[must_use]
-pub fn get_device_controller() -> Option<std::sync::Arc<crate::device_controller::DeviceController>> {
+pub fn get_device_controller() -> Option<std::sync::Arc<crate::device_controller::DeviceController>>
+{
     DEVICE_CONTROLLER.get().cloned()
 }
 
