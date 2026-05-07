@@ -19,7 +19,7 @@ Phase 43 closes the enforcement gap identified in the debug session `usb-deny-lo
 - **D-01:** Runtime-configurable failure mode for Blocked-tier enforcement. Three options stored in operator config (SQLite):
   - `Hard error` — Return Err when EITHER PnP disable OR DACL deny-all fails
   - `Warning only` (default) — Current behavior: return Ok if at least one layer succeeds
-  - `Retry then error` — Retry PnP disable up to 3 times with 100ms backoff, then fail hard
+  - `Retry then error` — Retry PnP disable up to 3 times with 100ms backoff, then fail hard if PnP STILL fails. DACL is defense-in-depth, NOT a substitute for PnP success.
 - **D-02:** The config key is `usb_blocked_failure_mode` (string enum). Default: `"Warning only"`.
 - **D-03:** Admin sets this via dlp-server admin API (`POST /admin/config`) and TUI. Agent polls the config on its normal refresh interval.
 
