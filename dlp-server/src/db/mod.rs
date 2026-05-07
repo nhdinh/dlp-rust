@@ -300,6 +300,47 @@ pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
         "owner_user",
         "device_registry",
     )?;
+
+    // Phase 43: USB enforcement config columns.
+    run_alter(
+        conn,
+        "ALTER TABLE global_agent_config ADD COLUMN usb_blocked_failure_mode TEXT NOT NULL DEFAULT 'Warning only'",
+        "usb_blocked_failure_mode",
+        "global_agent_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE global_agent_config ADD COLUMN usb_startup_resolution_mode TEXT NOT NULL DEFAULT 'VID/PID/serial fallback'",
+        "usb_startup_resolution_mode",
+        "global_agent_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE global_agent_config ADD COLUMN usb_none_serial_policy TEXT NOT NULL DEFAULT 'Always Blocked'",
+        "usb_none_serial_policy",
+        "global_agent_config",
+    )?;
+
+    // Phase 43: USB enforcement config columns for per-agent overrides.
+    run_alter(
+        conn,
+        "ALTER TABLE agent_config_overrides ADD COLUMN usb_blocked_failure_mode TEXT NOT NULL DEFAULT 'Warning only'",
+        "usb_blocked_failure_mode",
+        "agent_config_overrides",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE agent_config_overrides ADD COLUMN usb_startup_resolution_mode TEXT NOT NULL DEFAULT 'VID/PID/serial fallback'",
+        "usb_startup_resolution_mode",
+        "agent_config_overrides",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE agent_config_overrides ADD COLUMN usb_none_serial_policy TEXT NOT NULL DEFAULT 'Always Blocked'",
+        "usb_none_serial_policy",
+        "agent_config_overrides",
+    )?;
+
     Ok(())
 }
 
@@ -821,5 +862,63 @@ mod tests {
             count, 4,
             "all four valid statuses must insert without error"
         );
+    }
+
+    #[test]
+    fn test_global_agent_config_usb_columns() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        // Verify columns exist in global_agent_config.
+        let global_cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(global_agent_config)")
+            .expect("prepare pragma")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query pragma")
+            .filter_map(Result::ok)
+            .collect();
+        for col in &[
+            "usb_blocked_failure_mode",
+            "usb_startup_resolution_mode",
+            "usb_none_serial_policy",
+        ] {
+            assert!(
+                global_cols.contains(&col.to_string()),
+                "global_agent_config must have column '{col}'; found {global_cols:?}"
+            );
+        }
+
+        // Verify columns exist in agent_config_overrides.
+        let override_cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(agent_config_overrides)")
+            .expect("prepare pragma")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query pragma")
+            .filter_map(Result::ok)
+            .collect();
+        for col in &[
+            "usb_blocked_failure_mode",
+            "usb_startup_resolution_mode",
+            "usb_none_serial_policy",
+        ] {
+            assert!(
+                override_cols.contains(&col.to_string()),
+                "agent_config_overrides must have column '{col}'; found {override_cols:?}"
+            );
+        }
+
+        // Verify seed row defaults in global_agent_config.
+        let (failure_mode, resolution_mode, none_policy): (String, String, String) = conn
+            .query_row(
+                "SELECT usb_blocked_failure_mode, usb_startup_resolution_mode, \
+                 usb_none_serial_policy \
+                 FROM global_agent_config WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("seed row must exist");
+        assert_eq!(failure_mode, "Warning only");
+        assert_eq!(resolution_mode, "VID/PID/serial fallback");
+        assert_eq!(none_policy, "Always Blocked");
     }
 }
