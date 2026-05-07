@@ -864,10 +864,10 @@ mod tests {
 
     // -- Hook install/uninstall tests ----------------------------------------
 
+    #[cfg(not(windows))]
     #[test]
     fn test_install_uninstall_drag_drop_hook() {
-        // On non-Windows, install/uninstall should work (no-op).
-        // On Windows, it would actually install the hook.
+        // On non-Windows, install/uninstall uses the no-op fallback.
         assert!(!is_hook_installed());
 
         let result = install_drag_drop_hook(1);
@@ -878,13 +878,14 @@ mod tests {
         assert!(!is_hook_installed());
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_double_install_fails() {
-        // First install should succeed.
+        // First install should succeed (no-op on non-Windows).
         let result1 = install_drag_drop_hook(1);
         assert!(result1.is_ok());
 
-        // Second install should fail.
+        // Second install should fail (guard detects already installed).
         let result2 = install_drag_drop_hook(2);
         assert!(result2.is_err(), "double install should fail");
 
