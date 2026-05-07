@@ -181,6 +181,15 @@ pub fn run_service() -> Result<()> {
         None,
     )?;
 
+    // Install the drag-and-drop hook (APP-08, Phase 40).
+    // Runs in the service process; the hook thread sees messages from the
+    // interactive user session when the UI is spawned via CreateProcessAsUserW.
+    if let Err(e) = crate::interception::install_drag_drop_hook(1) {
+        warn!(error = %e, "drag-drop hook installation failed — drag-and-drop enforcement disabled");
+    } else {
+        info!("drag-drop hook installed");
+    }
+
     // Enter the main run loop.
     // NOTE: USB notification registration has been moved inside run_loop (Approach A)
     // so that usb_wndproc can schedule async refreshes on the live tokio runtime via
@@ -772,6 +781,9 @@ async fn run_loop(
     // Initialise the clipboard listener's audit emit context.
     crate::clipboard::listener::init_emit_context(audit_ctx.clone());
 
+    // Initialise the drag-and-drop enforcer's audit emit context (APP-08, Phase 40).
+    crate::interception::init_drag_drop_emit_context(audit_ctx.clone());
+
     // ── Disk Enumeration (Phase 33) ───────────────────────────────────────
     // Initialize the DiskEnumerator and spawn the background enumeration task.
     // This runs after USB setup so both detectors are available for Phase 36.
@@ -914,6 +926,11 @@ async fn run_loop(
             service_name = SERVICE_NAME,
             "shutting down enforcement subsystems"
         );
+
+        // Uninstall the drag-and-drop hook (APP-08, Phase 40).
+        crate::password_stop::debug_log("run_loop: uninstalling drag-drop hook");
+        crate::interception::uninstall_drag_drop_hook();
+        crate::password_stop::debug_log("run_loop: drag-drop hook uninstalled");
 
         // Stop the file monitor first so no new events arrive.
         crate::password_stop::debug_log("run_loop: stopping file monitor");
