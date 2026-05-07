@@ -107,8 +107,8 @@ pub fn run_service() -> Result<()> {
     // second instance to start.  On non-Windows targets the call is a no-op
     // that returns (), so we use cfg to keep the binding type consistent.
     #[cfg(windows)]
-    let _instance_mutex = acquire_instance_mutex()
-        .context("failed to acquire single-instance mutex")?;
+    let _instance_mutex =
+        acquire_instance_mutex().context("failed to acquire single-instance mutex")?;
     #[cfg(not(windows))]
     acquire_instance_mutex();
 
@@ -156,6 +156,13 @@ pub fn run_service() -> Result<()> {
     // ── Start Chrome Content Analysis pipe server ────────────────
     // Spawn as a dedicated std::thread (NOT a tokio task) because
     // ConnectNamedPipeW and ReadFile block the calling thread.
+    //
+    // Phase 41: Wire the ABAC policy evaluator before spawning the thread.
+    // The evaluator wraps the managed-origins cache in the ABAC
+    // EvaluateRequest/EvaluateResponse shape so the Chrome handler
+    // speaks ABAC while the backing evaluation still uses the cache
+    // until full OfflineManager integration.
+    crate::chrome::handler::set_policy_evaluator(chrome_policy_evaluator);
     let chrome_handle = std::thread::Builder::new()
         .name("chrome-pipe".into())
         .spawn(|| {
@@ -234,7 +241,10 @@ pub fn run_service() -> Result<()> {
 /// - The new `Vec<DiskIdentity>` from the server payload (entries to insert/overwrite).
 ///
 /// `None` is returned when `disk_allowlist` did not change (no merge needed).
-type DiskMergeData = Option<(std::collections::HashSet<String>, Vec<dlp_common::DiskIdentity>)>;
+type DiskMergeData = Option<(
+    std::collections::HashSet<String>,
+    Vec<dlp_common::DiskIdentity>,
+)>;
 
 /// Diffs a server-pushed `AgentConfigPayload` against in-memory `AgentConfig`
 /// and applies all detected changes including the `disk_allowlist` merge.
@@ -806,9 +816,7 @@ async fn run_loop(
     //
     // Phase 38.2 GAP-01: register the tokio runtime handle BEFORE spawning
     // so the deferred disk-arrival path (500 ms sleep) has a handle.
-    crate::detection::device_watcher::set_runtime_handle(
-        tokio::runtime::Handle::current()
-    );
+    crate::detection::device_watcher::set_runtime_handle(tokio::runtime::Handle::current());
     let device_watcher_cleanup =
         match crate::detection::spawn_device_watcher_task(audit_ctx.clone()) {
             Ok((hwnd, thread)) => {
@@ -1064,7 +1072,8 @@ async fn run_loop(
             service_name = SERVICE_NAME,
             "enforcement subsystems stopped"
         );
-    }).await;
+    })
+    .await;
 
     match shutdown_result {
         Ok(()) => {
@@ -1080,6 +1089,41 @@ async fn run_loop(
     }
 
     Ok(())
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Chrome policy evaluator (Phase 41)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Synchronous policy evaluator for the Chrome handler.
+///
+/// Evaluates the request against the managed-origins cache via the ABAC
+/// EvaluateRequest/EvaluateResponse shape. This is the Phase 41 bridge:
+/// the Chrome handler now speaks ABAC, but the backing evaluation still
+/// uses the managed-origins cache until full policy cache integration.
+fn chrome_policy_evaluator(
+    request: &dlp_common::abac::EvaluateRequest,
+) -> dlp_common::abac::EvaluateResponse {
+    use dlp_common::abac::{Decision, EvaluateResponse};
+
+    let should_block = request.source_origin.as_ref().is_some_and(|origin| {
+        // Access the global origins cache (same cache the old handler used).
+        crate::chrome::handler::origins_cache_is_managed(origin)
+    });
+
+    if should_block {
+        EvaluateResponse {
+            decision: Decision::DENY,
+            matched_policy_id: Some("managed-origins".to_string()),
+            reason: "Source origin is in managed-origins list".to_string(),
+        }
+    } else {
+        EvaluateResponse {
+            decision: Decision::ALLOW,
+            matched_policy_id: None,
+            reason: "Source origin is not managed".to_string(),
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1278,21 +1322,19 @@ fn report_scm_status(state: ServiceState, controls: ServiceControlAccept, wait_h
 /// Returns `Err` on unexpected Win32 API failures.
 #[cfg(windows)]
 fn acquire_instance_mutex() -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+    use windows::core::PCWSTR;
     use windows::Win32::Foundation::{GetLastError, WIN32_ERROR};
     use windows::Win32::System::Threading::CreateMutexW;
-    use windows::core::PCWSTR;
 
     // Null-terminated UTF-16 name in the Global kernel namespace.
-    let name: Vec<u16> = "Global\\DlpAgentSingleInstance\0"
-        .encode_utf16()
-        .collect();
+    let name: Vec<u16> = "Global\\DlpAgentSingleInstance\0".encode_utf16().collect();
 
     // SAFETY: `name` is a valid null-terminated UTF-16 string; the handle is
     // immediately checked and stored for the service lifetime.
     let handle = unsafe {
         CreateMutexW(
-            None,  // default security — inheritable by child processes
-            true,  // bInitialOwner: this instance claims ownership immediately
+            None, // default security — inheritable by child processes
+            true, // bInitialOwner: this instance claims ownership immediately
             PCWSTR(name.as_ptr()),
         )?
     };
@@ -1317,7 +1359,10 @@ fn acquire_instance_mutex() -> windows::core::Result<windows::Win32::Foundation:
 /// No-op stub for non-Windows targets (tests, cross-compilation).
 #[cfg(not(windows))]
 fn acquire_instance_mutex() {
-    info!(service_name = SERVICE_NAME, "single-instance check skipped (non-Windows)");
+    info!(
+        service_name = SERVICE_NAME,
+        "single-instance check skipped (non-Windows)"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1378,9 +1423,12 @@ mod tests {
         assert!(changed_fields.contains(&"disk_allowlist"));
 
         // Merge data must be provided for the deferred map update.
-        let (old_ids, new_list) = disk_merge_data
-            .expect("disk_merge_data must be Some when disk_allowlist changed");
-        assert!(old_ids.is_empty(), "old_ids must be empty on first-time apply");
+        let (old_ids, new_list) =
+            disk_merge_data.expect("disk_merge_data must be Some when disk_allowlist changed");
+        assert!(
+            old_ids.is_empty(),
+            "old_ids must be empty on first-time apply"
+        );
         assert_eq!(new_list.len(), 2);
 
         // Apply the merge into a real DiskEnumerator.
@@ -1389,8 +1437,14 @@ mod tests {
 
         // Both disks must be in instance_id_map.
         let map = enumerator.instance_id_map.read();
-        assert!(map.contains_key("DISK\\INSTANCE\\A"), "disk A must be in map");
-        assert!(map.contains_key("DISK\\INSTANCE\\B"), "disk B must be in map");
+        assert!(
+            map.contains_key("DISK\\INSTANCE\\A"),
+            "disk A must be in map"
+        );
+        assert!(
+            map.contains_key("DISK\\INSTANCE\\B"),
+            "disk B must be in map"
+        );
     }
 
     /// Test 2: No-change path — cfg.disk_allowlist already equals payload.disk_allowlist
@@ -1539,8 +1593,7 @@ mod tests {
             "reloaded config must contain the persisted disk"
         );
         assert_eq!(
-            reloaded.disk_allowlist[0].instance_id,
-            "DISK\\PERSIST\\001",
+            reloaded.disk_allowlist[0].instance_id, "DISK\\PERSIST\\001",
             "persisted instance_id must survive TOML roundtrip"
         );
     }
