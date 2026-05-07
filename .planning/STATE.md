@@ -35,7 +35,7 @@ Last activity: 2026-05-07 -- Phase 41 completed (all 4 plans done)
 
 v0.7.0 [Phase 33 done | Phase 34 done | Phase 35 done | Phase 36 done | Phase 37 done | Phase 38 done | Phase 38.1 done | Phase 38.2 done]
 v0.7.1 [Phase 38.3 done | Phase 38.4 done | Phase 38.5 done | Phase 38.6 done]
-v0.8.0 [Phase 39 done | Phase 40 done | Phase 41 done | Phase 42 pending]
+v0.8.0 [Phase 39 done | Phase 40 done | Phase 41 done | Phase 42 done]
 
 ---
 
