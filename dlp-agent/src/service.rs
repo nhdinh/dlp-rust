@@ -1556,6 +1556,9 @@ mod tests {
             offline_cache_enabled: true,
             ldap_config: None,
             disk_allowlist,
+            usb_blocked_failure_mode: "Warning only".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Always Blocked".to_string(),
         }
     }
 

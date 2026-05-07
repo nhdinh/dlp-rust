@@ -190,6 +190,21 @@ pub struct AgentConfig {
     #[serde(default)]
     pub poll_interval_secs: Option<u64>,
 
+    /// USB enforcement failure mode (USB-09). "Hard error", "Warning only",
+    /// or "Retry then error".
+    #[serde(default)]
+    pub usb_blocked_failure_mode: Option<String>,
+
+    /// USB startup scan resolution strategy (USB-07).
+    /// "Volume GUID resolution" or "VID/PID/serial fallback".
+    #[serde(default)]
+    pub usb_startup_resolution_mode: Option<String>,
+
+    /// Policy for USB devices without serial descriptors (USB-08).
+    /// "Always Blocked", "Port-based disambiguation", or "Allow unregistered".
+    #[serde(default)]
+    pub usb_none_serial_policy: Option<String>,
+
     /// Machine hostname, resolved once at startup.
     /// Not persisted to the config file.
     #[serde(skip)]
@@ -520,17 +535,8 @@ mod tests {
     #[test]
     fn test_resolve_watch_paths_configured() {
         let config = AgentConfig {
-            server_url: None,
             monitored_paths: vec![r"C:\Data\".to_string()],
-            excluded_paths: Vec::new(),
-            heartbeat_interval_secs: None,
-            offline_cache_enabled: None,
-            log_level: None,
-            encryption: EncryptionConfig::default(),
-            disk_allowlist: Vec::new(),
-            ldap_config: None,
-            poll_interval_secs: None,
-            machine_name: None,
+            ..Default::default()
         };
         let paths = config.resolve_watch_paths();
         assert_eq!(paths.len(), 1);
@@ -566,6 +572,9 @@ mod tests {
             disk_allowlist: Vec::new(),
             ldap_config: None,
             poll_interval_secs: None,
+            usb_blocked_failure_mode: None,
+            usb_startup_resolution_mode: None,
+            usb_none_serial_policy: None,
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
         };
@@ -597,6 +606,9 @@ mod tests {
             disk_allowlist: Vec::new(),
             ldap_config: None,
             poll_interval_secs: None,
+            usb_blocked_failure_mode: None,
+            usb_startup_resolution_mode: None,
+            usb_none_serial_policy: None,
             machine_name: None,
         };
 
@@ -990,6 +1002,52 @@ mod tests {
             config.resolved_poll_interval(),
             std::time::Duration::from_secs(30)
         );
+    }
+
+    // --- Phase 43: USB enforcement config fields (USB-07, USB-08, USB-09) ---
+
+    #[test]
+    fn test_agent_config_usb_fields_default() {
+        // Default AgentConfig must have None for all three USB fields.
+        let config = AgentConfig::default();
+        assert!(config.usb_blocked_failure_mode.is_none());
+        assert!(config.usb_startup_resolution_mode.is_none());
+        assert!(config.usb_none_serial_policy.is_none());
+    }
+
+    #[test]
+    fn test_agent_config_usb_fields_deserialize() {
+        let toml_str = r#"
+            usb_blocked_failure_mode = "Hard error"
+            usb_startup_resolution_mode = "VID/PID/serial fallback"
+            usb_none_serial_policy = "Allow unregistered"
+        "#;
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(
+            config.usb_blocked_failure_mode,
+            Some("Hard error".to_string())
+        );
+        assert_eq!(
+            config.usb_startup_resolution_mode,
+            Some("VID/PID/serial fallback".to_string())
+        );
+        assert_eq!(
+            config.usb_none_serial_policy,
+            Some("Allow unregistered".to_string())
+        );
+    }
+
+    #[test]
+    fn test_agent_config_usb_fields_backwards_compatible() {
+        // A TOML config without USB fields must parse successfully.
+        let toml_str = r#"
+            monitored_paths = ['C:\Restricted\']
+        "#;
+        let config: AgentConfig = toml::from_str(toml_str).expect("backwards-compat parse");
+        assert_eq!(config.monitored_paths, vec![r"C:\Restricted\"]);
+        assert!(config.usb_blocked_failure_mode.is_none());
+        assert!(config.usb_startup_resolution_mode.is_none());
+        assert!(config.usb_none_serial_policy.is_none());
     }
 
     #[test]
