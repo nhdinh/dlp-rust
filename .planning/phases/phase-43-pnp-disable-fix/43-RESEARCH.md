@@ -353,7 +353,7 @@ impl SiemConfigRepository {
 2. **How should "Retry then error" mode interact with the DACL fallback?**
    - What we know: D-01 says retry PnP disable up to 3 times with 100ms backoff, then fail hard. But DACL deny-all is always attempted as defense-in-depth.
    - What's unclear: If PnP disable fails after 3 retries but DACL succeeds, does "Retry then error" still return Err?
-   - Recommendation: Yes — "Retry then error" means the PnP layer MUST succeed. DACL is defense-in-depth, not a substitute. If PnP fails after retries, return Err regardless of DACL outcome.
+   - **RESOLVED per cross-AI review consensus:** "Retry then error" means the PnP layer MUST succeed after retries. DACL is defense-in-depth, not a substitute. If PnP fails after retries, return Err regardless of DACL outcome. The match arm in `apply_blocked_enforcement` must check ONLY `!pnp_ok` for "Retry then error", NOT `!pnp_ok || !dacl_ok`.
 
 ## Environment Availability
 
