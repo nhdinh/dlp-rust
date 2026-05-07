@@ -126,6 +126,49 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 | 40 | Drag-and-Drop Enforcement | v0.8.0 | 4/4 | Complete | 2026-05-07 |
 | 41 | Browser Origin Clipboard Policies | v0.8.0 | 4/4 | Complete | 2026-05-07 |
 | 42 | Audit Enrichment — App Identity Fields | v0.8.0 | 3/3 | Complete | 2026-05-07 |
+| 43 | USB Enforcement Fix — PnP Disable Actually Works | v0.8.1 | 0/TBD | Planned | — |
+| 44 | USB Device Description Fix | v0.8.1 | 0/TBD | Planned | — |
+| 45 | Mount-Time Blocking | v0.8.1 | 0/TBD | Planned | — |
+| 46 | Grace Period / Quarantine | v0.8.1 | 0/TBD | Planned | — |
+| 47 | UAT & Regression Validation | v0.8.1 | 0/TBD | Planned | — |
+
+## v0.8.1 - Deferred Items & Issue Debt (In Progress)
+
+**Goal:** Close all deferred feature gaps and outstanding issue debt from v0.8.0.
+
+**Requirements:** USB-07..09, DISK-06..07, UAT-05 (6 requirements)
+
+**Phase 43: USB Enforcement Fix — PnP Disable Actually Works**
+- Goal: Fix `DeviceController::disable_usb_device` to use real CM instance IDs resolved via SetupDi; surface hard failures
+- Requirements: USB-07, USB-08, USB-09
+- Success criteria:
+  1. `CM_Disable_DevNode` receives the actual CM instance ID from device interface path
+  2. Devices with `(none)` serial are handled gracefully
+  3. Both PnP disable and DACL deny-all return hard errors on failure
+
+**Phase 44: Mount-Time Blocking**
+- Goal: Lock volume at mount time so unregistered disks do not appear in Explorer
+- Requirements: DISK-06
+- Success criteria:
+  1. Unregistered fixed disk does not receive a drive letter on arrival
+  2. I/O-time blocking remains as fallback
+  3. Audit event emitted when mount-time block triggers
+
+**Phase 45: Grace Period / Quarantine**
+- Goal: Configurable read-only window before hard block for new disk arrivals
+- Requirements: DISK-07
+- Success criteria:
+  1. `agent-config.toml` accepts `disk_grace_period_seconds` (default 0 = immediate block)
+  2. During grace period, reads allowed, writes blocked with user notification
+  3. After grace period expires, mount-time block engages
+
+**Phase 46: UAT & Regression Validation**
+- Goal: Complete outstanding UAT and verify no regressions across disk/USB paths
+- Requirements: UAT-05
+- Success criteria:
+  1. SanDisk re-registered with full 128-char serial, ReadOnly/FullAccess enforced correctly
+  2. All workspace tests pass
+  3. SonarQube quality gate passes
 
 ## v0.3.0 - Operational Hardening (Shipped)
 
