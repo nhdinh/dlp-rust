@@ -43,11 +43,48 @@ const NUM_INSTANCES: u32 = 4;
 /// is called from the pipe thread).  The pointer is never mutated.
 static ORIGINS_CACHE: std::sync::OnceLock<Arc<ManagedOriginsCache>> = std::sync::OnceLock::new();
 
+/// Global policy evaluator callback — set once at service startup.
+///
+/// The callback takes an `&EvaluateRequest` and returns an `EvaluateResponse`.
+/// This is a function pointer (not a closure) so it can be called from the
+/// synchronous pipe thread without async runtime access.
+static POLICY_EVALUATOR: std::sync::OnceLock<
+    fn(&dlp_common::abac::EvaluateRequest) -> dlp_common::abac::EvaluateResponse,
+> = std::sync::OnceLock::new();
+
+/// Test-only override for the policy evaluator.
+///
+/// When set (non-None), this takes precedence over `POLICY_EVALUATOR`.
+/// This allows each test to use its own mock evaluator without the
+/// OnceLock single-set limitation.
+#[cfg(test)]
+static TEST_EVALUATOR_OVERRIDE: std::sync::Mutex<
+    Option<fn(&dlp_common::abac::EvaluateRequest) -> dlp_common::abac::EvaluateResponse>,
+> = std::sync::Mutex::new(None);
+
 /// Sets the global origins cache before the pipe server starts.
 ///
 /// Must be called exactly once during service initialization.
 pub fn set_origins_cache(cache: Arc<ManagedOriginsCache>) {
     let _ = ORIGINS_CACHE.set(cache);
+}
+
+/// Sets the global policy evaluator callback before the pipe server starts.
+///
+/// Must be called exactly once during service initialization.
+pub fn set_policy_evaluator(
+    evaluator: fn(&dlp_common::abac::EvaluateRequest) -> dlp_common::abac::EvaluateResponse,
+) {
+    let _ = POLICY_EVALUATOR.set(evaluator);
+}
+
+/// Checks if the given origin is in the managed-origins cache.
+/// Called by the service-layer policy evaluator.
+#[must_use]
+pub fn origins_cache_is_managed(origin: &str) -> bool {
+    ORIGINS_CACHE
+        .get()
+        .is_some_and(|cache| cache.is_managed(origin))
 }
 
 /// Starts the Chrome Content Analysis pipe server.
@@ -210,15 +247,19 @@ fn to_origin(url: &str) -> Option<String> {
 
 /// Dispatches a Chrome ContentAnalysisRequest and returns the response.
 ///
-/// Decision logic (per D-06 from 29-CONTEXT.md):
+/// Decision logic (Phase 41 — ABAC-evaluated origin policies):
 /// 1. Only process clipboard paste events (`reason == CLIPBOARD_PASTE`).
 /// 2. Extract source URL from `request_data.url`.
 /// 3. Normalise to origin.
-/// 4. If source origin is in the managed-origins cache -> BLOCK.
-/// 5. Otherwise -> ALLOW.
+/// 4. Build an `EvaluateRequest` with `Action::PASTE` and `source_origin`.
+/// 5. Evaluate against ABAC policy via `POLICY_EVALUATOR`.
+/// 6. If decision is DENY -> BLOCK and emit audit event.
+/// 7. Otherwise -> ALLOW.
 ///
-/// Non-clipboard requests are always allowed (we only care about paste
-/// boundary control).
+/// Non-clipboard requests are always allowed (no regression).
+///
+/// If `POLICY_EVALUATOR` is not set, the handler falls open (ALLOW)
+/// to avoid breaking user productivity during startup races (T-41-08).
 fn dispatch_request(request: &ContentAnalysisRequest) -> ContentAnalysisResponse {
     let mut response = ContentAnalysisResponse {
         request_token: request.request_token.clone(),
@@ -235,13 +276,47 @@ fn dispatch_request(request: &ContentAnalysisRequest) -> ContentAnalysisResponse
     let source_url = request.request_data.as_ref().and_then(|d| d.url.as_ref());
     let source_origin = source_url.and_then(|u| to_origin(u));
 
-    let should_block = source_origin.as_ref().is_some_and(|origin| {
-        ORIGINS_CACHE
-            .get()
-            .is_some_and(|cache| cache.is_managed(origin))
-    });
+    // Build an EvaluateRequest for ABAC policy evaluation.
+    let evaluate_request = dlp_common::abac::EvaluateRequest {
+        subject: dlp_common::abac::Subject {
+            user_sid: "CHROME".to_string(),
+            user_name: "CHROME".to_string(),
+            groups: Vec::new(),
+            device_trust: dlp_common::abac::DeviceTrust::Unknown,
+            network_location: dlp_common::abac::NetworkLocation::Unknown,
+        },
+        resource: dlp_common::abac::Resource {
+            path: "chrome://clipboard".to_string(),
+            classification: dlp_common::Classification::T3, // Conservative default for clipboard
+        },
+        environment: dlp_common::abac::Environment {
+            timestamp: chrono::Utc::now(),
+            session_id: 0,
+            access_context: dlp_common::abac::AccessContext::Local,
+        },
+        action: dlp_common::abac::Action::PASTE,
+        agent: None,
+        source_application: None,
+        destination_application: None,
+        source_origin: source_origin.clone(),
+        destination_origin: None, // Chrome API v1 does not expose destination origin
+    };
 
-    if should_block {
+    // Evaluate against ABAC policy if evaluator is available.
+    // Test override takes precedence for test isolation.
+    #[cfg(test)]
+    let evaluator_opt = {
+        let override_guard = TEST_EVALUATOR_OVERRIDE.lock().unwrap();
+        override_guard.as_ref().copied().or(POLICY_EVALUATOR.get().copied())
+    };
+    #[cfg(not(test))]
+    let evaluator_opt = POLICY_EVALUATOR.get().copied();
+
+    let decision = evaluator_opt
+        .map(|evaluator| evaluator(&evaluate_request).decision)
+        .unwrap_or(dlp_common::abac::Decision::ALLOW); // Fail-open if no evaluator (defensive)
+
+    if decision.is_denied() {
         response.results.push(make_result_block());
         emit_chrome_block_audit(&source_origin, None);
     } else {
@@ -286,6 +361,11 @@ fn make_result_block() -> super::proto::content_analysis_response::Result {
 /// The event carries `source_origin` and `destination_origin` fields.
 /// Clipboard content (`text_content`) is NEVER logged.
 fn emit_chrome_block_audit(source_origin: &Option<String>, destination_origin: Option<String>) {
+    debug!(
+        ?source_origin,
+        ?destination_origin,
+        "Chrome clipboard block audit: destination_origin is always None because Chrome Content Analysis API v1 does not expose it"
+    );
     let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Block,
         "CHROME".to_string(),
@@ -397,14 +477,141 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // dispatch_request — block case (with seeded cache)
+    // Mock policy evaluator for tests
+    // ------------------------------------------------------------------
+
+    /// Mock evaluator: blocks if source_origin contains "sharepoint.com".
+    fn mock_evaluator_block_managed_origin(
+        req: &dlp_common::abac::EvaluateRequest,
+    ) -> dlp_common::abac::EvaluateResponse {
+        if req.source_origin.as_deref() == Some("https://sharepoint.com") {
+            dlp_common::abac::EvaluateResponse {
+                decision: dlp_common::abac::Decision::DENY,
+                matched_policy_id: Some("mock-origin-policy".to_string()),
+                reason: "mock: managed origin blocked".to_string(),
+            }
+        } else {
+            dlp_common::abac::EvaluateResponse {
+                decision: dlp_common::abac::Decision::ALLOW,
+                matched_policy_id: None,
+                reason: "mock: allowed".to_string(),
+            }
+        }
+    }
+
+    /// Mock evaluator that always allows.
+    fn mock_evaluator_always_allow(
+        _req: &dlp_common::abac::EvaluateRequest,
+    ) -> dlp_common::abac::EvaluateResponse {
+        dlp_common::abac::EvaluateResponse {
+            decision: dlp_common::abac::Decision::ALLOW,
+            matched_policy_id: None,
+            reason: "mock: always allow".to_string(),
+        }
+    }
+
+    /// Mock evaluator that always denies.
+    fn mock_evaluator_always_deny(
+        _req: &dlp_common::abac::EvaluateRequest,
+    ) -> dlp_common::abac::EvaluateResponse {
+        dlp_common::abac::EvaluateResponse {
+            decision: dlp_common::abac::Decision::DENY,
+            matched_policy_id: Some("mock-deny-all".to_string()),
+            reason: "mock: always deny".to_string(),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // dispatch_request — ABAC evaluation tests
     // ------------------------------------------------------------------
 
     #[test]
+    fn test_dispatch_abac_evaluator_not_set_allows() {
+        // Ensure no evaluator override is set for this test.
+        {
+            let mut guard = TEST_EVALUATOR_OVERRIDE.lock().unwrap();
+            *guard = None;
+        }
+        let request = ContentAnalysisRequest {
+            request_token: Some("tok-abac-no-eval".to_string()),
+            analysis_connector: Some(3),
+            request_data: Some(super::super::proto::ContentMetaData {
+                url: Some("https://sharepoint.com/documents/file.xlsx".to_string()),
+                filename: None,
+                digest: None,
+                email: None,
+                tab_title: None,
+            }),
+            tags: vec![],
+            reason: Some(1), // CLIPBOARD_PASTE
+            content_data: None,
+        };
+        let response = dispatch_request(&request);
+        assert_eq!(response.results.len(), 1);
+        let rule = &response.results[0].triggered_rules[0];
+        assert_eq!(rule.action, Some(1)); // ALLOW (fail-open when no evaluator)
+    }
+
+    #[test]
+    fn test_dispatch_abac_denies_via_policy() {
+        {
+            let mut guard = TEST_EVALUATOR_OVERRIDE.lock().unwrap();
+            *guard = Some(mock_evaluator_always_deny);
+        }
+
+        let request = ContentAnalysisRequest {
+            request_token: Some("tok-abac-deny".to_string()),
+            analysis_connector: Some(3),
+            request_data: Some(super::super::proto::ContentMetaData {
+                url: Some("https://example.com/page.html".to_string()),
+                filename: None,
+                digest: None,
+                email: None,
+                tab_title: None,
+            }),
+            tags: vec![],
+            reason: Some(1), // CLIPBOARD_PASTE
+            content_data: None,
+        };
+        let response = dispatch_request(&request);
+        assert_eq!(response.results.len(), 1);
+        let rule = &response.results[0].triggered_rules[0];
+        assert_eq!(rule.action, Some(3)); // BLOCK = 3
+    }
+
+    #[test]
+    fn test_dispatch_abac_allows_via_policy() {
+        {
+            let mut guard = TEST_EVALUATOR_OVERRIDE.lock().unwrap();
+            *guard = Some(mock_evaluator_always_allow);
+        }
+
+        let request = ContentAnalysisRequest {
+            request_token: Some("tok-abac-allow".to_string()),
+            analysis_connector: Some(3),
+            request_data: Some(super::super::proto::ContentMetaData {
+                url: Some("https://example.com/page.html".to_string()),
+                filename: None,
+                digest: None,
+                email: None,
+                tab_title: None,
+            }),
+            tags: vec![],
+            reason: Some(1), // CLIPBOARD_PASTE
+            content_data: None,
+        };
+        let response = dispatch_request(&request);
+        assert_eq!(response.results.len(), 1);
+        let rule = &response.results[0].triggered_rules[0];
+        assert_eq!(rule.action, Some(1)); // ALLOW
+    }
+
+    #[test]
     fn test_dispatch_managed_origin_blocks() {
-        let cache = Arc::new(ManagedOriginsCache::new());
-        cache.seed_for_test("https://sharepoint.com");
-        let _ = ORIGINS_CACHE.set(cache);
+        {
+            let mut guard = TEST_EVALUATOR_OVERRIDE.lock().unwrap();
+            *guard = Some(mock_evaluator_block_managed_origin);
+        }
 
         let request = ContentAnalysisRequest {
             request_token: Some("tok-3".to_string()),
@@ -428,9 +635,10 @@ mod tests {
 
     #[test]
     fn test_dispatch_unmanaged_origin_allows() {
-        let cache = Arc::new(ManagedOriginsCache::new());
-        cache.seed_for_test("https://sharepoint.com");
-        let _ = ORIGINS_CACHE.set(cache);
+        {
+            let mut guard = TEST_EVALUATOR_OVERRIDE.lock().unwrap();
+            *guard = Some(mock_evaluator_block_managed_origin);
+        }
 
         let request = ContentAnalysisRequest {
             request_token: Some("tok-4".to_string()),
