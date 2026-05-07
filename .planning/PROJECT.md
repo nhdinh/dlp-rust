@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-05-06 — Milestone v0.8.0 Application-Aware DLP started. v0.7.1 Operational Hardening shipped with all 7 requirements validated.*
+*Last updated: 2026-05-07 — Milestone v0.8.1 Deferred Items & Issue Debt started. v0.8.0 Application-Aware DLP shipped with all 18 requirements validated.*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -33,9 +33,16 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - Phase 38.5: WMI Crate Upgrade — migrated from raw CoSetProxyBlanket FFI to wmi 0.18+
 - Phase 38.6: Operational Hardening Bundle — disk enumeration error resilience, structured USB logging, agent config validation, graceful service shutdown
 
-## Current Milestone: TBD
+## Current Milestone: v0.8.1 Deferred Items & Issue Debt
 
-**Goal:** Planning next milestone.
+**Goal:** Close all deferred feature gaps and outstanding issue debt from v0.8.0.
+
+**Target features:**
+- USB Enforcement Fix — PnP Disable Actually Works (dlp-rust-1vk)
+- USB device description matching fix (dlp-rust-sek)
+- Mount-time blocking for unregistered disks (DISK-F1)
+- Grace period / quarantine for new disk arrivals (DISK-F2)
+- UAT completion for SanDisk full-serial registration (dlp-rust-l79)
 
 **v0.8.0 shipped:** 2026-05-07 — Application-Aware DLP (Phases 39-42)
 
@@ -82,8 +89,14 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 ## Deferred (future milestones)
 
 - **Browser Extension (SEED-002 Path A):** Native Chrome/Edge Manifest V3 extension for tab-level origin control
+
+## Active in v0.8.1
+
+- **USB Enforcement Fix (dlp-rust-1vk):** PnP CM_Disable_DevNode using real CM instance IDs; surface hard failures
+- **USB Description Fix (dlp-rust-sek):** setupdi_description_for_device precise path matching
 - **Mount-time blocking (DISK-F1):** volume lock in addition to I/O-time blocking
 - **Grace period / quarantine (DISK-F2):** configurable read-only window before hard block
+- **UAT SanDisk full serial (dlp-rust-l79):** re-register with full 128-char serial for ReadOnly/FullAccess test
 
 ## Architecture
 
