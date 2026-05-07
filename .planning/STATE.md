@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
 milestone: v0.8.0
-milestone_name: - Application-Aware DLP
-status: completed
-stopped_at: context exhaustion at 75% (2026-05-07)
-last_updated: "2026-05-07T03:59:09.731Z"
-last_activity: 2026-05-07 -- Phase 41 completed (all 4 plans done)
+milestone_name: Application-Aware DLP
+status: shipped
+last_updated: "2026-05-07T08:30:00Z"
+last_activity: 2026-05-07 -- v0.8.0 milestone completed and tagged
 progress:
   total_phases: 4
-  completed_phases: 1
+  completed_phases: 4
   total_plans: 15
-  completed_plans: 7
-  percent: 47
+  completed_plans: 15
+  percent: 100
 ---
 
 # Project State
@@ -20,16 +19,15 @@ progress:
 
 **Project**: DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value**: Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus**: v0.8.0 Application-Aware DLP — Phase 41 next
+**Current Focus**: Planning next milestone after v0.8.0
 
 ---
 
 ## Current Position
 
-Phase: 42 (audit-enrichment-app-identity) — NEXT
-Plan: TBD
-Status: Phase 41 complete — ready for Phase 42
-Last activity: 2026-05-07 -- Phase 41 completed (all 4 plans done)
+Milestone: v0.8.0 shipped
+Status: All 4 phases complete (39-42), 15/15 plans done
+Last activity: 2026-05-07 -- v0.8.0 milestone completed and tagged
 
 ## Progress
 
@@ -64,15 +62,13 @@ Resume file: None
 
 ## Pending Todos
 
-Phase 40: Drag-and-Drop Enforcement — COMPLETE
-Phase 41: Browser Origin Clipboard Policies — COMPLETE
-Phase 42: Audit Enrichment — App Identity Fields — next
+None. v0.8.0 milestone complete. Ready for next milestone planning.
 
 ---
 
 ## Blockers
 
-None. Phase 41 complete. Phase 42 is next.
+None. v0.8.0 complete.
 
 ---
 
@@ -80,8 +76,8 @@ None. Phase 41 complete. Phase 42 is next.
 
 ### Roadmap Evolution
 
-- v0.8.0 phases 39-42 define Application-Aware DLP:
+- v0.8.0 Application-Aware DLP shipped (Phases 39-42):
   - Phase 39: UWP App Identity (APP-07) — DONE
   - Phase 40: Drag-and-Drop Enforcement (APP-08) — DONE
   - Phase 41: Browser Origin Clipboard Policies (BRW-04) — DONE
-  - Phase 42: Audit Enrichment — App Identity Fields (AUDIT-04) — NEXT
+  - Phase 42: Audit Enrichment — App Identity Fields (AUDIT-04) — DONE

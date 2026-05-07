@@ -9,7 +9,7 @@
 - v0.6.0 Endpoint Hardening -- Phases 22-30 (shipped 2026-04-29)
 - v0.7.0 Disk Exfiltration Prevention -- Phases 33-38.2 (shipped 2026-05-06)
 - v0.7.1 Operational Hardening -- Phases 38.3-38.6 (shipped 2026-05-06)
-- v0.8.0 Application-Aware DLP -- Phases 39-42 (planning)
+- v0.8.0 Application-Aware DLP -- Phases 39-42 (shipped 2026-05-07)
 
 ## Phase Numbering
 
@@ -18,61 +18,17 @@
 
 Phase numbering is continuous across milestones -- never restarts.
 
-## v0.8.0 - Application-Aware DLP (Planning)
+## Archived Milestones
 
-### Phase 39: UWP App Identity
-**Goal**: Agent can capture UWP application identity via AUMID for ABAC enforcement
-**Depends on**: Phase 25 (App Identity Capture)
-**Requirements**: APP-07
-**Success Criteria** (what must be TRUE):
-  1. Agent resolves UWP process identity to AUMID using `IShellItem::GetApplicationUserModelId` or equivalent Win32 API
-  2. AUMID is captured as a first-class `source_application` / `destination_application` attribute alongside existing Win32 process identity
-  3. UWP identity flows through the same ABAC evaluator without special-casing
-**Plans**: TBD
+### v0.8.0 - Application-Aware DLP (Shipped)
 
-### Phase 40: Drag-and-Drop Enforcement
-**Goal**: Agent blocks or allows drag-and-drop operations based on source application identity and ABAC policy
-**Depends on**: Phase 26 (ABAC Enforcement Convergence), Phase 39 (UWP App Identity)
-**Requirements**: APP-08
-**Success Criteria** (what must be TRUE):
-  1. Agent intercepts OLE drag-and-drop operations (IDropTarget, DoDragDrop hooks) to identify source application
-  2. Source application identity is resolved for both Win32 and UWP drag sources
-  3. ABAC policy is evaluated before drop completes; denied drops are blocked with a toast notification
-  4. Audit events include source_application, destination_application, and action fields for drag-and-drop blocks
-**Plans**: TBD
+<details>
+<summary>v0.8.0 - archived at <code>.planning/milestones/v0.8.0-ROADMAP.md</code></summary>
 
-### Phase 41: Browser Origin Clipboard Policies
-**Goal**: Extend Chrome Enterprise Connector with origin-specific clipboard policies
-**Depends on**: Phase 29 (Chrome Enterprise Connector)
-**Requirements**: BRW-04
-**Success Criteria** (what must be TRUE):
-  1. Chrome Enterprise Connector messages include tab origin (URL / domain) for clipboard read/write operations
-  2. ABAC evaluator supports `source_origin` and `destination_origin` as condition attributes
-  3. Admin can author policies that allow/deny clipboard operations based on managed-origins list and specific URL patterns
-  4. Paste from protected origin to unmanaged origin is blocked and audited with origin fields populated
-**Plans**: 4 plans
+Phase details and requirement outcomes archived at `.planning/milestones/v0.8.0-ROADMAP.md` and `.planning/milestones/v0.8.0-REQUIREMENTS.md`. UWP App Identity (APP-07), Drag-and-Drop Enforcement (APP-08), Browser Origin Clipboard Policies (BRW-04), and Audit Enrichment (AUDIT-04) — all 18 requirements delivered across 4 phases (39-42).
 
-Plans:
-- [x] 41-01-PLAN.md -- Add SourceOrigin/DestinationOrigin PolicyCondition variants, extend EvaluateRequest/AbacContext
-- [x] 41-02-PLAN.md -- Add origin condition matching to ABAC evaluator
-- [x] 41-03-PLAN.md -- Wire Chrome handler to ABAC evaluator
-- [x] 41-04-PLAN.md -- Update TUI conditions builder with origin attributes
-
-### Phase 42: Audit Enrichment — App Identity Fields
-**Goal**: Close gaps in app identity fields across all interception paths
-**Depends on**: Phase 25 (App Identity Capture), Phase 39 (UWP App Identity)
-**Requirements**: AUDIT-04
-**Success Criteria** (what must be TRUE):
-  1. All audit events from file interception include `source_application` and `destination_application` fields where applicable
-  2. All audit events from USB interception include device identity fields (VID, PID, serial, description)
-  3. All audit events from clipboard interception include both source and destination application identity
-  4. Audit schema is updated to guarantee non-null app identity fields; missing identity is flagged as AGENT-UNKNOWN with remediation path
-**Plans**: 3 plans
-
-Plans:
-- [ ] 42-01-PLAN.md -- File interception audit enrichment with app identity
-- [ ] 42-02-PLAN.md -- Clipboard/drag-drop/USB audit enrichment verification
-- [ ] 42-03-PLAN.md -- Audit schema guarantee and AGENT-UNKNOWN fallback
+**Known gaps at v0.8.0 close:** None.
+</details>
 
 ## Archived Milestones
 
@@ -166,8 +122,8 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 | 38.4 | Per-User Device Registry | v0.7.1 | 3/3 | Complete | 2026-05-06 |
 | 38.5 | WMI Crate Upgrade | v0.7.1 | 1/1 | Complete | 2026-05-06 |
 | 38.6 | Operational Hardening Bundle | v0.7.1 | 2/2 | Complete | 2026-05-06 |
-| 39 | UWP App Identity | v0.8.0 | 0/TBD | Not started | - |
-| 40 | Drag-and-Drop Enforcement | v0.8.0 | 0/TBD | Not started | - |
+| 39 | UWP App Identity | v0.8.0 | 4/4 | Complete | 2026-05-07 |
+| 40 | Drag-and-Drop Enforcement | v0.8.0 | 4/4 | Complete | 2026-05-07 |
 | 41 | Browser Origin Clipboard Policies | v0.8.0 | 4/4 | Complete | 2026-05-07 |
 | 42 | Audit Enrichment — App Identity Fields | v0.8.0 | 3/3 | Complete | 2026-05-07 |
 
