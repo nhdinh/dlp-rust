@@ -238,6 +238,12 @@ fn condition_matches(condition: &PolicyCondition, ctx: &AbacContext) -> bool {
         PolicyCondition::DestinationApplication { field, op, value } => {
             app_identity_matches(field, op, value, ctx.destination_application.as_ref())
         }
+        PolicyCondition::SourceOrigin { op, value } => {
+            origin_matches(op, value, ctx.source_origin.as_deref())
+        }
+        PolicyCondition::DestinationOrigin { op, value } => {
+            origin_matches(op, value, ctx.destination_origin.as_deref())
+        }
     }
 }
 
@@ -366,6 +372,32 @@ fn app_identity_matches(
     }
 }
 
+/// Evaluates an origin condition against an optional origin string.
+///
+/// Returns `false` (fails closed) if `origin` is `None` — a missing origin
+/// cannot satisfy an origin-based condition (per D-03).
+///
+/// Supported operators:
+/// - `"eq"` / `"ne"` — exact string match
+/// - `"contains"` — substring match
+///
+/// # Arguments
+///
+/// * `op` - Operator string: `"eq"`, `"ne"`, or `"contains"`
+/// * `expected` - The policy-authored origin string to compare against
+/// * `origin` - The resolved origin from the evaluation context, or `None`
+fn origin_matches(op: &str, expected: &str, origin: Option<&str>) -> bool {
+    let Some(origin) = origin else {
+        return false;
+    };
+    match op {
+        "eq" => origin == expected,
+        "ne" => origin != expected,
+        "contains" => origin.contains(expected),
+        _ => false,
+    }
+}
+
 /// Maps a Classification tier to its ordinal position (1–4).
 ///
 /// T1 = 1 (lowest sensitivity), T4 = 4 (highest sensitivity).
@@ -423,6 +455,8 @@ mod tests {
             agent: None,
             source_application: None,
             destination_application: None,
+            source_origin: None,
+            destination_origin: None,
         }
         .into()
     }
@@ -1794,6 +1828,8 @@ mod tests {
             agent: None,
             source_application: source_app,
             destination_application: dest_app,
+            source_origin: None,
+            destination_origin: None,
         }
         .into()
     }

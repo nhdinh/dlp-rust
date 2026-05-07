@@ -912,6 +912,8 @@ async fn test_offline_manager_carries_machine_name() {
         }),
         source_application: None,
         destination_application: None,
+        source_origin: None,
+        destination_origin: None,
     };
 
     let resp = offline.evaluate(&req).await;
