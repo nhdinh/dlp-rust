@@ -7,6 +7,32 @@
 
 use crate::endpoint::DeviceIdentity;
 
+// ---------------------------------------------------------------------------
+// Shared USB enforcement config constants
+// ---------------------------------------------------------------------------
+// These constants are referenced by dlp-server, dlp-agent, and dlp-admin-cli
+// to ensure enum values never drift across the codebase.
+// If you change a value here, you MUST update all consumers.
+
+/// Valid values for `usb_blocked_failure_mode`.
+pub const USB_FAILURE_MODES: &[&str] = &["Hard error", "Warning only", "Retry then error"];
+
+/// Valid values for `usb_startup_resolution_mode`.
+/// NOTE: "Volume GUID resolution" is not yet implemented; it is kept in the
+/// constant list for forward compatibility but rejected at config-set time.
+pub const USB_RESOLUTION_MODES: &[&str] = &["Volume GUID resolution", "VID/PID/serial fallback"];
+
+/// Valid values for `usb_none_serial_policy`.
+/// NOTE: "Port-based disambiguation" is not yet implemented; it is kept in the
+/// constant list for forward compatibility but rejected at config-set time.
+pub const USB_NONE_SERIAL_POLICIES: &[&str] =
+    &["Always Blocked", "Port-based disambiguation", "Allow unregistered"];
+
+/// Default values for each USB config field.
+pub const DEFAULT_USB_BLOCKED_FAILURE_MODE: &str = "Warning only";
+pub const DEFAULT_USB_STARTUP_RESOLUTION_MODE: &str = "VID/PID/serial fallback";
+pub const DEFAULT_USB_NONE_SERIAL_POLICY: &str = "Always Blocked";
+
 #[cfg(windows)]
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Get_Device_IDW, CM_Get_Parent, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
@@ -881,6 +907,43 @@ mod tests {
         // Assert the function returns a Result (either Ok or Err is acceptable
         // since we cannot control which USB devices are connected).
         let _ = result;
+    }
+
+    // -------------------------------------------------------------------------
+    // USB enforcement config constants -- duplicate detection (Phase 43-02)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_usb_failure_modes_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for &mode in USB_FAILURE_MODES {
+            assert!(
+                seen.insert(mode),
+                "duplicate value in USB_FAILURE_MODES: {mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_usb_resolution_modes_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for &mode in USB_RESOLUTION_MODES {
+            assert!(
+                seen.insert(mode),
+                "duplicate value in USB_RESOLUTION_MODES: {mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_usb_none_serial_policies_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for &policy in USB_NONE_SERIAL_POLICIES {
+            assert!(
+                seen.insert(policy),
+                "duplicate value in USB_NONE_SERIAL_POLICIES: {policy}"
+            );
+        }
     }
 
     // -------------------------------------------------------------------------
