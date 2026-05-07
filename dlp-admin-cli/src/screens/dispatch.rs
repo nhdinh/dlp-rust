@@ -2552,7 +2552,10 @@ pub(crate) fn operators_for(
         ConditionAttribute::AccessContext => &[("eq", true), ("neq", true)],
         ConditionAttribute::SourceApplication | ConditionAttribute::DestinationApplication => {
             match field {
-                Some(AppField::Publisher) | Some(AppField::ImagePath) | Some(AppField::Aumid) | Some(AppField::PackageFamilyName) => {
+                Some(AppField::Publisher)
+                | Some(AppField::ImagePath)
+                | Some(AppField::Aumid)
+                | Some(AppField::PackageFamilyName) => {
                     // String fields support equality, inequality, and substring matching.
                     &[("eq", true), ("ne", true), ("contains", true)]
                 }
@@ -2560,6 +2563,10 @@ pub(crate) fn operators_for(
                 // None means sub-step not yet resolved; conservative set is safe.
                 Some(AppField::TrustTier) | None => &[("eq", true), ("ne", true)],
             }
+        }
+        ConditionAttribute::SourceOrigin | ConditionAttribute::DestinationOrigin => {
+            // Origin URL conditions support equality, inequality, and substring matching.
+            &[("eq", true), ("ne", true), ("contains", true)]
         }
     }
 }
@@ -2590,6 +2597,7 @@ fn value_count_for(attr: ConditionAttribute, field: Option<dlp_common::abac::App
                 _ => 0,                         // Publisher / ImagePath: free-text input
             }
         }
+        ConditionAttribute::SourceOrigin | ConditionAttribute::DestinationOrigin => 0, // text input
     }
 }
 
@@ -2684,7 +2692,10 @@ fn build_condition(
                     1 => "untrusted".to_string(),
                     _ => "unknown".to_string(),
                 },
-                AppField::Publisher | AppField::ImagePath | AppField::Aumid | AppField::PackageFamilyName => {
+                AppField::Publisher
+                | AppField::ImagePath
+                | AppField::Aumid
+                | AppField::PackageFamilyName => {
                     let v = buffer.trim().to_string();
                     if v.is_empty() {
                         return None;
@@ -2707,7 +2718,10 @@ fn build_condition(
                     1 => "untrusted".to_string(),
                     _ => "unknown".to_string(),
                 },
-                AppField::Publisher | AppField::ImagePath | AppField::Aumid | AppField::PackageFamilyName => {
+                AppField::Publisher
+                | AppField::ImagePath
+                | AppField::Aumid
+                | AppField::PackageFamilyName => {
                     let v = buffer.trim().to_string();
                     if v.is_empty() {
                         return None;
@@ -2720,6 +2734,20 @@ fn build_condition(
                 op,
                 value,
             }
+        }
+        ConditionAttribute::SourceOrigin => {
+            let v = buffer.trim().to_string();
+            if v.is_empty() {
+                return None;
+            }
+            PolicyCondition::SourceOrigin { op, value: v }
+        }
+        ConditionAttribute::DestinationOrigin => {
+            let v = buffer.trim().to_string();
+            if v.is_empty() {
+                return None;
+            }
+            PolicyCondition::DestinationOrigin { op, value: v }
         }
     })
 }
@@ -2817,7 +2845,10 @@ fn condition_to_prefill(
             // Publisher/ImagePath: value is a text string; picker_idx is unused (0).
             // TrustTier: value is one of trusted/untrusted/unknown; mapped to picker index.
             let (picker_idx, buffer) = match field {
-                AppField::Publisher | AppField::ImagePath | AppField::Aumid | AppField::PackageFamilyName => (0usize, value.clone()),
+                AppField::Publisher
+                | AppField::ImagePath
+                | AppField::Aumid
+                | AppField::PackageFamilyName => (0usize, value.clone()),
                 AppField::TrustTier => {
                     let idx = match value.as_str() {
                         "trusted" => 0,
@@ -2837,7 +2868,10 @@ fn condition_to_prefill(
         PolicyCondition::DestinationApplication { field, op, value } => {
             use dlp_common::abac::AppField;
             let (picker_idx, buffer) = match field {
-                AppField::Publisher | AppField::ImagePath | AppField::Aumid | AppField::PackageFamilyName => (0usize, value.clone()),
+                AppField::Publisher
+                | AppField::ImagePath
+                | AppField::Aumid
+                | AppField::PackageFamilyName => (0usize, value.clone()),
                 AppField::TrustTier => {
                     let idx = match value.as_str() {
                         "trusted" => 0,
@@ -2854,22 +2888,18 @@ fn condition_to_prefill(
                 buffer,
             )
         }
-        PolicyCondition::SourceOrigin { op, value } => {
-            (
-                ConditionAttribute::SourceOrigin,
-                op.clone(),
-                0,
-                value.clone(),
-            )
-        }
-        PolicyCondition::DestinationOrigin { op, value } => {
-            (
-                ConditionAttribute::DestinationOrigin,
-                op.clone(),
-                0,
-                value.clone(),
-            )
-        }
+        PolicyCondition::SourceOrigin { op, value } => (
+            ConditionAttribute::SourceOrigin,
+            op.clone(),
+            0,
+            value.clone(),
+        ),
+        PolicyCondition::DestinationOrigin { op, value } => (
+            ConditionAttribute::DestinationOrigin,
+            op.clone(),
+            0,
+            value.clone(),
+        ),
     }
 }
 
@@ -3487,15 +3517,21 @@ fn handle_conditions_step3(
 
     // Use text input for:
     // - MemberOf (AD group SID)
-    // - app-identity Publisher or ImagePath (free-text string)
+    // - app-identity Publisher, ImagePath, Aumid, or PackageFamilyName (free-text string)
+    // - SourceOrigin / DestinationOrigin (origin URL free-text input)
     let use_text_input = attr == ConditionAttribute::MemberOf
         || matches!(
             (attr, selected_field),
             (
                 ConditionAttribute::SourceApplication | ConditionAttribute::DestinationApplication,
-                Some(AppField::Publisher) | Some(AppField::ImagePath)
+                Some(AppField::Publisher)
+                    | Some(AppField::ImagePath)
+                    | Some(AppField::Aumid)
+                    | Some(AppField::PackageFamilyName)
             )
-        );
+        )
+        || attr == ConditionAttribute::SourceOrigin
+        || attr == ConditionAttribute::DestinationOrigin;
 
     if use_text_input {
         handle_conditions_step3_text(app, key, attr, op, selected_field);
@@ -4774,6 +4810,121 @@ mod tests {
             4
         );
         assert_eq!(value_count_for(ConditionAttribute::AccessContext, None), 2);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 41-04: Origin condition tests.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn build_condition_source_origin_eq() {
+        let cond = build_condition(
+            ConditionAttribute::SourceOrigin,
+            "eq",
+            0,
+            "https://company.sharepoint.com",
+            None,
+        );
+        assert!(cond.is_some());
+        let json = serde_json::to_string(&cond.unwrap()).expect("serialize");
+        assert!(json.contains("\"attribute\":\"source_origin\""));
+        assert!(json.contains("\"op\":\"eq\""));
+        assert!(json.contains("\"value\":\"https://company.sharepoint.com\""));
+    }
+
+    #[test]
+    fn build_condition_destination_origin_contains() {
+        let cond = build_condition(
+            ConditionAttribute::DestinationOrigin,
+            "contains",
+            0,
+            "sharepoint.com",
+            None,
+        );
+        assert!(cond.is_some());
+        let json = serde_json::to_string(&cond.unwrap()).expect("serialize");
+        assert!(json.contains("\"attribute\":\"destination_origin\""));
+        assert!(json.contains("\"op\":\"contains\""));
+        assert!(json.contains("\"value\":\"sharepoint.com\""));
+    }
+
+    #[test]
+    fn build_condition_source_origin_empty_buffer_returns_none() {
+        let cond = build_condition(ConditionAttribute::SourceOrigin, "eq", 0, "  ", None);
+        assert!(cond.is_none());
+    }
+
+    #[test]
+    fn condition_display_source_origin() {
+        use dlp_common::abac::PolicyCondition;
+        let cond = PolicyCondition::SourceOrigin {
+            op: "eq".to_string(),
+            value: "https://company.sharepoint.com".to_string(),
+        };
+        let display = condition_display(&cond);
+        assert_eq!(display, "SourceOrigin eq https://company.sharepoint.com");
+    }
+
+    #[test]
+    fn condition_display_destination_origin() {
+        use dlp_common::abac::PolicyCondition;
+        let cond = PolicyCondition::DestinationOrigin {
+            op: "contains".to_string(),
+            value: "sharepoint.com".to_string(),
+        };
+        let display = condition_display(&cond);
+        assert_eq!(display, "DestinationOrigin contains sharepoint.com");
+    }
+
+    #[test]
+    fn condition_to_prefill_source_origin_round_trip() {
+        use dlp_common::abac::PolicyCondition;
+        let original = PolicyCondition::SourceOrigin {
+            op: "eq".to_string(),
+            value: "https://company.sharepoint.com".to_string(),
+        };
+        let (attr, op_str, picker_idx, buf) = condition_to_prefill(&original);
+        assert_eq!(attr, ConditionAttribute::SourceOrigin);
+        assert_eq!(op_str, "eq");
+        assert_eq!(picker_idx, 0);
+        assert_eq!(buf, "https://company.sharepoint.com");
+
+        let rebuilt = build_condition(attr, &op_str, picker_idx, &buf, None)
+            .expect("roundtrip must produce a valid condition");
+        assert_eq!(&rebuilt, &original);
+    }
+
+    #[test]
+    fn operators_for_source_origin_has_eq_ne_contains() {
+        let ops = operators_for(ConditionAttribute::SourceOrigin, None);
+        assert_eq!(ops.len(), 3);
+        let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+        assert!(wire.contains(&"eq"));
+        assert!(wire.contains(&"ne"));
+        assert!(wire.contains(&"contains"));
+    }
+
+    #[test]
+    fn operators_for_destination_origin_has_eq_ne_contains() {
+        let ops = operators_for(ConditionAttribute::DestinationOrigin, None);
+        assert_eq!(ops.len(), 3);
+        let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+        assert!(wire.contains(&"eq"));
+        assert!(wire.contains(&"ne"));
+        assert!(wire.contains(&"contains"));
+    }
+
+    #[test]
+    fn value_count_for_source_origin_is_zero() {
+        assert_eq!(value_count_for(ConditionAttribute::SourceOrigin, None), 0);
+    }
+
+    #[test]
+    fn value_count_for_destination_origin_is_zero() {
+        assert_eq!(
+            value_count_for(ConditionAttribute::DestinationOrigin, None),
+            0
+        );
     }
 
     // ---------------------------------------------------------------------------

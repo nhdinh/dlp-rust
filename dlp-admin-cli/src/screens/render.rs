@@ -445,6 +445,9 @@ fn picker_items(
                         _ => vec![], // Publisher/ImagePath: free-text input path
                     }
                 }
+                ConditionAttribute::SourceOrigin | ConditionAttribute::DestinationOrigin => {
+                    vec![] // text input, not a list picker
+                }
             }
         }
         _ => vec![],
@@ -615,7 +618,8 @@ fn draw_conditions_builder(
         frame.render_widget(Paragraph::new(label), picker_chunks[0]);
     }
 
-    // Text-input paths: MemberOf SID, or app-identity Publisher/ImagePath value.
+    // Text-input paths: MemberOf SID, app-identity Publisher/ImagePath/Aumid/PackageFamilyName,
+    // or origin URL free-text input.
     let is_member_of_step3 = step == 3 && selected_attribute == Some(&ConditionAttribute::MemberOf);
     let is_app_text_step3 = step == 3
         && matches!(
@@ -625,9 +629,17 @@ fn draw_conditions_builder(
         )
         && matches!(
             selected_field,
-            Some(AppField::Publisher) | Some(AppField::ImagePath)
+            Some(AppField::Publisher)
+                | Some(AppField::ImagePath)
+                | Some(AppField::Aumid)
+                | Some(AppField::PackageFamilyName)
         );
-    let is_text_input_step3 = is_member_of_step3 || is_app_text_step3;
+    let is_origin_text_step3 = step == 3
+        && matches!(
+            selected_attribute,
+            Some(ConditionAttribute::SourceOrigin) | Some(ConditionAttribute::DestinationOrigin)
+        );
+    let is_text_input_step3 = is_member_of_step3 || is_app_text_step3 || is_origin_text_step3;
 
     if in_app_field_sub_step {
         // --- Step 1.5: AppField sub-picker ---
@@ -659,9 +671,11 @@ fn draw_conditions_builder(
         let mut pk = picker_state.clone();
         frame.render_stateful_widget(sub_picker, picker_chunks[1], &mut pk);
     } else if is_text_input_step3 {
-        // --- Step 3 text input (MemberOf SID or Publisher/ImagePath value) ---
+        // --- Step 3 text input (MemberOf SID, app-identity value, or origin URL) ---
         let title = if is_member_of_step3 {
             " AD Group SID (partial match) "
+        } else if is_origin_text_step3 {
+            " Origin URL "
         } else {
             " Application Value "
         };
