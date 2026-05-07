@@ -294,7 +294,10 @@ mod tests {
             data_preview: Some("secret data".to_string()),
         };
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"DragDropAlert\""), "json was: {json}");
+        assert!(
+            json.contains("\"type\":\"DragDropAlert\""),
+            "json was: {json}"
+        );
         assert!(json.contains("source_application"));
         assert!(!json.contains("destination_application"));
         assert!(json.contains("\"session_id\":5"));
@@ -334,7 +337,10 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("source_application"), "json was: {json}");
-        assert!(!json.contains("destination_application"), "json was: {json}");
+        assert!(
+            !json.contains("destination_application"),
+            "json was: {json}"
+        );
         assert!(!json.contains("data_preview"), "json was: {json}");
     }
 

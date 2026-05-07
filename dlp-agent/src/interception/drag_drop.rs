@@ -275,7 +275,9 @@ impl DragDropEnforcer {
 
         // Store the join handle so stop() can wait.
         {
-            let mut guard = thread_handle_arc.lock().expect("thread_handle mutex poisoned");
+            let mut guard = thread_handle_arc
+                .lock()
+                .expect("thread_handle mutex poisoned");
             *guard = Some(thread);
         }
 
@@ -300,7 +302,10 @@ impl DragDropEnforcer {
             unsafe { PostThreadMessageW(thread_id, WM_QUIT, WPARAM::default(), LPARAM::default()) };
 
         // Wait for the thread to finish.
-        let mut handle_guard = self.thread_handle.lock().expect("thread_handle mutex poisoned");
+        let mut handle_guard = self
+            .thread_handle
+            .lock()
+            .expect("thread_handle mutex poisoned");
         let handle = handle_guard.take();
         drop(handle_guard);
         if let Some(handle) = handle {
@@ -551,9 +556,11 @@ fn get_process_image_path(handle: windows::Win32::Foundation::HANDLE) -> Option<
 /// app, returns `(None, None, false)`.
 #[cfg(windows)]
 fn resolve_uwp_identity(hwnd: HWND) -> (Option<String>, Option<String>, bool) {
-    use windows::Win32::System::Threading::{GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
+    use windows::Win32::System::Threading::{
+        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     // Quick check: if the window's PID matches the current process, it's
     // likely our own hidden window -- skip UWP resolution.
@@ -575,7 +582,9 @@ fn resolve_uwp_identity(hwnd: HWND) -> (Option<String>, Option<String>, bool) {
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok() };
     let result = match handle {
         Some(h) => {
-            let r = unsafe { GetApplicationUserModelId(h, &mut len, Some(windows::core::PWSTR(buf.as_mut_ptr()))) };
+            let r = unsafe {
+                GetApplicationUserModelId(h, &mut len, Some(windows::core::PWSTR(buf.as_mut_ptr())))
+            };
             let _ = unsafe { CloseHandle(h) };
             r
         }
@@ -641,7 +650,10 @@ fn count_files_in_hdrop(_hdrop: usize) -> u32 {
 /// # Returns
 ///
 /// The ABAC [`Decision`] -- ALLOW or DENY.
-fn evaluate_drag_drop(source_app: Option<&AppIdentity>, dest_app: Option<&AppIdentity>) -> Decision {
+fn evaluate_drag_drop(
+    source_app: Option<&AppIdentity>,
+    dest_app: Option<&AppIdentity>,
+) -> Decision {
     // Build a minimal evaluation request.
     let request = EvaluateRequest {
         subject: dlp_common::Subject {
@@ -815,7 +827,10 @@ mod tests {
             is_uwp: false,
         };
         let decision = evaluate_drag_drop(Some(&src), None);
-        assert!(decision.is_denied(), "untrusted source + T3 should be denied");
+        assert!(
+            decision.is_denied(),
+            "untrusted source + T3 should be denied"
+        );
     }
 
     #[test]
@@ -846,7 +861,11 @@ mod tests {
             is_uwp: false,
         };
         let decision = evaluate_drag_drop(None, Some(&dest));
-        assert_eq!(decision, Decision::ALLOW, "unknown tier should default to allow");
+        assert_eq!(
+            decision,
+            Decision::ALLOW,
+            "unknown tier should default to allow"
+        );
     }
 
     // -- DragDropEnforcer lifecycle tests ------------------------------------
@@ -873,7 +892,10 @@ mod tests {
         assert!(!is_hook_installed());
 
         let result = install_drag_drop_hook(1);
-        assert!(result.is_ok(), "install_drag_drop_hook should succeed: {result:?}");
+        assert!(
+            result.is_ok(),
+            "install_drag_drop_hook should succeed: {result:?}"
+        );
         assert!(is_hook_installed());
 
         uninstall_drag_drop_hook();

@@ -53,10 +53,10 @@ Phase numbering is continuous across milestones -- never restarts.
 **Plans**: 4 plans
 
 Plans:
-- [ ] 41-01-PLAN.md -- Add SourceOrigin/DestinationOrigin PolicyCondition variants, extend EvaluateRequest/AbacContext
+- [x] 41-01-PLAN.md -- Add SourceOrigin/DestinationOrigin PolicyCondition variants, extend EvaluateRequest/AbacContext
 - [x] 41-02-PLAN.md -- Add origin condition matching to ABAC evaluator
-- [ ] 41-03-PLAN.md -- Wire Chrome handler to ABAC evaluator
-- [ ] 41-04-PLAN.md -- Update TUI conditions builder with origin attributes
+- [x] 41-03-PLAN.md -- Wire Chrome handler to ABAC evaluator
+- [x] 41-04-PLAN.md -- Update TUI conditions builder with origin attributes
 
 ### Phase 42: Audit Enrichment — App Identity Fields
 **Goal**: Close gaps in app identity fields across all interception paths
@@ -163,7 +163,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 | 38.6 | Operational Hardening Bundle | v0.7.1 | 2/2 | Complete | 2026-05-06 |
 | 39 | UWP App Identity | v0.8.0 | 0/TBD | Not started | - |
 | 40 | Drag-and-Drop Enforcement | v0.8.0 | 0/TBD | Not started | - |
-| 41 | Browser Origin Clipboard Policies | v0.8.0 | 4/4 | Planned | - |
+| 41 | Browser Origin Clipboard Policies | v0.8.0 | 4/4 | Complete | 2026-05-07 |
 | 42 | Audit Enrichment — App Identity Fields | v0.8.0 | 0/TBD | Not started | - |
 
 ## v0.3.0 - Operational Hardening (Shipped)

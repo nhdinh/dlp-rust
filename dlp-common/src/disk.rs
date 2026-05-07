@@ -1011,7 +1011,9 @@ fn query_bus_type_for_handle(handle: HANDLE, _instance_id: &str) -> Result<BusTy
     };
 
     if let Err(e) = ok {
-        return Err(DiskError::IoctlFailed(format!("DeviceIoControl failed: {e}")));
+        return Err(DiskError::IoctlFailed(format!(
+            "DeviceIoControl failed: {e}"
+        )));
     }
 
     if returned < std::mem::size_of::<STORAGE_DEVICE_DESCRIPTOR>() as u32 {
@@ -1621,7 +1623,10 @@ mod tests {
     #[cfg(windows)]
     fn test_query_bus_type_for_handle_includes_win32_error() {
         // Open an invalid handle (nul device) to force DeviceIoControl failure.
-        let wide: Vec<u16> = r"\\.\NUL".encode_utf16().chain(std::iter::once(0)).collect();
+        let wide: Vec<u16> = r"\\.\NUL"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let handle = unsafe {
             CreateFileW(
                 windows::core::PCWSTR(wide.as_ptr()),
@@ -1676,6 +1681,9 @@ mod tests {
     #[cfg(windows)]
     fn test_find_drive_letter_returns_none_on_disk_number_err() {
         let result = find_drive_letter_for_instance_id("NONEXISTENT\\INSTANCE", &[]);
-        assert!(result.is_none(), "find_drive_letter must return None when disk_number fails");
+        assert!(
+            result.is_none(),
+            "find_drive_letter must return None when disk_number fails"
+        );
     }
 }

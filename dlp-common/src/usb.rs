@@ -18,7 +18,9 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Get_Device_Interface_PropertyW, CR_BUFFER_SMALL, CR_SUCCESS,
 };
 #[cfg(windows)]
-use windows::Win32::Devices::Properties::{DEVPKEY_Device_InstanceId, DEVPROP_TYPE_STRING, DEVPROPTYPE};
+use windows::Win32::Devices::Properties::{
+    DEVPKEY_Device_InstanceId, DEVPROPTYPE, DEVPROP_TYPE_STRING,
+};
 
 /// SetupDi registry property: device friendly name (`SPDRP_FRIENDLYNAME` = 0x0C).
 #[cfg(windows)]
@@ -373,7 +375,9 @@ pub enum UsbResolutionError {
 impl std::fmt::Display for UsbResolutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UsbResolutionError::ConfigManager(cr) => write!(f, "Configuration Manager error: {cr:#010x}"),
+            UsbResolutionError::ConfigManager(cr) => {
+                write!(f, "Configuration Manager error: {cr:#010x}")
+            }
             UsbResolutionError::Win32(e) => write!(f, "Win32 error: {e}"),
         }
     }
@@ -517,16 +521,15 @@ pub fn find_instance_id_by_vid_pid_serial(
 
         let mut id_buf = [0u16; 256];
         let ok = unsafe {
-            SetupDiGetDeviceInstanceIdW(
-                hdev,
-                &devinfo,
-                Some(id_buf.as_mut_slice()),
-                None,
-            )
+            SetupDiGetDeviceInstanceIdW(hdev, &devinfo, Some(id_buf.as_mut_slice()), None)
         };
         if ok.is_ok() {
             let instance_id = String::from_utf16_lossy(
-                &id_buf.iter().copied().take_while(|&w| w != 0).collect::<Vec<u16>>(),
+                &id_buf
+                    .iter()
+                    .copied()
+                    .take_while(|&w| w != 0)
+                    .collect::<Vec<u16>>(),
             );
             let reshaped = format!("\\\\?\\{}", instance_id.replace('\\', "#"));
             let candidate = parse_usb_device_path(&reshaped);
@@ -650,7 +653,8 @@ mod tests {
         // Non-USB path should be rejected before CM API call.
         #[cfg(windows)]
         {
-            let result = resolve_instance_id_from_dbcc_name(r"\\?\NOTUSB#VID_0951&PID_1666#SN12345#{guid}");
+            let result =
+                resolve_instance_id_from_dbcc_name(r"\\?\NOTUSB#VID_0951&PID_1666#SN12345#{guid}");
             assert!(result.is_err(), "Expected error for non-USB path");
         }
         #[cfg(not(windows))]

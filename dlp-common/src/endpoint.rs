@@ -255,7 +255,9 @@ mod tests {
     #[test]
     fn test_app_identity_uwp_serde_round_trip() {
         let original = AppIdentity {
-            image_path: r"C:\Program Files\WindowsApps\Microsoft.Windows.Photos_8wekyb3d8bbwe\Photos.exe".to_string(),
+            image_path:
+                r"C:\Program Files\WindowsApps\Microsoft.Windows.Photos_8wekyb3d8bbwe\Photos.exe"
+                    .to_string(),
             publisher: "Microsoft Corporation".to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,
@@ -267,9 +269,18 @@ mod tests {
         let round_trip: AppIdentity = serde_json::from_str(&json).unwrap();
         assert_eq!(original, round_trip);
         // Verify JSON contains UWP fields.
-        assert!(json.contains("\"aumid\""), "json must contain aumid field: {json}");
-        assert!(json.contains("\"package_family_name\""), "json must contain package_family_name field: {json}");
-        assert!(json.contains("\"is_uwp\":true"), "json must contain is_uwp field: {json}");
+        assert!(
+            json.contains("\"aumid\""),
+            "json must contain aumid field: {json}"
+        );
+        assert!(
+            json.contains("\"package_family_name\""),
+            "json must contain package_family_name field: {json}"
+        );
+        assert!(
+            json.contains("\"is_uwp\":true"),
+            "json must contain is_uwp field: {json}"
+        );
     }
 
     #[test]

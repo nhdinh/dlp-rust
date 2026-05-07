@@ -838,7 +838,9 @@ mod tests {
     #[test]
     fn test_app_identity_with_uwp_fields() {
         let identity = AppIdentity {
-            image_path: "C:\\Program Files\\WindowsApps\\Microsoft.Windows.Photos_8wekyb3d8bbwe\\Photos.exe".to_string(),
+            image_path:
+                "C:\\Program Files\\WindowsApps\\Microsoft.Windows.Photos_8wekyb3d8bbwe\\Photos.exe"
+                    .to_string(),
             publisher: "Microsoft Corporation".to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,

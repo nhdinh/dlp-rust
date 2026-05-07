@@ -52,15 +52,16 @@ static POLICY_EVALUATOR: std::sync::OnceLock<
     fn(&dlp_common::abac::EvaluateRequest) -> dlp_common::abac::EvaluateResponse,
 > = std::sync::OnceLock::new();
 
-/// Test-only override for the policy evaluator.
+/// Test-only thread-local override for the policy evaluator.
 ///
 /// When set (non-None), this takes precedence over `POLICY_EVALUATOR`.
-/// This allows each test to use its own mock evaluator without the
-/// OnceLock single-set limitation.
+/// Thread-local storage eliminates race conditions between parallel tests.
 #[cfg(test)]
-static TEST_EVALUATOR_OVERRIDE: std::sync::Mutex<
-    Option<fn(&dlp_common::abac::EvaluateRequest) -> dlp_common::abac::EvaluateResponse>,
-> = std::sync::Mutex::new(None);
+thread_local! {
+    static TEST_EVALUATOR_OVERRIDE: std::cell::RefCell<
+        Option<fn(&dlp_common::abac::EvaluateRequest) -> dlp_common::abac::EvaluateResponse>,
+    > = std::cell::RefCell::new(None);
+}
 
 /// Sets the global origins cache before the pipe server starts.
 ///
@@ -303,12 +304,11 @@ fn dispatch_request(request: &ContentAnalysisRequest) -> ContentAnalysisResponse
     };
 
     // Evaluate against ABAC policy if evaluator is available.
-    // Test override takes precedence for test isolation.
+    // Test override takes precedence for test isolation (thread-local).
     #[cfg(test)]
-    let evaluator_opt = {
-        let override_guard = TEST_EVALUATOR_OVERRIDE.lock().unwrap();
-        override_guard.as_ref().copied().or(POLICY_EVALUATOR.get().copied())
-    };
+    let evaluator_opt = TEST_EVALUATOR_OVERRIDE
+        .with(|cell| cell.borrow().as_ref().copied())
+        .or_else(|| POLICY_EVALUATOR.get().copied());
     #[cfg(not(test))]
     let evaluator_opt = POLICY_EVALUATOR.get().copied();
 
@@ -477,6 +477,34 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // Test helpers for evaluator override
+    // ------------------------------------------------------------------
+
+    /// RAII guard that sets the thread-local test evaluator override and resets to None on drop.
+    struct EvaluatorGuard {
+        _priv: (),
+    }
+
+    impl EvaluatorGuard {
+        fn set(
+            evaluator: fn(&dlp_common::abac::EvaluateRequest) -> dlp_common::abac::EvaluateResponse,
+        ) -> Self {
+            TEST_EVALUATOR_OVERRIDE.with(|cell| {
+                *cell.borrow_mut() = Some(evaluator);
+            });
+            Self { _priv: () }
+        }
+    }
+
+    impl Drop for EvaluatorGuard {
+        fn drop(&mut self) {
+            TEST_EVALUATOR_OVERRIDE.with(|cell| {
+                *cell.borrow_mut() = None;
+            });
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Mock policy evaluator for tests
     // ------------------------------------------------------------------
 
@@ -527,11 +555,9 @@ mod tests {
 
     #[test]
     fn test_dispatch_abac_evaluator_not_set_allows() {
-        // Ensure no evaluator override is set for this test.
-        {
-            let mut guard = TEST_EVALUATOR_OVERRIDE.lock().unwrap();
-            *guard = None;
-        }
+        // Ensure no evaluator override is active (Guard not created).
+        // This test verifies the fail-open behavior when neither
+        // POLICY_EVALUATOR nor TEST_EVALUATOR_OVERRIDE is set.
         let request = ContentAnalysisRequest {
             request_token: Some("tok-abac-no-eval".to_string()),
             analysis_connector: Some(3),
@@ -554,10 +580,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_abac_denies_via_policy() {
-        {
-            let mut guard = TEST_EVALUATOR_OVERRIDE.lock().unwrap();
-            *guard = Some(mock_evaluator_always_deny);
-        }
+        let _guard = EvaluatorGuard::set(mock_evaluator_always_deny);
 
         let request = ContentAnalysisRequest {
             request_token: Some("tok-abac-deny".to_string()),
@@ -581,10 +604,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_abac_allows_via_policy() {
-        {
-            let mut guard = TEST_EVALUATOR_OVERRIDE.lock().unwrap();
-            *guard = Some(mock_evaluator_always_allow);
-        }
+        let _guard = EvaluatorGuard::set(mock_evaluator_always_allow);
 
         let request = ContentAnalysisRequest {
             request_token: Some("tok-abac-allow".to_string()),
@@ -608,10 +628,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_managed_origin_blocks() {
-        {
-            let mut guard = TEST_EVALUATOR_OVERRIDE.lock().unwrap();
-            *guard = Some(mock_evaluator_block_managed_origin);
-        }
+        let _guard = EvaluatorGuard::set(mock_evaluator_block_managed_origin);
 
         let request = ContentAnalysisRequest {
             request_token: Some("tok-3".to_string()),
@@ -635,10 +652,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_unmanaged_origin_allows() {
-        {
-            let mut guard = TEST_EVALUATOR_OVERRIDE.lock().unwrap();
-            *guard = Some(mock_evaluator_block_managed_origin);
-        }
+        let _guard = EvaluatorGuard::set(mock_evaluator_block_managed_origin);
 
         let request = ContentAnalysisRequest {
             request_token: Some("tok-4".to_string()),
