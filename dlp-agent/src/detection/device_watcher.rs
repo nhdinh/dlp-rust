@@ -197,6 +197,110 @@ pub fn extract_disk_instance_id(device_path: &str) -> String {
 /// Handles `WM_DESTROY` (quit message loop) and `WM_DEVICECHANGE`
 /// (route arrival/removal events by `dbcc_classguid` to the appropriate
 /// per-protocol handler).  All other messages are forwarded to `DefWindowProcW`.
+/// Handles a `GUID_DEVINTERFACE_VOLUME` device change event.
+///
+/// Re-scans drive letters and reconciles with the blocked-drives set.
+#[cfg(windows)]
+fn handle_volume_device_change(event_type: u32) {
+    crate::detection::usb::handle_volume_event_dispatch(event_type);
+}
+
+/// Handles a `GUID_DEVINTERFACE_USB_DEVICE` device change event.
+#[cfg(windows)]
+fn handle_usb_device_change(event_type: u32, device_path: &str) {
+    if event_type == DBT_DEVICEARRIVAL {
+        crate::detection::usb::dispatch_usb_device_arrival(device_path);
+    } else {
+        crate::detection::usb::dispatch_usb_device_removal(device_path);
+    }
+}
+
+/// Handles a `GUID_DEVINTERFACE_DISK` arrival event with deferred processing.
+///
+/// Phase 38.2 GAP-01: defers disk arrival by 500 ms so the volume manager
+/// has time to mount the volume before `find_drive_letter_for_instance_id`
+/// is called.
+#[cfg(windows)]
+fn handle_disk_arrival(device_path: &str) {
+    if let (Some(handle), Some(ctx)) = (RUNTIME_HANDLE.get(), AUDIT_CTX.get()) {
+        let ctx = ctx.clone();
+        let path = device_path.to_owned();
+        std::mem::drop(handle.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            crate::detection::disk::on_disk_arrival(&path, &ctx);
+        }));
+        return;
+    }
+
+    if let Some(ctx) = AUDIT_CTX.get() {
+        // Fallback: process immediately (old behaviour).
+        crate::detection::disk::on_disk_arrival(device_path, ctx);
+        return;
+    }
+
+    warn!(
+        "device_watcher: AUDIT_CTX not set; \
+         skipping disk arrival audit emission"
+    );
+}
+
+/// Handles a `GUID_DEVINTERFACE_DISK` device change event.
+#[cfg(windows)]
+fn handle_disk_device_change(event_type: u32, device_path: &str) {
+    if event_type == DBT_DEVICEARRIVAL {
+        handle_disk_arrival(device_path);
+    } else {
+        crate::detection::disk::on_disk_removal(device_path);
+    }
+}
+
+/// Dispatches a `WM_DEVICECHANGE` event to the appropriate per-protocol handler.
+///
+/// # Safety
+///
+/// `lparam` must point to a valid `DEV_BROADCAST_HDR` produced by the OS
+/// for the duration of this callback.
+#[cfg(windows)]
+unsafe fn dispatch_device_change(event_type: u32, lparam: LPARAM) {
+    if lparam.0 == 0 {
+        return;
+    }
+
+    // SAFETY: lparam points to a DEV_BROADCAST_HDR produced by
+    // the OS; valid for the duration of this callback.
+    let hdr = unsafe { &*(lparam.0 as *const DEV_BROADCAST_HDR) };
+    if hdr.dbch_devicetype != DBT_DEVTYP_DEVICEINTERFACE {
+        return;
+    }
+
+    // SAFETY: the header's devicetype confirms the body is
+    // DEV_BROADCAST_DEVICEINTERFACE_W. Extract dbcc_classguid
+    // and dbcc_name (null-terminated wide string) here --
+    // do NOT store the pointer past this callback.
+    let di = unsafe { &*(lparam.0 as *const DEV_BROADCAST_DEVICEINTERFACE_W) };
+    let classguid = di.dbcc_classguid;
+
+    if classguid == GUID_DEVINTERFACE_VOLUME {
+        handle_volume_device_change(event_type);
+        return;
+    }
+
+    if classguid == GUID_DEVINTERFACE_USB_DEVICE {
+        // SAFETY: di is valid for this callback duration;
+        // read_dbcc_name extracts the wide string synchronously.
+        let device_path = unsafe { read_dbcc_name(di) };
+        handle_usb_device_change(event_type, &device_path);
+        return;
+    }
+
+    if classguid == GUID_DEVINTERFACE_DISK {
+        // SAFETY: di is valid for this callback duration;
+        // read_dbcc_name extracts the wide string synchronously.
+        let device_path = unsafe { read_dbcc_name(di) };
+        handle_disk_device_change(event_type, &device_path);
+    }
+}
+
 #[cfg(windows)]
 unsafe extern "system" fn device_watcher_wndproc(
     hwnd: HWND,
@@ -215,64 +319,10 @@ unsafe extern "system" fn device_watcher_wndproc(
             // DBT_DEVICEREMOVECOMPLETE = 0x8004. lparam is a pointer to
             // DEV_BROADCAST_HDR valid only for the duration of this call.
             let event_type = wparam.0 as u32;
-            if (event_type == DBT_DEVICEARRIVAL || event_type == DBT_DEVICEREMOVECOMPLETE)
-                && lparam.0 != 0
-            {
+            if event_type == DBT_DEVICEARRIVAL || event_type == DBT_DEVICEREMOVECOMPLETE {
                 // SAFETY: lparam points to a DEV_BROADCAST_HDR produced by
                 // the OS; valid for the duration of this callback.
-                let hdr = unsafe { &*(lparam.0 as *const DEV_BROADCAST_HDR) };
-                if hdr.dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE {
-                    // SAFETY: the header's devicetype confirms the body is
-                    // DEV_BROADCAST_DEVICEINTERFACE_W. Extract dbcc_classguid
-                    // and dbcc_name (null-terminated wide string) here --
-                    // do NOT store the pointer past this callback.
-                    let di = unsafe { &*(lparam.0 as *const DEV_BROADCAST_DEVICEINTERFACE_W) };
-                    let classguid = di.dbcc_classguid;
-
-                    if classguid == GUID_DEVINTERFACE_VOLUME {
-                        // VOLUME arrival/removal: re-scan drive letters and
-                        // reconcile with the blocked-drives set.
-                        crate::detection::usb::handle_volume_event_dispatch(event_type);
-                    } else if classguid == GUID_DEVINTERFACE_USB_DEVICE {
-                        // SAFETY: di is valid for this callback duration;
-                        // read_dbcc_name extracts the wide string synchronously.
-                        let device_path = unsafe { read_dbcc_name(di) };
-                        if event_type == DBT_DEVICEARRIVAL {
-                            crate::detection::usb::dispatch_usb_device_arrival(&device_path);
-                        } else {
-                            crate::detection::usb::dispatch_usb_device_removal(&device_path);
-                        }
-                    } else if classguid == GUID_DEVINTERFACE_DISK {
-                        // SAFETY: di is valid for this callback duration;
-                        // read_dbcc_name extracts the wide string synchronously.
-                        let device_path = unsafe { read_dbcc_name(di) };
-                        if event_type == DBT_DEVICEARRIVAL {
-                            // Phase 38.2 GAP-01: defer disk arrival by 500 ms so the
-                            // volume manager has time to mount the volume and
-                            // find_drive_letter_for_instance_id can resolve the letter.
-                            if let (Some(handle), Some(ctx)) =
-                                (RUNTIME_HANDLE.get(), AUDIT_CTX.get())
-                            {
-                                let ctx = ctx.clone();
-                                let path = device_path.clone();
-                                std::mem::drop(handle.spawn(async move {
-                                    tokio::time::sleep(Duration::from_millis(500)).await;
-                                    crate::detection::disk::on_disk_arrival(&path, &ctx);
-                                }));
-                            } else if let Some(ctx) = AUDIT_CTX.get() {
-                                // Fallback: process immediately (old behaviour).
-                                crate::detection::disk::on_disk_arrival(&device_path, ctx);
-                            } else {
-                                warn!(
-                                    "device_watcher: AUDIT_CTX not set; \
-                                     skipping disk arrival audit emission"
-                                );
-                            }
-                        } else {
-                            crate::detection::disk::on_disk_removal(&device_path);
-                        }
-                    }
-                }
+                unsafe { dispatch_device_change(event_type, lparam) };
             }
             LRESULT(0)
         }

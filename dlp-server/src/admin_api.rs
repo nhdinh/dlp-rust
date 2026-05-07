@@ -507,6 +507,58 @@ pub struct HealthResponse {
 /// assert!(validate_webhook_url("http://example.com").is_err());
 /// assert!(validate_webhook_url("https://127.0.0.1").is_err());
 /// ```
+/// Validates an IPv4 host address for webhook URLs.
+///
+/// Rejects loopback (127.0.0.0/8) and link-local (169.254.0.0/16).
+/// RFC1918 private addresses (10/8, 172.16/12, 192.168/16) are intentionally allowed.
+fn validate_ipv4_host(ip: std::net::Ipv4Addr) -> Result<(), String> {
+    if ip.is_loopback() {
+        return Err("loopback addresses not allowed".to_string());
+    }
+    if ip.is_link_local() {
+        // `is_link_local` covers 169.254.0.0/16 on stable Rust.
+        return Err("link-local addresses not allowed".to_string());
+    }
+    // RFC1918 (10/8, 172.16/12, 192.168/16) intentionally ALLOWED.
+    Ok(())
+}
+
+/// Validates an IPv6 host address for webhook URLs.
+///
+/// Rejects loopback (::1), link-local (fe80::/10), and IPv4-mapped
+/// loopback/link-local addresses (::ffff:127.0.0.1, ::ffff:169.254.x.x).
+fn validate_ipv6_host(ip: std::net::Ipv6Addr) -> Result<(), String> {
+    if ip.is_loopback() {
+        return Err("loopback addresses not allowed".to_string());
+    }
+
+    // G3: Ipv6Addr::is_unicast_link_local is unstable on rustc 1.94,
+    // so do the fe80::/10 check manually: first 10 bits == 1111111010,
+    // i.e. first segment in 0xfe80..=0xfebf.
+    let first_segment = ip.segments()[0];
+    if (first_segment & 0xffc0) == 0xfe80 {
+        return Err("link-local addresses not allowed".to_string());
+    }
+
+    // TM-02 hardening (BL-01 fix): IPv4-mapped IPv6 addresses
+    // (`::ffff:a.b.c.d`) route to the v4 stack on dual-stack hosts,
+    // so `[::ffff:127.0.0.1]` and `[::ffff:169.254.169.254]` would
+    // otherwise bypass the v4 loopback/link-local guards and let an
+    // attacker reach cloud metadata via the mapped form. Re-run the
+    // v4 blocklist against the unwrapped address. `to_ipv4_mapped`
+    // is stable since Rust 1.63.
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        if v4.is_loopback() {
+            return Err("loopback addresses not allowed (IPv4-mapped)".to_string());
+        }
+        if v4.is_link_local() {
+            return Err("link-local addresses not allowed (IPv4-mapped)".to_string());
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_webhook_url(url: &str) -> Result<(), String> {
     let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
 
@@ -515,45 +567,8 @@ pub(crate) fn validate_webhook_url(url: &str) -> Result<(), String> {
     }
 
     match parsed.host() {
-        Some(url::Host::Ipv4(ip)) => {
-            if ip.is_loopback() {
-                return Err("loopback addresses not allowed".to_string());
-            }
-            if ip.is_link_local() {
-                // `is_link_local` covers 169.254.0.0/16 on stable Rust.
-                return Err("link-local addresses not allowed".to_string());
-            }
-            // RFC1918 (10/8, 172.16/12, 192.168/16) intentionally ALLOWED.
-            Ok(())
-        }
-        Some(url::Host::Ipv6(ip)) => {
-            if ip.is_loopback() {
-                return Err("loopback addresses not allowed".to_string());
-            }
-            // G3: Ipv6Addr::is_unicast_link_local is unstable on rustc 1.94,
-            // so do the fe80::/10 check manually: first 10 bits == 1111111010,
-            // i.e. first segment in 0xfe80..=0xfebf.
-            let first_segment = ip.segments()[0];
-            if (first_segment & 0xffc0) == 0xfe80 {
-                return Err("link-local addresses not allowed".to_string());
-            }
-            // TM-02 hardening (BL-01 fix): IPv4-mapped IPv6 addresses
-            // (`::ffff:a.b.c.d`) route to the v4 stack on dual-stack hosts,
-            // so `[::ffff:127.0.0.1]` and `[::ffff:169.254.169.254]` would
-            // otherwise bypass the v4 loopback/link-local guards and let an
-            // attacker reach cloud metadata via the mapped form. Re-run the
-            // v4 blocklist against the unwrapped address. `to_ipv4_mapped`
-            // is stable since Rust 1.63.
-            if let Some(v4) = ip.to_ipv4_mapped() {
-                if v4.is_loopback() {
-                    return Err("loopback addresses not allowed (IPv4-mapped)".to_string());
-                }
-                if v4.is_link_local() {
-                    return Err("link-local addresses not allowed (IPv4-mapped)".to_string());
-                }
-            }
-            Ok(())
-        }
+        Some(url::Host::Ipv4(ip)) => validate_ipv4_host(ip),
+        Some(url::Host::Ipv6(ip)) => validate_ipv6_host(ip),
         Some(url::Host::Domain(_)) => {
             // Textual hostname — accept. No DNS lookup (TM-02 ratified).
             Ok(())

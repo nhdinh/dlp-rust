@@ -498,6 +498,56 @@ async fn config_poll_loop(
     }
 }
 
+/// Container for all subsystem shutdown handles and resources.
+///
+/// Collected during [`run_loop_init`] and consumed by [`run_loop_shutdown`]
+/// so that the service control loop body remains focused on a single
+/// responsibility: polling for the stop signal.
+struct RunLoopContext {
+    /// Handle to the file monitor task (spawned via `spawn_blocking`).
+    file_handle: tokio::task::JoinHandle<()>,
+    /// Clone of the file monitor for calling `stop()` on shutdown.
+    file_monitor: crate::interception::InterceptionEngine,
+    /// Handle to the async interception event loop.
+    event_loop_handle: tokio::task::JoinHandle<()>,
+    /// Handle to the Policy Engine heartbeat task.
+    heartbeat_handle: tokio::task::JoinHandle<()>,
+    /// Sender to signal the heartbeat task to exit.
+    heartbeat_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the Pipe 1 heartbeat task.
+    pipe1_hb_handle: tokio::task::JoinHandle<()>,
+    /// Sender to signal the Pipe 1 heartbeat to exit.
+    pipe1_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the config poll task (optional when no server client).
+    config_poll_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Sender to signal the config poll task to exit.
+    config_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the device registry poll task.
+    registry_poll_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Sender to signal the registry poll task to exit.
+    registry_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the managed origins poll task.
+    origins_poll_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Sender to signal the origins poll task to exit.
+    origins_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the disk enumeration background task.
+    disk_enum_handle: tokio::task::JoinHandle<()>,
+    /// Sender to signal the disk enumeration task to exit.
+    disk_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the encryption check background task.
+    enc_handle: tokio::task::JoinHandle<()>,
+    /// Sender to signal the encryption check task to exit.
+    enc_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the audit buffer flush task.
+    audit_flush_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Sender to signal the audit buffer to perform final flush.
+    audit_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Device watcher cleanup tuple (HWND, thread) — present when registration succeeded.
+    device_watcher_cleanup: Option<(windows::Win32::Foundation::HWND, std::thread::JoinHandle<()>)>,
+    /// Shared reference to the USB detector (for shutdown ACL restore / re-enable).
+    detector_arc: Arc<crate::detection::UsbDetector>,
+}
+
 /// The main service run loop.
 ///
 /// Runs the file system event loop and the service control loop.
@@ -516,382 +566,8 @@ async fn run_loop(
     let _log_path = crate::audit_emitter::log_path();
     info!(audit_log = %_log_path.display(), "audit subsystem initialised");
 
-    // ── Initialise the Policy Engine client and offline cache ──────────────
-    let engine_client = crate::engine_client::EngineClient::default_client()
-        .inspect_err(|e| warn!(error = %e, "Policy Engine client init failed — will run offline"))
-        .unwrap_or_else(|_| {
-            // Best-effort fallback — OfflineManager will handle unreachable engine.
-            crate::engine_client::EngineClient::new(
-                crate::engine_client::DEFAULT_ENGINE_URL,
-                false, // skip TLS verification if env is misconfigured
-            )
-            .expect("engine client must be constructable")
-        });
-
-    let cache = Arc::new(crate::cache::Cache::new());
-
-    // ── Load agent config (needed for server_url before monitor setup) ───
-    let agent_config = crate::config::AgentConfig::load_default();
-
-    // ── AD client (best-effort — AD features disabled if config absent or init fails) ───
-    // Construct from pushed LDAP config embedded in agent_config (set by config poll loop).
-    // Stored in Arc<Option<AdClient>> so all interception threads share the same client.
-    let ad_client: Arc<Option<dlp_common::AdClient>> =
-        if let Some(ref ldap_config) = agent_config.ldap_config {
-            use dlp_common::ad_client::LdapConfig;
-            let config = LdapConfig {
-                ldap_url: ldap_config.ldap_url.clone(),
-                base_dn: ldap_config.base_dn.clone(),
-                require_tls: ldap_config.require_tls,
-                cache_ttl_secs: ldap_config.cache_ttl_secs,
-                vpn_subnets: ldap_config.vpn_subnets.clone(),
-            };
-            match dlp_common::AdClient::new(config).await {
-                Ok(client) => {
-                    tracing::info!("AD client initialised from pushed config");
-                    Arc::new(Some(client))
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "AD client initialisation failed — AD features disabled for this session"
-                    );
-                    Arc::new(None)
-                }
-            }
-        } else {
-            tracing::debug!("No LDAP config in agent config — AD features disabled");
-            Arc::new(None)
-        };
-
-    // ── dlp-server client (best-effort -- server may not be running) ─────
-    let server_client = match crate::server_client::ServerClient::from_env_with_config(
-        agent_config.server_url.as_deref(),
-    ) {
-        Ok(sc) => {
-            // Register with dlp-server. Errors are logged, not fatal.
-            if let Err(e) = sc.register().await {
-                warn!(error = %e, "dlp-server registration failed (best-effort)");
-            }
-            Some(sc)
-        }
-        Err(e) => {
-            warn!(error = %e, "dlp-server client init failed -- server relay disabled");
-            None
-        }
-    };
-
-    // ── Store server client for on-demand auth hash fetching ─────────────
-    if let Some(ref sc) = server_client {
-        crate::password_stop::set_server_client(sc.clone());
-        crate::password_stop::sync_auth_hash_from_server(sc).await;
-    }
-
-    // ── Audit buffer for server relay ────────────────────────────────────
-    let (audit_shutdown_tx, audit_shutdown_rx) = tokio::sync::watch::channel(false);
-    let _audit_flush_handle = if let Some(ref sc) = server_client {
-        let buffer = Arc::new(crate::server_client::AuditBuffer::new(sc.clone()));
-        crate::audit_emitter::set_audit_buffer(Arc::clone(&buffer));
-        Some(crate::server_client::AuditBuffer::spawn_flush_task(
-            buffer,
-            audit_shutdown_rx,
-        ))
-    } else {
-        drop(audit_shutdown_rx);
-        None
-    };
-
-    // ── Start USB mass-storage detection (inside run_loop for tokio Handle access) ──
-    // USB registration is done here (not in run_service) so that usb_wndproc can
-    // schedule async device-registry refreshes via a stored tokio::runtime::Handle.
-    // The Handle is captured now (we are inside rt.block_on) and stored in a static
-    // so the USB message-loop thread can reach it without capturing environment.
-    // (Approach A from 24-03-PLAN.md)
-    use std::sync::OnceLock;
-    static USB_DETECTOR: OnceLock<Arc<crate::detection::UsbDetector>> = OnceLock::new();
-    // Store an Arc in the OnceLock so UsbEnforcer (Phase 26) can hold a shared
-    // reference without cloning a non-Clone type.
-    let detector_arc = USB_DETECTOR.get_or_init(|| Arc::new(crate::detection::UsbDetector::new()));
-    // Obtain a plain reference for the existing scan_existing_drives() and
-    // register_usb_notifications() call sites (both accept &UsbDetector).
-    let detector = detector_arc.as_ref();
-    detector.scan_existing_drives();
-    detector.scan_existing_usb_identities();
-
-    // ── Managed origins cache (D-02) ──────────────────────────────
-    let origins_cache = Arc::new(crate::chrome::cache::ManagedOriginsCache::new());
-    // Set the global cache so the chrome pipe handler can read from it.
-    crate::chrome::handler::set_origins_cache(Arc::clone(&origins_cache));
-    let (origins_shutdown_tx, origins_shutdown_rx) = tokio::sync::watch::channel(false);
-    let _origins_poll_handle = if let Some(ref sc) = server_client {
-        Some(crate::chrome::cache::ManagedOriginsCache::spawn_poll_task(
-            Arc::clone(&origins_cache),
-            sc.clone(),
-            origins_shutdown_rx,
-        ))
-    } else {
-        drop(origins_shutdown_rx);
-        None
-    };
-
-    // ── Device registry cache (D-07, D-08) ──────────────────────────────────
-    // Polls GET /admin/device-registry every 30 s. Phase 26 enforcement reads
-    // from this cache at I/O time without a server call.
-    let registry_cache = Arc::new(crate::device_registry::DeviceRegistryCache::new());
-    let (registry_shutdown_tx, registry_shutdown_rx) = tokio::sync::watch::channel(false);
-    let _registry_poll_handle = if let Some(ref sc) = server_client {
-        // Store the cache and client in statics so usb_wndproc can trigger an
-        // immediate refresh on DBT_DEVICEARRIVAL (D-09).
-        crate::detection::usb::set_registry_cache(Arc::clone(&registry_cache));
-        crate::detection::usb::set_registry_client(sc.clone());
-        // Store the current tokio Handle so the USB message-loop thread (a plain
-        // std::thread that does NOT inherit the tokio context) can spawn async tasks.
-        crate::detection::usb::set_registry_runtime_handle(tokio::runtime::Handle::current());
-        Some(
-            crate::device_registry::DeviceRegistryCache::spawn_poll_task(
-                Arc::clone(&registry_cache),
-                sc.clone(),
-                registry_shutdown_rx,
-            ),
-        )
-    } else {
-        drop(registry_shutdown_rx);
-        None
-    };
-
-    // ── DeviceController (Phase 31) ───────────────────────────────────────
-    // Active PnP enforcement: disables devices (Blocked tier) and modifies
-    // volume DACLs (ReadOnly tier). Set in the static before USB notifications
-    // are registered so usb_wndproc has access on first arrival.
-    let device_controller = Arc::new(crate::device_controller::DeviceController::new());
-    crate::detection::usb::set_device_controller(Arc::clone(&device_controller));
-
-    // ── UsbEnforcer (D-12) ────────────────────────────────────────────────
-    // Constructed after registry_cache so both backing caches are ready.
-    // Always constructed (registry_cache exists even without a server_client).
-    let usb_enforcer_opt: Option<Arc<crate::usb_enforcer::UsbEnforcer>> =
-        Some(Arc::new(crate::usb_enforcer::UsbEnforcer::new(
-            Arc::clone(detector_arc),
-            Arc::clone(&registry_cache),
-        )));
-
-    // Set the global DRIVE_DETECTOR reference before spawning the watcher so
-    // dispatch callbacks can reach the UsbDetector on first arrival.
-    // The device watcher itself is spawned below (after audit_ctx is constructed).
-    crate::detection::usb::set_drive_detector(detector);
-
-    // ── Clone server client for config poll BEFORE it moves into offline_manager ──
-    // server_client is an Option<ServerClient>. ServerClient is Clone.
-    let server_client_for_config = server_client.clone();
-
-    let mut offline_manager =
-        crate::offline::OfflineManager::new(engine_client, cache, machine_name.clone());
-    if let Some(sc) = server_client {
-        offline_manager = offline_manager.with_server_client(sc);
-    }
-    let offline = Arc::new(offline_manager);
-
-    // ── Wrap agent_config in Arc<Mutex<>> for shared access ──────────────
-    // The config poll loop needs a shared mutable reference to apply server-pushed
-    // updates. InterceptionEngine gets a clone of the config at construction time
-    // (paths are fixed; live path hot-reload is out of scope for this phase).
-    let config_arc = Arc::new(parking_lot::Mutex::new(agent_config.clone()));
-
-    // ── Phase 35: Arc<RwLock<AgentConfig>> for disk allowlist persistence ──
-    // The disk enumeration task (D-04) needs a write-capable shared reference
-    // to AgentConfig so it can update `disk_allowlist` after merge and call
-    // `save(config_path)`. RwLock is used (not Mutex) because future Phase
-    // 36/37 readers may need concurrent read access to the allowlist.
-    //
-    // CRITICAL: must be constructed BEFORE `InterceptionEngine::with_config`
-    // moves `agent_config` (Pitfall 2). The window is between this point and
-    // the `with_config(agent_config)` call below.
-    let disk_config_arc = Arc::new(parking_lot::RwLock::new(agent_config.clone()));
-    let config_path = std::path::PathBuf::from(crate::config::AgentConfig::effective_config_path());
-
-    // ── Start the Policy Engine heartbeat ─────────────────────────────────
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let offline_hb = offline.clone();
-    let _heartbeat_handle = tokio::spawn(async move {
-        offline_hb.heartbeat_loop(shutdown_rx).await;
-    });
-
-    // ── Start the Pipe 1 heartbeat ────────────────────────────────────────
-    let (pipe1_shutdown_tx, mut pipe1_shutdown_rx) = tokio::sync::watch::channel(false);
-    let _pipe1_hb_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    crate::ipc::pipe1::send_ping_to_all();
-                }
-                _ = pipe1_shutdown_rx.changed() => {
-                    debug!("Pipe 1 heartbeat shutting down");
-                    return;
-                }
-            }
-        }
-    });
-
-    // ── Start the config poll loop ─────────────────────────────────────────
-    let (config_shutdown_tx, config_shutdown_rx) = tokio::sync::watch::channel(false);
-    let _config_poll_handle = if let Some(sc) = server_client_for_config {
-        let config_for_poll = Arc::clone(&config_arc);
-        Some(tokio::spawn(async move {
-            config_poll_loop(sc, config_for_poll, config_shutdown_rx).await;
-        }))
-    } else {
-        drop(config_shutdown_rx);
-        None
-    };
-
-    // ── Start the file system monitor pipeline ─────────────────────────
-    // Capture the recheck interval before agent_config is consumed by with_config below.
-    // Per CRYPT-02, the cadence must come exclusively from admin config — no hard-coded value.
-    let recheck_interval = agent_config.resolved_recheck_interval();
-    let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
-        .expect("file monitor initialisation always succeeds");
-    let file_monitor_for_shutdown = file_monitor.clone();
-
-    let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
-
-    // Channel for dynamically adding USB drive roots to the file watcher after
-    // startup. The sender is stored in a global so usb_wndproc can push new
-    // drive roots from the USB notification thread without holding a reference
-    // to the InterceptionEngine.
-    let (watch_tx, watch_rx) = std::sync::mpsc::channel::<std::path::PathBuf>();
-    crate::detection::usb::set_watch_path_sender(watch_tx);
-
-    // Per-session identity map — resolves actual interactive users for
-    // file events instead of attributing everything to SYSTEM.
-    let session_map = Arc::new(crate::session_identity::SessionIdentityMap::new());
-    crate::session_identity::init_global(session_map.clone());
-
-    // Populate with any sessions that are already active.
-    if let Ok(sessions) = crate::ui_spawner::enumerate_active_sessions_pub() {
-        for sid in sessions {
-            if let Err(e) = session_map.add_session(sid) {
-                debug!(
-                    session_id = sid,
-                    error = %e,
-                    "failed to resolve identity for session"
-                );
-            }
-        }
-    }
-
-    let audit_ctx = crate::audit_emitter::EmitContext {
-        agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
-        session_id: 1,
-        user_sid: "S-1-5-18".to_string(), // default; overridden per-event
-        user_name: "SYSTEM".to_string(),
-        machine_name: machine_name.clone(),
-    };
-
-    // Initialise the clipboard listener's audit emit context.
-    crate::clipboard::listener::init_emit_context(audit_ctx.clone());
-
-    // Initialise the drag-and-drop enforcer's audit emit context (APP-08, Phase 40).
-    crate::interception::init_drag_drop_emit_context(audit_ctx.clone());
-
-    // ── Disk Enumeration (Phase 33) ───────────────────────────────────────
-    // Initialize the DiskEnumerator and spawn the background enumeration task.
-    // This runs after USB setup so both detectors are available for Phase 36.
-    let disk_enumerator = Arc::new(crate::detection::DiskEnumerator::new());
-    crate::detection::disk::set_disk_enumerator(Arc::clone(&disk_enumerator));
-    let (disk_shutdown_tx, disk_shutdown_rx) = tokio::sync::watch::channel(false);
-    let disk_enum_handle = crate::detection::disk::spawn_disk_enumeration_task(
-        tokio::runtime::Handle::current(),
-        audit_ctx.clone(),
-        Arc::clone(&disk_config_arc),
-        config_path.clone(),
-        disk_shutdown_rx,
-    );
-    info!("disk enumeration task spawned");
-
-    // ── Device watcher (Phase 36 D-12) ───────────────────────────────────
-    // Spawned after audit_ctx and disk enumeration are ready so the watcher
-    // can emit DiskDiscovery events from the disk arrival handler.
-    // Replaces the old `register_usb_notifications` Win32 window.
-    //
-    // Phase 38.2 GAP-01: register the tokio runtime handle BEFORE spawning
-    // so the deferred disk-arrival path (500 ms sleep) has a handle.
-    crate::detection::device_watcher::set_runtime_handle(tokio::runtime::Handle::current());
-    let device_watcher_cleanup =
-        match crate::detection::spawn_device_watcher_task(audit_ctx.clone()) {
-            Ok((hwnd, thread)) => {
-                info!("device watcher registered (volume + USB + disk interfaces)");
-                Some((hwnd, thread))
-            }
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    "device watcher unavailable — continuing without USB/disk monitoring"
-                );
-                None
-            }
-        };
-
-    // ── DiskEnforcer (Phase 36) ───────────────────────────────────────────
-    // Constructed after disk enumeration so the global OnceLock is populated.
-    // Fails closed (blocks all fixed-disk writes) until the enumeration task
-    // sets `is_ready()` (D-06).
-    let disk_enforcer_opt: Option<Arc<crate::disk_enforcer::DiskEnforcer>> =
-        Some(Arc::new(crate::disk_enforcer::DiskEnforcer::new()));
-    info!("disk enforcer constructed");
-
-    // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
-    // Initialize the EncryptionChecker and spawn the background verification
-    // task. The task waits internally for `DiskEnumerator::is_ready` (D-04)
-    // before scanning, then re-checks every `recheck_interval` (D-10, D-11).
-    // Per CRYPT-02, the cadence comes exclusively from admin config — there
-    // is no hard-coded value. Per D-16, an Alert is emitted only on the
-    // initial total-failure outcome; subsequent periodic-poll failures yield
-    // `Unknown` silently.
-    let encryption_checker = Arc::new(crate::detection::encryption::EncryptionChecker::new());
-    crate::detection::encryption::set_encryption_checker(Arc::clone(&encryption_checker));
-    let (enc_shutdown_tx, enc_shutdown_rx) = tokio::sync::watch::channel(false);
-    let enc_handle = crate::detection::encryption::spawn_encryption_check_task(
-        tokio::runtime::Handle::current(),
-        audit_ctx.clone(),
-        recheck_interval,
-        enc_shutdown_rx,
-    );
-    info!(
-        recheck_interval_secs = recheck_interval.as_secs(),
-        "encryption verification task spawned"
-    );
-
-    let offline_ev = offline.clone();
-    let ctx_ev = audit_ctx.clone();
-    let session_map_ev = session_map.clone();
-    let ad_client_ev = ad_client.clone();
-    let event_loop_handle = tokio::spawn(async move {
-        crate::interception::run_event_loop(
-            action_rx,
-            offline_ev,
-            ctx_ev,
-            session_map_ev,
-            ad_client_ev,
-            usb_enforcer_opt,
-            disk_enforcer_opt,
-        )
-        .await;
-    });
-
-    // Spawn the file monitor — run() is blocking and must run on a dedicated thread
-    // because the notify watcher blocks on its internal channel.  Wrap it in
-    // spawn_blocking so it doesn't monopolise a Tokio thread.
-    let file_monitor_clone = file_monitor.clone();
-    let file_handle = tokio::task::spawn_blocking(move || {
-        // file_monitor.run() is synchronous; it blocks until stop() is called.
-        let _ = file_monitor_clone.run(action_tx, Some(watch_rx));
-    });
-
-    info!(
-        service_name = SERVICE_NAME,
-        "enforcement subsystems started"
-    );
+    // Initialise all subsystems and collect handles into a single context.
+    let ctx = run_loop_init(machine_name).await;
 
     // ── Service control loop ─────────────────────────────────────────────
     let poll_interval = Duration::from_millis(500);
@@ -928,152 +604,7 @@ async fn run_loop(
     }
 
     // ── Graceful shutdown with timeout (OP-04) ────────────────────────────
-    let shutdown_result = tokio::time::timeout(SHUTDOWN_TIMEOUT, async {
-        crate::password_stop::debug_log("run_loop: starting graceful shutdown");
-        info!(
-            service_name = SERVICE_NAME,
-            "shutting down enforcement subsystems"
-        );
-
-        // Uninstall the drag-and-drop hook (APP-08, Phase 40).
-        crate::password_stop::debug_log("run_loop: uninstalling drag-drop hook");
-        crate::interception::uninstall_drag_drop_hook();
-        crate::password_stop::debug_log("run_loop: drag-drop hook uninstalled");
-
-        // Stop the file monitor first so no new events arrive.
-        crate::password_stop::debug_log("run_loop: stopping file monitor");
-        file_monitor_for_shutdown.stop();
-        let _ = file_handle.await;
-        crate::password_stop::debug_log("run_loop: file monitor stopped");
-
-        // Signal the event loop to drain and exit.
-        drop(event_loop_handle);
-        crate::password_stop::debug_log("run_loop: event loop dropped");
-
-        // Stop the heartbeat loop.
-        let _ = shutdown_tx.send(true);
-        let _ = _heartbeat_handle.await;
-        crate::password_stop::debug_log("run_loop: heartbeat stopped");
-
-        // Stop the Pipe 1 heartbeat.
-        let _ = pipe1_shutdown_tx.send(true);
-        let _ = _pipe1_hb_handle.await;
-        crate::password_stop::debug_log("run_loop: Pipe 1 heartbeat stopped");
-
-        // Stop the config poll loop.
-        let _ = config_shutdown_tx.send(true);
-        if let Some(h) = _config_poll_handle {
-            let _ = h.await;
-        }
-        crate::password_stop::debug_log("run_loop: config poll stopped");
-
-        // Stop the device registry poll task.
-        let _ = registry_shutdown_tx.send(true);
-        if let Some(h) = _registry_poll_handle {
-            let _ = h.await;
-        }
-        crate::password_stop::debug_log("run_loop: device registry poll stopped");
-
-        // Stop the managed origins poll task.
-        let _ = origins_shutdown_tx.send(true);
-        if let Some(h) = _origins_poll_handle {
-            let _ = h.await;
-        }
-        crate::password_stop::debug_log("run_loop: managed origins poll stopped");
-
-        // Cancel in-flight disk enumeration and wait up to 5s (OP-04).
-        let _ = disk_shutdown_tx.send(true);
-        match tokio::time::timeout(DISK_ENUM_CANCEL_TIMEOUT, disk_enum_handle).await {
-            Ok(Ok(())) => debug!("disk enumeration task shut down cleanly"),
-            Ok(Err(e)) => warn!(error = %e, "disk enumeration task panicked"),
-            Err(_) => warn!("disk enumeration task did not shut down within 5s"),
-        }
-        crate::password_stop::debug_log("run_loop: disk enumeration stopped");
-
-        // Cancel encryption check task (OP-04 gap closure).
-        let _ = enc_shutdown_tx.send(true);
-        match tokio::time::timeout(DISK_ENUM_CANCEL_TIMEOUT, enc_handle).await {
-            Ok(Ok(())) => debug!("encryption check task shut down cleanly"),
-            Ok(Err(e)) => warn!(error = %e, "encryption check task panicked"),
-            Err(_) => warn!("encryption check task did not shut down within 5s"),
-        }
-        crate::password_stop::debug_log("run_loop: encryption check stopped");
-
-        // Unregister device watcher (Phase 36 D-12 replacement for register_usb_notifications).
-        // USB handlers complete naturally via the device watcher thread join.
-        if let Some((hwnd, thread)) = device_watcher_cleanup {
-            crate::password_stop::debug_log("run_loop: unregistering device watcher");
-            crate::detection::unregister_device_watcher(hwnd, thread);
-            crate::password_stop::debug_log("run_loop: device watcher unregistered");
-        }
-
-        // Restore volume DACL modifications for any USB drives (OP-04).
-        // Iterate over the USB detector's known device identities and restore
-        // original DACLs so the system is not left in a permanently denied state.
-        #[cfg(windows)]
-        if let Some(controller) = crate::detection::usb::get_device_controller() {
-            let letters: Vec<char> = detector_arc
-                .device_identities
-                .read()
-                .keys()
-                .copied()
-                .collect();
-            for letter in letters {
-                if let Err(e) = controller.restore_volume_acl(letter) {
-                    debug!(
-                        drive = %letter,
-                        error = %e,
-                        "restore_volume_acl on shutdown (may be unmodified)"
-                    );
-                } else {
-                    info!(drive = %letter, "restored volume ACL on shutdown");
-                }
-            }
-        }
-
-        // Re-enable PnP-disabled USB devices on shutdown (best-effort, OP-04).
-        // Prevents devices from remaining disabled after agent restart.
-        #[cfg(windows)]
-        if let Some(controller) = crate::detection::usb::get_device_controller() {
-            let identities: Vec<(char, dlp_common::DeviceIdentity)> = detector_arc
-                .device_identities
-                .read()
-                .iter()
-                .map(|(k, v)| (*k, v.clone()))
-                .collect();
-            for (letter, identity) in identities {
-                // Empty dbcc_name as fallback; enable_usb_device resolves instance_id
-                // from the identity fields when dbcc_name is empty.
-                if let Err(e) = controller.enable_usb_device("", &identity) {
-                    debug!(
-                        drive = %letter,
-                        error = %e,
-                        "enable_usb_device on shutdown (may not be disabled)"
-                    );
-                }
-            }
-        }
-
-        // Kill all UI processes spawned by the session monitor.  Must happen before
-        // the process exits so users are not left with orphaned dlp-user-ui windows.
-        crate::password_stop::debug_log("run_loop: killing UI processes");
-        crate::ui_spawner::kill_all();
-        crate::password_stop::debug_log("run_loop: UI processes killed");
-
-        // Stop the audit buffer flush task (final flush runs inside).
-        let _ = audit_shutdown_tx.send(true);
-        if let Some(h) = _audit_flush_handle {
-            let _ = h.await;
-        }
-        crate::password_stop::debug_log("run_loop: audit buffer stopped");
-
-        crate::password_stop::debug_log("run_loop: shutdown complete");
-        info!(
-            service_name = SERVICE_NAME,
-            "enforcement subsystems stopped"
-        );
-    })
-    .await;
+    let shutdown_result = tokio::time::timeout(SHUTDOWN_TIMEOUT, run_loop_shutdown(ctx)).await;
 
     match shutdown_result {
         Ok(()) => {
@@ -1089,6 +620,645 @@ async fn run_loop(
     }
 
     Ok(())
+}
+
+/// Initialises all enforcement subsystems and returns a [`RunLoopContext`]
+/// containing every handle and sender needed for graceful shutdown.
+///
+/// Extracted from [`run_loop`] to reduce cognitive complexity.  Each subsystem
+/// block is kept in source order so comments remain valid.
+async fn run_loop_init(
+    machine_name: Option<String>,
+) -> RunLoopContext {
+    // ── Initialise the Policy Engine client and offline cache ──────────────
+    let engine_client = crate::engine_client::EngineClient::default_client()
+        .inspect_err(|e| warn!(error = %e, "Policy Engine client init failed — will run offline"))
+        .unwrap_or_else(|_| {
+            // Best-effort fallback — OfflineManager will handle unreachable engine.
+            crate::engine_client::EngineClient::new(
+                crate::engine_client::DEFAULT_ENGINE_URL,
+                false, // skip TLS verification if env is misconfigured
+            )
+            .expect("engine client must be constructable")
+        });
+
+    let cache = Arc::new(crate::cache::Cache::new());
+
+    // ── Load agent config (needed for server_url before monitor setup) ───
+    let agent_config = crate::config::AgentConfig::load_default();
+
+    // ── AD client (best-effort — AD features disabled if config absent or init fails) ───
+    let ad_client = init_ad_client(&agent_config).await;
+
+    // ── dlp-server client (best-effort -- server may not be running) ─────
+    let server_client = init_server_client(&agent_config).await;
+
+    // ── Store server client for on-demand auth hash fetching ─────────────
+    if let Some(ref sc) = server_client {
+        crate::password_stop::set_server_client(sc.clone());
+        crate::password_stop::sync_auth_hash_from_server(sc).await;
+    }
+
+    // ── Audit buffer for server relay ────────────────────────────────────
+    let (audit_shutdown_tx, audit_shutdown_rx) = tokio::sync::watch::channel(false);
+    let audit_flush_handle = server_client.as_ref().map(|sc| {
+        let buffer = Arc::new(crate::server_client::AuditBuffer::new(sc.clone()));
+        crate::audit_emitter::set_audit_buffer(Arc::clone(&buffer));
+        crate::server_client::AuditBuffer::spawn_flush_task(buffer, audit_shutdown_rx)
+    });
+
+    // ── Start USB mass-storage detection (inside run_loop for tokio Handle access) ──
+    let detector_arc = init_usb_detector().await;
+
+    // ── Managed origins cache (D-02) ──────────────────────────────
+    let (origins_shutdown_tx, origins_poll_handle) =
+        init_origins_cache(server_client.as_ref()).await;
+
+    // ── Device registry cache (D-07, D-08) ──────────────────────────────────
+    let (registry_shutdown_tx, registry_poll_handle, registry_cache) =
+        init_registry_cache(server_client.as_ref()).await;
+
+    // ── DeviceController (Phase 31) ───────────────────────────────────────
+    let device_controller = Arc::new(crate::device_controller::DeviceController::new());
+    crate::detection::usb::set_device_controller(Arc::clone(&device_controller));
+
+    // ── UsbEnforcer (D-12) ────────────────────────────────────────────────
+    let usb_enforcer_opt: Option<Arc<crate::usb_enforcer::UsbEnforcer>> =
+        Some(Arc::new(crate::usb_enforcer::UsbEnforcer::new(
+            Arc::clone(&detector_arc),
+            Arc::clone(&registry_cache),
+        )));
+
+    // SAFETY: detector_arc is stored in the RunLoopContext which outlives the
+    // service main loop. The static reference is only used during the lifetime
+    // of the service process.
+    let detector_static: &'static crate::detection::UsbDetector =
+        unsafe { std::mem::transmute(detector_arc.as_ref()) };
+    crate::detection::usb::set_drive_detector(detector_static);
+
+    // ── Offline manager ────────────────────────────────────────────────────
+    let offline = init_offline_manager(engine_client, cache, &server_client, machine_name.clone());
+
+    // ── Wrap agent_config in Arc<Mutex<>> for shared access ──────────────
+    let config_arc = Arc::new(parking_lot::Mutex::new(agent_config.clone()));
+
+    // ── Phase 35: Arc<RwLock<AgentConfig>> for disk allowlist persistence ──
+    let disk_config_arc = Arc::new(parking_lot::RwLock::new(agent_config.clone()));
+    let config_path = std::path::PathBuf::from(crate::config::AgentConfig::effective_config_path());
+
+    // ── Start the Policy Engine heartbeat ─────────────────────────────────
+    let (heartbeat_shutdown_tx, heartbeat_handle) = spawn_heartbeat_task(offline.clone());
+
+    // ── Start the Pipe 1 heartbeat ────────────────────────────────────────
+    let (pipe1_shutdown_tx, pipe1_hb_handle) = spawn_pipe1_heartbeat_task();
+
+    // ── Start the config poll loop ─────────────────────────────────────────
+    let (config_shutdown_tx, config_poll_handle) =
+        spawn_config_poll_task(server_client.clone(), Arc::clone(&config_arc));
+
+    // ── Start the file system monitor pipeline ─────────────────────────
+    let recheck_interval = agent_config.resolved_recheck_interval();
+    let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
+        .expect("file monitor initialisation always succeeds");
+
+    let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
+
+    // Channel for dynamically adding USB drive roots to the file watcher.
+    let (watch_tx, watch_rx) = std::sync::mpsc::channel::<std::path::PathBuf>();
+    crate::detection::usb::set_watch_path_sender(watch_tx);
+
+    // ── Per-session identity map ───────────────────────────────────────────
+    let session_map = init_session_map();
+
+    let audit_ctx = build_audit_ctx(machine_name);
+
+    // Initialise the clipboard listener's audit emit context.
+    crate::clipboard::listener::init_emit_context(audit_ctx.clone());
+
+    // Initialise the drag-and-drop enforcer's audit emit context (APP-08, Phase 40).
+    crate::interception::init_drag_drop_emit_context(audit_ctx.clone());
+
+    // ── Disk Enumeration (Phase 33) ───────────────────────────────────────
+    let (disk_shutdown_tx, disk_enum_handle) =
+        spawn_disk_enumeration(Arc::clone(&disk_config_arc), config_path, audit_ctx.clone());
+
+    // ── Device watcher (Phase 36 D-12) ───────────────────────────────────
+    let device_watcher_cleanup = spawn_device_watcher(audit_ctx.clone());
+
+    // ── DiskEnforcer (Phase 36) ───────────────────────────────────────────
+    let disk_enforcer_opt: Option<Arc<crate::disk_enforcer::DiskEnforcer>> =
+        Some(Arc::new(crate::disk_enforcer::DiskEnforcer::new()));
+    info!("disk enforcer constructed");
+
+    // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
+    let (enc_shutdown_tx, enc_handle) =
+        spawn_encryption_task(audit_ctx.clone(), recheck_interval);
+
+    // ── Spawn interception event loop and file monitor ────────────────────
+    let event_loop_handle = spawn_event_loop(
+        action_rx,
+        offline.clone(),
+        audit_ctx.clone(),
+        session_map.clone(),
+        ad_client.clone(),
+        usb_enforcer_opt,
+        disk_enforcer_opt,
+    );
+
+    let file_monitor_for_shutdown = file_monitor.clone();
+    let file_handle = tokio::task::spawn_blocking(move || {
+        let _ = file_monitor.run(action_tx, Some(watch_rx));
+    });
+
+    info!(
+        service_name = SERVICE_NAME,
+        "enforcement subsystems started"
+    );
+
+    RunLoopContext {
+        file_handle,
+        file_monitor: file_monitor_for_shutdown,
+        event_loop_handle,
+        heartbeat_handle,
+        heartbeat_shutdown_tx,
+        pipe1_hb_handle,
+        pipe1_shutdown_tx,
+        config_poll_handle,
+        config_shutdown_tx,
+        registry_poll_handle,
+        registry_shutdown_tx,
+        origins_poll_handle,
+        origins_shutdown_tx,
+        disk_enum_handle,
+        disk_shutdown_tx,
+        enc_handle,
+        enc_shutdown_tx,
+        audit_flush_handle,
+        audit_shutdown_tx,
+        device_watcher_cleanup,
+        detector_arc,
+    }
+}
+
+/// Initialises the AD client from the LDAP config embedded in `AgentConfig`.
+///
+/// Returns `Arc::new(None)` when no LDAP config is present or initialisation fails.
+async fn init_ad_client(
+    agent_config: &crate::config::AgentConfig,
+) -> Arc<Option<dlp_common::AdClient>> {
+    let Some(ref ldap_config) = agent_config.ldap_config else {
+        tracing::debug!("No LDAP config in agent config — AD features disabled");
+        return Arc::new(None);
+    };
+
+    use dlp_common::ad_client::LdapConfig;
+    let config = LdapConfig {
+        ldap_url: ldap_config.ldap_url.clone(),
+        base_dn: ldap_config.base_dn.clone(),
+        require_tls: ldap_config.require_tls,
+        cache_ttl_secs: ldap_config.cache_ttl_secs,
+        vpn_subnets: ldap_config.vpn_subnets.clone(),
+    };
+
+    match dlp_common::AdClient::new(config).await {
+        Ok(client) => {
+            tracing::info!("AD client initialised from pushed config");
+            Arc::new(Some(client))
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "AD client initialisation failed — AD features disabled for this session"
+            );
+            Arc::new(None)
+        }
+    }
+}
+
+/// Initialises the dlp-server client and registers the agent.
+///
+/// Returns `None` when the client cannot be constructed or registration fails.
+async fn init_server_client(
+    agent_config: &crate::config::AgentConfig,
+) -> Option<crate::server_client::ServerClient> {
+    match crate::server_client::ServerClient::from_env_with_config(
+        agent_config.server_url.as_deref(),
+    ) {
+        Ok(sc) => {
+            if let Err(e) = sc.register().await {
+                warn!(error = %e, "dlp-server registration failed (best-effort)");
+            }
+            Some(sc)
+        }
+        Err(e) => {
+            warn!(error = %e, "dlp-server client init failed -- server relay disabled");
+            None
+        }
+    }
+}
+
+/// Initialises the global USB detector, scans existing drives, and reconciles identities.
+async fn init_usb_detector() -> Arc<crate::detection::UsbDetector> {
+    use std::sync::OnceLock;
+    static USB_DETECTOR: OnceLock<Arc<crate::detection::UsbDetector>> = OnceLock::new();
+    let detector = USB_DETECTOR.get_or_init(|| Arc::new(crate::detection::UsbDetector::new()));
+    detector.scan_existing_drives();
+    detector.scan_existing_usb_identities();
+    Arc::clone(detector)
+}
+
+/// Initialises the managed-origins cache and spawns its poll task.
+///
+/// Returns `(shutdown_tx, poll_handle)` where `poll_handle` is `None` when no
+/// server client is available.
+async fn init_origins_cache(
+    server_client: Option<&crate::server_client::ServerClient>,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    let origins_cache = Arc::new(crate::chrome::cache::ManagedOriginsCache::new());
+    crate::chrome::handler::set_origins_cache(Arc::clone(&origins_cache));
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = server_client.map(|sc| {
+        crate::chrome::cache::ManagedOriginsCache::spawn_poll_task(
+            origins_cache,
+            sc.clone(),
+            rx,
+        )
+    });
+    (tx, handle)
+}
+
+/// Initialises the device-registry cache, sets global statics, and spawns its poll task.
+///
+/// Returns `(shutdown_tx, poll_handle, cache)`.
+async fn init_registry_cache(
+    server_client: Option<&crate::server_client::ServerClient>,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    Option<tokio::task::JoinHandle<()>>,
+    Arc<crate::device_registry::DeviceRegistryCache>,
+) {
+    let cache = Arc::new(crate::device_registry::DeviceRegistryCache::new());
+    let (tx, rx) = tokio::sync::watch::channel(false);
+
+    if let Some(sc) = server_client {
+        crate::detection::usb::set_registry_cache(Arc::clone(&cache));
+        crate::detection::usb::set_registry_client(sc.clone());
+        crate::detection::usb::set_registry_runtime_handle(tokio::runtime::Handle::current());
+        let handle = crate::device_registry::DeviceRegistryCache::spawn_poll_task(
+            Arc::clone(&cache),
+            sc.clone(),
+            rx,
+        );
+        (tx, Some(handle), cache)
+    } else {
+        drop(rx);
+        (tx, None, cache)
+    }
+}
+
+/// Constructs the [`OfflineManager`] and optionally attaches a server client.
+fn init_offline_manager(
+    engine_client: crate::engine_client::EngineClient,
+    cache: Arc<crate::cache::Cache>,
+    server_client: &Option<crate::server_client::ServerClient>,
+    machine_name: Option<String>,
+) -> Arc<crate::offline::OfflineManager> {
+    let mut om = crate::offline::OfflineManager::new(engine_client, cache, machine_name);
+    if let Some(sc) = server_client {
+        om = om.with_server_client(sc.clone());
+    }
+    Arc::new(om)
+}
+
+/// Spawns the Policy Engine heartbeat task.
+///
+/// Returns `(shutdown_tx, join_handle)`.
+fn spawn_heartbeat_task(
+    offline: Arc<crate::offline::OfflineManager>,
+) -> (tokio::sync::watch::Sender<bool>, tokio::task::JoinHandle<()>) {
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = tokio::spawn(async move {
+        offline.heartbeat_loop(rx).await;
+    });
+    (tx, handle)
+}
+
+/// Spawns the Pipe 1 heartbeat task that pings all connected UI clients.
+///
+/// Returns `(shutdown_tx, join_handle)`.
+fn spawn_pipe1_heartbeat_task() -> (tokio::sync::watch::Sender<bool>, tokio::task::JoinHandle<()>) {
+    let (tx, mut rx) = tokio::sync::watch::channel(false);
+    let handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    crate::ipc::pipe1::send_ping_to_all();
+                }
+                _ = rx.changed() => {
+                    debug!("Pipe 1 heartbeat shutting down");
+                    return;
+                }
+            }
+        }
+    });
+    (tx, handle)
+}
+
+/// Spawns the config poll task when a server client is available.
+///
+/// Returns `(shutdown_tx, poll_handle)` where `poll_handle` is `None` when no
+/// server client is available.
+fn spawn_config_poll_task(
+    server_client: Option<crate::server_client::ServerClient>,
+    config: Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
+) -> (tokio::sync::watch::Sender<bool>, Option<tokio::task::JoinHandle<()>>) {
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = server_client.map(|sc| {
+        tokio::spawn(async move {
+            config_poll_loop(sc, config, rx).await;
+        })
+    });
+    (tx, handle)
+}
+
+/// Builds the per-session identity map and seeds it with currently active sessions.
+fn init_session_map() -> Arc<crate::session_identity::SessionIdentityMap> {
+    let session_map = Arc::new(crate::session_identity::SessionIdentityMap::new());
+    crate::session_identity::init_global(session_map.clone());
+
+    if let Ok(sessions) = crate::ui_spawner::enumerate_active_sessions_pub() {
+        for sid in sessions {
+            if let Err(e) = session_map.add_session(sid) {
+                debug!(
+                    session_id = sid,
+                    error = %e,
+                    "failed to resolve identity for session"
+                );
+            }
+        }
+    }
+    session_map
+}
+
+/// Builds the default [`EmitContext`] used for audit events.
+fn build_audit_ctx(machine_name: Option<String>) -> crate::audit_emitter::EmitContext {
+    crate::audit_emitter::EmitContext {
+        agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
+        session_id: 1,
+        user_sid: "S-1-5-18".to_string(), // default; overridden per-event
+        user_name: "SYSTEM".to_string(),
+        machine_name,
+    }
+}
+
+/// Spawns the disk enumeration background task.
+///
+/// Returns `(shutdown_tx, join_handle)`.
+fn spawn_disk_enumeration(
+    disk_config_arc: Arc<parking_lot::RwLock<crate::config::AgentConfig>>,
+    config_path: std::path::PathBuf,
+    audit_ctx: crate::audit_emitter::EmitContext,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let disk_enumerator = Arc::new(crate::detection::DiskEnumerator::new());
+    crate::detection::disk::set_disk_enumerator(Arc::clone(&disk_enumerator));
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = crate::detection::disk::spawn_disk_enumeration_task(
+        tokio::runtime::Handle::current(),
+        audit_ctx,
+        disk_config_arc,
+        config_path,
+        rx,
+    );
+    (tx, handle)
+}
+
+/// Spawns the device watcher task and returns its cleanup handle.
+fn spawn_device_watcher(
+    audit_ctx: crate::audit_emitter::EmitContext,
+) -> Option<(windows::Win32::Foundation::HWND, std::thread::JoinHandle<()>)> {
+    crate::detection::device_watcher::set_runtime_handle(tokio::runtime::Handle::current());
+    match crate::detection::spawn_device_watcher_task(audit_ctx) {
+        Ok((hwnd, thread)) => {
+            info!("device watcher registered (volume + USB + disk interfaces)");
+            Some((hwnd, thread))
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "device watcher unavailable — continuing without USB/disk monitoring"
+            );
+            None
+        }
+    }
+}
+
+/// Spawns the encryption verification background task.
+///
+/// Returns `(shutdown_tx, join_handle)`.
+fn spawn_encryption_task(
+    audit_ctx: crate::audit_emitter::EmitContext,
+    recheck_interval: Duration,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let checker = Arc::new(crate::detection::encryption::EncryptionChecker::new());
+    crate::detection::encryption::set_encryption_checker(Arc::clone(&checker));
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = crate::detection::encryption::spawn_encryption_check_task(
+        tokio::runtime::Handle::current(),
+        audit_ctx,
+        recheck_interval,
+        rx,
+    );
+    info!(
+        recheck_interval_secs = recheck_interval.as_secs(),
+        "encryption verification task spawned"
+    );
+    (tx, handle)
+}
+
+/// Spawns the async interception event loop task.
+fn spawn_event_loop(
+    action_rx: mpsc::Receiver<crate::interception::FileAction>,
+    offline: Arc<crate::offline::OfflineManager>,
+    audit_ctx: crate::audit_emitter::EmitContext,
+    session_map: Arc<crate::session_identity::SessionIdentityMap>,
+    ad_client: Arc<Option<dlp_common::AdClient>>,
+    usb_enforcer: Option<Arc<crate::usb_enforcer::UsbEnforcer>>,
+    disk_enforcer: Option<Arc<crate::disk_enforcer::DiskEnforcer>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        crate::interception::run_event_loop(
+            action_rx,
+            offline,
+            audit_ctx,
+            session_map,
+            ad_client,
+            usb_enforcer,
+            disk_enforcer,
+        )
+        .await;
+    })
+}
+
+/// Performs graceful shutdown of all subsystems.
+///
+/// Extracted from [`run_loop`] to reduce cognitive complexity.  Each subsystem
+/// is stopped in reverse order of initialisation.
+async fn run_loop_shutdown(ctx: RunLoopContext) {
+    crate::password_stop::debug_log("run_loop: starting graceful shutdown");
+    info!(
+        service_name = SERVICE_NAME,
+        "shutting down enforcement subsystems"
+    );
+
+    // Uninstall the drag-and-drop hook (APP-08, Phase 40).
+    crate::password_stop::debug_log("run_loop: uninstalling drag-drop hook");
+    crate::interception::uninstall_drag_drop_hook();
+    crate::password_stop::debug_log("run_loop: drag-drop hook uninstalled");
+
+    // Stop the file monitor first so no new events arrive.
+    crate::password_stop::debug_log("run_loop: stopping file monitor");
+    ctx.file_monitor.stop();
+    let _ = ctx.file_handle.await;
+    crate::password_stop::debug_log("run_loop: file monitor stopped");
+
+    // Signal the event loop to drain and exit.
+    drop(ctx.event_loop_handle);
+    crate::password_stop::debug_log("run_loop: event loop dropped");
+
+    // Stop the heartbeat loop.
+    let _ = ctx.heartbeat_shutdown_tx.send(true);
+    let _ = ctx.heartbeat_handle.await;
+    crate::password_stop::debug_log("run_loop: heartbeat stopped");
+
+    // Stop the Pipe 1 heartbeat.
+    let _ = ctx.pipe1_shutdown_tx.send(true);
+    let _ = ctx.pipe1_hb_handle.await;
+    crate::password_stop::debug_log("run_loop: Pipe 1 heartbeat stopped");
+
+    // Stop the config poll loop.
+    let _ = ctx.config_shutdown_tx.send(true);
+    if let Some(h) = ctx.config_poll_handle {
+        let _ = h.await;
+    }
+    crate::password_stop::debug_log("run_loop: config poll stopped");
+
+    // Stop the device registry poll task.
+    let _ = ctx.registry_shutdown_tx.send(true);
+    if let Some(h) = ctx.registry_poll_handle {
+        let _ = h.await;
+    }
+    crate::password_stop::debug_log("run_loop: device registry poll stopped");
+
+    // Stop the managed origins poll task.
+    let _ = ctx.origins_shutdown_tx.send(true);
+    if let Some(h) = ctx.origins_poll_handle {
+        let _ = h.await;
+    }
+    crate::password_stop::debug_log("run_loop: managed origins poll stopped");
+
+    // Cancel in-flight disk enumeration and wait up to 5s (OP-04).
+    let _ = ctx.disk_shutdown_tx.send(true);
+    match tokio::time::timeout(DISK_ENUM_CANCEL_TIMEOUT, ctx.disk_enum_handle).await {
+        Ok(Ok(())) => debug!("disk enumeration task shut down cleanly"),
+        Ok(Err(e)) => warn!(error = %e, "disk enumeration task panicked"),
+        Err(_) => warn!("disk enumeration task did not shut down within 5s"),
+    }
+    crate::password_stop::debug_log("run_loop: disk enumeration stopped");
+
+    // Cancel encryption check task (OP-04 gap closure).
+    let _ = ctx.enc_shutdown_tx.send(true);
+    match tokio::time::timeout(DISK_ENUM_CANCEL_TIMEOUT, ctx.enc_handle).await {
+        Ok(Ok(())) => debug!("encryption check task shut down cleanly"),
+        Ok(Err(e)) => warn!(error = %e, "encryption check task panicked"),
+        Err(_) => warn!("encryption check task did not shut down within 5s"),
+    }
+    crate::password_stop::debug_log("run_loop: encryption check stopped");
+
+    // Unregister device watcher.
+    if let Some((hwnd, thread)) = ctx.device_watcher_cleanup {
+        crate::password_stop::debug_log("run_loop: unregistering device watcher");
+        crate::detection::unregister_device_watcher(hwnd, thread);
+        crate::password_stop::debug_log("run_loop: device watcher unregistered");
+    }
+
+    // Restore volume DACL modifications for any USB drives (OP-04).
+    #[cfg(windows)]
+    restore_usb_volume_acls(&ctx.detector_arc);
+
+    // Re-enable PnP-disabled USB devices on shutdown (best-effort, OP-04).
+    #[cfg(windows)]
+    reenable_usb_devices(&ctx.detector_arc);
+
+    // Kill all UI processes spawned by the session monitor.
+    crate::password_stop::debug_log("run_loop: killing UI processes");
+    crate::ui_spawner::kill_all();
+    crate::password_stop::debug_log("run_loop: UI processes killed");
+
+    // Stop the audit buffer flush task (final flush runs inside).
+    let _ = ctx.audit_shutdown_tx.send(true);
+    if let Some(h) = ctx.audit_flush_handle {
+        let _ = h.await;
+    }
+    crate::password_stop::debug_log("run_loop: audit buffer stopped");
+
+    crate::password_stop::debug_log("run_loop: shutdown complete");
+    info!(
+        service_name = SERVICE_NAME,
+        "enforcement subsystems stopped"
+    );
+}
+
+/// Restores volume ACLs for all tracked USB drives on shutdown.
+#[cfg(windows)]
+fn restore_usb_volume_acls(detector: &Arc<crate::detection::UsbDetector>) {
+    let Some(controller) = crate::detection::usb::get_device_controller() else {
+        return;
+    };
+    let letters: Vec<char> = detector.device_identities.read().keys().copied().collect();
+    for letter in letters {
+        if let Err(e) = controller.restore_volume_acl(letter) {
+            debug!(
+                drive = %letter,
+                error = %e,
+                "restore_volume_acl on shutdown (may be unmodified)"
+            );
+        } else {
+            info!(drive = %letter, "restored volume ACL on shutdown");
+        }
+    }
+}
+
+/// Re-enables PnP-disabled USB devices on shutdown.
+#[cfg(windows)]
+fn reenable_usb_devices(detector: &Arc<crate::detection::UsbDetector>) {
+    let Some(controller) = crate::detection::usb::get_device_controller() else {
+        return;
+    };
+    let identities: Vec<(char, dlp_common::DeviceIdentity)> = detector
+        .device_identities
+        .read()
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+    for (letter, identity) in identities {
+        if let Err(e) = controller.enable_usb_device("", &identity) {
+            debug!(
+                drive = %letter,
+                error = %e,
+                "enable_usb_device on shutdown (may not be disabled)"
+            );
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

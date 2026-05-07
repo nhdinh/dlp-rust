@@ -771,21 +771,74 @@ async fn run_one_verification_cycle(
     let mut new_methods: HashMap<String, EncryptionMethod> = HashMap::new();
     let mut failed: Vec<(String, String)> = Vec::new();
 
-    // Fan-out per-disk WMI queries: one spawn per disk (COM is per-thread, Pitfall A).
-    // CR-01 fix: store instance_id alongside the JoinHandle so a task panic (which
-    // consumes the return value) cannot silently drop a disk from new_statuses. Using
-    // Vec<(id, JoinHandle)> instead of JoinSet retains the id regardless of panic.
-    type DiskHandleResult = Result<(EncryptionStatus, Option<EncryptionMethod>), EncryptionError>;
-    let mut handles: Vec<(
-        String,
-        Option<char>,
-        tokio::task::JoinHandle<DiskHandleResult>,
-    )> = Vec::with_capacity(disks.len());
+    let handles = spawn_disk_check_tasks(disks, &backend);
 
+    for (id, _letter, handle) in handles {
+        let outcome = resolve_disk_check_result(handle, &id, disks, &backend).await;
+        new_statuses.insert(id.clone(), outcome.status);
+        if let Some(m) = outcome.method {
+            new_methods.insert(id.clone(), m);
+        }
+        if let Some(reason) = outcome.failure_reason {
+            failed.push((id, reason));
+        }
+    }
+
+    // ── Update DiskEnumerator state in place (D-20) ─────────────────────
+    let now = Utc::now();
+    update_disk_enumerator_state(&new_statuses, &new_methods, now);
+
+    // ── Update EncryptionChecker cache + flags ──────────────────────────
+    let old_snapshot = update_encryption_checker_cache(&new_statuses, now);
+
+    // ── Decide whether to emit ──────────────────────────────────────────
+    let transitions = compute_changed_transitions(&old_snapshot, &new_statuses);
+    let all_failed = compute_all_failed(disks, &new_statuses);
+
+    if is_initial && all_failed {
+        // D-16/D-16a: single Alert on initial total failure.
+        emit_total_failure_alert(audit_ctx, &failed);
+    }
+
+    if !transitions.is_empty() {
+        emit_status_transitions(audit_ctx, disks, &transitions, &failed);
+    }
+
+    // ── Pitfall E: flip is_first_check after the FIRST attempt regardless of outcome ─
+    if let Some(checker) = get_encryption_checker() {
+        checker.mark_first_check_complete();
+    }
+}
+
+/// Outcome of a single disk check, normalized from the various JoinHandle results.
+struct DiskCheckOutcome {
+    /// The resolved encryption status.
+    status: EncryptionStatus,
+    /// The encryption method, if available.
+    method: Option<EncryptionMethod>,
+    /// Failure reason for the `failed` list, if the status is Unknown.
+    failure_reason: Option<String>,
+}
+
+/// Type alias for the per-disk async check handle.
+type DiskCheckHandle = tokio::task::JoinHandle<
+    Result<(EncryptionStatus, Option<EncryptionMethod>), EncryptionError>,
+>;
+
+/// Spawn async check tasks for all disks, pairing each with its instance ID.
+///
+/// CR-01 fix: store instance_id alongside the JoinHandle so a task panic (which
+/// consumes the return value) cannot silently drop a disk from new_statuses. Using
+/// Vec<(id, JoinHandle)> instead of JoinSet retains the id regardless of panic.
+fn spawn_disk_check_tasks(
+    disks: &[DiskIdentity],
+    backend: &Arc<dyn EncryptionBackend>,
+) -> Vec<(String, Option<char>, DiskCheckHandle)> {
+    let mut handles = Vec::with_capacity(disks.len());
     for disk in disks {
         let id = disk.instance_id.clone();
         let letter = disk.drive_letter;
-        let backend_clone = Arc::clone(&backend);
+        let backend_clone = Arc::clone(backend);
         let handle = tokio::task::spawn(async move {
             match letter {
                 Some(l) => check_one_disk(l, Arc::clone(&backend_clone)).await,
@@ -794,130 +847,177 @@ async fn run_one_verification_cycle(
         });
         handles.push((id, letter, handle));
     }
+    handles
+}
 
-    for (id, _letter, handle) in handles {
-        match handle.await {
-            Ok(Ok((status, method))) => {
-                new_statuses.insert(id.clone(), status);
-                if let Some(m) = method {
-                    new_methods.insert(id, m);
-                }
-            }
-            Ok(Err(e)) => {
-                // D-01a: namespace-unavailable triggers Registry fallback (boot disk only).
-                // CR-02: try_registry_fallback calls blocking Win32 Registry APIs
-                // (RegOpenKeyExW / RegQueryValueExW). Wrap in spawn_blocking so the
-                // tokio executor thread is not stalled. Identical protection to the
-                // WMI path in check_one_disk (Pitfall A).
-                let resolved = if e.warrants_registry_fallback() {
-                    let backend_clone = Arc::clone(&backend);
-                    let id_clone = id.clone();
-                    let disks_vec = disks.to_vec();
-                    let fallback_task = tokio::task::spawn_blocking(move || {
-                        try_registry_fallback(&id_clone, &disks_vec, backend_clone)
-                    });
-                    match tokio::time::timeout(Duration::from_secs(2), fallback_task).await {
-                        Ok(Ok(status)) => status,
-                        Ok(Err(_join_err)) => EncryptionStatus::Unknown,
-                        Err(_elapsed) => EncryptionStatus::Unknown,
-                    }
-                } else {
-                    EncryptionStatus::Unknown
-                };
-                new_statuses.insert(id.clone(), resolved);
-                if resolved == EncryptionStatus::Unknown {
-                    failed.push((id, e.to_string()));
-                }
-            }
-            Err(join_err) => {
-                // CR-01: The id is preserved in the outer Vec so it is always
-                // recoverable here, even when the spawned async block panics and the
-                // return value is lost. Insert Unknown so the disk is not silently
-                // dropped from new_statuses, which would cause encryption_checked_at
-                // to advance falsely (WR-01) and all_failed to misfire (WR-02).
-                error!(error = %join_err, "encryption check task panicked -- disk status unknown");
-                new_statuses.insert(id.clone(), EncryptionStatus::Unknown);
-                failed.push((id, format!("task panicked: {join_err}")));
+/// Resolve a single disk check result, applying Registry fallback if warranted.
+///
+/// Handles the three cases: success, error (with optional fallback), and panic.
+async fn resolve_disk_check_result(
+    handle: DiskCheckHandle,
+    id: &str,
+    disks: &[DiskIdentity],
+    backend: &Arc<dyn EncryptionBackend>,
+) -> DiskCheckOutcome {
+    match handle.await {
+        Ok(Ok((status, method))) => DiskCheckOutcome {
+            status,
+            method,
+            failure_reason: None,
+        },
+        Ok(Err(e)) => resolve_disk_check_error(e, id, disks, backend).await,
+        Err(join_err) => {
+            // CR-01: The id is preserved in the outer Vec so it is always
+            // recoverable here, even when the spawned async block panics and the
+            // return value is lost. Insert Unknown so the disk is not silently
+            // dropped from new_statuses, which would cause encryption_checked_at
+            // to advance falsely (WR-01) and all_failed to misfire (WR-02).
+            error!(error = %join_err, "encryption check task panicked -- disk status unknown");
+            DiskCheckOutcome {
+                status: EncryptionStatus::Unknown,
+                method: None,
+                failure_reason: Some(format!("task panicked: {join_err}")),
             }
         }
     }
+}
 
-    // ── Update DiskEnumerator state in place (D-20) ─────────────────────
-    let now = Utc::now();
-    if let Some(enumerator) = crate::detection::disk::get_disk_enumerator() {
-        let mut discovered = enumerator.discovered_disks.write();
-        let mut id_map = enumerator.instance_id_map.write();
-        let mut letter_map = enumerator.drive_letter_map.write();
-        for d in discovered.iter_mut() {
-            if let Some(s) = new_statuses.get(&d.instance_id).copied() {
-                d.encryption_status = Some(s);
-            }
-            if let Some(m) = new_methods.get(&d.instance_id).copied() {
-                d.encryption_method = Some(m);
-            }
-            // WR-01: Only update timestamp if this disk was actually checked this cycle.
-            // Disks absent from new_statuses (e.g. due to CR-01 task panic) must not
-            // receive a fresh timestamp that would falsely indicate a successful check.
-            if new_statuses.contains_key(&d.instance_id) {
-                d.encryption_checked_at = Some(now);
-            }
+/// Resolve a disk check error, applying Registry fallback if warranted.
+///
+/// D-01a: namespace-unavailable triggers Registry fallback (boot disk only).
+/// CR-02: try_registry_fallback calls blocking Win32 Registry APIs
+/// (RegOpenKeyExW / RegQueryValueExW). Wrap in spawn_blocking so the
+/// tokio executor thread is not stalled. Identical protection to the
+/// WMI path in check_one_disk (Pitfall A).
+async fn resolve_disk_check_error(
+    e: EncryptionError,
+    id: &str,
+    disks: &[DiskIdentity],
+    backend: &Arc<dyn EncryptionBackend>,
+) -> DiskCheckOutcome {
+    let resolved = if e.warrants_registry_fallback() {
+        run_registry_fallback(id, disks, backend).await
+    } else {
+        EncryptionStatus::Unknown
+    };
+
+    let failure_reason = if resolved == EncryptionStatus::Unknown {
+        Some(e.to_string())
+    } else {
+        None
+    };
+
+    DiskCheckOutcome {
+        status: resolved,
+        method: None,
+        failure_reason,
+    }
+}
+
+/// Run the Registry fallback for a single disk.
+///
+/// Wraps the blocking Registry call in `spawn_blocking` with a 2-second timeout.
+async fn run_registry_fallback(
+    id: &str,
+    disks: &[DiskIdentity],
+    backend: &Arc<dyn EncryptionBackend>,
+) -> EncryptionStatus {
+    let backend_clone = Arc::clone(backend);
+    let id_clone = id.to_string();
+    let disks_vec = disks.to_vec();
+    let fallback_task = tokio::task::spawn_blocking(move || {
+        try_registry_fallback(&id_clone, &disks_vec, backend_clone)
+    });
+    match tokio::time::timeout(Duration::from_secs(2), fallback_task).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(_join_err)) => EncryptionStatus::Unknown,
+        Err(_elapsed) => EncryptionStatus::Unknown,
+    }
+}
+
+/// Update DiskEnumerator state in place with the new encryption statuses (D-20).
+fn update_disk_enumerator_state(
+    new_statuses: &HashMap<String, EncryptionStatus>,
+    new_methods: &HashMap<String, EncryptionMethod>,
+    now: DateTime<Utc>,
+) {
+    let Some(enumerator) = crate::detection::disk::get_disk_enumerator() else {
+        return;
+    };
+    let mut discovered = enumerator.discovered_disks.write();
+    let mut id_map = enumerator.instance_id_map.write();
+    let mut letter_map = enumerator.drive_letter_map.write();
+    for d in discovered.iter_mut() {
+        if let Some(s) = new_statuses.get(&d.instance_id).copied() {
+            d.encryption_status = Some(s);
         }
-        // Re-sync the secondary maps to keep them consistent with discovered_disks.
-        for d in discovered.iter() {
-            id_map.insert(d.instance_id.clone(), d.clone());
-            if let Some(l) = d.drive_letter {
-                letter_map.insert(l, d.clone());
-            }
+        if let Some(m) = new_methods.get(&d.instance_id).copied() {
+            d.encryption_method = Some(m);
+        }
+        // WR-01: Only update timestamp if this disk was actually checked this cycle.
+        // Disks absent from new_statuses (e.g. due to CR-01 task panic) must not
+        // receive a fresh timestamp that would falsely indicate a successful check.
+        if new_statuses.contains_key(&d.instance_id) {
+            d.encryption_checked_at = Some(now);
         }
     }
+    // Re-sync the secondary maps to keep them consistent with discovered_disks.
+    for d in discovered.iter() {
+        id_map.insert(d.instance_id.clone(), d.clone());
+        if let Some(l) = d.drive_letter {
+            letter_map.insert(l, d.clone());
+        }
+    }
+}
 
-    // ── Update EncryptionChecker cache + flags ──────────────────────────
-    let old_snapshot = if let Some(c) = get_encryption_checker() {
+/// Update EncryptionChecker cache and return the old snapshot.
+fn update_encryption_checker_cache(
+    new_statuses: &HashMap<String, EncryptionStatus>,
+    now: DateTime<Utc>,
+) -> HashMap<String, EncryptionStatus> {
+    if let Some(c) = get_encryption_checker() {
         let snap = c.encryption_status_map.read().clone();
         *c.encryption_status_map.write() = new_statuses.clone();
         *c.last_check_at.write() = Some(now);
         snap
     } else {
         HashMap::new()
-    };
+    }
+}
 
-    // ── Decide whether to emit ──────────────────────────────────────────
-    let transitions = compute_changed_transitions(&old_snapshot, &new_statuses);
-    // WR-02: Guard against vacuous-truth: if new_statuses is empty (all tasks
-    // panicked at the JoinSet level), .all() returns true on an empty iterator.
-    // That would emit a misleading total-failure alert with no per-disk details.
-    let all_failed = !disks.is_empty()
+/// Compute whether all disks failed this cycle.
+///
+/// WR-02: Guard against vacuous-truth: if new_statuses is empty (all tasks
+/// panicked at the JoinSet level), .all() returns true on an empty iterator.
+/// That would emit a misleading total-failure alert with no per-disk details.
+fn compute_all_failed(
+    disks: &[DiskIdentity],
+    new_statuses: &HashMap<String, EncryptionStatus>,
+) -> bool {
+    !disks.is_empty()
         && !new_statuses.is_empty()
-        && new_statuses
-            .values()
-            .all(|s| *s == EncryptionStatus::Unknown);
+        && new_statuses.values().all(|s| *s == EncryptionStatus::Unknown)
+}
 
-    if is_initial && all_failed {
-        // D-16/D-16a: single Alert on initial total failure.
-        emit_total_failure_alert(audit_ctx, &failed);
+/// Emit a DiskDiscovery event for status transitions (D-25).
+fn emit_status_transitions(
+    audit_ctx: &crate::audit_emitter::EmitContext,
+    disks: &[DiskIdentity],
+    transitions: &[StatusTransition],
+    failed: &[(String, String)],
+) {
+    let updated_disks = if let Some(enumerator) = crate::detection::disk::get_disk_enumerator() {
+        enumerator.all_disks()
+    } else {
+        disks.to_vec()
+    };
+    let mut justification = build_change_justification(transitions);
+    if !failed.is_empty() {
+        let unknown_lines = build_unknown_justification(failed);
+        justification.push('\n');
+        justification.push_str(&unknown_lines);
     }
-
-    if !transitions.is_empty() {
-        // D-25: status-change DiskDiscovery with combined justification.
-        let updated_disks = if let Some(enumerator) = crate::detection::disk::get_disk_enumerator()
-        {
-            enumerator.all_disks()
-        } else {
-            disks.to_vec()
-        };
-        let mut justification = build_change_justification(&transitions);
-        if !failed.is_empty() {
-            let unknown_lines = build_unknown_justification(&failed);
-            justification.push('\n');
-            justification.push_str(&unknown_lines);
-        }
-        emit_status_change_discovery(audit_ctx, &updated_disks, justification);
-    }
-
-    // ── Pitfall E: flip is_first_check after the FIRST attempt regardless of outcome ─
-    if let Some(checker) = get_encryption_checker() {
-        checker.mark_first_check_complete();
-    }
+    emit_status_change_discovery(audit_ctx, &updated_disks, justification);
 }
 
 /// Try the Registry fallback for the boot disk only.
