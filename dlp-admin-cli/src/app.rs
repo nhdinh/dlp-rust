@@ -136,7 +136,7 @@ pub enum PasswordPurpose {
 // Conditions builder supporting types
 // ---------------------------------------------------------------------------
 
-/// The seven ABAC condition attributes available in the conditions builder.
+/// The nine ABAC condition attributes available in the conditions builder.
 ///
 /// Used across Step 1 display, Step 2 operator lookup, Step 3 value-picker
 /// branching, and `PolicyCondition` construction. A dedicated enum avoids
@@ -190,6 +190,8 @@ impl ConditionAttribute {
             Self::AccessContext => "AccessContext",
             Self::SourceApplication => "SourceApplication",
             Self::DestinationApplication => "DestinationApplication",
+            Self::SourceOrigin => "SourceOrigin",
+            Self::DestinationOrigin => "DestinationOrigin",
         }
     }
 }
