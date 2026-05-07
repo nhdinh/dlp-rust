@@ -343,7 +343,7 @@ impl SiemConfigRepository {
 | A3 | `AgentConfigPayload` on the agent side can be extended with `#[serde(default)]` without breaking older servers | Common Pitfalls | If wrong, agent config poll deserialization fails. Mitigation: test with old server JSON |
 | A4 | The admin TUI "System" menu has room for a 4th config screen (USB Enforcement Settings) | Architecture Patterns | If wrong, could add to existing screen or create submenu. Not blocking |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should USB enforcement config be per-agent override or global-only?**
    - What we know: `global_agent_config` is global; `agent_config_overrides` is per-agent. D-11 says "stored in the existing SQLite operator config table (same pattern as SIEM config, alert routing config, agent config)". SIEM/alert are global-only. Agent config supports both global and per-agent override.
