@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-05-07T00:54:44.162Z",
+  "phase": "41",
+  "phase_name": "browser-origin-clipboard-policies",
+  "phase_dir": ".planning/phases/41-browser-origin-clipboard-policies",
+  "plan": 1,
+  "task": 2,
+  "total_tasks": 8,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": 1, "name": "Add SourceOrigin/DestinationOrigin PolicyCondition variants", "status": "done", "commit": "3a42956"},
+    {"id": 2, "name": "Extend EvaluateRequest/AbacContext with origin fields + From impl", "status": "done", "commit": "3a42956"}
+  ],
+  "remaining_tasks": [
+    {"id": 3, "name": "Plan 41-02: Wire origin_matches into condition_matches + tests", "status": "not_started"},
+    {"id": 4, "name": "Plan 41-03: Chrome handler refactor - ABAC evaluation", "status": "not_started"},
+    {"id": 5, "name": "Plan 41-04: Admin TUI conditions builder origin support", "status": "not_started"},
+    {"id": 6, "name": "Fix dlp-admin-cli compile errors (non-exhaustive matches)", "status": "not_started"},
+    {"id": 7, "name": "Run full test suite (cargo test --all)", "status": "not_started"},
+    {"id": 8, "name": "Run clippy + fmt + sonar-scanner", "status": "not_started"}
+  ],
+  "blockers": [
+    {"description": "dlp-admin-cli has non-exhaustive match errors from new ConditionAttribute variants (SourceOrigin/DestinationOrigin). These are expected - plan 41-04 covers the TUI match arm updates.", "type": "technical", "workaround": "Plan 41-04 addresses these. Can also temporarily add catch-all arms to compile."}
+  ],
+  "human_actions_pending": [],
+  "decisions": [
+    {"decision": "SourceOrigin/DestinationOrigin as new PolicyCondition variants (not nested like AppField)", "rationale": "Follows exact pattern of SourceApplication/DestinationApplication from Phase 26. Origins are simple string comparisons.", "phase": "41"},
+    {"decision": "source_origin = page URL from Chrome request; destination_origin = None", "rationale": "Chrome Content Analysis API v1 only provides one URL. True source-origin tracking deferred to v0.9.0+ native extension.", "phase": "41"},
+    {"decision": "Operators: eq, ne, contains for origin conditions", "rationale": "Same operator set as ImagePath and Aumid. contains enables partial domain matching.", "phase": "41"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "Resume with plan 41-02: add origin_matches call in condition_matches + comprehensive tests in policy_store.rs",
+  "context_notes": "Plan 41-01 is complete and committed. The new PolicyCondition variants compile in dlp-common and dlp-server (origin_matches helper added). dlp-admin-cli has expected non-exhaustive match errors because new ConditionAttribute variants were added but the render.rs and additional dispatch.rs match arms (plan 41-04 scope) haven't been updated yet. These will be fixed during plan 41-04 execution."
+}
