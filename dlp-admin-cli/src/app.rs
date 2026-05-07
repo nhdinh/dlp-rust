@@ -157,10 +157,14 @@ pub enum ConditionAttribute {
     SourceApplication,
     /// Destination application identity (process publisher, image path, or app trust tier).
     DestinationApplication,
+    /// Source origin URL for browser clipboard events.
+    SourceOrigin,
+    /// Destination origin URL for browser clipboard events.
+    DestinationOrigin,
 }
 
 /// All condition attributes in display order (Step 1 list).
-pub const ATTRIBUTES: [ConditionAttribute; 7] = [
+pub const ATTRIBUTES: [ConditionAttribute; 9] = [
     ConditionAttribute::Classification,
     ConditionAttribute::MemberOf,
     ConditionAttribute::DeviceTrust,
@@ -168,6 +172,8 @@ pub const ATTRIBUTES: [ConditionAttribute; 7] = [
     ConditionAttribute::AccessContext,
     ConditionAttribute::SourceApplication,
     ConditionAttribute::DestinationApplication,
+    ConditionAttribute::SourceOrigin,
+    ConditionAttribute::DestinationOrigin,
 ];
 
 impl ConditionAttribute {

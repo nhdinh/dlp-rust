@@ -195,6 +195,14 @@ pub struct EvaluateRequest {
     /// paste target). Populated by Phase 25.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_application: Option<AppIdentity>,
+    /// Source origin URL for browser clipboard events (e.g., the page where paste occurs).
+    /// Populated by Phase 41 Chrome handler. `None` on requests from agents that predate Phase 41.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_origin: Option<String>,
+    /// Destination origin URL for browser clipboard events.
+    /// Chrome Content Analysis API v1 does not expose this; always `None` in v0.8.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_origin: Option<String>,
 }
 
 /// Internal ABAC evaluation context.
@@ -220,6 +228,13 @@ pub struct AbacContext {
     /// Resolved identity of the destination application (paste target).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_application: Option<AppIdentity>,
+    /// Source origin URL for browser clipboard events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_origin: Option<String>,
+    /// Destination origin URL for browser clipboard events.
+    /// Chrome Content Analysis API v1 does not expose this; always `None` in v0.8.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_origin: Option<String>,
 }
 
 /// A complete ABAC evaluation response.
@@ -291,7 +306,8 @@ impl From<EvaluateRequest> for AbacContext {
     /// # Returns
     ///
     /// An [`AbacContext`] with `subject`, `resource`, `environment`, `action`,
-    /// `source_application`, and `destination_application` forwarded from `req`.
+    /// `source_application`, `destination_application`, `source_origin`, and
+    /// `destination_origin` forwarded from `req`.
     fn from(req: EvaluateRequest) -> Self {
         Self {
             subject: req.subject,
@@ -300,6 +316,8 @@ impl From<EvaluateRequest> for AbacContext {
             action: req.action,
             source_application: req.source_application,
             destination_application: req.destination_application,
+            source_origin: req.source_origin,
+            destination_origin: req.destination_origin,
         }
     }
 }
@@ -362,6 +380,28 @@ pub enum PolicyCondition {
         #[serde(rename = "op")]
         op: String,
         /// The value to compare against (string form).
+        value: String,
+    },
+    /// Match by the source origin URL (the page where the clipboard paste is occurring).
+    ///
+    /// If `source_origin` is `None` on the [`AbacContext`], this condition does NOT match
+    /// (fails closed — no origin means the condition cannot be confirmed, per D-03).
+    SourceOrigin {
+        /// Comparison operator: `"eq"`, `"ne"`, or `"contains"`.
+        #[serde(rename = "op")]
+        op: String,
+        /// The origin string to compare against (e.g., `"https://sharepoint.com"`).
+        value: String,
+    },
+    /// Match by the destination origin URL (the page where content is being pasted).
+    ///
+    /// If `destination_origin` is `None` on the [`AbacContext`], this condition does NOT match
+    /// (fails closed — no origin means the condition cannot be confirmed, per D-03).
+    DestinationOrigin {
+        /// Comparison operator: `"eq"`, `"ne"`, or `"contains"`.
+        #[serde(rename = "op")]
+        op: String,
+        /// The origin string to compare against (e.g., `"https://example.com"`).
         value: String,
     },
 }

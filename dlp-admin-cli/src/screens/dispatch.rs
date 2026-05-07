@@ -2854,6 +2854,22 @@ fn condition_to_prefill(
                 buffer,
             )
         }
+        PolicyCondition::SourceOrigin { op, value } => {
+            (
+                ConditionAttribute::SourceOrigin,
+                op.clone(),
+                0,
+                value.clone(),
+            )
+        }
+        PolicyCondition::DestinationOrigin { op, value } => {
+            (
+                ConditionAttribute::DestinationOrigin,
+                op.clone(),
+                0,
+                value.clone(),
+            )
+        }
     }
 }
 
@@ -2878,6 +2894,12 @@ pub fn condition_display(cond: &dlp_common::abac::PolicyCondition) -> String {
         }
         PolicyCondition::DestinationApplication { field, op, value } => {
             format!("DestinationApplication {field:?} {op} {value}")
+        }
+        PolicyCondition::SourceOrigin { op, value } => {
+            format!("SourceOrigin {op} {value}")
+        }
+        PolicyCondition::DestinationOrigin { op, value } => {
+            format!("DestinationOrigin {op} {value}")
         }
     }
 }
