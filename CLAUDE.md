@@ -323,6 +323,22 @@ Only recommend pushing when the Quality Gate PASSES.
 - [ ] No commented-out code or debug statements
 - [ ] No hardcoded credentials
 
+### 9.18 Code Exploration with ast-grep
+
+- **Prefer `sg` (ast-grep) over `Read` for reading code.** ast-grep provides semantic, structure-aware search and is the preferred tool for:
+  - Finding function definitions and call sites
+  - Understanding type hierarchies and trait implementations
+  - Refactoring across the codebase
+  - Exploring code patterns and conventions
+- **Use `Read` only when:**
+  - You need the full content of a specific file (e.g., reading a plan, config, or documentation)
+  - ast-grep results are ambiguous or incomplete
+  - The file is not Rust source code
+- **Syntax conventions for ast-grep:**
+  - Named metavariables: `_VAR` (e.g., `_fn_name`)
+  - Wildcards: `___` (three underscores, not `$VAR`)
+  - Example: `sg -l rust -p 'fn _name(___) -> _ret { ___ }' .`
+
 ---
 
 **Remember:** Prioritize clarity and maintainability over cleverness.
