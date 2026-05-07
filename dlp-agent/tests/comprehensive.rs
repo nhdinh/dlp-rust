@@ -352,17 +352,8 @@ mod config_edge_cases {
     #[test]
     fn test_resolve_watch_paths_configured() {
         let config = AgentConfig {
-            server_url: None,
             monitored_paths: vec![r"C:\Data\".to_string(), r"D:\Shares\".to_string()],
-            excluded_paths: Vec::new(),
-            heartbeat_interval_secs: None,
-            offline_cache_enabled: None,
-            log_level: None,
-            ldap_config: None,
-            machine_name: None,
-            encryption: Default::default(),
-            disk_allowlist: Vec::new(),
-            poll_interval_secs: None,
+            ..Default::default()
         };
         let paths = config.resolve_watch_paths();
         assert_eq!(paths.len(), 2);
@@ -375,17 +366,9 @@ mod config_edge_cases {
         use dlp_agent::config::AgentConfig;
 
         let a = AgentConfig {
-            server_url: None,
             monitored_paths: vec![r"C:\Data\".to_string()],
             excluded_paths: vec![r"C:\Temp\".to_string()],
-            heartbeat_interval_secs: None,
-            offline_cache_enabled: None,
-            log_level: None,
-            ldap_config: None,
-            machine_name: None,
-            encryption: Default::default(),
-            disk_allowlist: Vec::new(),
-            poll_interval_secs: None,
+            ..Default::default()
         };
         let b = a.clone();
         assert_eq!(a, b);

@@ -20,6 +20,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dlp_common::ad_client::LdapConfig as AdLdapConfig;
+use dlp_common::usb::{
+    DEFAULT_USB_BLOCKED_FAILURE_MODE,
+    DEFAULT_USB_NONE_SERIAL_POLICY,
+    DEFAULT_USB_STARTUP_RESOLUTION_MODE,
+};
 use dlp_common::AuditEvent;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -136,6 +141,32 @@ pub struct AgentConfigPayload {
     /// not emit the field.
     #[serde(default)]
     pub disk_allowlist: Vec<dlp_common::DiskIdentity>,
+
+    /// USB enforcement failure mode (USB-09). Default: "Warning only".
+    #[serde(default = "default_usb_blocked_failure_mode")]
+    pub usb_blocked_failure_mode: String,
+
+    /// USB startup scan resolution strategy (USB-07).
+    /// Default: "VID/PID/serial fallback".
+    #[serde(default = "default_usb_startup_resolution_mode")]
+    pub usb_startup_resolution_mode: String,
+
+    /// Policy for USB devices without serial descriptors (USB-08).
+    /// Default: "Always Blocked".
+    #[serde(default = "default_usb_none_serial_policy")]
+    pub usb_none_serial_policy: String,
+}
+
+fn default_usb_blocked_failure_mode() -> String {
+    DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string()
+}
+
+fn default_usb_startup_resolution_mode() -> String {
+    DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string()
+}
+
+fn default_usb_none_serial_policy() -> String {
+    DEFAULT_USB_NONE_SERIAL_POLICY.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -831,6 +862,9 @@ mod tests {
             offline_cache_enabled: false,
             ldap_config: None,
             disk_allowlist: vec![],
+            usb_blocked_failure_mode: "Warning only".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Always Blocked".to_string(),
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -853,6 +887,9 @@ mod tests {
             offline_cache_enabled: false,
             ldap_config: Some(ldap),
             disk_allowlist: vec![],
+            usb_blocked_failure_mode: "Warning only".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Always Blocked".to_string(),
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -922,6 +959,9 @@ mod tests {
             offline_cache_enabled: false,
             ldap_config: None,
             disk_allowlist: disks.clone(),
+            usb_blocked_failure_mode: "Warning only".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Always Blocked".to_string(),
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -1027,5 +1067,57 @@ mod tests {
         let client = unreachable_client();
         let result = client.fetch_managed_origins().await;
         assert!(result.is_err(), "unreachable server must return Err");
+    }
+
+    // --- Phase 43: USB enforcement config payload tests (USB-07, USB-08, USB-09) ---
+
+    /// Verify that JSON missing the `usb_*` fields deserializes to the
+    /// expected default values (backward compatibility with older servers).
+    #[test]
+    fn test_agent_config_payload_usb_fields_default_when_missing() {
+        // Construct JSON without any usb_* fields (simulates an older server).
+        let json = r#"{
+            "monitored_paths": [],
+            "excluded_paths": [],
+            "heartbeat_interval_secs": 30,
+            "offline_cache_enabled": false,
+            "ldap_config": null
+        }"#;
+        let payload: AgentConfigPayload = serde_json::from_str(json)
+            .expect("deserialization must succeed without usb fields");
+        assert_eq!(
+            payload.usb_blocked_failure_mode, "Warning only",
+            "usb_blocked_failure_mode must default to 'Warning only'"
+        );
+        assert_eq!(
+            payload.usb_startup_resolution_mode, "VID/PID/serial fallback",
+            "usb_startup_resolution_mode must default to 'VID/PID/serial fallback'"
+        );
+        assert_eq!(
+            payload.usb_none_serial_policy, "Always Blocked",
+            "usb_none_serial_policy must default to 'Always Blocked'"
+        );
+    }
+
+    /// Verify that a payload with custom USB values survives a serialize/deserialize
+    /// roundtrip with all fields intact.
+    #[test]
+    fn test_agent_config_payload_usb_fields_roundtrip() {
+        let payload = AgentConfigPayload {
+            monitored_paths: vec![],
+            excluded_paths: vec![],
+            heartbeat_interval_secs: 30,
+            offline_cache_enabled: false,
+            ldap_config: None,
+            disk_allowlist: vec![],
+            usb_blocked_failure_mode: "Hard error".to_string(),
+            usb_startup_resolution_mode: "Volume GUID resolution".to_string(),
+            usb_none_serial_policy: "Allow unregistered".to_string(),
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt.usb_blocked_failure_mode, "Hard error");
+        assert_eq!(rt.usb_startup_resolution_mode, "Volume GUID resolution");
+        assert_eq!(rt.usb_none_serial_policy, "Allow unregistered");
     }
 }
