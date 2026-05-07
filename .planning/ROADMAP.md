@@ -169,7 +169,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 | 39 | UWP App Identity | v0.8.0 | 0/TBD | Not started | - |
 | 40 | Drag-and-Drop Enforcement | v0.8.0 | 0/TBD | Not started | - |
 | 41 | Browser Origin Clipboard Policies | v0.8.0 | 4/4 | Complete | 2026-05-07 |
-| 42 | Audit Enrichment — App Identity Fields | v0.8.0 | 0/TBD | Not started | - |
+| 42 | Audit Enrichment — App Identity Fields | v0.8.0 | 3/3 | Complete | 2026-05-07 |
 
 ## v0.3.0 - Operational Hardening (Shipped)
 
