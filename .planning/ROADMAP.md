@@ -54,7 +54,7 @@ Phase numbering is continuous across milestones -- never restarts.
 
 Plans:
 - [ ] 41-01-PLAN.md -- Add SourceOrigin/DestinationOrigin PolicyCondition variants, extend EvaluateRequest/AbacContext
-- [ ] 41-02-PLAN.md -- Add origin condition matching to ABAC evaluator
+- [x] 41-02-PLAN.md -- Add origin condition matching to ABAC evaluator
 - [ ] 41-03-PLAN.md -- Wire Chrome handler to ABAC evaluator
 - [ ] 41-04-PLAN.md -- Update TUI conditions builder with origin attributes
 
