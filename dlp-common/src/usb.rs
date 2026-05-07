@@ -303,44 +303,7 @@ fn enumerate_connected_usb_devices_windows() -> Vec<DeviceIdentity> {
             break;
         }
 
-        // Walk up the PnP device tree to find a USB ancestor.
-        let mut usb_identity: Option<DeviceIdentity> = None;
-        let mut current_devinst = devinfo.DevInst;
-        for _ in 0..16 {
-            // Avoid infinite loops — device trees are shallow (usually < 8 levels).
-            let mut parent_devinst: u32 = 0;
-            // SAFETY: current_devinst is a valid DEVINST returned by SetupDi.
-            let cr = unsafe { CM_Get_Parent(&mut parent_devinst, current_devinst, 0) };
-            if cr.0 != 0 {
-                // No more parents (CR_NO_SUCH_DEVNODE, CR_INVALID_DEVINST, etc.).
-                break;
-            }
-
-            let mut id_buf = [0u16; 256];
-            // SAFETY: parent_devinst is a valid DEVINST; id_buf is owned.
-            let cr = unsafe { CM_Get_Device_IDW(parent_devinst, &mut id_buf, 0) };
-            if cr.0 == 0 {
-                let id = String::from_utf16_lossy(
-                    &id_buf
-                        .iter()
-                        .copied()
-                        .take_while(|&w| w != 0)
-                        .collect::<Vec<u16>>(),
-                );
-                if id.starts_with("USB\\") {
-                    // Reshape: `USB\VID_X&PID_Y\SERIAL` -> `\\?\USB#VID_X&PID_Y#SERIAL#`.
-                    let reshaped = format!("\\\\?\\{}", id.replace('\\', "#"));
-                    let identity = parse_usb_device_path(&reshaped);
-                    if !identity.vid.is_empty() && !identity.pid.is_empty() {
-                        usb_identity = Some(identity);
-                    }
-                    break;
-                }
-            }
-            current_devinst = parent_devinst;
-        }
-
-        if let Some(mut identity) = usb_identity {
+        if let Some(mut identity) = find_usb_identity_for_disk(hdev, &devinfo) {
             // Read description from the disk device node (not the USB ancestor).
             identity.description = read_string_property(hdev, &devinfo, SPDRP_FRIENDLYNAME)
                 .filter(|s| !s.is_empty())
@@ -359,6 +322,63 @@ fn enumerate_connected_usb_devices_windows() -> Vec<DeviceIdentity> {
     // SAFETY: hdev is a valid handle from SetupDiGetClassDevsW above.
     let _ = unsafe { SetupDiDestroyDeviceInfoList(hdev) };
     out
+}
+
+/// Walk up the PnP device tree from a disk device to find a USB ancestor.
+///
+/// Returns `Some(DeviceIdentity)` if a USB ancestor is found with valid
+/// VID and PID, or `None` if no USB ancestor exists.
+///
+/// # Arguments
+///
+/// * `_hdev` -- valid `HDEVINFO` from `SetupDiGetClassDevsW` (unused but kept
+///   for API consistency with other device enumeration helpers).
+/// * `devinfo` -- the disk device info data to start walking from.
+#[cfg(windows)]
+fn find_usb_identity_for_disk(
+    _hdev: windows::Win32::Devices::DeviceAndDriverInstallation::HDEVINFO,
+    devinfo: &SP_DEVINFO_DATA,
+) -> Option<DeviceIdentity> {
+    let mut current_devinst = devinfo.DevInst;
+    for _ in 0..16 {
+        // Avoid infinite loops — device trees are shallow (usually < 8 levels).
+        let mut parent_devinst: u32 = 0;
+        // SAFETY: current_devinst is a valid DEVINST returned by SetupDi.
+        let cr = unsafe { CM_Get_Parent(&mut parent_devinst, current_devinst, 0) };
+        if cr.0 != 0 {
+            // No more parents (CR_NO_SUCH_DEVNODE, CR_INVALID_DEVINST, etc.).
+            return None;
+        }
+
+        let mut id_buf = [0u16; 256];
+        // SAFETY: parent_devinst is a valid DEVINST; id_buf is owned.
+        let cr = unsafe { CM_Get_Device_IDW(parent_devinst, &mut id_buf, 0) };
+        if cr.0 != 0 {
+            current_devinst = parent_devinst;
+            continue;
+        }
+
+        let id = String::from_utf16_lossy(
+            &id_buf
+                .iter()
+                .copied()
+                .take_while(|&w| w != 0)
+                .collect::<Vec<u16>>(),
+        );
+        if !id.starts_with("USB\\") {
+            current_devinst = parent_devinst;
+            continue;
+        }
+
+        // Reshape: `USB\VID_X&PID_Y\SERIAL` -> `\\?\USB#VID_X&PID_Y#SERIAL#`.
+        let reshaped = format!("\\\\?\\{}", id.replace('\\', "#"));
+        let identity = parse_usb_device_path(&reshaped);
+        if identity.vid.is_empty() || identity.pid.is_empty() {
+            return None;
+        }
+        return Some(identity);
+    }
+    None
 }
 
 /// Errors that can occur when resolving a USB device instance ID.

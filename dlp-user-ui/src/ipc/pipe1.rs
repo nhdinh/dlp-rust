@@ -163,6 +163,96 @@ fn handle_clipboard_read(request_id: String, session_id: u32) -> Option<Pipe1UiM
     }
 }
 
+/// Handles a `BlockNotify` message and returns the user's response.
+fn handle_block_notify(
+    reason: String,
+    classification: String,
+    resource_path: String,
+    policy_id: String,
+    session_id: u32,
+) -> Option<Vec<u8>> {
+    info!(
+        session_id,
+        classification,
+        resource_path = %resource_path,
+        "Pipe 1: BlockNotify received"
+    );
+    let request_id = format!("block-{}", session_id);
+    let dialog_result = crate::dialogs::show_block_dialog_with_result(
+        &classification,
+        &resource_path,
+        &policy_id,
+        &reason,
+    );
+    let msg = match dialog_result {
+        crate::dialogs::BlockDialogResult::Confirmed => {
+            Pipe1UiMsg::UserConfirmed { request_id }
+        }
+        crate::dialogs::BlockDialogResult::Close => {
+            Pipe1UiMsg::UserCancelled { request_id }
+        }
+    };
+    serialize_response(&msg, session_id, "BlockNotify response")
+}
+
+/// Handles an `OverrideRequest` message and returns the user's response.
+fn handle_override_request(
+    request_id: String,
+    reason: String,
+    classification: String,
+    resource_path: String,
+    session_id: u32,
+) -> Option<Vec<u8>> {
+    info!(session_id, request_id, "Pipe 1: OverrideRequest received");
+    let result = crate::dialogs::override_request::show_override_dialog(
+        &classification,
+        &resource_path,
+        &reason,
+    );
+    let msg = match result {
+        crate::dialogs::override_request::OverrideDialogResult::Approved {
+            justification,
+        } => {
+            info!(
+                session_id,
+                request_id,
+                justification = %justification,
+                "override approved by user"
+            );
+            Pipe1UiMsg::UserConfirmed { request_id }
+        }
+        crate::dialogs::override_request::OverrideDialogResult::Cancelled => {
+            info!(session_id, request_id, "override cancelled by user");
+            Pipe1UiMsg::UserCancelled { request_id }
+        }
+    };
+    serialize_response(&msg, session_id, "override response")
+}
+
+/// Handles a `PasswordDialog` message and returns the user's response.
+fn handle_password_dialog(request_id: String, session_id: u32) -> Option<Vec<u8>> {
+    info!(session_id, request_id, "Pipe 1: PasswordDialog received");
+    let msg = match crate::dialogs::stop_password::show_password_dialog(&request_id) {
+        Ok(m) => m,
+        Err(e) => {
+            error!(session_id, request_id, error = %e, "password dialog failed");
+            Pipe1UiMsg::PasswordCancel { request_id }
+        }
+    };
+    serialize_response(&msg, session_id, "password message")
+}
+
+/// Handles a `Ping` message by sending a `Pong` response directly.
+fn handle_ping(session_id: u32, pipe: HANDLE) {
+    debug!(session_id, "Pipe 1: Ping received — sending Pong");
+    let pong = Pipe1UiMsg::Pong;
+    if let Ok(json) = serde_json::to_vec(&pong) {
+        if write_frame(pipe, &json).is_err() {
+            debug!(session_id, "Pipe 1: failed to write Pong");
+        }
+    }
+}
+
 /// Handles an incoming agent message and returns an optional response.
 fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32, pipe: HANDLE) -> Option<Vec<u8>> {
     match msg {
@@ -171,85 +261,23 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32, pipe: HANDLE) -> Option
             classification,
             resource_path,
             policy_id,
-        } => {
-            info!(
-                session_id,
-                classification,
-                resource_path = %resource_path,
-                "Pipe 1: BlockNotify received"
-            );
-            let request_id = format!("block-{}", session_id);
-            let dialog_result = crate::dialogs::show_block_dialog_with_result(
-                &classification,
-                &resource_path,
-                &policy_id,
-                &reason,
-            );
-            let msg = match dialog_result {
-                crate::dialogs::BlockDialogResult::Confirmed => {
-                    Pipe1UiMsg::UserConfirmed { request_id }
-                }
-                crate::dialogs::BlockDialogResult::Close => {
-                    Pipe1UiMsg::UserCancelled { request_id }
-                }
-            };
-            serialize_response(&msg, session_id, "BlockNotify response")
-        }
+        } => handle_block_notify(reason, classification, resource_path, policy_id, session_id),
         Pipe1AgentMsg::OverrideRequest {
             request_id,
             reason,
             classification,
             resource_path,
-        } => {
-            info!(session_id, request_id, "Pipe 1: OverrideRequest received");
-            let result = crate::dialogs::override_request::show_override_dialog(
-                &classification,
-                &resource_path,
-                &reason,
-            );
-            let msg = match result {
-                crate::dialogs::override_request::OverrideDialogResult::Approved {
-                    justification,
-                } => {
-                    info!(
-                        session_id,
-                        request_id,
-                        justification = %justification,
-                        "override approved by user"
-                    );
-                    Pipe1UiMsg::UserConfirmed { request_id }
-                }
-                crate::dialogs::override_request::OverrideDialogResult::Cancelled => {
-                    info!(session_id, request_id, "override cancelled by user");
-                    Pipe1UiMsg::UserCancelled { request_id }
-                }
-            };
-            serialize_response(&msg, session_id, "override response")
-        }
+        } => handle_override_request(request_id, reason, classification, resource_path, session_id),
         Pipe1AgentMsg::ClipboardRead { request_id } => {
             info!(session_id, request_id, "Pipe 1: ClipboardRead received");
             let msg = handle_clipboard_read(request_id, session_id)?;
             serialize_response(&msg, session_id, "ClipboardData")
         }
         Pipe1AgentMsg::PasswordDialog { request_id } => {
-            info!(session_id, request_id, "Pipe 1: PasswordDialog received");
-            let msg = match crate::dialogs::stop_password::show_password_dialog(&request_id) {
-                Ok(m) => m,
-                Err(e) => {
-                    error!(session_id, request_id, error = %e, "password dialog failed");
-                    Pipe1UiMsg::PasswordCancel { request_id }
-                }
-            };
-            serialize_response(&msg, session_id, "password message")
+            handle_password_dialog(request_id, session_id)
         }
         Pipe1AgentMsg::Ping => {
-            debug!(session_id, "Pipe 1: Ping received — sending Pong");
-            let pong = Pipe1UiMsg::Pong;
-            if let Ok(json) = serde_json::to_vec(&pong) {
-                if write_frame(pipe, &json).is_err() {
-                    debug!(session_id, "Pipe 1: failed to write Pong");
-                }
-            }
+            handle_ping(session_id, pipe);
             None
         }
     }

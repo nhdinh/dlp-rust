@@ -112,52 +112,8 @@ fn run_mock_pipe_server(name: &str, messages: Arc<Mutex<Vec<String>>>) -> anyhow
     // Accept up to 4 connections so tests that expect multiple frames
     // (or dedup tests that might accidentally send twice) do not hang.
     for _ in 0..4 {
-        // SAFETY: pipe is a valid server-side handle until CloseHandle.
-        let connected = unsafe { ConnectNamedPipe(pipe, None) };
-        if connected.is_err() {
-            // ERROR_PIPE_CONNECTED (535) means a client connected before
-            // ConnectNamedPipe was called — that's still a successful
-            // connection and we should proceed to read.
-            let code = connected.as_ref().err().map(|e| e.code().0 as u32 & 0xFFFF);
-            if code != Some(535) {
-                break;
-            }
-        }
-
-        // Read length prefix.
-        let mut len_buf = [0u8; 4];
-        if !read_exact(pipe, &mut len_buf) {
-            // Disconnect and try to accept the next client.
-            unsafe {
-                let _ = windows::Win32::System::Pipes::DisconnectNamedPipe(pipe);
-            }
-            continue;
-        }
-        let payload_len = u32::from_le_bytes(len_buf) as usize;
-
-        if payload_len == 0 || payload_len > 1_048_576 {
-            unsafe {
-                let _ = windows::Win32::System::Pipes::DisconnectNamedPipe(pipe);
-            }
-            continue;
-        }
-
-        let mut payload = vec![0u8; payload_len];
-        if !read_exact(pipe, &mut payload) {
-            unsafe {
-                let _ = windows::Win32::System::Pipes::DisconnectNamedPipe(pipe);
-            }
-            continue;
-        }
-
-        if let Ok(text) = String::from_utf8(payload) {
-            messages.lock().expect("messages mutex poisoned").push(text);
-        }
-
-        // Drop the current client so the next iteration can accept a
-        // new connection (each `send_clipboard_alert` opens a fresh one).
-        unsafe {
-            let _ = windows::Win32::System::Pipes::DisconnectNamedPipe(pipe);
+        if !accept_and_read_one(pipe, &messages) {
+            break;
         }
     }
 
@@ -165,6 +121,70 @@ fn run_mock_pipe_server(name: &str, messages: Arc<Mutex<Vec<String>>>) -> anyhow
         let _ = CloseHandle(pipe);
     }
     Ok(())
+}
+
+/// Accepts a single client connection on `pipe` and reads one length-prefixed frame.
+///
+/// Returns `true` if the server should continue accepting connections,
+/// `false` if the pipe is closed or an unrecoverable error occurred.
+fn accept_and_read_one(pipe: HANDLE, messages: &Arc<Mutex<Vec<String>>>) -> bool {
+    // SAFETY: pipe is a valid server-side handle until CloseHandle.
+    let connected = unsafe { ConnectNamedPipe(pipe, None) };
+    if connected.is_err() {
+        // ERROR_PIPE_CONNECTED (535) means a client connected before
+        // ConnectNamedPipe was called — that's still a successful
+        // connection and we should proceed to read.
+        let code = connected.as_ref().err().map(|e| e.code().0 as u32 & 0xFFFF);
+        if code != Some(535) {
+            return false;
+        }
+    }
+
+    let payload = match read_frame(pipe) {
+        Some(p) => p,
+        None => {
+            disconnect_pipe(pipe);
+            return true;
+        }
+    };
+
+    if let Ok(text) = String::from_utf8(payload) {
+        messages.lock().expect("messages mutex poisoned").push(text);
+    }
+
+    // Drop the current client so the next iteration can accept a
+    // new connection (each `send_clipboard_alert` opens a fresh one).
+    disconnect_pipe(pipe);
+    true
+}
+
+/// Reads a length-prefixed frame from `pipe`.
+///
+/// Returns `None` if the length prefix is invalid or the payload read fails.
+fn read_frame(pipe: HANDLE) -> Option<Vec<u8>> {
+    let mut len_buf = [0u8; 4];
+    if !read_exact(pipe, &mut len_buf) {
+        return None;
+    }
+    let payload_len = u32::from_le_bytes(len_buf) as usize;
+
+    if payload_len == 0 || payload_len > 1_048_576 {
+        return None;
+    }
+
+    let mut payload = vec![0u8; payload_len];
+    if !read_exact(pipe, &mut payload) {
+        return None;
+    }
+
+    Some(payload)
+}
+
+/// Safely disconnects a named pipe client.
+fn disconnect_pipe(pipe: HANDLE) {
+    unsafe {
+        let _ = windows::Win32::System::Pipes::DisconnectNamedPipe(pipe);
+    }
 }
 
 /// Reads exactly `buf.len()` bytes from `pipe`. Returns `false` on EOF
