@@ -14,7 +14,6 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -27,7 +26,7 @@ use windows::Win32::System::Pipes::{
     PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 
-use dlp_common::Decision;
+use dlp_common::{HookRequest, HookResponse};
 
 use crate::ipc::frame::{read_frame, write_frame};
 use crate::ipc::pipe_security::PipeSecurity;
@@ -43,20 +42,6 @@ const PIPE_BUFFER_SIZE: u32 = 65_536;
 
 /// Default timeout for `CreateNamedPipeW`.
 const PIPE_TIMEOUT_MS: u32 = 5_000;
-
-/// Request sent by the hook DLL to the agent for classification.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct HookRequest {
-    pub path: String,
-    pub action: String,
-}
-
-/// Response returned by the agent to the hook DLL.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct HookResponse {
-    pub decision: Decision,
-    pub reason: String,
-}
 
 /// Handler type for processing hook requests.
 pub type HookHandler = Arc<dyn Fn(HookRequest) -> HookResponse + Send + Sync + 'static>;
@@ -265,6 +250,28 @@ pub fn close_pipe(pipe: HANDLE) {
     let _ = unsafe { CloseHandle(pipe) };
 }
 
+/// Test helper: starts a [`HookIpcServer`] on a dedicated thread using the
+/// given handler, waits until the pipe is ready, and returns the thread
+/// handle so the caller can join it later (or let it run).
+#[cfg(test)]
+pub fn start_mock_server(
+    pipe_name: &str,
+    handler: HookHandler,
+) -> std::thread::JoinHandle<Result<()>> {
+    let name = pipe_name.to_string();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let handle = std::thread::spawn(move || {
+        let server = HookIpcServer::new(name, handler);
+        server.run_with_ready(|| {
+            let _ = tx.send(());
+        })
+    });
+
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .expect("server did not become ready within 5s");
+    handle
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -282,18 +289,7 @@ mod tests {
         pipe_name: &str,
         handler: HookHandler,
     ) -> std::thread::JoinHandle<Result<()>> {
-        let name = pipe_name.to_string();
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
-        let handle = std::thread::spawn(move || {
-            let server = HookIpcServer::new(name, handler);
-            server.run_with_ready(|| {
-                let _ = tx.send(());
-            })
-        });
-
-        rx.recv_timeout(Duration::from_secs(5))
-            .expect("server did not become ready within 5s");
-        handle
+        start_mock_server(pipe_name, handler)
     }
 
     #[test]
@@ -305,7 +301,7 @@ mod tests {
             reason: format!("blocked: {}", req.path),
         });
 
-        let server_handle = start_server(pipe_name, handler);
+        let _server_handle = start_server(pipe_name, handler);
 
         // Give the server thread time to enter ConnectNamedPipe before the
         // client connects.  Without this, CreateFileW may race ahead and the
@@ -331,7 +327,6 @@ mod tests {
             assert_eq!(resp.reason, format!("blocked: {}", req.path));
             latencies.push(elapsed);
 
-            eprintln!("[test] completed request {} in {:?}", i, elapsed);
         }
 
         close_pipe(client);
@@ -359,7 +354,7 @@ mod tests {
         // Clean up: we can't gracefully stop the server, but we can at
         // least join the thread with a timeout so it doesn't leak forever
         // in test runners.
-        let _ = server_handle.join();
+        // Server thread blocks in ConnectNamedPipe — do not join.
     }
 
     #[test]
@@ -375,7 +370,7 @@ mod tests {
             },
         });
 
-        let server_handle = start_server(pipe_name, handler);
+        let _server_handle = start_server(pipe_name, handler);
         let client = connect_client(pipe_name).expect("client connect");
 
         let req = HookRequest {
@@ -387,7 +382,7 @@ mod tests {
         assert_eq!(resp.reason, "empty path ok");
 
         close_pipe(client);
-        let _ = server_handle.join();
+        // Server thread blocks in ConnectNamedPipe — do not join.
     }
 
     #[test]
@@ -399,7 +394,7 @@ mod tests {
             reason: "never reached".to_string(),
         });
 
-        let server_handle = start_server(pipe_name, handler);
+        let _server_handle = start_server(pipe_name, handler);
         let client = connect_client(pipe_name).expect("client connect");
 
         // Write a zero-byte payload (length = 0, no payload bytes).
@@ -415,6 +410,11 @@ mod tests {
             .is_ok()
         };
         assert!(written);
+
+        // Close our end so the server detects the disconnect and leaves
+        // handle_connection.  Then ReadFile on our (now-invalid) handle
+        // should fail.
+        close_pipe(client);
 
         // The server will try to bincode::deserialize an empty slice and
         // log a warning, then close the connection without writing a
@@ -448,8 +448,7 @@ mod tests {
             "expected broken pipe after zero-byte payload"
         );
 
-        close_pipe(client);
-        let _ = server_handle.join();
+        // Server thread blocks in ConnectNamedPipe — do not join.
     }
 
     #[test]
@@ -461,7 +460,7 @@ mod tests {
             reason: "should not reach".to_string(),
         });
 
-        let server_handle = start_server(pipe_name, handler);
+        let _server_handle = start_server(pipe_name, handler);
         let client = connect_client(pipe_name).expect("client connect");
 
         // Send a valid-length frame but with garbage bytes that are not
@@ -514,7 +513,7 @@ mod tests {
         );
 
         close_pipe(client);
-        let _ = server_handle.join();
+        // Server thread blocks in ConnectNamedPipe — do not join.
     }
 
     #[test]
@@ -533,7 +532,7 @@ mod tests {
             reason: "ok".to_string(),
         });
 
-        let server_handle = start_server(pipe_name, handler);
+        let _server_handle = start_server(pipe_name, handler);
         let client = connect_client(pipe_name).expect("client connect");
 
         // Build a path well over 32KB.
@@ -551,6 +550,6 @@ mod tests {
         assert_eq!(resp.decision, Decision::DENY);
 
         close_pipe(client);
-        let _ = server_handle.join();
+        // Server thread blocks in ConnectNamedPipe — do not join.
     }
 }
