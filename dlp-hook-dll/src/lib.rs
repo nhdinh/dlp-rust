@@ -464,14 +464,12 @@ fn classify_path(path: &str, action: &str, pipe_name: &str) -> Result<Decision, 
         path: path.to_string(),
         action: action.to_string(),
     };
-    eprintln!("[classify_path] sending request to {}", pipe_name);
     let resp = pipe_client::send_request(
         pipe_name,
         &req,
         50, // 50 ms timeout per task spec
-    );
-    eprintln!("[classify_path] send_request result: {:?}", resp);
-    Ok(resp?.decision)
+    )?;
+    Ok(resp.decision)
 }
 
 /// Converts a `PCWSTR` to a Rust `String`.
@@ -524,108 +522,24 @@ pub use pipe_client::DEFAULT_PIPE_NAME;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::time::Duration;
-    use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
-    use windows::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE,
-        PIPE_TYPE_MESSAGE, PIPE_WAIT,
-    };
-    use dlp_common::{HookRequest, HookResponse};
+    use dlp_agent::hook_ipc::HookIpcServer;
+    use dlp_common::{Decision, HookRequest, HookResponse};
 
-    /// Starts a minimal mock pipe server that returns a fixed decision.
-    fn start_mock_pipe_server(pipe_name: &str, decision: Decision) -> std::thread::JoinHandle<()> {
+    /// Starts a [`HookIpcServer`] on a dedicated thread using the given
+    /// handler, waits until the pipe is ready, and returns the thread handle.
+    fn start_agent_mock_server(
+        pipe_name: &str,
+        handler: Arc<dyn Fn(HookRequest) -> HookResponse + Send + Sync>,
+    ) -> std::thread::JoinHandle<()> {
         let name = pipe_name.to_string();
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let handle = std::thread::spawn(move || {
-            let name_wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-            let pipe = unsafe {
-                CreateNamedPipeW(
-                    PCWSTR::from_raw(name_wide.as_ptr()),
-                    PIPE_ACCESS_DUPLEX,
-                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-                    1,
-                    65536,
-                    65536,
-                    5000,
-                    None,
-                )
-            };
-            if pipe.is_invalid() {
-                let err = std::io::Error::last_os_error();
-                panic!("CreateNamedPipeW failed for {}: {}", name, err);
-            }
-            eprintln!("[mock server] pipe created for {}", name);
-            let _ = tx.send(());
-
-            // Wait for one client.
-            eprintln!("[mock server] waiting for client on {}", name);
-            let conn = unsafe { ConnectNamedPipe(pipe, None) };
-            eprintln!("[mock server] ConnectNamedPipe result: {:?}", conn);
-
-            // Read frame.
-            let mut len_buf = [0u8; 4];
-            let mut read = 0u32;
-            let read_result = unsafe {
-                windows::Win32::Storage::FileSystem::ReadFile(
-                    pipe,
-                    Some(&mut len_buf),
-                    Some(&mut read),
-                    None,
-                )
-            };
-            eprintln!("[mock server] ReadFile result: {:?}, read={}", read_result, read);
-            let len = u32::from_le_bytes(len_buf) as usize;
-            let mut payload = vec![0u8; len];
-            let mut total = 0u32;
-            while total < len as u32 {
-                let mut chunk = 0u32;
-                let _ = unsafe {
-                    windows::Win32::Storage::FileSystem::ReadFile(
-                        pipe,
-                        Some(&mut payload[total as usize..]),
-                        Some(&mut chunk),
-                        None,
-                    )
-                };
-                if chunk == 0 {
-                    break;
-                }
-                total += chunk;
-            }
-
-            let _req: HookRequest = match bincode::deserialize(&payload) {
-                Ok(r) => r,
-                Err(_) => {
-                    let _ = unsafe { DisconnectNamedPipe(pipe) };
-                    return;
-                }
-            };
-
-            let resp = HookResponse {
-                decision,
-                reason: "mock".to_string(),
-            };
-            let out = bincode::serialize(&resp).unwrap_or_default();
-            let len_bytes = (out.len() as u32).to_le_bytes();
-            let mut written = 0u32;
-            let _ = unsafe {
-                windows::Win32::Storage::FileSystem::WriteFile(
-                    pipe,
-                    Some(&len_bytes),
-                    Some(&mut written),
-                    None,
-                )
-            };
-            let mut written2 = 0u32;
-            let _ = unsafe {
-                windows::Win32::Storage::FileSystem::WriteFile(
-                    pipe,
-                    Some(&out),
-                    Some(&mut written2),
-                    None,
-                )
-            };
-            let _ = unsafe { DisconnectNamedPipe(pipe) };
+            let server = HookIpcServer::new(name, handler);
+            server.run_with_ready(|| {
+                let _ = tx.send(());
+            }).unwrap();
         });
 
         rx.recv_timeout(Duration::from_secs(5))
@@ -676,7 +590,11 @@ mod tests {
     #[test]
     fn pipe_client_roundtrip_deny() {
         let pipe_name = r"\\.\pipe\DlpHookPipeTestDeny";
-        let _server = start_mock_pipe_server(pipe_name, Decision::DENY);
+        let handler = Arc::new(|req: HookRequest| HookResponse {
+            decision: Decision::DENY,
+            reason: format!("blocked: {}", req.path),
+        });
+        let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
 
         let req = HookRequest {
@@ -686,13 +604,17 @@ mod tests {
         let resp = pipe_client::send_request(pipe_name, &req, 1000)
             .expect("send_request should succeed");
         assert_eq!(resp.decision, Decision::DENY);
-        assert_eq!(resp.reason, "mock");
+        assert_eq!(resp.reason, "blocked: C:\\secret.txt");
     }
 
     #[test]
     fn pipe_client_roundtrip_allow() {
         let pipe_name = r"\\.\pipe\DlpHookPipeTestAllow";
-        let _server = start_mock_pipe_server(pipe_name, Decision::ALLOW);
+        let handler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "allowed".to_string(),
+        });
+        let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
 
         let req = HookRequest {
@@ -702,13 +624,18 @@ mod tests {
         let resp = pipe_client::send_request(pipe_name, &req, 1000)
             .expect("send_request should succeed");
         assert_eq!(resp.decision, Decision::ALLOW);
+        assert_eq!(resp.reason, "allowed");
     }
 
     #[test]
     fn hook_createfilew_fail_closed_on_deny() {
         let pipe_name = r"\\.\pipe\DlpHookPipeTestHookDeny";
-        let _server = start_mock_pipe_server(pipe_name, Decision::DENY);
-        std::thread::sleep(Duration::from_millis(100));
+        let handler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::DENY,
+            reason: "denied".to_string(),
+        });
+        let _server = start_agent_mock_server(pipe_name, handler);
+        std::thread::sleep(Duration::from_millis(50));
 
         let result = classify_path(r"C:\secret.txt", "CREATE", pipe_name);
         assert!(result.is_ok());
@@ -718,8 +645,12 @@ mod tests {
     #[test]
     fn hook_createfilew_allow_when_allowed() {
         let pipe_name = r"\\.\pipe\DlpHookPipeTestHookAllow";
-        let _server = start_mock_pipe_server(pipe_name, Decision::ALLOW);
-        std::thread::sleep(Duration::from_millis(100));
+        let handler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "allowed".to_string(),
+        });
+        let _server = start_agent_mock_server(pipe_name, handler);
+        std::thread::sleep(Duration::from_millis(50));
 
         let result = classify_path(r"C:\public.txt", "CREATE", pipe_name);
         assert!(result.is_ok());
@@ -728,7 +659,6 @@ mod tests {
 
     #[test]
     fn unhook_all_does_not_panic_when_not_initialised() {
-        // UnhookAll should be safe to call even if init() never ran.
         UnhookAll();
     }
 

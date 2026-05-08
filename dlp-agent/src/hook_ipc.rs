@@ -280,6 +280,7 @@ pub fn start_mock_server(
 mod tests {
     use std::time::{Duration, Instant};
 
+    use dlp_common::Decision;
     use super::*;
 
     /// Starts a [`HookIpcServer`] on a dedicated thread using the given
