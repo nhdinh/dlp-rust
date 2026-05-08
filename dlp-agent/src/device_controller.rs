@@ -189,6 +189,57 @@ impl DeviceController {
         Ok(())
     }
 
+    /// Disables a USB device with optional retry logic.
+    ///
+    /// **BLOCKING:** This method uses `std::thread::sleep` between retry attempts.
+    /// It MUST NOT be called directly from an async tokio context. Callers must
+    /// either:
+    /// - Call it from a dedicated synchronous thread (e.g., the WM_DEVICECHANGE
+    ///   handler thread), OR
+    /// - Wrap the call in `tokio::task::spawn_blocking` if invoked from async code.
+    ///
+    /// When `retry_count` > 0, retries `CM_Disable_DevNode` up to `retry_count`
+    /// times with `retry_delay_ms` between attempts. Only returns `Err` after
+    /// all retries are exhausted.
+    ///
+    /// # Arguments
+    ///
+    /// * `dbcc_name` — Device interface path.
+    /// * `identity` — Parsed device identity.
+    /// * `retry_count` — Number of retry attempts (0 = no retry).
+    /// * `retry_delay_ms` — Delay between retries in milliseconds.
+    #[cfg(windows)]
+    pub fn disable_usb_device_with_retry_blocking(
+        &self,
+        dbcc_name: &str,
+        identity: &dlp_common::DeviceIdentity,
+        retry_count: u32,
+        retry_delay_ms: u64,
+    ) -> Result<(), DeviceControllerError> {
+        let mut last_error = None;
+        for attempt in 0..=retry_count {
+            match self.disable_usb_device(dbcc_name, identity) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < retry_count {
+                        warn!(
+                            vid = %identity.vid,
+                            pid = %identity.pid,
+                            serial = %identity.serial,
+                            attempt = attempt + 1,
+                            max_attempts = retry_count + 1,
+                            "PnP disable failed, retrying after {}ms",
+                            retry_delay_ms
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(retry_delay_ms));
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or(DeviceControllerError::ConfigManager(0x0000000D)))
+    }
+
     /// Enables a previously disabled USB device.
     ///
     /// Uses the same instance ID resolution logic as [`disable_usb_device`],
@@ -762,5 +813,50 @@ mod tests {
             r"\\?\USB#VID_0951&PID_1666#SN123#{a5dcbf10-6530-11d2-901f-00c04fb951ed}",
             &identity,
         );
+    }
+
+    /// Verify that `disable_usb_device_with_retry_blocking` with zero retries
+    /// returns Err when no real device matches (signature + runtime check).
+    #[test]
+    #[cfg(windows)]
+    fn test_disable_usb_device_with_retry_blocking_zero_retries() {
+        let controller = DeviceController::new();
+        let identity = dlp_common::DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN123".into(),
+            description: "Test".into(),
+        };
+        let result = controller.disable_usb_device_with_retry_blocking(
+            r"\\?\USB#VID_0951&PID_1666#SN123#{a5dcbf10-6530-11d2-901f-00c04fb951ed}",
+            &identity,
+            0,
+            0,
+        );
+        assert!(
+            result.is_err(),
+            "expected Err with zero retries on fake device"
+        );
+    }
+
+    /// Verify that `disable_usb_device_with_retry_blocking` exhausts all retries
+    /// and returns Err. Uses a short delay to keep the test fast.
+    #[test]
+    #[cfg(windows)]
+    fn test_disable_usb_device_with_retry_blocking_exhausts_retries() {
+        let controller = DeviceController::new();
+        let identity = dlp_common::DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN123".into(),
+            description: "Test".into(),
+        };
+        let result = controller.disable_usb_device_with_retry_blocking(
+            r"\\?\USB#VID_0951&PID_1666#SN123#{a5dcbf10-6530-11d2-901f-00c04fb951ed}",
+            &identity,
+            2,
+            10,
+        );
+        assert!(result.is_err(), "expected Err after exhausting all retries");
     }
 }
