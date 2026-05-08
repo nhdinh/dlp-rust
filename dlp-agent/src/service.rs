@@ -26,6 +26,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use dlp_common::usb::{
+    DEFAULT_USB_BLOCKED_FAILURE_MODE,
+    DEFAULT_USB_NONE_SERIAL_POLICY,
+    DEFAULT_USB_STARTUP_RESOLUTION_MODE,
+};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn, Level};
@@ -299,6 +304,49 @@ fn apply_payload_to_config(
     if cfg.excluded_paths != payload.excluded_paths {
         changed_fields.push("excluded_paths");
         cfg.excluded_paths = payload.excluded_paths.clone();
+    }
+
+    // Phase 43 (USB-09): apply server-pushed USB enforcement config fields.
+    //
+    // None guard: if cfg is None and payload equals the system default, skip the
+    // diff to avoid spurious "config changed" logs when a new agent polls an old
+    // server that does not send these fields (the default functions provide the
+    // system default, so the diff would fire on every poll).
+    //
+    // Empty-string guard: defense-in-depth — never apply empty strings for USB
+    // config fields (preserves previous config value against a compromised or
+    // buggy server).
+    let should_apply_usb_failure_mode = match cfg.usb_blocked_failure_mode {
+        Some(ref existing) => existing != &payload.usb_blocked_failure_mode,
+        None => payload.usb_blocked_failure_mode != DEFAULT_USB_BLOCKED_FAILURE_MODE,
+    };
+    if should_apply_usb_failure_mode && !payload.usb_blocked_failure_mode.is_empty() {
+        changed_fields.push("usb_blocked_failure_mode");
+        cfg.usb_blocked_failure_mode = Some(payload.usb_blocked_failure_mode.clone());
+    } else if payload.usb_blocked_failure_mode.is_empty() {
+        warn!("server sent empty usb_blocked_failure_mode — skipping apply");
+    }
+
+    let should_apply_usb_resolution_mode = match cfg.usb_startup_resolution_mode {
+        Some(ref existing) => existing != &payload.usb_startup_resolution_mode,
+        None => payload.usb_startup_resolution_mode != DEFAULT_USB_STARTUP_RESOLUTION_MODE,
+    };
+    if should_apply_usb_resolution_mode && !payload.usb_startup_resolution_mode.is_empty() {
+        changed_fields.push("usb_startup_resolution_mode");
+        cfg.usb_startup_resolution_mode = Some(payload.usb_startup_resolution_mode.clone());
+    } else if payload.usb_startup_resolution_mode.is_empty() {
+        warn!("server sent empty usb_startup_resolution_mode — skipping apply");
+    }
+
+    let should_apply_usb_none_serial_policy = match cfg.usb_none_serial_policy {
+        Some(ref existing) => existing != &payload.usb_none_serial_policy,
+        None => payload.usb_none_serial_policy != DEFAULT_USB_NONE_SERIAL_POLICY,
+    };
+    if should_apply_usb_none_serial_policy && !payload.usb_none_serial_policy.is_empty() {
+        changed_fields.push("usb_none_serial_policy");
+        cfg.usb_none_serial_policy = Some(payload.usb_none_serial_policy.clone());
+    } else if payload.usb_none_serial_policy.is_empty() {
+        warn!("server sent empty usb_none_serial_policy — skipping apply");
     }
 
     // Phase 37 (D-03): apply server-pushed disk allowlist.
@@ -1768,6 +1816,116 @@ mod tests {
         assert_eq!(
             reloaded.disk_allowlist[0].instance_id, "DISK\\PERSIST\\001",
             "persisted instance_id must survive TOML roundtrip"
+        );
+    }
+
+    /// Test 6: USB config fields are applied from payload to cfg.
+    #[test]
+    fn test_apply_payload_usb_fields() {
+        let mut cfg = AgentConfig::default();
+        let mut payload = make_payload(vec![]);
+        payload.usb_blocked_failure_mode = "Hard error".to_string();
+        payload.usb_startup_resolution_mode = "Volume GUID resolution".to_string();
+        payload.usb_none_serial_policy = "Allow unregistered".to_string();
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            changed_fields.contains(&"usb_blocked_failure_mode"),
+            "usb_blocked_failure_mode must be in changed_fields"
+        );
+        assert!(
+            changed_fields.contains(&"usb_startup_resolution_mode"),
+            "usb_startup_resolution_mode must be in changed_fields"
+        );
+        assert!(
+            changed_fields.contains(&"usb_none_serial_policy"),
+            "usb_none_serial_policy must be in changed_fields"
+        );
+        assert_eq!(
+            cfg.usb_blocked_failure_mode,
+            Some("Hard error".to_string())
+        );
+        assert_eq!(
+            cfg.usb_startup_resolution_mode,
+            Some("Volume GUID resolution".to_string())
+        );
+        assert_eq!(
+            cfg.usb_none_serial_policy,
+            Some("Allow unregistered".to_string())
+        );
+    }
+
+    /// Test 7: No-change path — cfg and payload USB values match.
+    #[test]
+    fn test_apply_payload_usb_fields_no_change() {
+        let mut cfg = AgentConfig::default();
+        cfg.usb_blocked_failure_mode = Some("Warning only".to_string());
+        cfg.usb_startup_resolution_mode = Some("VID/PID/serial fallback".to_string());
+        cfg.usb_none_serial_policy = Some("Always Blocked".to_string());
+        let payload = make_payload(vec![]);
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"usb_blocked_failure_mode"),
+            "usb_blocked_failure_mode must NOT be in changed_fields when unchanged"
+        );
+        assert!(
+            !changed_fields.contains(&"usb_startup_resolution_mode"),
+            "usb_startup_resolution_mode must NOT be in changed_fields when unchanged"
+        );
+        assert!(
+            !changed_fields.contains(&"usb_none_serial_policy"),
+            "usb_none_serial_policy must NOT be in changed_fields when unchanged"
+        );
+    }
+
+    /// Test 8: None guard — when cfg USB fields are None and payload carries the
+    /// system default, changed_fields must NOT contain usb_* entries.
+    /// This prevents spurious "config changed" logs when a new agent polls an old
+    /// server that does not send these fields.
+    #[test]
+    fn test_apply_payload_usb_fields_none_guard() {
+        let mut cfg = AgentConfig::default(); // all USB fields are None
+        let payload = make_payload(vec![]); // all defaults
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"usb_blocked_failure_mode"),
+            "None guard: usb_blocked_failure_mode must NOT diff when payload == default"
+        );
+        assert!(
+            !changed_fields.contains(&"usb_startup_resolution_mode"),
+            "None guard: usb_startup_resolution_mode must NOT diff when payload == default"
+        );
+        assert!(
+            !changed_fields.contains(&"usb_none_serial_policy"),
+            "None guard: usb_none_serial_policy must NOT diff when payload == default"
+        );
+    }
+
+    /// Test 9: Empty-string guard — when the server sends an empty string for a
+    /// USB config field, the apply must be skipped and the previous cfg value
+    /// preserved.
+    #[test]
+    fn test_apply_payload_usb_fields_empty_guard() {
+        let mut cfg = AgentConfig::default();
+        cfg.usb_blocked_failure_mode = Some("Hard error".to_string());
+        let mut payload = make_payload(vec![]);
+        payload.usb_blocked_failure_mode = "".to_string();
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"usb_blocked_failure_mode"),
+            "empty-string guard: must NOT diff when payload is empty"
+        );
+        assert_eq!(
+            cfg.usb_blocked_failure_mode,
+            Some("Hard error".to_string()),
+            "empty-string guard: previous value must be preserved"
         );
     }
 }
