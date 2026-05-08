@@ -194,7 +194,24 @@ impl DiskEnforcer {
             .map(|(stored, live)| stored != live)
             .unwrap_or(false);
 
+        // Phase 45 (DISK-07): grace period check for unregistered disks.
+        // If the disk is in grace period, allow reads but block writes.
+        // If grace period expired (or never started), use normal block behavior.
         if registered.is_none() || serial_mismatch {
+            // Check if this disk is in an active grace period.
+            if enumerator.is_in_grace_period(&live_disk.instance_id) {
+                // Grace period active: block writes, allow reads.
+                // FileAction filter at top of check() already ensures we only
+                // intercept write-path actions, so reads are implicitly allowed.
+                let notify = self.should_notify(letter);
+                return Some(DiskBlockResult {
+                    decision: Decision::DENY,
+                    disk: live_disk,
+                    notify,
+                });
+            }
+
+            // No grace period (or expired): normal full block.
             let notify = self.should_notify(letter);
             return Some(DiskBlockResult {
                 decision: Decision::DENY,
