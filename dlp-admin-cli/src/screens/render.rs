@@ -14,12 +14,12 @@ use crate::app::{
     SIMULATE_ACTION_OPTIONS, SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
     SIMULATE_NETWORK_LOCATION_OPTIONS,
 };
-use crate::screens::usb_enforcement::{
-    USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_LABELS, USB_ENFORCEMENT_OPTIONS,
-    USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_SAVE_ROW,
-};
 use crate::screens::dispatch::condition_display;
 use crate::screens::dispatch::operators_for;
+use crate::screens::usb_enforcement::{
+    USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_LABELS,
+    USB_ENFORCEMENT_SAVE_ROW,
+};
 use dlp_common::abac::PolicyMode;
 
 /// Top-level draw function dispatched from the event loop.
@@ -571,7 +571,6 @@ fn render_step3_text_input(
     _selected_field: Option<dlp_common::abac::AppField>,
     buffer: &str,
 ) {
-
     let is_member_of = selected_attribute == Some(&ConditionAttribute::MemberOf);
     let is_origin = matches!(
         selected_attribute,
@@ -587,8 +586,8 @@ fn render_step3_text_input(
     };
 
     let input_display = format!("[{buffer}_]");
-    let input_paragraph = Paragraph::new(input_display)
-        .block(Block::default().title(title).borders(Borders::ALL));
+    let input_paragraph =
+        Paragraph::new(input_display).block(Block::default().title(title).borders(Borders::ALL));
     frame.render_widget(input_paragraph, area);
 }
 
@@ -650,8 +649,7 @@ fn step_flags(
         )
         && selected_field.is_none();
 
-    let is_member_of_step3 =
-        step == 3 && selected_attribute == Some(&ConditionAttribute::MemberOf);
+    let is_member_of_step3 = step == 3 && selected_attribute == Some(&ConditionAttribute::MemberOf);
     let is_app_text_step3 = step == 3
         && matches!(
             selected_attribute,
@@ -771,7 +769,10 @@ fn draw_conditions_builder(
         step_flags(step, selected_attribute, selected_field);
 
     if !in_app_field_sub_step {
-        frame.render_widget(Paragraph::new(step_label(step, selected_attribute)), picker_chunks[0]);
+        frame.render_widget(
+            Paragraph::new(step_label(step, selected_attribute)),
+            picker_chunks[0],
+        );
     }
 
     if in_app_field_sub_step {
@@ -796,7 +797,8 @@ fn draw_conditions_builder(
         );
     }
 
-    let hints = conditions_builder_hints(pending_focused, in_app_field_sub_step, is_text_input_step3);
+    let hints =
+        conditions_builder_hints(pending_focused, in_app_field_sub_step, is_text_input_step3);
     draw_hints(frame, modal_area, hints);
 }
 
@@ -893,7 +895,11 @@ fn format_config_field_value(
     }
     if is_bool_fn(index) {
         let b = config[key].as_bool().unwrap_or(false);
-        return if b { "[x]".to_string() } else { "[ ]".to_string() };
+        return if b {
+            "[x]".to_string()
+        } else {
+            "[ ]".to_string()
+        };
     }
     if is_secret_fn(index) {
         let v = config[key].as_str().unwrap_or("");
@@ -939,8 +945,15 @@ fn draw_siem_config(
     for (i, label) in SIEM_FIELD_LABELS.iter().enumerate() {
         let line = if i < KEYS.len() {
             let value_display = format_config_field_value(
-                config, KEYS[i], i, selected, editing, buffer,
-                is_siem_bool, is_siem_secret, |_| false,
+                config,
+                KEYS[i],
+                i,
+                selected,
+                editing,
+                buffer,
+                is_siem_bool,
+                is_siem_secret,
+                |_| false,
             );
             format!("{label}: {value_display}")
         } else {
@@ -1014,8 +1027,15 @@ fn draw_alert_config(
     for (i, label) in ALERT_FIELD_LABELS.iter().enumerate() {
         let line = if i < KEYS.len() {
             let value_display = format_config_field_value(
-                config, KEYS[i], i, selected, editing, buffer,
-                is_alert_bool, is_alert_secret, is_alert_numeric,
+                config,
+                KEYS[i],
+                i,
+                selected,
+                editing,
+                buffer,
+                is_alert_bool,
+                is_alert_secret,
+                is_alert_numeric,
             );
             format!("{label}: {value_display}")
         } else {
@@ -1052,7 +1072,13 @@ fn draw_alert_config(
 }
 
 /// Formats the policy name field line.
-fn format_policy_name_field(label: &str, form: &crate::app::PolicyFormState, selected: usize, editing: bool, buffer: &str) -> Line<'static> {
+fn format_policy_name_field(
+    label: &str,
+    form: &crate::app::PolicyFormState,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+) -> Line<'static> {
     if editing && selected == 0 {
         Line::from(format!("{label}:              [{buffer}_]"))
     } else if form.name.is_empty() {
@@ -1066,7 +1092,13 @@ fn format_policy_name_field(label: &str, form: &crate::app::PolicyFormState, sel
 }
 
 /// Formats the policy description field line.
-fn format_policy_description_field(label: &str, form: &crate::app::PolicyFormState, selected: usize, editing: bool, buffer: &str) -> Line<'static> {
+fn format_policy_description_field(
+    label: &str,
+    form: &crate::app::PolicyFormState,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+) -> Line<'static> {
     if editing && selected == 1 {
         Line::from(format!("{label}:       [{buffer}_]"))
     } else if form.description.is_empty() {
@@ -1080,7 +1112,13 @@ fn format_policy_description_field(label: &str, form: &crate::app::PolicyFormSta
 }
 
 /// Formats the policy priority field line.
-fn format_policy_priority_field(label: &str, form: &crate::app::PolicyFormState, selected: usize, editing: bool, buffer: &str) -> Line<'static> {
+fn format_policy_priority_field(
+    label: &str,
+    form: &crate::app::PolicyFormState,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+) -> Line<'static> {
     if editing && selected == 2 {
         Line::from(format!("{label}:          [{buffer}_]"))
     } else if form.priority.is_empty() {
@@ -1116,7 +1154,10 @@ fn format_policy_mode_field(label: &str, form: &crate::app::PolicyFormState) -> 
 }
 
 /// Formats the policy conditions summary field line.
-fn format_policy_conditions_field(label: &str, form: &crate::app::PolicyFormState) -> Line<'static> {
+fn format_policy_conditions_field(
+    label: &str,
+    form: &crate::app::PolicyFormState,
+) -> Line<'static> {
     let n = form.conditions.len();
     if n == 0 {
         Line::from(vec![
@@ -1138,8 +1179,17 @@ fn format_policy_conditions_field(label: &str, form: &crate::app::PolicyFormStat
 }
 
 /// Renders the mode advisory hint when applicable.
-fn render_mode_advisory(frame: &mut Frame, area: Rect, form: &crate::app::PolicyFormState, validation_error: Option<&str>) {
-    if validation_error.is_some() || form.mode == PolicyMode::ALL || !form.conditions.is_empty() || area.height < 4 {
+fn render_mode_advisory(
+    frame: &mut Frame,
+    area: Rect,
+    form: &crate::app::PolicyFormState,
+    validation_error: Option<&str>,
+) {
+    if validation_error.is_some()
+        || form.mode == PolicyMode::ALL
+        || !form.conditions.is_empty()
+        || area.height < 4
+    {
         return;
     }
     let hint = match form.mode {
@@ -2292,15 +2342,13 @@ fn draw_usb_enforcement_config(
     };
     items.push(ListItem::new(back_text));
 
-    let list = List::new(items)
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+    let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::BOLD));
     frame.render_widget(list, inner);
 
     // Show hint when editing a picker field
     if editing && selected < USB_ENFORCEMENT_KEYS.len() {
         let hint = "Up/Down: cycle options | Enter: confirm | Esc: cancel".to_string();
-        let hint_para = Paragraph::new(hint)
-            .style(Style::default().fg(Color::DarkGray));
+        let hint_para = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
         let hint_area = Rect {
             x: inner.x,
             y: inner.y + inner.height.saturating_sub(1),
@@ -2385,8 +2433,15 @@ fn draw_ldap_config(
     for (i, label) in LDAP_FIELD_LABELS.iter().enumerate() {
         let line = if i < KEYS.len() {
             let value_display = format_config_field_value(
-                config, KEYS[i], i, selected, editing, buffer,
-                is_ldap_bool, |_| false, is_ldap_numeric,
+                config,
+                KEYS[i],
+                i,
+                selected,
+                editing,
+                buffer,
+                is_ldap_bool,
+                |_| false,
+                is_ldap_numeric,
             );
             format!("{label}: {value_display}")
         } else {
