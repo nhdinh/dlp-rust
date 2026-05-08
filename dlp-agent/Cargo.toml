@@ -78,6 +78,9 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell",
     # detection/app_identity.rs: WinVerifyTrust, WINTRUST_DATA, etc.
     "Win32_Security_WinTrust",
+    # WFP network egress filter (M017 T05)
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_System_Rpc",
 ] }
 
 # WMI for BitLocker queries (Phase 34 - Win32_EncryptableVolume in
