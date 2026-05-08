@@ -47,6 +47,12 @@ pub enum EventType {
     /// A fixed disk was blocked at mount time because its instance_id was not
     /// in the frozen allowlist (DISK-F1, Phase 44).
     DiskMountBlocked,
+    /// A grace period / quarantine was started for an unregistered disk.
+    /// The disk is mounted read-only during the grace period (DISK-07, Phase 45).
+    DiskQuarantineStarted,
+    /// A grace period expired for an unregistered disk and mount-time blocking
+    /// was applied (DISK-07, Phase 45).
+    DiskQuarantineExpired,
 }
 
 impl EventType {
@@ -64,6 +70,8 @@ impl EventType {
                 | Self::ServiceStopFailed
                 | Self::DiskDiscovery
                 | Self::DiskMountBlocked
+                | Self::DiskQuarantineStarted
+                | Self::DiskQuarantineExpired
         )
     }
 
