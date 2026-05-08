@@ -104,6 +104,10 @@ chrono = { version = "0.4", features = ["serde"] }
 prost = "0.14"
 bytes = "1"
 
+# Print spooler XPS parsing (M017/S04)
+zip = "2"
+quick-xml = "0.36"
+
 [features]
 # Phase 34: real-Windows-only smoke tests against the live WMI namespace
 # `ROOT\CIMV2\Security\MicrosoftVolumeEncryption` and the live BitLocker

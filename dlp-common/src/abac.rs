@@ -39,6 +39,8 @@ pub enum Action {
     DRAG_DROP,
     /// Cloud upload operation (Phase 45, M017/S01).
     CLOUD_UPLOAD,
+    /// Print operation (Phase 46, M017/S04).
+    PRINT,
 }
 
 /// The access context describes how the file operation originated.
@@ -882,5 +884,35 @@ mod phase37_action_tests {
         assert_ne!(Action::CLOUD_UPLOAD, Action::WRITE);
         assert_ne!(Action::CLOUD_UPLOAD, Action::COPY);
         assert_ne!(Action::CLOUD_UPLOAD, Action::DRAG_DROP);
+    }
+
+    /// Verify `PRINT` serializes as its literal variant name (no rename).
+    #[test]
+    fn test_print_serializes_as_variant_name() {
+        let json = serde_json::to_string(&Action::PRINT).expect("serialize PRINT");
+        assert_eq!(
+            json, "\"PRINT\"",
+            "PRINT must serialize as its literal variant name per M017/S04"
+        );
+    }
+
+    /// Verify `"PRINT"` deserializes back to the correct variant.
+    #[test]
+    fn test_print_deserializes_from_variant_name() {
+        let action: Action = serde_json::from_str("\"PRINT\"").expect("deserialize PRINT");
+        assert_eq!(
+            action,
+            Action::PRINT,
+            "\"PRINT\" must deserialize to Action::PRINT"
+        );
+    }
+
+    /// Verify PRINT is distinct from other Action variants.
+    #[test]
+    fn test_print_is_distinct() {
+        assert_ne!(Action::PRINT, Action::READ);
+        assert_ne!(Action::PRINT, Action::WRITE);
+        assert_ne!(Action::PRINT, Action::COPY);
+        assert_ne!(Action::PRINT, Action::CLOUD_UPLOAD);
     }
 }
