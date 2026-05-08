@@ -81,6 +81,8 @@ windows = { version = "0.62", features = [
     # WFP network egress filter (M017 T05)
     "Win32_NetworkManagement_WindowsFilteringPlatform",
     "Win32_System_Rpc",
+    # Print spooler wrappers (M017 T02)
+    "Win32_Graphics_Printing",
 ] }
 
 # WMI for BitLocker queries (Phase 34 - Win32_EncryptableVolume in

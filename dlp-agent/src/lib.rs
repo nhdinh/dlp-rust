@@ -91,6 +91,9 @@ pub mod session_identity;
 pub mod server_client;
 
 #[cfg(windows)]
+pub mod print_job_info;
+
+#[cfg(windows)]
 pub mod device_controller;
 
 #[cfg(windows)]
