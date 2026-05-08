@@ -14,6 +14,10 @@ use crate::app::{
     SIMULATE_ACTION_OPTIONS, SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
     SIMULATE_NETWORK_LOCATION_OPTIONS,
 };
+use crate::screens::usb_enforcement::{
+    USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_LABELS, USB_ENFORCEMENT_OPTIONS,
+    USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_SAVE_ROW,
+};
 use crate::screens::dispatch::condition_display;
 use crate::screens::dispatch::operators_for;
 use dlp_common::abac::PolicyMode;
@@ -92,6 +96,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                     "SIEM Config",
                     "Alert Config",
                     "LDAP Config",
+                    "USB Enforcement",
                     "Back",
                 ],
                 *selected,
@@ -149,6 +154,14 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             buffer,
         } => {
             draw_ldap_config(frame, area, config, *selected, *editing, buffer);
+        }
+        Screen::UsbEnforcementConfig {
+            config,
+            selected,
+            editing,
+            buffer,
+        } => {
+            draw_usb_enforcement_config(frame, area, config, *selected, *editing, buffer);
         }
         Screen::ConditionsBuilder {
             step,
@@ -2226,6 +2239,76 @@ fn draw_hints(frame: &mut Frame, area: Rect, hints: &str) {
     frame.render_widget(Clear, hint_area);
     let line = Paragraph::new(Line::from(hints).style(Style::default().fg(Color::DarkGray)));
     frame.render_widget(line, hint_area);
+}
+
+/// Draws the USB enforcement config form.
+///
+/// Three picker fields (row 0-2) plus Save (row 3) and Back (row 4).
+/// When `editing` is true, the selected picker cycles through its options
+/// on Up/Down instead of moving between rows.
+fn draw_usb_enforcement_config(
+    frame: &mut Frame,
+    area: Rect,
+    config: &serde_json::Value,
+    selected: usize,
+    editing: bool,
+    _buffer: &str,
+) {
+    let block = Block::default()
+        .title("USB Enforcement Settings")
+        .borders(Borders::ALL);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    for (i, key) in USB_ENFORCEMENT_KEYS.iter().enumerate() {
+        let current_value = config.get(key).and_then(|v| v.as_str()).unwrap_or("");
+        let label = USB_ENFORCEMENT_LABELS[i];
+        let display = if editing && i == selected {
+            format!("> {}: {} <", label, current_value)
+        } else if i == selected {
+            format!("> {}: {}", label, current_value)
+        } else {
+            format!("  {}: {}", label, current_value)
+        };
+        items.push(ListItem::new(display));
+    }
+
+    // Save row
+    let save_text = if selected == USB_ENFORCEMENT_SAVE_ROW {
+        "> [ Save ]"
+    } else {
+        "  [ Save ]"
+    };
+    items.push(ListItem::new(save_text));
+
+    // Back row
+    let back_text = if selected == USB_ENFORCEMENT_BACK_ROW {
+        "> [ Back ]"
+    } else {
+        "  [ Back ]"
+    };
+    items.push(ListItem::new(back_text));
+
+    let list = List::new(items)
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+    frame.render_widget(list, inner);
+
+    // Show hint when editing a picker field
+    if editing && selected < USB_ENFORCEMENT_KEYS.len() {
+        let hint = "Up/Down: cycle options | Enter: confirm | Esc: cancel".to_string();
+        let hint_para = Paragraph::new(hint)
+            .style(Style::default().fg(Color::DarkGray));
+        let hint_area = Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(1),
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(hint_para, hint_area);
+    }
 }
 
 /// Draws the status bar at the bottom of the screen.
