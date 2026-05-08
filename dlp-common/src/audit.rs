@@ -44,6 +44,9 @@ pub enum EventType {
     ServiceStopFailed,
     /// Disk discovery event emitted at agent startup with all enumerated fixed disks.
     DiskDiscovery,
+    /// A fixed disk was blocked at mount time because its instance_id was not
+    /// in the frozen allowlist (DISK-F1, Phase 44).
+    DiskMountBlocked,
 }
 
 impl EventType {
@@ -60,6 +63,7 @@ impl EventType {
                 | Self::AdminAction
                 | Self::ServiceStopFailed
                 | Self::DiskDiscovery
+                | Self::DiskMountBlocked
         )
     }
 
