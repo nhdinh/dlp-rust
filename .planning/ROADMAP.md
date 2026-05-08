@@ -126,8 +126,8 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 | 40 | Drag-and-Drop Enforcement | v0.8.0 | 4/4 | Complete | 2026-05-07 |
 | 41 | Browser Origin Clipboard Policies | v0.8.0 | 4/4 | Complete | 2026-05-07 |
 | 42 | Audit Enrichment -- App Identity Fields | v0.8.0 | 3/3 | Complete | 2026-05-07 |
-| 43 | USB Enforcement Fix -- PnP Disable Actually Works | v0.8.1 | 5/5 | Planned | -- |
-| 44 | Mount-Time Blocking | v0.8.1 | 0/TBD | Planned | -- |
+| 43 | USB Enforcement Fix -- PnP Disable Actually Works | v0.8.1 | 5/5 | Complete | 2026-05-08 |
+| 44 | Mount-Time Blocking | v0.8.1 | 1/1 | Complete | 2026-05-08 |
 | 45 | Grace Period / Quarantine | v0.8.1 | 0/TBD | Planned | -- |
 | 46 | UAT & Regression Validation | v0.8.1 | 0/TBD | Planned | -- |
 
