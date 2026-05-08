@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
@@ -52,6 +52,13 @@ pub struct DiskEnumerator {
     pub instance_id_map: RwLock<HashMap<String, DiskIdentity>>,
     /// Set to `true` when enumeration has completed successfully at least once.
     pub enumeration_complete: RwLock<bool>,
+    /// Grace period tracking: instance_id -> arrival Instant (Phase 45, DISK-07).
+    /// Disks in this map are mounted normally but writes are blocked.
+    /// After the grace period expires, mount-time block engages.
+    pub grace_period_map: RwLock<HashMap<String, Instant>>,
+    /// Configurable grace period duration in seconds (Phase 45, DISK-07).
+    /// Default 0 = immediate block. Set at startup from AgentConfig.
+    pub disk_grace_period_seconds: RwLock<u64>,
 }
 
 impl DiskEnumerator {
@@ -62,6 +69,8 @@ impl DiskEnumerator {
             drive_letter_map: RwLock::new(HashMap::new()),
             instance_id_map: RwLock::new(HashMap::new()),
             enumeration_complete: RwLock::new(false),
+            grace_period_map: RwLock::new(HashMap::new()),
+            disk_grace_period_seconds: RwLock::new(0),
         }
     }
 
@@ -92,6 +101,44 @@ impl DiskEnumerator {
     #[must_use]
     pub fn all_disks(&self) -> Vec<DiskIdentity> {
         self.discovered_disks.read().clone()
+    }
+
+    /// Returns `true` if the given instance_id is currently in a grace period.
+    ///
+    /// A disk is in grace period when:
+    /// 1. It exists in `grace_period_map` (was inserted at arrival time)
+    /// 2. The elapsed time since insertion is less than `disk_grace_period_seconds`
+    ///
+    /// Expired entries are NOT cleaned up here — the expiry timer handles that.
+    #[must_use]
+    pub fn is_in_grace_period(&self, instance_id: &str) -> bool {
+        let grace_seconds = *self.disk_grace_period_seconds.read();
+        if grace_seconds == 0 {
+            return false;
+        }
+        let gp_map = self.grace_period_map.read();
+        let Some(started) = gp_map.get(instance_id) else {
+            return false;
+        };
+        Instant::now().duration_since(*started) < Duration::from_secs(grace_seconds)
+    }
+
+    /// Sets the configurable grace period duration.
+    ///
+    /// Called once at startup from `service.rs` after config is loaded.
+    /// Values above 3600 are clamped to 3600 per T-45-01 threat mitigation.
+    pub fn set_grace_period_seconds(&self, seconds: u64) {
+        const MAX_GRACE_SECONDS: u64 = 3600; // T-45-01: max 1 hour
+        let clamped = seconds.min(MAX_GRACE_SECONDS);
+        if clamped != seconds {
+            warn!(
+                requested = seconds,
+                applied = clamped,
+                max = MAX_GRACE_SECONDS,
+                "disk_grace_period_seconds out of range -- clamped"
+            );
+        }
+        *self.disk_grace_period_seconds.write() = clamped;
     }
 }
 
@@ -558,24 +605,33 @@ fn on_disk_arrival_inner(
             continue;
         };
 
-        // NEW (Phase 44): Check frozen allowlist BEFORE adding to drive_letter_map.
-        // If unregistered, block at mount time and skip drive_letter_map insertion.
+        // Phase 44 (DISK-F1) + Phase 45 (DISK-07): Check frozen allowlist BEFORE
+        // adding to drive_letter_map. If unregistered, apply grace period or
+        // immediate mount-time block.
         if enumerator.disk_for_instance_id(&disk.instance_id).is_none() {
-            warn!(
-                drive = %letter,
-                instance_id = %disk.instance_id,
-                model = %disk.model,
-                bus_type = ?disk.bus_type,
-                "unregistered disk arrived -- blocking at mount time"
-            );
-            if let Err(e) = block_disk_at_mount_time(letter, disk, audit_ctx) {
+            let grace_seconds = *enumerator.disk_grace_period_seconds.read();
+            if grace_seconds > 0 {
+                // Phase 45: Grace period mode -- disk is accessible but writes blocked.
+                start_grace_period(letter, disk, grace_seconds, audit_ctx, &enumerator);
+            } else {
+                // Phase 44: Immediate mount-time block (grace period = 0).
                 warn!(
-                    letter = %letter,
-                    error = %e,
-                    "Mount-time block failed, falling back to I/O-time blocking"
+                    drive = %letter,
+                    instance_id = %disk.instance_id,
+                    model = %disk.model,
+                    bus_type = ?disk.bus_type,
+                    "unregistered disk arrived -- blocking at mount time"
                 );
+                if let Err(e) = block_disk_at_mount_time(letter, disk, audit_ctx) {
+                    warn!(
+                        letter = %letter,
+                        error = %e,
+                        "Mount-time block failed, falling back to I/O-time blocking"
+                    );
+                }
             }
-            // Do NOT insert into drive_letter_map -- keeps disk invisible.
+            // Do NOT insert into drive_letter_map for immediate block path.
+            // For grace period path, start_grace_period handles insertion.
             continue;
         }
 
@@ -656,6 +712,18 @@ pub fn on_disk_removal(device_path: &str) {
             "on_disk_removal: instance_id not in drive_letter_map"
         );
     }
+
+    // Phase 45: Cancel any active grace period for this disk.
+    {
+        let mut gp_map = enumerator.grace_period_map.write();
+        if gp_map.remove(&instance_id).is_some() {
+            info!(
+                instance_id = %instance_id,
+                "grace period cancelled -- disk removed before expiry"
+            );
+        }
+    }
+
     // D-14: No audit event on removal.
     // D-10: instance_id_map NOT touched -- disconnected allowlisted disks remain registered (D-06).
 }
@@ -811,6 +879,205 @@ fn emit_disk_mount_blocked(disk: &DiskIdentity, audit_ctx: &crate::audit_emitter
         audit_ctx.session_id,
     )
     .with_blocked_disk(disk.clone());
+    crate::audit_emitter::emit_audit(audit_ctx, &mut event);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 45: Grace period / quarantine (DISK-07)
+// ---------------------------------------------------------------------------
+
+/// Starts a grace period for an unregistered disk.
+///
+/// The disk is inserted into `drive_letter_map` so it appears in Explorer,
+/// but writes are blocked via I/O-time enforcement. After `grace_seconds`
+/// elapses, `enforce_grace_period_expiry` is called to apply mount-time
+/// blocking (drive letter removal + volume offline).
+///
+/// # Arguments
+///
+/// * `letter` — the drive letter assigned to the disk.
+/// * `disk` — the live [`DiskIdentity`] of the unregistered disk.
+/// * `grace_seconds` — duration of the grace period (already validated <= 3600).
+/// * `audit_ctx` — [`EmitContext`] for audit emission.
+/// * `enumerator` — the global [`DiskEnumerator`] (avoids re-locking OnceLock).
+#[cfg(windows)]
+fn start_grace_period(
+    letter: char,
+    disk: &DiskIdentity,
+    grace_seconds: u64,
+    audit_ctx: &crate::audit_emitter::EmitContext,
+    enumerator: &DiskEnumerator,
+) {
+    // Insert into drive_letter_map so disk is accessible (read-only).
+    {
+        let mut map = enumerator.drive_letter_map.write();
+        if map.contains_key(&letter) {
+            return;
+        }
+        map.insert(letter, disk.clone());
+    }
+
+    // Track grace period start time.
+    {
+        let mut gp_map = enumerator.grace_period_map.write();
+        gp_map.insert(disk.instance_id.clone(), Instant::now());
+    }
+
+    info!(
+        drive = %letter,
+        instance_id = %disk.instance_id,
+        model = %disk.model,
+        grace_seconds = grace_seconds,
+        "unregistered disk arrived -- grace period started (read-only)"
+    );
+
+    // Emit audit event.
+    emit_disk_quarantine_started(disk, grace_seconds, audit_ctx);
+
+    // Toast notification: inform user of grace period.
+    let body = format!(
+        "{} ({}:) — unregistered disk. You have {} seconds to register it before it is blocked.",
+        disk.model, letter, grace_seconds
+    );
+    crate::ipc::pipe2::BROADCASTER.broadcast(&crate::ipc::messages::Pipe2AgentMsg::Toast {
+        title: "Disk Quarantine Started".to_string(),
+        body,
+    });
+
+    // Spawn timer to enforce block after grace period.
+    let instance_id = disk.instance_id.clone();
+    let audit_ctx_clone = audit_ctx.clone();
+    let enumerator_weak = Arc::downgrade(
+        // SAFETY: get_disk_enumerator returns the Arc stored in the global OnceLock.
+        // We clone it to get an owned Arc for the async task.
+        &get_disk_enumerator().expect("enumerator must exist when start_grace_period is called"),
+    );
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(grace_seconds)).await;
+        // Check if the enumerator still exists (disk may have been removed).
+        if let Some(enumerator) = enumerator_weak.upgrade() {
+            enforce_grace_period_expiry(&instance_id, &audit_ctx_clone, &enumerator);
+        }
+    });
+}
+
+/// Enforces mount-time block when a grace period expires.
+///
+/// Checks if the disk is still connected, removes it from `drive_letter_map`,
+/// and applies `block_disk_at_mount_time`. Emits `DiskQuarantineExpired` audit.
+///
+/// # Arguments
+///
+/// * `instance_id` — the instance ID of the disk whose grace period expired.
+/// * `audit_ctx` — [`EmitContext`] for audit emission.
+/// * `enumerator` — the global [`DiskEnumerator`].
+#[cfg(windows)]
+fn enforce_grace_period_expiry(
+    instance_id: &str,
+    audit_ctx: &crate::audit_emitter::EmitContext,
+    enumerator: &DiskEnumerator,
+) {
+    // Check if disk is still connected (still in drive_letter_map).
+    let disk_opt = {
+        let map = enumerator.drive_letter_map.read();
+        map.values()
+            .find(|d| d.instance_id == instance_id)
+            .cloned()
+    };
+
+    let Some(disk) = disk_opt else {
+        // Disk was removed during grace period -- clean up the map entry.
+        let mut gp_map = enumerator.grace_period_map.write();
+        gp_map.remove(instance_id);
+        return;
+    };
+
+    // Remove from grace_period_map.
+    {
+        let mut gp_map = enumerator.grace_period_map.write();
+        gp_map.remove(instance_id);
+    }
+
+    // Apply mount-time block.
+    if let Some(letter) = disk.drive_letter {
+        warn!(
+            drive = %letter,
+            instance_id = %disk.instance_id,
+            "grace period expired -- applying mount-time block"
+        );
+        if let Err(e) = block_disk_at_mount_time(letter, &disk, audit_ctx) {
+            warn!(
+                letter = %letter,
+                error = %e,
+                "Mount-time block after grace period failed"
+            );
+        }
+        // Remove from drive_letter_map so disk disappears from Explorer.
+        let mut map = enumerator.drive_letter_map.write();
+        map.remove(&letter);
+    }
+
+    // Emit audit event.
+    emit_disk_quarantine_expired(&disk, audit_ctx);
+}
+
+/// Emits a `DiskQuarantineStarted` audit event.
+///
+/// Signals that an unregistered disk has been placed in grace-period
+/// quarantine. SIEM rules can correlate this with `DiskQuarantineExpired`
+/// to track the full lifecycle.
+#[cfg(windows)]
+fn emit_disk_quarantine_started(
+    disk: &DiskIdentity,
+    grace_seconds: u64,
+    audit_ctx: &crate::audit_emitter::EmitContext,
+) {
+    use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+    let mut event = AuditEvent::new(
+        EventType::DiskQuarantineStarted,
+        audit_ctx.user_sid.clone(),
+        audit_ctx.user_name.clone(),
+        "disk://quarantine-started".to_string(),
+        Classification::T3,
+        Action::WRITE,
+        Decision::DENY,
+        audit_ctx.agent_id.clone(),
+        audit_ctx.session_id,
+    )
+    .with_blocked_disk(disk.clone())
+    .with_justification(format!(
+        "Unregistered disk placed in grace period quarantine for {grace_seconds} seconds"
+    ));
+    crate::audit_emitter::emit_audit(audit_ctx, &mut event);
+}
+
+/// Emits a `DiskQuarantineExpired` audit event.
+///
+/// Signals that the grace period for an unregistered disk has ended and
+/// mount-time blocking has been applied.
+#[cfg(windows)]
+fn emit_disk_quarantine_expired(
+    disk: &DiskIdentity,
+    audit_ctx: &crate::audit_emitter::EmitContext,
+) {
+    use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+    let mut event = AuditEvent::new(
+        EventType::DiskQuarantineExpired,
+        audit_ctx.user_sid.clone(),
+        audit_ctx.user_name.clone(),
+        "disk://quarantine-expired".to_string(),
+        Classification::T3,
+        Action::WRITE,
+        Decision::DENY,
+        audit_ctx.agent_id.clone(),
+        audit_ctx.session_id,
+    )
+    .with_blocked_disk(disk.clone())
+    .with_justification(
+        "Grace period expired -- mount-time block applied to unregistered disk".to_string(),
+    );
     crate::audit_emitter::emit_audit(audit_ctx, &mut event);
 }
 
