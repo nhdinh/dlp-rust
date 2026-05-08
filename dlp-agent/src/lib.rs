@@ -97,6 +97,9 @@ pub mod print_job_info;
 pub mod print_xps_parser;
 
 #[cfg(windows)]
+pub mod print_watcher;
+
+#[cfg(windows)]
 pub mod device_controller;
 
 #[cfg(windows)]
