@@ -920,11 +920,10 @@ fn bcrypt_verify_against_server(password: &str) -> Result<bool> {
     };
 
     debug_log("bcrypt_verify: comparing");
-    let matched = bcrypt::verify(password, &stored_hash)
-        .map_err(|e| {
-            debug_log(&format!("bcrypt_verify: FAILED — {e}"));
-            anyhow::anyhow!("bcrypt verify error: {e}")
-        })?;
+    let matched = bcrypt::verify(password, &stored_hash).map_err(|e| {
+        debug_log(&format!("bcrypt_verify: FAILED — {e}"));
+        anyhow::anyhow!("bcrypt verify error: {e}")
+    })?;
 
     if matched {
         debug_log("bcrypt_verify: MATCH");

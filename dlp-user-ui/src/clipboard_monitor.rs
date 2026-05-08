@@ -164,7 +164,9 @@ fn handle_monitor_message(
     msg: &windows::Win32::UI::WindowsAndMessaging::MSG,
     last_hash: &mut u64,
 ) {
-    use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, TranslateMessage, WM_CLIPBOARDUPDATE};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, TranslateMessage, WM_CLIPBOARDUPDATE,
+    };
 
     if msg.message == WM_CLIPBOARDUPDATE {
         // Capture source identity synchronously — BEFORE handle_clipboard_change.
@@ -193,9 +195,7 @@ fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
         AddClipboardFormatListener, RemoveClipboardFormatListener,
     };
     use windows::Win32::UI::Accessibility::UnhookWinEvent;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        PeekMessageW, PM_REMOVE, MSG,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{PeekMessageW, MSG, PM_REMOVE};
 
     let hwnd = create_monitor_window()?;
 

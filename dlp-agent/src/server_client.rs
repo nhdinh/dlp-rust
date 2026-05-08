@@ -21,8 +21,7 @@ use std::time::Duration;
 
 use dlp_common::ad_client::LdapConfig as AdLdapConfig;
 use dlp_common::usb::{
-    DEFAULT_USB_BLOCKED_FAILURE_MODE,
-    DEFAULT_USB_NONE_SERIAL_POLICY,
+    DEFAULT_USB_BLOCKED_FAILURE_MODE, DEFAULT_USB_NONE_SERIAL_POLICY,
     DEFAULT_USB_STARTUP_RESOLUTION_MODE,
 };
 use dlp_common::AuditEvent;
@@ -1083,8 +1082,8 @@ mod tests {
             "offline_cache_enabled": false,
             "ldap_config": null
         }"#;
-        let payload: AgentConfigPayload = serde_json::from_str(json)
-            .expect("deserialization must succeed without usb fields");
+        let payload: AgentConfigPayload =
+            serde_json::from_str(json).expect("deserialization must succeed without usb fields");
         assert_eq!(
             payload.usb_blocked_failure_mode, "Warning only",
             "usb_blocked_failure_mode must default to 'Warning only'"
