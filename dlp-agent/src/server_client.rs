@@ -169,6 +169,26 @@ pub struct AgentConfigPayload {
     /// Default: 5000.
     #[serde(default = "default_hook_classification_timeout_ms")]
     pub hook_classification_timeout_ms: u64,
+
+    /// Whether print spooler interception is enabled (M017/S04).
+    /// Default: `false`.
+    #[serde(default)]
+    pub print_enabled: bool,
+
+    /// Timeout in milliseconds for XPS spool file parsing (M017/S04).
+    /// Default: 5000.
+    #[serde(default = "default_print_xps_timeout_ms")]
+    pub print_xps_timeout_ms: u64,
+
+    /// Action to take when a print job cannot be classified (M017/S04).
+    /// Default: `"Block"`.
+    #[serde(default = "default_print_unclassifiable_action")]
+    pub print_unclassifiable_action: String,
+
+    /// Maximum number of pages to parse from an XPS spool file (M017/S04).
+    /// Default: 100.
+    #[serde(default = "default_print_max_pages")]
+    pub print_max_pages: usize,
 }
 
 fn default_usb_blocked_failure_mode() -> String {
@@ -185,6 +205,18 @@ fn default_usb_none_serial_policy() -> String {
 
 fn default_hook_classification_timeout_ms() -> u64 {
     5000
+}
+
+fn default_print_xps_timeout_ms() -> u64 {
+    5000
+}
+
+fn default_print_unclassifiable_action() -> String {
+    "Block".to_string()
+}
+
+fn default_print_max_pages() -> usize {
+    100
 }
 
 // ---------------------------------------------------------------------------
@@ -886,6 +918,10 @@ mod tests {
             cloud_hook_enabled: false,
             wfp_filter_enabled: false,
             hook_classification_timeout_ms: 5000,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: "Block".to_string(),
+            print_max_pages: 100,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -914,6 +950,10 @@ mod tests {
             cloud_hook_enabled: false,
             wfp_filter_enabled: false,
             hook_classification_timeout_ms: 5000,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: "Block".to_string(),
+            print_max_pages: 100,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -989,6 +1029,10 @@ mod tests {
             cloud_hook_enabled: false,
             wfp_filter_enabled: false,
             hook_classification_timeout_ms: 5000,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: "Block".to_string(),
+            print_max_pages: 100,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -1143,6 +1187,10 @@ mod tests {
             cloud_hook_enabled: true,
             wfp_filter_enabled: true,
             hook_classification_timeout_ms: 3000,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: "Block".to_string(),
+            print_max_pages: 100,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");

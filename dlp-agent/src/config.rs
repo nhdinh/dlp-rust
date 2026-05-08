@@ -229,6 +229,26 @@ pub struct AgentConfig {
     #[serde(default)]
     pub hook_classification_timeout_ms: Option<u64>,
 
+    /// Whether print spooler interception is enabled (M017/S04).
+    /// When `None`, defaults to `false`. Populated by server config push.
+    #[serde(default)]
+    pub print_enabled: Option<bool>,
+
+    /// Timeout in milliseconds for XPS spool file parsing (M017/S04).
+    /// When `None`, defaults to 5000 ms. Populated by server config push.
+    #[serde(default)]
+    pub print_xps_timeout_ms: Option<u64>,
+
+    /// Action to take when a print job cannot be classified (M017/S04).
+    /// When `None`, defaults to `"Block"`. Populated by server config push.
+    #[serde(default)]
+    pub print_unclassifiable_action: Option<String>,
+
+    /// Maximum number of pages to parse from an XPS spool file (M017/S04).
+    /// When `None`, defaults to 100. Populated by server config push.
+    #[serde(default)]
+    pub print_max_pages: Option<usize>,
+
     /// Machine hostname, resolved once at startup.
     /// Not persisted to the config file.
     #[serde(skip)]
@@ -603,6 +623,10 @@ mod tests {
             cloud_hook_enabled: None,
             wfp_filter_enabled: None,
             hook_classification_timeout_ms: None,
+            print_enabled: None,
+            print_xps_timeout_ms: None,
+            print_unclassifiable_action: None,
+            print_max_pages: None,
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
         };
@@ -641,6 +665,10 @@ mod tests {
             cloud_hook_enabled: None,
             wfp_filter_enabled: None,
             hook_classification_timeout_ms: None,
+            print_enabled: None,
+            print_xps_timeout_ms: None,
+            print_unclassifiable_action: None,
+            print_max_pages: None,
             machine_name: None,
         };
 

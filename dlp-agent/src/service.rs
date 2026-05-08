@@ -382,6 +382,45 @@ fn apply_payload_to_config(
         warn!("server sent empty usb_none_serial_policy — skipping apply");
     }
 
+    // M017/S04: apply server-pushed print enforcement config fields.
+    let should_apply_print_enabled = match cfg.print_enabled {
+        Some(existing) => existing != payload.print_enabled,
+        None => payload.print_enabled != false,
+    };
+    if should_apply_print_enabled {
+        changed_fields.push("print_enabled");
+        cfg.print_enabled = Some(payload.print_enabled);
+    }
+
+    let should_apply_print_xps_timeout_ms = match cfg.print_xps_timeout_ms {
+        Some(existing) => existing != payload.print_xps_timeout_ms,
+        None => payload.print_xps_timeout_ms != 5000,
+    };
+    if should_apply_print_xps_timeout_ms {
+        changed_fields.push("print_xps_timeout_ms");
+        cfg.print_xps_timeout_ms = Some(payload.print_xps_timeout_ms);
+    }
+
+    let should_apply_print_unclassifiable_action = match cfg.print_unclassifiable_action {
+        Some(ref existing) => existing != &payload.print_unclassifiable_action,
+        None => payload.print_unclassifiable_action != "Block",
+    };
+    if should_apply_print_unclassifiable_action && !payload.print_unclassifiable_action.is_empty() {
+        changed_fields.push("print_unclassifiable_action");
+        cfg.print_unclassifiable_action = Some(payload.print_unclassifiable_action.clone());
+    } else if payload.print_unclassifiable_action.is_empty() {
+        warn!("server sent empty print_unclassifiable_action — skipping apply");
+    }
+
+    let should_apply_print_max_pages = match cfg.print_max_pages {
+        Some(existing) => existing != payload.print_max_pages,
+        None => payload.print_max_pages != 100,
+    };
+    if should_apply_print_max_pages {
+        changed_fields.push("print_max_pages");
+        cfg.print_max_pages = Some(payload.print_max_pages);
+    }
+
     // Phase 37 (D-03): apply server-pushed disk allowlist.
     //
     // PartialEq on DiskIdentity compares all fields including encryption_status,
@@ -1726,6 +1765,10 @@ mod tests {
             cloud_hook_enabled: false,
             wfp_filter_enabled: false,
             hook_classification_timeout_ms: 5000,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: "Block".to_string(),
+            print_max_pages: 100,
         }
     }
 
@@ -2041,6 +2084,128 @@ mod tests {
         assert_eq!(
             cfg.usb_blocked_failure_mode,
             Some("Hard error".to_string()),
+            "empty-string guard: previous value must be preserved"
+        );
+    }
+
+    // ── M017/S04: Print config field tests ────────────────────────────────
+
+    /// Test 10: Print config fields are applied from payload to cfg.
+    #[test]
+    fn test_apply_payload_print_fields() {
+        let mut cfg = AgentConfig::default();
+        let mut payload = make_payload(vec![]);
+        payload.print_enabled = true;
+        payload.print_xps_timeout_ms = 3000;
+        payload.print_unclassifiable_action = "Allow".to_string();
+        payload.print_max_pages = 50;
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            changed_fields.contains(&"print_enabled"),
+            "print_enabled must be in changed_fields"
+        );
+        assert!(
+            changed_fields.contains(&"print_xps_timeout_ms"),
+            "print_xps_timeout_ms must be in changed_fields"
+        );
+        assert!(
+            changed_fields.contains(&"print_unclassifiable_action"),
+            "print_unclassifiable_action must be in changed_fields"
+        );
+        assert!(
+            changed_fields.contains(&"print_max_pages"),
+            "print_max_pages must be in changed_fields"
+        );
+        assert_eq!(cfg.print_enabled, Some(true));
+        assert_eq!(cfg.print_xps_timeout_ms, Some(3000));
+        assert_eq!(cfg.print_unclassifiable_action, Some("Allow".to_string()));
+        assert_eq!(cfg.print_max_pages, Some(50));
+    }
+
+    /// Test 11: No-change path — cfg and payload print values match.
+    #[test]
+    fn test_apply_payload_print_fields_no_change() {
+        let mut cfg = AgentConfig::default();
+        cfg.print_enabled = Some(true);
+        cfg.print_xps_timeout_ms = Some(3000);
+        cfg.print_unclassifiable_action = Some("Allow".to_string());
+        cfg.print_max_pages = Some(50);
+        let mut payload = make_payload(vec![]);
+        payload.print_enabled = true;
+        payload.print_xps_timeout_ms = 3000;
+        payload.print_unclassifiable_action = "Allow".to_string();
+        payload.print_max_pages = 50;
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"print_enabled"),
+            "print_enabled must NOT be in changed_fields when unchanged"
+        );
+        assert!(
+            !changed_fields.contains(&"print_xps_timeout_ms"),
+            "print_xps_timeout_ms must NOT be in changed_fields when unchanged"
+        );
+        assert!(
+            !changed_fields.contains(&"print_unclassifiable_action"),
+            "print_unclassifiable_action must NOT be in changed_fields when unchanged"
+        );
+        assert!(
+            !changed_fields.contains(&"print_max_pages"),
+            "print_max_pages must NOT be in changed_fields when unchanged"
+        );
+    }
+
+    /// Test 12: None guard — when cfg print fields are None and payload carries the
+    /// system default, changed_fields must NOT contain print_* entries.
+    /// This prevents spurious "config changed" logs when a new agent polls an old
+    /// server that does not send these fields.
+    #[test]
+    fn test_apply_payload_print_fields_none_guard() {
+        let mut cfg = AgentConfig::default(); // all print fields are None
+        let payload = make_payload(vec![]); // all defaults
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"print_enabled"),
+            "None guard: print_enabled must NOT diff when payload == default"
+        );
+        assert!(
+            !changed_fields.contains(&"print_xps_timeout_ms"),
+            "None guard: print_xps_timeout_ms must NOT diff when payload == default"
+        );
+        assert!(
+            !changed_fields.contains(&"print_unclassifiable_action"),
+            "None guard: print_unclassifiable_action must NOT diff when payload == default"
+        );
+        assert!(
+            !changed_fields.contains(&"print_max_pages"),
+            "None guard: print_max_pages must NOT diff when payload == default"
+        );
+    }
+
+    /// Test 13: Empty-string guard — when the server sends an empty string for
+    /// print_unclassifiable_action, the apply must be skipped and the previous
+    /// cfg value preserved.
+    #[test]
+    fn test_apply_payload_print_unclassifiable_action_empty_guard() {
+        let mut cfg = AgentConfig::default();
+        cfg.print_unclassifiable_action = Some("Allow".to_string());
+        let mut payload = make_payload(vec![]);
+        payload.print_unclassifiable_action = "".to_string();
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"print_unclassifiable_action"),
+            "empty-string guard: must NOT diff when payload is empty"
+        );
+        assert_eq!(
+            cfg.print_unclassifiable_action,
+            Some("Allow".to_string()),
             "empty-string guard: previous value must be preserved"
         );
     }
