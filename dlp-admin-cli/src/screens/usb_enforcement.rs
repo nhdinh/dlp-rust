@@ -31,11 +31,8 @@ pub const USB_ENFORCEMENT_BACK_ROW: usize = 4;
 pub const USB_ENFORCEMENT_ROW_COUNT: usize = 5;
 
 /// Human-readable labels for each picker field.
-pub const USB_ENFORCEMENT_LABELS: [&str; 3] = [
-    "Failure Mode",
-    "Startup Resolution",
-    "(none) Serial Policy",
-];
+pub const USB_ENFORCEMENT_LABELS: [&str; 3] =
+    ["Failure Mode", "Startup Resolution", "(none) Serial Policy"];
 
 #[cfg(test)]
 mod tests {
