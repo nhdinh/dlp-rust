@@ -1796,6 +1796,7 @@ mod tests {
         let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
         enumerator.drive_letter_map.write().clear();
         enumerator.instance_id_map.write().clear();
+        *enumerator.disk_grace_period_seconds.write() = 0; // immediate block
 
         let unregistered = DiskIdentity {
             instance_id: "UNREG\\Disk\\44".to_string(),
