@@ -128,7 +128,7 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 | 42 | Audit Enrichment -- App Identity Fields | v0.8.0 | 3/3 | Complete | 2026-05-07 |
 | 43 | USB Enforcement Fix -- PnP Disable Actually Works | v0.8.1 | 5/5 | Complete | 2026-05-08 |
 | 44 | Mount-Time Blocking | v0.8.1 | 1/1 | Complete | 2026-05-08 |
-| 45 | Grace Period / Quarantine | v0.8.1 | 0/TBD | Planned | -- |
+| 45 | Grace Period / Quarantine | v0.8.1 | 1/1 | Complete | 2026-05-08 |
 | 46 | UAT & Regression Validation | v0.8.1 | 0/TBD | Planned | -- |
 
 ## v0.8.1 - Deferred Items & Issue Debt (In Progress)

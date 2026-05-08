@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v0.8.1
 milestone_name: Deferred Items & Issue Debt
 status: executing
-stopped_at: Phase 44 complete, proceeding to Phase 45 (2026-05-08)
+stopped_at: Phase 45 complete, proceeding to Phase 46 (2026-05-08)
 last_updated: "2026-05-08T00:00:00.000Z"
-last_activity: 2026-05-08 -- Phase 44 execution complete
+last_activity: 2026-05-08 -- Phase 45 execution complete
 progress:
   total_phases: 4
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 6
   completed_plans: 6
-  percent: 50
+  percent: 75
 ---
 
 # Project State
@@ -20,23 +20,23 @@ progress:
 
 **Project**: DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value**: Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus**: Phase 45 Grace Period / Quarantine
+**Current Focus**: Phase 46 UAT & Regression Validation
 
 ---
 
 ## Current Position
 
-Phase: 45 (Grace Period / Quarantine) — READY TO PLAN
+Phase: 46 (UAT & Regression Validation) — READY TO PLAN
 Plan: N/A
-Status: Phase 44 complete, Phase 45 next
-Last activity: 2026-05-08 -- Phase 44 execution and verification complete
+Status: Phase 45 complete, Phase 46 next
+Last activity: 2026-05-08 -- Phase 45 execution and verification complete
 
 ## Progress
 
 v0.7.0 [Phase 33 done | Phase 34 done | Phase 35 done | Phase 36 done | Phase 37 done | Phase 38 done | Phase 38.1 done | Phase 38.2 done]
 v0.7.1 [Phase 38.3 done | Phase 38.4 done | Phase 38.5 done | Phase 38.6 done]
 v0.8.0 [Phase 39 done | Phase 40 done | Phase 41 done | Phase 42 done]
-v0.8.1 [Phase 43 done | Phase 44 done | Phase 45 ready | Phase 46 ready]
+v0.8.1 [Phase 43 done | Phase 44 done | Phase 45 done | Phase 46 ready]
 
 ---
 
@@ -53,20 +53,20 @@ v0.8.1 [Phase 43 done | Phase 44 done | Phase 45 ready | Phase 46 ready]
 9. Chrome Content Analysis API v1 limitation: destination_origin is always None; source_origin maps to the paste page URL.
 10. Thread-local test override (TEST_EVALUATOR_OVERRIDE) eliminates parallel test races for Chrome handler ABAC tests.
 11. Phase 44 mount-time blocking: DefineDosDeviceW + IOCTL_VOLUME_OFFLINE hybrid approach. Unregistered disks blocked before drive letter assignment.
+12. Phase 45 grace period: Configurable read-only window before hard block. Default 0 = immediate block.
 
 ---
 
 ## Session Continuity
 
 Last session: 2026-05-08
-Stopped at: Phase 44 verification complete
-Resume file: .planning/phases/phase-44-mount-time-blocking/44-VERIFICATION.md
+Stopped at: Phase 45 verification complete
+Resume file: .planning/phases/phase-45-grace-period-quarantine/45-VERIFICATION.md
 
 ---
 
 ## Pending Todos
 
-- Plan Phase 45 (Grace Period / Quarantine)
 - Plan Phase 46 (UAT & Regression Validation)
 
 ---
@@ -89,5 +89,5 @@ None.
 - v0.8.1 Deferred Items & Issue Debt (In Progress):
   - Phase 43: USB Enforcement Fix — DONE
   - Phase 44: Mount-Time Blocking — DONE
-  - Phase 45: Grace Period / Quarantine — READY
+  - Phase 45: Grace Period / Quarantine — DONE
   - Phase 46: UAT & Regression Validation — READY
