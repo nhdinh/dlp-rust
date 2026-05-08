@@ -94,6 +94,9 @@ pub mod server_client;
 pub mod print_job_info;
 
 #[cfg(windows)]
+pub mod print_xps_parser;
+
+#[cfg(windows)]
 pub mod device_controller;
 
 #[cfg(windows)]
