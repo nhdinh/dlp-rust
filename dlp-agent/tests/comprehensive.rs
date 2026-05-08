@@ -2513,32 +2513,69 @@ mod email_alert_tc {
 // ─────────────────────────────────────────────────────────────────────────────
 
 mod cloud_tc {
-    /// TC-30: Public cloud upload → ALLOW
+    use dlp_agent::cloud_enforcer::CloudEnforcer;
+    use dlp_agent::interception::FileAction;
+    use dlp_common::Decision;
+
+    fn written_action(path: &str) -> FileAction {
+        FileAction::Written {
+            path: path.to_string(),
+            process_id: 1,
+            related_process_id: 1,
+            byte_count: 100,
+        }
+    }
+
+    /// TC-30: Public (T2) file in sync folder → ALLOW (not sensitive).
     #[test]
-    #[ignore = "cloud monitoring not yet implemented"]
     fn test_tc_30_public_cloud_upload_allowed() {
-        todo!("TC-30: public cloud upload — cloud monitoring not yet implemented")
+        let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
+        let result = enforcer.check(
+            r"C:\Users\Alice\OneDrive\public_notes.txt",
+            &written_action(r"C:\Users\Alice\OneDrive\public_notes.txt"),
+        );
+        assert_eq!(result, None, "T2 public file in sync folder should not be blocked");
     }
 
-    /// TC-31: Confidential cloud upload → allow, monitor
+    /// TC-31: Confidential cloud upload → DENY (T3 is sensitive).
     #[test]
-    #[ignore = "cloud monitoring not yet implemented"]
-    fn test_tc_31_confidential_cloud_upload_monitored() {
-        todo!("TC-31: Confidential cloud upload — allow, monitor — cloud monitoring not yet implemented")
+    fn test_tc_31_confidential_cloud_upload_blocked() {
+        let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
+        let result = enforcer.check(
+            r"C:\Users\Alice\OneDrive\confidential.docx",
+            &written_action(r"C:\Users\Alice\OneDrive\confidential.docx"),
+        );
+        assert!(result.is_some(), "T3 confidential file in sync folder should be blocked");
+        let r = result.unwrap();
+        assert_eq!(r.decision, Decision::DENY);
+        assert_eq!(r.provider, "OneDrive");
+        assert!(r.notify);
     }
 
-    /// TC-32: Confidential public share link → DENY + alert
+    /// TC-32: Restricted file in sync folder → DENY + alert.
     #[test]
-    #[ignore = "cloud share link detection not yet implemented"]
-    fn test_tc_32_confidential_public_share_link_blocked_alert() {
-        todo!("TC-32: Confidential public share link — DENY + alert — cloud share link detection not yet implemented")
+    fn test_tc_32_restricted_cloud_upload_blocked_alert() {
+        let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
+        let result = enforcer.check(
+            r"C:\Users\Alice\OneDrive\Restricted\secret.xlsx",
+            &written_action(r"C:\Users\Alice\OneDrive\Restricted\secret.xlsx"),
+        );
+        assert!(result.is_some(), "T4 restricted file in sync folder should be blocked");
+        let r = result.unwrap();
+        assert_eq!(r.decision, Decision::DENY);
+        assert_eq!(r.provider, "OneDrive");
+        assert!(r.notify);
     }
 
-    /// TC-33: Restricted share → DENY
+    /// TC-33: File outside sync folder → no cloud block, fall through to ABAC.
     #[test]
-    #[ignore = "cloud share detection not yet implemented"]
-    fn test_tc_33_restricted_share_blocked() {
-        todo!("TC-33: Restricted share — DENY — cloud share detection not yet implemented")
+    fn test_tc_33_outside_sync_folder_no_block() {
+        let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
+        let result = enforcer.check(
+            r"C:\Windows\secret.xlsx",
+            &written_action(r"C:\Windows\secret.xlsx"),
+        );
+        assert_eq!(result, None, "file outside sync folder should not trigger cloud block");
     }
 }
 

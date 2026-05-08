@@ -37,6 +37,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::audit_emitter::{self, emit_audit, EmitContext};
+use crate::cloud_enforcer::CloudEnforcer;
 use crate::disk_enforcer::DiskEnforcer;
 use crate::identity::WindowsIdentity;
 use crate::ipc::messages::{Pipe1AgentMsg, Pipe2AgentMsg};
@@ -209,6 +210,67 @@ fn handle_disk_block(
     }
 }
 
+/// Emits a cloud block audit event and notifies the UI.
+fn handle_cloud_block(
+    ctx: &EmitContext,
+    user_sid: &str,
+    user_name: &str,
+    path: &str,
+    pid: u32,
+    cloud_result: &crate::cloud_enforcer::CloudBlockResult,
+) {
+    let mut audit_event = AuditEvent::new(
+        EventType::Block,
+        user_sid.to_string(),
+        user_name.to_string(),
+        path.to_string(),
+        // Classification not yet resolved at this stage; T1 is the
+        // conservative public-tier placeholder (AUDIT-02).
+        dlp_common::Classification::T1,
+        dlp_common::Action::CLOUD_UPLOAD,
+        cloud_result.decision,
+        ctx.agent_id.clone(),
+        ctx.session_id,
+    )
+    .with_access_context(AuditAccessContext::Local);
+    // WR-03: no policy matched this enforcement — leave policy_id as None.
+    audit_event.policy_name = Some(cloud_result.reason.clone());
+
+    // AUDIT-04 (Phase 42): Enrich with app identity from the initiating process.
+    crate::audit_emitter::enrich_audit_with_app_identity(&mut audit_event, pid);
+    crate::audit_emitter::set_destination_application(&mut audit_event, None);
+
+    emit_audit(ctx, &mut audit_event);
+
+    // AUDIT-02: Pipe 1 BlockNotify for SIEM / dashboard visibility.
+    if cloud_result.decision.is_denied() {
+        let msg = Pipe1AgentMsg::BlockNotify {
+            reason: cloud_result.reason.clone(),
+            classification: format!("Cloud-{}", cloud_result.provider),
+            resource_path: path.to_string(),
+            policy_id: String::new(),
+        };
+        if let Err(e) = pipe1::send_to_ui(ctx.session_id, &msg) {
+            warn!(
+                error = %e,
+                session_id = ctx.session_id,
+                "failed to send cloud BlockNotify to UI"
+            );
+        }
+    }
+
+    // Toast notification.
+    if cloud_result.notify {
+        crate::ipc::pipe2::BROADCASTER.broadcast(&Pipe2AgentMsg::Toast {
+            title: "Cloud Sync Blocked".to_string(),
+            body: format!(
+                "{} — upload to {} is blocked",
+                path, cloud_result.provider
+            ),
+        });
+    }
+}
+
 /// Runs the file interception event loop.
 ///
 /// This is the core audit pipeline integration point.  It receives [`FileAction`]
@@ -226,7 +288,7 @@ fn handle_disk_block(
 /// * `session_map` — per-session identity map for resolving file owners
 /// * `ad_client` — optional AD client for group/trust/location resolution (None = fallback to placeholder)
 /// * `usb_enforcer` — optional USB trust-tier enforcer; fires before ABAC evaluation (None = USB enforcement disabled)
-/// * `disk_enforcer` — optional fixed-disk write enforcer; fires after USB, before ABAC (None = disk enforcement disabled)
+/// * `cloud_enforcer` — optional cloud sync enforcer; fires after disk, before ABAC (None = cloud enforcement disabled)
 pub async fn run_event_loop(
     mut rx: mpsc::Receiver<FileAction>,
     offline: Arc<OfflineManager>,
@@ -235,6 +297,7 @@ pub async fn run_event_loop(
     ad_client: Arc<Option<dlp_common::AdClient>>,
     usb_enforcer: Option<Arc<UsbEnforcer>>,
     disk_enforcer: Option<Arc<DiskEnforcer>>,
+    cloud_enforcer: Option<Arc<CloudEnforcer>>,
 ) {
     info!("interception event loop started");
 
@@ -272,6 +335,16 @@ pub async fn run_event_loop(
         if let Some(ref enforcer) = disk_enforcer {
             if let Some(disk_result) = enforcer.check(&path, &action) {
                 handle_disk_block(&ctx, &user_sid, &user_name, &path, pid, &disk_result);
+                continue; // skip ABAC evaluation for this event
+            }
+        }
+
+        // ── Cloud enforcement (pre-ABAC check) ───────────────────────────
+        // Fires after disk enforcement, before the ABAC engine. Blocks T3/T4
+        // writes to known cloud sync folders (M017/S01).
+        if let Some(ref enforcer) = cloud_enforcer {
+            if let Some(cloud_result) = enforcer.check(&path, &action) {
+                handle_cloud_block(&ctx, &user_sid, &user_name, &path, pid, &cloud_result);
                 continue; // skip ABAC evaluation for this event
             }
         }
