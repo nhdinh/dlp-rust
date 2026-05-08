@@ -538,6 +538,25 @@ pub enum Screen {
         /// Buffered input while editing.
         buffer: String,
     },
+    /// USB enforcement settings form.
+    ///
+    /// Navigable list of 5 rows (3 picker fields + Save + Back).
+    /// Row 0: usb_blocked_failure_mode (picker: "Hard error", "Warning only", "Retry then error")
+    /// Row 1: usb_startup_resolution_mode (picker: "VID/PID/serial fallback")
+    /// Row 2: usb_none_serial_policy (picker: "Always Blocked", "Allow unregistered")
+    /// Row 3 = [ Save ], Row 4 = [ Back ].
+    /// NOTE: Unimplemented options ("Volume GUID resolution", "Port-based disambiguation")
+    /// are excluded from the picker to prevent admin confusion.
+    UsbEnforcementConfig {
+        /// Currently loaded config as a JSON object.
+        config: serde_json::Value,
+        /// Index of the selected row (0..=4).
+        selected: usize,
+        /// Whether the selected picker field is in edit mode (cycling values).
+        editing: bool,
+        /// Buffered input while editing (unused for pickers, kept for consistency).
+        buffer: String,
+    },
     /// Conditions Builder modal overlay.
     ///
     /// 3-step sequential picker: Attribute -> Operator -> Value.
