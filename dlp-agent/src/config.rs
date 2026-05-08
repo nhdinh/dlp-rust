@@ -214,6 +214,21 @@ pub struct AgentConfig {
     #[serde(default)]
     pub disk_grace_period_seconds: u64,
 
+    /// Whether the cloud sync hook DLL is enabled (M017/S01).
+    /// When `None`, defaults to `false`. Populated by server config push.
+    #[serde(default)]
+    pub cloud_hook_enabled: Option<bool>,
+
+    /// Whether the WFP network egress filter is enabled (M017/S01).
+    /// When `None`, defaults to `false`. Populated by server config push.
+    #[serde(default)]
+    pub wfp_filter_enabled: Option<bool>,
+
+    /// Timeout in milliseconds for hook classification pipe requests (M017/S01).
+    /// When `None`, defaults to 5000 ms. Populated by server config push.
+    #[serde(default)]
+    pub hook_classification_timeout_ms: Option<u64>,
+
     /// Machine hostname, resolved once at startup.
     /// Not persisted to the config file.
     #[serde(skip)]
@@ -585,6 +600,9 @@ mod tests {
             usb_startup_resolution_mode: None,
             usb_none_serial_policy: None,
             disk_grace_period_seconds: 0,
+            cloud_hook_enabled: None,
+            wfp_filter_enabled: None,
+            hook_classification_timeout_ms: None,
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
         };
@@ -620,6 +638,9 @@ mod tests {
             usb_startup_resolution_mode: None,
             usb_none_serial_policy: None,
             disk_grace_period_seconds: 0,
+            cloud_hook_enabled: None,
+            wfp_filter_enabled: None,
+            hook_classification_timeout_ms: None,
             machine_name: None,
         };
 

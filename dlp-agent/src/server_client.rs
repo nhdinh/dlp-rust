@@ -154,6 +154,21 @@ pub struct AgentConfigPayload {
     /// Default: "Always Blocked".
     #[serde(default = "default_usb_none_serial_policy")]
     pub usb_none_serial_policy: String,
+
+    /// Whether the cloud sync hook DLL is enabled (M017/S01).
+    /// Default: `false`.
+    #[serde(default)]
+    pub cloud_hook_enabled: bool,
+
+    /// Whether the WFP network egress filter is enabled (M017/S01).
+    /// Default: `false`.
+    #[serde(default)]
+    pub wfp_filter_enabled: bool,
+
+    /// Timeout in milliseconds for hook classification pipe requests (M017/S01).
+    /// Default: 5000.
+    #[serde(default = "default_hook_classification_timeout_ms")]
+    pub hook_classification_timeout_ms: u64,
 }
 
 fn default_usb_blocked_failure_mode() -> String {
@@ -166,6 +181,10 @@ fn default_usb_startup_resolution_mode() -> String {
 
 fn default_usb_none_serial_policy() -> String {
     DEFAULT_USB_NONE_SERIAL_POLICY.to_string()
+}
+
+fn default_hook_classification_timeout_ms() -> u64 {
+    5000
 }
 
 // ---------------------------------------------------------------------------
@@ -864,6 +883,9 @@ mod tests {
             usb_blocked_failure_mode: "Warning only".to_string(),
             usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
             usb_none_serial_policy: "Always Blocked".to_string(),
+            cloud_hook_enabled: false,
+            wfp_filter_enabled: false,
+            hook_classification_timeout_ms: 5000,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -889,6 +911,9 @@ mod tests {
             usb_blocked_failure_mode: "Warning only".to_string(),
             usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
             usb_none_serial_policy: "Always Blocked".to_string(),
+            cloud_hook_enabled: false,
+            wfp_filter_enabled: false,
+            hook_classification_timeout_ms: 5000,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -961,6 +986,9 @@ mod tests {
             usb_blocked_failure_mode: "Warning only".to_string(),
             usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
             usb_none_serial_policy: "Always Blocked".to_string(),
+            cloud_hook_enabled: false,
+            wfp_filter_enabled: false,
+            hook_classification_timeout_ms: 5000,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -1112,6 +1140,9 @@ mod tests {
             usb_blocked_failure_mode: "Hard error".to_string(),
             usb_startup_resolution_mode: "Volume GUID resolution".to_string(),
             usb_none_serial_policy: "Allow unregistered".to_string(),
+            cloud_hook_enabled: true,
+            wfp_filter_enabled: true,
+            hook_classification_timeout_ms: 3000,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");

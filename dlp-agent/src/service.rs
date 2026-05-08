@@ -1651,6 +1651,9 @@ mod tests {
             usb_blocked_failure_mode: "Warning only".to_string(),
             usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
             usb_none_serial_policy: "Always Blocked".to_string(),
+            cloud_hook_enabled: false,
+            wfp_filter_enabled: false,
+            hook_classification_timeout_ms: 5000,
         }
     }
 

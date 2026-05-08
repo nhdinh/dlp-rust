@@ -1,0 +1,63 @@
+# Requirements
+
+## Active
+
+### USB-07 — Fix CM instance ID resolution for PnP device disable. `DeviceController::disable_usb_device` must resolve the actual CM instance ID from the device interface path via SetupDi, not construct it from VID/PID/serial. Pass the real instance ID to `CM_Disable_DevNode`. (dlp-rust-1vk)
+
+- Status: active
+- Class: core-capability
+- Source: inferred
+- Primary Slice: none yet
+
+Fix CM instance ID resolution for PnP device disable. `DeviceController::disable_usb_device` must resolve the actual CM instance ID from the device interface path via SetupDi, not construct it from VID/PID/serial. Pass the real instance ID to `CM_Disable_DevNode`. (dlp-rust-1vk)
+
+### USB-08 — Fix `setupdi_description_for_device` matching wrong device. Match device path more precisely in SetupDi enumeration to avoid returning Bluetooth instead of SanDisk. (dlp-rust-sek)
+
+- Status: active
+- Class: core-capability
+- Source: inferred
+- Primary Slice: none yet
+
+Fix `setupdi_description_for_device` matching wrong device. Match device path more precisely in SetupDi enumeration to avoid returning Bluetooth instead of SanDisk. (dlp-rust-sek)
+
+### USB-09 — Surface hard failures when both PnP disable and DACL deny-all fail. Neither enforcement layer may fail silently; return a hard error to the caller so the agent can emit a proper audit event.
+
+- Status: active
+- Class: core-capability
+- Source: inferred
+- Primary Slice: none yet
+
+Surface hard failures when both PnP disable and DACL deny-all fail. Neither enforcement layer may fail silently; return a hard error to the caller so the agent can emit a proper audit event.
+
+### DISK-06 — Implement mount-time volume lock for unregistered disks (DISK-F1). In addition to I/O-time blocking, lock the volume at mount time so the drive letter does not appear in Explorer at all for unregistered devices.
+
+- Status: active
+- Class: core-capability
+- Source: inferred
+- Primary Slice: none yet
+
+Implement mount-time volume lock for unregistered disks (DISK-F1). In addition to I/O-time blocking, lock the volume at mount time so the drive letter does not appear in Explorer at all for unregistered devices.
+
+### DISK-07 — Configurable read-only grace period before hard block for new disk arrivals (DISK-F2). Allow a time-bounded read-only window (configurable in `agent-config.toml`) after an unregistered disk arrives, during which reads are allowed and writes are blocked with a user notification, before escalating to full mount-time block.
+
+- Status: active
+- Class: core-capability
+- Source: inferred
+- Primary Slice: none yet
+
+Configurable read-only grace period before hard block for new disk arrivals (DISK-F2). Allow a time-bounded read-only window (configurable in `agent-config.toml`) after an unregistered disk arrives, during which reads are allowed and writes are blocked with a user notification, before escalating to full mount-time block.
+
+### UAT-05 — Complete SanDisk re-registration with full 128-char serial for ReadOnly/FullAccess enforcement test. Verify the per-user device registry correctly stores and enforces trust tier for devices with long serial numbers. (dlp-rust-l79)
+
+- Status: active
+- Class: core-capability
+- Source: inferred
+- Primary Slice: none yet
+
+Complete SanDisk re-registration with full 128-char serial for ReadOnly/FullAccess enforcement test. Verify the per-user device registry correctly stores and enforces trust tier for devices with long serial numbers. (dlp-rust-l79)
+
+## Validated
+
+## Deferred
+
+## Out of Scope

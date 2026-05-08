@@ -1,7 +1,7 @@
 # Codebase Map
 
-Generated: 2026-05-06T00:06:10Z | Files: 339 | Described: 0/339
-<!-- gsd:codebase-meta {"generatedAt":"2026-05-06T00:06:10Z","fingerprint":"abc719f4ca69c9c1b09442ddd6735dfcea52fdce","fileCount":339,"truncated":false} -->
+Generated: 2026-05-08T07:06:20Z | Files: 364 | Described: 0/364
+<!-- gsd:codebase-meta {"generatedAt":"2026-05-08T07:06:20Z","fingerprint":"86639e5a34e652f4d3f63833f46dd81efd776a4f","fileCount":364,"truncated":false} -->
 
 ### (root)/
 - `.gitignore`
@@ -10,11 +10,26 @@ Generated: 2026-05-06T00:06:10Z | Files: 339 | Described: 0/339
 - `audit.jsonl`
 - `Cargo.toml`
 - `CLAUDE.md`
+- `EOF`
 - `fix_admin_api.py`
+- `PROMPT_EOF`
 - `README.md`
+- `sgconfig.yml`
 - `sonar-project.properties`
 - `update_plan.py`
 - `write_db_rs.py`
+
+### .ast-grep/rule-tests/
+- `.ast-grep/rule-tests/.gitkeep`
+- `.ast-grep/rule-tests/avoid-duplicate-export-test.yml`
+
+### .ast-grep/rules/
+- `.ast-grep/rules/.gitkeep`
+- `.ast-grep/rules/a.yml`
+- `.ast-grep/rules/avoid-duplicate-export.yml`
+
+### .ast-grep/utils/
+- `.ast-grep/utils/.gitkeep`
 
 ### .beads/
 - `.beads/.gitignore`
@@ -52,14 +67,26 @@ Generated: 2026-05-06T00:06:10Z | Files: 339 | Described: 0/339
 - `.gsd.migrating/STATE.md`
 
 ### .gsd.migrating/activity/
+- `.gsd.migrating/activity/001-complete-slice-M001-S01.jsonl`
+- `.gsd.migrating/activity/001-execute-task-M001-S01-T04.jsonl`
 - `.gsd.migrating/activity/001-reactive-execute-M001-S01-reactive+T01,T02.jsonl`
 - `.gsd.migrating/activity/002-execute-task-M001-S01-T03.jsonl`
 
 ### .gsd.migrating/audit/
 - `.gsd.migrating/audit/events.jsonl`
 
+### .gsd.migrating/codebase/
+- `.gsd.migrating/codebase/ARCHITECTURE.md`
+- `.gsd.migrating/codebase/INTEGRATIONS.md`
+- `.gsd.migrating/codebase/STACK.md`
+- `.gsd.migrating/codebase/STRUCTURE.md`
+
+### .gsd.migrating/graphs/
+- `.gsd.migrating/graphs/graph.json`
+
 ### .gsd.migrating/journal/
 - `.gsd.migrating/journal/2026-05-05.jsonl`
+- `.gsd.migrating/journal/2026-05-06.jsonl`
 
 ### .gsd.migrating/milestones/M001/
 - `.gsd.migrating/milestones/M001/M001-CONTEXT.md`
@@ -69,6 +96,8 @@ Generated: 2026-05-06T00:06:10Z | Files: 339 | Described: 0/339
 ### .gsd.migrating/milestones/M001/slices/S01/
 - `.gsd.migrating/milestones/M001/slices/S01/S01-CONTINUE.md`
 - `.gsd.migrating/milestones/M001/slices/S01/S01-PLAN.md`
+- `.gsd.migrating/milestones/M001/slices/S01/S01-SUMMARY.md`
+- `.gsd.migrating/milestones/M001/slices/S01/S01-UAT.md`
 
 ### .gsd.migrating/milestones/M001/slices/S01/tasks/
 - `.gsd.migrating/milestones/M001/slices/S01/tasks/T01-PLAN.md`
@@ -79,6 +108,8 @@ Generated: 2026-05-06T00:06:10Z | Files: 339 | Described: 0/339
 - `.gsd.migrating/milestones/M001/slices/S01/tasks/T03-SUMMARY.md`
 - `.gsd.migrating/milestones/M001/slices/S01/tasks/T03-VERIFY.json`
 - `.gsd.migrating/milestones/M001/slices/S01/tasks/T04-PLAN.md`
+- `.gsd.migrating/milestones/M001/slices/S01/tasks/T04-SUMMARY.md`
+- `.gsd.migrating/milestones/M001/slices/S01/tasks/T04-VERIFY.json`
 
 ### .gsd.migrating/milestones/M002/
 - `.gsd.migrating/milestones/M002/M002-CONTEXT.md`
@@ -133,6 +164,7 @@ Generated: 2026-05-06T00:06:10Z | Files: 339 | Described: 0/339
 - `.gsd.migrating/runtime/write-gate-state.json`
 
 ### .gsd.migrating/runtime/units/
+- `.gsd.migrating/runtime/units/complete-slice-M001-S01.json`
 - `.gsd.migrating/runtime/units/execute-task-M001-S01-T03.json`
 - `.gsd.migrating/runtime/units/execute-task-M001-S01-T04.json`
 - `.gsd.migrating/runtime/units/reactive-execute-M001-S01-reactive+T01,T02.json`
@@ -158,6 +190,7 @@ Generated: 2026-05-06T00:06:10Z | Files: 339 | Described: 0/339
 - `dlp-admin-cli/src/screens/dispatch.rs`
 - `dlp-admin-cli/src/screens/mod.rs`
 - `dlp-admin-cli/src/screens/render.rs`
+- `dlp-admin-cli/src/screens/usb_enforcement.rs`
 
 ### dlp-agent/
 - `dlp-agent/build.rs`
@@ -202,6 +235,7 @@ Generated: 2026-05-06T00:06:10Z | Files: 339 | Described: 0/339
 - `dlp-agent/src/clipboard/mod.rs`
 
 ### dlp-agent/src/detection/
+- `dlp-agent/src/detection/app_identity.rs`
 - `dlp-agent/src/detection/device_watcher.rs`
 - `dlp-agent/src/detection/disk.rs`
 - `dlp-agent/src/detection/encryption.rs`
@@ -210,6 +244,7 @@ Generated: 2026-05-06T00:06:10Z | Files: 339 | Described: 0/339
 - `dlp-agent/src/detection/usb.rs`
 
 ### dlp-agent/src/interception/
+- `dlp-agent/src/interception/drag_drop.rs`
 - `dlp-agent/src/interception/file_monitor.rs`
 - `dlp-agent/src/interception/mod.rs`
 - `dlp-agent/src/interception/policy_mapper.rs`
