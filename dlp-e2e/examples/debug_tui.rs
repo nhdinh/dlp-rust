@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use dlp_admin_cli::app::{App, Screen};
+use dlp_admin_cli::app::App;
 use dlp_admin_cli::event::AppEvent;
 use dlp_admin_cli::screens::handle_event;
 use dlp_e2e::helpers;

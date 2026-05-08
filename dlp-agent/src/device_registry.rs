@@ -440,7 +440,9 @@ mod tests {
         let cache = DeviceRegistryCache::new();
         // Act + Assert: unknown device returns Blocked (fail-safe D-10)
         assert_eq!(
-            cache.trust_tier_for("0951", "1666", "ABC"),
+            cache
+                .trust_tier_for_with_sid("0951", "1666", "ABC", None)
+                .tier,
             UsbTrustTier::Blocked
         );
     }
@@ -452,7 +454,9 @@ mod tests {
         cache.seed_for_test("0951", "1666", "ABC", UsbTrustTier::ReadOnly);
         // Act + Assert: lookup normalises caller's case to match stored key
         assert_eq!(
-            cache.trust_tier_for("0951", "1666", "ABC"),
+            cache
+                .trust_tier_for_with_sid("0951", "1666", "ABC", None)
+                .tier,
             UsbTrustTier::ReadOnly
         );
     }
@@ -464,7 +468,9 @@ mod tests {
         cache.seed_for_test("0951", "1666", "ABC", UsbTrustTier::FullAccess);
         // Act + Assert: different serial -> Blocked (not in cache)
         assert_eq!(
-            cache.trust_tier_for("0951", "1666", "DIFFERENT"),
+            cache
+                .trust_tier_for_with_sid("0951", "1666", "DIFFERENT", None)
+                .tier,
             UsbTrustTier::Blocked
         );
     }
@@ -486,8 +492,8 @@ mod tests {
         // Act: two threads read simultaneously
         let c1 = Arc::clone(&cache);
         let c2 = Arc::clone(&cache);
-        let t1 = thread::spawn(move || c1.trust_tier_for("vid", "pid", "ser"));
-        let t2 = thread::spawn(move || c2.trust_tier_for("vid", "pid", "ser"));
+        let t1 = thread::spawn(move || c1.trust_tier_for_with_sid("vid", "pid", "ser", None).tier);
+        let t2 = thread::spawn(move || c2.trust_tier_for_with_sid("vid", "pid", "ser", None).tier);
         // Assert: both threads return the correct tier (no deadlock)
         assert_eq!(
             t1.join().expect("thread 1 must not panic"),

@@ -156,6 +156,26 @@ fn register_blocked_device(app: &mut App) {
     type_text(app, "Test USB");
     inject(app, enter);
 
+    // Now at Owner SID prompt (skip by pressing Enter).
+    assert!(
+        matches!(
+            app.screen,
+            Screen::TextInput { ref prompt, .. } if prompt.contains("Owner SID")
+        ),
+        "expected Owner SID prompt after entering description"
+    );
+    inject(app, enter);
+
+    // Now at Owner User prompt (skip by pressing Enter).
+    assert!(
+        matches!(
+            app.screen,
+            Screen::TextInput { ref prompt, .. } if prompt.contains("Owner User")
+        ),
+        "expected Owner User prompt after skipping Owner SID"
+    );
+    inject(app, enter);
+
     // Now at DeviceTierPicker with selected == 0 (blocked).
     assert!(
         matches!(app.screen, Screen::DeviceTierPicker { selected: 0, .. }),
@@ -265,8 +285,8 @@ fn test_register_device() {
     let buf: &Buffer = buffer.buffer();
     let text: String = buf.content.iter().map(|c: &Cell| c.symbol()).collect();
     assert!(
-        text.contains("[BLOCKED]"),
-        "rendered buffer should show [BLOCKED] tag for blocked-tier device: {text}"
+        text.contains("BLOCKED"),
+        "rendered buffer should show BLOCKED tag for blocked-tier device: {text}"
     );
 }
 
