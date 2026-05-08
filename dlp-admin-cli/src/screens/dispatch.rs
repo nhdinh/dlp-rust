@@ -9,6 +9,10 @@ use crate::app::{
     LDAP_ROW_COUNT, LDAP_SAVE_ROW,
 };
 use crate::event::AppEvent;
+use crate::screens::usb_enforcement::{
+    USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_OPTIONS,
+    USB_ENFORCEMENT_ROW_COUNT, USB_ENFORCEMENT_SAVE_ROW,
+};
 use dlp_common::abac::PolicyMode;
 
 /// Routes an event to the handler for the current screen.
@@ -40,6 +44,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::SiemConfig { .. } => handle_siem_config(app, key),
         Screen::AlertConfig { .. } => handle_alert_config(app, key),
         Screen::LdapConfig { .. } => handle_ldap_config(app, key),
+        Screen::UsbEnforcementConfig { .. } => handle_usb_enforcement_config(app, key),
         Screen::ConditionsBuilder { .. } => handle_conditions_builder(app, key),
         Screen::PolicyCreate { .. } => handle_policy_create(app, key),
         Screen::PolicyEdit { .. } => handle_policy_edit(app, key),
@@ -206,15 +211,16 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        // Phase 38.1: expanded from 5 to 6 items — added "LDAP Config" at index 4.
-        KeyCode::Up | KeyCode::Down => nav(selected, 6, key.code),
+        // Phase 43.05: expanded from 6 to 7 items — added "USB Enforcement" at index 5.
+        KeyCode::Up | KeyCode::Down => nav(selected, 7, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
             2 => action_load_siem_config(app),
             3 => action_load_alert_config(app),
             4 => action_load_ldap_config(app),
-            5 => app.screen = Screen::MainMenu { selected: 2 },
+            5 => action_load_usb_enforcement_config(app),
+            6 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
@@ -1249,7 +1255,10 @@ fn alert_commit_numeric(app: &mut App, selected: usize) {
         }
     };
     if let Screen::AlertConfig {
-        config, buffer, editing, ..
+        config,
+        buffer,
+        editing,
+        ..
     } = &mut app.screen
     {
         let key_name = ALERT_KEYS[selected];
@@ -1262,7 +1271,10 @@ fn alert_commit_numeric(app: &mut App, selected: usize) {
 /// Commits a string buffer value to the Alert config field at `selected`.
 fn alert_commit_string(app: &mut App, selected: usize) {
     if let Screen::AlertConfig {
-        config, buffer, editing, ..
+        config,
+        buffer,
+        editing,
+        ..
     } = &mut app.screen
     {
         let key_name = ALERT_KEYS[selected];
@@ -1325,7 +1337,10 @@ fn alert_toggle_bool(app: &mut App, selected: usize) {
 /// Enters numeric edit mode for the Alert config field at `selected`.
 fn alert_enter_numeric_edit(app: &mut App, selected: usize) {
     if let Screen::AlertConfig {
-        config, editing, buffer, ..
+        config,
+        editing,
+        buffer,
+        ..
     } = &mut app.screen
     {
         let key_name = ALERT_KEYS[selected];
@@ -1338,7 +1353,10 @@ fn alert_enter_numeric_edit(app: &mut App, selected: usize) {
 /// Enters string edit mode for the Alert config field at `selected`.
 fn alert_enter_string_edit(app: &mut App, selected: usize) {
     if let Screen::AlertConfig {
-        config, editing, buffer, ..
+        config,
+        editing,
+        buffer,
+        ..
     } = &mut app.screen
     {
         let key_name = ALERT_KEYS[selected];
@@ -1520,7 +1538,10 @@ fn ldap_commit_numeric(app: &mut App, selected: usize) {
         }
     };
     if let Screen::LdapConfig {
-        config, buffer, editing, ..
+        config,
+        buffer,
+        editing,
+        ..
     } = &mut app.screen
     {
         let key_name = LDAP_KEYS[selected];
@@ -1533,7 +1554,10 @@ fn ldap_commit_numeric(app: &mut App, selected: usize) {
 /// Commits a string buffer value to the LDAP config field at `selected`.
 fn ldap_commit_string(app: &mut App, selected: usize) {
     if let Screen::LdapConfig {
-        config, buffer, editing, ..
+        config,
+        buffer,
+        editing,
+        ..
     } = &mut app.screen
     {
         let key_name = LDAP_KEYS[selected];
@@ -1566,7 +1590,10 @@ fn ldap_toggle_bool(app: &mut App, selected: usize) {
 /// Enters numeric edit mode for the LDAP config field at `selected`.
 fn ldap_enter_numeric_edit(app: &mut App, selected: usize) {
     if let Screen::LdapConfig {
-        config, editing, buffer, ..
+        config,
+        editing,
+        buffer,
+        ..
     } = &mut app.screen
     {
         let key_name = LDAP_KEYS[selected];
@@ -1579,7 +1606,10 @@ fn ldap_enter_numeric_edit(app: &mut App, selected: usize) {
 /// Enters string edit mode for the LDAP config field at `selected`.
 fn ldap_enter_string_edit(app: &mut App, selected: usize) {
     if let Screen::LdapConfig {
-        config, editing, buffer, ..
+        config,
+        editing,
+        buffer,
+        ..
     } = &mut app.screen
     {
         let key_name = LDAP_KEYS[selected];
@@ -1660,6 +1690,132 @@ mod ldap_config_tests {
         for i in 0..LDAP_ROW_COUNT {
             assert_eq!(ldap_is_numeric(i), i == 3);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// USB enforcement config screen
+// ---------------------------------------------------------------------------
+
+/// Fetches the current agent config from the server and switches to the
+/// `UsbEnforcementConfig` screen.
+fn action_load_usb_enforcement_config(app: &mut App) {
+    match app
+        .rt
+        .block_on(app.client.get::<serde_json::Value>("admin/agent-config"))
+    {
+        Ok(config) => {
+            app.screen = Screen::UsbEnforcementConfig {
+                config,
+                selected: 0,
+                editing: false,
+                buffer: String::new(),
+            };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Persists the in-memory USB enforcement config to the server.
+///
+/// Sends the FULL agent config payload (not just USB fields) because
+/// the server PUT /admin/agent-config expects the complete payload.
+/// NOTE: This is the existing pattern for all config screens. A TOCTOU
+/// risk exists: if another admin changes a different field between load
+/// and save, this screen will overwrite it with the stale value. This is
+/// a pre-existing design limitation, not introduced by this plan.
+fn action_save_usb_enforcement_config(app: &mut App) {
+    let payload = match &app.screen {
+        Screen::UsbEnforcementConfig { config, .. } => config.clone(),
+        _ => return,
+    };
+    match app.rt.block_on(
+        app.client
+            .put::<serde_json::Value, _>("admin/agent-config", &payload),
+    ) {
+        Ok(_) => {
+            app.set_status("USB enforcement config saved", StatusKind::Success);
+            app.screen = Screen::SystemMenu { selected: 5 };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Handles key events while the USB enforcement config form is active.
+fn handle_usb_enforcement_config(app: &mut App, key: KeyEvent) {
+    let (selected, editing) = match &app.screen {
+        Screen::UsbEnforcementConfig {
+            selected, editing, ..
+        } => (*selected, *editing),
+        _ => return,
+    };
+
+    if editing {
+        handle_usb_enforcement_editing(app, key, selected);
+    } else {
+        handle_usb_enforcement_nav(app, key, selected);
+    }
+}
+
+/// Handles key events while editing a picker field in the USB enforcement config form.
+fn handle_usb_enforcement_editing(app: &mut App, key: KeyEvent, selected: usize) {
+    if selected >= USB_ENFORCEMENT_KEYS.len() {
+        return; // Save/Back rows don't enter edit mode
+    }
+
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::UsbEnforcementConfig { config, .. } = &mut app.screen {
+                let key_name = USB_ENFORCEMENT_KEYS[selected];
+                let current = config.get(key_name).and_then(|v| v.as_str()).unwrap_or("");
+                let options = USB_ENFORCEMENT_OPTIONS[selected];
+                let current_idx = options.iter().position(|&o| o == current).unwrap_or(0);
+                let new_idx = match key.code {
+                    KeyCode::Up => current_idx.checked_sub(1).unwrap_or(options.len() - 1),
+                    _ => (current_idx + 1) % options.len(),
+                };
+                config[key_name] = serde_json::Value::String(options[new_idx].to_string());
+            }
+        }
+        KeyCode::Enter => {
+            if let Screen::UsbEnforcementConfig { editing, .. } = &mut app.screen {
+                *editing = false;
+            }
+        }
+        KeyCode::Esc => {
+            if let Screen::UsbEnforcementConfig { editing, .. } = &mut app.screen {
+                *editing = false;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events while navigating the USB enforcement config form.
+fn handle_usb_enforcement_nav(app: &mut App, key: KeyEvent, selected: usize) {
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::UsbEnforcementConfig { selected: s, .. } = &mut app.screen {
+                nav(s, USB_ENFORCEMENT_ROW_COUNT, key.code);
+            }
+        }
+        KeyCode::Enter => match selected {
+            0..=2 => {
+                // Enter edit mode for picker fields
+                if let Screen::UsbEnforcementConfig { editing, .. } = &mut app.screen {
+                    *editing = true;
+                }
+            }
+            USB_ENFORCEMENT_SAVE_ROW => action_save_usb_enforcement_config(app),
+            USB_ENFORCEMENT_BACK_ROW => {
+                app.screen = Screen::SystemMenu { selected: 5 };
+            }
+            _ => {}
+        },
+        KeyCode::Esc => {
+            app.screen = Screen::SystemMenu { selected: 5 };
+        }
+        _ => {}
     }
 }
 
@@ -1827,7 +1983,10 @@ fn policy_create_enter_edit(app: &mut App, selected: usize) {
         return;
     }
     if let Screen::PolicyCreate {
-        form, editing, buffer, ..
+        form,
+        editing,
+        buffer,
+        ..
     } = &mut app.screen
     {
         let pre_fill = match selected {
@@ -2105,7 +2264,10 @@ fn policy_edit_enter_edit(app: &mut App, selected: usize) {
         return;
     }
     if let Screen::PolicyEdit {
-        form, editing, buffer, ..
+        form,
+        editing,
+        buffer,
+        ..
     } = &mut app.screen
     {
         let pre_fill = match selected {
@@ -2472,15 +2634,15 @@ fn simulate_cycle_field(app: &mut App, selected: usize) {
                     % crate::app::SIMULATE_NETWORK_LOCATION_OPTIONS.len();
             }
             6 => {
-                form.classification = (form.classification + 1)
-                    % crate::app::SIMULATE_CLASSIFICATION_OPTIONS.len();
+                form.classification =
+                    (form.classification + 1) % crate::app::SIMULATE_CLASSIFICATION_OPTIONS.len();
             }
             7 => {
                 form.action = (form.action + 1) % crate::app::SIMULATE_ACTION_OPTIONS.len();
             }
             8 => {
-                form.access_context = (form.access_context + 1)
-                    % crate::app::SIMULATE_ACCESS_CONTEXT_OPTIONS.len();
+                form.access_context =
+                    (form.access_context + 1) % crate::app::SIMULATE_ACCESS_CONTEXT_OPTIONS.len();
             }
             _ => {}
         }
@@ -2490,7 +2652,10 @@ fn simulate_cycle_field(app: &mut App, selected: usize) {
 /// Enters edit mode for a simulate form text field.
 fn simulate_enter_text_edit(app: &mut App, selected: usize) {
     if let Screen::PolicySimulate {
-        form, editing, buffer, ..
+        form,
+        editing,
+        buffer,
+        ..
     } = &mut app.screen
     {
         let pre_fill = match selected {
@@ -2529,7 +2694,10 @@ fn handle_simulate_nav(app: &mut App, key: KeyEvent, selected: usize) {
             0 | 1 | 5 => simulate_enter_text_edit(app, selected),
             2 => {
                 if let Screen::PolicySimulate {
-                    form, editing, buffer, ..
+                    form,
+                    editing,
+                    buffer,
+                    ..
                 } = &mut app.screen
                 {
                     *buffer = form.groups_raw.clone();
@@ -2814,9 +2982,7 @@ fn build_condition(
 ) -> Option<dlp_common::abac::PolicyCondition> {
     let op = op.to_string();
     match attr {
-        ConditionAttribute::Classification => {
-            build_classification_condition(op, picker_selected)
-        }
+        ConditionAttribute::Classification => build_classification_condition(op, picker_selected),
         ConditionAttribute::MemberOf => {
             if buffer.trim().is_empty() {
                 return None;
@@ -3116,7 +3282,9 @@ fn pending_nav(app: &mut App, pending_len: usize, key: KeyCode) {
 /// Deletes the selected condition from the pending list.
 fn pending_delete(app: &mut App) {
     if let Screen::ConditionsBuilder {
-        pending, pending_state, ..
+        pending,
+        pending_state,
+        ..
     } = &mut app.screen
     {
         let Some(idx) = pending_state.selected() else {
@@ -3135,7 +3303,9 @@ fn pending_delete(app: &mut App) {
 }
 
 /// Extracts the AppField from an app-identity condition for prefill.
-fn app_field_from_condition(cond: &dlp_common::abac::PolicyCondition) -> Option<dlp_common::abac::AppField> {
+fn app_field_from_condition(
+    cond: &dlp_common::abac::PolicyCondition,
+) -> Option<dlp_common::abac::AppField> {
     match cond {
         dlp_common::abac::PolicyCondition::SourceApplication { field, .. }
         | dlp_common::abac::PolicyCondition::DestinationApplication { field, .. } => Some(*field),
@@ -3147,7 +3317,9 @@ fn app_field_from_condition(cond: &dlp_common::abac::PolicyCondition) -> Option<
 fn pending_edit(app: &mut App) {
     let edit_target = match &app.screen {
         Screen::ConditionsBuilder {
-            pending, pending_state, ..
+            pending,
+            pending_state,
+            ..
         } => pending_state
             .selected()
             .and_then(|i| pending.get(i).cloned().map(|c| (i, c))),
@@ -3190,7 +3362,10 @@ fn pending_edit(app: &mut App) {
 fn pending_close_modal(app: &mut App) {
     let (caller, pending, form_snapshot) = match &app.screen {
         Screen::ConditionsBuilder {
-            caller, pending, form_snapshot, ..
+            caller,
+            pending,
+            form_snapshot,
+            ..
         } => (*caller, pending.clone(), form_snapshot.clone()),
         _ => return,
     };
@@ -3909,10 +4084,10 @@ fn import_post_policy(
 ) -> Result<(), (String, String)> {
     let name = policy.name.clone();
     let payload: crate::app::PolicyPayload = policy.into();
-    match app
-        .rt
-        .block_on(app.client.post::<serde_json::Value, _>("admin/policies", &payload))
-    {
+    match app.rt.block_on(
+        app.client
+            .post::<serde_json::Value, _>("admin/policies", &payload),
+    ) {
         Ok(_) => Ok(()),
         Err(e) => Err((name, e.to_string())),
     }
@@ -3942,7 +4117,9 @@ fn import_execute_policies(app: &mut App) {
 
     let (policies, existing_ids): (Vec<PolicyResponse>, Vec<String>) = match &app.screen {
         Screen::ImportConfirm {
-            policies, existing_ids, ..
+            policies,
+            existing_ids,
+            ..
         } => (policies.clone(), existing_ids.clone()),
         _ => return,
     };
@@ -3951,8 +4128,7 @@ fn import_execute_policies(app: &mut App) {
         *state = ImportState::InProgress;
     }
 
-    let existing_set: std::collections::HashSet<String> =
-        existing_ids.into_iter().collect();
+    let existing_set: std::collections::HashSet<String> = existing_ids.into_iter().collect();
     let (to_create, to_update): (Vec<PolicyResponse>, Vec<PolicyResponse>) = policies
         .into_iter()
         .partition(|p| !existing_set.contains(&p.id));
@@ -5953,6 +6129,138 @@ mod usb_scan_routing_tests {
         match &app.screen {
             Screen::DevicesMenu { selected } => assert_eq!(*selected, 0),
             other => panic!("expected DevicesMenu on err, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod usb_enforcement_tests {
+    use super::*;
+
+    fn key_event(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn make_test_app(screen: Screen) -> crate::app::App {
+        let client = crate::client::EngineClient::for_test();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime build must succeed");
+        let mut app = crate::app::App::new(client, rt);
+        app.screen = screen;
+        app
+    }
+
+    #[test]
+    fn usb_enforcement_screen_navigates_all_rows() {
+        let config = serde_json::json!({
+            "usb_blocked_failure_mode": "Warning only",
+            "usb_startup_resolution_mode": "VID/PID/serial fallback",
+            "usb_none_serial_policy": "Always Blocked",
+        });
+        let screen = Screen::UsbEnforcementConfig {
+            config,
+            selected: 0,
+            editing: false,
+            buffer: String::new(),
+        };
+        let mut app = make_test_app(screen);
+
+        // Navigate Down through all 5 rows (0..=4).
+        for expected in [1, 2, 3, 4, 0] {
+            handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Down)));
+            match &app.screen {
+                Screen::UsbEnforcementConfig { selected, .. } => {
+                    assert_eq!(*selected, expected);
+                }
+                other => panic!("expected UsbEnforcementConfig, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn usb_enforcement_editing_cycles_picker_options() {
+        let config = serde_json::json!({
+            "usb_blocked_failure_mode": "Warning only",
+            "usb_startup_resolution_mode": "VID/PID/serial fallback",
+            "usb_none_serial_policy": "Always Blocked",
+        });
+        let screen = Screen::UsbEnforcementConfig {
+            config,
+            selected: 0,
+            editing: true,
+            buffer: String::new(),
+        };
+        let mut app = make_test_app(screen);
+
+        // Row 0 has 3 options; cycle Up from "Warning only" -> "Hard error".
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Up)));
+        match &app.screen {
+            Screen::UsbEnforcementConfig { config, .. } => {
+                let val = config["usb_blocked_failure_mode"].as_str().unwrap_or("");
+                assert_eq!(val, "Hard error");
+            }
+            other => panic!("expected UsbEnforcementConfig, got {other:?}"),
+        }
+
+        // Cycle Down from "Hard error" -> "Warning only" -> "Retry then error".
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Down)));
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Down)));
+        match &app.screen {
+            Screen::UsbEnforcementConfig { config, .. } => {
+                let val = config["usb_blocked_failure_mode"].as_str().unwrap_or("");
+                assert_eq!(val, "Retry then error");
+            }
+            other => panic!("expected UsbEnforcementConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usb_enforcement_enter_exits_edit_mode() {
+        let config = serde_json::json!({
+            "usb_blocked_failure_mode": "Warning only",
+            "usb_startup_resolution_mode": "VID/PID/serial fallback",
+            "usb_none_serial_policy": "Always Blocked",
+        });
+        let screen = Screen::UsbEnforcementConfig {
+            config,
+            selected: 0,
+            editing: true,
+            buffer: String::new(),
+        };
+        let mut app = make_test_app(screen);
+
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        match &app.screen {
+            Screen::UsbEnforcementConfig { editing, .. } => {
+                assert!(!editing);
+            }
+            other => panic!("expected UsbEnforcementConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usb_enforcement_esc_returns_to_system_menu() {
+        let config = serde_json::json!({
+            "usb_blocked_failure_mode": "Warning only",
+            "usb_startup_resolution_mode": "VID/PID/serial fallback",
+            "usb_none_serial_policy": "Always Blocked",
+        });
+        let screen = Screen::UsbEnforcementConfig {
+            config,
+            selected: 2,
+            editing: false,
+            buffer: String::new(),
+        };
+        let mut app = make_test_app(screen);
+
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Esc)));
+        match &app.screen {
+            Screen::SystemMenu { selected } => {
+                assert_eq!(*selected, 5);
+            }
+            other => panic!("expected SystemMenu, got {other:?}"),
         }
     }
 }
