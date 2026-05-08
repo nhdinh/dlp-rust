@@ -185,12 +185,8 @@ fn handle_block_notify(
         &reason,
     );
     let msg = match dialog_result {
-        crate::dialogs::BlockDialogResult::Confirmed => {
-            Pipe1UiMsg::UserConfirmed { request_id }
-        }
-        crate::dialogs::BlockDialogResult::Close => {
-            Pipe1UiMsg::UserCancelled { request_id }
-        }
+        crate::dialogs::BlockDialogResult::Confirmed => Pipe1UiMsg::UserConfirmed { request_id },
+        crate::dialogs::BlockDialogResult::Close => Pipe1UiMsg::UserCancelled { request_id },
     };
     serialize_response(&msg, session_id, "BlockNotify response")
 }
@@ -210,9 +206,7 @@ fn handle_override_request(
         &reason,
     );
     let msg = match result {
-        crate::dialogs::override_request::OverrideDialogResult::Approved {
-            justification,
-        } => {
+        crate::dialogs::override_request::OverrideDialogResult::Approved { justification } => {
             info!(
                 session_id,
                 request_id,
@@ -267,7 +261,13 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32, pipe: HANDLE) -> Option
             reason,
             classification,
             resource_path,
-        } => handle_override_request(request_id, reason, classification, resource_path, session_id),
+        } => handle_override_request(
+            request_id,
+            reason,
+            classification,
+            resource_path,
+            session_id,
+        ),
         Pipe1AgentMsg::ClipboardRead { request_id } => {
             info!(session_id, request_id, "Pipe 1: ClipboardRead received");
             let msg = handle_clipboard_read(request_id, session_id)?;

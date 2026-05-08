@@ -354,8 +354,8 @@ async fn poll_loop(
 fn enumerate_connected_shares() -> HashSet<String> {
     use windows::Win32::Foundation::{HANDLE, WIN32_ERROR};
     use windows::Win32::NetworkManagement::WNet::{
-        WNetCloseEnum, WNetOpenEnumW, RESOURCETYPE_ANY,
-        RESOURCEUSAGE_CONNECTABLE, RESOURCEUSAGE_CONTAINER, RESOURCE_GLOBALNET,
+        WNetCloseEnum, WNetOpenEnumW, RESOURCETYPE_ANY, RESOURCEUSAGE_CONNECTABLE,
+        RESOURCEUSAGE_CONTAINER, RESOURCE_GLOBALNET,
     };
 
     const NO_ERROR: WIN32_ERROR = WIN32_ERROR(0);
@@ -407,9 +407,7 @@ fn enumerate_connected_shares() -> HashSet<String> {
 /// # Returns
 ///
 /// `Some((entries_read, buffer))` on success, `None` on error.
-fn enumerate_mpr_resources(
-    handle: windows::Win32::Foundation::HANDLE,
-) -> Option<(u32, Vec<u8>)> {
+fn enumerate_mpr_resources(handle: windows::Win32::Foundation::HANDLE) -> Option<(u32, Vec<u8>)> {
     use windows::Win32::Foundation::WIN32_ERROR;
     use windows::Win32::NetworkManagement::WNet::{WNetEnumResourceW, NETRESOURCEW};
 
@@ -447,11 +445,7 @@ fn enumerate_mpr_resources(
 /// * `buffer` -- raw bytes containing `NETRESOURCEW` structs.
 /// * `entries_read` -- number of valid entries in the buffer.
 /// * `results` -- output set to populate with UNC paths.
-fn extract_unc_paths_from_buffer(
-    buffer: &[u8],
-    entries_read: u32,
-    results: &mut HashSet<String>,
-) {
+fn extract_unc_paths_from_buffer(buffer: &[u8], entries_read: u32, results: &mut HashSet<String>) {
     use windows::Win32::NetworkManagement::WNet::NETRESOURCEW;
 
     let entry_size = std::mem::size_of::<NETRESOURCEW>();

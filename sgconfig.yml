@@ -1,0 +1,6 @@
+ruleDirs:
+- C:\Users\nhdinh\dev\dlp-rust\.ast-grep/rules
+testConfigs:
+- testDir: C:\Users\nhdinh\dev\dlp-rust\.ast-grep/rule-tests
+utilDirs:
+- C:\Users\nhdinh\dev\dlp-rust\.ast-grep/utils

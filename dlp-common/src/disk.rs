@@ -665,7 +665,10 @@ fn query_disk_number_for_device(
 
     let device_path = get_device_interface_path(hdev, &interface_data)?;
 
-    let wide_path: Vec<u16> = device_path.encode_utf16().chain(std::iter::once(0)).collect();
+    let wide_path: Vec<u16> = device_path
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     let handle = unsafe {
         CreateFileW(
             windows::core::PCWSTR(wide_path.as_ptr()),
@@ -708,14 +711,7 @@ fn get_device_interface_path(
 ) -> Option<String> {
     let mut required: u32 = 0;
     let _ = unsafe {
-        SetupDiGetDeviceInterfaceDetailW(
-            hdev,
-            interface_data,
-            None,
-            0,
-            Some(&mut required),
-            None,
-        )
+        SetupDiGetDeviceInterfaceDetailW(hdev, interface_data, None, 0, Some(&mut required), None)
     };
     if required == 0 {
         return None;
@@ -728,14 +724,7 @@ fn get_device_interface_path(
         (*detail).cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
     }
     let ok = unsafe {
-        SetupDiGetDeviceInterfaceDetailW(
-            hdev,
-            interface_data,
-            Some(detail),
-            required,
-            None,
-            None,
-        )
+        SetupDiGetDeviceInterfaceDetailW(hdev, interface_data, Some(detail), required, None, None)
     };
     if ok.is_err() {
         return None;

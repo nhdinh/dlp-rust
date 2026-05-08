@@ -821,9 +821,8 @@ struct DiskCheckOutcome {
 }
 
 /// Type alias for the per-disk async check handle.
-type DiskCheckHandle = tokio::task::JoinHandle<
-    Result<(EncryptionStatus, Option<EncryptionMethod>), EncryptionError>,
->;
+type DiskCheckHandle =
+    tokio::task::JoinHandle<Result<(EncryptionStatus, Option<EncryptionMethod>), EncryptionError>>;
 
 /// Spawn async check tasks for all disks, pairing each with its instance ID.
 ///
@@ -996,7 +995,9 @@ fn compute_all_failed(
 ) -> bool {
     !disks.is_empty()
         && !new_statuses.is_empty()
-        && new_statuses.values().all(|s| *s == EncryptionStatus::Unknown)
+        && new_statuses
+            .values()
+            .all(|s| *s == EncryptionStatus::Unknown)
 }
 
 /// Emit a DiskDiscovery event for status transitions (D-25).
