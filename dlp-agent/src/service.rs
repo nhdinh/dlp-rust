@@ -630,6 +630,12 @@ struct RunLoopContext {
     )>,
     /// Shared reference to the USB detector (for shutdown ACL restore / re-enable).
     detector_arc: Arc<crate::detection::UsbDetector>,
+    /// Optional hook injector (M017/S01). `None` when `cloud_hook_enabled` is false.
+    #[allow(dead_code)]
+    hook_injector: Option<crate::hook_injector::HookInjector>,
+    /// Optional WFP manager (M017/S01). `None` when `wfp_filter_enabled` is false.
+    #[allow(dead_code)]
+    wfp_manager: Option<crate::wfp_manager::WfpManager>,
 }
 
 /// The main service run loop.
@@ -803,7 +809,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
 
     // ── Start the file system monitor pipeline ─────────────────────────
     let recheck_interval = agent_config.resolved_recheck_interval();
-    let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
+    let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config.clone())
         .expect("file monitor initialisation always succeeds");
 
     let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
@@ -835,6 +841,49 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         Some(Arc::new(crate::disk_enforcer::DiskEnforcer::new()));
     info!("disk enforcer constructed");
 
+    // ── CloudEnforcer (M017/S01) ──────────────────────────────────────────
+    let cloud_enforcer_opt: Option<Arc<crate::cloud_enforcer::CloudEnforcer>> =
+        Some(Arc::new(crate::cloud_enforcer::CloudEnforcer::new()));
+    info!("cloud enforcer constructed");
+
+    // ── HookInjector (M017/S01) ───────────────────────────────────────────
+    let hook_injector_opt: Option<crate::hook_injector::HookInjector> =
+        if agent_config.cloud_hook_enabled.unwrap_or(false) {
+            let dll_path = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll.dll")))
+                .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll.dll"));
+            let injector = crate::hook_injector::HookInjector::new(&dll_path, None);
+            info!(dll_path = %dll_path.display(), "hook injector constructed");
+            Some(injector)
+        } else {
+            info!("cloud hook disabled — skipping HookInjector");
+            None
+        };
+
+    // ── WfpManager (M017/S01) ─────────────────────────────────────────────
+    let wfp_manager_opt: Option<crate::wfp_manager::WfpManager> =
+        if agent_config.wfp_filter_enabled.unwrap_or(false) {
+            match crate::wfp_manager::WfpManager::new() {
+                Ok(manager) => {
+                    if let Err(e) = manager.register() {
+                        warn!(error = %e, "WFP manager registration failed — continuing without WFP");
+                        None
+                    } else {
+                        info!("WFP manager registered");
+                        Some(manager)
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "WFP manager init failed — continuing without WFP");
+                    None
+                }
+            }
+        } else {
+            info!("WFP filter disabled — skipping WfpManager");
+            None
+        };
+
     // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
     let (enc_shutdown_tx, enc_handle) = spawn_encryption_task(audit_ctx.clone(), recheck_interval);
 
@@ -847,6 +896,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         ad_client.clone(),
         usb_enforcer_opt,
         disk_enforcer_opt,
+        cloud_enforcer_opt,
     );
 
     let file_monitor_for_shutdown = file_monitor.clone();
@@ -881,6 +931,8 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         audit_shutdown_tx,
         device_watcher_cleanup,
         detector_arc,
+        hook_injector: hook_injector_opt,
+        wfp_manager: wfp_manager_opt,
     }
 }
 
@@ -1186,6 +1238,7 @@ fn spawn_event_loop(
     ad_client: Arc<Option<dlp_common::AdClient>>,
     usb_enforcer: Option<Arc<crate::usb_enforcer::UsbEnforcer>>,
     disk_enforcer: Option<Arc<crate::disk_enforcer::DiskEnforcer>>,
+    cloud_enforcer: Option<Arc<crate::cloud_enforcer::CloudEnforcer>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         crate::interception::run_event_loop(
@@ -1196,6 +1249,7 @@ fn spawn_event_loop(
             ad_client,
             usb_enforcer,
             disk_enforcer,
+            cloud_enforcer,
         )
         .await;
     })
@@ -1290,6 +1344,24 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     // Re-enable PnP-disabled USB devices on shutdown (best-effort, OP-04).
     #[cfg(windows)]
     reenable_usb_devices(&ctx.detector_arc);
+
+    // Unregister WFP filters and close engine (M017/S01).
+    if let Some(manager) = ctx.wfp_manager {
+        crate::password_stop::debug_log("run_loop: unregistering WFP manager");
+        if let Err(e) = manager.unregister() {
+            warn!(error = %e, "WFP manager unregister failed during shutdown");
+        } else {
+            info!("WFP manager unregistered");
+        }
+        crate::password_stop::debug_log("run_loop: WFP manager unregistered");
+    }
+
+    // Drop hook injector (no explicit stop needed; DLL stays loaded in target
+    // processes until they exit). Log for observability.
+    if ctx.hook_injector.is_some() {
+        crate::password_stop::debug_log("run_loop: dropping hook injector");
+        info!("hook injector dropped");
+    }
 
     // Kill all UI processes spawned by the session monitor.
     crate::password_stop::debug_log("run_loop: killing UI processes");
