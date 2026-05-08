@@ -41,6 +41,9 @@ pub mod ipc;
 pub mod hook_ipc;
 
 #[cfg(windows)]
+pub mod hook_injector;
+
+#[cfg(windows)]
 pub mod health_monitor;
 
 #[cfg(windows)]
