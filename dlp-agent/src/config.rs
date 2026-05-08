@@ -205,6 +205,15 @@ pub struct AgentConfig {
     #[serde(default)]
     pub usb_none_serial_policy: Option<String>,
 
+    /// Grace period in seconds before mount-time block engages for unregistered disks.
+    /// Default 0 = immediate block (backward compatible with Phase 44 behavior).
+    /// During grace period: disk is accessible but writes are blocked.
+    /// After grace period expires: mount-time block engages (drive letter removed).
+    ///
+    /// Config validation: max 3600 seconds (1 hour) per T-45-01 threat mitigation.
+    #[serde(default)]
+    pub disk_grace_period_seconds: u64,
+
     /// Machine hostname, resolved once at startup.
     /// Not persisted to the config file.
     #[serde(skip)]
@@ -575,6 +584,7 @@ mod tests {
             usb_blocked_failure_mode: None,
             usb_startup_resolution_mode: None,
             usb_none_serial_policy: None,
+            disk_grace_period_seconds: 0,
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
         };
@@ -609,6 +619,7 @@ mod tests {
             usb_blocked_failure_mode: None,
             usb_startup_resolution_mode: None,
             usb_none_serial_policy: None,
+            disk_grace_period_seconds: 0,
             machine_name: None,
         };
 
