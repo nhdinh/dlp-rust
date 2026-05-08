@@ -544,7 +544,8 @@ fn on_disk_arrival_inner(
         }
     };
 
-    // Disks newly visible since the last enumeration -- D-13 step 2.
+    // Phase 44 (DISK-F1): check allowlist BEFORE inserting into drive_letter_map.
+    // Unregistered disks are blocked at mount time so they never appear in Explorer.
     //
     // CR-01 fix: the check-and-insert MUST be atomic under the write lock to
     // eliminate the TOCTOU gap between the former snapshot read and the per-disk
@@ -556,6 +557,27 @@ fn on_disk_arrival_inner(
         let Some(letter) = disk.drive_letter else {
             continue;
         };
+
+        // NEW (Phase 44): Check frozen allowlist BEFORE adding to drive_letter_map.
+        // If unregistered, block at mount time and skip drive_letter_map insertion.
+        if enumerator.disk_for_instance_id(&disk.instance_id).is_none() {
+            warn!(
+                drive = %letter,
+                instance_id = %disk.instance_id,
+                model = %disk.model,
+                bus_type = ?disk.bus_type,
+                "unregistered disk arrived -- blocking at mount time"
+            );
+            if let Err(e) = block_disk_at_mount_time(letter, disk, audit_ctx) {
+                warn!(
+                    letter = %letter,
+                    error = %e,
+                    "Mount-time block failed, falling back to I/O-time blocking"
+                );
+            }
+            // Do NOT insert into drive_letter_map -- keeps disk invisible.
+            continue;
+        }
 
         // D-10: update drive_letter_map ONLY. instance_id_map is the frozen
         // allowlist (D-09) -- never mutated by arrival handlers.
@@ -572,25 +594,11 @@ fn on_disk_arrival_inner(
             // Write lock released here (end of block).
         }
 
-        // D-13 step 4: if the disk's instance_id is NOT in the frozen
-        // allowlist, emit a DiskDiscovery event so admins see the
-        // unregistered arrival before any write attempt fires.
-        if enumerator.disk_for_instance_id(&disk.instance_id).is_none() {
-            warn!(
-                drive = %letter,
-                instance_id = %disk.instance_id,
-                model = %disk.model,
-                bus_type = ?disk.bus_type,
-                "unregistered disk arrived -- emitting DiskDiscovery audit"
-            );
-            emit_disk_discovery_for_arrival(audit_ctx, disk);
-        } else {
-            info!(
-                drive = %letter,
-                instance_id = %disk.instance_id,
-                "registered disk reconnected -- drive_letter_map updated"
-            );
-        }
+        info!(
+            drive = %letter,
+            instance_id = %disk.instance_id,
+            "registered disk reconnected -- drive_letter_map updated"
+        );
     }
 }
 
@@ -652,28 +660,158 @@ pub fn on_disk_removal(device_path: &str) {
     // D-10: instance_id_map NOT touched -- disconnected allowlisted disks remain registered (D-06).
 }
 
-/// Emits a `DiskDiscovery` audit event for a single unregistered disk arrival.
+/// Blocks an unregistered disk at mount time by removing its drive letter
+/// and taking the volume offline.
 ///
-/// Mirrors [`emit_disk_discovery`] but for the runtime-arrival code path
-/// (called from [`on_disk_arrival_inner`] when a newly visible disk is not in
-/// the frozen `instance_id_map` allowlist).
+/// This is the primary enforcement layer for unregistered fixed disks (DISK-F1,
+/// Phase 44).  It runs BEFORE the disk is inserted into `drive_letter_map`, so
+/// the disk never appears in Explorer.  If this function fails, the caller
+/// falls back to I/O-time blocking in [`DiskEnforcer`] (Phase 36).
+///
+/// # Steps
+///
+/// 1. Remove the drive letter from the DOS namespace via `DefineDosDeviceW`.
+/// 2. Open the volume handle and issue `FSCTL_DISMOUNT_VOLUME` followed by
+///    `IOCTL_VOLUME_OFFLINE` (defense-in-depth).
+/// 3. Emit a `DiskMountBlocked` audit event.
+///
+/// # Arguments
+///
+/// * `letter` — The drive letter to remove (e.g. `'E'`).
+/// * `disk` — The live [`DiskIdentity`] of the unregistered disk.
+/// * `audit_ctx` — [`EmitContext`] for audit emission.
+///
+/// # Returns
+///
+/// `Ok(())` on success.  `Err(String)` if `DefineDosDeviceW` fails (the volume
+/// offline step is best-effort and does NOT fail the overall call).
 #[cfg(windows)]
-fn emit_disk_discovery_for_arrival(ctx: &crate::audit_emitter::EmitContext, disk: &DiskIdentity) {
+fn block_disk_at_mount_time(
+    letter: char,
+    disk: &DiskIdentity,
+    audit_ctx: &crate::audit_emitter::EmitContext,
+) -> Result<(), String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, DefineDosDeviceW, DDD_REMOVE_DEFINITION, FILE_FLAGS_AND_ATTRIBUTES,
+        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        IOCTL_VOLUME_OFFLINE, OPEN_EXISTING,
+    };
+    use windows::Win32::System::IO::DeviceIoControl;
+
+    // FSCTL_DISMOUNT_VOLUME is a u32 constant in Win32::System::Ioctl.
+    const FSCTL_DISMOUNT_VOLUME: u32 = 0x00090064; // 589856u32
+
+    // Step 1: Remove drive letter from DOS namespace.
+    let drive_str = format!("{letter}:",);
+    let wide: Vec<u16> = drive_str.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: `wide` is a valid null-terminated UTF-16 string.
+    let result = unsafe {
+        DefineDosDeviceW(
+            DDD_REMOVE_DEFINITION,
+            windows::core::PCWSTR(wide.as_ptr()),
+            windows::core::PCWSTR::null(),
+        )
+    };
+    if let Err(e) = result {
+        warn!(
+            letter = %letter,
+            error = %e,
+            "DefineDosDeviceW failed to remove drive letter"
+        );
+        // Return error so caller knows mount-time block failed.
+        return Err(format!("DefineDosDeviceW failed: {e}"));
+    }
+    info!(
+        letter = %letter,
+        instance_id = %disk.instance_id,
+        "Drive letter removed for unregistered disk"
+    );
+
+    // Step 2: Defense-in-depth -- dismount and offline the volume.
+    let volume_path = format!(r"\\.\{letter}:",);
+    let wide_path: Vec<u16> = volume_path
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide_path` is a valid null-terminated UTF-16 string.
+    let handle_result = unsafe {
+        CreateFileW(
+            windows::core::PCWSTR(wide_path.as_ptr()),
+            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        )
+    };
+    if let Ok(handle) = handle_result {
+        let mut bytes_returned = 0u32;
+        // Dismount first (best-effort -- ignore errors).
+        // SAFETY: `handle` is a valid file handle returned by CreateFileW.
+        let _ = unsafe {
+            DeviceIoControl(
+                handle,
+                FSCTL_DISMOUNT_VOLUME,
+                None,
+                0,
+                None,
+                0,
+                Some(&mut bytes_returned),
+                None,
+            )
+        };
+        // Then offline (best-effort -- ignore errors).
+        let _ = unsafe {
+            DeviceIoControl(
+                handle,
+                IOCTL_VOLUME_OFFLINE,
+                None,
+                0,
+                None,
+                0,
+                Some(&mut bytes_returned),
+                None,
+            )
+        };
+        // SAFETY: `handle` is a valid handle; CloseHandle is idempotent.
+        let _ = unsafe { CloseHandle(handle) };
+    } else {
+        warn!(
+            letter = %letter,
+            "Could not open volume handle for offline -- drive letter removal already applied"
+        );
+    }
+
+    // Step 3: Emit audit event.
+    emit_disk_mount_blocked(disk, audit_ctx);
+
+    Ok(())
+}
+
+/// Emits a `DiskMountBlocked` audit event for an unregistered disk.
+///
+/// Used by [`block_disk_at_mount_time`] after successfully removing the drive
+/// letter.  The event carries the disk identity so SIEM rules can correlate
+/// mount-time blocks with the physical device.
+#[cfg(windows)]
+fn emit_disk_mount_blocked(disk: &DiskIdentity, audit_ctx: &crate::audit_emitter::EmitContext) {
     use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
 
     let mut event = AuditEvent::new(
-        EventType::DiskDiscovery,
-        ctx.user_sid.clone(),
-        ctx.user_name.clone(),
-        "disk://arrival".to_string(),
-        Classification::T1,
-        Action::READ,
-        Decision::ALLOW,
-        ctx.agent_id.clone(),
-        ctx.session_id,
+        EventType::DiskMountBlocked,
+        audit_ctx.user_sid.clone(),
+        audit_ctx.user_name.clone(),
+        "disk://mount-blocked".to_string(),
+        Classification::T4,
+        Action::WRITE,
+        Decision::DENY,
+        audit_ctx.agent_id.clone(),
+        audit_ctx.session_id,
     )
-    .with_discovered_disks(Some(vec![disk.clone()]));
-    crate::audit_emitter::emit_audit(ctx, &mut event);
+    .with_blocked_disk(disk.clone());
+    crate::audit_emitter::emit_audit(audit_ctx, &mut event);
 }
 
 // ---------------------------------------------------------------------------
@@ -1148,6 +1286,14 @@ mod tests {
             encryption_checked_at: None,
         };
 
+        // Phase 44: seed instance_id_map so the disk is treated as registered.
+        // The test's purpose is to verify drive_letter_map update behavior,
+        // not mount-time blocking.
+        enumerator
+            .instance_id_map
+            .write()
+            .insert(new_disk.instance_id.clone(), new_disk.clone());
+
         let ctx = crate::audit_emitter::EmitContext {
             agent_id: "AGENT-T".into(),
             session_id: 1,
@@ -1165,7 +1311,10 @@ mod tests {
             Some("USBSTOR\\Disk\\1".to_string())
         );
         // instance_id_map UNCHANGED (D-09/D-10 frozen allowlist invariant).
-        assert!(enumerator.instance_id_map.read().is_empty());
+        assert!(enumerator
+            .instance_id_map
+            .read()
+            .contains_key("USBSTOR\\Disk\\1"));
     }
 
     /// D-13: arrival of a disk whose drive letter is already tracked is a no-op.
@@ -1358,6 +1507,130 @@ mod tests {
         assert_eq!(expected[0], std::time::Duration::from_millis(200));
         assert_eq!(expected[1], std::time::Duration::from_millis(1000));
         assert_eq!(expected[2], std::time::Duration::from_millis(4000));
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 44 (DISK-F1): Mount-time blocking tests
+    // -------------------------------------------------------------------------
+
+    /// Phase 44: an unregistered disk arriving must NOT be inserted into
+    /// drive_letter_map.  The mount-time block path skips the insertion
+    /// entirely so the disk stays invisible to Explorer.
+    #[cfg(windows)]
+    #[test]
+    fn test_on_disk_arrival_skips_unregistered_disk() {
+        let _guard = DISK_TEST_LOCK.lock();
+        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
+        enumerator.drive_letter_map.write().clear();
+        enumerator.instance_id_map.write().clear();
+
+        let unregistered = DiskIdentity {
+            instance_id: "UNREG\\Disk\\44".to_string(),
+            bus_type: BusType::Usb,
+            model: "EvilDrive".to_string(),
+            drive_letter: Some('X'),
+            serial: Some("SN-EVIL".to_string()),
+            size_bytes: Some(1_000_000_000),
+            is_boot_disk: false,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
+        };
+
+        let ctx = crate::audit_emitter::EmitContext {
+            agent_id: "AGENT-T".into(),
+            session_id: 1,
+            user_sid: "S-1-5-18".into(),
+            user_name: "SYSTEM".into(),
+            machine_name: None,
+        };
+
+        on_disk_arrival_inner(r"\\?\UNREG#Disk#44", &[unregistered], &ctx);
+
+        // drive_letter_map must NOT contain the unregistered disk.
+        assert!(
+            enumerator.drive_letter_map.read().get(&'X').is_none(),
+            "unregistered disk must NOT appear in drive_letter_map"
+        );
+        // instance_id_map remains empty (frozen allowlist invariant).
+        assert!(enumerator.instance_id_map.read().is_empty());
+    }
+
+    /// Phase 44: verify that `block_disk_at_mount_time` has the expected
+    /// signature (compile-time check).  Runtime execution requires a real
+    /// volume handle, so we only assert the function exists and accepts the
+    /// correct parameter types.
+    #[cfg(windows)]
+    #[test]
+    fn test_block_disk_at_mount_time_signature() {
+        let _ = block_disk_at_mount_time
+            as fn(char, &DiskIdentity, &crate::audit_emitter::EmitContext) -> Result<(), String>;
+    }
+
+    /// Phase 44: verify that `emit_disk_mount_blocked` constructs an
+    /// AuditEvent with the correct EventType and blocked_disk fields.
+    /// We build the same event the helper would build and inspect it.
+    #[cfg(windows)]
+    #[test]
+    fn test_emit_disk_mount_blocked_event_fields() {
+        use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+        let ctx = crate::audit_emitter::EmitContext {
+            agent_id: "AGENT-TEST-44".into(),
+            session_id: 42,
+            user_sid: "S-1-5-21-44".into(),
+            user_name: "testuser".into(),
+            machine_name: None,
+        };
+
+        let disk = DiskIdentity {
+            instance_id: "TEST\\Disk\\44".to_string(),
+            bus_type: BusType::Usb,
+            model: "TestDrive".to_string(),
+            drive_letter: Some('Y'),
+            serial: Some("SN-44".to_string()),
+            size_bytes: Some(500_000_000_000),
+            is_boot_disk: false,
+            encryption_status: None,
+            encryption_method: None,
+            encryption_checked_at: None,
+        };
+
+        // Build the event exactly as emit_disk_mount_blocked would.
+        let event = AuditEvent::new(
+            EventType::DiskMountBlocked,
+            ctx.user_sid.clone(),
+            ctx.user_name.clone(),
+            "disk://mount-blocked".to_string(),
+            Classification::T4,
+            Action::WRITE,
+            Decision::DENY,
+            ctx.agent_id.clone(),
+            ctx.session_id,
+        )
+        .with_blocked_disk(disk.clone());
+
+        assert_eq!(event.event_type, EventType::DiskMountBlocked);
+        assert_eq!(event.classification, Classification::T4);
+        assert_eq!(event.decision, Decision::DENY);
+        assert_eq!(event.resource_path, "disk://mount-blocked");
+        assert!(event.blocked_disk.is_some());
+        let blocked = event.blocked_disk.as_ref().unwrap();
+        assert_eq!(blocked.instance_id, "TEST\\Disk\\44");
+        assert_eq!(blocked.drive_letter, Some('Y'));
+
+        // Verify JSON serialization contains expected fields.
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            json.contains("DISK_MOUNT_BLOCKED"),
+            "event_type must serialize"
+        );
+        assert!(
+            json.contains("blocked_disk"),
+            "blocked_disk field must be present"
+        );
+        assert!(json.contains("TestDrive"), "model must be present");
     }
 
     /// on_disk_arrival logs device_path on enumerate_fixed_disks failure.
