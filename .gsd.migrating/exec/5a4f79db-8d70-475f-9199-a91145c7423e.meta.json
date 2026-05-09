@@ -1,0 +1,18 @@
+{
+  "id": "5a4f79db-8d70-475f-9199-a91145c7423e",
+  "runtime": "bash",
+  "purpose": "Run dlp-agent tests with correct filter pattern",
+  "script_chars": 76,
+  "started_at": "2026-05-08T15:33:37.920Z",
+  "finished_at": "2026-05-08T15:33:38.482Z",
+  "exit_code": 0,
+  "signal": null,
+  "timed_out": false,
+  "duration_ms": 562,
+  "stdout_bytes": 2250,
+  "stderr_bytes": 0,
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "stdout_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\5a4f79db-8d70-475f-9199-a91145c7423e.stdout",
+  "stderr_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\5a4f79db-8d70-475f-9199-a91145c7423e.stderr"
+}

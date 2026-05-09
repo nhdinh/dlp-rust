@@ -1,0 +1,98 @@
+=== List all test names in dlp-agent ===
+cloud_enforcer::tests::test_created_action_blocked: test
+cloud_enforcer::tests::test_custom_sync_path: test
+cloud_enforcer::tests::test_deleted_action_returns_none: test
+cloud_enforcer::tests::test_empty_path_returns_none: test
+cloud_enforcer::tests::test_moved_action_blocked: test
+cloud_enforcer::tests::test_path_outside_sync_folder_returns_none: test
+cloud_enforcer::tests::test_read_action_returns_none: test
+cloud_enforcer::tests::test_t1_file_in_sync_folder_returns_none: test
+cloud_enforcer::tests::test_t3_file_in_sync_folder_blocked: test
+cloud_enforcer::tests::test_t4_file_in_sync_folder_blocked: test
+cloud_enforcer::tests::test_unc_path_returns_none: test
+hook_injector::tests::test_injector_rejects_long_path: test
+hook_injector::tests::test_injector_rejects_missing_dll: test
+hook_injector::tests::test_injector_rejects_pid_zero: test
+hook_injector::tests::test_injector_successfully_injects_dll: test
+hook_injector::tests::test_is_module_loaded_finds_kernel32: test
+hook_injector::tests::test_is_module_loaded_not_found: test
+hook_ipc::tests::hook_ipc_empty_path_boundary: test
+hook_ipc::tests::hook_ipc_malformed_request_logged_and_dropped: test
+hook_ipc::tests::hook_ipc_oversized_path_frame_rejected: test
+hook_ipc::tests::hook_ipc_roundtrip_test: test
+hook_ipc::tests::hook_ipc_server_not_running_connect_fails: test
+hook_ipc::tests::hook_ipc_zero_byte_payload_returns_no_response: test
+wfp_manager::tests::test_add_remove_block: test
+wfp_manager::tests::test_block_invalid_pid: test
+wfp_manager::tests::test_double_block_same_pid: test
+wfp_manager::tests::test_register_unregister: test
+wfp_manager::tests::test_remove_nonexistent_pid: test
+cloud_tc::test_tc_30_public_cloud_upload_allowed: test
+cloud_tc::test_tc_31_confidential_cloud_upload_blocked: test
+
+=== Running dlp-agent tests with broader filters ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running unittests src\lib.rs (target\debug\deps\dlp_agent-b25f6b5d6cc9ff77.exe)
+
+running 12 tests
+test hook_injector::tests::test_injector_rejects_pid_zero ... ok
+test hook_injector::tests::test_injector_rejects_long_path ... ok
+test hook_injector::tests::test_injector_rejects_missing_dll ... ok
+test hook_injector::tests::test_is_module_loaded_finds_kernel32 ... ok
+test hook_ipc::tests::hook_ipc_server_not_running_connect_fails ... ok
+test hook_injector::tests::test_is_module_loaded_not_found ... ok
+test hook_ipc::tests::hook_ipc_zero_byte_payload_returns_no_response ... ok
+test hook_ipc::tests::hook_ipc_empty_path_boundary ... ok
+test hook_ipc::tests::hook_ipc_malformed_request_logged_and_dropped ... ok
+test hook_ipc::tests::hook_ipc_oversized_path_frame_rejected ... ok
+test hook_ipc::tests::hook_ipc_roundtrip_test ... ok
+test hook_injector::tests::test_injector_successfully_injects_dll ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 389 filtered out; finished in 0.21s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+     Running unittests src\lib.rs (target\debug\deps\dlp_agent-b25f6b5d6cc9ff77.exe)
+
+running 5 tests
+test wfp_manager::tests::test_add_remove_block ... ok
+test wfp_manager::tests::test_block_invalid_pid ... ok
+test wfp_manager::tests::test_register_unregister ... ok
+test wfp_manager::tests::test_double_block_same_pid ... ok
+test wfp_manager::tests::test_remove_nonexistent_pid ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 396 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+     Running unittests src\lib.rs (target\debug\deps\dlp_agent-b25f6b5d6cc9ff77.exe)
+
+running 11 tests
+test cloud_enforcer::tests::test_unc_path_returns_none ... ok
+test cloud_enforcer::tests::test_created_action_blocked ... ok
+test cloud_enforcer::tests::test_custom_sync_path ... ok
+test cloud_enforcer::tests::test_t3_file_in_sync_folder_blocked ... ok
+test cloud_enforcer::tests::test_read_action_returns_none ... ok
+test cloud_enforcer::tests::test_t1_file_in_sync_folder_returns_none ... ok
+test cloud_enforcer::tests::test_deleted_action_returns_none ... ok
+test cloud_enforcer::tests::test_t4_file_in_sync_folder_blocked ... ok
+test cloud_enforcer::tests::test_empty_path_returns_none ... ok
+test cloud_enforcer::tests::test_path_outside_sync_folder_returns_none ... ok
+test cloud_enforcer::tests::test_moved_action_blocked ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 390 filtered out; finished in 0.00s
+
+
+=== Running comprehensive TC-30 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+     Running tests\comprehensive.rs (target\debug\deps\comprehensive-07c9a9f7d29159cc.exe)
+
+running 1 test
+test cloud_tc::test_tc_30_public_cloud_upload_allowed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 169 filtered out; finished in 0.00s
+
+
+=== Summary ===
+HOOK_LIB: 0
+WFP_LIB: 0
+CLOUD_LIB: 0
+TC30: 0

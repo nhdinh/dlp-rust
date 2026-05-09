@@ -1,9 +1,9 @@
 # GSD State
 
 **Active Milestone:** M017: v0.9.0 Cloud & Print Exfiltration Prevention
-**Active Slice:** S01: API Hook Framework + WFP Filter
+**Active Slice:** S05: Integration & UAT
 **Phase:** planning
-**Requirements Status:** 0 active · 6 validated · 0 deferred · 0 out of scope
+**Requirements Status:** 2 active · 6 validated · 0 deferred · 0 out of scope
 
 ## Milestone Registry
 - ✅ **M008:** v0.8.1 Deferred Items & Issue Debt
@@ -24,4 +24,4 @@
 - None
 
 ## Next Action
-Slice S01 has no DB tasks. Plan slice tasks before execution.
+Slice S05 has no DB tasks. Plan slice tasks before execution.

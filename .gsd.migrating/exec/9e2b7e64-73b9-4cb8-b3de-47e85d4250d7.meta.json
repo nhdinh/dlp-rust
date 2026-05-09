@@ -1,0 +1,18 @@
+{
+  "id": "9e2b7e64-73b9-4cb8-b3de-47e85d4250d7",
+  "runtime": "bash",
+  "purpose": "Run print_xps_parser tests",
+  "script_chars": 73,
+  "started_at": "2026-05-08T15:31:48.059Z",
+  "finished_at": "2026-05-08T15:32:18.836Z",
+  "exit_code": null,
+  "signal": "SIGKILL",
+  "timed_out": true,
+  "duration_ms": 30777,
+  "stdout_bytes": 1844,
+  "stderr_bytes": 0,
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "stdout_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\9e2b7e64-73b9-4cb8-b3de-47e85d4250d7.stdout",
+  "stderr_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\9e2b7e64-73b9-4cb8-b3de-47e85d4250d7.stderr"
+}

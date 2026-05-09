@@ -1,0 +1,225 @@
+=== dlp-common EventType ===
+dlp-common/src/audit.rs:30:pub enum EventType {
+dlp-common/src/audit.rs-31-    /// A file was opened, read, or written.
+dlp-common/src/audit.rs-32-    Access,
+dlp-common/src/audit.rs-33-    /// An operation was blocked by an ABAC DENY decision.
+dlp-common/src/audit.rs-34-    Block,
+dlp-common/src/audit.rs-35-    /// A DENY_WITH_ALERT decision was triggered — also triggers SIEM alert.
+dlp-common/src/audit.rs-36-    Alert,
+dlp-common/src/audit.rs-37-    /// A policy or configuration was changed.
+dlp-common/src/audit.rs-38-    ConfigChange,
+dlp-common/src/audit.rs-39-    /// A user session logged off.
+dlp-common/src/audit.rs-40-    SessionLogoff,
+dlp-common/src/audit.rs-41-    /// An administrative action was performed via the dlp-server admin API.
+dlp-common/src/audit.rs-42-    AdminAction,
+dlp-common/src/audit.rs-43-    /// A dlp-agent service stop was attempted and failed after 3 wrong passwords.
+dlp-common/src/audit.rs-44-    ServiceStopFailed,
+dlp-common/src/audit.rs-45-    /// Disk discovery event emitted at agent startup with all enumerated fixed disks.
+dlp-common/src/audit.rs-46-    DiskDiscovery,
+dlp-common/src/audit.rs-47-    /// A fixed disk was blocked at mount time because its instance_id was not
+dlp-common/src/audit.rs-48-    /// in the frozen allowlist (DISK-F1, Phase 44).
+dlp-common/src/audit.rs-49-    DiskMountBlocked,
+dlp-common/src/audit.rs-50-    /// A grace period / quarantine was started for an unregistered disk.
+
+=== AuditEvent struct ===
+
+=== lib.rs modules ===
+//! `dlp-agent` — Windows Service DLP enforcement component.
+//!
+//! ## Crate structure
+//!
+//! - [`service`] — Windows Service lifecycle (Sprint 4, T-10): SCM registration,
+//!   Start/Stop/Pause/Resume states, single-instance mutex, graceful shutdown.
+//! - [`ui_spawner`] — Multi-session UI spawner (Sprint 5, T-30):
+//!   `WTSEnumerateSessionsW` + `CreateProcessAsUser` + session change handling.
+//! - [`ipc`] — Named-pipe IPC servers (Sprint 6, T-31–T-34):
+//!   Pipe 1 (command), Pipe 2 (agent-to-UI), Pipe 3 (UI-to-agent).
+//! - [`health_monitor`] — Mutual health ping-pong (Sprint 7, T-35).
+//! - [`session_monitor`] — Session logon/logoff handler (Sprint 7, T-36).
+//! - [`protection`] — Process DACL hardening (Sprint 8, T-37).
+//! - [`interception`] — File interception engine (Sprint 13, T-11).
+//! - [`identity`] — SMB impersonation resolution (Sprint 13, T-12).
+//! - [`engine_client`] — HTTPS client to Policy Engine (Sprint 13, T-16).
+//! - [`cache`] — Policy decision cache with TTL (Sprint 13, T-17).
+//! - [`detection`] — USB and network share detection (Sprint 14, T-13–T-14):
+//!   - `detection::usb` — USB mass storage detection via `GetDriveTypeW`.
+//!   - `detection::network_share` — SMB destination whitelisting.
+//! - [`offline`] — Offline mode with fail-closed fallback (Sprint 15, T-18).
+//! - [`audit_emitter`] — Append-only JSONL audit log with rotation (Sprint 15, T-19/T-26/T-27).
+//! - [`clipboard`] — Clipboard hooks and content classifier (Sprint 16, T-20).
+
+pub mod config;
+
+pub mod prelude {
+    pub use dlp_common::*;
+}
+
+#[cfg(windows)]
+pub mod service;
+
+#[cfg(windows)]
+pub mod ui_spawner;
+
+#[cfg(windows)]
+pub mod ipc;
+
+#[cfg(windows)]
+pub mod hook_ipc;
+
+#[cfg(windows)]
+pub mod hook_injector;
+
+#[cfg(windows)]
+pub mod wfp_ffi;
+
+#[cfg(windows)]
+pub mod wfp_manager;
+
+#[cfg(windows)]
+pub mod health_monitor;
+
+#[cfg(windows)]
+pub mod session_monitor;
+
+#[cfg(windows)]
+pub mod protection;
+
+#[cfg(windows)]
+pub mod password_stop;
+
+#[cfg(windows)]
+pub mod interception;
+
+#[cfg(windows)]
+pub mod identity;
+
+#[cfg(windows)]
+pub mod engine_client;
+
+#[cfg(windows)]
+pub mod cache;
+
+#[cfg(windows)]
+pub mod detection;
+
+#[cfg(windows)]
+pub mod offline;
+
+pub mod audit_emitter;
+
+#[cfg(windows)]
+pub mod clipboard;
+
+#[cfg(windows)]
+pub mod session_identity;
+
+#[cfg(windows)]
+pub mod server_client;
+
+#[cfg(windows)]
+pub mod device_controller;
+
+#[cfg(windows)]
+pub mod device_registry;
+
+pub mod chrome;
+
+#[cfg(windows)]
+pub mod disk_enforcer;
+
+#[cfg(windows)]
+pub mod usb_enforcer;
+
+#[cfg(windows)]
+pub mod cloud_enforcer;
+
+/// Shared test helpers for modules that mutate the global DiskEnumerator OnceLock.
+///
+/// The global `DISK_ENUMERATOR` is a process-wide OnceLock. Tests in
+/// `disk_enforcer::tests` and `detection::disk::tests` both reset the
+/// enumerator's RwLock-protected fields between test cases. Without a shared
+/// serialization lock, these tests race against each other when cargo runs
+/// them in parallel threads. `DISK_TEST_LOCK` provides the coordination point.
+#[cfg(test)]
+pub mod test_helpers {
+    use parking_lot::Mutex;
+
+    /// Acquire this lock in any test that reads or writes the global
+    /// `DiskEnumerator` maps (`drive_letter_map`, `instance_id_map`,
+    /// `enumeration_complete`). Holds across the full arrange-act-assert cycle.
+    pub static DISK_TEST_LOCK: Mutex<()> = Mutex::new(());
+}
+
+=== interception/mod.rs enforcer checks ===
+112:    audit_event.policy_name = Some("USB enforcement: device blocked or read-only".to_string());
+113-
+114-    // AUDIT-04 (Phase 42): Enrich with app identity from the initiating process.
+115-    crate::audit_emitter::enrich_audit_with_app_identity(&mut audit_event, pid);
+116-    crate::audit_emitter::set_destination_application(&mut audit_event, None);
+117-
+118-    emit_audit(ctx, &mut audit_event);
+119-
+120-    if usb_result.decision.is_denied() {
+121-        let msg = Pipe1AgentMsg::BlockNotify {
+122:            reason: "USB enforcement: device blocked or read-only".to_string(),
+123-            classification: usb_classification(usb_result.tier),
+124-            resource_path: path.to_string(),
+125-            policy_id: String::new(),
+126-        };
+127-        if let Err(e) = pipe1::send_to_ui(ctx.session_id, &msg) {
+128-            warn!(
+129-                error = %e,
+130-                session_id = ctx.session_id,
+131-                "failed to send USB BlockNotify to UI"
+132-            );
+133-        }
+134-    }
+135-
+136-    // USB-04: toast notification — fires only when per-drive cooldown has not suppressed it.
+137-    if usb_result.notify {
+138-        let (title, body) = usb_toast_message(usb_result);
+139-        crate::ipc::pipe2::BROADCASTER.broadcast(&Pipe2AgentMsg::Toast { title, body });
+140-    }
+141-}
+142-
+143-/// Emits a disk block audit event and notifies the UI.
+144-fn handle_disk_block(
+145-    ctx: &EmitContext,
+146-    user_sid: &str,
+147-    user_name: &str,
+148-    path: &str,
+149-    pid: u32,
+150-    disk_result: &crate::disk_enforcer::DiskBlockResult,
+151-) {
+152-    let mut audit_event = AuditEvent::new(
+153-        EventType::Block,
+154-        user_sid.to_string(),
+155-        user_name.to_string(),
+156-        path.to_string(),
+157-        // Classification not yet resolved at this stage; T1 is the
+158-        // conservative public-tier placeholder (AUDIT-02).
+159-        dlp_common::Classification::T1,
+160-        dlp_common::Action::WRITE,
+161-        disk_result.decision,
+162-        ctx.agent_id.clone(),
+163-        ctx.session_id,
+164-    )
+165-    .with_access_context(AuditAccessContext::Local)
+166-    .with_blocked_disk(disk_result.disk.clone());
+167-    // WR-03: no policy matched this enforcement — leave policy_id as None
+168-    // so SIEM rules that test `policy_id IS NOT NULL` are not misled.
+169-    // Set only policy_name to convey the enforcement reason.
+170-    audit_event.policy_name = Some("Disk enforcement: unregistered fixed disk".to_string());
+171-
+172-    // AUDIT-04 (Phase 42): Enrich with app identity from the initiating process.
+--
+290:/// * `usb_enforcer` — optional USB trust-tier enforcer; fires before ABAC evaluation (None = USB enforcement disabled)
+291-/// * `cloud_enforcer` — optional cloud sync enforcer; fires after disk, before ABAC (None = cloud enforcement disabled)
+292-pub async fn run_event_loop(
+293-    mut rx: mpsc::Receiver<FileAction>,
+294-    offline: Arc<OfflineManager>,
+295-    ctx: EmitContext,
+296-    session_map: Arc<SessionIdentityMap>,
+297-    ad_client: Arc<Option<dlp_common::AdClient>>,
+
+=== Classification enum ===

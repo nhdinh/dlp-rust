@@ -13,16 +13,16 @@
 
 ## Slices
 
-- [ ] **S01: API Hook Framework + WFP Filter** `risk:high` `depends:[]`
+- [x] **S01: S01** `risk:high` `depends:[]`
   > After this: Write a test file to a OneDrive folder — the hook blocks CreateFileW before the sync client sees it. Bypass the hook with a direct syscall → WFP catches the HTTPS upload attempt.
 
-- [ ] **S04: Print Spooler Interception** `risk:high` `depends:[]`
+- [x] **S04: S04** `risk:high` `depends:[]`
   > After this: Print a document containing T4 content — job is cancelled via SetJob(..., JOB_CONTROL_DELETE) before the printer receives it. Admin CLI shows print policy status.
 
-- [ ] **S02: Cloud Sync Interception** `risk:high` `depends:[S01]`
+- [x] **S02: S02** `risk:high` `depends:[]`
   > After this: Copy a T4 file to Dropbox → blocked with user toast. Copy a T1 file → allowed. Works for all four providers (OneDrive, GDrive, Dropbox, Box).
 
-- [ ] **S03: Cloud Share Link Detection** `risk:medium` `depends:[S02]`
+- [x] **S03: S03** `risk:medium` `depends:[]`
   > After this: Copy a https://1drv.ms/... link to clipboard → alert emitted if the linked file is T3/T4. Sync-folder files get stricter ABAC policy applied.
 
 - [ ] **S05: Integration & UAT** `risk:low` `depends:[S02,S03,S04]`

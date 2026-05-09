@@ -1,3 +1,10 @@
-# GSD context snapshot (2026-05-05T23:51:22.646Z)
+# GSD context snapshot (2026-05-09T01:25:47.273Z)
 
-_No durable memories, active context, or exec history to surface._
+## Top project memories
+- [MEM017] (architecture) The hook DLL implements fail-closed behavior: if the named pipe client cannot connect, the pipe request times out, or the agent responds DENY, the hook returns ERROR_ACCESS_DENIED. This prevents files from silently bypassing enforcement when the agent is unreachable.
+- [MEM013] (gotcha) In dlp-agent/src/ipc/frame.rs, write_all had a bug where `slice_len = buf.len() - remaining` computed 0 on the first iteration, causing WriteFile to receive an empty slice and immediately fail with "pipe closed during write". The fix uses `offset = buf.len() - remaining` and `slice_len = remaining.min(65536)`, matching the correct pattern in read_exact.
+- [MEM007] (architecture) Test isolation pattern for global OnceLock state Chose: Thread-local TEST_EVALUATOR_OVERRIDE for Chrome handler parallel test isolation. Rationale: Eliminates parallel test races for Chrome handler ABAC tests without restructuring the entire evaluator to use dependency injection..
+- [MEM019] (environment) WFP filter registration requires admin privileges and may fail on non-Windows targets or Windows versions without WFP support. The WfpManager is constructed conditionally based on wfp_filter_enabled config, and registration failures are logged as warnings without blocking service startup.
+- [MEM020] (pattern) When adding new config fields to AgentConfig/AgentConfigPayload, follow the established pattern: Option<T> in AgentConfig (TOML) with serde(default), plain T in AgentConfigPayload (JSON) with serde(default) or serde(default = "fn_name"). Add corresponding default functions in server_client.rs. In apply_payload_to_config, use None guard (skip diff when cfg is None and payload equals default) and empty-string guard for String fields. Update all test struct literals in both crates.
+- [MEM023] (pattern) PrintEnforcer follows the established enforcer shape (MEM018): new() reads config flag, start() delegates to watcher, stop() delegates to w
+…[truncated]

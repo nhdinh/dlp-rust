@@ -1,16 +1,16 @@
 {
   "nodes": [
     {
-      "id": "milestone:M009",
-      "label": "M009: v0.8.0 Application-Aware DLP",
+      "id": "milestone:M017",
+      "label": "M017: v0.9.0 Cloud & Print Exfiltration Prevention",
       "type": "milestone",
-      "description": "Active milestone: M009",
+      "description": "Active milestone: M017",
       "confidence": "EXTRACTED",
       "sourceFile": "STATE.md"
     },
     {
-      "id": "concept:phase:validating-milestone",
-      "label": "Phase: validating-milestone",
+      "id": "concept:phase:planning",
+      "label": "Phase: planning",
       "type": "concept",
       "confidence": "EXTRACTED",
       "sourceFile": "STATE.md"
@@ -97,6 +97,13 @@
       "label": "T01: UAT and regression validation",
       "type": "task",
       "confidence": "EXTRACTED"
+    },
+    {
+      "id": "milestone:M009",
+      "label": "M009: v0.8.0 Application-Aware DLP",
+      "type": "milestone",
+      "confidence": "EXTRACTED",
+      "sourceFile": "milestones/M009/M009-ROADMAP.md"
     },
     {
       "id": "slice:M009:S01",
@@ -614,6 +621,130 @@
       "label": "T01: Comprehensive DLP test suite",
       "type": "task",
       "confidence": "EXTRACTED"
+    },
+    {
+      "id": "slice:M017:S01",
+      "label": "S01: API Hook Framework + WFP Filter",
+      "type": "slice",
+      "confidence": "EXTRACTED",
+      "sourceFile": "milestones/M017/slices/S01/S01-PLAN.md"
+    },
+    {
+      "id": "task:M017:S01:T01",
+      "label": "T01: Add Action::CLOUD_UPLOAD and cloud/WFP config fields",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "task:M017:S01:T02",
+      "label": "T02: Named pipe protocol and agent-side pipe server",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "task:M017:S01:T03",
+      "label": "T03: Hook DLL skeleton and injector",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "task:M017:S01:T04",
+      "label": "T04: Hook classification logic and named pipe client",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "task:M017:S01:T05",
+      "label": "T05: WFP FFI bindings and WFP manager",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "task:M017:S01:T06",
+      "label": "T06: Cloud enforcer and service integration",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "slice:M017:S02",
+      "label": "S02: Cloud Sync Interception",
+      "type": "slice",
+      "confidence": "EXTRACTED",
+      "sourceFile": "milestones/M017/slices/S02/S02-PLAN.md"
+    },
+    {
+      "id": "task:M017:S02:T01",
+      "label": "T01: Implement resolve_sync_paths() with registry discovery and fallback",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "task:M017:S02:T02",
+      "label": "T02: Wire real ABAC classification into CloudEnforcer::check() and update all call sites",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "task:M017:S02:T03",
+      "label": "T03: Add sync-client process watcher loop to service.rs",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "slice:M017:S03",
+      "label": "S03: Cloud Share Link Detection",
+      "type": "slice",
+      "confidence": "EXTRACTED",
+      "sourceFile": "milestones/M017/slices/S03/S03-PLAN.md"
+    },
+    {
+      "id": "task:M017:S03:T01",
+      "label": "T01: Implement ShareLinkEnforcer detection module and add Action::SHARE_LINK",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "task:M017:S03:T02",
+      "label": "T02: Wire ShareLinkEnforcer into ClipboardListener and add TC-34..TC-37",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "slice:M017:S04",
+      "label": "S04: Print Spooler Interception",
+      "type": "slice",
+      "confidence": "EXTRACTED",
+      "sourceFile": "milestones/M017/slices/S04/S04-PLAN.md"
+    },
+    {
+      "id": "task:M017:S04:T01",
+      "label": "T01: Add ABAC PRINT action, config fields, and dependencies",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "task:M017:S04:T02",
+      "label": "T02: Build Win32 print job info wrappers",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "task:M017:S04:T03",
+      "label": "T03: Build XPS text extraction parser",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "task:M017:S04:T04",
+      "label": "T04: Build print spooler watcher thread",
+      "type": "task",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "id": "task:M017:S04:T05",
+      "label": "T05: Integrate print enforcer into service and implement UAT tests",
+      "type": "task",
+      "confidence": "EXTRACTED"
     }
   ],
   "edges": [
@@ -1120,7 +1251,127 @@
       "to": "task:M016:S02:T01",
       "type": "contains",
       "confidence": "EXTRACTED"
+    },
+    {
+      "from": "milestone:M017",
+      "to": "slice:M017:S01",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S01",
+      "to": "task:M017:S01:T01",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S01",
+      "to": "task:M017:S01:T02",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S01",
+      "to": "task:M017:S01:T03",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S01",
+      "to": "task:M017:S01:T04",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S01",
+      "to": "task:M017:S01:T05",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S01",
+      "to": "task:M017:S01:T06",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "milestone:M017",
+      "to": "slice:M017:S02",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S02",
+      "to": "task:M017:S02:T01",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S02",
+      "to": "task:M017:S02:T02",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S02",
+      "to": "task:M017:S02:T03",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "milestone:M017",
+      "to": "slice:M017:S03",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S03",
+      "to": "task:M017:S03:T01",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S03",
+      "to": "task:M017:S03:T02",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "milestone:M017",
+      "to": "slice:M017:S04",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S04",
+      "to": "task:M017:S04:T01",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S04",
+      "to": "task:M017:S04:T02",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S04",
+      "to": "task:M017:S04:T03",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S04",
+      "to": "task:M017:S04:T04",
+      "type": "contains",
+      "confidence": "EXTRACTED"
+    },
+    {
+      "from": "slice:M017:S04",
+      "to": "task:M017:S04:T05",
+      "type": "contains",
+      "confidence": "EXTRACTED"
     }
   ],
-  "builtAt": "2026-05-08T05:50:04.614Z"
+  "builtAt": "2026-05-09T01:19:49.965Z"
 }

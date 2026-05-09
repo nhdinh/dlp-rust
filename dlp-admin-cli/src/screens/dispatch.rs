@@ -2816,6 +2816,7 @@ fn value_count_for(attr: ConditionAttribute, field: Option<dlp_common::abac::App
 /// * `buffer` - Free-text input for MemberOf and app-identity Publisher/ImagePath fields.
 /// * `field` - For `SourceApplication`/`DestinationApplication`: the AppField selected in the
 ///   sub-step. `None` causes an early return of `None` (fail-closed, per T-28-02-01).
+///
 /// Builds a Classification condition from picker index.
 fn build_classification_condition(
     op: String,
@@ -3024,6 +3025,7 @@ fn build_condition(
 ///   select attributes; `0` for `MemberOf` (text path, index unused).
 /// - `buffer` is the `group_sid` string for `MemberOf`; `String::new()`
 ///   for all other attributes.
+///
 /// Maps a Classification value to its picker index.
 fn classification_to_idx(value: &dlp_common::Classification) -> usize {
     match value {
@@ -3620,7 +3622,7 @@ fn handle_conditions_step2(
     let ops = operators_for(attr, selected_field);
 
     match key.code {
-        KeyCode::Up | KeyCode::Down => step2_nav(app, &ops, key.code),
+        KeyCode::Up | KeyCode::Down => step2_nav(app, ops, key.code),
         KeyCode::Enter => step2_advance(app),
         KeyCode::Esc => step2_go_back(app),
         _ => {}
@@ -4070,6 +4072,7 @@ fn action_import_policies(app: &mut App) {
 /// - Abort on first failure with per-policy error message.
 /// - Transitions to ImportState::Success { created, updated } on success,
 ///   ImportState::Error(msg) on failure.
+///
 /// Returns the caller screen for ImportConfirm.
 fn import_confirm_return_screen(caller: ImportCaller) -> Screen {
     match caller {

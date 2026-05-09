@@ -1,0 +1,18 @@
+{
+  "id": "7b434116-6b9e-4d2b-93a0-d60880074c0e",
+  "runtime": "bash",
+  "purpose": "Find CLOUD_UPLOAD and related types in dlp-common",
+  "script_chars": 114,
+  "started_at": "2026-05-08T14:50:36.024Z",
+  "finished_at": "2026-05-08T14:50:36.305Z",
+  "exit_code": 127,
+  "signal": null,
+  "timed_out": false,
+  "duration_ms": 281,
+  "stdout_bytes": 231,
+  "stderr_bytes": 0,
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "stdout_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\7b434116-6b9e-4d2b-93a0-d60880074c0e.stdout",
+  "stderr_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\7b434116-6b9e-4d2b-93a0-d60880074c0e.stderr"
+}
