@@ -1,5 +1,0 @@
-target_family="windows"
-target_os="windows"
-windows
----
-%OS%
