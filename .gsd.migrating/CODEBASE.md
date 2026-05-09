@@ -1,7 +1,7 @@
 # Codebase Map
 
-Generated: 2026-05-09T02:22:38Z | Files: 500 | Described: 0/500
-<!-- gsd:codebase-meta {"generatedAt":"2026-05-09T02:22:38Z","fingerprint":"d179797cbf15bf1ae81301fad35749ab9bac0df4","fileCount":500,"truncated":true} -->
+Generated: 2026-05-09T05:50:33Z | Files: 500 | Described: 0/500
+<!-- gsd:codebase-meta {"generatedAt":"2026-05-09T05:50:33Z","fingerprint":"9f6fea70bc988ce45b3dfa20f4b0868d3b3604d0","fileCount":500,"truncated":true} -->
 Note: Truncated to first 500 files. Run with higher --max-files to include all.
 
 ### (root)/
@@ -92,7 +92,7 @@ Note: Truncated to first 500 files. Run with higher --max-files to include all.
 - `.gsd.migrating/STATE.md`
 
 ### .gsd.migrating/activity/
-- *(34 files: 34 .jsonl)*
+- *(41 files: 41 .jsonl)*
 
 ### .gsd.migrating/audit/
 - `.gsd.migrating/audit/events.jsonl`
@@ -598,7 +598,10 @@ Note: Truncated to first 500 files. Run with higher --max-files to include all.
 
 ### .gsd.migrating/milestones/M017/
 - `.gsd.migrating/milestones/M017/M017-CONTEXT.md`
+- `.gsd.migrating/milestones/M017/M017-LEARNINGS.md`
 - `.gsd.migrating/milestones/M017/M017-ROADMAP.md`
+- `.gsd.migrating/milestones/M017/M017-SUMMARY.md`
+- `.gsd.migrating/milestones/M017/M017-VALIDATION.md`
 
 ### .gsd.migrating/milestones/M017/anchors/
 - `.gsd.migrating/milestones/M017/anchors/plan-slice.json`
@@ -644,17 +647,3 @@ Note: Truncated to first 500 files. Run with higher --max-files to include all.
 - `.gsd.migrating/milestones/M017/slices/S02/tasks/T02-VERIFY.json`
 - `.gsd.migrating/milestones/M017/slices/S02/tasks/T03-PLAN.md`
 - `.gsd.migrating/milestones/M017/slices/S02/tasks/T03-SUMMARY.md`
-- `.gsd.migrating/milestones/M017/slices/S02/tasks/T03-VERIFY.json`
-
-### .gsd.migrating/milestones/M017/slices/S03/
-- `.gsd.migrating/milestones/M017/slices/S03/S03-PLAN.md`
-- `.gsd.migrating/milestones/M017/slices/S03/S03-PRE-EXEC-VERIFY.json`
-- `.gsd.migrating/milestones/M017/slices/S03/S03-RESEARCH.md`
-- `.gsd.migrating/milestones/M017/slices/S03/S03-SUMMARY.md`
-- `.gsd.migrating/milestones/M017/slices/S03/S03-UAT.md`
-
-### .gsd.migrating/milestones/M017/slices/S03/tasks/
-- `.gsd.migrating/milestones/M017/slices/S03/tasks/T01-PLAN.md`
-- `.gsd.migrating/milestones/M017/slices/S03/tasks/T01-SUMMARY.md`
-- `.gsd.migrating/milestones/M017/slices/S03/tasks/T01-VERIFY.json`
-- `.gsd.migrating/milestones/M017/slices/S03/tasks/T02-PLAN.md`
