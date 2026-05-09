@@ -17,9 +17,9 @@ The system consists of five independent crates in a single Cargo workspace:
 |---|---|
 | `dlp-common` | Shared ABAC types, audit event schemas, classification model, text classifier |
 | `dlp-server` | Central HTTP management server (axum) — admin API, audit store, SIEM relay, agent registry |
-| `dlp-agent` | Windows Service running as SYSTEM — file interception, ABAC evaluation client, audit emission, clipboard monitoring |
+| `dlp-agent` | Windows Service running as SYSTEM — file interception, ABAC evaluation client, audit emission, clipboard monitoring, WFP egress enforcement, IAT hook DLL injection, print spooler interception |
 | `dlp-user-ui` | Per-session iced GUI subprocess — system tray, block dialogs, clipboard monitor, stop-password dialog |
-| `dlp-admin-cli` | Interactive ratatui TUI for DLP administrators — policy CRUD, password management, SIEM/alert configuration |
+| `dlp-admin-cli` | Interactive ratatui TUI for DLP administrators — policy CRUD, password management, SIEM/alert configuration, cloud enforcement config, print enforcement config |
 
 ---
 
@@ -140,6 +140,52 @@ dlp-server writes to SQLite policies table
 PolicySyncer → PUT /policies/{id} ──► replica dlp-servers
 ```
 
+### 3.5 Cloud Channel Enforcement Flow
+
+```
+1. Admin enables cloud_hook_enabled via dlp-admin-cli CloudConfig screen
+         │
+2. dlp-server pushes updated AgentConfigPayload to dlp-agent on next heartbeat
+         │
+3. HookInjector::inject() — CreateRemoteThread + LoadLibraryW → IAT hook DLL
+   into monitored processes (architecture-checked: x64 / x86)
+         │
+4. Hook DLL intercepts WinInet/WinHTTP calls → HookRequest sent to agent via
+   named pipe → agent evaluates CLOUD_UPLOAD ABAC action
+         │                               │
+   ALLOW → permit                  DENY → WfpManager::block_pid(pid)
+                                    │
+                              WFP sublayer installs per-PID
+                              TCP/443 block filter
+                              (FWP_ACTION_BLOCK on FWPM_LAYER_ALE_AUTH_CONNECT_V4)
+         │
+5. Clipboard ShareLinkEnforcer intercepts copy events for known cloud share-link
+   URL patterns → evaluates SHARE_LINK ABAC action → DENY clears clipboard
+```
+
+### 3.6 Print Spooler Enforcement Flow
+
+```
+1. Admin enables print_enabled via dlp-admin-cli PrintConfig screen
+         │
+2. dlp-server pushes updated AgentConfigPayload; agent starts PrintWatcher thread
+         │
+3. FindFirstPrinterChangeNotification (PRINTER_CHANGE_ADD_JOB) → new print job
+         │
+4. GetJobW → JobInfo { job_id, document_name, user_name, pages, datatype }
+         │
+5. Read XPS spool file (ZIP archive) → parse .fpage XML files up to max_pages
+   Extract Glyphs UnicodeString attributes → reconstruct document text
+         │
+6. ContentClassifier → Classification (T1-T4)
+   │
+   ├─ Classifiable + permitted → ALLOW (job proceeds)
+   ├─ Classifiable + blocked   → SetJobW(JOB_CONTROL_DELETE) → block dialog
+   └─ Unclassifiable           → print_unclassifiable_action (Allow or Block)
+         │
+7. Audit event emitted for every enforcement decision
+```
+
 ---
 
 ## 4. Key Abstractions
@@ -199,22 +245,8 @@ Single SQLite database (WAL mode) with one mutex-guarded `Connection`. Key table
 - `global_agent_config` — default per-agent settings (monitored paths, heartbeat interval)
 - `agent_config_overrides` — per-agent config overrides
 - `ldap_config` — Active Directory connection settings (URL, base DN, TLS, cache TTL, VPN subnets)
-
-### 4.4 Database Schema (`dlp-server::db`)
-
-Single SQLite database (WAL mode) with one mutex-guarded `Connection`. Key tables:
-
-- `policies` — ABAC rules (priority, conditions JSON, action, version)
-- `exceptions` — time-limited user overrides with justification + approver
-- `agents` — endpoint registry (heartbeat, status)
-- `audit_events` — appended event log (correlation_id for SIEM deduplication)
-- `admin_users` — dlp-admin bcrypt hashes
-- `agent_credentials` — shared agent auth hash (bcrypt, synced to all agents)
-- `siem_config` — Splunk HEC and ELK endpoint configuration
-- `alert_router_config` — SMTP and Webhook alert configuration
-- `global_agent_config` — default per-agent settings (monitored paths, heartbeat interval)
-- `agent_config_overrides` — per-agent config overrides
-- `ldap_config` — Active Directory connection settings (URL, base DN, TLS, cache TTL, VPN subnets)
+- `cloud_config` — Cloud upload enforcement settings (hook enabled flag)
+- `print_config` — Print spooler enforcement settings (enabled, XPS timeout, unclassifiable action, max pages)
 
 ### 4.5 Active Directory Client (`dlp-common::ad_client`)
 
@@ -314,6 +346,13 @@ dlp-rust/
 │   │   ├── mod.rs
 │   │   ├── usb.rs           # USB mass storage detection via GetDriveTypeW.
 │   │   └── network_share.rs # SMB destination whitelisting.
+│   ├── wfp_ffi.rs           # FFI bindings to Windows Filtering Platform APIs.
+│   ├── wfp_manager.rs       # WfpManager: sublayer + per-PID TCP/443 block filters.
+│   ├── hook_injector.rs     # IAT hook DLL injection via CreateRemoteThread + LoadLibraryW.
+│   ├── hook_ipc.rs          # Named-pipe IPC types between hook DLL and agent.
+│   ├── print_watcher.rs     # Print spooler watcher (FindFirstPrinterChangeNotification).
+│   ├── print_job_info.rs    # Safe RAII wrappers for OpenPrinterW / GetJobW / SetJobW.
+│   └── print_xps_parser.rs  # XPS spool text extraction (ZIP + XML Glyphs parsing).
 │   ├── ipc/                 # Three named-pipe IPC servers.
 │   ├── service.rs           # Windows Service lifecycle (SCM, states).
 │   ├── ui_spawner.rs        # WTSEnumerateSessionsW + CreateProcessAsUser.

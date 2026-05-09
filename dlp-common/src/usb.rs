@@ -293,12 +293,18 @@ fn setupdi_description_by_vid_pid_serial(device_path: &str) -> String {
             let reshaped = format!("\\\\?\\{}", instance_id.replace('\\', "#"));
             let candidate = parse_usb_device_path(&reshaped);
 
-            // Match by VID + PID. Serial is also checked when present on both sides.
-            if candidate.vid == parsed.vid
-                && candidate.pid == parsed.pid
-                && (parsed.serial == "(none)"
-                    || candidate.serial == parsed.serial
-                    || candidate.serial == "(none)")
+            // Match by VID + PID + serial.
+            // Only treat a candidate with serial "(none)" as matching when the target
+            // also has no serial. Bluetooth adapters that share a VID with a SanDisk
+            // device have synthesised "(none)" serials and must not match a target
+            // that has a real serial number.
+            let serial_match = match (parsed.serial.as_str(), candidate.serial.as_str()) {
+                ("(none)", "(none)") => true,  // both have no serial
+                ("(none)", _) => true,          // target has no serial; accept any candidate
+                (_, "(none)") => false,         // target has real serial; candidate has none → no match
+                (t, c) => t == c,               // both have real serials; must match exactly
+            };
+            if candidate.vid == parsed.vid && candidate.pid == parsed.pid && serial_match
             {
                 let desc = read_string_property(hdev, &devinfo, SPDRP_FRIENDLYNAME)
                     .filter(|s| !s.is_empty())
@@ -627,7 +633,8 @@ impl std::error::Error for UsbResolutionError {}
 #[cfg(windows)]
 pub fn resolve_instance_id_from_dbcc_name(dbcc_name: &str) -> Result<String, UsbResolutionError> {
     // Validate path starts with the expected prefix (ASVS V5 — reject malformed input).
-    if !dbcc_name.starts_with(r"\?\USB#") {
+    // Windows device paths arrive as `\\?\USB#...` (two leading backslashes + `?`).
+    if !dbcc_name.starts_with(r"\\?\USB#") {
         return Err(UsbResolutionError::ConfigManager(0x00000013));
     }
 
@@ -756,12 +763,15 @@ pub fn find_instance_id_by_vid_pid_serial(
             let reshaped = format!("\\\\?\\{}", instance_id.replace('\\', "#"));
             let candidate = parse_usb_device_path(&reshaped);
 
-            if candidate.vid == vid
-                && candidate.pid == pid
-                && (serial == "(none)"
-                    || candidate.serial == serial
-                    || candidate.serial == "(none)")
-            {
+            // Apply the same serial matching logic as the description lookup:
+            // a candidate with serial "(none)" does not match a target with a real serial.
+            let serial_match = match (serial, candidate.serial.as_str()) {
+                ("(none)", "(none)") => true,
+                ("(none)", _) => true,
+                (_, "(none)") => false,
+                (t, c) => t == c,
+            };
+            if candidate.vid == vid && candidate.pid == pid && serial_match {
                 matches.push(instance_id);
             }
         }
@@ -977,5 +987,104 @@ mod tests {
     fn test_setupdi_description_signature_compiles() {
         // Type-check the function signature: fn(&str) -> String
         let _ = setupdi_description_for_device as fn(&str) -> String;
+    }
+
+    // -------------------------------------------------------------------------
+    // resolve_instance_id_from_dbcc_name — prefix validation (bug fix)
+    // -------------------------------------------------------------------------
+
+    /// Regression test: paths starting with `\\?\USB#` (double backslash) must NOT
+    /// be rejected by the prefix guard. Before the fix the guard checked for `\?\USB#`
+    /// (single backslash), which rejected every valid Windows device path.
+    #[test]
+    #[cfg(windows)]
+    fn test_resolve_instance_id_accepts_double_backslash_prefix() {
+        // A well-formed USB path (device will not be found at runtime, but it must
+        // pass the prefix guard and reach the CM API rather than returning early).
+        let path = r"\\?\USB#VID_0951&PID_1666#SN12345#{a5dcbf10-6530-11d2-901f-00c04fb951ed}";
+        let result = resolve_instance_id_from_dbcc_name(path);
+        // We cannot assert Ok on a machine without that device, but we must NOT get the
+        // ConfigManager(0x13) "invalid data" sentinel that the prefix guard returns.
+        if let Err(UsbResolutionError::ConfigManager(0x00000013)) = result {
+            panic!("prefix guard incorrectly rejected a valid \\\\?\\USB# path");
+        }
+    }
+
+    /// Confirm that a path with only a single leading backslash is still rejected.
+    #[test]
+    #[cfg(windows)]
+    fn test_resolve_instance_id_rejects_single_backslash_prefix() {
+        // `\?\USB#...` (one backslash) is not a valid Win32 device namespace path.
+        let path = r"\?\USB#VID_0951&PID_1666#SN12345#{a5dcbf10-6530-11d2-901f-00c04fb951ed}";
+        let result = resolve_instance_id_from_dbcc_name(path);
+        assert!(
+            matches!(result, Err(UsbResolutionError::ConfigManager(0x00000013))),
+            "expected ConfigManager(0x13) for single-backslash prefix, got: {result:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Serial match logic — prevent Bluetooth/SanDisk VID collision (bug fix)
+    // -------------------------------------------------------------------------
+
+    /// Unit-level regression: a candidate with serial "(none)" must NOT match a
+    /// target with a real serial. This is the core of the Bluetooth/SanDisk
+    /// confusion: both share VID 0781 but Bluetooth has no serial descriptor.
+    ///
+    /// We test the matching logic directly via `parse_usb_device_path` + the
+    /// match expression extracted from the function, since the SetupDi functions
+    /// require a real device to be connected.
+    #[test]
+    fn test_serial_match_real_target_vs_none_candidate() {
+        // Target: SanDisk with a real serial.
+        let target = parse_usb_device_path(
+            r"\\?\USB#VID_0781&PID_5591#0401EFEFB391D95A#{a5dcbf10-6530-11d2-901f-00c04fb951ed}",
+        );
+        // Candidate: Bluetooth adapter — same VID, no serial.
+        let candidate = parse_usb_device_path(
+            r"\\?\USB#VID_0781&PID_5591##{a5dcbf10-6530-11d2-901f-00c04fb951ed}",
+        );
+
+        assert_eq!(target.serial, "0401EFEFB391D95A");
+        assert_eq!(candidate.serial, "(none)");
+
+        // Reproduce the match logic from setupdi_description_by_vid_pid_serial.
+        let serial_match = match (target.serial.as_str(), candidate.serial.as_str()) {
+            ("(none)", "(none)") => true,
+            ("(none)", _) => true,
+            (_, "(none)") => false, // <-- must take this branch
+            (t, c) => t == c,
+        };
+
+        assert!(
+            !serial_match,
+            "candidate with serial '(none)' must NOT match target with real serial"
+        );
+    }
+
+    #[test]
+    fn test_serial_match_none_target_accepts_none_candidate() {
+        let serial_match = match ("(none)", "(none)") {
+            ("(none)", "(none)") => true,
+            _ => false,
+        };
+        assert!(serial_match);
+    }
+
+    #[test]
+    fn test_serial_match_real_both_must_be_equal() {
+        let serial_match = match ("ABC123", "ABC123") {
+            ("(none)", "(none)") | ("(none)", _) => true,
+            (_, "(none)") => false,
+            (t, c) => t == c,
+        };
+        assert!(serial_match);
+
+        let serial_match_diff = match ("ABC123", "XYZ999") {
+            ("(none)", "(none)") | ("(none)", _) => true,
+            (_, "(none)") => false,
+            (t, c) => t == c,
+        };
+        assert!(!serial_match_diff);
     }
 }

@@ -74,9 +74,9 @@ The primary TC (Test Case) coverage suite. 170 test functions organized in 6 mod
 |--------|-----------|----------|
 | `file_ops_tc` | TC-01/02/03/10/11/12/13/14/60/61/62/70/71/72 | File interception, USB, network shares, classification |
 | `email_alert_tc` | TC-20/21/22/23/24 | Email body pattern detection |
-| `cloud_tc` | TC-30/31/32/33 | Cloud interception stubs (Phase 9) |
+| `cloud_tc` | TC-30/31/32/33/34/35/36 | Cloud upload enforcement (WFP + hook DLL + ShareLink clipboard) |
 | `clipboard_tier_tc` | TC-40/41/42 | Cross-tier clipboard paste detection |
-| `print_tc` | TC-50/51/52 | Print spooler stubs (Phase 9) |
+| `print_tc` | TC-50/51/52/53/54 | Print spooler enforcement (XPS parsing, ABAC classification, job cancellation) |
 | `detective_tc` | TC-80/81/82 | Audit event generation |
 
 ### `dlp-agent/tests/integration.rs`
