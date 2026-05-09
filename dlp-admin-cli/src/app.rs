@@ -557,6 +557,34 @@ pub enum Screen {
         /// Buffered input while editing (unused for pickers, kept for consistency).
         buffer: String,
     },
+    /// Cloud sync hook configuration form.
+    ///
+    /// Row 0: cloud_hook_enabled (bool toggle). Row 1 = [Save]. Row 2 = [Back].
+    CloudConfig {
+        /// Currently loaded config as a JSON object.
+        config: serde_json::Value,
+        /// Index of the selected row (0..=2).
+        selected: usize,
+        /// Whether the selected field is in edit mode (unused for bool toggle, kept for consistency).
+        editing: bool,
+        /// Buffered input while editing (unused for bool toggle, kept for consistency).
+        buffer: String,
+    },
+    /// Print spooler interception configuration form.
+    ///
+    /// Row 0: print_enabled (bool). Row 1: print_xps_timeout_ms (numeric).
+    /// Row 2: print_unclassifiable_action (picker). Row 3: print_max_pages (numeric).
+    /// Row 4 = [Save]. Row 5 = [Back].
+    PrintConfig {
+        /// Currently loaded config as a JSON object.
+        config: serde_json::Value,
+        /// Index of the selected row (0..=5).
+        selected: usize,
+        /// Whether the selected text/numeric/picker field is in edit mode.
+        editing: bool,
+        /// Buffered input while editing a numeric field.
+        buffer: String,
+    },
     /// Conditions Builder modal overlay.
     ///
     /// 3-step sequential picker: Attribute -> Operator -> Value.

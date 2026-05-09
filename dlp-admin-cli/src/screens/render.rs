@@ -16,6 +16,12 @@ use crate::app::{
 };
 use crate::screens::dispatch::condition_display;
 use crate::screens::dispatch::operators_for;
+use crate::screens::cloud_config::{
+    CLOUD_CONFIG_BACK_ROW, CLOUD_CONFIG_KEYS, CLOUD_CONFIG_LABELS, CLOUD_CONFIG_SAVE_ROW,
+};
+use crate::screens::print_config::{
+    is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_KEYS, PRINT_CONFIG_LABELS,
+};
 use crate::screens::usb_enforcement::{
     USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_LABELS,
     USB_ENFORCEMENT_SAVE_ROW,
@@ -97,6 +103,8 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                     "Alert Config",
                     "LDAP Config",
                     "USB Enforcement",
+                    "Cloud Config",
+                    "Print Config",
                     "Back",
                 ],
                 *selected,
@@ -162,6 +170,22 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             buffer,
         } => {
             draw_usb_enforcement_config(frame, area, config, *selected, *editing, buffer);
+        }
+        Screen::CloudConfig {
+            config,
+            selected,
+            editing,
+            buffer,
+        } => {
+            draw_cloud_config(frame, area, config, *selected, *editing, buffer);
+        }
+        Screen::PrintConfig {
+            config,
+            selected,
+            editing,
+            buffer,
+        } => {
+            draw_print_config(frame, area, config, *selected, *editing, buffer);
         }
         Screen::ConditionsBuilder {
             step,
@@ -2357,6 +2381,151 @@ fn draw_usb_enforcement_config(
         };
         frame.render_widget(hint_para, hint_area);
     }
+}
+
+/// Draws the Cloud Config form.
+///
+/// `cloud_hook_enabled` (row 0) is rendered as a bool toggle — `true` displays as "Enabled",
+/// `false` displays as "Disabled". Row 1 = [Save], Row 2 = [Back].
+fn draw_cloud_config(
+    frame: &mut Frame,
+    area: Rect,
+    config: &serde_json::Value,
+    selected: usize,
+    _editing: bool,
+    _buffer: &str,
+) {
+    let block = Block::default()
+        .title(" Cloud Config ")
+        .borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut items: Vec<ListItem> = Vec::with_capacity(CLOUD_CONFIG_KEYS.len() + 2);
+
+    for (i, key) in CLOUD_CONFIG_KEYS.iter().enumerate() {
+        let label = CLOUD_CONFIG_LABELS[i];
+        // cloud_hook_enabled is a bool — display as "Enabled"/"Disabled".
+        let value_str = config[key].as_bool().map_or("Disabled", |b| {
+            if b { "Enabled" } else { "Disabled" }
+        });
+        let line = if i == selected {
+            format!("> {label}: {value_str}")
+        } else {
+            format!("  {label}: {value_str}")
+        };
+        items.push(ListItem::new(line));
+    }
+
+    let save_text = if selected == CLOUD_CONFIG_SAVE_ROW {
+        "> [ Save ]"
+    } else {
+        "  [ Save ]"
+    };
+    items.push(ListItem::new(save_text));
+
+    let back_text = if selected == CLOUD_CONFIG_BACK_ROW {
+        "> [ Back ]"
+    } else {
+        "  [ Back ]"
+    };
+    items.push(ListItem::new(back_text));
+
+    let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::BOLD));
+    frame.render_widget(list, inner);
+
+    draw_hints(frame, area, "Up/Down: navigate | Enter: toggle/action | Esc: back");
+}
+
+/// Draws the Print Config form.
+///
+/// Row 0: print_enabled (bool toggle — "[x]" / "[ ]").
+/// Row 1: print_xps_timeout_ms (numeric, edit buffer shown when editing).
+/// Row 2: print_unclassifiable_action (picker — cycles on Up/Down in edit mode).
+/// Row 3: print_max_pages (numeric).
+/// Row 4: [Save], Row 5: [Back].
+fn draw_print_config(
+    frame: &mut Frame,
+    area: Rect,
+    config: &serde_json::Value,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+) {
+    // Combine field labels with action rows for a single iteration pass.
+    const ACTION_LABELS: [&str; 2] = ["[ Save ]", "[ Back ]"];
+    let all_labels: Vec<&str> = PRINT_CONFIG_LABELS
+        .iter()
+        .copied()
+        .chain(ACTION_LABELS.iter().copied())
+        .collect();
+
+    let mut items: Vec<ListItem> = Vec::with_capacity(all_labels.len());
+
+    for (i, label) in all_labels.iter().enumerate() {
+        let line = if i < PRINT_CONFIG_KEYS.len() {
+            let value_display = if is_print_picker(i) && editing && i == selected {
+                // Picker in edit mode: show buffer-like prompt with current value and hint arrows.
+                format!(
+                    "[{}]",
+                    config
+                        .get(PRINT_CONFIG_KEYS[i])
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Block")
+                )
+            } else if is_print_picker(i) {
+                // Picker not editing: show the stored string value directly.
+                config
+                    .get(PRINT_CONFIG_KEYS[i])
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Block")
+                    .to_string()
+            } else {
+                format_config_field_value(
+                    config,
+                    PRINT_CONFIG_KEYS[i],
+                    i,
+                    selected,
+                    editing,
+                    buffer,
+                    is_print_bool,
+                    |_| false,
+                    is_print_numeric,
+                )
+            };
+            format!("{label}: {value_display}")
+        } else {
+            (*label).to_string()
+        };
+        items.push(ListItem::new(Line::from(line)));
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Print Config ")
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut state);
+
+    let hints = if editing && is_print_picker(selected) {
+        "Up/Down: cycle options | Enter: confirm | Esc: cancel"
+    } else if editing {
+        "Type to edit | Enter: commit | Esc: cancel"
+    } else {
+        "Up/Down: navigate | Enter: edit/toggle | Esc: back"
+    };
+    draw_hints(frame, area, hints);
 }
 
 /// Draws the status bar at the bottom of the screen.
