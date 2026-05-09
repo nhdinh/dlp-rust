@@ -1,0 +1,24 @@
+---
+---
+271:pub struct EmitContext {
+272-    /// The unique ID of this agent (e.g. "AGENT-WS02-001").
+273-    pub agent_id: String,
+274-    /// The interactive session in which the event occurred.
+275-    pub session_id: u32,
+276-    /// The user's Windows Security Identifier.
+277-    pub user_sid: String,
+278-    /// The user's display name.
+279-    pub user_name: String,
+280-    /// Machine hostname, set once at startup.
+281-    pub machine_name: Option<String>,
+282-}
+283-
+284-#[derive(Debug, thiserror::Error)]
+285-pub enum AuditError {
+286-    #[error("failed to open audit log: {0}")]
+287-    OpenFailed(#[from] std::io::Error),
+288-    #[error("failed to serialise audit event: {0}")]
+289-    SerializationFailed(#[from] serde_json::Error),
+290-    #[error("log directory does not exist: {0}")]
+291-    DirectoryCreateFailed(String),
+---

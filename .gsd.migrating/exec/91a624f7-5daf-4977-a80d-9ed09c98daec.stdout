@@ -1,0 +1,273 @@
+=== PROJECT STRUCTURE ===
+./dlp-admin-cli/src/app.rs
+./dlp-admin-cli/src/client.rs
+./dlp-admin-cli/src/engine.rs
+./dlp-admin-cli/src/event.rs
+./dlp-admin-cli/src/lib.rs
+./dlp-admin-cli/src/login.rs
+./dlp-admin-cli/src/main.rs
+./dlp-admin-cli/src/registry.rs
+./dlp-admin-cli/src/tui.rs
+./dlp-agent/build.rs
+./dlp-agent/src/audit_emitter.rs
+./dlp-agent/src/cache.rs
+./dlp-agent/src/config.rs
+./dlp-agent/src/device_controller.rs
+./dlp-agent/src/device_registry.rs
+./dlp-agent/src/disk_enforcer.rs
+./dlp-agent/src/engine_client.rs
+./dlp-agent/src/health_monitor.rs
+./dlp-agent/src/identity.rs
+./dlp-agent/src/lib.rs
+./dlp-agent/src/main.rs
+./dlp-agent/src/offline.rs
+./dlp-agent/src/password_stop.rs
+./dlp-agent/src/protection.rs
+./dlp-agent/src/server_client.rs
+./dlp-agent/src/service.rs
+./dlp-agent/src/session_identity.rs
+./dlp-agent/src/session_monitor.rs
+./dlp-agent/src/ui_spawner.rs
+./dlp-agent/src/usb_enforcer.rs
+./dlp-agent/tests/chrome_pipe.rs
+./dlp-agent/tests/comprehensive.rs
+./dlp-agent/tests/device_registry_cache.rs
+./dlp-agent/tests/encryption_integration.rs
+./dlp-agent/tests/integration.rs
+./dlp-agent/tests/negative.rs
+./dlp-common/src/abac.rs
+./dlp-common/src/ad_client.rs
+./dlp-common/src/audit.rs
+./dlp-common/src/classification.rs
+./dlp-common/src/classifier.rs
+./dlp-common/src/disk.rs
+./dlp-common/src/endpoint.rs
+./dlp-common/src/lib.rs
+./dlp-common/src/usb.rs
+./dlp-common/tests/endpoint_cross_crate_compat.rs
+./dlp-e2e/examples/debug_tui.rs
+./dlp-e2e/src/lib.rs
+./dlp-e2e/tests/agent_toml_writeback.rs
+./dlp-e2e/tests/agent_ui_lifecycle.rs
+
+=== CARGO WORKSPACE ===
+[workspace]
+resolver = "2"
+members = ["dlp-common", "dlp-agent", "dlp-user-ui", "dlp-admin-cli", "dlp-server", "dlp-e2e"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["DLP Team <dlp@example.com>"]
+license = "Proprietary"
+description = "Enterprise DLP System — NTFS + Active Directory + ABAC"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"
+anyhow = "1"
+parking_lot = "0.12"
+once_cell = "1"
+uuid = { version = "1", features = ["v4"] }
+bcrypt = "0.16"
+notify = "8"
+ldap3 = "0.11"
+ipnetwork = "0.20"
+secrecy = "0.8"
+
+=== EXISTING ENFORCERS ===
+./.claude/worktrees/agent-a0ddab94a92b76526/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a11aadf03a3ee2698/dlp-agent/src/disk_enforcer.rs
+./.claude/worktrees/agent-a11aadf03a3ee2698/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a206518e205941774/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a25a75105f47cc65c/dlp-agent/src/disk_enforcer.rs
+./.claude/worktrees/agent-a25a75105f47cc65c/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a2c692bf7b061f238/dlp-agent/src/disk_enforcer.rs
+./.claude/worktrees/agent-a2c692bf7b061f238/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a2e39174b2f932683/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a2ff1e1c1b32fc92e/dlp-agent/src/disk_enforcer.rs
+./.claude/worktrees/agent-a2ff1e1c1b32fc92e/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a5846cde4746812f1/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a5d42a6e6c1295c88/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a6271313a2cd75f4a/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a708f71fb3ba1a247/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a8a8e8a86cfe93081/dlp-agent/src/disk_enforcer.rs
+./.claude/worktrees/agent-a8a8e8a86cfe93081/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a92e46937ef03b491/dlp-agent/src/disk_enforcer.rs
+./.claude/worktrees/agent-a92e46937ef03b491/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-a9511bb8ac98e3201/dlp-agent/src/disk_enforcer.rs
+./.claude/worktrees/agent-a9511bb8ac98e3201/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-ac490c3ab7568e339/dlp-agent/src/disk_enforcer.rs
+./.claude/worktrees/agent-ac490c3ab7568e339/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-ac490c3ab7568e339/target/doc/dlp_agent/disk_enforcer
+./.claude/worktrees/agent-ac490c3ab7568e339/target/doc/dlp_agent/usb_enforcer
+./.claude/worktrees/agent-ac490c3ab7568e339/target/doc/src/dlp_agent/disk_enforcer.rs.html
+./.claude/worktrees/agent-ac490c3ab7568e339/target/doc/src/dlp_agent/usb_enforcer.rs.html
+./.claude/worktrees/agent-acd0c2a79eb1ab467/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-ad8e3fa5626b9ab10/dlp-agent/src/disk_enforcer.rs
+./.claude/worktrees/agent-ad8e3fa5626b9ab10/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-aee14e7ad12358c20/dlp-agent/src/usb_enforcer.rs
+./.claude/worktrees/agent-aef2469feee2048a0/dlp-agent/src/usb_enforcer.rs
+./dlp-agent/src/disk_enforcer.rs
+./dlp-agent/src/usb_enforcer.rs
+
+=== ABAC TYPES ===
+./.claude/worktrees/agent-a0ddab94a92b76526/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a11aadf03a3ee2698/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a206518e205941774/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a25a75105f47cc65c/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a2c692bf7b061f238/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a2e39174b2f932683/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a2ff1e1c1b32fc92e/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a4bb731f/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a5846cde4746812f1/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a5d42a6e6c1295c88/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a6271313a2cd75f4a/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a708f71fb3ba1a247/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a727a7b6/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a74fa802/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a8a8e8a86cfe93081/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a8a8f3fc/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a92e46937ef03b491/dlp-common/src/abac.rs
+./.claude/worktrees/agent-a9511bb8ac98e3201/dlp-common/src/abac.rs
+./.claude/worktrees/agent-aa5c15481310cfd3f/dlp-common/src/abac.rs
+./.claude/worktrees/agent-abb5386d/dlp-common/src/abac.rs
+./.claude/worktrees/agent-ac490c3ab7568e339/dlp-common/src/abac.rs
+./.claude/worktrees/agent-acd0c2a79eb1ab467/dlp-common/src/abac.rs
+./.claude/worktrees/agent-ad8e3fa5626b9ab10/dlp-common/src/abac.rs
+./.claude/worktrees/agent-ae9faf99/dlp-common/src/abac.rs
+./.claude/worktrees/agent-aee14e7ad12358c20/dlp-common/src/abac.rs
+./.claude/worktrees/agent-aef2469feee2048a0/dlp-common/src/abac.rs
+./dlp-common/src/abac.rs
+
+=== INTERCEPTION MODULE ===
+./.claude/worktrees/agent-a0ddab94a92b76526/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a0ddab94a92b76526/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a0ddab94a92b76526/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a11aadf03a3ee2698/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a11aadf03a3ee2698/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a11aadf03a3ee2698/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a206518e205941774/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a206518e205941774/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a206518e205941774/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a25a75105f47cc65c/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a25a75105f47cc65c/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a25a75105f47cc65c/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a2c692bf7b061f238/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a2c692bf7b061f238/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a2c692bf7b061f238/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a2e39174b2f932683/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a2e39174b2f932683/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a2e39174b2f932683/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a2ff1e1c1b32fc92e/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a2ff1e1c1b32fc92e/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a2ff1e1c1b32fc92e/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a4bb731f/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a4bb731f/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a4bb731f/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a5846cde4746812f1/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a5846cde4746812f1/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a5846cde4746812f1/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a5d42a6e6c1295c88/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a5d42a6e6c1295c88/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a5d42a6e6c1295c88/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a6271313a2cd75f4a/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a6271313a2cd75f4a/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a6271313a2cd75f4a/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a708f71fb3ba1a247/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a708f71fb3ba1a247/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a708f71fb3ba1a247/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a727a7b6/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a727a7b6/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a727a7b6/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a74fa802/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a74fa802/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a74fa802/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a8a8e8a86cfe93081/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a8a8e8a86cfe93081/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a8a8e8a86cfe93081/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a8a8f3fc/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a8a8f3fc/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a8a8f3fc/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a92e46937ef03b491/dlp-agent/src/interception/drag_drop.rs
+./.claude/worktrees/agent-a92e46937ef03b491/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a92e46937ef03b491/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a92e46937ef03b491/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-a9511bb8ac98e3201/dlp-agent/src/interception/drag_drop.rs
+./.claude/worktrees/agent-a9511bb8ac98e3201/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-a9511bb8ac98e3201/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-a9511bb8ac98e3201/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-abb5386d/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-abb5386d/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-abb5386d/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-ac490c3ab7568e339/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-ac490c3ab7568e339/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-ac490c3ab7568e339/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-acd0c2a79eb1ab467/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-acd0c2a79eb1ab467/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-acd0c2a79eb1ab467/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-ad8e3fa5626b9ab10/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-ad8e3fa5626b9ab10/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-ad8e3fa5626b9ab10/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-ae9faf99/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-ae9faf99/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-ae9faf99/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-aee14e7ad12358c20/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-aee14e7ad12358c20/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-aee14e7ad12358c20/dlp-agent/src/interception/policy_mapper.rs
+./.claude/worktrees/agent-aef2469feee2048a0/dlp-agent/src/interception/file_monitor.rs
+./.claude/worktrees/agent-aef2469feee2048a0/dlp-agent/src/interception/mod.rs
+./.claude/worktrees/agent-aef2469feee2048a0/dlp-agent/src/interception/policy_mapper.rs
+./dlp-agent/src/interception/drag_drop.rs
+./dlp-agent/src/interception/file_monitor.rs
+./dlp-agent/src/interception/mod.rs
+./dlp-agent/src/interception/policy_mapper.rs
+
+=== SERVICE STARTUP ===
+./.claude/worktrees/agent-a0ddab94a92b76526/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a11aadf03a3ee2698/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a206518e205941774/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a25a75105f47cc65c/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a2c692bf7b061f238/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a2e39174b2f932683/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a2ff1e1c1b32fc92e/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a4bb731f/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a5846cde4746812f1/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a5d42a6e6c1295c88/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a6271313a2cd75f4a/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a708f71fb3ba1a247/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a727a7b6/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a74fa802/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a8a8e8a86cfe93081/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a8a8f3fc/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a92e46937ef03b491/dlp-agent/src/service.rs
+./.claude/worktrees/agent-a9511bb8ac98e3201/dlp-agent/src/service.rs
+./.claude/worktrees/agent-abb5386d/dlp-agent/src/service.rs
+./.claude/worktrees/agent-ac490c3ab7568e339/dlp-agent/src/service.rs
+./.claude/worktrees/agent-acd0c2a79eb1ab467/dlp-agent/src/service.rs
+./.claude/worktrees/agent-ad8e3fa5626b9ab10/dlp-agent/src/service.rs
+./.claude/worktrees/agent-ae9faf99/dlp-agent/src/service.rs
+./.claude/worktrees/agent-aee14e7ad12358c20/dlp-agent/src/service.rs
+./.claude/worktrees/agent-aef2469feee2048a0/dlp-agent/src/service.rs
+./dlp-agent/src/service.rs
+
+=== TEST STUBS TC-30+ ===
+2512:// DLP TC tests — cloud upload/share (TC-30, 31, 32, 33) — stubs
+2516:    /// TC-30: Public cloud upload → ALLOW
+2520:        todo!("TC-30: public cloud upload — cloud monitoring not yet implemented")
+2523:    /// TC-31: Confidential cloud upload → allow, monitor
+2527:        todo!("TC-31: Confidential cloud upload — allow, monitor — cloud monitoring not yet implemented")
+2530:    /// TC-32: Confidential public share link → DENY + alert
+2534:        todo!("TC-32: Confidential public share link — DENY + alert — cloud share link detection not yet implemented")
+2537:    /// TC-33: Restricted share → DENY
+2541:        todo!("TC-33: Restricted share — DENY — cloud share detection not yet implemented")
+2586:// DLP TC tests — print interception (TC-50, 51, 52) — stubs
+2590:    /// TC-50: Print Internal file → ALLOW
+2594:        todo!("TC-50: print Internal file — ALLOW — print spooler interception not yet implemented")
+2597:    /// TC-51: Print Confidential file → require_auth
+2601:        todo!("TC-51: print Confidential — require_auth interception not yet implemented")
+2604:    /// TC-52: Print Restricted file → DENY
+2608:        todo!("TC-52: print Restricted — block — print spooler interception not yet implemented")

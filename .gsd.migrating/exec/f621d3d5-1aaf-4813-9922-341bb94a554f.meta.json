@@ -1,0 +1,18 @@
+{
+  "id": "f621d3d5-1aaf-4813-9922-341bb94a554f",
+  "runtime": "bash",
+  "purpose": "Run all dlp-agent lib tests to see what runs",
+  "script_chars": 80,
+  "started_at": "2026-05-08T15:33:51.476Z",
+  "finished_at": "2026-05-08T15:33:57.017Z",
+  "exit_code": 0,
+  "signal": null,
+  "timed_out": false,
+  "duration_ms": 5541,
+  "stdout_bytes": 2713,
+  "stderr_bytes": 0,
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "stdout_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\f621d3d5-1aaf-4813-9922-341bb94a554f.stdout",
+  "stderr_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\f621d3d5-1aaf-4813-9922-341bb94a554f.stderr"
+}

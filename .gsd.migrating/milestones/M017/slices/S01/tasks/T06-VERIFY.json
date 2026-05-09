@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "taskId": "T06",
+  "unitId": "M017/S01/T06",
+  "timestamp": 1778252356300,
+  "passed": true,
+  "discoverySource": "task-plan",
+  "checks": [
+    {
+      "command": "cargo test -p dlp-agent cloud_enforcer",
+      "exitCode": 0,
+      "durationMs": 452,
+      "verdict": "pass"
+    },
+    {
+      "command": "cargo test -p dlp-agent --test comprehensive -- test_tc_30",
+      "exitCode": 0,
+      "durationMs": 361,
+      "verdict": "pass"
+    }
+  ]
+}

@@ -1,0 +1,178 @@
+=== WINDOWS CRATES ===
+dlp-agent/Cargo.toml:windows = { version = "0.62", features = [
+dlp-agent/Cargo.toml:[target.'cfg(windows)'.dependencies]
+dlp-agent/Cargo.toml:windows-service = "0.8"
+dlp-common/Cargo.toml:[target.'cfg(windows)'.dependencies]
+dlp-common/Cargo.toml:windows = { version = "0.62", features = [
+
+=== EXISTING WINDOWS API CALLS ===
+dlp-agent/src/audit_emitter.rs:71:        use windows::Win32::Foundation::{CloseHandle, HMODULE};
+dlp-agent/src/audit_emitter.rs:72:        use windows::Win32::System::ProcessStatus::GetModuleFileNameExW;
+dlp-agent/src/audit_emitter.rs:73:        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+dlp-agent/src/audit_emitter.rs:94:        use windows::Win32::Foundation::LocalFree;
+dlp-agent/src/audit_emitter.rs:95:        use windows::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+dlp-agent/src/audit_emitter.rs:96:        use windows::Win32::Security::{OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID};
+dlp-agent/src/audit_emitter.rs:125:            let ok = windows::Win32::Security::Authorization::ConvertSidToStringSidW(
+dlp-agent/src/audit_emitter.rs:133:                let _ = LocalFree(Some(windows::Win32::Foundation::HLOCAL(sd.0)));
+dlp-agent/src/audit_emitter.rs:145:                let _ = LocalFree(Some(windows::Win32::Foundation::HLOCAL(
+dlp-agent/src/chrome/frame.rs:13:use windows::Win32::Foundation::HANDLE;
+dlp-agent/src/chrome/frame.rs:15:use windows::Win32::Storage::FileSystem::{FlushFileBuffers, ReadFile, WriteFile};
+dlp-agent/src/chrome/handler.rs:16:use windows::Win32::Foundation::{CloseHandle, HANDLE};
+dlp-agent/src/chrome/handler.rs:18:use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+dlp-agent/src/chrome/handler.rs:20:use windows::Win32::System::Pipes::{
+dlp-agent/src/chrome/registry.rs:13:use windows::Win32::System::Registry::{
+dlp-agent/src/chrome/registry.rs:60:        let mut hkey = windows::Win32::System::Registry::HKEY::default();
+dlp-agent/src/clipboard/listener.rs:54:use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+dlp-agent/src/clipboard/listener.rs:56:use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+dlp-agent/src/clipboard/listener.rs:58:use windows::Win32::UI::WindowsAndMessaging::{
+dlp-agent/src/clipboard/listener.rs:77:use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, PostQuitMessage, WM_DESTROY};
+dlp-agent/src/clipboard/listener.rs:318:        let thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+dlp-agent/src/clipboard/listener.rs:425:        use windows::Win32::Foundation::HGLOBAL;
+dlp-agent/src/clipboard/listener.rs:426:        use windows::Win32::System::DataExchange::{
+dlp-agent/src/clipboard/listener.rs:429:        use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+dlp-agent/src/clipboard/listener.rs:494:) -> windows::Win32::Foundation::LRESULT {
+dlp-agent/src/clipboard/listener.rs:497:        windows::Win32::UI::WindowsAndMessaging::WM_DESTROY => {
+dlp-agent/src/clipboard/listener.rs:499:            windows::Win32::Foundation::LRESULT(0)
+dlp-agent/src/detection/app_identity.rs:26:use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
+dlp-agent/src/detection/app_identity.rs:28:use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
+dlp-agent/src/detection/app_identity.rs:74:    use windows::Win32::System::Threading::{
+
+=== DLL / HOOK PATTERNS ===
+dlp-agent/src/clipboard/listener.rs:1://! Clipboard message hook listener (T-20, F-AGT-17).
+dlp-agent/src/clipboard/listener.rs:3://! Installs a `WH_GETMESSAGE` hook via `SetWindowsHookExW` to intercept
+dlp-agent/src/clipboard/listener.rs:13://! The hook listener runs on a dedicated std thread created by `start()`.
+dlp-agent/src/clipboard/listener.rs:16://! required for `WH_GETMESSAGE` hooks to fire.  The hook is installed on that
+dlp-agent/src/clipboard/listener.rs:17://! same thread via `SetWindowsHookExW`, so the hook procedure runs inside the
+dlp-agent/src/clipboard/listener.rs:22://! `SetWindowsHookExW` hooks are per-thread.  The hook procedure runs on the
+dlp-agent/src/clipboard/listener.rs:38://! - When running as a Windows Service (SYSTEM), the hook must be spawned in the
+dlp-agent/src/clipboard/listener.rs:40://!   A service-level hook will not see the interactive user's clipboard.
+dlp-agent/src/clipboard/listener.rs:59:    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+dlp-agent/src/clipboard/listener.rs:60:    PostThreadMessageW, RegisterClassW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+dlp-agent/src/clipboard/listener.rs:61:    HHOOK, MSG, WH_GETMESSAGE, WINDOW_STYLE, WM_QUIT, WNDCLASSW, WS_EX_NOACTIVATE,
+dlp-agent/src/clipboard/listener.rs:64:/// Wrapper around `HHOOK` that is `Send + Sync`.
+dlp-agent/src/clipboard/listener.rs:66:/// `HHOOK` is `*mut c_void` which is not `Send + Sync` by default, but Win32 hook
+dlp-agent/src/clipboard/listener.rs:69:struct SendableHhook(HHOOK);
+dlp-agent/src/clipboard/listener.rs:72:unsafe impl Send for SendableHhook {}
+dlp-agent/src/clipboard/listener.rs:74:unsafe impl Sync for SendableHhook {}
+dlp-agent/src/clipboard/listener.rs:81:/// Windows message constants used by the hook procedure at runtime.
+dlp-agent/src/clipboard/listener.rs:84:/// Module-level reference to the running listener so the C-callable hook procedure
+dlp-agent/src/clipboard/listener.rs:86:static HOOK_LISTENER: std::sync::OnceLock<Arc<ClipboardListener>> = std::sync::OnceLock::new();
+dlp-agent/src/clipboard/listener.rs:104:/// clipbaord hook (which has no access to async context) can still emit audit
+
+=== NAMED PIPE USAGE ===
+dlp-agent/src/audit_emitter.rs:26://! file owner SID via `GetNamedSecurityInfoW` + `ConvertSidToStringSidW`.
+dlp-agent/src/audit_emitter.rs:59:    /// Uses `GetNamedSecurityInfoW` to read the file's owner from the
+dlp-agent/src/audit_emitter.rs:95:        use windows::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+dlp-agent/src/audit_emitter.rs:107:            let err = GetNamedSecurityInfoW(
+dlp-agent/src/audit_emitter.rs:119:                debug!(path, "GetNamedSecurityInfoW failed");
+dlp-agent/src/audit_emitter.rs:131:            // Free the security descriptor allocated by GetNamedSecurityInfoW.
+dlp-agent/src/audit_emitter.rs:308:/// the interception pipeline to set the real interactive user via
+dlp-agent/src/chrome/frame.rs:24:/// Reads a single length-prefixed protobuf frame from a pipe handle.
+dlp-agent/src/chrome/frame.rs:28:/// Returns an error if the pipe is broken, the frame header cannot be
+dlp-agent/src/chrome/frame.rs:32:pub fn read_frame(pipe: HANDLE) -> Result<Vec<u8>> {
+dlp-agent/src/chrome/frame.rs:34:    read_exact(pipe, &mut length_buf).context("read frame length")?;
+dlp-agent/src/chrome/frame.rs:47:    read_exact(pipe, &mut payload).context("read frame payload")?;
+dlp-agent/src/chrome/frame.rs:51:/// Writes a length-prefixed protobuf frame to a pipe handle.
+dlp-agent/src/chrome/frame.rs:55:/// Returns an error if the pipe is broken or the write is partial.
+dlp-agent/src/chrome/frame.rs:57:pub fn write_frame(pipe: HANDLE, payload: &[u8]) -> Result<()> {
+dlp-agent/src/chrome/frame.rs:59:    write_all(pipe, &length_buf).context("write frame length")?;
+dlp-agent/src/chrome/frame.rs:60:    write_all(pipe, payload).context("write frame payload")?;
+dlp-agent/src/chrome/frame.rs:61:    flush(pipe).context("flush frame")?;
+dlp-agent/src/chrome/frame.rs:67:fn read_exact(pipe: HANDLE, buf: &mut [u8]) -> Result<()> {
+dlp-agent/src/chrome/frame.rs:77:                pipe,
+
+=== PRINT SPOOLER / WFP REFERENCES ===
+dlp-agent/src/cache.rs:92:        guard.remove(&key).filter(|e| !e.is_expired()).map(|e| {
+dlp-agent/src/clipboard/mod.rs:1://! Clipboard interception and content classification (Sprint 16, T-20, F-AGT-17).
+dlp-agent/src/config.rs:317:            .filter(|s| !s.is_empty())
+dlp-agent/src/config.rs:466:                .filter(|p| p.exists())
+dlp-agent/src/detection/encryption.rs:288:        .filter(|c| c.is_ascii_alphabetic())
+dlp-agent/src/detection/encryption.rs:523:            // `query()` fetches all Win32_EncryptableVolume rows; we then filter
+dlp-agent/src/detection/mod.rs:1://! Exfiltration detection modules (Sprint 14, T-13–T-14; Phase 34–36).
+dlp-agent/src/detection/usb.rs:163:                    .filter(|letter| !ids.contains_key(letter))
+dlp-agent/src/detection/usb.rs:298:                .filter(|letter| !ids.contains_key(letter))
+dlp-agent/src/device_registry.rs:247:    /// Fetches the device registry with an optional owner SID filter and
+dlp-agent/src/device_registry.rs:258:    /// * `owner_sid` - Optional Windows user SID to filter per-user entries.
+dlp-agent/src/device_registry.rs:263:                // Build a new map from the server response, filtering out entries
+dlp-agent/src/device_registry.rs:267:                    .filter_map(|e| {
+dlp-agent/src/device_registry.rs:281:                        let owner_sid_norm = e.owner_sid.filter(|s| !s.is_empty());
+dlp-agent/src/device_registry.rs:415:            .filter(|(v, p, _, _)| *v == vid_lc && *p == pid_lc)
+dlp-agent/src/disk_enforcer.rs:10://! 1. Action filter: only `Created`, `Written`, `Moved` are intercepted (DISK-04).
+dlp-agent/src/disk_enforcer.rs:124:        // DISK-04 action filter: only intercept write-path actions.
+dlp-agent/src/disk_enforcer.rs:204:                // FileAction filter at top of check() already ensures we only
+dlp-agent/src/interception/file_monitor.rs:414:    // -- Path exclusion filter tests ----------------------------------------
+dlp-agent/src/ipc/pipe1.rs:280:            // requires a kernel-level minifilter in a future phase).
+
+=== DRAG DROP HOOK (EXISTING) ===
+dlp-agent/src/audit_emitter.rs:602:    fn test_drag_drop_audit_event_has_app_identity() {
+dlp-agent/src/audit_emitter.rs:630:            Action::DRAG_DROP,
+dlp-agent/src/audit_emitter.rs:657:        assert_eq!(event.action_attempted, Action::DRAG_DROP);
+dlp-agent/src/audit_emitter.rs:662:    fn test_drag_drop_audit_event_applies_agent_unknown_when_missing() {
+dlp-agent/src/audit_emitter.rs:671:            Action::DRAG_DROP,
+dlp-agent/src/interception/drag_drop.rs:19://! 4. Build an [`EvaluateRequest`] with `Action::DRAG_DROP`.
+dlp-agent/src/interception/drag_drop.rs:78:static DRAG_DROP_EMIT_CONTEXT: std::sync::OnceLock<crate::audit_emitter::EmitContext> =
+dlp-agent/src/interception/drag_drop.rs:86:    let prev = DRAG_DROP_EMIT_CONTEXT.set(ctx.clone());
+dlp-agent/src/interception/drag_drop.rs:371:        let decision = evaluate_drag_drop(source_app.as_ref(), dest_app.as_ref());
+dlp-agent/src/interception/drag_drop.rs:376:            if let Some(ctx) = DRAG_DROP_EMIT_CONTEXT.get() {
+dlp-agent/src/interception/drag_drop.rs:383:                    dlp_common::Action::DRAG_DROP,
+dlp-agent/src/interception/drag_drop.rs:653:fn evaluate_drag_drop(
+dlp-agent/src/interception/drag_drop.rs:675:        action: Action::DRAG_DROP,
+dlp-agent/src/interception/drag_drop.rs:746:pub fn install_drag_drop_hook(session_id: u32) -> Result<(), String> {
+dlp-agent/src/interception/drag_drop.rs:772:pub fn uninstall_drag_drop_hook() {
+dlp-agent/src/interception/drag_drop.rs:794:    // -- evaluate_drag_drop tests --------------------------------------------
+dlp-agent/src/interception/drag_drop.rs:797:    fn test_evaluate_drag_drop_allow_by_default() {
+dlp-agent/src/interception/drag_drop.rs:799:        let decision = evaluate_drag_drop(None, None);
+dlp-agent/src/interception/drag_drop.rs:804:    fn test_evaluate_drag_drop_denies_untrusted_dest() {
+dlp-agent/src/interception/drag_drop.rs:814:        let decision = evaluate_drag_drop(None, Some(&dest));
+
+=== AGENT CONFIG STRUCT ===
+dlp-agent/src/config.rs:113:pub struct AgentConfig {
+dlp-agent/src/config.rs-114-    /// DLP Server URL for agent-to-server communication.
+dlp-agent/src/config.rs-115-    ///
+dlp-agent/src/config.rs-116-    /// When empty or omitted, the agent reads `DLP_SERVER_URL` env var,
+dlp-agent/src/config.rs-117-    /// then falls back to `http://127.0.0.1:9090`.
+dlp-agent/src/config.rs-118-    #[serde(default)]
+dlp-agent/src/config.rs-119-    pub server_url: Option<String>,
+dlp-agent/src/config.rs-120-
+dlp-agent/src/config.rs-121-    /// Directories to watch recursively.
+dlp-agent/src/config.rs-122-    ///
+dlp-agent/src/config.rs-123-    /// When empty the agent monitors all mounted drives (A-Z).
+dlp-agent/src/config.rs-124-    /// When non-empty only these directories are watched.
+dlp-agent/src/config.rs-125-    #[serde(default)]
+dlp-agent/src/config.rs-126-    pub monitored_paths: Vec<String>,
+dlp-agent/src/config.rs-127-
+dlp-agent/src/config.rs-128-    /// Additional exclusion prefixes (case-insensitive substring match).
+dlp-agent/src/config.rs-129-    ///
+dlp-agent/src/config.rs-130-    /// These are merged with the built-in exclusion list — they do not
+dlp-agent/src/config.rs-131-    /// replace it.  Use this to suppress noisy directories that are not
+dlp-agent/src/config.rs-132-    /// relevant to DLP enforcement (e.g., build output, IDE caches).
+dlp-agent/src/config.rs-133-    #[serde(default)]
+dlp-agent/src/config.rs-134-    pub excluded_paths: Vec<String>,
+dlp-agent/src/config.rs-135-
+dlp-agent/src/config.rs-136-    /// Heartbeat interval in seconds. When `None`, the agent uses its
+dlp-agent/src/config.rs-137-    /// compiled default (30 seconds). Populated by server config push.
+dlp-agent/src/config.rs-138-    #[serde(default)]
+dlp-agent/src/config.rs-139-    pub heartbeat_interval_secs: Option<u64>,
+dlp-agent/src/config.rs-140-
+dlp-agent/src/config.rs-141-    /// Whether offline event caching is enabled. When `None`, defaults
+dlp-agent/src/config.rs-142-    /// to `true`. Populated by server config push.
+dlp-agent/src/config.rs-143-    #[serde(default)]
+--
+dlp-agent/src/server_client.rs:123:pub struct AgentConfigPayload {
+dlp-agent/src/server_client.rs-124-    /// Directory paths the agent should monitor.
+dlp-agent/src/server_client.rs-125-    pub monitored_paths: Vec<String>,
+dlp-agent/src/server_client.rs-126-    /// Directory paths to exclude from monitoring (merged with built-in exclusions).
+dlp-agent/src/server_client.rs-127-    /// Defaults to empty when absent for backward compatibility with older servers.
+dlp-agent/src/server_client.rs-128-    #[serde(default)]
+dlp-agent/src/server_client.rs-129-    pub excluded_paths: Vec<String>,
+dlp-agent/src/server_client.rs-130-    /// Heartbeat interval in seconds.
+dlp-agent/src/server_client.rs-131-    pub heartbeat_interval_secs: u64,
+dlp-agent/src/server_client.rs-132-    /// Whether offline caching is active.
+dlp-agent/src/server_client.rs-133-    pub offline_cache_enabled: bool,
+dlp-agent/src/server_client.rs-134-    /// LDAP/AD configuration for group resolution (optional).
+dlp-agent/src/server_client.rs-135-    pub ldap_config: Option<LdapConfigPayload>,
+dlp-agent/src/server_client.rs-136-    /// Phase 37 (D-02/D-03): per-agent disk allowlist pushed by the server's
+dlp-agent/src/server_client.rs-137-    /// `disk_registry` table. The agent merges this list into
+dlp-agent/src/server_client.rs-138-    /// `DiskEnumerator.instance_id_map` on the next poll cycle. Defaults to
+dlp-agent/src/server_client.rs-139-    /// empty for backward compatibility with older server builds that do
+dlp-agent/src/server_client.rs-140-    /// not emit the field.

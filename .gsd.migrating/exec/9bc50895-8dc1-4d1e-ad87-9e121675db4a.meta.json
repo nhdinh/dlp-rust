@@ -1,0 +1,18 @@
+{
+  "id": "9bc50895-8dc1-4d1e-ad87-9e121675db4a",
+  "runtime": "bash",
+  "purpose": "Run dlp-agent tests with print_xps filter",
+  "script_chars": 93,
+  "started_at": "2026-05-08T15:34:01.980Z",
+  "finished_at": "2026-05-08T15:34:02.454Z",
+  "exit_code": 0,
+  "signal": null,
+  "timed_out": false,
+  "duration_ms": 474,
+  "stdout_bytes": 808,
+  "stderr_bytes": 0,
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "stdout_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\9bc50895-8dc1-4d1e-ad87-9e121675db4a.stdout",
+  "stderr_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\9bc50895-8dc1-4d1e-ad87-9e121675db4a.stderr"
+}

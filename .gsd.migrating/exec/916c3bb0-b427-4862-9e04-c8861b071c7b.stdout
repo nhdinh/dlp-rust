@@ -1,0 +1,24 @@
+=== WINDOWS CRATES ===
+dlp-agent/Cargo.toml:windows = { version = "0.62", features = [
+dlp-agent/Cargo.toml:[target.'cfg(windows)'.dependencies]
+dlp-agent/Cargo.toml:windows-service = "0.8"
+dlp-common/Cargo.toml:[target.'cfg(windows)'.dependencies]
+dlp-common/Cargo.toml:windows = { version = "0.62", features = [
+
+=== EXISTING WINDOWS API CALLS ===
+Cannot find file at '..\\lib\ripgrep\tools\ripgrep-14.1.0-x86_64-pc-windows-msvc\rg.exe' (C:\Users\nhdinh\.gsd\agent\lib\ripgrep\tools\ripgrep-14.1.0-x86_64-pc-windows-msvc\rg.exe). This usually indicates a missing or moved file.
+
+=== DLL / HOOK PATTERNS ===
+Cannot find file at '..\\lib\ripgrep\tools\ripgrep-14.1.0-x86_64-pc-windows-msvc\rg.exe' (C:\Users\nhdinh\.gsd\agent\lib\ripgrep\tools\ripgrep-14.1.0-x86_64-pc-windows-msvc\rg.exe). This usually indicates a missing or moved file.
+
+=== NAMED PIPE USAGE ===
+Cannot find file at '..\\lib\ripgrep\tools\ripgrep-14.1.0-x86_64-pc-windows-msvc\rg.exe' (C:\Users\nhdinh\.gsd\agent\lib\ripgrep\tools\ripgrep-14.1.0-x86_64-pc-windows-msvc\rg.exe). This usually indicates a missing or moved file.
+
+=== PRINT SPOOLER / WFP REFERENCES ===
+Cannot find file at '..\\lib\ripgrep\tools\ripgrep-14.1.0-x86_64-pc-windows-msvc\rg.exe' (C:\Users\nhdinh\.gsd\agent\lib\ripgrep\tools\ripgrep-14.1.0-x86_64-pc-windows-msvc\rg.exe). This usually indicates a missing or moved file.
+
+=== DRAG DROP HOOK (EXISTING) ===
+Cannot find file at '..\\lib\ripgrep\tools\ripgrep-14.1.0-x86_64-pc-windows-msvc\rg.exe' (C:\Users\nhdinh\.gsd\agent\lib\ripgrep\tools\ripgrep-14.1.0-x86_64-pc-windows-msvc\rg.exe). This usually indicates a missing or moved file.
+
+=== AGENT CONFIG STRUCT ===
+Cannot find file at '..\\lib\ripgrep\tools\ripgrep-14.1.0-x86_64-pc-windows-msvc\rg.exe' (C:\Users\nhdinh\.gsd\agent\lib\ripgrep\tools\ripgrep-14.1.0-x86_64-pc-windows-msvc\rg.exe). This usually indicates a missing or moved file.

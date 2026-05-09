@@ -1,0 +1,15 @@
+failures:
+
+---- detection::disk::tests::test_global_static_get_set stdout ----
+
+thread 'detection::disk::tests::test_global_static_get_set' (24816) panicked at dlp-agent\src\detection\disk.rs:1322:13:
+assertion failed: Arc::ptr_eq(&enumerator, &retrieved.unwrap())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    detection::disk::tests::test_global_static_get_set
+
+test result: FAILED. 418 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.06s
+
+error: test failed, to rerun pass `-p dlp-agent --lib`

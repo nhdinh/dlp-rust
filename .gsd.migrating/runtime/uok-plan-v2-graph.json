@@ -1,91 +1,358 @@
 {
-  "compiledAt": "2026-05-06T00:07:32.076Z",
-  "milestoneId": "M001",
+  "compiledAt": "2026-05-09T01:17:10.205Z",
+  "milestoneId": "M017",
   "pipeline": {
     "clarifyRoundLimit": 3,
     "researchSynthesized": true,
     "draftContextIncluded": false,
     "finalizedContextIncluded": true,
-    "sourcePhase": "validating-milestone"
+    "sourcePhase": "summarizing"
   },
   "nodes": [
     {
-      "id": "execute-task:M001:S01:T01",
+      "id": "execute-task:M017:S01:T01",
       "kind": "unit",
       "dependsOn": [],
       "writes": [
-        "dlp-admin-cli/src/app.rs",
-        "dlp-admin-cli/src/screens/dispatch.rs",
-        "dlp-admin-cli/src/screens/render.rs"
+        "dlp-common/src/abac.rs",
+        "dlp-agent/src/config.rs",
+        "dlp-agent/src/server_client.rs",
+        "dlp-agent/src/service.rs"
       ],
       "metadata": {
         "unitType": "execute-task",
-        "unitId": "M001.S01.T01",
-        "title": "Added Screen::DiskRegistryList variant, InputPurpose::AddDiskRegistry* variants, ConfirmPurpose::DeleteDiskRegistry, and wired DevicesMenu index 3 with placeholder match arms",
+        "unitId": "M017.S01.T01",
+        "title": "Added Action::CLOUD_UPLOAD and cloud/WFP config fields to AgentConfig and AgentConfigPayload",
         "status": "complete"
       }
     },
     {
-      "id": "execute-task:M001:S01:T02",
+      "id": "execute-task:M017:S01:T02",
       "kind": "unit",
       "dependsOn": [
-        "execute-task:M001:S01:T01"
+        "execute-task:M017:S01:T01"
       ],
       "writes": [
-        "dlp-admin-cli/src/screens/dispatch.rs",
-        "dlp-admin-cli/src/app.rs"
+        "dlp-agent/src/hook_ipc.rs",
+        "dlp-agent/src/lib.rs",
+        "dlp-agent/Cargo.toml",
+        "dlp-agent/src/ipc/frame.rs"
       ],
       "metadata": {
         "unitType": "execute-task",
-        "unitId": "M001.S01.T02",
-        "title": "Implemented action_load_disk_registry_list, handle_disk_registry_list with Up/Down/a/d/Esc handlers, and 5-field TextInput completion chain posting to admin/disk-registry",
+        "unitId": "M017.S01.T02",
+        "title": "Created named-pipe hook IPC protocol (HookRequest/HookResponse over bincode) and agent-side server with 1000-round-trip test (p99 37.8µs); fixed existing frame.rs write_all bug.",
         "status": "complete"
       }
     },
     {
-      "id": "execute-task:M001:S01:T03",
+      "id": "execute-task:M017:S01:T03",
       "kind": "unit",
       "dependsOn": [
-        "execute-task:M001:S01:T02"
+        "execute-task:M017:S01:T02"
       ],
       "writes": [
-        "dlp-admin-cli/src/screens/render.rs"
+        "dlp-hook-dll/Cargo.toml",
+        "dlp-hook-dll/build.rs",
+        "dlp-hook-dll/src/lib.rs",
+        "dlp-agent/src/hook_injector.rs",
+        "Cargo.toml",
+        "dlp-agent/Cargo.toml",
+        "dlp-agent/src/lib.rs"
       ],
       "metadata": {
         "unitType": "execute-task",
-        "unitId": "M001.S01.T03",
-        "title": "Replaced placeholder List-based draw_disk_registry_list with a 5-column Table (Agent ID, Instance ID, Bus Type, Encrypted, Model) including header row, row highlighting, centered empty-state message, and keybinding hints",
+        "unitId": "M017.S01.T03",
+        "title": "Created dlp-hook-dll cdylib with exported HookCreateFileW/HookNtCreateFile/UnhookAll trampolines, and agent-side hook_injector using CreateRemoteThread+LoadLibraryW with architecture detection and 6 unit tests.",
         "status": "complete"
       }
     },
     {
-      "id": "execute-task:M001:S01:T04",
+      "id": "execute-task:M017:S01:T04",
       "kind": "unit",
       "dependsOn": [
-        "execute-task:M001:S01:T03"
+        "execute-task:M017:S01:T03"
       ],
       "writes": [
-        "dlp-admin-cli/src/screens/dispatch.rs",
-        "dlp-admin-cli/src/screens/render.rs"
+        "dlp-common/src/hook_ipc.rs",
+        "dlp-common/src/lib.rs",
+        "dlp-agent/src/hook_ipc.rs",
+        "dlp-hook-dll/Cargo.toml",
+        "dlp-hook-dll/src/pipe_client.rs",
+        "dlp-hook-dll/src/lib.rs"
       ],
       "metadata": {
         "unitType": "execute-task",
-        "unitId": "M001.S01.T04",
-        "title": "Added 8 unit tests covering disk registry TUI: menu navigation wrap at 4, index-3 routing, Esc return, Up/Down nav, empty/nonempty rendering",
+        "unitId": "M017.S01.T04",
+        "title": "Implemented PE IAT patching, named pipe client, and fail-closed hook classification in dlp-hook-dll with 13 passing integration tests",
         "status": "complete"
       }
     },
     {
-      "id": "complete-slice:M001:S01",
+      "id": "execute-task:M017:S01:T05",
+      "kind": "unit",
+      "dependsOn": [
+        "execute-task:M017:S01:T04"
+      ],
+      "writes": [
+        "dlp-agent/src/wfp_ffi.rs",
+        "dlp-agent/src/wfp_manager.rs",
+        "dlp-agent/Cargo.toml",
+        "dlp-agent/src/lib.rs"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S01.T05",
+        "title": "Implemented WFP FFI bindings and WfpManager with per-process egress block filters and 5 passing unit tests",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S01:T06",
+      "kind": "unit",
+      "dependsOn": [
+        "execute-task:M017:S01:T05"
+      ],
+      "writes": [
+        "dlp-agent/src/cloud_enforcer.rs",
+        "dlp-agent/src/service.rs",
+        "dlp-agent/src/interception/mod.rs",
+        "dlp-agent/tests/comprehensive.rs",
+        "dlp-agent/src/lib.rs"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S01.T06",
+        "title": "Implemented CloudEnforcer, wired HookInjector and WfpManager into service lifecycle, and replaced TC-30 stub with real cloud sync block tests.",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "complete-slice:M017:S01",
       "kind": "verification",
       "dependsOn": [
-        "execute-task:M001:S01:T04"
+        "execute-task:M017:S01:T06"
       ],
       "metadata": {
         "unitType": "complete-slice",
-        "unitId": "M001.S01",
+        "unitId": "M017.S01",
         "title": "S01",
         "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S04:T01",
+      "kind": "unit",
+      "dependsOn": [],
+      "writes": [
+        "dlp-common/src/abac.rs",
+        "dlp-agent/src/config.rs",
+        "dlp-agent/src/server_client.rs",
+        "dlp-agent/src/service.rs",
+        "dlp-agent/Cargo.toml"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S04.T01",
+        "title": "Added ABAC PRINT action, print config fields, hot-reload plumbing, and zip/quick-xml dependencies for M017/S04",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S04:T02",
+      "kind": "unit",
+      "dependsOn": [
+        "execute-task:M017:S04:T01"
+      ],
+      "writes": [
+        "dlp-agent/src/print_job_info.rs",
+        "dlp-agent/src/lib.rs",
+        "dlp-agent/Cargo.toml"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S04.T02",
+        "title": "Built Win32 print job info wrappers with safe PrinterHandle, JobInfo, get/cancel helpers, and unit tests",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S04:T03",
+      "kind": "unit",
+      "dependsOn": [
+        "execute-task:M017:S04:T02"
+      ],
+      "writes": [
+        "dlp-agent/src/print_xps_parser.rs",
+        "dlp-agent/src/lib.rs"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S04.T03",
+        "title": "Built XPS text extraction parser with ZIP+XML parsing, in-memory text extraction from Glyphs elements, and comprehensive unit tests",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S04:T04",
+      "kind": "unit",
+      "dependsOn": [
+        "execute-task:M017:S04:T03"
+      ],
+      "writes": [
+        "dlp-agent/src/print_watcher.rs",
+        "dlp-agent/src/lib.rs"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S04.T04",
+        "title": "Built print spooler watcher thread with FindFirstPrinterChangeNotification, XPS text extraction, ABAC evaluation, and job cancellation",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S04:T05",
+      "kind": "unit",
+      "dependsOn": [
+        "execute-task:M017:S04:T04"
+      ],
+      "writes": [
+        "dlp-agent/src/print_enforcer.rs",
+        "dlp-agent/src/lib.rs",
+        "dlp-agent/src/service.rs",
+        "dlp-agent/tests/comprehensive.rs"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S04.T05",
+        "title": "Integrated PrintEnforcer into service lifecycle and implemented TC-50/51/52 print interception tests — all 3 passing, zero warnings",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "complete-slice:M017:S04",
+      "kind": "verification",
+      "dependsOn": [
+        "execute-task:M017:S04:T05"
+      ],
+      "metadata": {
+        "unitType": "complete-slice",
+        "unitId": "M017.S04",
+        "title": "S04",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S02:T01",
+      "kind": "unit",
+      "dependsOn": [],
+      "writes": [
+        "dlp-agent/src/cloud_enforcer.rs"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S02.T01",
+        "title": "Implement resolve_sync_paths() with registry discovery and fallback for all four cloud providers",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S02:T02",
+      "kind": "unit",
+      "dependsOn": [
+        "execute-task:M017:S02:T01"
+      ],
+      "writes": [
+        "dlp-agent/src/cloud_enforcer.rs",
+        "dlp-agent/src/interception/mod.rs",
+        "dlp-agent/tests/comprehensive.rs"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S02.T02",
+        "title": "Wire real ABAC classification into CloudEnforcer::check() by adding explicit Classification parameter, removing provisional_sync_classification(), and updating all 22 call sites (18 unit tests + 4 TC-30..33)",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S02:T03",
+      "kind": "unit",
+      "dependsOn": [
+        "execute-task:M017:S02:T02"
+      ],
+      "writes": [
+        "dlp-agent/src/cloud_enforcer.rs",
+        "dlp-agent/src/service.rs",
+        "dlp-agent/Cargo.toml"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S02.T03",
+        "title": "Add sync-client process watcher thread to service.rs with AtomicBool shutdown, enumerate_sync_client_pids() via ToolHelp32, and sync_process_names() covering all four providers",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "complete-slice:M017:S02",
+      "kind": "verification",
+      "dependsOn": [
+        "execute-task:M017:S02:T03"
+      ],
+      "metadata": {
+        "unitType": "complete-slice",
+        "unitId": "M017.S02",
+        "title": "S02",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S03:T01",
+      "kind": "unit",
+      "dependsOn": [],
+      "writes": [
+        "dlp-agent/src/share_link_enforcer.rs",
+        "dlp-common/src/abac.rs",
+        "dlp-agent/src/lib.rs"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S03.T01",
+        "title": "Add Action::SHARE_LINK to ABAC enum and implement cross-platform ShareLinkEnforcer detection module with 23 passing unit tests",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S03:T02",
+      "kind": "unit",
+      "dependsOn": [
+        "execute-task:M017:S03:T01"
+      ],
+      "writes": [
+        "dlp-agent/src/clipboard/listener.rs",
+        "dlp-agent/tests/comprehensive.rs",
+        "dlp-agent/src/service.rs",
+        "dlp-agent/src/hook_injector.rs",
+        "dlp-agent/src/wfp_manager.rs",
+        "dlp-agent/src/interception/mod.rs"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S03.T02",
+        "title": "Wire ShareLinkEnforcer into ClipboardListener and add TC-34..TC-37 share-link tests with all 4 passing",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "complete-slice:M017:S03",
+      "kind": "verification",
+      "dependsOn": [
+        "execute-task:M017:S03:T02"
+      ],
+      "metadata": {
+        "unitType": "complete-slice",
+        "unitId": "M017.S03",
+        "title": "S03",
+        "status": "pending"
       }
     }
   ]

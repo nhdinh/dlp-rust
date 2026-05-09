@@ -1,0 +1,18 @@
+{
+  "id": "4bc13244-d3be-44eb-952e-97a5baf34a09",
+  "runtime": "bash",
+  "purpose": "Check CloudEnforcer wiring in interception module",
+  "script_chars": 116,
+  "started_at": "2026-05-08T15:01:22.533Z",
+  "finished_at": "2026-05-08T15:01:22.592Z",
+  "exit_code": 0,
+  "signal": null,
+  "timed_out": false,
+  "duration_ms": 59,
+  "stdout_bytes": 345,
+  "stderr_bytes": 0,
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "stdout_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\4bc13244-d3be-44eb-952e-97a5baf34a09.stdout",
+  "stderr_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\4bc13244-d3be-44eb-952e-97a5baf34a09.stderr"
+}

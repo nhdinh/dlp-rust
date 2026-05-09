@@ -1,7 +1,8 @@
 # Codebase Map
 
-Generated: 2026-05-08T07:06:20Z | Files: 364 | Described: 0/364
-<!-- gsd:codebase-meta {"generatedAt":"2026-05-08T07:06:20Z","fingerprint":"86639e5a34e652f4d3f63833f46dd81efd776a4f","fileCount":364,"truncated":false} -->
+Generated: 2026-05-09T01:17:09Z | Files: 500 | Described: 0/500
+<!-- gsd:codebase-meta {"generatedAt":"2026-05-09T01:17:09Z","fingerprint":"3ad403be026c88e1fe56b541be340228f5291212","fileCount":500,"truncated":true} -->
+Note: Truncated to first 500 files. Run with higher --max-files to include all.
 
 ### (root)/
 - `.gitignore`
@@ -11,13 +12,8 @@ Generated: 2026-05-08T07:06:20Z | Files: 364 | Described: 0/364
 - `Cargo.toml`
 - `CLAUDE.md`
 - `EOF`
-- `fix_admin_api.py`
 - `PROMPT_EOF`
 - `README.md`
-- `sgconfig.yml`
-- `sonar-project.properties`
-- `update_plan.py`
-- `write_db_rs.py`
 
 ### .ast-grep/rule-tests/
 - `.ast-grep/rule-tests/.gitkeep`
@@ -25,8 +21,6 @@ Generated: 2026-05-08T07:06:20Z | Files: 364 | Described: 0/364
 
 ### .ast-grep/rules/
 - `.ast-grep/rules/.gitkeep`
-- `.ast-grep/rules/a.yml`
-- `.ast-grep/rules/avoid-duplicate-export.yml`
 
 ### .ast-grep/utils/
 - `.ast-grep/utils/.gitkeep`
@@ -52,6 +46,46 @@ Generated: 2026-05-08T07:06:20Z | Files: 364 | Described: 0/364
 ### .gitnexus/
 - `.gitnexus/lbug`
 - `.gitnexus/meta.json`
+
+### .gsd.broken.backup/
+- `.gsd.broken.backup/CODEBASE.md`
+- `.gsd.broken.backup/DECISIONS.md`
+- `.gsd.broken.backup/notifications.jsonl`
+- `.gsd.broken.backup/PROJECT.md`
+- `.gsd.broken.backup/REQUIREMENTS.md`
+- `.gsd.broken.backup/STATE.md`
+
+### .gsd.broken.backup/milestones/M001/
+- `.gsd.broken.backup/milestones/M001/M001-CONTEXT.md`
+- `.gsd.broken.backup/milestones/M001/M001-RESEARCH.md`
+- `.gsd.broken.backup/milestones/M001/M001-ROADMAP.md`
+
+### .gsd.broken.backup/milestones/M002/
+- `.gsd.broken.backup/milestones/M002/M002-CONTEXT.md`
+- `.gsd.broken.backup/milestones/M002/M002-ROADMAP.md`
+
+### .gsd.broken.backup/milestones/M003/
+- `.gsd.broken.backup/milestones/M003/M003-CONTEXT.md`
+- `.gsd.broken.backup/milestones/M003/M003-ROADMAP.md`
+
+### .gsd.broken.backup/milestones/M004/
+- `.gsd.broken.backup/milestones/M004/M004-CONTEXT.md`
+- `.gsd.broken.backup/milestones/M004/M004-ROADMAP.md`
+
+### .gsd.broken.backup/milestones/M005/
+- `.gsd.broken.backup/milestones/M005/M005-CONTEXT.md`
+- `.gsd.broken.backup/milestones/M005/M005-ROADMAP.md`
+
+### .gsd.broken.backup/milestones/M006/
+- `.gsd.broken.backup/milestones/M006/M006-CONTEXT.md`
+- `.gsd.broken.backup/milestones/M006/M006-ROADMAP.md`
+
+### .gsd.broken.backup/milestones/M007/
+- `.gsd.broken.backup/milestones/M007/M007-CONTEXT.md`
+- `.gsd.broken.backup/milestones/M007/M007-ROADMAP.md`
+
+### .gsd.broken.backup/runtime/
+- `.gsd.broken.backup/runtime/write-gate-state.json`
 
 ### .gsd.migrating/
 - `.gsd.migrating/CODEBASE.md`
@@ -156,6 +190,423 @@ Generated: 2026-05-08T07:06:20Z | Files: 364 | Described: 0/364
 - `.gsd.migrating/milestones/M006/M006-CONTEXT.md`
 - `.gsd.migrating/milestones/M006/M006-ROADMAP.md`
 
+### .gsd.migrating/milestones/M008/
+- `.gsd.migrating/milestones/M008/M008-ROADMAP.md`
+- `.gsd.migrating/milestones/M008/M008-SUMMARY.md`
+- `.gsd.migrating/milestones/M008/M008-VALIDATION.md`
+
+### .gsd.migrating/milestones/M008/slices/S01/
+- `.gsd.migrating/milestones/M008/slices/S01/S01-PLAN.md`
+- `.gsd.migrating/milestones/M008/slices/S01/S01-SUMMARY.md`
+- `.gsd.migrating/milestones/M008/slices/S01/S01-UAT.md`
+
+### .gsd.migrating/milestones/M008/slices/S01/tasks/
+- `.gsd.migrating/milestones/M008/slices/S01/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M008/slices/S01/tasks/T01-SUMMARY.md`
+- `.gsd.migrating/milestones/M008/slices/S01/tasks/T02-PLAN.md`
+- `.gsd.migrating/milestones/M008/slices/S01/tasks/T02-SUMMARY.md`
+- `.gsd.migrating/milestones/M008/slices/S01/tasks/T03-PLAN.md`
+- `.gsd.migrating/milestones/M008/slices/S01/tasks/T03-SUMMARY.md`
+- `.gsd.migrating/milestones/M008/slices/S01/tasks/T04-PLAN.md`
+- `.gsd.migrating/milestones/M008/slices/S01/tasks/T04-SUMMARY.md`
+- `.gsd.migrating/milestones/M008/slices/S01/tasks/T05-PLAN.md`
+- `.gsd.migrating/milestones/M008/slices/S01/tasks/T05-SUMMARY.md`
+
+### .gsd.migrating/milestones/M008/slices/S02/
+- `.gsd.migrating/milestones/M008/slices/S02/S02-PLAN.md`
+- `.gsd.migrating/milestones/M008/slices/S02/S02-SUMMARY.md`
+- `.gsd.migrating/milestones/M008/slices/S02/S02-UAT.md`
+
+### .gsd.migrating/milestones/M008/slices/S02/tasks/
+- `.gsd.migrating/milestones/M008/slices/S02/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M008/slices/S02/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M008/slices/S03/
+- `.gsd.migrating/milestones/M008/slices/S03/S03-PLAN.md`
+- `.gsd.migrating/milestones/M008/slices/S03/S03-SUMMARY.md`
+- `.gsd.migrating/milestones/M008/slices/S03/S03-UAT.md`
+
+### .gsd.migrating/milestones/M008/slices/S03/tasks/
+- `.gsd.migrating/milestones/M008/slices/S03/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M008/slices/S03/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M008/slices/S04/
+- `.gsd.migrating/milestones/M008/slices/S04/S04-PLAN.md`
+- `.gsd.migrating/milestones/M008/slices/S04/S04-SUMMARY.md`
+- `.gsd.migrating/milestones/M008/slices/S04/S04-UAT.md`
+
+### .gsd.migrating/milestones/M008/slices/S04/tasks/
+- `.gsd.migrating/milestones/M008/slices/S04/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M008/slices/S04/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M009/
+- `.gsd.migrating/milestones/M009/M009-ROADMAP.md`
+- `.gsd.migrating/milestones/M009/M009-SUMMARY.md`
+- `.gsd.migrating/milestones/M009/M009-VALIDATION.md`
+
+### .gsd.migrating/milestones/M009/slices/S01/
+- `.gsd.migrating/milestones/M009/slices/S01/S01-PLAN.md`
+- `.gsd.migrating/milestones/M009/slices/S01/S01-SUMMARY.md`
+- `.gsd.migrating/milestones/M009/slices/S01/S01-UAT.md`
+
+### .gsd.migrating/milestones/M009/slices/S01/tasks/
+- `.gsd.migrating/milestones/M009/slices/S01/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M009/slices/S01/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M009/slices/S02/
+- `.gsd.migrating/milestones/M009/slices/S02/S02-PLAN.md`
+- `.gsd.migrating/milestones/M009/slices/S02/S02-SUMMARY.md`
+- `.gsd.migrating/milestones/M009/slices/S02/S02-UAT.md`
+
+### .gsd.migrating/milestones/M009/slices/S02/tasks/
+- `.gsd.migrating/milestones/M009/slices/S02/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M009/slices/S02/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M009/slices/S03/
+- `.gsd.migrating/milestones/M009/slices/S03/S03-PLAN.md`
+- `.gsd.migrating/milestones/M009/slices/S03/S03-SUMMARY.md`
+- `.gsd.migrating/milestones/M009/slices/S03/S03-UAT.md`
+
+### .gsd.migrating/milestones/M009/slices/S03/tasks/
+- `.gsd.migrating/milestones/M009/slices/S03/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M009/slices/S03/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M009/slices/S04/
+- `.gsd.migrating/milestones/M009/slices/S04/S04-PLAN.md`
+- `.gsd.migrating/milestones/M009/slices/S04/S04-SUMMARY.md`
+- `.gsd.migrating/milestones/M009/slices/S04/S04-UAT.md`
+
+### .gsd.migrating/milestones/M009/slices/S04/tasks/
+- `.gsd.migrating/milestones/M009/slices/S04/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M009/slices/S04/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M010/
+- `.gsd.migrating/milestones/M010/M010-ROADMAP.md`
+- `.gsd.migrating/milestones/M010/M010-SUMMARY.md`
+- `.gsd.migrating/milestones/M010/M010-VALIDATION.md`
+
+### .gsd.migrating/milestones/M010/slices/S01/
+- `.gsd.migrating/milestones/M010/slices/S01/S01-PLAN.md`
+- `.gsd.migrating/milestones/M010/slices/S01/S01-SUMMARY.md`
+- `.gsd.migrating/milestones/M010/slices/S01/S01-UAT.md`
+
+### .gsd.migrating/milestones/M010/slices/S01/tasks/
+- `.gsd.migrating/milestones/M010/slices/S01/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M010/slices/S01/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M010/slices/S02/
+- `.gsd.migrating/milestones/M010/slices/S02/S02-PLAN.md`
+- `.gsd.migrating/milestones/M010/slices/S02/S02-SUMMARY.md`
+- `.gsd.migrating/milestones/M010/slices/S02/S02-UAT.md`
+
+### .gsd.migrating/milestones/M010/slices/S02/tasks/
+- `.gsd.migrating/milestones/M010/slices/S02/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M010/slices/S02/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M010/slices/S03/
+- `.gsd.migrating/milestones/M010/slices/S03/S03-PLAN.md`
+- `.gsd.migrating/milestones/M010/slices/S03/S03-SUMMARY.md`
+- `.gsd.migrating/milestones/M010/slices/S03/S03-UAT.md`
+
+### .gsd.migrating/milestones/M010/slices/S03/tasks/
+- `.gsd.migrating/milestones/M010/slices/S03/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M010/slices/S03/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M010/slices/S04/
+- `.gsd.migrating/milestones/M010/slices/S04/S04-PLAN.md`
+- `.gsd.migrating/milestones/M010/slices/S04/S04-SUMMARY.md`
+- `.gsd.migrating/milestones/M010/slices/S04/S04-UAT.md`
+
+### .gsd.migrating/milestones/M010/slices/S04/tasks/
+- `.gsd.migrating/milestones/M010/slices/S04/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M010/slices/S04/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M011/
+- `.gsd.migrating/milestones/M011/M011-ROADMAP.md`
+- `.gsd.migrating/milestones/M011/M011-SUMMARY.md`
+- `.gsd.migrating/milestones/M011/M011-VALIDATION.md`
+
+### .gsd.migrating/milestones/M011/slices/S01/
+- `.gsd.migrating/milestones/M011/slices/S01/S01-PLAN.md`
+- `.gsd.migrating/milestones/M011/slices/S01/S01-SUMMARY.md`
+- `.gsd.migrating/milestones/M011/slices/S01/S01-UAT.md`
+
+### .gsd.migrating/milestones/M011/slices/S01/tasks/
+- `.gsd.migrating/milestones/M011/slices/S01/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M011/slices/S01/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M011/slices/S02/
+- `.gsd.migrating/milestones/M011/slices/S02/S02-PLAN.md`
+- `.gsd.migrating/milestones/M011/slices/S02/S02-SUMMARY.md`
+- `.gsd.migrating/milestones/M011/slices/S02/S02-UAT.md`
+
+### .gsd.migrating/milestones/M011/slices/S02/tasks/
+- `.gsd.migrating/milestones/M011/slices/S02/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M011/slices/S02/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M011/slices/S03/
+- `.gsd.migrating/milestones/M011/slices/S03/S03-PLAN.md`
+- `.gsd.migrating/milestones/M011/slices/S03/S03-SUMMARY.md`
+- `.gsd.migrating/milestones/M011/slices/S03/S03-UAT.md`
+
+### .gsd.migrating/milestones/M011/slices/S03/tasks/
+- `.gsd.migrating/milestones/M011/slices/S03/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M011/slices/S03/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M011/slices/S04/
+- `.gsd.migrating/milestones/M011/slices/S04/S04-PLAN.md`
+- `.gsd.migrating/milestones/M011/slices/S04/S04-SUMMARY.md`
+- `.gsd.migrating/milestones/M011/slices/S04/S04-UAT.md`
+
+### .gsd.migrating/milestones/M011/slices/S04/tasks/
+- `.gsd.migrating/milestones/M011/slices/S04/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M011/slices/S04/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M011/slices/S05/
+- `.gsd.migrating/milestones/M011/slices/S05/S05-PLAN.md`
+- `.gsd.migrating/milestones/M011/slices/S05/S05-SUMMARY.md`
+- `.gsd.migrating/milestones/M011/slices/S05/S05-UAT.md`
+
+### .gsd.migrating/milestones/M011/slices/S05/tasks/
+- `.gsd.migrating/milestones/M011/slices/S05/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M011/slices/S05/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M011/slices/S06/
+- `.gsd.migrating/milestones/M011/slices/S06/S06-PLAN.md`
+- `.gsd.migrating/milestones/M011/slices/S06/S06-SUMMARY.md`
+- `.gsd.migrating/milestones/M011/slices/S06/S06-UAT.md`
+
+### .gsd.migrating/milestones/M011/slices/S06/tasks/
+- `.gsd.migrating/milestones/M011/slices/S06/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M011/slices/S06/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M012/
+- `.gsd.migrating/milestones/M012/M012-ROADMAP.md`
+- `.gsd.migrating/milestones/M012/M012-SUMMARY.md`
+- `.gsd.migrating/milestones/M012/M012-VALIDATION.md`
+
+### .gsd.migrating/milestones/M012/slices/S01/
+- `.gsd.migrating/milestones/M012/slices/S01/S01-PLAN.md`
+- `.gsd.migrating/milestones/M012/slices/S01/S01-SUMMARY.md`
+- `.gsd.migrating/milestones/M012/slices/S01/S01-UAT.md`
+
+### .gsd.migrating/milestones/M012/slices/S01/tasks/
+- `.gsd.migrating/milestones/M012/slices/S01/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M012/slices/S01/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M012/slices/S02/
+- `.gsd.migrating/milestones/M012/slices/S02/S02-PLAN.md`
+- `.gsd.migrating/milestones/M012/slices/S02/S02-SUMMARY.md`
+- `.gsd.migrating/milestones/M012/slices/S02/S02-UAT.md`
+
+### .gsd.migrating/milestones/M012/slices/S02/tasks/
+- `.gsd.migrating/milestones/M012/slices/S02/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M012/slices/S02/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M012/slices/S03/
+- `.gsd.migrating/milestones/M012/slices/S03/S03-PLAN.md`
+- `.gsd.migrating/milestones/M012/slices/S03/S03-SUMMARY.md`
+- `.gsd.migrating/milestones/M012/slices/S03/S03-UAT.md`
+
+### .gsd.migrating/milestones/M012/slices/S03/tasks/
+- `.gsd.migrating/milestones/M012/slices/S03/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M012/slices/S03/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M012/slices/S04/
+- `.gsd.migrating/milestones/M012/slices/S04/S04-PLAN.md`
+- `.gsd.migrating/milestones/M012/slices/S04/S04-SUMMARY.md`
+- `.gsd.migrating/milestones/M012/slices/S04/S04-UAT.md`
+
+### .gsd.migrating/milestones/M012/slices/S04/tasks/
+- `.gsd.migrating/milestones/M012/slices/S04/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M012/slices/S04/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M012/slices/S05/
+- `.gsd.migrating/milestones/M012/slices/S05/S05-PLAN.md`
+- `.gsd.migrating/milestones/M012/slices/S05/S05-SUMMARY.md`
+- `.gsd.migrating/milestones/M012/slices/S05/S05-UAT.md`
+
+### .gsd.migrating/milestones/M012/slices/S05/tasks/
+- `.gsd.migrating/milestones/M012/slices/S05/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M012/slices/S05/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M013/
+- `.gsd.migrating/milestones/M013/M013-ROADMAP.md`
+- `.gsd.migrating/milestones/M013/M013-SUMMARY.md`
+- `.gsd.migrating/milestones/M013/M013-VALIDATION.md`
+
+### .gsd.migrating/milestones/M013/slices/S01/
+- `.gsd.migrating/milestones/M013/slices/S01/S01-PLAN.md`
+- `.gsd.migrating/milestones/M013/slices/S01/S01-SUMMARY.md`
+- `.gsd.migrating/milestones/M013/slices/S01/S01-UAT.md`
+
+### .gsd.migrating/milestones/M013/slices/S01/tasks/
+- `.gsd.migrating/milestones/M013/slices/S01/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M013/slices/S01/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M013/slices/S02/
+- `.gsd.migrating/milestones/M013/slices/S02/S02-PLAN.md`
+- `.gsd.migrating/milestones/M013/slices/S02/S02-SUMMARY.md`
+- `.gsd.migrating/milestones/M013/slices/S02/S02-UAT.md`
+
+### .gsd.migrating/milestones/M013/slices/S02/tasks/
+- `.gsd.migrating/milestones/M013/slices/S02/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M013/slices/S02/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M013/slices/S03/
+- `.gsd.migrating/milestones/M013/slices/S03/S03-PLAN.md`
+- `.gsd.migrating/milestones/M013/slices/S03/S03-SUMMARY.md`
+- `.gsd.migrating/milestones/M013/slices/S03/S03-UAT.md`
+
+### .gsd.migrating/milestones/M013/slices/S03/tasks/
+- `.gsd.migrating/milestones/M013/slices/S03/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M013/slices/S03/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M013/slices/S04/
+- `.gsd.migrating/milestones/M013/slices/S04/S04-PLAN.md`
+- `.gsd.migrating/milestones/M013/slices/S04/S04-SUMMARY.md`
+- `.gsd.migrating/milestones/M013/slices/S04/S04-UAT.md`
+
+### .gsd.migrating/milestones/M013/slices/S04/tasks/
+- `.gsd.migrating/milestones/M013/slices/S04/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M013/slices/S04/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M014/
+- `.gsd.migrating/milestones/M014/M014-ROADMAP.md`
+- `.gsd.migrating/milestones/M014/M014-SUMMARY.md`
+- `.gsd.migrating/milestones/M014/M014-VALIDATION.md`
+
+### .gsd.migrating/milestones/M014/slices/S01/
+- `.gsd.migrating/milestones/M014/slices/S01/S01-PLAN.md`
+- `.gsd.migrating/milestones/M014/slices/S01/S01-SUMMARY.md`
+- `.gsd.migrating/milestones/M014/slices/S01/S01-UAT.md`
+
+### .gsd.migrating/milestones/M014/slices/S01/tasks/
+- `.gsd.migrating/milestones/M014/slices/S01/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M014/slices/S01/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M014/slices/S02/
+- `.gsd.migrating/milestones/M014/slices/S02/S02-PLAN.md`
+- `.gsd.migrating/milestones/M014/slices/S02/S02-SUMMARY.md`
+- `.gsd.migrating/milestones/M014/slices/S02/S02-UAT.md`
+
+### .gsd.migrating/milestones/M014/slices/S02/tasks/
+- `.gsd.migrating/milestones/M014/slices/S02/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M014/slices/S02/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M014/slices/S03/
+- `.gsd.migrating/milestones/M014/slices/S03/S03-PLAN.md`
+- `.gsd.migrating/milestones/M014/slices/S03/S03-SUMMARY.md`
+- `.gsd.migrating/milestones/M014/slices/S03/S03-UAT.md`
+
+### .gsd.migrating/milestones/M014/slices/S03/tasks/
+- `.gsd.migrating/milestones/M014/slices/S03/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M014/slices/S03/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M014/slices/S04/
+- `.gsd.migrating/milestones/M014/slices/S04/S04-PLAN.md`
+- `.gsd.migrating/milestones/M014/slices/S04/S04-SUMMARY.md`
+- `.gsd.migrating/milestones/M014/slices/S04/S04-UAT.md`
+
+### .gsd.migrating/milestones/M014/slices/S04/tasks/
+- `.gsd.migrating/milestones/M014/slices/S04/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M014/slices/S04/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M014/slices/S05/
+- `.gsd.migrating/milestones/M014/slices/S05/S05-PLAN.md`
+- `.gsd.migrating/milestones/M014/slices/S05/S05-SUMMARY.md`
+- `.gsd.migrating/milestones/M014/slices/S05/S05-UAT.md`
+
+### .gsd.migrating/milestones/M014/slices/S05/tasks/
+- `.gsd.migrating/milestones/M014/slices/S05/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M014/slices/S05/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M015/
+- `.gsd.migrating/milestones/M015/M015-ROADMAP.md`
+- `.gsd.migrating/milestones/M015/M015-SUMMARY.md`
+- `.gsd.migrating/milestones/M015/M015-VALIDATION.md`
+
+### .gsd.migrating/milestones/M015/slices/S01/
+- `.gsd.migrating/milestones/M015/slices/S01/S01-PLAN.md`
+- `.gsd.migrating/milestones/M015/slices/S01/S01-SUMMARY.md`
+- `.gsd.migrating/milestones/M015/slices/S01/S01-UAT.md`
+
+### .gsd.migrating/milestones/M015/slices/S01/tasks/
+- `.gsd.migrating/milestones/M015/slices/S01/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M015/slices/S01/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M015/slices/S02/
+- `.gsd.migrating/milestones/M015/slices/S02/S02-PLAN.md`
+- `.gsd.migrating/milestones/M015/slices/S02/S02-SUMMARY.md`
+- `.gsd.migrating/milestones/M015/slices/S02/S02-UAT.md`
+
+### .gsd.migrating/milestones/M015/slices/S02/tasks/
+- `.gsd.migrating/milestones/M015/slices/S02/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M015/slices/S02/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M015/slices/S03/
+- `.gsd.migrating/milestones/M015/slices/S03/S03-PLAN.md`
+- `.gsd.migrating/milestones/M015/slices/S03/S03-SUMMARY.md`
+- `.gsd.migrating/milestones/M015/slices/S03/S03-UAT.md`
+
+### .gsd.migrating/milestones/M015/slices/S03/tasks/
+- `.gsd.migrating/milestones/M015/slices/S03/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M015/slices/S03/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M015/slices/S04/
+- `.gsd.migrating/milestones/M015/slices/S04/S04-PLAN.md`
+- `.gsd.migrating/milestones/M015/slices/S04/S04-SUMMARY.md`
+- `.gsd.migrating/milestones/M015/slices/S04/S04-UAT.md`
+
+### .gsd.migrating/milestones/M015/slices/S04/tasks/
+- `.gsd.migrating/milestones/M015/slices/S04/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M015/slices/S04/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M015/slices/S05/
+- `.gsd.migrating/milestones/M015/slices/S05/S05-PLAN.md`
+- `.gsd.migrating/milestones/M015/slices/S05/S05-SUMMARY.md`
+- `.gsd.migrating/milestones/M015/slices/S05/S05-UAT.md`
+
+### .gsd.migrating/milestones/M015/slices/S05/tasks/
+- `.gsd.migrating/milestones/M015/slices/S05/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M015/slices/S05/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M015/slices/S06/
+- `.gsd.migrating/milestones/M015/slices/S06/S06-PLAN.md`
+- `.gsd.migrating/milestones/M015/slices/S06/S06-SUMMARY.md`
+- `.gsd.migrating/milestones/M015/slices/S06/S06-UAT.md`
+
+### .gsd.migrating/milestones/M015/slices/S06/tasks/
+- `.gsd.migrating/milestones/M015/slices/S06/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M015/slices/S06/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M016/
+- `.gsd.migrating/milestones/M016/M016-ROADMAP.md`
+- `.gsd.migrating/milestones/M016/M016-SUMMARY.md`
+- `.gsd.migrating/milestones/M016/M016-VALIDATION.md`
+
+### .gsd.migrating/milestones/M016/slices/S01/
+- `.gsd.migrating/milestones/M016/slices/S01/S01-PLAN.md`
+- `.gsd.migrating/milestones/M016/slices/S01/S01-SUMMARY.md`
+- `.gsd.migrating/milestones/M016/slices/S01/S01-UAT.md`
+
+### .gsd.migrating/milestones/M016/slices/S01/tasks/
+- `.gsd.migrating/milestones/M016/slices/S01/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M016/slices/S01/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M016/slices/S02/
+- `.gsd.migrating/milestones/M016/slices/S02/S02-PLAN.md`
+- `.gsd.migrating/milestones/M016/slices/S02/S02-SUMMARY.md`
+- `.gsd.migrating/milestones/M016/slices/S02/S02-UAT.md`
+
+### .gsd.migrating/milestones/M016/slices/S02/tasks/
+- `.gsd.migrating/milestones/M016/slices/S02/tasks/T01-PLAN.md`
+- `.gsd.migrating/milestones/M016/slices/S02/tasks/T01-SUMMARY.md`
+
+### .gsd.migrating/milestones/M017/
+- `.gsd.migrating/milestones/M017/M017-CONTEXT.md`
+- `.gsd.migrating/milestones/M017/M017-ROADMAP.md`
+
 ### .gsd.migrating/runtime/
 - `.gsd.migrating/runtime/M001-S01-reactive.json`
 - `.gsd.migrating/runtime/uok-parity.jsonl`
@@ -200,26 +651,7 @@ Generated: 2026-05-08T07:06:20Z | Files: 364 | Described: 0/364
 - `dlp-agent/proto/content_analysis.proto`
 
 ### dlp-agent/src/
-- `dlp-agent/src/audit_emitter.rs`
-- `dlp-agent/src/cache.rs`
-- `dlp-agent/src/config.rs`
-- `dlp-agent/src/device_controller.rs`
-- `dlp-agent/src/device_registry.rs`
-- `dlp-agent/src/disk_enforcer.rs`
-- `dlp-agent/src/engine_client.rs`
-- `dlp-agent/src/health_monitor.rs`
-- `dlp-agent/src/identity.rs`
-- `dlp-agent/src/lib.rs`
-- `dlp-agent/src/main.rs`
-- `dlp-agent/src/offline.rs`
-- `dlp-agent/src/password_stop.rs`
-- `dlp-agent/src/protection.rs`
-- `dlp-agent/src/server_client.rs`
-- `dlp-agent/src/service.rs`
-- `dlp-agent/src/session_identity.rs`
-- `dlp-agent/src/session_monitor.rs`
-- `dlp-agent/src/ui_spawner.rs`
-- `dlp-agent/src/usb_enforcer.rs`
+- *(30 files: 30 .rs)*
 
 ### dlp-agent/src/chrome/
 - `dlp-agent/src/chrome/cache.rs`
@@ -278,6 +710,7 @@ Generated: 2026-05-08T07:06:20Z | Files: 364 | Described: 0/364
 - `dlp-common/src/classifier.rs`
 - `dlp-common/src/disk.rs`
 - `dlp-common/src/endpoint.rs`
+- `dlp-common/src/hook_ipc.rs`
 - `dlp-common/src/lib.rs`
 - `dlp-common/src/usb.rs`
 
@@ -301,6 +734,16 @@ Generated: 2026-05-08T07:06:20Z | Files: 364 | Described: 0/364
 - `dlp-e2e/tests/tui_conditions_builder.rs`
 - `dlp-e2e/tests/tui_device_registry.rs`
 - `dlp-e2e/tests/tui_managed_origins.rs`
+
+### dlp-hook-dll/
+- `dlp-hook-dll/build.rs`
+- `dlp-hook-dll/Cargo.toml`
+
+### dlp-hook-dll/src/
+- `dlp-hook-dll/src/debug_test.rs`
+- `dlp-hook-dll/src/hook.def`
+- `dlp-hook-dll/src/lib.rs`
+- `dlp-hook-dll/src/pipe_client.rs`
 
 ### dlp-server/
 - `dlp-server/Cargo.toml`
@@ -348,71 +791,4 @@ Generated: 2026-05-08T07:06:20Z | Files: 364 | Described: 0/364
 - `dlp-server/tests/mode_end_to_end.rs`
 
 ### dlp-user-ui/
-- `dlp-user-ui/build.rs`
 - `dlp-user-ui/Cargo.toml`
-
-### dlp-user-ui/src/
-- `dlp-user-ui/src/app.rs`
-- `dlp-user-ui/src/clipboard_monitor.rs`
-- `dlp-user-ui/src/lib.rs`
-- `dlp-user-ui/src/main.rs`
-- `dlp-user-ui/src/notifications.rs`
-- `dlp-user-ui/src/tray.rs`
-
-### dlp-user-ui/src/detection/
-- `dlp-user-ui/src/detection/app_identity.rs`
-- `dlp-user-ui/src/detection/mod.rs`
-
-### dlp-user-ui/src/dialogs/
-- `dlp-user-ui/src/dialogs/clipboard.rs`
-- `dlp-user-ui/src/dialogs/mod.rs`
-- `dlp-user-ui/src/dialogs/override_request.rs`
-- `dlp-user-ui/src/dialogs/stop_password.rs`
-
-### dlp-user-ui/src/ipc/
-- `dlp-user-ui/src/ipc/frame.rs`
-- `dlp-user-ui/src/ipc/messages.rs`
-- `dlp-user-ui/src/ipc/mod.rs`
-- `dlp-user-ui/src/ipc/pipe1.rs`
-- `dlp-user-ui/src/ipc/pipe2.rs`
-- `dlp-user-ui/src/ipc/pipe3.rs`
-
-### dlp-user-ui/tests/
-- `dlp-user-ui/tests/clipboard_integration.rs`
-
-### docs/
-- `docs/ABAC_POLICIES.md`
-- `docs/ARCHITECTURE.md`
-- `docs/AUDIT_LOGGING.md`
-- `docs/CONFIGURATION.md`
-- `docs/DEVELOPMENT.md`
-- `docs/GETTING-STARTED.md`
-- `docs/IMPLEMENTATION_GUIDE.md`
-- `docs/MANUAL_TESTING.md`
-- `docs/OPERATIONAL.md`
-- `docs/SECURITY_ARCHITECTURE.md`
-- `docs/SECURITY_AUDIT.md`
-- `docs/SECURITY_OVERVIEW.md`
-- `docs/SRS.md`
-- `docs/TESTING.md`
-
-### graphify-out/
-- `graphify-out/GRAPH_REPORT.md`
-- `graphify-out/graph.json`
-
-### graphify-out/cache/
-- *(89 files: 89 .json)*
-
-### installer/
-- `installer/build.ps1`
-- `installer/DLPAgent.wxs`
-- `installer/readme.md`
-
-### planning/phases/24-device-registry-db-admin-api/
-- `planning/phases/24-device-registry-db-admin-api/24-REVIEW.md`
-
-### scripts/
-- `scripts/Manage-DlpAgentService.ps1`
-- `scripts/Manage-DlpComponents.ps1`
-- `scripts/Uat-ReadMe.md`
-- `scripts/Uat-UsbBlock.ps1`

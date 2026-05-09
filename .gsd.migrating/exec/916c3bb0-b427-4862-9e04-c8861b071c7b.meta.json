@@ -1,0 +1,18 @@
+{
+  "id": "916c3bb0-b427-4862-9e04-c8861b071c7b",
+  "runtime": "bash",
+  "purpose": "Find Windows API usage patterns and existing hooks",
+  "script_chars": 822,
+  "started_at": "2026-05-08T07:35:38.410Z",
+  "finished_at": "2026-05-08T07:35:38.766Z",
+  "exit_code": 0,
+  "signal": null,
+  "timed_out": false,
+  "duration_ms": 356,
+  "stdout_bytes": 1895,
+  "stderr_bytes": 0,
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "stdout_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\916c3bb0-b427-4862-9e04-c8861b071c7b.stdout",
+  "stderr_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\916c3bb0-b427-4862-9e04-c8861b071c7b.stderr"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "dfd5c314-4c0e-4760-a36f-733a05366b2c",
+  "runtime": "bash",
+  "purpose": "Get EventType, AuditEvent, lib.rs modules",
+  "script_chars": 505,
+  "started_at": "2026-05-08T15:07:33.552Z",
+  "finished_at": "2026-05-08T15:07:33.680Z",
+  "exit_code": 1,
+  "signal": null,
+  "timed_out": false,
+  "duration_ms": 128,
+  "stdout_bytes": 8154,
+  "stderr_bytes": 0,
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "stdout_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\dfd5c314-4c0e-4760-a36f-733a05366b2c.stdout",
+  "stderr_path": "C:\\Users\\nhdinh\\dev\\dlp-rust\\.gsd\\exec\\dfd5c314-4c0e-4760-a36f-733a05366b2c.stderr"
+}
