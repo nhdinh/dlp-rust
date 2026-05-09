@@ -289,3 +289,48 @@ The system supports hierarchical configuration with the following precedence:
 2. Registry `HKLM\SOFTWARE\DLP\PolicyEngine\BindAddr`
 3. Local port probe
 4. Compiled default `http://127.0.0.1:9090`
+
+---
+
+## Cloud and Print enforcement configuration
+
+Two additional SQLite tables manage cloud upload enforcement and print spooler enforcement. Both are single-row tables (id=1) and are managed via the admin API and the `dlp-admin-cli` CloudConfig / PrintConfig screens.
+
+### `cloud_config` — Cloud upload enforcement settings
+
+| Column | Type | Default | Description |
+|--------|------|---------|-------------|
+| `cloud_hook_enabled` | INTEGER | 0 | Enable IAT hook DLL injection + WFP egress blocking for cloud upload enforcement |
+| `updated_at` | TEXT | `''` | ISO 8601 timestamp of last update |
+
+When `cloud_hook_enabled` is true, the agent:
+1. Injects the hook DLL into monitored processes via `CreateRemoteThread` + `LoadLibraryW` (IAT patching)
+2. Installs a WFP sublayer with per-process TCP/443 egress block filters for processes attempting unauthorised cloud uploads
+3. Enforces the `CLOUD_UPLOAD` ABAC action on intercepted upload attempts
+4. Enforces the `SHARE_LINK` ABAC action on clipboard share-link copy operations
+
+### `print_config` — Print spooler enforcement settings
+
+| Column | Type | Default | Description |
+|--------|------|---------|-------------|
+| `print_enabled` | INTEGER | 0 | Enable print spooler watcher and XPS-based print enforcement |
+| `print_xps_timeout_ms` | INTEGER | 5000 | Timeout in milliseconds for XPS spool file parsing per job |
+| `print_unclassifiable_action` | TEXT | `'Allow'` | Action for jobs whose content cannot be classified: `'Allow'` or `'Block'` |
+| `print_max_pages` | INTEGER | 50 | Maximum number of XPS pages to parse per print job |
+| `updated_at` | TEXT | `''` | ISO 8601 timestamp of last update |
+
+When `print_enabled` is true, the agent:
+1. Opens the default printer spooler via `OpenPrinterW` and installs a change notification watcher
+2. For each new print job, fetches job metadata via `GetJobW` and reads the XPS spool file
+3. Parses XPS (ZIP+XML) up to `print_max_pages` pages, extracting `Glyphs` `UnicodeString` attributes
+4. Classifies extracted text using the content classifier; jobs exceeding the permitted classification are cancelled via `SetJobW(JOB_CONTROL_DELETE)`
+5. Unclassifiable jobs are handled according to `print_unclassifiable_action`
+
+### Admin CLI screens
+
+Both settings are managed from the `dlp-admin-cli` TUI:
+
+- **CloudConfig screen** — toggle `cloud_hook_enabled` with `Space`, save with `s`, back with `Esc`
+- **PrintConfig screen** — edit all four fields, save with `s`, back with `Esc`
+
+These screens are accessible from the Main Menu navigation.

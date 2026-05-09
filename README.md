@@ -62,17 +62,19 @@ docs/
 
 ## Status
 
-Phase 1 through 7 are complete. All crates are implemented and tested.
+Phases 1 through 9 are complete. Current release: **v0.9.0 (M017)**.
 
-| Phase | Focus                                                   | Crates                                                   |
-| ----- | ------------------------------------------------------- | -------------------------------------------------------- |
-| 1     | Foundation: shared types, ABAC evaluation, agent, UI    | `dlp-common`, `dlp-server`, `dlp-agent`, `dlp-user-ui`  |
-| 2     | Process protection + IPC hardening                      | `dlp-agent`, `dlp-user-ui`                               |
-| 3     | File interception + integration tests                   | `dlp-agent`                                              |
-| 4     | Production hardening: MSI installer, security audit     | All                                                      |
-| 5     | Central management: audit store, SIEM, admin API        | `dlp-server`, `dlp-admin-cli`                            |
-| 6     | Config push to agents                                   | `dlp-server`, `dlp-agent`                                |
-| 7     | Active Directory LDAP integration (machine-account Kerberos, group resolution, device trust, network location) | `dlp-common`, `dlp-server`, `dlp-agent` |
+| Phase | Focus                                                                                                          | Crates                                                  |
+| ----- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| 1     | Foundation: shared types, ABAC evaluation, agent, UI                                                          | `dlp-common`, `dlp-server`, `dlp-agent`, `dlp-user-ui` |
+| 2     | Process protection + IPC hardening                                                                             | `dlp-agent`, `dlp-user-ui`                              |
+| 3     | File interception + integration tests                                                                          | `dlp-agent`                                             |
+| 4     | Production hardening: MSI installer, security audit                                                            | All                                                     |
+| 5     | Central management: audit store, SIEM, admin API                                                               | `dlp-server`, `dlp-admin-cli`                           |
+| 6     | Config push to agents                                                                                          | `dlp-server`, `dlp-agent`                               |
+| 7     | Active Directory LDAP integration (machine-account Kerberos, group resolution, device trust, network location) | `dlp-common`, `dlp-server`, `dlp-agent`                 |
+| 8     | Cloud channel enforcement: WFP per-process HTTPS egress blocking + IAT hook DLL injection + CloudEnforcer + share-link clipboard policy | `dlp-agent`, `dlp-common`, `dlp-admin-cli`, `dlp-server` |
+| 9     | Print spooler interception: XPS spool parsing, ABAC classification, job cancellation + PrintEnforcer + admin config screens | `dlp-agent`, `dlp-admin-cli`, `dlp-server`              |
 
 ---
 
