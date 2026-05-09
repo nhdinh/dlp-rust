@@ -41,6 +41,8 @@ pub enum Action {
     CLOUD_UPLOAD,
     /// Print operation (Phase 46, M017/S04).
     PRINT,
+    /// Cloud share-link pasted to clipboard (Phase 47, M017/S03).
+    SHARE_LINK,
 }
 
 /// The access context describes how the file operation originated.
@@ -914,5 +916,36 @@ mod phase37_action_tests {
         assert_ne!(Action::PRINT, Action::WRITE);
         assert_ne!(Action::PRINT, Action::COPY);
         assert_ne!(Action::PRINT, Action::CLOUD_UPLOAD);
+    }
+
+    /// Verify `SHARE_LINK` serializes as its literal variant name (no rename).
+    #[test]
+    fn test_share_link_serializes_as_variant_name() {
+        let json = serde_json::to_string(&Action::SHARE_LINK).expect("serialize SHARE_LINK");
+        assert_eq!(
+            json, "\"SHARE_LINK\"",
+            "SHARE_LINK must serialize as its literal variant name per M017/S03"
+        );
+    }
+
+    /// Verify `"SHARE_LINK"` deserializes back to the correct variant.
+    #[test]
+    fn test_share_link_deserializes_from_variant_name() {
+        let action: Action =
+            serde_json::from_str("\"SHARE_LINK\"").expect("deserialize SHARE_LINK");
+        assert_eq!(
+            action,
+            Action::SHARE_LINK,
+            "\"SHARE_LINK\" must deserialize to Action::SHARE_LINK"
+        );
+    }
+
+    /// Verify SHARE_LINK is distinct from other Action variants.
+    #[test]
+    fn test_share_link_is_distinct() {
+        assert_ne!(Action::SHARE_LINK, Action::PASTE);
+        assert_ne!(Action::SHARE_LINK, Action::COPY);
+        assert_ne!(Action::SHARE_LINK, Action::CLOUD_UPLOAD);
+        assert_ne!(Action::SHARE_LINK, Action::PRINT);
     }
 }

@@ -119,6 +119,8 @@ pub mod usb_enforcer;
 #[cfg(windows)]
 pub mod cloud_enforcer;
 
+pub mod share_link_enforcer;
+
 /// Shared test helpers for modules that mutate the global DiskEnumerator OnceLock.
 ///
 /// The global `DISK_ENUMERATOR` is a process-wide OnceLock. Tests in
