@@ -19,7 +19,9 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+bincode = "1.3"
 toml = "0.8"
+serde_ignored = "0.1"
 
 # Error handling
 thiserror = { workspace = true }
@@ -46,11 +48,14 @@ windows = { version = "0.62", features = [
     "Win32_System_Pipes",
     "Win32_System_IO",
     "Win32_System_RemoteDesktop",
+    "Win32_System_Diagnostics_Debug",
     "Win32_System_Diagnostics_Etw",
     "Win32_System_Time",
     "Win32_Security_Cryptography",
     "Win32_System_Memory",
     "Win32_System_Registry",
+    # detection/app_identity.rs: GetApplicationUserModelId (UWP AUMID resolution)
+    "Win32_Storage_Packaging_Appx",
     # detection/network_share.rs: WNetOpenEnumW, WNetEnumResourceW (MPR/WNet submodule)
     "Win32_NetworkManagement_WNet",
     "Win32_System_DataExchange",
@@ -65,22 +70,27 @@ windows = { version = "0.62", features = [
     # detection/usb.rs Plan 02: SetupDiGetClassDevsW, SetupDiEnumDeviceInfo,
     # SetupDiGetDeviceRegistryPropertyW for device friendly-name lookup.
     "Win32_Devices_DeviceAndDriverInstallation",
-    # detection/encryption.rs: CoSetProxyBlanket (PktPrivacy auth upgrade).
-    # wmi 0.14 uses windows 0.59 internally; we call CoSetProxyBlanket via raw
-    # FFI to upgrade from CALL-level (wmi default) to PktPrivacy (D-02 requirement).
-    "Win32_System_Com",
+    # Phase 38.2: CM_Get_Device_Interface_PropertyW + DEVPKEY_Device_InstanceId.
+    "Win32_Devices_Properties",
+    # Phase 40: OLE drag-and-drop interception (IDropTarget, RegisterDragDrop)
+    "Win32_System_Ole",
+    # Phase 40: DragQueryFileW, HDROP for WM_DROPFILES handling
+    "Win32_UI_Shell",
+    # detection/app_identity.rs: WinVerifyTrust, WINTRUST_DATA, etc.
+    "Win32_Security_WinTrust",
+    # WFP network egress filter (M017 T05)
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_System_Rpc",
+    # Print spooler wrappers (M017 T02)
+    "Win32_Graphics_Printing",
+    # Sync-client process watcher (M017 S02 T03)
+    "Win32_System_Diagnostics_ToolHelp",
 ] }
 
 # WMI for BitLocker queries (Phase 34 - Win32_EncryptableVolume in
-# ROOT\CIMV2\Security\MicrosoftVolumeEncryption). Pinned at 0.14 per D-21a;
-# rationale: minimize churn in Phase 34's scope. Future maintenance phase may
-# bump to 0.18 once integration test coverage exists.
-wmi = { version = "0.14", features = ["chrono"] }
-
-# windows-core 0.59 is the version transitively used by wmi 0.14. We declare it
-# as a direct dependency so we can bring the `Interface` trait into scope to call
-# `IWbemServices::as_raw()` for the CoSetProxyBlanket PktPrivacy upgrade (D-02).
-windows-core = "0.59"
+# ROOT\CIMV2\Security\MicrosoftVolumeEncryption). Upgraded to 0.18+ in
+# Phase 38.5 to eliminate raw CoSetProxyBlanket FFI (TECH-01).
+wmi = { version = "0.18", features = ["chrono"] }
 
 # Password hashing: bcrypt for dlp-admin stop-password verification
 bcrypt = "0.16"
@@ -97,6 +107,10 @@ chrono = { version = "0.4", features = ["serde"] }
 # Protobuf (Chrome Enterprise Content Analysis)
 prost = "0.14"
 bytes = "1"
+
+# Print spooler XPS parsing (M017/S04)
+zip = "2"
+quick-xml = "0.36"
 
 [features]
 # Phase 34: real-Windows-only smoke tests against the live WMI namespace

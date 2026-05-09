@@ -16,6 +16,9 @@ fn sample_app() -> AppIdentity {
         publisher: "Contoso Corporation".to_string(),
         trust_tier: AppTrustTier::Trusted,
         signature_state: SignatureState::Valid,
+        aumid: None,
+        package_family_name: None,
+        is_uwp: false,
     }
 }
 
@@ -66,6 +69,9 @@ fn evaluate_request_round_trip_with_both_app_fields() {
             publisher: "Unknown".to_string(),
             trust_tier: AppTrustTier::Untrusted,
             signature_state: SignatureState::NotSigned,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         }),
         ..Default::default()
     };
@@ -116,8 +122,9 @@ fn audit_event_builder_chain_and_round_trip() {
     // D-11/D-12: populated fields present.
     assert!(json.contains("source_application"));
     assert!(json.contains("device_identity"));
-    // D-13: the None destination_application is skipped from JSON output.
-    assert!(!json.contains("destination_application"));
+    // AUDIT-05 (Phase 38.3): destination_application is always serialized,
+    // even when None (as null), to guarantee schema presence.
+    assert!(json.contains("\"destination_application\":null"));
 
     let rt: AuditEvent = serde_json::from_str(&json).unwrap();
     assert!(rt.source_application.is_some());

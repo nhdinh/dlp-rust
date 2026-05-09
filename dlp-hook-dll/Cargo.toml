@@ -1,0 +1,30 @@
+[package]
+name = "dlp-hook-dll"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "DLP API hook DLL for cloud sync client interception"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_Security",
+    "Win32_System_Pipes",
+] }
+serde = { workspace = true }
+bincode = "1.3"
+
+[dev-dependencies]
+dlp-agent = { path = "../dlp-agent" }
+
+[dependencies.dlp-common]
+path = "../dlp-common"

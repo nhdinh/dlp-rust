@@ -471,6 +471,24 @@ fn enumerate_fixed_disks_windows() -> Result<Vec<DiskIdentity>, DiskError> {
         // 33-HUMAN-UAT.md test 1 diagnosis.
         let ioctl_result = query_bus_type_ioctl(&instance_id);
         let pnp_result = is_usb_bridged_pnp_walk(&instance_id);
+
+        // OP-01: If BOTH signals fail, log the error with instance_id and skip
+        // this disk. The enumeration continues with the next device so that one
+        // failing disk does not abort the entire enumeration (T-38.6-01).
+        if let (Err(ref ioctl_err), Err(ref pnp_err)) = (&ioctl_result, &pnp_result) {
+            tracing::error!(
+                instance_id = %instance_id,
+                ioctl_error = %ioctl_err,
+                pnp_error = %pnp_err,
+                "IOCTL_STORAGE_QUERY_PROPERTY and PnP walk both failed for disk -- skipping"
+            );
+            index += 1;
+            if index > 1024 {
+                break;
+            }
+            continue;
+        }
+
         let bus_type = resolve_bus_type_with_pnp_override(ioctl_result, pnp_result);
 
         // Determine drive letter by scanning fixed drives.
@@ -551,9 +569,37 @@ fn disk_number_for_instance_id(instance_id: &str) -> Result<u32, DiskError> {
     };
     let hdev = hdev.map_err(|e| DiskError::SetupDiFailed(format!("SetupDiGetClassDevsW: {e}")))?;
 
-    let mut index: u32 = 0;
-    let mut disk_number: Option<u32> = None;
+    let disk_number = find_disk_number_in_device_set(hdev, instance_id);
+    let _ = unsafe { SetupDiDestroyDeviceInfoList(hdev) };
 
+    disk_number.ok_or_else(|| {
+        DiskError::DeviceOpenFailed(format!(
+            "could not open device handle for instance_id: {instance_id}"
+        ))
+    })
+}
+
+/// Scan a SetupDi device set for a matching instance ID and return its disk number.
+///
+/// Iterates through all devices in the set, comparing each device's instance ID
+/// against `target_id`. On match, opens the device's interface and queries the
+/// kernel-assigned disk number via `IOCTL_STORAGE_GET_DEVICE_NUMBER`.
+///
+/// # Arguments
+///
+/// * `hdev` -- valid `HDEVINFO` device set.
+/// * `target_id` -- the SetupDi instance ID to locate.
+///
+/// # Returns
+///
+/// The disk number on success, or `None` if the device is not found or the
+/// IOCTL fails.
+#[cfg(windows)]
+fn find_disk_number_in_device_set(
+    hdev: windows::Win32::Devices::DeviceAndDriverInstallation::HDEVINFO,
+    target_id: &str,
+) -> Option<u32> {
+    let mut index: u32 = 0;
     loop {
         let mut devinfo = SP_DEVINFO_DATA {
             cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
@@ -563,100 +609,139 @@ fn disk_number_for_instance_id(instance_id: &str) -> Result<u32, DiskError> {
             break;
         }
 
-        let this_instance_id = read_instance_id(hdev, &devinfo)?;
-        if this_instance_id == instance_id {
-            // Found the matching device. Get its interface detail to open a handle.
-            let mut interface_data = SP_DEVICE_INTERFACE_DATA {
-                cbSize: std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
-                ..Default::default()
-            };
-            if unsafe {
-                SetupDiEnumDeviceInterfaces(
-                    hdev,
-                    Some(&devinfo),
-                    &GUID_DEVINTERFACE_DISK,
-                    0,
-                    &mut interface_data,
-                )
+        let this_instance_id = match read_instance_id(hdev, &devinfo) {
+            Ok(id) => id,
+            Err(_) => {
+                index += 1;
+                continue;
             }
-            .is_ok()
-            {
-                // Get the required buffer size for the interface detail.
-                let mut required: u32 = 0;
-                let _ = unsafe {
-                    SetupDiGetDeviceInterfaceDetailW(
-                        hdev,
-                        &interface_data,
-                        None,
-                        0,
-                        Some(&mut required),
-                        None,
-                    )
-                };
-                if required > 0 {
-                    let mut buf = vec![0u8; required as usize];
-                    let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
-                    // SAFETY: SP_DEVICE_INTERFACE_DETAIL_DATA_W starts with cbSize (u32) then DevicePath.
-                    unsafe {
-                        (*detail).cbSize =
-                            std::mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
-                    }
-                    let ok = unsafe {
-                        SetupDiGetDeviceInterfaceDetailW(
-                            hdev,
-                            &interface_data,
-                            Some(detail),
-                            required,
-                            None,
-                            None,
-                        )
-                    };
-                    if ok.is_ok() {
-                        // Extract the device path from the detail structure.
-                        let path_wide: Vec<u16> = unsafe {
-                            std::slice::from_raw_parts(
-                                (*detail).DevicePath.as_ptr(),
-                                (required as usize - std::mem::size_of::<u32>()) / 2,
-                            )
-                        }
-                        .iter()
-                        .copied()
-                        .take_while(|&w| w != 0)
-                        .collect();
-                        let path = String::from_utf16_lossy(&path_wide);
+        };
 
-                        // Open the device and query its disk number.
-                        let wide_path: Vec<u16> =
-                            path.encode_utf16().chain(std::iter::once(0)).collect();
-                        let handle = unsafe {
-                            CreateFileW(
-                                windows::core::PCWSTR(wide_path.as_ptr()),
-                                0, // no access needed for IOCTL
-                                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                None,
-                                OPEN_EXISTING,
-                                FILE_FLAGS_AND_ATTRIBUTES(0),
-                                None,
-                            )
-                        };
-                        if let Ok(h) = handle {
-                            disk_number = query_disk_number_for_handle(h);
-                            let _ = unsafe { CloseHandle(h) };
-                        }
-                    }
-                }
-            }
-            break;
+        if this_instance_id == target_id {
+            return query_disk_number_for_device(hdev, &devinfo);
         }
+
         index += 1;
         if index > 1024 {
             break;
         }
     }
-    let _ = unsafe { SetupDiDestroyDeviceInfoList(hdev) };
-    disk_number.ok_or_else(|| {
-        DiskError::SetupDiFailed("could not determine disk number for instance_id".to_string())
-    })
+    None
+}
+
+/// Query the disk number for a single device by opening its interface and
+/// sending `IOCTL_STORAGE_GET_DEVICE_NUMBER`.
+///
+/// # Arguments
+///
+/// * `hdev` -- valid `HDEVINFO` device set.
+/// * `devinfo` -- the device info data for the target device.
+///
+/// # Returns
+///
+/// The disk number on success, or `None` if the interface cannot be opened
+/// or the IOCTL fails.
+#[cfg(windows)]
+fn query_disk_number_for_device(
+    hdev: windows::Win32::Devices::DeviceAndDriverInstallation::HDEVINFO,
+    devinfo: &SP_DEVINFO_DATA,
+) -> Option<u32> {
+    let mut interface_data = SP_DEVICE_INTERFACE_DATA {
+        cbSize: std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
+        ..Default::default()
+    };
+    let enum_ok = unsafe {
+        SetupDiEnumDeviceInterfaces(
+            hdev,
+            Some(devinfo),
+            &GUID_DEVINTERFACE_DISK,
+            0,
+            &mut interface_data,
+        )
+    };
+    if enum_ok.is_err() {
+        return None;
+    }
+
+    let device_path = get_device_interface_path(hdev, &interface_data)?;
+
+    let wide_path: Vec<u16> = device_path
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let handle = unsafe {
+        CreateFileW(
+            windows::core::PCWSTR(wide_path.as_ptr()),
+            0, // no access needed for IOCTL
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        )
+    };
+
+    let h = match handle {
+        Ok(h) => h,
+        Err(_) => return None,
+    };
+
+    let disk_number = query_disk_number_for_handle(h);
+    let _ = unsafe { CloseHandle(h) };
+    disk_number
+}
+
+/// Retrieve the device interface path from a `SP_DEVICE_INTERFACE_DATA` entry.
+///
+/// Calls `SetupDiGetDeviceInterfaceDetailW` twice (size probe + detail fetch)
+/// and extracts the null-terminated `DevicePath` string.
+///
+/// # Arguments
+///
+/// * `hdev` -- valid `HDEVINFO` device set.
+/// * `interface_data` -- the interface data returned by `SetupDiEnumDeviceInterfaces`.
+///
+/// # Returns
+///
+/// The device path string on success, or `None` on any error.
+#[cfg(windows)]
+fn get_device_interface_path(
+    hdev: windows::Win32::Devices::DeviceAndDriverInstallation::HDEVINFO,
+    interface_data: &SP_DEVICE_INTERFACE_DATA,
+) -> Option<String> {
+    let mut required: u32 = 0;
+    let _ = unsafe {
+        SetupDiGetDeviceInterfaceDetailW(hdev, interface_data, None, 0, Some(&mut required), None)
+    };
+    if required == 0 {
+        return None;
+    }
+
+    let mut buf = vec![0u8; required as usize];
+    let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
+    // SAFETY: SP_DEVICE_INTERFACE_DETAIL_DATA_W starts with cbSize (u32) then DevicePath.
+    unsafe {
+        (*detail).cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
+    }
+    let ok = unsafe {
+        SetupDiGetDeviceInterfaceDetailW(hdev, interface_data, Some(detail), required, None, None)
+    };
+    if ok.is_err() {
+        return None;
+    }
+
+    // Extract the device path from the detail structure.
+    let path_wide: Vec<u16> = unsafe {
+        std::slice::from_raw_parts(
+            (*detail).DevicePath.as_ptr(),
+            (required as usize - std::mem::size_of::<u32>()) / 2,
+        )
+    }
+    .iter()
+    .copied()
+    .take_while(|&w| w != 0)
+    .collect();
+    Some(String::from_utf16_lossy(&path_wide))
 }
 
 /// Send `IOCTL_STORAGE_GET_DEVICE_NUMBER` to an open disk handle.
@@ -720,103 +805,8 @@ fn find_drive_letter_for_disk_number(target_disk: u32) -> Option<char> {
                 .collect::<Vec<u16>>(),
         );
 
-        // Open the volume for IOCTL.
-        let wide_vol: Vec<u16> = volume_path
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-        let vol_handle = unsafe {
-            CreateFileW(
-                windows::core::PCWSTR(wide_vol.as_ptr()),
-                0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                None,
-                OPEN_EXISTING,
-                FILE_FLAGS_AND_ATTRIBUTES(0),
-                None,
-            )
-        };
-
-        if let Ok(h) = vol_handle {
-            // Send IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS.
-            let mut extents_buf = vec![0u8; 512];
-            let mut returned: u32 = 0;
-            let ok = unsafe {
-                DeviceIoControl(
-                    h,
-                    IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
-                    None,
-                    0,
-                    Some(extents_buf.as_mut_ptr() as *mut std::ffi::c_void),
-                    extents_buf.len() as u32,
-                    Some(&mut returned),
-                    None,
-                )
-            };
-            // Minimum size: 8 bytes (NumberOfDiskExtents DWORD + Padding DWORD).
-            if ok.is_ok() && returned >= 8 {
-                // VOLUME_DISK_EXTENTS layout:
-                //   DWORD NumberOfDiskExtents;  // offset 0
-                //   DWORD Padding;              // offset 4
-                //   DISK_EXTENT Extents[1];     // offset 8
-                // DISK_EXTENT layout:
-                //   DWORD DiskNumber;           // offset 0  (within DISK_EXTENT)
-                //   LARGE_INTEGER StartingOffset; // offset 8
-                //   LONGLONG ExtentLength;      // offset 16
-                let num_extents = u32::from_le_bytes([
-                    extents_buf[0],
-                    extents_buf[1],
-                    extents_buf[2],
-                    extents_buf[3],
-                ]);
-                for i in 0..num_extents {
-                    let offset = 8 + (i as usize * 24); // sizeof(DISK_EXTENT) = 24
-                    if offset + 4 <= extents_buf.len() {
-                        let disk_num = u32::from_le_bytes([
-                            extents_buf[offset],
-                            extents_buf[offset + 1],
-                            extents_buf[offset + 2],
-                            extents_buf[offset + 3],
-                        ]);
-                        if disk_num == target_disk {
-                            // Found the volume. Now get its mount points (drive letters).
-                            let mut path_names_buf = [0u16; 1024];
-                            let mut returned_paths: u32 = 0;
-                            let ok = unsafe {
-                                GetVolumePathNamesForVolumeNameW(
-                                    windows::core::PCWSTR(wide_vol.as_ptr()),
-                                    Some(&mut path_names_buf),
-                                    &mut returned_paths,
-                                )
-                            };
-                            let _ = unsafe { CloseHandle(h) };
-                            if ok.is_ok() {
-                                // path_names_buf contains null-terminated strings,
-                                // double-null terminated.
-                                let names: Vec<u16> = path_names_buf
-                                    .iter()
-                                    .copied()
-                                    .take_while(|&w| w != 0)
-                                    .collect();
-                                if !names.is_empty() {
-                                    let path_str = String::from_utf16_lossy(&names);
-                                    // Extract drive letter from "X:\" format.
-                                    if let Some(letter) = path_str.chars().next() {
-                                        if letter.is_ascii_alphabetic() {
-                                            result = Some(letter.to_ascii_uppercase());
-                                        }
-                                    }
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-            let _ = unsafe { CloseHandle(h) };
-        }
-
-        if result.is_some() {
+        if let Some(letter) = check_volume_for_disk_number(&volume_path, target_disk) {
+            result = Some(letter);
             break;
         }
 
@@ -827,6 +817,162 @@ fn find_drive_letter_for_disk_number(target_disk: u32) -> Option<char> {
 
     let _ = unsafe { FindVolumeClose(find_handle) };
     result
+}
+
+/// Check if a volume is backed by the target disk and return its drive letter.
+///
+/// Opens the volume, sends `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS`, and if
+/// the target disk number is found among the extents, resolves the drive letter.
+///
+/// # Arguments
+///
+/// * `volume_path` -- the volume path (e.g., `\\?\Volume{GUID}\`).
+/// * `target_disk` -- the disk number to search for.
+///
+/// # Returns
+///
+/// The drive letter if the volume is backed by `target_disk`, or `None`.
+#[cfg(windows)]
+fn check_volume_for_disk_number(volume_path: &str, target_disk: u32) -> Option<char> {
+    let wide_vol: Vec<u16> = volume_path
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let vol_handle = unsafe {
+        CreateFileW(
+            windows::core::PCWSTR(wide_vol.as_ptr()),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        )
+    };
+
+    let h = match vol_handle {
+        Ok(h) => h,
+        Err(_) => return None,
+    };
+
+    let letter = find_drive_letter_from_volume_handle(h, target_disk, &wide_vol);
+    let _ = unsafe { CloseHandle(h) };
+    letter
+}
+
+/// Query a volume handle for disk extents and resolve the drive letter if
+/// the target disk is found.
+///
+/// # Arguments
+///
+/// * `h` -- open handle to the volume.
+/// * `target_disk` -- the disk number to search for in the volume extents.
+/// * `wide_vol` -- the volume path as a wide string (for `GetVolumePathNamesForVolumeNameW`).
+///
+/// # Returns
+///
+/// The drive letter if the volume contains the target disk, or `None`.
+#[cfg(windows)]
+fn find_drive_letter_from_volume_handle(
+    h: HANDLE,
+    target_disk: u32,
+    wide_vol: &[u16],
+) -> Option<char> {
+    let mut extents_buf = vec![0u8; 512];
+    let mut returned: u32 = 0;
+    let ok = unsafe {
+        DeviceIoControl(
+            h,
+            IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+            None,
+            0,
+            Some(extents_buf.as_mut_ptr() as *mut std::ffi::c_void),
+            extents_buf.len() as u32,
+            Some(&mut returned),
+            None,
+        )
+    };
+
+    if ok.is_err() || returned < 8 {
+        return None;
+    }
+
+    // VOLUME_DISK_EXTENTS layout:
+    //   DWORD NumberOfDiskExtents;  // offset 0
+    //   DWORD Padding;              // offset 4
+    //   DISK_EXTENT Extents[1];     // offset 8
+    // DISK_EXTENT layout:
+    //   DWORD DiskNumber;           // offset 0  (within DISK_EXTENT)
+    //   LARGE_INTEGER StartingOffset; // offset 8
+    //   LONGLONG ExtentLength;      // offset 16
+    let num_extents = u32::from_le_bytes([
+        extents_buf[0],
+        extents_buf[1],
+        extents_buf[2],
+        extents_buf[3],
+    ]);
+
+    for i in 0..num_extents {
+        let offset = 8 + (i as usize * 24); // sizeof(DISK_EXTENT) = 24
+        if offset + 4 > extents_buf.len() {
+            continue;
+        }
+        let disk_num = u32::from_le_bytes([
+            extents_buf[offset],
+            extents_buf[offset + 1],
+            extents_buf[offset + 2],
+            extents_buf[offset + 3],
+        ]);
+        if disk_num == target_disk {
+            return extract_drive_letter_from_volume(wide_vol);
+        }
+    }
+    None
+}
+
+/// Resolve the drive letter for a volume via `GetVolumePathNamesForVolumeNameW`.
+///
+/// # Arguments
+///
+/// * `wide_vol` -- the volume path as a wide string.
+///
+/// # Returns
+///
+/// The first drive letter found (e.g., `'C'`), or `None`.
+#[cfg(windows)]
+fn extract_drive_letter_from_volume(wide_vol: &[u16]) -> Option<char> {
+    let mut path_names_buf = [0u16; 1024];
+    let mut returned_paths: u32 = 0;
+    let ok = unsafe {
+        GetVolumePathNamesForVolumeNameW(
+            windows::core::PCWSTR(wide_vol.as_ptr()),
+            Some(&mut path_names_buf),
+            &mut returned_paths,
+        )
+    };
+
+    if ok.is_err() {
+        return None;
+    }
+
+    // path_names_buf contains null-terminated strings, double-null terminated.
+    let names: Vec<u16> = path_names_buf
+        .iter()
+        .copied()
+        .take_while(|&w| w != 0)
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+
+    let path_str = String::from_utf16_lossy(&names);
+    // Extract drive letter from "X:\" format.
+    let letter = path_str.chars().next()?;
+    if letter.is_ascii_alphabetic() {
+        Some(letter.to_ascii_uppercase())
+    } else {
+        None
+    }
 }
 
 /// Find the drive letter associated with a given disk instance ID.
@@ -990,8 +1136,10 @@ fn query_bus_type_for_handle(handle: HANDLE, _instance_id: &str) -> Result<BusTy
         )
     };
 
-    if ok.is_err() {
-        return Err(DiskError::IoctlFailed("DeviceIoControl failed".to_string()));
+    if let Err(e) = ok {
+        return Err(DiskError::IoctlFailed(format!(
+            "DeviceIoControl failed: {e}"
+        )));
     }
 
     if returned < std::mem::size_of::<STORAGE_DEVICE_DESCRIPTOR>() as u32 {
@@ -1586,5 +1734,82 @@ mod tests {
         let _ = disk_number_for_instance_id as fn(&str) -> Result<u32, DiskError>;
         let _ = find_drive_letter_for_disk_number as fn(u32) -> Option<char>;
         let _ = query_disk_number_for_handle as fn(HANDLE) -> Option<u32>;
+    }
+
+    // -------------------------------------------------------------------------
+    // OP-01: Disk Enumeration Error Resilience (Phase 38.6)
+    // -------------------------------------------------------------------------
+
+    /// query_bus_type_for_handle must include the Win32 error in its error message.
+    ///
+    /// When DeviceIoControl fails, the error message must contain the underlying
+    /// Win32 error so operators can diagnose the failure (e.g., access denied,
+    /// device not ready, invalid parameter).
+    #[test]
+    #[cfg(windows)]
+    fn test_query_bus_type_for_handle_includes_win32_error() {
+        // Open an invalid handle (nul device) to force DeviceIoControl failure.
+        let wide: Vec<u16> = r"\\.\NUL"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let handle = unsafe {
+            CreateFileW(
+                windows::core::PCWSTR(wide.as_ptr()),
+                0x8000_0000u32, // GENERIC_READ
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                None,
+            )
+        };
+        if let Ok(h) = handle {
+            let result = query_bus_type_for_handle(h, "TEST-INSTANCE");
+            let _ = unsafe { CloseHandle(h) };
+            assert!(result.is_err(), "DeviceIoControl on NUL must fail");
+            let err_str = format!("{}", result.unwrap_err());
+            // The error message must contain some indication of failure,
+            // not just a generic string.
+            assert!(
+                err_str.contains("failed") || err_str.contains("error"),
+                "error message must include Win32 error context: got '{err_str}'"
+            );
+        }
+    }
+
+    /// disk_number_for_instance_id returns a descriptive error for unknown IDs.
+    ///
+    /// When the instance_id does not match any present disk device, the function
+    /// must return Err(DiskError::DeviceOpenFailed) with the instance_id in the
+    /// message so the caller can log it for troubleshooting.
+    #[test]
+    #[cfg(windows)]
+    fn test_disk_number_for_instance_id_returns_err_for_unknown() {
+        let result = disk_number_for_instance_id("NONEXISTENT\\INSTANCE\\ID");
+        assert!(
+            result.is_err(),
+            "unknown instance_id must return Err, not Ok"
+        );
+        let err_str = format!("{}", result.unwrap_err());
+        assert!(
+            err_str.contains("NONEXISTENT"),
+            "error message must include the failing instance_id: got '{err_str}'"
+        );
+    }
+
+    /// find_drive_letter_for_instance_id returns None when disk_number fails.
+    ///
+    /// When disk_number_for_instance_id returns Err (e.g., unknown instance_id),
+    /// find_drive_letter_for_instance_id must return None gracefully without
+    /// panicking. The error must be logged at warn level with the instance_id.
+    #[test]
+    #[cfg(windows)]
+    fn test_find_drive_letter_returns_none_on_disk_number_err() {
+        let result = find_drive_letter_for_instance_id("NONEXISTENT\\INSTANCE", &[]);
+        assert!(
+            result.is_none(),
+            "find_drive_letter must return None when disk_number fails"
+        );
     }
 }

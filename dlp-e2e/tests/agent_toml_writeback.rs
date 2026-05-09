@@ -162,6 +162,7 @@ fn seed_global_agent_config(port: u16, payload: serde_json::Value) {
 /// 7. Kills the agent process and cleans up temp files.
 #[test]
 #[cfg(windows)]
+#[ignore = "requires Windows SCM - dlp-agent binary is a service that cannot run in console mode"]
 fn test_agent_toml_writeback_roundtrip() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let config_path = temp_dir.path().join("agent-config.toml");
@@ -233,6 +234,7 @@ fn test_agent_toml_writeback_roundtrip() {
 /// configuration path.
 #[test]
 #[cfg(windows)]
+#[ignore = "requires Windows SCM - dlp-agent binary is a service that cannot run in console mode"]
 fn test_agent_toml_writeback_empty_paths() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let config_path = temp_dir.path().join("agent-config.toml");

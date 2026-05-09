@@ -32,6 +32,11 @@ use crate::policy_store::mode_str;
 use crate::rate_limiter::{self, default_config, policy_config};
 use crate::AppError;
 use dlp_common::abac::PolicyMode;
+use dlp_common::{
+    DEFAULT_USB_BLOCKED_FAILURE_MODE, DEFAULT_USB_NONE_SERIAL_POLICY,
+    DEFAULT_USB_STARTUP_RESOLUTION_MODE, USB_FAILURE_MODES, USB_NONE_SERIAL_POLICIES,
+    USB_RESOLUTION_MODES,
+};
 
 /// Parses a `PolicyMode` from its DB string representation.
 fn mode_from_str(s: &str) -> PolicyMode {
@@ -280,6 +285,69 @@ pub struct AgentConfigPayload {
     /// Defaults to empty for backward compatibility with payloads from earlier server builds.
     #[serde(default)]
     pub disk_allowlist: Vec<dlp_common::DiskIdentity>,
+    /// USB enforcement failure mode (USB-09). Default: "Warning only".
+    #[serde(default = "default_usb_blocked_failure_mode")]
+    pub usb_blocked_failure_mode: String,
+    /// USB startup scan resolution strategy (USB-07). Default: "VID/PID/serial fallback".
+    #[serde(default = "default_usb_startup_resolution_mode")]
+    pub usb_startup_resolution_mode: String,
+    /// Policy for USB devices without serial descriptors (USB-08). Default: "Always Blocked".
+    #[serde(default = "default_usb_none_serial_policy")]
+    pub usb_none_serial_policy: String,
+    /// Whether the cloud sync hook DLL is enabled (M017/S01). Default: false.
+    #[serde(default)]
+    pub cloud_hook_enabled: bool,
+    /// Whether print spooler interception is enabled (M017/S04). Default: false.
+    #[serde(default)]
+    pub print_enabled: bool,
+    /// Timeout in milliseconds for XPS spool file parsing (M017/S04). Default: 5000.
+    #[serde(default = "default_print_xps_timeout_ms")]
+    pub print_xps_timeout_ms: u64,
+    /// Action when a print job cannot be classified (M017/S04). Default: "Block".
+    #[serde(default = "default_print_unclassifiable_action")]
+    pub print_unclassifiable_action: String,
+    /// Maximum pages to parse from an XPS spool file (M017/S04). Default: 100.
+    #[serde(default = "default_print_max_pages")]
+    pub print_max_pages: usize,
+}
+
+fn default_usb_blocked_failure_mode() -> String {
+    DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string()
+}
+fn default_usb_startup_resolution_mode() -> String {
+    DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string()
+}
+fn default_usb_none_serial_policy() -> String {
+    DEFAULT_USB_NONE_SERIAL_POLICY.to_string()
+}
+fn default_print_xps_timeout_ms() -> u64 {
+    5000
+}
+fn default_print_unclassifiable_action() -> String {
+    "Block".to_string()
+}
+fn default_print_max_pages() -> usize {
+    100
+}
+
+impl Default for AgentConfigPayload {
+    fn default() -> Self {
+        Self {
+            monitored_paths: Vec::new(),
+            excluded_paths: Vec::new(),
+            heartbeat_interval_secs: 30,
+            offline_cache_enabled: true,
+            disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: default_usb_blocked_failure_mode(),
+            usb_startup_resolution_mode: default_usb_startup_resolution_mode(),
+            usb_none_serial_policy: default_usb_none_serial_policy(),
+            cloud_hook_enabled: false,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: default_print_unclassifiable_action(),
+            print_max_pages: 100,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +368,12 @@ pub struct DeviceRegistryRequest {
     pub pid: String,
     /// Device serial number, or `"(none)"` for devices without one.
     pub serial: String,
+    /// Windows Security Identifier of the owning user. `None` creates a machine-wide entry.
+    #[serde(default)]
+    pub owner_sid: Option<String>,
+    /// Human-readable username for display. `None` for machine-wide entries.
+    #[serde(default)]
+    pub owner_user: Option<String>,
     /// Human-readable device description. Optional; defaults to empty string.
     #[serde(default)]
     pub description: String,
@@ -320,6 +394,10 @@ pub struct DeviceRegistryResponse {
     pub pid: String,
     /// Device serial number.
     pub serial: String,
+    /// Windows Security Identifier of the owning user. `None` means machine-wide entry.
+    pub owner_sid: Option<String>,
+    /// Human-readable username for display. `None` means machine-wide entry.
+    pub owner_user: Option<String>,
     /// Human-readable device description (empty string if not provided).
     pub description: String,
     /// Trust tier: `"blocked"`, `"read_only"`, or `"full_access"`.
@@ -335,6 +413,8 @@ impl From<repositories::DeviceRegistryRow> for DeviceRegistryResponse {
             vid: row.vid,
             pid: row.pid,
             serial: row.serial,
+            owner_sid: row.owner_sid,
+            owner_user: row.owner_user,
             description: row.description,
             trust_tier: row.trust_tier,
             created_at: row.created_at,
@@ -411,6 +491,8 @@ pub struct DiskRegistryFilter {
 ///
 /// Admin-internal fields (`id`, `description`, `trust_tier`, `created_at`) are omitted
 /// to prevent unauthenticated callers from enumerating privileged device tiers (CR-01).
+/// Owner fields are included so agents can distinguish per-user from machine-wide entries
+/// (Phase 38.4, D-11 accepted: owner SIDs are not secrets).
 #[derive(Debug, Serialize)]
 struct PublicDeviceEntry {
     /// USB Vendor ID hex string.
@@ -419,6 +501,10 @@ struct PublicDeviceEntry {
     pub pid: String,
     /// Device serial number.
     pub serial: String,
+    /// Windows SID of the owning user. `None` means machine-wide entry.
+    pub owner_sid: Option<String>,
+    /// Human-readable username. `None` means machine-wide entry.
+    pub owner_user: Option<String>,
 }
 
 impl From<repositories::DeviceRegistryRow> for PublicDeviceEntry {
@@ -427,6 +513,8 @@ impl From<repositories::DeviceRegistryRow> for PublicDeviceEntry {
             vid: row.vid,
             pid: row.pid,
             serial: row.serial,
+            owner_sid: row.owner_sid,
+            owner_user: row.owner_user,
         }
     }
 }
@@ -487,6 +575,58 @@ pub struct HealthResponse {
 /// assert!(validate_webhook_url("http://example.com").is_err());
 /// assert!(validate_webhook_url("https://127.0.0.1").is_err());
 /// ```
+/// Validates an IPv4 host address for webhook URLs.
+///
+/// Rejects loopback (127.0.0.0/8) and link-local (169.254.0.0/16).
+/// RFC1918 private addresses (10/8, 172.16/12, 192.168/16) are intentionally allowed.
+fn validate_ipv4_host(ip: std::net::Ipv4Addr) -> Result<(), String> {
+    if ip.is_loopback() {
+        return Err("loopback addresses not allowed".to_string());
+    }
+    if ip.is_link_local() {
+        // `is_link_local` covers 169.254.0.0/16 on stable Rust.
+        return Err("link-local addresses not allowed".to_string());
+    }
+    // RFC1918 (10/8, 172.16/12, 192.168/16) intentionally ALLOWED.
+    Ok(())
+}
+
+/// Validates an IPv6 host address for webhook URLs.
+///
+/// Rejects loopback (::1), link-local (fe80::/10), and IPv4-mapped
+/// loopback/link-local addresses (::ffff:127.0.0.1, ::ffff:169.254.x.x).
+fn validate_ipv6_host(ip: std::net::Ipv6Addr) -> Result<(), String> {
+    if ip.is_loopback() {
+        return Err("loopback addresses not allowed".to_string());
+    }
+
+    // G3: Ipv6Addr::is_unicast_link_local is unstable on rustc 1.94,
+    // so do the fe80::/10 check manually: first 10 bits == 1111111010,
+    // i.e. first segment in 0xfe80..=0xfebf.
+    let first_segment = ip.segments()[0];
+    if (first_segment & 0xffc0) == 0xfe80 {
+        return Err("link-local addresses not allowed".to_string());
+    }
+
+    // TM-02 hardening (BL-01 fix): IPv4-mapped IPv6 addresses
+    // (`::ffff:a.b.c.d`) route to the v4 stack on dual-stack hosts,
+    // so `[::ffff:127.0.0.1]` and `[::ffff:169.254.169.254]` would
+    // otherwise bypass the v4 loopback/link-local guards and let an
+    // attacker reach cloud metadata via the mapped form. Re-run the
+    // v4 blocklist against the unwrapped address. `to_ipv4_mapped`
+    // is stable since Rust 1.63.
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        if v4.is_loopback() {
+            return Err("loopback addresses not allowed (IPv4-mapped)".to_string());
+        }
+        if v4.is_link_local() {
+            return Err("link-local addresses not allowed (IPv4-mapped)".to_string());
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_webhook_url(url: &str) -> Result<(), String> {
     let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
 
@@ -495,45 +635,8 @@ pub(crate) fn validate_webhook_url(url: &str) -> Result<(), String> {
     }
 
     match parsed.host() {
-        Some(url::Host::Ipv4(ip)) => {
-            if ip.is_loopback() {
-                return Err("loopback addresses not allowed".to_string());
-            }
-            if ip.is_link_local() {
-                // `is_link_local` covers 169.254.0.0/16 on stable Rust.
-                return Err("link-local addresses not allowed".to_string());
-            }
-            // RFC1918 (10/8, 172.16/12, 192.168/16) intentionally ALLOWED.
-            Ok(())
-        }
-        Some(url::Host::Ipv6(ip)) => {
-            if ip.is_loopback() {
-                return Err("loopback addresses not allowed".to_string());
-            }
-            // G3: Ipv6Addr::is_unicast_link_local is unstable on rustc 1.94,
-            // so do the fe80::/10 check manually: first 10 bits == 1111111010,
-            // i.e. first segment in 0xfe80..=0xfebf.
-            let first_segment = ip.segments()[0];
-            if (first_segment & 0xffc0) == 0xfe80 {
-                return Err("link-local addresses not allowed".to_string());
-            }
-            // TM-02 hardening (BL-01 fix): IPv4-mapped IPv6 addresses
-            // (`::ffff:a.b.c.d`) route to the v4 stack on dual-stack hosts,
-            // so `[::ffff:127.0.0.1]` and `[::ffff:169.254.169.254]` would
-            // otherwise bypass the v4 loopback/link-local guards and let an
-            // attacker reach cloud metadata via the mapped form. Re-run the
-            // v4 blocklist against the unwrapped address. `to_ipv4_mapped`
-            // is stable since Rust 1.63.
-            if let Some(v4) = ip.to_ipv4_mapped() {
-                if v4.is_loopback() {
-                    return Err("loopback addresses not allowed (IPv4-mapped)".to_string());
-                }
-                if v4.is_link_local() {
-                    return Err("link-local addresses not allowed (IPv4-mapped)".to_string());
-                }
-            }
-            Ok(())
-        }
+        Some(url::Host::Ipv4(ip)) => validate_ipv4_host(ip),
+        Some(url::Host::Ipv6(ip)) => validate_ipv6_host(ip),
         Some(url::Host::Domain(_)) => {
             // Textual hostname — accept. No DNS lookup (TM-02 ratified).
             Ok(())
@@ -1390,6 +1493,14 @@ async fn get_agent_config_for_agent(
                 heartbeat_interval_secs: u64::try_from(row.heartbeat_interval_secs).unwrap_or(30),
                 offline_cache_enabled: row.offline_cache_enabled != 0,
                 disk_allowlist: Vec::new(),
+                usb_blocked_failure_mode: row.usb_blocked_failure_mode,
+                usb_startup_resolution_mode: row.usb_startup_resolution_mode,
+                usb_none_serial_policy: row.usb_none_serial_policy,
+                cloud_hook_enabled: row.cloud_hook_enabled != 0,
+                print_enabled: row.print_enabled != 0,
+                print_xps_timeout_ms: u64::try_from(row.print_xps_timeout_ms).unwrap_or(5000),
+                print_unclassifiable_action: row.print_unclassifiable_action,
+                print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
             },
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // Fall back to global default.
@@ -1401,6 +1512,14 @@ async fn get_agent_config_for_agent(
                         .unwrap_or(30),
                     offline_cache_enabled: row.offline_cache_enabled != 0,
                     disk_allowlist: Vec::new(),
+                    usb_blocked_failure_mode: row.usb_blocked_failure_mode.clone(),
+                    usb_startup_resolution_mode: row.usb_startup_resolution_mode.clone(),
+                    usb_none_serial_policy: row.usb_none_serial_policy.clone(),
+                    cloud_hook_enabled: row.cloud_hook_enabled != 0,
+                    print_enabled: row.print_enabled != 0,
+                    print_xps_timeout_ms: u64::try_from(row.print_xps_timeout_ms).unwrap_or(5000),
+                    print_unclassifiable_action: row.print_unclassifiable_action.clone(),
+                    print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
                 }
             }
             Err(e) => return Err(AppError::Database(e)),
@@ -1512,6 +1631,14 @@ async fn get_global_agent_config_handler(
         offline_cache_enabled: row.offline_cache_enabled != 0,
         // disk_allowlist is not relevant for admin-config GET (only agents poll /agent-config/{id}).
         disk_allowlist: Vec::new(),
+        usb_blocked_failure_mode: row.usb_blocked_failure_mode,
+        usb_startup_resolution_mode: row.usb_startup_resolution_mode,
+        usb_none_serial_policy: row.usb_none_serial_policy,
+        cloud_hook_enabled: row.cloud_hook_enabled != 0,
+        print_enabled: row.print_enabled != 0,
+        print_xps_timeout_ms: u64::try_from(row.print_xps_timeout_ms).unwrap_or(5000),
+        print_unclassifiable_action: row.print_unclassifiable_action,
+        print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
     }))
 }
 
@@ -1533,6 +1660,46 @@ async fn update_global_agent_config_handler(
             "heartbeat_interval_secs must be >= 10".to_string(),
         ));
     }
+    // Validate USB config enum values.
+    if !USB_FAILURE_MODES.contains(&payload.usb_blocked_failure_mode.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "usb_blocked_failure_mode must be one of: {}",
+            USB_FAILURE_MODES.join(", ")
+        )));
+    }
+    if !USB_RESOLUTION_MODES.contains(&payload.usb_startup_resolution_mode.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "usb_startup_resolution_mode must be one of: {}",
+            USB_RESOLUTION_MODES.join(", ")
+        )));
+    }
+    if !USB_NONE_SERIAL_POLICIES.contains(&payload.usb_none_serial_policy.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "usb_none_serial_policy must be one of: {}",
+            USB_NONE_SERIAL_POLICIES.join(", ")
+        )));
+    }
+    const PRINT_UNCLASSIFIABLE_ACTIONS: &[&str] = &["Block", "Allow"];
+    if !PRINT_UNCLASSIFIABLE_ACTIONS.contains(&payload.print_unclassifiable_action.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "print_unclassifiable_action must be one of: {}",
+            PRINT_UNCLASSIFIABLE_ACTIONS.join(", ")
+        )));
+    }
+
+    // Reject unimplemented modes (review concern #7).
+    if payload.usb_startup_resolution_mode == "Volume GUID resolution" {
+        return Err(AppError::BadRequest(
+            "Volume GUID resolution is not yet implemented. Please select 'VID/PID/serial fallback'."
+                .to_string(),
+        ));
+    }
+    if payload.usb_none_serial_policy == "Port-based disambiguation" {
+        return Err(AppError::BadRequest(
+            "Port-based disambiguation is not yet implemented. Please select 'Always Blocked' or 'Allow unregistered'."
+                .to_string(),
+        ));
+    }
 
     let now = Utc::now().to_rfc3339();
     let p = payload.clone();
@@ -1549,6 +1716,14 @@ async fn update_global_agent_config_handler(
             heartbeat_interval_secs: i64::try_from(p.heartbeat_interval_secs).unwrap_or(30),
             offline_cache_enabled: if p.offline_cache_enabled { 1 } else { 0 },
             updated_at: now,
+            usb_blocked_failure_mode: p.usb_blocked_failure_mode.clone(),
+            usb_startup_resolution_mode: p.usb_startup_resolution_mode.clone(),
+            usb_none_serial_policy: p.usb_none_serial_policy.clone(),
+            cloud_hook_enabled: if p.cloud_hook_enabled { 1 } else { 0 },
+            print_enabled: if p.print_enabled { 1 } else { 0 },
+            print_xps_timeout_ms: i64::try_from(p.print_xps_timeout_ms).unwrap_or(5000),
+            print_unclassifiable_action: p.print_unclassifiable_action.clone(),
+            print_max_pages: i64::try_from(p.print_max_pages).unwrap_or(100),
         };
         AgentConfigRepository::update_global(&uow, &record).map_err(AppError::Database)?;
         uow.commit().map_err(AppError::Database)?;
@@ -1583,6 +1758,14 @@ async fn get_agent_config_override_handler(
         offline_cache_enabled: row.offline_cache_enabled != 0,
         // disk_allowlist is not relevant for admin-config GET (only agents poll /agent-config/{id}).
         disk_allowlist: Vec::new(),
+        usb_blocked_failure_mode: row.usb_blocked_failure_mode,
+        usb_startup_resolution_mode: row.usb_startup_resolution_mode,
+        usb_none_serial_policy: row.usb_none_serial_policy,
+        cloud_hook_enabled: row.cloud_hook_enabled != 0,
+        print_enabled: row.print_enabled != 0,
+        print_xps_timeout_ms: u64::try_from(row.print_xps_timeout_ms).unwrap_or(5000),
+        print_unclassifiable_action: row.print_unclassifiable_action,
+        print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
     }))
 }
 
@@ -1623,6 +1806,14 @@ async fn update_agent_config_override_handler(
             i64::try_from(p.heartbeat_interval_secs).unwrap_or(30),
             if p.offline_cache_enabled { 1 } else { 0 },
             &now,
+            &p.usb_blocked_failure_mode,
+            &p.usb_startup_resolution_mode,
+            &p.usb_none_serial_policy,
+            if p.cloud_hook_enabled { 1 } else { 0 },
+            if p.print_enabled { 1 } else { 0 },
+            i64::try_from(p.print_xps_timeout_ms).unwrap_or(5000),
+            &p.print_unclassifiable_action,
+            i64::try_from(p.print_max_pages).unwrap_or(100),
         )
         .map_err(AppError::Database)?;
         uow.commit().map_err(AppError::Database)?;
@@ -1721,6 +1912,14 @@ async fn list_device_registry_handler(
     Ok(Json(response))
 }
 
+/// Optional query-string filter for `GET /admin/device-registry/full` (D-06).
+#[derive(Debug, Default, Deserialize)]
+pub struct DeviceRegistryFilter {
+    /// When set, restricts results to entries for the given SID plus machine-wide entries.
+    #[serde(default)]
+    pub owner_sid: Option<String>,
+}
+
 /// Returns the full device registry list including `trust_tier` and `description`.
 ///
 /// `GET /admin/device-registry/full` — requires JWT Bearer auth.
@@ -1728,12 +1927,26 @@ async fn list_device_registry_handler(
 /// Used by the admin TUI to display the complete device list.  Separated from
 /// the unauthenticated `GET /admin/device-registry` endpoint which omits
 /// `trust_tier` to prevent unauthenticated enumeration of privileged devices.
+///
+/// Optional `?owner_sid={sid}` query param returns entries matching that SID
+/// plus machine-wide entries (per D-06).
 async fn list_device_registry_full_handler(
     State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<Vec<DeviceRegistryResponse>>, AppError> {
+    // Extract query params.
+    let filter = axum::extract::Query::<DeviceRegistryFilter>::from_request(req, &state)
+        .await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
     let pool = Arc::clone(&state.pool);
+    let owner_sid_filter = filter.owner_sid.clone();
     let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        repositories::DeviceRegistryRepository::list_all(&pool).map_err(AppError::Database)
+        repositories::DeviceRegistryRepository::list_all_filtered(
+            &pool,
+            owner_sid_filter.as_deref(),
+        )
+        .map_err(AppError::Database)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -1958,8 +2171,8 @@ async fn delete_disk_registry_handler(
     //     SELECT + DELETE would introduce. Requires SQLite 3.35+ (bundled rusqlite).
     let pool = Arc::clone(&state.pool);
     let disk_id = id.clone();
-    let result = tokio::task::spawn_blocking(
-        move || -> Result<Option<(String, String)>, AppError> {
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<Option<(String, String)>, AppError> {
             let mut conn = pool.get().map_err(AppError::from)?;
             let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
             // RETURNING makes the DELETE and the metadata read atomic in one
@@ -1978,10 +2191,9 @@ async fn delete_disk_registry_handler(
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(AppError::Database(e)),
             }
-        },
-    )
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+        })
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     let (agent_id_for_audit, instance_id_for_audit) = match result {
         Some(t) => t,
@@ -2066,6 +2278,8 @@ async fn upsert_device_registry_handler(
         vid: body.vid.clone(),
         pid: body.pid.clone(),
         serial: body.serial.clone(),
+        owner_sid: body.owner_sid.clone(),
+        owner_user: body.owner_user.clone(),
         description: body.description.clone(),
         trust_tier: body.trust_tier.clone(),
         created_at,
@@ -2075,8 +2289,9 @@ async fn upsert_device_registry_handler(
     let vid = body.vid.clone();
     let pid = body.pid.clone();
     let serial = body.serial.clone();
+    let owner_sid = body.owner_sid.clone();
 
-    // Upsert, then re-read by (vid, pid, serial) to get the persisted UUID.
+    // Upsert, then re-read by (vid, pid, serial, owner_sid) to get the persisted UUID.
     // On conflict the original UUID is preserved — re-reading is necessary.
     let persisted = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         {
@@ -2090,8 +2305,14 @@ async fn upsert_device_registry_handler(
                 .map_err(AppError::Database)?;
             uow.commit().map_err(AppError::Database)?;
         } // conn returned to pool here
-        repositories::DeviceRegistryRepository::get_by_device_key(&pool, &vid, &pid, &serial)
-            .map_err(AppError::Database)
+        repositories::DeviceRegistryRepository::get_by_device_key_and_owner(
+            &pool,
+            &vid,
+            &pid,
+            &serial,
+            owner_sid.as_deref(),
+        )
+        .map_err(AppError::Database)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -3213,6 +3434,8 @@ mod tests {
             1,
         )
         .with_policy("pol-audit-test".to_string(), "Test block".to_string())
+        .with_source_application(Some(dlp_common::endpoint::agent_unknown_app()))
+        .with_destination_application(Some(dlp_common::endpoint::agent_unknown_app()))
     }
 
     #[tokio::test]
@@ -3393,7 +3616,9 @@ mod tests {
         .with_policy(
             "pol-alert-test".to_string(),
             "DenyWithAlert policy".to_string(),
-        );
+        )
+        .with_source_application(Some(dlp_common::endpoint::agent_unknown_app()))
+        .with_destination_application(Some(dlp_common::endpoint::agent_unknown_app()));
 
         let batch = vec![event];
         let body = serde_json::to_string(&batch).expect("serialize");
@@ -3525,10 +3750,119 @@ mod tests {
             heartbeat_interval_secs: 60,
             offline_cache_enabled: false,
             disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
+            usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
+            usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
+            ..Default::default()
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt, payload);
+    }
+
+    #[test]
+    fn test_agent_config_payload_usb_fields_default() {
+        // JSON without the three new fields must deserialize with defaults.
+        let json = r#"{
+            "monitored_paths": ["C:/Data/"],
+            "excluded_paths": [],
+            "heartbeat_interval_secs": 60,
+            "offline_cache_enabled": false
+        }"#;
+        let payload: AgentConfigPayload = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(
+            payload.usb_blocked_failure_mode,
+            DEFAULT_USB_BLOCKED_FAILURE_MODE
+        );
+        assert_eq!(
+            payload.usb_startup_resolution_mode,
+            DEFAULT_USB_STARTUP_RESOLUTION_MODE
+        );
+        assert_eq!(
+            payload.usb_none_serial_policy,
+            DEFAULT_USB_NONE_SERIAL_POLICY
+        );
+
+        // Roundtrip: serialize with custom values and deserialize back.
+        let full = AgentConfigPayload {
+            monitored_paths: vec![],
+            excluded_paths: vec![],
+            heartbeat_interval_secs: 30,
+            offline_cache_enabled: true,
+            disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: "Hard error".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Allow unregistered".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&full).expect("serialize");
+        let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt, full);
+    }
+
+    /// Helper to run USB enum validation against a payload.
+    fn validate_usb_config(payload: &AgentConfigPayload) -> Result<(), String> {
+        if !USB_FAILURE_MODES.contains(&payload.usb_blocked_failure_mode.as_str()) {
+            return Err(format!(
+                "usb_blocked_failure_mode must be one of: {}",
+                USB_FAILURE_MODES.join(", ")
+            ));
+        }
+        if !USB_RESOLUTION_MODES.contains(&payload.usb_startup_resolution_mode.as_str()) {
+            return Err(format!(
+                "usb_startup_resolution_mode must be one of: {}",
+                USB_RESOLUTION_MODES.join(", ")
+            ));
+        }
+        if !USB_NONE_SERIAL_POLICIES.contains(&payload.usb_none_serial_policy.as_str()) {
+            return Err(format!(
+                "usb_none_serial_policy must be one of: {}",
+                USB_NONE_SERIAL_POLICIES.join(", ")
+            ));
+        }
+        if payload.usb_startup_resolution_mode == "Volume GUID resolution" {
+            return Err(                "Volume GUID resolution is not yet implemented. Please select 'VID/PID/serial fallback'."
+                    .to_string(),
+            );
+        }
+        if payload.usb_none_serial_policy == "Port-based disambiguation" {
+            return Err(                "Port-based disambiguation is not yet implemented. Please select 'Always Blocked' or 'Allow unregistered'."
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_agent_config_payload_usb_fields_enum_validation() {
+        // Valid payload passes.
+        let valid = AgentConfigPayload {
+            monitored_paths: vec![],
+            excluded_paths: vec![],
+            heartbeat_interval_secs: 30,
+            offline_cache_enabled: true,
+            disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: "Warning only".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Always Blocked".to_string(),
+            ..Default::default()
+        };
+        assert!(validate_usb_config(&valid).is_ok());
+
+        // Invalid enum value for failure mode.
+        let mut bad = valid.clone();
+        bad.usb_blocked_failure_mode = "Foo".to_string();
+        assert!(validate_usb_config(&bad).is_err());
+
+        // Unimplemented mode: Volume GUID resolution.
+        let mut unimplemented = valid.clone();
+        unimplemented.usb_startup_resolution_mode = "Volume GUID resolution".to_string();
+        assert!(validate_usb_config(&unimplemented).is_err());
+
+        // Unimplemented mode: Port-based disambiguation.
+        let mut unimplemented2 = valid.clone();
+        unimplemented2.usb_none_serial_policy = "Port-based disambiguation".to_string();
+        assert!(validate_usb_config(&unimplemented2).is_err());
     }
 
     // ── Task 06-01 / Task 2: Agent config handler integration tests ───────────
@@ -3601,6 +3935,10 @@ mod tests {
             heartbeat_interval_secs: 60,
             offline_cache_enabled: true,
             disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
+            usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
+            usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
+            ..Default::default()
         };
 
         // PUT the new global config.
@@ -3646,6 +3984,10 @@ mod tests {
             heartbeat_interval_secs: 5,
             offline_cache_enabled: true,
             disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
+            usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
+            usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
+            ..Default::default()
         };
         let req = Request::builder()
             .method("PUT")
@@ -3689,6 +4031,10 @@ mod tests {
             heartbeat_interval_secs: 15,
             offline_cache_enabled: false,
             disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
+            usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
+            usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
+            ..Default::default()
         };
 
         // PUT per-agent override.
@@ -3753,6 +4099,10 @@ mod tests {
             heartbeat_interval_secs: 20,
             offline_cache_enabled: false,
             disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
+            usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
+            usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
+            ..Default::default()
         };
         let put_req = Request::builder()
             .method("PUT")
@@ -3823,6 +4173,10 @@ mod tests {
             heartbeat_interval_secs: 30,
             offline_cache_enabled: true,
             disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
+            usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
+            usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
+            ..Default::default()
         };
         let req = Request::builder()
             .method("PUT")
@@ -3864,7 +4218,9 @@ mod tests {
             format!("AGENT-TC-{tc_id}"),
             1,
         )
-        .with_policy(format!("pol-tc-{tc_id}"), format!("TC-{tc_id} policy"));
+        .with_policy(format!("pol-tc-{tc_id}"), format!("TC-{tc_id} policy"))
+        .with_source_application(Some(dlp_common::endpoint::agent_unknown_app()))
+        .with_destination_application(Some(dlp_common::endpoint::agent_unknown_app()));
 
         let body = serde_json::to_string(&vec![event]).map_err(|e| e.to_string())?;
         let req = Request::builder()
@@ -4073,7 +4429,9 @@ mod tests {
         .with_policy(
             "pol-tc-80".to_string(),
             "TC-80 detective policy".to_string(),
-        );
+        )
+        .with_source_application(Some(dlp_common::endpoint::agent_unknown_app()))
+        .with_destination_application(Some(dlp_common::endpoint::agent_unknown_app()));
 
         let body = serde_json::to_string(&vec![access_event]).expect("serialize");
         let ingest_req = Request::builder()
@@ -4426,7 +4784,7 @@ mod tests {
         );
     }
 
-    /// DeviceRegistryResponse serializes to JSON with all 7 expected fields.
+    /// DeviceRegistryResponse serializes to JSON with all expected fields.
     #[test]
     fn test_device_registry_response_serializes_all_fields() {
         let resp = DeviceRegistryResponse {
@@ -4434,6 +4792,8 @@ mod tests {
             vid: "0951".to_string(),
             pid: "1666".to_string(),
             serial: "SN001".to_string(),
+            owner_sid: Some("S-1-5-21-1".to_string()),
+            owner_user: Some("alice".to_string()),
             description: "Kingston DataTraveler".to_string(),
             trust_tier: "read_only".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -4443,6 +4803,14 @@ mod tests {
         assert!(json.contains(r#""vid":"0951""#), "vid field missing");
         assert!(json.contains(r#""pid":"1666""#), "pid field missing");
         assert!(json.contains(r#""serial":"SN001""#), "serial field missing");
+        assert!(
+            json.contains(r#""owner_sid":"S-1-5-21-1""#),
+            "owner_sid field missing"
+        );
+        assert!(
+            json.contains(r#""owner_user":"alice""#),
+            "owner_user field missing"
+        );
         assert!(
             json.contains(r#""description":"Kingston DataTraveler""#),
             "description field missing"
@@ -4464,6 +4832,16 @@ mod tests {
         let req: DeviceRegistryRequest =
             serde_json::from_str(json).expect("deserialize DeviceRegistryRequest");
         assert_eq!(req.trust_tier, "read_only");
+    }
+
+    /// DeviceRegistryRequest without owner_sid/owner_user deserializes with None defaults.
+    #[test]
+    fn test_device_registry_request_owner_fields_default_to_none() {
+        let json = r#"{"vid":"0951","pid":"1666","serial":"SN001","trust_tier":"blocked"}"#;
+        let req: DeviceRegistryRequest =
+            serde_json::from_str(json).expect("deserialize DeviceRegistryRequest");
+        assert_eq!(req.owner_sid, None, "owner_sid must default to None");
+        assert_eq!(req.owner_user, None, "owner_user must default to None");
     }
 
     // ---------------------------------------------------------------------------
@@ -4649,6 +5027,225 @@ mod tests {
             .expect("build request");
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// POST with owner_sid and owner_user returns 200 with those fields populated.
+    #[tokio::test]
+    async fn test_device_registry_post_with_owner_sid() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+        let payload = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "OWNER001",
+            "owner_sid": "S-1-5-21-1",
+            "owner_user": "alice",
+            "trust_tier": "blocked"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let row: DeviceRegistryResponse =
+            serde_json::from_slice(&body).expect("parse DeviceRegistryResponse");
+        assert_eq!(row.owner_sid, Some("S-1-5-21-1".to_string()));
+        assert_eq!(row.owner_user, Some("alice".to_string()));
+    }
+
+    /// POST without owner_sid/owner_user returns 200 with both fields as None.
+    #[tokio::test]
+    async fn test_device_registry_post_without_owner_sid() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+        let payload = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "NOOWNER001",
+            "trust_tier": "read_only"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&payload).unwrap()))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let row: DeviceRegistryResponse =
+            serde_json::from_slice(&body).expect("parse DeviceRegistryResponse");
+        assert_eq!(row.owner_sid, None);
+        assert_eq!(row.owner_user, None);
+    }
+
+    /// GET /admin/device-registry/full?owner_sid=S-1-5-21-1 returns matching SID + machine-wide.
+    #[tokio::test]
+    async fn test_device_registry_get_filtered_by_owner_sid() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        // Seed machine-wide entry.
+        let mw = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "FILTER001",
+            "trust_tier": "read_only"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&mw).unwrap()))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot POST");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Seed per-user entry for alice.
+        let alice = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "FILTER001",
+            "owner_sid": "S-1-5-21-1",
+            "owner_user": "alice",
+            "trust_tier": "blocked"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&alice).unwrap()))
+            .expect("build POST 2");
+        let resp = app.clone().oneshot(req).await.expect("oneshot POST 2");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Seed per-user entry for bob (should NOT appear in alice's filter).
+        let bob = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "FILTER001",
+            "owner_sid": "S-1-5-21-2",
+            "owner_user": "bob",
+            "trust_tier": "full_access"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&bob).unwrap()))
+            .expect("build POST 3");
+        let resp = app.clone().oneshot(req).await.expect("oneshot POST 3");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Query with owner_sid filter for alice.
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/admin/device-registry/full?owner_sid=S-1-5-21-1")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let get_resp = app.oneshot(get_req).await.expect("oneshot GET");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let list: Vec<DeviceRegistryResponse> = serde_json::from_slice(&body).expect("parse list");
+
+        // Must return alice's entry + machine-wide entry (2 rows), NOT bob's.
+        assert_eq!(list.len(), 2, "expected 2 rows: alice + machine-wide");
+        let sids: Vec<Option<&str>> = list.iter().map(|r| r.owner_sid.as_deref()).collect();
+        assert!(
+            sids.contains(&Some("S-1-5-21-1")),
+            "alice's entry must be present"
+        );
+        assert!(sids.contains(&None), "machine-wide entry must be present");
+        assert!(
+            !sids.contains(&Some("S-1-5-21-2")),
+            "bob's entry must NOT be present"
+        );
+    }
+
+    /// Machine-wide and per-user entries for same device both succeed.
+    #[tokio::test]
+    async fn test_device_registry_unique_per_user_and_machine_wide() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        // Machine-wide entry.
+        let mw = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "UNIQUE001",
+            "trust_tier": "read_only"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&mw).unwrap()))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot POST");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Per-user entry for same device — must succeed.
+        let user = serde_json::json!({
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "UNIQUE001",
+            "owner_sid": "S-1-5-21-1",
+            "owner_user": "alice",
+            "trust_tier": "blocked"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/device-registry")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&user).unwrap()))
+            .expect("build POST 2");
+        let resp = app.clone().oneshot(req).await.expect("oneshot POST 2");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify both entries exist via full list.
+        let get_req = Request::builder()
+            .method("GET")
+            .uri("/admin/device-registry/full")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let get_resp = app.oneshot(get_req).await.expect("oneshot GET");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let list: Vec<DeviceRegistryResponse> = serde_json::from_slice(&body).expect("parse list");
+        assert_eq!(list.len(), 2, "expected 2 rows: machine-wide + per-user");
     }
 
     // -----------------------------------------------------------------------

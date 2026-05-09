@@ -349,11 +349,13 @@ async fn periodic_recheck_populates_status_after_first_cycle() {
     // loop never fires during this test.  Advance time by a small amount to
     // let the initial cycle complete.
     let recheck = Duration::from_secs(600);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     spawn_encryption_check_task_with_backend(
         tokio::runtime::Handle::current(),
         fake_audit_ctx(),
         recheck,
         backend.clone(),
+        shutdown_rx,
     );
     run_one_cycle().await;
 
@@ -442,11 +444,13 @@ async fn status_change_emits_disk_discovery_event() {
     backend.script('E', vec![Ok((EncryptionStatus::Suspended, None))]);
 
     // Act: run one cycle using a long recheck interval.
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     spawn_encryption_check_task_with_backend(
         tokio::runtime::Handle::current(),
         fake_audit_ctx(),
         Duration::from_secs(600),
         backend,
+        shutdown_rx,
     );
     run_one_cycle().await;
 
@@ -538,11 +542,13 @@ async fn no_change_does_not_emit_events() {
     );
 
     // Act: one cycle
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     spawn_encryption_check_task_with_backend(
         tokio::runtime::Handle::current(),
         fake_audit_ctx(),
         Duration::from_secs(600),
         backend,
+        shutdown_rx,
     );
     run_one_cycle().await;
 
@@ -590,11 +596,13 @@ async fn failure_yields_unknown_not_encrypted() {
     );
 
     // Act
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     spawn_encryption_check_task_with_backend(
         tokio::runtime::Handle::current(),
         fake_audit_ctx(),
         Duration::from_secs(600),
         backend,
+        shutdown_rx,
     );
     run_one_cycle().await;
 
@@ -654,11 +662,13 @@ async fn initial_total_failure_fires_one_alert_only() {
     );
 
     // Act: spawn task and run the first cycle.
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     spawn_encryption_check_task_with_backend(
         tokio::runtime::Handle::current(),
         fake_audit_ctx(),
         recheck,
         backend,
+        shutdown_rx,
     );
     run_one_cycle().await;
 
@@ -709,11 +719,13 @@ async fn waits_for_disk_enumeration_before_checking() {
     );
 
     // Act: spawn the task with a long recheck interval.
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     spawn_encryption_check_task_with_backend(
         tokio::runtime::Handle::current(),
         fake_audit_ctx(),
         Duration::from_secs(600),
         backend,
+        shutdown_rx,
     );
 
     // Yield to let the task reach `wait_for_disk_enumerator_ready` and enter
@@ -775,11 +787,13 @@ async fn wire_unknown_written_as_some_unknown_not_absent() {
     backend.script('N', vec![Err(EncryptionError::VolumeNotFound)]);
 
     // Act
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     spawn_encryption_check_task_with_backend(
         tokio::runtime::Handle::current(),
         fake_audit_ctx(),
         Duration::from_secs(600),
         backend,
+        shutdown_rx,
     );
     run_one_cycle().await;
 

@@ -38,6 +38,18 @@ pub mod ui_spawner;
 pub mod ipc;
 
 #[cfg(windows)]
+pub mod hook_ipc;
+
+#[cfg(windows)]
+pub mod hook_injector;
+
+#[cfg(windows)]
+pub mod wfp_ffi;
+
+#[cfg(windows)]
+pub mod wfp_manager;
+
+#[cfg(windows)]
 pub mod health_monitor;
 
 #[cfg(windows)]
@@ -79,6 +91,18 @@ pub mod session_identity;
 pub mod server_client;
 
 #[cfg(windows)]
+pub mod print_job_info;
+
+#[cfg(windows)]
+pub mod print_xps_parser;
+
+#[cfg(windows)]
+pub mod print_watcher;
+
+#[cfg(windows)]
+pub mod print_enforcer;
+
+#[cfg(windows)]
 pub mod device_controller;
 
 #[cfg(windows)]
@@ -91,6 +115,11 @@ pub mod disk_enforcer;
 
 #[cfg(windows)]
 pub mod usb_enforcer;
+
+#[cfg(windows)]
+pub mod cloud_enforcer;
+
+pub mod share_link_enforcer;
 
 /// Shared test helpers for modules that mutate the global DiskEnumerator OnceLock.
 ///

@@ -16,6 +16,16 @@ use crate::app::{
 };
 use crate::screens::dispatch::condition_display;
 use crate::screens::dispatch::operators_for;
+use crate::screens::cloud_config::{
+    CLOUD_CONFIG_BACK_ROW, CLOUD_CONFIG_KEYS, CLOUD_CONFIG_LABELS, CLOUD_CONFIG_SAVE_ROW,
+};
+use crate::screens::print_config::{
+    is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_KEYS, PRINT_CONFIG_LABELS,
+};
+use crate::screens::usb_enforcement::{
+    USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_LABELS,
+    USB_ENFORCEMENT_SAVE_ROW,
+};
 use dlp_common::abac::PolicyMode;
 
 /// Top-level draw function dispatched from the event loop.
@@ -92,6 +102,9 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                     "SIEM Config",
                     "Alert Config",
                     "LDAP Config",
+                    "USB Enforcement",
+                    "Cloud Config",
+                    "Print Config",
                     "Back",
                 ],
                 *selected,
@@ -149,6 +162,30 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             buffer,
         } => {
             draw_ldap_config(frame, area, config, *selected, *editing, buffer);
+        }
+        Screen::UsbEnforcementConfig {
+            config,
+            selected,
+            editing,
+            buffer,
+        } => {
+            draw_usb_enforcement_config(frame, area, config, *selected, *editing, buffer);
+        }
+        Screen::CloudConfig {
+            config,
+            selected,
+            editing,
+            buffer,
+        } => {
+            draw_cloud_config(frame, area, config, *selected, *editing, buffer);
+        }
+        Screen::PrintConfig {
+            config,
+            selected,
+            editing,
+            buffer,
+        } => {
+            draw_print_config(frame, area, config, *selected, *editing, buffer);
         }
         Screen::ConditionsBuilder {
             step,
@@ -445,10 +482,219 @@ fn picker_items(
                         _ => vec![], // Publisher/ImagePath: free-text input path
                     }
                 }
+                ConditionAttribute::SourceOrigin | ConditionAttribute::DestinationOrigin => {
+                    vec![] // text input, not a list picker
+                }
             }
         }
         _ => vec![],
     }
+}
+
+/// Returns the picker highlight style based on whether the pending list has focus.
+///
+/// When `pending_focused` is `true`, the picker is not focused and uses plain White.
+/// When `false`, the picker has focus and uses Cyan background with Black text.
+fn picker_highlight_style(pending_focused: bool) -> Style {
+    if pending_focused {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
+/// Renders the pending conditions list into the given area.
+///
+/// Shows an empty-state placeholder when `pending` is empty, otherwise renders
+/// a scrollable list of conditions with a delete hint.
+fn render_pending_conditions(
+    frame: &mut Frame,
+    area: Rect,
+    pending: &[dlp_common::abac::PolicyCondition],
+    pending_focused: bool,
+    pending_state: &ListState,
+) {
+    if pending.is_empty() {
+        let empty = Paragraph::new(Line::from(
+            "No conditions added. Use the picker below to add conditions.",
+        ))
+        .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(empty, area);
+        return;
+    }
+
+    let highlight = if pending_focused {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let items: Vec<ListItem> = pending
+        .iter()
+        .map(|c| {
+            let display = condition_display(c);
+            ListItem::new(Line::from(vec![
+                Span::raw(display),
+                Span::styled("  [d]", Style::default().fg(Color::DarkGray)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Pending Conditions ")
+                .borders(Borders::ALL),
+        )
+        .highlight_style(highlight)
+        .highlight_symbol("> ");
+
+    let mut ps = pending_state.clone();
+    frame.render_stateful_widget(list, area, &mut ps);
+}
+
+/// Renders the AppField sub-picker (Step 1.5) into the given area.
+fn render_app_field_sub_picker(
+    frame: &mut Frame,
+    area: Rect,
+    pending_focused: bool,
+    picker_state: &ListState,
+) {
+    let sub_label = Line::styled(
+        "Step 1.5: Select Application Field",
+        Style::default().add_modifier(Modifier::BOLD),
+    );
+    frame.render_widget(Paragraph::new(sub_label), area);
+
+    let sub_items: Vec<ListItem> = APP_FIELD_LABELS
+        .iter()
+        .map(|f| ListItem::new(f.to_string()))
+        .collect();
+
+    let sub_picker = List::new(sub_items)
+        .highlight_style(picker_highlight_style(pending_focused))
+        .highlight_symbol("> ");
+
+    let mut pk = picker_state.clone();
+    frame.render_stateful_widget(sub_picker, area, &mut pk);
+}
+
+/// Renders the Step 3 text input widget into the given area.
+///
+/// The title varies based on the selected attribute and field.
+fn render_step3_text_input(
+    frame: &mut Frame,
+    area: Rect,
+    selected_attribute: Option<&ConditionAttribute>,
+    _selected_field: Option<dlp_common::abac::AppField>,
+    buffer: &str,
+) {
+    let is_member_of = selected_attribute == Some(&ConditionAttribute::MemberOf);
+    let is_origin = matches!(
+        selected_attribute,
+        Some(ConditionAttribute::SourceOrigin) | Some(ConditionAttribute::DestinationOrigin)
+    );
+
+    let title = if is_member_of {
+        " AD Group SID (partial match) "
+    } else if is_origin {
+        " Origin URL "
+    } else {
+        " Application Value "
+    };
+
+    let input_display = format!("[{buffer}_]");
+    let input_paragraph =
+        Paragraph::new(input_display).block(Block::default().title(title).borders(Borders::ALL));
+    frame.render_widget(input_paragraph, area);
+}
+
+/// Renders the regular step picker list into the given area.
+fn render_step_picker_list(
+    frame: &mut Frame,
+    area: Rect,
+    step: u8,
+    selected_attribute: Option<&ConditionAttribute>,
+    selected_field: Option<dlp_common::abac::AppField>,
+    pending_focused: bool,
+    picker_state: &ListState,
+) {
+    let items = picker_items(step, selected_attribute, selected_field);
+    if items.is_empty() {
+        return;
+    }
+
+    let picker_list = List::new(items)
+        .highlight_style(picker_highlight_style(pending_focused))
+        .highlight_symbol("> ");
+
+    let mut pk = picker_state.clone();
+    frame.render_stateful_widget(picker_list, area, &mut pk);
+}
+
+/// Returns the hint string for the conditions builder based on current state.
+fn conditions_builder_hints(
+    pending_focused: bool,
+    in_app_field_sub_step: bool,
+    is_text_input_step3: bool,
+) -> &'static str {
+    if pending_focused {
+        "Up/Down Navigate  d: Delete  e: Edit  Tab: Switch to Picker  Esc: Close"
+    } else if in_app_field_sub_step {
+        "Enter: Select   Esc: Back to attribute"
+    } else if is_text_input_step3 {
+        "Type value  Enter: Add  Esc: Back  Tab: Switch to Pending"
+    } else {
+        "Up/Down Navigate  Enter: Select  Esc: Back/Close  Tab: Switch to Pending"
+    }
+}
+
+/// Computes the step flags used to determine rendering mode.
+///
+/// Returns `(in_app_field_sub_step, is_text_input_step3)`.
+fn step_flags(
+    step: u8,
+    selected_attribute: Option<&ConditionAttribute>,
+    selected_field: Option<dlp_common::abac::AppField>,
+) -> (bool, bool) {
+    use dlp_common::abac::AppField;
+
+    let in_app_field_sub_step = step == 1
+        && matches!(
+            selected_attribute,
+            Some(ConditionAttribute::SourceApplication)
+                | Some(ConditionAttribute::DestinationApplication)
+        )
+        && selected_field.is_none();
+
+    let is_member_of_step3 = step == 3 && selected_attribute == Some(&ConditionAttribute::MemberOf);
+    let is_app_text_step3 = step == 3
+        && matches!(
+            selected_attribute,
+            Some(ConditionAttribute::SourceApplication)
+                | Some(ConditionAttribute::DestinationApplication)
+        )
+        && matches!(
+            selected_field,
+            Some(AppField::Publisher)
+                | Some(AppField::ImagePath)
+                | Some(AppField::Aumid)
+                | Some(AppField::PackageFamilyName)
+        );
+    let is_origin_text_step3 = step == 3
+        && matches!(
+            selected_attribute,
+            Some(ConditionAttribute::SourceOrigin) | Some(ConditionAttribute::DestinationOrigin)
+        );
+    let is_text_input_step3 = is_member_of_step3 || is_app_text_step3 || is_origin_text_step3;
+
+    (in_app_field_sub_step, is_text_input_step3)
 }
 
 /// Renders the conditions builder modal overlay.
@@ -492,10 +738,8 @@ fn draw_conditions_builder(
     picker_state: &ListState,
     edit_index: Option<usize>,
 ) {
-    // Full-frame Clear to overlay parent content (matches draw_hints pattern).
     frame.render_widget(Clear, area);
 
-    // Center a 60%-width, 22-row modal box.
     let modal_width = area.width * 60 / 100;
     let modal_height = 22_u16.min(area.height);
     let modal_x = area.x + (area.width.saturating_sub(modal_width)) / 2;
@@ -513,19 +757,16 @@ fn draw_conditions_builder(
         " Conditions Builder "
     };
     let modal_block = Block::default().title(modal_title).borders(Borders::ALL);
-    // CRITICAL: compute inner BEFORE rendering; inner() borrows &self so must be
-    // called before the block is moved into render_widget (Pitfall 3 from PATTERNS.md).
     let inner = modal_block.inner(modal_area);
     frame.render_widget(modal_block, modal_area);
 
-    // Split interior into sub-areas per UI-SPEC area allocations.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // header / breadcrumb
-            Constraint::Length(6), // pending list
-            Constraint::Length(1), // divider
-            Constraint::Min(0),    // step picker (fills remaining)
+            Constraint::Length(2),
+            Constraint::Length(6),
+            Constraint::Length(1),
+            Constraint::Min(0),
         ])
         .split(inner);
 
@@ -534,176 +775,54 @@ fn draw_conditions_builder(
     let divider_area = chunks[2];
     let picker_area = chunks[3];
 
-    // --- Header: breadcrumb ---
-    let breadcrumb = build_breadcrumb(step);
-    frame.render_widget(Paragraph::new(breadcrumb), header_area);
+    frame.render_widget(Paragraph::new(build_breadcrumb(step)), header_area);
 
-    // --- Divider ---
-    // Use a Block with only a top border so ratatui draws the separator line
-    // without allocating a String on every render tick.
     let divider = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(Color::DarkGray));
     frame.render_widget(divider, divider_area);
 
-    // --- Pending conditions list ---
-    if pending.is_empty() {
-        // Per D-19: empty state placeholder in DarkGray.
-        let empty = Paragraph::new(Line::from(
-            "No conditions added. Use the picker below to add conditions.",
-        ))
-        .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(empty, pending_area);
-    } else {
-        let pending_highlight = if pending_focused {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
+    render_pending_conditions(frame, pending_area, pending, pending_focused, pending_state);
 
-        let items: Vec<ListItem> = pending
-            .iter()
-            .map(|c| {
-                let display = condition_display(c);
-                ListItem::new(Line::from(vec![
-                    Span::raw(display),
-                    Span::styled("  [d]", Style::default().fg(Color::DarkGray)),
-                ]))
-            })
-            .collect();
-
-        let pending_list = List::new(items)
-            .block(
-                Block::default()
-                    .title(" Pending Conditions ")
-                    .borders(Borders::ALL),
-            )
-            .highlight_style(pending_highlight)
-            .highlight_symbol("> ");
-
-        // Clone ListState into a mutable local; render path must not mutate the
-        // canonical state stored in the Screen variant (read-only borrow in draw_screen).
-        let mut ps = pending_state.clone();
-        frame.render_stateful_widget(pending_list, pending_area, &mut ps);
-    }
-
-    // --- Step picker ---
-    // Split picker area: step label (1 row) + options list (remaining).
     let picker_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(picker_area);
 
-    use dlp_common::abac::AppField;
+    let (in_app_field_sub_step, is_text_input_step3) =
+        step_flags(step, selected_attribute, selected_field);
 
-    // Determine the rendering mode for the picker area.
-    // Sub-step (Step 1.5): step==1, app-identity attribute selected, field not yet chosen.
-    let in_app_field_sub_step = step == 1
-        && matches!(
-            selected_attribute,
-            Some(ConditionAttribute::SourceApplication)
-                | Some(ConditionAttribute::DestinationApplication)
-        )
-        && selected_field.is_none();
-
-    // Render the step label above the picker list (skipped for sub-step which has its own label).
     if !in_app_field_sub_step {
-        let label = step_label(step, selected_attribute);
-        frame.render_widget(Paragraph::new(label), picker_chunks[0]);
-    }
-
-    // Text-input paths: MemberOf SID, or app-identity Publisher/ImagePath value.
-    let is_member_of_step3 = step == 3 && selected_attribute == Some(&ConditionAttribute::MemberOf);
-    let is_app_text_step3 = step == 3
-        && matches!(
-            selected_attribute,
-            Some(ConditionAttribute::SourceApplication)
-                | Some(ConditionAttribute::DestinationApplication)
-        )
-        && matches!(
-            selected_field,
-            Some(AppField::Publisher) | Some(AppField::ImagePath)
+        frame.render_widget(
+            Paragraph::new(step_label(step, selected_attribute)),
+            picker_chunks[0],
         );
-    let is_text_input_step3 = is_member_of_step3 || is_app_text_step3;
+    }
 
     if in_app_field_sub_step {
-        // --- Step 1.5: AppField sub-picker ---
-        // Override the step label to communicate the sub-step to the admin.
-        let sub_label = Line::styled(
-            "Step 1.5: Select Application Field",
-            Style::default().add_modifier(Modifier::BOLD),
-        );
-        frame.render_widget(Paragraph::new(sub_label), picker_chunks[0]);
-
-        let sub_items: Vec<ListItem> = APP_FIELD_LABELS
-            .iter()
-            .map(|f| ListItem::new(f.to_string()))
-            .collect();
-
-        let picker_highlight = if pending_focused {
-            Style::default().fg(Color::White)
-        } else {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        };
-
-        let sub_picker = List::new(sub_items)
-            .highlight_style(picker_highlight)
-            .highlight_symbol("> ");
-
-        let mut pk = picker_state.clone();
-        frame.render_stateful_widget(sub_picker, picker_chunks[1], &mut pk);
+        render_app_field_sub_picker(frame, picker_chunks[1], pending_focused, picker_state);
     } else if is_text_input_step3 {
-        // --- Step 3 text input (MemberOf SID or Publisher/ImagePath value) ---
-        let title = if is_member_of_step3 {
-            " AD Group SID (partial match) "
-        } else {
-            " Application Value "
-        };
-        // Trailing `_` acts as a simple cursor indicator.
-        let input_display = format!("[{buffer}_]");
-        let input_paragraph = Paragraph::new(input_display)
-            .block(Block::default().title(title).borders(Borders::ALL));
-        frame.render_widget(input_paragraph, picker_chunks[1]);
+        render_step3_text_input(
+            frame,
+            picker_chunks[1],
+            selected_attribute,
+            selected_field,
+            buffer,
+        );
     } else {
-        let items = picker_items(step, selected_attribute, selected_field);
-        if !items.is_empty() {
-            let picker_highlight = if pending_focused {
-                // Picker is not focused; show selection in plain White.
-                Style::default().fg(Color::White)
-            } else {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            };
-
-            let picker_list = List::new(items)
-                .highlight_style(picker_highlight)
-                .highlight_symbol("> ");
-
-            // Clone picker ListState for the same reason as pending_state above.
-            let mut pk = picker_state.clone();
-            frame.render_stateful_widget(picker_list, picker_chunks[1], &mut pk);
-        }
+        render_step_picker_list(
+            frame,
+            picker_chunks[1],
+            step,
+            selected_attribute,
+            selected_field,
+            pending_focused,
+            picker_state,
+        );
     }
 
-    // --- Hints bar (inside modal bottom, NOT at terminal bottom) ---
-    // Pass modal_area so draw_hints computes y = modal_area.y + modal_area.height - 1.
-    let hints = if pending_focused {
-        "Up/Down Navigate  d: Delete  e: Edit  Tab: Switch to Picker  Esc: Close"
-    } else if in_app_field_sub_step {
-        "Enter: Select   Esc: Back to attribute"
-    } else if is_text_input_step3 {
-        "Type value  Enter: Add  Esc: Back  Tab: Switch to Pending"
-    } else {
-        "Up/Down Navigate  Enter: Select  Esc: Back/Close  Tab: Switch to Pending"
-    };
+    let hints =
+        conditions_builder_hints(pending_focused, in_app_field_sub_step, is_text_input_step3);
     draw_hints(frame, modal_area, hints);
 }
 
@@ -779,6 +898,53 @@ const POLICY_FIELD_LABELS: [&str; 9] = [
     "[Submit]",
 ];
 
+/// Formats a single config field value for display.
+///
+/// Handles the editing buffer, boolean toggle display, secret masking,
+/// numeric formatting, and plain text with empty-state fallback.
+#[allow(clippy::too_many_arguments)]
+fn format_config_field_value(
+    config: &serde_json::Value,
+    key: &str,
+    index: usize,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+    is_bool_fn: fn(usize) -> bool,
+    is_secret_fn: fn(usize) -> bool,
+    is_numeric_fn: fn(usize) -> bool,
+) -> String {
+    if editing && index == selected {
+        return format!("[{buffer}_]");
+    }
+    if is_bool_fn(index) {
+        let b = config[key].as_bool().unwrap_or(false);
+        return if b {
+            "[x]".to_string()
+        } else {
+            "[ ]".to_string()
+        };
+    }
+    if is_secret_fn(index) {
+        let v = config[key].as_str().unwrap_or("");
+        return if v.is_empty() {
+            "(empty)".to_string()
+        } else {
+            "*****".to_string()
+        };
+    }
+    if is_numeric_fn(index) {
+        let n = config[key].as_i64().unwrap_or(0);
+        return n.to_string();
+    }
+    let v = config[key].as_str().unwrap_or("");
+    if v.is_empty() {
+        "(empty)".to_string()
+    } else {
+        v.to_string()
+    }
+}
+
 /// Draws the SIEM configuration form.
 fn draw_siem_config(
     frame: &mut Frame,
@@ -802,32 +968,17 @@ fn draw_siem_config(
     let mut items: Vec<ListItem> = Vec::with_capacity(SIEM_FIELD_LABELS.len());
     for (i, label) in SIEM_FIELD_LABELS.iter().enumerate() {
         let line = if i < KEYS.len() {
-            let key = KEYS[i];
-            let value_display = if editing && i == selected {
-                // Show buffer with trailing cursor.
-                format!("[{buffer}_]")
-            } else if is_siem_bool(i) {
-                let b = config[key].as_bool().unwrap_or(false);
-                if b {
-                    "[x]".to_string()
-                } else {
-                    "[ ]".to_string()
-                }
-            } else if is_siem_secret(i) {
-                let v = config[key].as_str().unwrap_or("");
-                if v.is_empty() {
-                    "(empty)".to_string()
-                } else {
-                    "*****".to_string()
-                }
-            } else {
-                let v = config[key].as_str().unwrap_or("");
-                if v.is_empty() {
-                    "(empty)".to_string()
-                } else {
-                    v.to_string()
-                }
-            };
+            let value_display = format_config_field_value(
+                config,
+                KEYS[i],
+                i,
+                selected,
+                editing,
+                buffer,
+                is_siem_bool,
+                is_siem_secret,
+                |_| false,
+            );
             format!("{label}: {value_display}")
         } else {
             // Save / Back action rows.
@@ -899,36 +1050,17 @@ fn draw_alert_config(
     let mut items: Vec<ListItem> = Vec::with_capacity(ALERT_FIELD_LABELS.len());
     for (i, label) in ALERT_FIELD_LABELS.iter().enumerate() {
         let line = if i < KEYS.len() {
-            let key = KEYS[i];
-            let value_display = if editing && i == selected {
-                // Show buffer with trailing cursor marker.
-                format!("[{buffer}_]")
-            } else if is_alert_bool(i) {
-                let b = config[key].as_bool().unwrap_or(false);
-                if b {
-                    "[x]".to_string()
-                } else {
-                    "[ ]".to_string()
-                }
-            } else if is_alert_numeric(i) {
-                // smtp_port is stored as a JSON number; default to 587 if absent.
-                let n = config[key].as_i64().unwrap_or(587);
-                n.to_string()
-            } else if is_alert_secret(i) {
-                let v = config[key].as_str().unwrap_or("");
-                if v.is_empty() {
-                    "(empty)".to_string()
-                } else {
-                    "*****".to_string()
-                }
-            } else {
-                let v = config[key].as_str().unwrap_or("");
-                if v.is_empty() {
-                    "(empty)".to_string()
-                } else {
-                    v.to_string()
-                }
-            };
+            let value_display = format_config_field_value(
+                config,
+                KEYS[i],
+                i,
+                selected,
+                editing,
+                buffer,
+                is_alert_bool,
+                is_alert_secret,
+                is_alert_numeric,
+            );
             format!("{label}: {value_display}")
         } else {
             // Save / Back action rows.
@@ -963,6 +1095,158 @@ fn draw_alert_config(
     draw_hints(frame, area, hints);
 }
 
+/// Formats the policy name field line.
+fn format_policy_name_field(
+    label: &str,
+    form: &crate::app::PolicyFormState,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+) -> Line<'static> {
+    if editing && selected == 0 {
+        Line::from(format!("{label}:              [{buffer}_]"))
+    } else if form.name.is_empty() {
+        Line::from(vec![
+            Span::raw(format!("{label}:              ")),
+            Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        Line::from(format!("{label}:              {}", form.name))
+    }
+}
+
+/// Formats the policy description field line.
+fn format_policy_description_field(
+    label: &str,
+    form: &crate::app::PolicyFormState,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+) -> Line<'static> {
+    if editing && selected == 1 {
+        Line::from(format!("{label}:       [{buffer}_]"))
+    } else if form.description.is_empty() {
+        Line::from(vec![
+            Span::raw(format!("{label}:       ")),
+            Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        Line::from(format!("{label}:       {}", form.description))
+    }
+}
+
+/// Formats the policy priority field line.
+fn format_policy_priority_field(
+    label: &str,
+    form: &crate::app::PolicyFormState,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+) -> Line<'static> {
+    if editing && selected == 2 {
+        Line::from(format!("{label}:          [{buffer}_]"))
+    } else if form.priority.is_empty() {
+        Line::from(vec![
+            Span::raw(format!("{label}:          ")),
+            Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        Line::from(format!("{label}:          {}", form.priority))
+    }
+}
+
+/// Formats the policy action field line.
+fn format_policy_action_field(label: &str, form: &crate::app::PolicyFormState) -> Line<'static> {
+    let action_label = ACTION_OPTIONS[form.action];
+    Line::from(format!("{label}:            {action_label}"))
+}
+
+/// Formats the policy enabled field line.
+fn format_policy_enabled_field(label: &str, form: &crate::app::PolicyFormState) -> Line<'static> {
+    let enabled_val = if form.enabled { "Yes" } else { "No" };
+    Line::from(format!("{label}:              {enabled_val}"))
+}
+
+/// Formats the policy mode field line.
+fn format_policy_mode_field(label: &str, form: &crate::app::PolicyFormState) -> Line<'static> {
+    let mode_label = match form.mode {
+        PolicyMode::ALL => "ALL",
+        PolicyMode::ANY => "ANY",
+        PolicyMode::NONE => "NONE",
+    };
+    Line::from(format!("{label}:              {mode_label}"))
+}
+
+/// Formats the policy conditions summary field line.
+fn format_policy_conditions_field(
+    label: &str,
+    form: &crate::app::PolicyFormState,
+) -> Line<'static> {
+    let n = form.conditions.len();
+    if n == 0 {
+        Line::from(vec![
+            Span::raw(format!("{label} ({n}):    ")),
+            Span::styled("No conditions added.", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        let summary = form
+            .conditions
+            .iter()
+            .map(condition_display)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Line::from(vec![
+            Span::raw(format!("{n} condition(s):    ")),
+            Span::styled(summary, Style::default().fg(Color::DarkGray)),
+        ])
+    }
+}
+
+/// Renders the mode advisory hint when applicable.
+fn render_mode_advisory(
+    frame: &mut Frame,
+    area: Rect,
+    form: &crate::app::PolicyFormState,
+    validation_error: Option<&str>,
+) {
+    if validation_error.is_some()
+        || form.mode == PolicyMode::ALL
+        || !form.conditions.is_empty()
+        || area.height < 4
+    {
+        return;
+    }
+    let hint = match form.mode {
+        PolicyMode::ANY => "Note: mode=ANY with no conditions will never match.",
+        PolicyMode::NONE => "Note: mode=NONE with no conditions matches every request.",
+        PolicyMode::ALL => "",
+    };
+    let hint_area = Rect {
+        x: area.x + 2,
+        y: area.y + area.height - 2,
+        width: area.width.saturating_sub(4),
+        height: 1,
+    };
+    let hint_para = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(hint_para, hint_area);
+}
+
+/// Renders a validation error overlay at the bottom of the form area.
+fn render_validation_error(frame: &mut Frame, area: Rect, validation_error: Option<&str>) {
+    if let Some(err) = validation_error {
+        if area.height >= 4 {
+            let err_area = Rect {
+                x: area.x + 2,
+                y: area.y + area.height - 2,
+                width: area.width.saturating_sub(4),
+                height: 1,
+            };
+            let err_para = Paragraph::new(err).style(Style::default().fg(Color::Red));
+            frame.render_widget(err_para, err_area);
+        }
+    }
+}
+
 /// Draws the Policy Create multi-field form.
 ///
 /// # Arguments
@@ -983,106 +1267,24 @@ fn draw_policy_create(
     buffer: &str,
     validation_error: Option<&str>,
 ) {
-    // Build 8 ListItems — one per row.
     let mut items: Vec<ListItem> = Vec::with_capacity(POLICY_FIELD_LABELS.len());
 
     for (i, label) in POLICY_FIELD_LABELS.iter().enumerate() {
         let line = match i {
-            0 => {
-                // Name (text, required)
-                if editing && selected == 0 {
-                    Line::from(format!("{label}:              [{buffer}_]"))
-                } else if form.name.is_empty() {
-                    Line::from(vec![
-                        Span::raw(format!("{label}:              ")),
-                        Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
-                    ])
-                } else {
-                    Line::from(format!("{label}:              {}", form.name))
-                }
-            }
-            1 => {
-                // Description (text, optional)
-                if editing && selected == 1 {
-                    Line::from(format!("{label}:       [{buffer}_]"))
-                } else if form.description.is_empty() {
-                    Line::from(vec![
-                        Span::raw(format!("{label}:       ")),
-                        Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
-                    ])
-                } else {
-                    Line::from(format!("{label}:       {}", form.description))
-                }
-            }
-            2 => {
-                // Priority (numeric text)
-                if editing && selected == 2 {
-                    Line::from(format!("{label}:          [{buffer}_]"))
-                } else if form.priority.is_empty() {
-                    Line::from(vec![
-                        Span::raw(format!("{label}:          ")),
-                        Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
-                    ])
-                } else {
-                    Line::from(format!("{label}:          {}", form.priority))
-                }
-            }
-            3 => {
-                // Action (select index — cycles on Enter, no edit mode)
-                let action_label = ACTION_OPTIONS[form.action];
-                Line::from(format!("{label}:            {action_label}"))
-            }
-            4 => {
-                // Enabled (bool toggle — Enter toggles, no edit mode)
-                let enabled_val = if form.enabled { "Yes" } else { "No" };
-                Line::from(format!("{label}:              {enabled_val}"))
-            }
-            5 => {
-                // Mode (select enum — cycles on Enter/Space, no edit mode).
-                let mode_label = match form.mode {
-                    PolicyMode::ALL => "ALL",
-                    PolicyMode::ANY => "ANY",
-                    PolicyMode::NONE => "NONE",
-                };
-                Line::from(format!("{label}:              {mode_label}"))
-            }
-            6 => {
-                // [Add Conditions] action row
-                Line::from(format!("  {label}"))
-            }
-            7 => {
-                // Conditions summary (read-only)
-                let n = form.conditions.len();
-                if n == 0 {
-                    // DarkGray empty state (per D-18)
-                    Line::from(vec![
-                        Span::raw(format!("{label} ({n}):    ")),
-                        Span::styled("No conditions added.", Style::default().fg(Color::DarkGray)),
-                    ])
-                } else {
-                    // Comma-separated summary of conditions
-                    let summary = form
-                        .conditions
-                        .iter()
-                        .map(condition_display)
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    Line::from(vec![
-                        Span::raw(format!("{n} condition(s):    ")),
-                        Span::styled(summary, Style::default().fg(Color::DarkGray)),
-                    ])
-                }
-            }
-            8 => {
-                // [Submit] action row
-                Line::from(format!("  {label}"))
-            }
+            0 => format_policy_name_field(label, form, selected, editing, buffer),
+            1 => format_policy_description_field(label, form, selected, editing, buffer),
+            2 => format_policy_priority_field(label, form, selected, editing, buffer),
+            3 => format_policy_action_field(label, form),
+            4 => format_policy_enabled_field(label, form),
+            5 => format_policy_mode_field(label, form),
+            6 => Line::from(format!("  {label}")),
+            7 => format_policy_conditions_field(label, form),
+            8 => Line::from(format!("  {label}")),
             _ => Line::from(""),
         };
         items.push(ListItem::new(line));
     }
 
-    // Render list with same highlight style used by all existing TUI screens.
     let list = List::new(items)
         .block(
             Block::default()
@@ -1101,47 +1303,9 @@ fn draw_policy_create(
     state.select(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
 
-    // Empty-conditions mode advisory (Phase 19 D-04). Shown in the same
-    // bottom-2 row slot as the validation_error overlay (see below); errors
-    // take priority, so this block is gated on `validation_error.is_none()`.
-    if validation_error.is_none()
-        && form.mode != PolicyMode::ALL
-        && form.conditions.is_empty()
-        && area.height >= 4
-    {
-        let hint = match form.mode {
-            PolicyMode::ANY => "Note: mode=ANY with no conditions will never match.",
-            PolicyMode::NONE => "Note: mode=NONE with no conditions matches every request.",
-            // Unreachable given the `form.mode != PolicyMode::ALL` guard above,
-            // but Rust requires an exhaustive match on the three-variant enum.
-            PolicyMode::ALL => "",
-        };
-        let hint_area = Rect {
-            x: area.x + 2,
-            y: area.y + area.height - 2,
-            width: area.width.saturating_sub(4),
-            height: 1,
-        };
-        let hint_para = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(hint_para, hint_area);
-    }
+    render_mode_advisory(frame, area, form, validation_error);
+    render_validation_error(frame, area, validation_error);
 
-    // Validation error overlay below the Submit row (not a list item).
-    if let Some(err) = validation_error {
-        // Position: bottom-2 row (above hints bar at bottom-1).
-        if area.height >= 4 {
-            let err_area = Rect {
-                x: area.x + 2,
-                y: area.y + area.height - 2,
-                width: area.width.saturating_sub(4),
-                height: 1,
-            };
-            let err_para = Paragraph::new(err).style(Style::default().fg(Color::Red));
-            frame.render_widget(err_para, err_area);
-        }
-    }
-
-    // Key hints bar (contextual based on editing mode).
     let hints = if editing {
         "Type to edit | Enter: commit | Esc: cancel"
     } else {
@@ -1176,89 +1340,19 @@ fn draw_policy_edit(
     buffer: &str,
     validation_error: Option<&str>,
 ) {
-    // Build 9 ListItems — one per row (Phase 19: 9 rows).
     let mut items: Vec<ListItem> = Vec::with_capacity(POLICY_FIELD_LABELS.len());
 
     for (i, label) in POLICY_FIELD_LABELS.iter().enumerate() {
         let line = match i {
-            0 => {
-                if editing && selected == 0 {
-                    Line::from(format!("{label}:              [{buffer}_]"))
-                } else if form.name.is_empty() {
-                    Line::from(vec![
-                        Span::raw(format!("{label}:              ")),
-                        Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
-                    ])
-                } else {
-                    Line::from(format!("{label}:              {}", form.name))
-                }
-            }
-            1 => {
-                if editing && selected == 1 {
-                    Line::from(format!("{label}:       [{buffer}_]"))
-                } else if form.description.is_empty() {
-                    Line::from(vec![
-                        Span::raw(format!("{label}:       ")),
-                        Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
-                    ])
-                } else {
-                    Line::from(format!("{label}:       {}", form.description))
-                }
-            }
-            2 => {
-                if editing && selected == 2 {
-                    Line::from(format!("{label}:          [{buffer}_]"))
-                } else if form.priority.is_empty() {
-                    Line::from(vec![
-                        Span::raw(format!("{label}:          ")),
-                        Span::styled("(empty)", Style::default().fg(Color::DarkGray)),
-                    ])
-                } else {
-                    Line::from(format!("{label}:          {}", form.priority))
-                }
-            }
-            3 => {
-                let action_label = ACTION_OPTIONS[form.action];
-                Line::from(format!("{label}:            {action_label}"))
-            }
-            4 => {
-                let enabled_val = if form.enabled { "Yes" } else { "No" };
-                Line::from(format!("{label}:              {enabled_val}"))
-            }
-            5 => {
-                // Mode (select enum — cycles on Enter/Space, no edit mode).
-                let mode_label = match form.mode {
-                    PolicyMode::ALL => "ALL",
-                    PolicyMode::ANY => "ANY",
-                    PolicyMode::NONE => "NONE",
-                };
-                Line::from(format!("{label}:              {mode_label}"))
-            }
+            0 => format_policy_name_field(label, form, selected, editing, buffer),
+            1 => format_policy_description_field(label, form, selected, editing, buffer),
+            2 => format_policy_priority_field(label, form, selected, editing, buffer),
+            3 => format_policy_action_field(label, form),
+            4 => format_policy_enabled_field(label, form),
+            5 => format_policy_mode_field(label, form),
             6 => Line::from(format!("  {label}")),
-            7 => {
-                let n = form.conditions.len();
-                if n == 0 {
-                    Line::from(vec![
-                        Span::raw(format!("{label} ({n}):    ")),
-                        Span::styled("No conditions added.", Style::default().fg(Color::DarkGray)),
-                    ])
-                } else {
-                    let summary = form
-                        .conditions
-                        .iter()
-                        .map(condition_display)
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    Line::from(vec![
-                        Span::raw(format!("{n} condition(s):    ")),
-                        Span::styled(summary, Style::default().fg(Color::DarkGray)),
-                    ])
-                }
-            }
-            8 => {
-                // [Save] — hardcoded label (UI-SPEC D-03).
-                Line::from("  [Save]")
-            }
+            7 => format_policy_conditions_field(label, form),
+            8 => Line::from("  [Save]"),
             _ => Line::from(""),
         };
         items.push(ListItem::new(line));
@@ -1282,43 +1376,8 @@ fn draw_policy_edit(
     state.select(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
 
-    // Empty-conditions mode advisory (Phase 19 D-04). Shown in the same
-    // bottom-2 row slot as the validation_error overlay (see below); errors
-    // take priority, so this block is gated on `validation_error.is_none()`.
-    if validation_error.is_none()
-        && form.mode != PolicyMode::ALL
-        && form.conditions.is_empty()
-        && area.height >= 4
-    {
-        let hint = match form.mode {
-            PolicyMode::ANY => "Note: mode=ANY with no conditions will never match.",
-            PolicyMode::NONE => "Note: mode=NONE with no conditions matches every request.",
-            // Unreachable given the `form.mode != PolicyMode::ALL` guard above,
-            // but Rust requires an exhaustive match on the three-variant enum.
-            PolicyMode::ALL => "",
-        };
-        let hint_area = Rect {
-            x: area.x + 2,
-            y: area.y + area.height - 2,
-            width: area.width.saturating_sub(4),
-            height: 1,
-        };
-        let hint_para = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(hint_para, hint_area);
-    }
-
-    if let Some(err) = validation_error {
-        if area.height >= 4 {
-            let err_area = Rect {
-                x: area.x + 2,
-                y: area.y + area.height - 2,
-                width: area.width.saturating_sub(4),
-                height: 1,
-            };
-            let err_para = Paragraph::new(err).style(Style::default().fg(Color::Red));
-            frame.render_widget(err_para, err_area);
-        }
-    }
+    render_mode_advisory(frame, area, form, validation_error);
+    render_validation_error(frame, area, validation_error);
 
     let hints = if editing {
         "Type to edit | Enter: commit | Esc: cancel"
@@ -1935,44 +1994,88 @@ fn draw_agent_list(frame: &mut Frame, area: Rect, agents: &[serde_json::Value], 
     draw_hints(frame, area, "Up/Down: navigate | Esc: back");
 }
 
-/// Draws the Device Registry list screen.
+/// Draws the Device Registry list screen as a 6-column ratatui `Table`.
 ///
-/// Each device is shown as a compact one-liner:
-/// `[TRUST_TIER] VID:{vid} PID:{pid} SER:{serial} "{description}"`
-///
-/// An empty list renders a single informational row.
+/// Columns: VID | PID | Serial | Owner | Tier | Description.
+/// Machine-wide entries (null owner_sid) display "(all users)" in the Owner column.
+/// Per-user entries display the owner_user if present, otherwise the SID truncated.
 fn draw_device_list(frame: &mut Frame, area: Rect, devices: &[serde_json::Value], selected: usize) {
-    let items: Vec<ListItem> = if devices.is_empty() {
-        vec![ListItem::new(Line::from(
-            "No devices registered.".to_string(),
-        ))]
-    } else {
-        devices
-            .iter()
-            .map(|d| {
-                let trust_tier = d["trust_tier"].as_str().unwrap_or("blocked");
-                let tier_tag = match trust_tier {
-                    "read_only" => "[READ_ONLY]",
-                    "full_access" => "[FULL_ACCESS]",
-                    _ => "[BLOCKED]",
-                };
-                let vid = d["vid"].as_str().unwrap_or("-");
-                let pid = d["pid"].as_str().unwrap_or("-");
-                let serial = d["serial"].as_str().unwrap_or("");
-                let description = d["description"].as_str().unwrap_or("");
-                let line = format!("{tier_tag} VID:{vid} PID:{pid} SER:{serial} \"{description}\"");
-                ListItem::new(Line::from(line))
-            })
-            .collect()
-    };
+    if devices.is_empty() {
+        let paragraph = Paragraph::new("No devices registered.")
+            .block(
+                Block::default()
+                    .title(" Device Registry (0) ")
+                    .borders(Borders::ALL),
+            )
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(paragraph, area);
+        draw_hints(frame, area, "r: Register   d: Delete   Esc: Back");
+        return;
+    }
 
-    let list = List::new(items)
+    let header = Row::new(vec!["VID", "PID", "Serial", "Owner", "Tier", "Description"])
+        .style(Style::default().add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = devices
+        .iter()
+        .map(|d| {
+            let vid = d["vid"].as_str().unwrap_or("-");
+            let pid = d["pid"].as_str().unwrap_or("-");
+            let serial = d["serial"].as_str().unwrap_or("");
+            let description = d["description"].as_str().unwrap_or("");
+            let trust_tier = d["trust_tier"].as_str().unwrap_or("blocked");
+            let tier_label = match trust_tier {
+                "read_only" => "READ_ONLY",
+                "full_access" => "FULL_ACCESS",
+                _ => "BLOCKED",
+            };
+
+            // Owner column: per D-10, machine-wide entries show "(all users)".
+            let owner_sid = d["owner_sid"].as_str();
+            let owner_user = d["owner_user"].as_str();
+            let owner = match (owner_sid, owner_user) {
+                (None, None) => "(all users)".to_string(),
+                (None, Some(user)) => format!("{user} (all users)"),
+                (Some(_), Some(user)) => user.to_string(),
+                (Some(sid), None) => {
+                    // Truncate long SIDs to avoid breaking layout (T-38.4-11 mitigation).
+                    if sid.len() > 20 {
+                        format!("{}...", &sid[..17])
+                    } else {
+                        sid.to_string()
+                    }
+                }
+            };
+
+            Row::new(vec![
+                vid.to_string(),
+                pid.to_string(),
+                serial.to_string(),
+                owner,
+                tier_label.to_string(),
+                description.to_string(),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(8),  // VID
+        Constraint::Percentage(8),  // PID
+        Constraint::Percentage(18), // Serial
+        Constraint::Percentage(18), // Owner
+        Constraint::Percentage(12), // Tier
+        Constraint::Percentage(36), // Description
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
         .block(
             Block::default()
                 .title(format!(" Device Registry ({}) ", devices.len()))
                 .borders(Borders::ALL),
         )
-        .highlight_style(
+        .row_highlight_style(
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
@@ -1980,13 +2083,9 @@ fn draw_device_list(frame: &mut Frame, area: Rect, devices: &[serde_json::Value]
         )
         .highlight_symbol("> ");
 
-    let mut state = ratatui::widgets::ListState::default();
-    // Only select a row when the list is non-empty to avoid rendering
-    // the highlight on the "No devices registered." informational row.
-    if !devices.is_empty() {
-        state.select(Some(selected));
-    }
-    frame.render_stateful_widget(list, area, &mut state);
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(table, area, &mut state);
 
     draw_hints(frame, area, "r: Register   d: Delete   Esc: Back");
 }
@@ -2216,6 +2315,219 @@ fn draw_hints(frame: &mut Frame, area: Rect, hints: &str) {
     frame.render_widget(line, hint_area);
 }
 
+/// Draws the USB enforcement config form.
+///
+/// Three picker fields (row 0-2) plus Save (row 3) and Back (row 4).
+/// When `editing` is true, the selected picker cycles through its options
+/// on Up/Down instead of moving between rows.
+fn draw_usb_enforcement_config(
+    frame: &mut Frame,
+    area: Rect,
+    config: &serde_json::Value,
+    selected: usize,
+    editing: bool,
+    _buffer: &str,
+) {
+    let block = Block::default()
+        .title("USB Enforcement Settings")
+        .borders(Borders::ALL);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    for (i, key) in USB_ENFORCEMENT_KEYS.iter().enumerate() {
+        let current_value = config.get(key).and_then(|v| v.as_str()).unwrap_or("");
+        let label = USB_ENFORCEMENT_LABELS[i];
+        let display = if editing && i == selected {
+            format!("> {}: {} <", label, current_value)
+        } else if i == selected {
+            format!("> {}: {}", label, current_value)
+        } else {
+            format!("  {}: {}", label, current_value)
+        };
+        items.push(ListItem::new(display));
+    }
+
+    // Save row
+    let save_text = if selected == USB_ENFORCEMENT_SAVE_ROW {
+        "> [ Save ]"
+    } else {
+        "  [ Save ]"
+    };
+    items.push(ListItem::new(save_text));
+
+    // Back row
+    let back_text = if selected == USB_ENFORCEMENT_BACK_ROW {
+        "> [ Back ]"
+    } else {
+        "  [ Back ]"
+    };
+    items.push(ListItem::new(back_text));
+
+    let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::BOLD));
+    frame.render_widget(list, inner);
+
+    // Show hint when editing a picker field
+    if editing && selected < USB_ENFORCEMENT_KEYS.len() {
+        let hint = "Up/Down: cycle options | Enter: confirm | Esc: cancel".to_string();
+        let hint_para = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
+        let hint_area = Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(1),
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(hint_para, hint_area);
+    }
+}
+
+/// Draws the Cloud Config form.
+///
+/// `cloud_hook_enabled` (row 0) is rendered as a bool toggle — `true` displays as "Enabled",
+/// `false` displays as "Disabled". Row 1 = [Save], Row 2 = [Back].
+fn draw_cloud_config(
+    frame: &mut Frame,
+    area: Rect,
+    config: &serde_json::Value,
+    selected: usize,
+    _editing: bool,
+    _buffer: &str,
+) {
+    let block = Block::default()
+        .title(" Cloud Config ")
+        .borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut items: Vec<ListItem> = Vec::with_capacity(CLOUD_CONFIG_KEYS.len() + 2);
+
+    for (i, key) in CLOUD_CONFIG_KEYS.iter().enumerate() {
+        let label = CLOUD_CONFIG_LABELS[i];
+        // cloud_hook_enabled is a bool — display as "Enabled"/"Disabled".
+        let value_str = config[key].as_bool().map_or("Disabled", |b| {
+            if b { "Enabled" } else { "Disabled" }
+        });
+        let line = if i == selected {
+            format!("> {label}: {value_str}")
+        } else {
+            format!("  {label}: {value_str}")
+        };
+        items.push(ListItem::new(line));
+    }
+
+    let save_text = if selected == CLOUD_CONFIG_SAVE_ROW {
+        "> [ Save ]"
+    } else {
+        "  [ Save ]"
+    };
+    items.push(ListItem::new(save_text));
+
+    let back_text = if selected == CLOUD_CONFIG_BACK_ROW {
+        "> [ Back ]"
+    } else {
+        "  [ Back ]"
+    };
+    items.push(ListItem::new(back_text));
+
+    let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::BOLD));
+    frame.render_widget(list, inner);
+
+    draw_hints(frame, area, "Up/Down: navigate | Enter: toggle/action | Esc: back");
+}
+
+/// Draws the Print Config form.
+///
+/// Row 0: print_enabled (bool toggle — "[x]" / "[ ]").
+/// Row 1: print_xps_timeout_ms (numeric, edit buffer shown when editing).
+/// Row 2: print_unclassifiable_action (picker — cycles on Up/Down in edit mode).
+/// Row 3: print_max_pages (numeric).
+/// Row 4: [Save], Row 5: [Back].
+fn draw_print_config(
+    frame: &mut Frame,
+    area: Rect,
+    config: &serde_json::Value,
+    selected: usize,
+    editing: bool,
+    buffer: &str,
+) {
+    // Combine field labels with action rows for a single iteration pass.
+    const ACTION_LABELS: [&str; 2] = ["[ Save ]", "[ Back ]"];
+    let all_labels: Vec<&str> = PRINT_CONFIG_LABELS
+        .iter()
+        .copied()
+        .chain(ACTION_LABELS.iter().copied())
+        .collect();
+
+    let mut items: Vec<ListItem> = Vec::with_capacity(all_labels.len());
+
+    for (i, label) in all_labels.iter().enumerate() {
+        let line = if i < PRINT_CONFIG_KEYS.len() {
+            let value_display = if is_print_picker(i) && editing && i == selected {
+                // Picker in edit mode: show buffer-like prompt with current value and hint arrows.
+                format!(
+                    "[{}]",
+                    config
+                        .get(PRINT_CONFIG_KEYS[i])
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Block")
+                )
+            } else if is_print_picker(i) {
+                // Picker not editing: show the stored string value directly.
+                config
+                    .get(PRINT_CONFIG_KEYS[i])
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Block")
+                    .to_string()
+            } else {
+                format_config_field_value(
+                    config,
+                    PRINT_CONFIG_KEYS[i],
+                    i,
+                    selected,
+                    editing,
+                    buffer,
+                    is_print_bool,
+                    |_| false,
+                    is_print_numeric,
+                )
+            };
+            format!("{label}: {value_display}")
+        } else {
+            (*label).to_string()
+        };
+        items.push(ListItem::new(Line::from(line)));
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Print Config ")
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut state);
+
+    let hints = if editing && is_print_picker(selected) {
+        "Up/Down: cycle options | Enter: confirm | Esc: cancel"
+    } else if editing {
+        "Type to edit | Enter: commit | Esc: cancel"
+    } else {
+        "Up/Down: navigate | Enter: edit/toggle | Esc: back"
+    };
+    draw_hints(frame, area, hints);
+}
+
 /// Draws the status bar at the bottom of the screen.
 fn draw_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     let (text, style) = match &app.status {
@@ -2289,29 +2601,17 @@ fn draw_ldap_config(
     let mut items: Vec<ListItem> = Vec::with_capacity(LDAP_FIELD_LABELS.len());
     for (i, label) in LDAP_FIELD_LABELS.iter().enumerate() {
         let line = if i < KEYS.len() {
-            let key = KEYS[i];
-            let value_display = if editing && i == selected {
-                // Show buffer with trailing cursor marker.
-                format!("[{buffer}_]")
-            } else if is_ldap_bool(i) {
-                let b = config[key].as_bool().unwrap_or(false);
-                if b {
-                    "[x]".to_string()
-                } else {
-                    "[ ]".to_string()
-                }
-            } else if is_ldap_numeric(i) {
-                // cache_ttl_secs is stored as a JSON number; default to 300 if absent.
-                let n = config[key].as_u64().unwrap_or(300);
-                n.to_string()
-            } else {
-                let v = config[key].as_str().unwrap_or("");
-                if v.is_empty() {
-                    "(empty)".to_string()
-                } else {
-                    v.to_string()
-                }
-            };
+            let value_display = format_config_field_value(
+                config,
+                KEYS[i],
+                i,
+                selected,
+                editing,
+                buffer,
+                is_ldap_bool,
+                |_| false,
+                is_ldap_numeric,
+            );
             format!("{label}: {value_display}")
         } else {
             // Save / Back action rows.
@@ -2475,6 +2775,180 @@ mod usb_scan_render_tests {
 }
 
 #[cfg(test)]
+mod device_list_render_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use serde_json::json;
+
+    #[test]
+    fn draw_device_list_empty_shows_message() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_device_list(frame, area, &[], 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("Device Registry (0)"),
+            "empty title missing: {s}"
+        );
+        assert!(
+            s.contains("No devices registered."),
+            "empty message missing: {s}"
+        );
+        assert!(s.contains("r: Register"), "register hint missing: {s}");
+        assert!(s.contains("Esc: Back"), "esc hint missing: {s}");
+    }
+
+    #[test]
+    fn draw_device_list_with_owner_shows_username() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let devices = vec![json!({
+            "id": "uuid-1",
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "SN1234",
+            "description": "Kingston USB",
+            "trust_tier": "read_only",
+            "owner_sid": "S-1-5-21-1",
+            "owner_user": "alice"
+        })];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_device_list(frame, area, &devices, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("Device Registry (1)"),
+            "title count missing: {s}"
+        );
+        assert!(s.contains("VID"), "header VID missing: {s}");
+        assert!(s.contains("PID"), "header PID missing: {s}");
+        assert!(s.contains("Serial"), "header Serial missing: {s}");
+        assert!(s.contains("Owner"), "header Owner missing: {s}");
+        assert!(s.contains("Tier"), "header Tier missing: {s}");
+        assert!(s.contains("Description"), "header Description missing: {s}");
+        assert!(s.contains("0951"), "row vid missing: {s}");
+        assert!(s.contains("1666"), "row pid missing: {s}");
+        assert!(s.contains("SN1234"), "row serial missing: {s}");
+        assert!(s.contains("alice"), "row owner_user missing: {s}");
+        assert!(s.contains("READ_ONLY"), "row tier missing: {s}");
+    }
+
+    #[test]
+    fn draw_device_list_machine_wide_shows_all_users() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let devices = vec![json!({
+            "id": "uuid-1",
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "SN1234",
+            "description": "Kingston USB",
+            "trust_tier": "full_access",
+            "owner_sid": null,
+            "owner_user": null
+        })];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_device_list(frame, area, &devices, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("(all users)"),
+            "machine-wide owner label missing: {s}"
+        );
+        assert!(s.contains("FULL_ACCESS"), "row tier missing: {s}");
+    }
+
+    #[test]
+    fn draw_device_list_mixed_renders_correctly() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let devices = vec![
+            json!({
+                "id": "uuid-1",
+                "vid": "0951",
+                "pid": "1666",
+                "serial": "SN1",
+                "description": "Machine-wide device",
+                "trust_tier": "blocked",
+                "owner_sid": null,
+                "owner_user": null
+            }),
+            json!({
+                "id": "uuid-2",
+                "vid": "05ac",
+                "pid": "12a8",
+                "serial": "SN2",
+                "description": "Alice's device",
+                "trust_tier": "read_only",
+                "owner_sid": "S-1-5-21-1",
+                "owner_user": "alice"
+            }),
+        ];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_device_list(frame, area, &devices, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("Device Registry (2)"),
+            "title count missing: {s}"
+        );
+        assert!(s.contains("(all users)"), "machine-wide label missing: {s}");
+        assert!(s.contains("alice"), "per-user owner missing: {s}");
+        assert!(s.contains("BLOCKED"), "blocked tier missing: {s}");
+        assert!(s.contains("READ_ONLY"), "read_only tier missing: {s}");
+    }
+
+    #[test]
+    fn draw_device_list_sid_only_truncates_long_sid() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let long_sid = "S-1-5-21-1234567890-1234567890-1234567890-1234";
+        let devices = vec![json!({
+            "id": "uuid-1",
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "SN1",
+            "description": "SID-only device",
+            "trust_tier": "blocked",
+            "owner_sid": long_sid,
+            "owner_user": null
+        })];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_device_list(frame, area, &devices, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        // Long SIDs are truncated (T-38.4-11 mitigation).
+        // The full SID is not present; a truncated prefix is shown instead.
+        assert!(
+            !s.contains(long_sid),
+            "full long SID should not appear in output: {s}"
+        );
+        assert!(
+            s.contains("S-1-5-21-12345678"),
+            "truncated SID prefix should appear: {s}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod disk_registry_render_tests {
     use super::*;
     use ratatui::backend::TestBackend;
@@ -2492,10 +2966,7 @@ mod disk_registry_render_tests {
         .expect("draw");
         let buf = term.backend().buffer().clone();
         let s: String = buf.content().iter().map(|c| c.symbol()).collect();
-        assert!(
-            s.contains("Disk Registry (0)"),
-            "empty title missing: {s}"
-        );
+        assert!(s.contains("Disk Registry (0)"), "empty title missing: {s}");
         assert!(
             s.contains("No disk registry entries."),
             "empty message missing: {s}"

@@ -64,18 +64,15 @@ pub fn start(session_id: u32) -> Arc<AtomicBool> {
     stop
 }
 
-/// The clipboard monitoring loop.
+/// Creates a message-only window for clipboard monitoring.
 ///
-/// Uses `AddClipboardFormatListener` to receive `WM_CLIPBOARDUPDATE`
-/// messages when the clipboard changes.
-fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
+/// Registers the window class and creates an HWND_MESSAGE window.
+/// Returns the window handle on success.
+fn create_monitor_window() -> anyhow::Result<windows::Win32::Foundation::HWND> {
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::DataExchange::{
-        AddClipboardFormatListener, RemoveClipboardFormatListener,
-    };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DispatchMessageW, RegisterClassW, TranslateMessage, CW_USEDEFAULT, HMENU,
-        MSG, WINDOW_EX_STYLE, WM_CLIPBOARDUPDATE, WNDCLASSW, WS_OVERLAPPED,
+        CreateWindowExW, RegisterClassW, CW_USEDEFAULT, HMENU, WINDOW_EX_STYLE, WNDCLASSW,
+        WS_OVERLAPPED,
     };
 
     let class_name_str = "DLPClipboardMonitor\0";
@@ -111,30 +108,25 @@ fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
         )?
     };
 
-    // Register for clipboard change notifications.
-    let registered = unsafe { AddClipboardFormatListener(hwnd) };
-    if let Err(e) = registered {
-        warn!(error = %e, "AddClipboardFormatListener failed");
-        anyhow::bail!("AddClipboardFormatListener failed: {e}");
-    }
+    Ok(hwnd)
+}
 
-    debug!("clipboard format listener registered");
-
-    // Register WinEvent hook for foreground window tracking (D-01, APP-01).
-    //
-    // WINEVENT_OUTOFCONTEXT: callback runs in our process without DLL injection.
-    // WINEVENT_SKIPOWNPROCESS: prevents DLP UI's own focus events (e.g., dialogs)
-    // from poisoning the destination slot (PITFALL-A3).
-    //
-    // Thread affinity: SetWinEventHook MUST be called on a thread with a message
-    // loop — the clipboard-monitor thread satisfies this (PeekMessageW loop below).
-    // The callback is delivered on this same thread. Do NOT call from tokio tasks.
-    use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent};
+/// Registers the WinEvent hook for foreground window tracking (D-01, APP-01).
+///
+/// WINEVENT_OUTOFCONTEXT: callback runs in our process without DLL injection.
+/// WINEVENT_SKIPOWNPROCESS: prevents DLP UI's own focus events (e.g., dialogs)
+/// from poisoning the destination slot (PITFALL-A3).
+///
+/// Thread affinity: SetWinEventHook MUST be called on a thread with a message
+/// loop — the clipboard-monitor thread satisfies this (PeekMessageW loop below).
+/// The callback is delivered on this same thread. Do NOT call from tokio tasks.
+fn register_foreground_hook() -> windows::Win32::UI::Accessibility::HWINEVENTHOOK {
+    use windows::Win32::UI::Accessibility::SetWinEventHook;
     use windows::Win32::UI::WindowsAndMessaging::{
         EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
     };
 
-    let winevent_hook = unsafe {
+    unsafe {
         SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND, // eventMin: only foreground changes
             EVENT_SYSTEM_FOREGROUND, // eventMax: same event
@@ -144,7 +136,79 @@ fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
             0, // idThread: 0 = all threads
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
         )
+    }
+}
+
+/// Reads the destination HWND from the foreground slot.
+///
+/// swap(0) returns the previous value and resets the slot to 0 in
+/// one operation — no separate load + store needed.
+fn read_destination_hwnd() -> Option<windows::Win32::Foundation::HWND> {
+    let dest_raw = FOREGROUND_SLOT.swap(0, Ordering::Relaxed);
+    if dest_raw == 0 {
+        return None;
+    }
+    // Reconstruct HWND from usize. The cast is the inverse of the
+    // store in foreground_event_proc (hwnd.0 as usize).
+    Some(windows::Win32::Foundation::HWND(
+        dest_raw as *mut core::ffi::c_void,
+    ))
+}
+
+/// Handles a single Windows message in the clipboard monitor loop.
+///
+/// Returns true if the loop should continue, false if WM_CLIPBOARDUPDATE
+/// was handled (the loop always continues for this monitor).
+fn handle_monitor_message(
+    session_id: u32,
+    msg: &windows::Win32::UI::WindowsAndMessaging::MSG,
+    last_hash: &mut u64,
+) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, TranslateMessage, WM_CLIPBOARDUPDATE,
     };
+
+    if msg.message == WM_CLIPBOARDUPDATE {
+        // Capture source identity synchronously — BEFORE handle_clipboard_change.
+        // GetClipboardOwner must be called here (D-03, APP-02): the source
+        // process may exit within milliseconds of setting clipboard data.
+        // Returns windows_core::Result<HWND> — Err means NULL (no owner).
+        let source_hwnd: Option<windows::Win32::Foundation::HWND> =
+            unsafe { windows::Win32::System::DataExchange::GetClipboardOwner().ok() };
+
+        let dest_hwnd = read_destination_hwnd();
+        handle_clipboard_change(session_id, last_hash, source_hwnd, dest_hwnd);
+    }
+
+    unsafe {
+        let _ = TranslateMessage(msg);
+        let _ = DispatchMessageW(msg);
+    }
+}
+
+/// The clipboard monitoring loop.
+///
+/// Uses `AddClipboardFormatListener` to receive `WM_CLIPBOARDUPDATE`
+/// messages when the clipboard changes.
+fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
+    use windows::Win32::System::DataExchange::{
+        AddClipboardFormatListener, RemoveClipboardFormatListener,
+    };
+    use windows::Win32::UI::Accessibility::UnhookWinEvent;
+    use windows::Win32::UI::WindowsAndMessaging::{PeekMessageW, MSG, PM_REMOVE};
+
+    let hwnd = create_monitor_window()?;
+
+    // Register for clipboard change notifications.
+    let registered = unsafe { AddClipboardFormatListener(hwnd) };
+    if let Err(e) = registered {
+        warn!(error = %e, "AddClipboardFormatListener failed");
+        anyhow::bail!("AddClipboardFormatListener failed: {e}");
+    }
+
+    debug!("clipboard format listener registered");
+
+    let winevent_hook = register_foreground_hook();
     debug!("WinEvent hook registered for foreground tracking");
 
     // Track the last clipboard text to avoid duplicate alerts.
@@ -158,45 +222,10 @@ fn run_monitor(session_id: u32, stop: Arc<AtomicBool>) -> anyhow::Result<()> {
 
         // Use PeekMessage with PM_REMOVE + a short sleep to allow
         // checking the stop flag between messages.
-        let has_msg = unsafe {
-            windows::Win32::UI::WindowsAndMessaging::PeekMessageW(
-                &mut msg,
-                None,
-                0,
-                0,
-                windows::Win32::UI::WindowsAndMessaging::PM_REMOVE,
-            )
-        };
+        let has_msg = unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) };
 
         if has_msg.as_bool() {
-            if msg.message == WM_CLIPBOARDUPDATE {
-                // Capture source identity synchronously — BEFORE handle_clipboard_change.
-                // GetClipboardOwner must be called here (D-03, APP-02): the source
-                // process may exit within milliseconds of setting clipboard data.
-                // Returns windows_core::Result<HWND> — Err means NULL (no owner).
-                let source_hwnd: Option<windows::Win32::Foundation::HWND> =
-                    unsafe { windows::Win32::System::DataExchange::GetClipboardOwner().ok() };
-
-                // Read-and-clear the foreground slot atomically (D-01, APP-01).
-                // swap(0) returns the previous value and resets the slot to 0 in
-                // one operation — no separate load + store needed.
-                let dest_raw = FOREGROUND_SLOT.swap(0, Ordering::Relaxed);
-                let dest_hwnd: Option<windows::Win32::Foundation::HWND> = if dest_raw != 0 {
-                    // Reconstruct HWND from usize. The cast is the inverse of the
-                    // store in foreground_event_proc (hwnd.0 as usize).
-                    Some(windows::Win32::Foundation::HWND(
-                        dest_raw as *mut core::ffi::c_void,
-                    ))
-                } else {
-                    None
-                };
-
-                handle_clipboard_change(session_id, &mut last_hash, source_hwnd, dest_hwnd);
-            }
-            unsafe {
-                let _ = TranslateMessage(&msg);
-                let _ = DispatchMessageW(&msg);
-            }
+            handle_monitor_message(session_id, &msg, &mut last_hash);
         } else {
             // No message — sleep briefly to avoid busy-wait.
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -436,6 +465,9 @@ mod tests {
             publisher: "Microsoft Corporation".to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         };
         let dest = source.clone();
         assert_eq!(source, dest, "intra-app dest must equal source clone");

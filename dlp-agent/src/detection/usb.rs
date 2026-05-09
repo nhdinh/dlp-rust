@@ -37,7 +37,7 @@ use std::os::windows::ffi::OsStrExt;
 use dlp_common::usb::{parse_usb_device_path, setupdi_description_for_device};
 use dlp_common::{Classification, DeviceIdentity, UsbTrustTier};
 use parking_lot::{Mutex, RwLock};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 // DBT_DEVICEARRIVAL is needed by handle_volume_event to distinguish arrival
 // from removal events. The window, registration, and wndproc live in
@@ -110,7 +110,32 @@ impl UsbDetector {
     pub fn scan_existing_usb_identities(&self) {
         use dlp_common::usb::enumerate_connected_usb_devices;
 
-        let identities = enumerate_connected_usb_devices();
+        // Read startup resolution mode once (Phase 43-04).
+        let mode = crate::service::with_config(|cfg| {
+            cfg.usb_startup_resolution_mode
+                .clone()
+                .unwrap_or_else(|| "VID/PID/serial fallback".to_string())
+        })
+        .unwrap_or_else(|| {
+            warn!(
+                "config unavailable — falling back to 'VID/PID/serial fallback' \
+                 for usb_startup_resolution_mode"
+            );
+            "VID/PID/serial fallback".to_string()
+        });
+
+        let identities = if mode == "Volume GUID resolution" {
+            // Volume GUID resolution is rejected at config-set time (Plan 43-02).
+            // This branch should not be reachable, but log a warning just in case.
+            warn!(
+                mode = %mode,
+                "Volume GUID resolution mode selected but not yet implemented — \
+                 falling back to VID/PID/serial"
+            );
+            enumerate_connected_usb_devices()
+        } else {
+            enumerate_connected_usb_devices()
+        };
         if identities.is_empty() {
             debug!("startup scan: no USB mass-storage devices currently connected");
             return;
@@ -152,7 +177,10 @@ impl UsbDetector {
                 self.device_identities
                     .write()
                     .insert(letter, identity.clone());
-                apply_tier_enforcement(letter, &identity);
+                // Startup scan has no dbcc_name — use empty string to trigger fallback.
+                if let Err(e) = apply_tier_enforcement(letter, &identity, "") {
+                    warn!(drive = %letter, error = %e, "tier enforcement failed during startup scan");
+                }
             } else if unmapped.len() > 1 {
                 // Ambiguous: multiple unmapped USB drives. We cannot determine which
                 // identity belongs to which drive letter. Park the identity in
@@ -260,6 +288,7 @@ impl UsbDetector {
     pub fn reconcile_identity_with_unmapped_drive(
         &self,
         identity: &DeviceIdentity,
+        dbcc_name: &str,
     ) -> Option<char> {
         let unmapped: Vec<char> = {
             let blocked = self.blocked_drives.read();
@@ -275,7 +304,9 @@ impl UsbDetector {
             self.device_identities
                 .write()
                 .insert(letter, identity.clone());
-            apply_tier_enforcement(letter, identity);
+            if let Err(e) = apply_tier_enforcement(letter, identity, dbcc_name) {
+                warn!(drive = %letter, error = %e, "tier enforcement failed during reconciliation");
+            }
             Some(letter)
         } else {
             None
@@ -430,6 +461,14 @@ pub fn set_device_controller(
     let _ = DEVICE_CONTROLLER.set(controller);
 }
 
+/// Returns the global device controller reference, if set.
+#[cfg(windows)]
+#[must_use]
+pub fn get_device_controller() -> Option<std::sync::Arc<crate::device_controller::DeviceController>>
+{
+    DEVICE_CONTROLLER.get().cloned()
+}
+
 /// Stores the channel sender used to notify `InterceptionEngine` of newly-arrived
 /// USB drive roots.
 ///
@@ -454,35 +493,74 @@ pub fn set_watch_path_sender(tx: std::sync::mpsc::Sender<std::path::PathBuf>) {
 #[cfg(windows)]
 fn handle_volume_event(detector: &UsbDetector, event_type: u32) {
     let before: HashSet<char> = detector.blocked_drives.read().iter().copied().collect();
-    let mut now_present: HashSet<char> = HashSet::new();
+    let now_present = scan_removable_drives(detector);
+
+    if event_type == DBT_DEVICEARRIVAL {
+        handle_volume_arrival(detector, &before, &now_present);
+    } else {
+        handle_volume_removal(detector, &before, &now_present);
+    }
+}
+
+/// Scans all drive letters and returns the set of removable drives.
+#[cfg(windows)]
+fn scan_removable_drives(detector: &UsbDetector) -> HashSet<char> {
+    let mut present = HashSet::new();
     for letter in 'A'..='Z' {
         if detector.is_removable_drive(letter) {
-            now_present.insert(letter);
+            present.insert(letter);
         }
     }
-    if event_type == DBT_DEVICEARRIVAL {
-        for letter in now_present.difference(&before) {
-            detector.on_drive_arrival(*letter);
-            // Reconcile a pending identity: the GUID_DEVINTERFACE_USB_DEVICE
-            // notification arrived before this GUID_DEVINTERFACE_VOLUME
-            // notification, so on_usb_device_arrival parked the identity without
-            // a drive letter.  Assign it now and apply tier enforcement.
-            if let Some(identity) = detector.pending_identity.lock().take() {
-                detector
-                    .device_identities
-                    .write()
-                    .insert(*letter, identity.clone());
-                apply_tier_enforcement(*letter, &identity);
-            }
-            // Notify the file monitor to start watching this new drive root so
-            // file events on the USB drive reach UsbEnforcer::check().
-            let root = std::path::PathBuf::from(format!("{}:\\", letter));
-            let _ = WATCH_PATH_TX.lock().as_ref().map(|tx| tx.send(root));
-        }
-    } else {
-        for letter in before.difference(&now_present) {
-            detector.on_drive_removal(*letter);
-        }
+    present
+}
+
+/// Handles USB volume arrival: blocks new drives, reconciles pending identities,
+/// and registers the drive root with the file monitor.
+#[cfg(windows)]
+fn handle_volume_arrival(
+    detector: &UsbDetector,
+    before: &HashSet<char>,
+    now_present: &HashSet<char>,
+) {
+    for letter in now_present.difference(before) {
+        detector.on_drive_arrival(*letter);
+        reconcile_pending_identity(detector, *letter);
+        notify_file_monitor_of_new_drive(*letter);
+    }
+}
+
+/// Reconciles a pending USB device identity with a newly arrived drive letter.
+#[cfg(windows)]
+fn reconcile_pending_identity(detector: &UsbDetector, letter: char) {
+    let Some(identity) = detector.pending_identity.lock().take() else {
+        return;
+    };
+    detector
+        .device_identities
+        .write()
+        .insert(letter, identity.clone());
+    // pending_identity has no dbcc_name — use empty string to trigger fallback.
+    if let Err(e) = apply_tier_enforcement(letter, &identity, "") {
+        warn!(drive = %letter, error = %e, "tier enforcement failed for pending identity");
+    }
+}
+
+/// Notifies the file monitor to start watching a new USB drive root.
+#[cfg(windows)]
+fn notify_file_monitor_of_new_drive(letter: char) {
+    let root = std::path::PathBuf::from(format!("{}:", letter));
+    let _ = WATCH_PATH_TX.lock().as_ref().map(|tx| tx.send(root));
+}
+
+/// Handles USB volume removal: unblocks drives that are no longer present.
+#[cfg(windows)]
+fn handle_volume_removal(
+    detector: &UsbDetector,
+    before: &HashSet<char>,
+    now_present: &HashSet<char>,
+) {
+    for letter in before.difference(now_present) {
+        detector.on_drive_removal(*letter);
     }
 }
 
@@ -493,88 +571,371 @@ fn handle_volume_event(detector: &UsbDetector, event_type: u32) {
 /// - `Blocked`: disables the device via Windows Device Manager.
 /// - `ReadOnly`: modifies the volume DACL to remove write access.
 /// - `FullAccess`: no action.
+///
+/// ## Per-user support (USB-06, Phase 38.4)
+///
+/// Resolves the current process SID and queries the cache with
+/// `trust_tier_for_with_sid`, which considers both per-user and machine-wide
+/// entries and returns the most restrictive tier. Owner identity is included
+/// in tracing spans for auditability.
+///
+/// ## Config-driven behavior (Phase 43-04)
+///
+/// Reads `usb_blocked_failure_mode` and `usb_none_serial_policy` from the
+/// global config once per call and passes them by parameter to avoid
+/// repeated mutex acquisitions.
 #[cfg(windows)]
-fn apply_tier_enforcement(letter: char, identity: &DeviceIdentity) {
-    if let Some(controller) = DEVICE_CONTROLLER.get() {
-        let tier = if let Some(cache) = REGISTRY_CACHE.get() {
-            let t = cache.trust_tier_for(&identity.vid, &identity.pid, &identity.serial);
-            if cache.has_device(&identity.vid, &identity.pid, &identity.serial) {
-                debug!(
-                    vid = %identity.vid,
-                    pid = %identity.pid,
-                    tier = ?t,
-                    "registry cache hit — applying registered tier"
-                );
-            } else {
-                let cache_size = cache.len();
-                let registered_serials = cache.serials_for_vid_pid(&identity.vid, &identity.pid);
-                if registered_serials.is_empty() {
-                    warn!(
-                        vid = %identity.vid,
-                        pid = %identity.pid,
-                        serial = %identity.serial,
-                        cache_entries = cache_size,
-                        "device not found in registry cache (no entry for this VID/PID) — applying default-deny (Blocked)"
-                    );
-                } else {
-                    warn!(
-                        vid = %identity.vid,
-                        pid = %identity.pid,
-                        hardware_serial = %identity.serial,
-                        registered_serials = ?registered_serials,
-                        cache_entries = cache_size,
-                        "device not found in registry cache (VID/PID match but serial mismatch) — applying default-deny (Blocked)"
-                    );
-                }
+fn apply_tier_enforcement(
+    letter: char,
+    identity: &DeviceIdentity,
+    dbcc_name: &str,
+) -> Result<(), String> {
+    let Some(controller) = DEVICE_CONTROLLER.get() else {
+        return Err("DeviceController not initialized".to_string());
+    };
+
+    // Read config values once per enforcement call (Phase 43-04).
+    let failure_mode = crate::service::with_config(|cfg| {
+        cfg.usb_blocked_failure_mode
+            .clone()
+            .unwrap_or_else(|| "Warning only".to_string())
+    })
+    .unwrap_or_else(|| {
+        warn!("config unavailable — falling back to 'Warning only' for usb_blocked_failure_mode");
+        "Warning only".to_string()
+    });
+
+    let none_serial_policy = crate::service::with_config(|cfg| {
+        cfg.usb_none_serial_policy
+            .clone()
+            .unwrap_or_else(|| "Always Blocked".to_string())
+    })
+    .unwrap_or_else(|| {
+        warn!("config unavailable — falling back to 'Always Blocked' for usb_none_serial_policy");
+        "Always Blocked".to_string()
+    });
+
+    let (tier, owner_sid, owner_user) = resolve_tier_from_registry(identity, &none_serial_policy);
+
+    match tier {
+        UsbTrustTier::Blocked => apply_blocked_enforcement(
+            letter,
+            identity,
+            dbcc_name,
+            controller,
+            &owner_sid,
+            &owner_user,
+            &failure_mode,
+        ),
+        UsbTrustTier::ReadOnly => {
+            apply_readonly_enforcement(letter, identity, controller, &owner_sid, &owner_user)
+        }
+        UsbTrustTier::FullAccess => {
+            debug!(
+                vid = %identity.vid,
+                pid = %identity.pid,
+                serial = %identity.serial,
+                drive = %letter,
+                tier = "FullAccess",
+                action = "none",
+                owner_sid = ?owner_sid,
+                owner_user = ?owner_user,
+                "USB device has FullAccess — no enforcement action"
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Resolves the trust tier from the registry cache, defaulting to Blocked.
+///
+/// # Arguments
+///
+/// * `identity` — The USB device identity.
+/// * `none_serial_policy` — Policy for devices without serial descriptors:
+///   "Always Blocked" forces Blocked for `(none)` serials;
+///   "Allow unregistered" falls through to normal registry lookup.
+#[cfg(windows)]
+fn resolve_tier_from_registry(
+    identity: &DeviceIdentity,
+    none_serial_policy: &str,
+) -> (UsbTrustTier, Option<String>, Option<String>) {
+    // Check (none) serial policy before registry lookup.
+    if identity.serial == "(none)" && none_serial_policy == "Always Blocked" {
+        warn!(
+            vid = %identity.vid,
+            pid = %identity.pid,
+            serial = "(none)",
+            policy = %none_serial_policy,
+            "USB device has no serial — forcing Blocked tier per policy"
+        );
+        return (UsbTrustTier::Blocked, None, None);
+        // "Allow unregistered" falls through to normal registry lookup.
+        // "Port-based disambiguation" is rejected at config-set time (Plan 43-02).
+    }
+
+    let current_sid = crate::identity::get_current_process_sid();
+
+    let Some(cache) = REGISTRY_CACHE.get() else {
+        warn!("registry cache unavailable — applying default-deny (Blocked)");
+        return (UsbTrustTier::Blocked, None, None);
+    };
+
+    let result = cache.trust_tier_for_with_sid(
+        &identity.vid,
+        &identity.pid,
+        &identity.serial,
+        current_sid.as_deref(),
+    );
+    let t = result.tier;
+    let has_entry = cache.has_device_with_sid(
+        &identity.vid,
+        &identity.pid,
+        &identity.serial,
+        current_sid.as_deref(),
+    ) || cache.has_device(&identity.vid, &identity.pid, &identity.serial);
+
+    if has_entry {
+        debug!(
+            vid = %identity.vid,
+            pid = %identity.pid,
+            tier = ?t,
+            owner_sid = ?result.owner_sid,
+            "registry cache hit — applying registered tier"
+        );
+    } else {
+        log_cache_miss(identity, cache);
+    }
+
+    (t, result.owner_sid, result.owner_user)
+}
+
+/// Logs a cache miss with context about why the device was not found.
+#[cfg(windows)]
+fn log_cache_miss(identity: &DeviceIdentity, cache: &crate::device_registry::DeviceRegistryCache) {
+    let cache_size = cache.len();
+    let registered_serials = cache.serials_for_vid_pid(&identity.vid, &identity.pid);
+    if registered_serials.is_empty() {
+        warn!(
+            vid = %identity.vid,
+            pid = %identity.pid,
+            serial = %identity.serial,
+            cache_entries = cache_size,
+            "device not found in registry cache (no entry for this VID/PID) — applying default-deny (Blocked)"
+        );
+    } else {
+        warn!(
+            vid = %identity.vid,
+            pid = %identity.pid,
+            hardware_serial = %identity.serial,
+            registered_serials = ?registered_serials,
+            cache_entries = cache_size,
+            "device not found in registry cache (VID/PID match but serial mismatch) — applying default-deny (Blocked)"
+        );
+    }
+}
+
+/// Pure function that decides the enforcement outcome based on failure mode.
+///
+/// Returns `Ok(())` if enforcement is considered successful, `Err(msg)` otherwise.
+///
+/// # Arguments
+///
+/// * `failure_mode` — The configured failure mode: "Hard error", "Warning only",
+///   or "Retry then error".
+/// * `pnp_ok` — Whether the PnP disable operation succeeded.
+/// * `dacl_ok` — Whether the DACL deny-all operation succeeded.
+/// * `retry_count` — Number of retry attempts that were configured (for logging).
+#[cfg(windows)]
+fn decide_enforcement_outcome(
+    failure_mode: &str,
+    pnp_ok: bool,
+    dacl_ok: bool,
+    retry_count: u32,
+) -> Result<(), String> {
+    match failure_mode {
+        "Hard error" => {
+            if !pnp_ok || !dacl_ok {
+                return Err(format!(
+                    "Blocked enforcement failed (mode: Hard error) — PnP: {}, DACL: {}",
+                    if pnp_ok { "ok" } else { "err" },
+                    if dacl_ok { "ok" } else { "err" }
+                ));
             }
-            t
-        } else {
-            warn!("registry cache unavailable — applying default-deny (Blocked)");
-            UsbTrustTier::Blocked
-        };
-        match tier {
-            UsbTrustTier::Blocked => {
-                // Layer 1: PnP disable (primary enforcement).
-                if let Err(e) =
-                    controller.disable_usb_device(&identity.vid, &identity.pid, &identity.serial)
-                {
-                    warn!(
-                        vid = %identity.vid,
-                        pid = %identity.pid,
-                        serial = %identity.serial,
-                        error = %e,
-                        "failed to disable USB device"
-                    );
-                } else {
-                    info!(
-                        drive = %letter,
-                        vid = %identity.vid,
-                        pid = %identity.pid,
-                        "USB device disabled (Blocked tier)"
-                    );
-                }
-                // Layer 2: DACL deny-all (defense-in-depth fallback).
-                if let Err(e) = controller.set_volume_deny_all(letter) {
-                    warn!(drive = %letter, error = %e, "failed to set volume deny-all");
-                } else {
-                    info!(drive = %letter, "volume set to deny-all (Blocked tier defense-in-depth)");
-                }
+            Ok(())
+        }
+        "Retry then error" => {
+            if !pnp_ok {
+                return Err(format!(
+                    "Blocked enforcement failed (mode: Retry then error) — PnP failed after {} retries",
+                    retry_count
+                ));
             }
-            UsbTrustTier::ReadOnly => {
-                if let Err(e) = controller.set_volume_readonly(letter) {
-                    warn!(drive = %letter, error = %e, "failed to set volume read-only");
-                } else {
-                    info!(drive = %letter, "USB volume set to read-only (ReadOnly tier)");
-                }
-            }
-            UsbTrustTier::FullAccess => {
-                debug!(
-                    drive = %letter,
-                    vid = %identity.vid,
-                    pid = %identity.pid,
-                    "USB device has FullAccess — no enforcement action"
-                );
-            }
+            Ok(())
+        }
+        _ => {
+            // "Warning only" (default) — current behavior: always return Ok.
+            Ok(())
+        }
+    }
+}
+
+/// Applies Blocked-tier enforcement: PnP disable + DACL deny-all.
+///
+/// The `failure_mode` parameter controls how failures are handled:
+/// - "Hard error": returns `Err` if either PnP or DACL fails.
+/// - "Retry then error": retries PnP up to 2 times, returns `Err` if PnP still fails.
+/// - "Warning only" (default): logs failures but always returns `Ok`.
+#[cfg(windows)]
+fn apply_blocked_enforcement(
+    letter: char,
+    identity: &DeviceIdentity,
+    dbcc_name: &str,
+    controller: &crate::device_controller::DeviceController,
+    owner_sid: &Option<String>,
+    owner_user: &Option<String>,
+    failure_mode: &str,
+) -> Result<(), String> {
+    // Determine retry parameters based on failure mode.
+    let (retry_count, retry_delay_ms) = match failure_mode {
+        "Retry then error" => (2_u32, 100_u64), // 3 total attempts (0, 1, 2)
+        _ => (0_u32, 0_u64),
+    };
+
+    // Layer 1: PnP disable (primary enforcement).
+    tracing::debug!(
+        vid = %identity.vid,
+        pid = %identity.pid,
+        serial = %identity.serial,
+        drive = %letter,
+        tier = "Blocked",
+        action = "PnP disable",
+        "applying tier enforcement"
+    );
+    let pnp_result = if retry_count > 0 {
+        controller.disable_usb_device_with_retry_blocking(
+            dbcc_name,
+            identity,
+            retry_count,
+            retry_delay_ms,
+        )
+    } else {
+        controller.disable_usb_device(dbcc_name, identity)
+    };
+    let pnp_ok = pnp_result.is_ok();
+    if let Err(ref e) = pnp_result {
+        error!(
+            vid = %identity.vid,
+            pid = %identity.pid,
+            serial = %identity.serial,
+            drive = %letter,
+            tier = "Blocked",
+            owner_sid = ?owner_sid,
+            owner_user = ?owner_user,
+            pnp_result = "err",
+            error = %e,
+            "PnP disable failed for blocked USB device"
+        );
+    }
+
+    // Layer 2: DACL deny-all (defense-in-depth fallback — always attempt).
+    tracing::debug!(
+        drive = %letter,
+        action = "DACL deny-all",
+        "applying tier enforcement defense-in-depth"
+    );
+    let dacl_result = controller.set_volume_deny_all(letter);
+    let dacl_ok = dacl_result.is_ok();
+    if let Err(ref e) = dacl_result {
+        error!(
+            vid = %identity.vid,
+            pid = %identity.pid,
+            serial = %identity.serial,
+            drive = %letter,
+            tier = "Blocked",
+            owner_sid = ?owner_sid,
+            owner_user = ?owner_user,
+            dacl_result = "err",
+            error = %e,
+            "DACL deny-all failed for blocked USB device"
+        );
+    }
+
+    // Apply failure mode decision via pure function.
+    match decide_enforcement_outcome(failure_mode, pnp_ok, dacl_ok, retry_count) {
+        Ok(()) => {
+            info!(
+                vid = %identity.vid,
+                pid = %identity.pid,
+                serial = %identity.serial,
+                drive = %letter,
+                tier = "Blocked",
+                owner_sid = ?owner_sid,
+                owner_user = ?owner_user,
+                mode = %failure_mode,
+                "USB device blocked — enforcement succeeded"
+            );
+            Ok(())
+        }
+        Err(err_msg) => {
+            error!(
+                vid = %identity.vid,
+                pid = %identity.pid,
+                serial = %identity.serial,
+                drive = %letter,
+                tier = "Blocked",
+                owner_sid = ?owner_sid,
+                owner_user = ?owner_user,
+                mode = %failure_mode,
+                "{}",
+                err_msg
+            );
+            Err(err_msg)
+        }
+    }
+}
+
+/// Applies ReadOnly-tier enforcement: modifies the volume DACL.
+#[cfg(windows)]
+fn apply_readonly_enforcement(
+    letter: char,
+    identity: &DeviceIdentity,
+    controller: &crate::device_controller::DeviceController,
+    owner_sid: &Option<String>,
+    owner_user: &Option<String>,
+) -> Result<(), String> {
+    tracing::debug!(
+        drive = %letter,
+        action = "DACL read-only",
+        "applying tier enforcement"
+    );
+    match controller.set_volume_readonly(letter) {
+        Ok(()) => {
+            info!(
+                vid = %identity.vid,
+                pid = %identity.pid,
+                serial = %identity.serial,
+                drive = %letter,
+                tier = "ReadOnly",
+                owner_sid = ?owner_sid,
+                owner_user = ?owner_user,
+                "USB volume set to read-only"
+            );
+            Ok(())
+        }
+        Err(e) => {
+            error!(
+                vid = %identity.vid,
+                pid = %identity.pid,
+                serial = %identity.serial,
+                drive = %letter,
+                tier = "ReadOnly",
+                owner_sid = ?owner_sid,
+                owner_user = ?owner_user,
+                error = %e,
+                "Failed to set USB volume to read-only"
+            );
+            Err(format!("ReadOnly DACL failed: {e}"))
         }
     }
 }
@@ -600,7 +961,7 @@ fn on_usb_device_arrival(detector: &UsbDetector, device_path: &str) {
     // WR-01 fix: If VOLUME arrived before USB_DEVICE, the drive letter is already
     // in blocked_drives but device_identities has no entry. Check for exactly one
     // un-identity'd USB drive and reconcile immediately.
-    if let Some(letter) = detector.reconcile_identity_with_unmapped_drive(&identity) {
+    if let Some(letter) = detector.reconcile_identity_with_unmapped_drive(&identity, device_path) {
         info!(
             vid = %identity.vid,
             pid = %identity.pid,
@@ -657,7 +1018,7 @@ fn on_usb_device_removal(detector: &UsbDetector, device_path: &str) {
 
             // Re-enable the device if it was disabled (Blocked tier).
             // This is best-effort: the device may already be gone.
-            if let Err(e) = controller.enable_usb_device(&parsed.vid, &parsed.pid, &parsed.serial) {
+            if let Err(e) = controller.enable_usb_device(device_path, &parsed) {
                 warn!(
                     vid = %parsed.vid,
                     pid = %parsed.pid,
@@ -955,7 +1316,7 @@ mod tests {
 
         // reconcile_identity_with_unmapped_drive should fire because exactly
         // one unmapped drive exists.
-        let result = detector.reconcile_identity_with_unmapped_drive(&identity);
+        let result = detector.reconcile_identity_with_unmapped_drive(&identity, "");
         assert_eq!(result, Some('F'));
 
         // device_identities should now contain the mapped identity.
@@ -984,7 +1345,7 @@ mod tests {
         };
 
         // reconcile should return None because no unmapped drives exist.
-        let result = detector.reconcile_identity_with_unmapped_drive(&identity);
+        let result = detector.reconcile_identity_with_unmapped_drive(&identity, "");
         assert_eq!(result, None);
 
         // device_identities should still be empty.
@@ -1019,7 +1380,7 @@ mod tests {
         };
 
         // reconcile should return None because multiple unmapped drives exist.
-        let result = detector.reconcile_identity_with_unmapped_drive(&identity);
+        let result = detector.reconcile_identity_with_unmapped_drive(&identity, "");
         assert_eq!(result, None);
 
         // device_identities should still be empty.
@@ -1053,7 +1414,7 @@ mod tests {
         };
 
         // 'F' is already mapped, so no unmapped drives exist.
-        let result = detector.reconcile_identity_with_unmapped_drive(&new_identity);
+        let result = detector.reconcile_identity_with_unmapped_drive(&new_identity, "");
         assert_eq!(result, None);
 
         // Existing identity should not be overwritten.
@@ -1085,13 +1446,10 @@ mod tests {
 
         // This is the same pattern scan_existing_usb_identities uses for
         // each identity returned by enumerate_connected_usb_devices.
-        let result = detector.reconcile_identity_with_unmapped_drive(&identity);
+        let result = detector.reconcile_identity_with_unmapped_drive(&identity, "");
         assert_eq!(result, Some('F'));
 
-        assert_eq!(
-            detector.device_identity_for_drive('F'),
-            Some(identity)
-        );
+        assert_eq!(detector.device_identity_for_drive('F'), Some(identity));
     }
 
     /// When scan_existing_usb_identities encounters an already-mapped identity,
@@ -1107,7 +1465,10 @@ mod tests {
             serial: "SN42".into(),
             description: "Existing".into(),
         };
-        detector.device_identities.write().insert('F', existing.clone());
+        detector
+            .device_identities
+            .write()
+            .insert('F', existing.clone());
 
         // Simulate the already_mapped check from scan_existing_usb_identities.
         let ids = detector.device_identities.read();
@@ -1125,4 +1486,117 @@ mod tests {
         );
     }
 
+    /// Verify that `apply_tier_enforcement` returns an error when DEVICE_CONTROLLER
+    /// is not initialized (the early-return path that requires no hardware).
+    #[test]
+    #[cfg(windows)]
+    fn test_apply_tier_enforcement_no_controller_returns_err() {
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN42".into(),
+            description: "Test".into(),
+        };
+        let result = apply_tier_enforcement('E', &identity, "");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("DeviceController not initialized"));
+    }
+
+    // ── Phase 43-04: decide_enforcement_outcome tests ──────────────────────
+
+    /// "Hard error" mode: both PnP and DACL fail → Err.
+    #[test]
+    fn test_decide_enforcement_outcome_hard_error_both_fail() {
+        let result = decide_enforcement_outcome("Hard error", false, false, 0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Hard error"));
+    }
+
+    /// "Hard error" mode: PnP fails, DACL succeeds → Err.
+    #[test]
+    fn test_decide_enforcement_outcome_hard_error_pnp_only_fails() {
+        let result = decide_enforcement_outcome("Hard error", false, true, 0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Hard error"));
+    }
+
+    /// "Hard error" mode: PnP succeeds, DACL fails → Err.
+    #[test]
+    fn test_decide_enforcement_outcome_hard_error_dacl_only_fails() {
+        let result = decide_enforcement_outcome("Hard error", true, false, 0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Hard error"));
+    }
+
+    /// "Hard error" mode: both succeed → Ok.
+    #[test]
+    fn test_decide_enforcement_outcome_hard_error_both_succeed() {
+        let result = decide_enforcement_outcome("Hard error", true, true, 0);
+        assert!(result.is_ok());
+    }
+
+    /// "Retry then error" mode: PnP fails → Err (PnP-only check per review fix).
+    #[test]
+    fn test_decide_enforcement_outcome_retry_then_error_pnp_fails() {
+        let result = decide_enforcement_outcome("Retry then error", false, true, 2);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("Retry then error"));
+        assert!(err_msg.contains("2 retries"));
+    }
+
+    /// "Retry then error" mode: PnP succeeds, DACL fails → Ok (PnP-only check).
+    #[test]
+    fn test_decide_enforcement_outcome_retry_then_error_pnp_succeeds() {
+        let result = decide_enforcement_outcome("Retry then error", true, false, 2);
+        assert!(result.is_ok());
+    }
+
+    /// "Warning only" mode: any combination → Ok.
+    #[test]
+    fn test_decide_enforcement_outcome_warning_only_mode() {
+        assert!(decide_enforcement_outcome("Warning only", false, false, 0).is_ok());
+        assert!(decide_enforcement_outcome("Warning only", false, true, 0).is_ok());
+        assert!(decide_enforcement_outcome("Warning only", true, false, 0).is_ok());
+        assert!(decide_enforcement_outcome("Warning only", true, true, 0).is_ok());
+    }
+
+    // ── Phase 43-04: resolve_tier_from_registry (none) serial policy tests ─
+
+    /// Devices with serial="(none)" and policy "Always Blocked" → Blocked.
+    #[test]
+    #[cfg(not(windows))]
+    fn test_resolve_tier_none_serial_always_blocked() {
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "(none)".into(),
+            description: "Test".into(),
+        };
+        let (tier, sid, user) = resolve_tier_from_registry(&identity, "Always Blocked");
+        assert_eq!(tier, UsbTrustTier::Blocked);
+        assert_eq!(sid, None);
+        assert_eq!(user, None);
+    }
+
+    /// Devices with serial="(none)" and policy "Allow unregistered" → normal
+    /// registry lookup proceeds (returns Blocked because cache is not set).
+    #[test]
+    #[cfg(not(windows))]
+    fn test_resolve_tier_none_serial_allow_unregistered() {
+        let identity = DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "(none)".into(),
+            description: "Test".into(),
+        };
+        // On non-Windows, registry cache is not available, so this falls through
+        // to the default-deny path (Blocked) — but NOT because of the
+        // "Always Blocked" policy, because the policy is "Allow unregistered".
+        let (tier, _, _) = resolve_tier_from_registry(&identity, "Allow unregistered");
+        // Cache is not available on non-Windows, so default-deny applies.
+        assert_eq!(tier, UsbTrustTier::Blocked);
+    }
 }

@@ -1,157 +1,37 @@
-# Requirements: v0.7.1 Operational Hardening
+# Milestone v0.8.1 — Deferred Items & Issue Debt
 
-**Milestone:** v0.7.1 Operational Hardening
-**Status:** Planning
-**Last updated:** 2026-05-06
+## USB Fixes
 
----
+- [ ] **USB-07**: Fix CM instance ID resolution for PnP device disable. `DeviceController::disable_usb_device` must resolve the actual CM instance ID from the device interface path via SetupDi, not construct it from VID/PID/serial. Pass the real instance ID to `CM_Disable_DevNode`. (dlp-rust-1vk)
+- [ ] **USB-08**: Fix `setupdi_description_for_device` matching wrong device. Match device path more precisely in SetupDi enumeration to avoid returning Bluetooth instead of SanDisk. (dlp-rust-sek)
+- [ ] **USB-09**: Surface hard failures when both PnP disable and DACL deny-all fail. Neither enforcement layer may fail silently; return a hard error to the caller so the agent can emit a proper audit event.
 
-## Audit & Compliance
+## Disk Enforcement
 
-### AUDIT-05: AGENT-UNKNOWN Remediation
+- [ ] **DISK-06**: Implement mount-time volume lock for unregistered disks (DISK-F1). In addition to I/O-time blocking, lock the volume at mount time so the drive letter does not appear in Explorer at all for unregistered devices.
+- [ ] **DISK-07**: Configurable read-only grace period before hard block for new disk arrivals (DISK-F2). Allow a time-bounded read-only window (configurable in `agent-config.toml`) after an unregistered disk arrives, during which reads are allowed and writes are blocked with a user notification, before escalating to full mount-time block.
 
-**User story:** As a security auditor, I want missing application identity fields to be explicitly flagged so that I know when the agent cannot identify the source or destination of a data flow.
+## UAT & Validation
 
-**Acceptance criteria:**
-- [ ] All audit events from file interception include `source_application` and `destination_application` fields where applicable
-- [ ] All audit events from clipboard interception include both source and destination application identity
-- [ ] Missing identity is populated with `AGENT-UNKNOWN` sentinel value, not left as `None` or omitted
-- [ ] Audit schema documents the remediation path for AGENT-UNKNOWN (e.g., "Run dlp-user-ui in user session" or "Enable app identity capture in agent config")
-- [ ] A metric counter tracks AGENT-UNKNOWN frequency per interception path
+- [ ] **UAT-05**: Complete SanDisk re-registration with full 128-char serial for ReadOnly/FullAccess enforcement test. Verify the per-user device registry correctly stores and enforces trust tier for devices with long serial numbers. (dlp-rust-l79)
 
-**Priority:** High — compliance gap
-**Depends on:** Phase 25 (App Identity Capture), Phase 26 (ABAC Enforcement)
+## Future Requirements (deferred beyond v0.8.1)
 
----
+- None. All deferred items and issue debt are targeted for this milestone.
 
-## USB Device Control
+## Out of Scope
 
-### USB-06: Per-User Device Registry
-
-**User story:** As an admin, I want to register USB devices per user so that shared kiosks and multi-user machines can have different device policies per Windows user account.
-
-**Acceptance criteria:**
-- [ ] `device_registry` table has `owner_user` column (nullable for machine-wide devices)
-- [ ] Admin API supports filtering device registry by `owner_user`
-- [ ] Agent evaluates device trust tier against current Windows user SID, falling back to machine-wide entry if no per-user entry exists
-- [ ] Admin TUI shows `owner_user` column in device registry table
-- [ ] Audit events include `owner_user` when a per-user device decision is made
-
-**Priority:** Medium — deferred from v0.6.0
-**Depends on:** Phase 24 (Device Registry DB + Admin API)
-
----
-
-## Technical Debt
-
-### TECH-01: WMI Crate Upgrade
-
-**User story:** As a developer, I want to use the maintained `wmi` crate instead of raw COM FFI so that BitLocker verification code is simpler and less error-prone.
-
-**Acceptance criteria:**
-- [ ] `wmi` crate upgraded to 0.18+ (or latest stable)
-- [ ] Raw `CoSetProxyBlanket` FFI call eliminated from `encryption_checker.rs`
-- [ ] `Win32_EncryptableVolume` queries use `wmi` crate's typed query interface
-- [ ] EncryptionStatus/EncryptionMethod enum mapping preserved (DB stores fully_encrypted/partially_encrypted; Rust enum serializes as encrypted/suspended)
-- [ ] All existing Phase 34 unit tests continue to pass
-- [ ] No functional change in BitLocker detection behavior
-
-**Priority:** Low — code quality, no user-facing change
-**Depends on:** Phase 34 (BitLocker Verification)
-**Risk:** `wmi` crate may not support all required WMI authentication levels (PktPrivacy)
-
----
-
-## Operational Hardening
-
-### OP-01: Disk Enumeration Error Resilience
-
-**User story:** As an operator, I want the agent to continue running even when disk enumeration encounters a hardware error or invalid handle.
-
-**Acceptance criteria:**
-- [ ] `enumerate_fixed_disks_windows` handles `IOCTL_STORAGE_QUERY_PROPERTY` failure per disk (logs error, skips disk, continues enumeration)
-- [ ] `find_drive_letter_for_instance_id` handles missing volume mount gracefully (returns `None` instead of panicking)
-- [ ] `disk_number_for_instance_id` handles invalid device handle (logs error, returns `None`)
-- [ ] Service startup does not abort if disk enumeration fails; retries on next poll interval
-- [ ] Each error includes the failing `instance_id` for troubleshooting
-
-**Priority:** High — production resilience
-**Depends on:** Phase 33 (Disk Enumeration)
-
-### OP-02: USB Enforcement Structured Logging
-
-**User story:** As an operator, I want all USB block/allow decisions to emit structured traces so that I can debug policy decisions in production.
-
-**Acceptance criteria:**
-- [ ] `UsbEnforcer::check` emits a `tracing::info!` span with device identity, trust tier, file action, and decision
-- [ ] `apply_tier_enforcement` emits `tracing::debug!` for PnP disable and DACL operations with NTSTATUS/Win32 error codes
-- [ ] Block decisions include the specific rule that triggered the block (registry entry reference)
-- [ ] Allow decisions include the matching registry entry for audit trail completeness
-- [ ] Error cases (registry lookup failure, PnP disable failure, DACL failure) emit `tracing::error!` with structured context
-
-**Priority:** Medium — observability
-**Depends on:** Phase 38.2 (USB Enforcement Fix)
-
-### OP-03: Agent Config TOML Validation
-
-**User story:** As an admin, I want invalid agent configuration values to be rejected at load time with descriptive error messages.
-
-**Acceptance criteria:**
-- [ ] `recheck_interval` in `[encryption]` section clamps to `[60, 86400]` with warning log if out of range
-- [ ] `cache_ttl_secs` in `[ldap]` section clamps to `[60, 3600]` with warning log if out of range
-- [ ] `poll_interval` in `[agent]` section rejects values < 5 seconds (prevents excessive server load)
-- [ ] Unknown TOML keys log a warning but do not abort load (forward compatibility)
-- [ ] Invalid TOML syntax produces a descriptive error pointing to the offending line
-
-**Priority:** Medium — config safety
-**Depends on:** Phase 34, Phase 38.1 (config sections)
-
-### OP-04: Graceful Service Shutdown
-
-**User story:** As an operator, I want the agent service to shut down cleanly without leaving orphaned device notifications or incomplete audit events.
-
-**Acceptance criteria:**
-- [ ] `Ctrl+C` / service stop signal triggers graceful shutdown sequence
-- [ ] In-flight disk enumeration tasks are cancelled within 5 seconds
-- [ ] In-flight USB device arrival handlers complete before shutdown
-- [ ] Pending audit events in the batch buffer are flushed to the server
-- [ ] Device notification registrations are unregistered (UnregisterDeviceNotificationW)
-- [ ] Volume DACL modifications are restored to original state on shutdown
-- [ ] Shutdown timeout: if graceful shutdown exceeds 10 seconds, force-terminate with error log
-
-**Priority:** Medium — operational hygiene
-**Depends on:** Phase 36 (Disk Enforcement), Phase 38.2 (USB Enforcement Fix)
-
----
-
-## Deferred Human Verification
-
-### UAT-01: Phase 34 — Unencrypted Disk Warning
-
-**Test:** On a physical Windows machine with at least one unencrypted fixed disk, verify the agent emits a warning audit event with severity `Warning` and the correct disk identity.
-
-**Why human:** Requires a real unencrypted disk; VM disks often report incorrectly via WMI.
-**Status:** Deferred from v0.7.0. Run when physical test machine is available.
-
-### UAT-02: Phase 38.2 — Drive-Letter Correlation
-
-**Test:** On a physical Windows machine with multiple fixed disks (including one USB mass-storage device), verify `enumerate_fixed_disks()` reports correct drive letters matching Windows Explorer.
-
-**Why human:** Requires real kernel-assigned mount points; Win32 API behavior differs between VMs and physical hardware.
-**Status:** Deferred from v0.7.0. Run when physical test machine is available.
-
----
+- Native browser extension (SEED-002 Path A) — remains deferred to future milestone
+- macOS / Linux support — Windows-only per project scope
+- Cloud-native policy engine — on-prem DLP with enterprise AD dependency
 
 ## Traceability
 
-| Requirement | Phase | Status |
-|-------------|-------|--------|
-| AUDIT-05 | 38.3 | Not started |
-| USB-06 | 38.4 | Not started |
-| TECH-01 | 38.5 | Not started |
-| OP-01 | 38.6 | Not started |
-| OP-02 | 38.6 | Not started |
-| OP-03 | 38.6 | Not started |
-| OP-04 | 38.6 | Not started |
-| UAT-01 | — | Deferred verification |
-| UAT-02 | — | Deferred verification |
+| Requirement | Phase | Plan | Status |
+|-------------|-------|------|--------|
+| USB-07 | 43 | TBD | Planned |
+| USB-08 | 43 | TBD | Planned |
+| USB-09 | 43 | TBD | Planned |
+| DISK-06 | 44 | TBD | Planned |
+| DISK-07 | 45 | TBD | Planned |
+| UAT-05 | 46 | TBD | Planned |

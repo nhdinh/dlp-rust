@@ -22,7 +22,10 @@
 use std::collections::HashMap;
 
 use parking_lot::Mutex;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
+
+#[cfg(windows)]
+use dlp_common::usb::{find_instance_id_by_vid_pid_serial, resolve_instance_id_from_dbcc_name};
 
 #[cfg(windows)]
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
@@ -80,31 +83,67 @@ impl DeviceController {
         }
     }
 
-    /// Disables a USB device by its VID/PID/serial triple.
+    #[cfg(windows)]
+    fn map_resolution_error(e: dlp_common::usb::UsbResolutionError) -> DeviceControllerError {
+        match e {
+            dlp_common::usb::UsbResolutionError::ConfigManager(cr) => {
+                DeviceControllerError::ConfigManager(cr)
+            }
+            dlp_common::usb::UsbResolutionError::Win32(err) => DeviceControllerError::Win32(err),
+        }
+    }
+
+    /// Disables a USB device by resolving its actual CM instance ID.
     ///
-    /// Builds a device instance ID (`USB\VID_XXXX&PID_YYYY\SERIAL`), locates
-    /// the device node via `CM_Locate_DevNodeW`, and disables it with
-    /// `CM_Disable_DevNode` using `CM_DISABLE_ABSOLUTE`.
+    /// Primary resolution uses `dbcc_name` via `CM_Get_Device_Interface_PropertyW`.
+    /// Fallback uses SetupDi enumeration by VID/PID/serial for startup scan path.
     ///
     /// # Arguments
     ///
-    /// * `vid` — USB Vendor ID hex string (e.g., `"0951"`).
-    /// * `pid` — USB Product ID hex string (e.g., `"1666"`).
-    /// * `serial` — Device serial number string.
+    /// * `dbcc_name` — Device interface path (e.g. `\\?\USB#VID_XXXX&PID_YYYY#SERIAL#{guid}`).
+    /// * `identity` — Parsed device identity with VID, PID, serial.
     ///
     /// # Errors
     ///
-    /// Returns `Err` if the CM APIs return an unexpected error.
-    /// If the device is not found (already removed), logs a warning and
-    /// returns `Ok(())` — this is NOT treated as a failure.
+    /// Returns `Err` if instance ID resolution fails (both primary and fallback).
+    /// Returns `Ok(())` with warning if device removed after resolution but before disable.
     #[cfg(windows)]
     pub fn disable_usb_device(
         &self,
-        vid: &str,
-        pid: &str,
-        serial: &str,
+        dbcc_name: &str,
+        identity: &dlp_common::DeviceIdentity,
     ) -> Result<(), DeviceControllerError> {
-        let instance_id = format!(r"USB\VID_{vid}&PID_{pid}\{serial}");
+        let instance_id = match resolve_instance_id_from_dbcc_name(dbcc_name) {
+            Ok(id) => id,
+            Err(e) => {
+                warn!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    error = %e,
+                    "CM_Get_Device_Interface_PropertyW failed — falling back to SetupDi enumeration"
+                );
+                match find_instance_id_by_vid_pid_serial(
+                    &identity.vid,
+                    &identity.pid,
+                    &identity.serial,
+                ) {
+                    Ok(id) => id,
+                    Err(e2) => {
+                        error!(
+                            vid = %identity.vid,
+                            pid = %identity.pid,
+                            serial = %identity.serial,
+                            primary_error = %e,
+                            fallback_error = %e2,
+                            "Failed to resolve USB device instance ID — both primary and fallback failed"
+                        );
+                        return Err(Self::map_resolution_error(e2));
+                    }
+                }
+            }
+        };
+
         let wide: Vec<u16> = instance_id
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -120,16 +159,14 @@ impl DeviceController {
             )
         };
 
-        // CONFIGRET(0) is CR_SUCCESS.
         if cr.0 != 0 {
-            // CR_NO_SUCH_DEVNODE = 0x0000000D — device already removed.
             const CR_NO_SUCH_DEVNODE: u32 = 0x0000000D;
             if cr.0 == CR_NO_SUCH_DEVNODE {
                 warn!(
-                    vid = %vid,
-                    pid = %pid,
-                    serial = %serial,
-                    "CM_Locate_DevNodeW: device not found — may have been removed"
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    "CM_Locate_DevNodeW: device removed between resolution and disable"
                 );
                 return Ok(());
             }
@@ -144,33 +181,111 @@ impl DeviceController {
         }
 
         info!(
-            vid = %vid,
-            pid = %pid,
-            serial = %serial,
+            vid = %identity.vid,
+            pid = %identity.pid,
+            serial = %identity.serial,
             "USB device disabled"
         );
         Ok(())
     }
 
-    /// Enables a previously disabled USB device.
+    /// Disables a USB device with optional retry logic.
     ///
-    /// Uses the same instance ID construction and locate logic as
-    /// [`disable_usb_device`], then calls `CM_Enable_DevNode` with
-    /// `CM_ENABLE_ABSOLUTE`.
+    /// **BLOCKING:** This method uses `std::thread::sleep` between retry attempts.
+    /// It MUST NOT be called directly from an async tokio context. Callers must
+    /// either:
+    /// - Call it from a dedicated synchronous thread (e.g., the WM_DEVICECHANGE
+    ///   handler thread), OR
+    /// - Wrap the call in `tokio::task::spawn_blocking` if invoked from async code.
+    ///
+    /// When `retry_count` > 0, retries `CM_Disable_DevNode` up to `retry_count`
+    /// times with `retry_delay_ms` between attempts. Only returns `Err` after
+    /// all retries are exhausted.
     ///
     /// # Arguments
     ///
-    /// * `vid` — USB Vendor ID hex string.
-    /// * `pid` — USB Product ID hex string.
-    /// * `serial` — Device serial number string.
+    /// * `dbcc_name` — Device interface path.
+    /// * `identity` — Parsed device identity.
+    /// * `retry_count` — Number of retry attempts (0 = no retry).
+    /// * `retry_delay_ms` — Delay between retries in milliseconds.
+    #[cfg(windows)]
+    pub fn disable_usb_device_with_retry_blocking(
+        &self,
+        dbcc_name: &str,
+        identity: &dlp_common::DeviceIdentity,
+        retry_count: u32,
+        retry_delay_ms: u64,
+    ) -> Result<(), DeviceControllerError> {
+        let mut last_error = None;
+        for attempt in 0..=retry_count {
+            match self.disable_usb_device(dbcc_name, identity) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < retry_count {
+                        warn!(
+                            vid = %identity.vid,
+                            pid = %identity.pid,
+                            serial = %identity.serial,
+                            attempt = attempt + 1,
+                            max_attempts = retry_count + 1,
+                            "PnP disable failed, retrying after {}ms",
+                            retry_delay_ms
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(retry_delay_ms));
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or(DeviceControllerError::ConfigManager(0x0000000D)))
+    }
+
+    /// Enables a previously disabled USB device.
+    ///
+    /// Uses the same instance ID resolution logic as [`disable_usb_device`],
+    /// then calls `CM_Enable_DevNode` with `CM_ENABLE_ABSOLUTE`.
+    ///
+    /// # Arguments
+    ///
+    /// * `dbcc_name` — Device interface path.
+    /// * `identity` — Parsed device identity with VID, PID, serial.
     #[cfg(windows)]
     pub fn enable_usb_device(
         &self,
-        vid: &str,
-        pid: &str,
-        serial: &str,
+        dbcc_name: &str,
+        identity: &dlp_common::DeviceIdentity,
     ) -> Result<(), DeviceControllerError> {
-        let instance_id = format!(r"USB\VID_{vid}&PID_{pid}\{serial}");
+        let instance_id = match resolve_instance_id_from_dbcc_name(dbcc_name) {
+            Ok(id) => id,
+            Err(e) => {
+                warn!(
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    error = %e,
+                    "CM_Get_Device_Interface_PropertyW failed — falling back to SetupDi enumeration"
+                );
+                match find_instance_id_by_vid_pid_serial(
+                    &identity.vid,
+                    &identity.pid,
+                    &identity.serial,
+                ) {
+                    Ok(id) => id,
+                    Err(e2) => {
+                        error!(
+                            vid = %identity.vid,
+                            pid = %identity.pid,
+                            serial = %identity.serial,
+                            primary_error = %e,
+                            fallback_error = %e2,
+                            "Failed to resolve USB device instance ID — both primary and fallback failed"
+                        );
+                        return Err(Self::map_resolution_error(e2));
+                    }
+                }
+            }
+        };
+
         let wide: Vec<u16> = instance_id
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -190,10 +305,10 @@ impl DeviceController {
             const CR_NO_SUCH_DEVNODE: u32 = 0x0000000D;
             if cr.0 == CR_NO_SUCH_DEVNODE {
                 warn!(
-                    vid = %vid,
-                    pid = %pid,
-                    serial = %serial,
-                    "CM_Locate_DevNodeW: device not found — may have been removed"
+                    vid = %identity.vid,
+                    pid = %identity.pid,
+                    serial = %identity.serial,
+                    "CM_Locate_DevNodeW: device removed between resolution and enable"
                 );
                 return Ok(());
             }
@@ -208,9 +323,9 @@ impl DeviceController {
         }
 
         info!(
-            vid = %vid,
-            pid = %pid,
-            serial = %serial,
+            vid = %identity.vid,
+            pid = %identity.pid,
+            serial = %identity.serial,
             "USB device enabled"
         );
         Ok(())
@@ -647,5 +762,101 @@ mod tests {
             assert_eq!(cache.get(&'F'), Some(&dacl_f));
             assert_eq!(cache.get(&'E'), None);
         }
+    }
+
+    /// Verify that `map_resolution_error` correctly maps `UsbResolutionError::ConfigManager`
+    /// to `DeviceControllerError::ConfigManager`.
+    #[test]
+    #[cfg(windows)]
+    fn test_map_resolution_error_config_manager() {
+        let usb_err = dlp_common::usb::UsbResolutionError::ConfigManager(0x0D);
+        let mapped = DeviceController::map_resolution_error(usb_err);
+        match mapped {
+            DeviceControllerError::ConfigManager(0x0D) => {}
+            _ => panic!("Expected ConfigManager(0x0D), got {:?}", mapped),
+        }
+    }
+
+    /// Verify that `disable_usb_device` accepts the new signature with `dbcc_name`
+    /// and `DeviceIdentity`. This is a compile-time check; the call fails at runtime
+    /// because no real USB device matches the fake path.
+    #[test]
+    #[cfg(windows)]
+    fn test_disable_usb_device_signature_compiles() {
+        let controller = DeviceController::new();
+        let identity = dlp_common::DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN123".into(),
+            description: "Test".into(),
+        };
+        let _ = controller.disable_usb_device(
+            r"\\?\USB#VID_0951&PID_1666#SN123#{a5dcbf10-6530-11d2-901f-00c04fb951ed}",
+            &identity,
+        );
+    }
+
+    /// Verify that `enable_usb_device` accepts the new signature with `dbcc_name`
+    /// and `DeviceIdentity`. This is a compile-time check; the call fails at runtime
+    /// because no real USB device matches the fake path.
+    #[test]
+    #[cfg(windows)]
+    fn test_enable_usb_device_signature_compiles() {
+        let controller = DeviceController::new();
+        let identity = dlp_common::DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN123".into(),
+            description: "Test".into(),
+        };
+        let _ = controller.enable_usb_device(
+            r"\\?\USB#VID_0951&PID_1666#SN123#{a5dcbf10-6530-11d2-901f-00c04fb951ed}",
+            &identity,
+        );
+    }
+
+    /// Verify that `disable_usb_device_with_retry_blocking` with zero retries
+    /// returns Err when no real device matches (signature + runtime check).
+    #[test]
+    #[cfg(windows)]
+    fn test_disable_usb_device_with_retry_blocking_zero_retries() {
+        let controller = DeviceController::new();
+        let identity = dlp_common::DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN123".into(),
+            description: "Test".into(),
+        };
+        let result = controller.disable_usb_device_with_retry_blocking(
+            r"\\?\USB#VID_0951&PID_1666#SN123#{a5dcbf10-6530-11d2-901f-00c04fb951ed}",
+            &identity,
+            0,
+            0,
+        );
+        assert!(
+            result.is_err(),
+            "expected Err with zero retries on fake device"
+        );
+    }
+
+    /// Verify that `disable_usb_device_with_retry_blocking` exhausts all retries
+    /// and returns Err. Uses a short delay to keep the test fast.
+    #[test]
+    #[cfg(windows)]
+    fn test_disable_usb_device_with_retry_blocking_exhausts_retries() {
+        let controller = DeviceController::new();
+        let identity = dlp_common::DeviceIdentity {
+            vid: "0951".into(),
+            pid: "1666".into(),
+            serial: "SN123".into(),
+            description: "Test".into(),
+        };
+        let result = controller.disable_usb_device_with_retry_blocking(
+            r"\\?\USB#VID_0951&PID_1666#SN123#{a5dcbf10-6530-11d2-901f-00c04fb951ed}",
+            &identity,
+            2,
+            10,
+        );
+        assert!(result.is_err(), "expected Err after exhausting all retries");
     }
 }

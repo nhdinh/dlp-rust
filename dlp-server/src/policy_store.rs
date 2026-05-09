@@ -238,6 +238,12 @@ fn condition_matches(condition: &PolicyCondition, ctx: &AbacContext) -> bool {
         PolicyCondition::DestinationApplication { field, op, value } => {
             app_identity_matches(field, op, value, ctx.destination_application.as_ref())
         }
+        PolicyCondition::SourceOrigin { op, value } => {
+            origin_matches(op, value, ctx.source_origin.as_deref())
+        }
+        PolicyCondition::DestinationOrigin { op, value } => {
+            origin_matches(op, value, ctx.destination_origin.as_deref())
+        }
     }
 }
 
@@ -351,6 +357,48 @@ fn app_identity_matches(
                 _ => false,
             }
         }
+        AppField::Aumid => match op {
+            "eq" => app.aumid.as_deref().unwrap_or("") == value,
+            "ne" => app.aumid.as_deref().unwrap_or("") != value,
+            "contains" => app.aumid.as_deref().unwrap_or("").contains(value),
+            _ => false,
+        },
+        AppField::PackageFamilyName => match op {
+            "eq" => app.package_family_name.as_deref().unwrap_or("") == value,
+            "ne" => app.package_family_name.as_deref().unwrap_or("") != value,
+            "contains" => app
+                .package_family_name
+                .as_deref()
+                .unwrap_or("")
+                .contains(value),
+            _ => false,
+        },
+    }
+}
+
+/// Evaluates an origin condition against an optional origin string.
+///
+/// Returns `false` (fails closed) if `origin` is `None` — a missing origin
+/// cannot satisfy an origin-based condition (per D-03).
+///
+/// Supported operators:
+/// - `"eq"` / `"ne"` — exact string match
+/// - `"contains"` — substring match
+///
+/// # Arguments
+///
+/// * `op` - Operator string: `"eq"`, `"ne"`, or `"contains"`
+/// * `expected` - The policy-authored origin string to compare against
+/// * `origin` - The resolved origin from the evaluation context, or `None`
+fn origin_matches(op: &str, expected: &str, origin: Option<&str>) -> bool {
+    let Some(origin) = origin else {
+        return false;
+    };
+    match op {
+        "eq" => origin == expected,
+        "ne" => origin != expected,
+        "contains" => origin.contains(expected),
+        _ => false,
     }
 }
 
@@ -411,6 +459,8 @@ mod tests {
             agent: None,
             source_application: None,
             destination_application: None,
+            source_origin: None,
+            destination_origin: None,
         }
         .into()
     }
@@ -1327,6 +1377,9 @@ mod tests {
             image_path: image_path.to_string(),
             trust_tier,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         });
         ctx
     }
@@ -1345,6 +1398,9 @@ mod tests {
             image_path: image_path.to_string(),
             trust_tier,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         });
         ctx
     }
@@ -1518,6 +1574,9 @@ mod tests {
             image_path: r"C:\Tool\tool.exe".to_string(),
             trust_tier: AppTrustTier::Unknown,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         });
         let condition = PolicyCondition::SourceApplication {
             field: AppField::TrustTier,
@@ -1773,6 +1832,8 @@ mod tests {
             agent: None,
             source_application: source_app,
             destination_application: dest_app,
+            source_origin: None,
+            destination_origin: None,
         }
         .into()
     }
@@ -1792,6 +1853,9 @@ mod tests {
                 AppTrustTier::Untrusted
             },
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         }
     }
 
@@ -1851,6 +1915,9 @@ mod tests {
             image_path: r"C:\Temp\bad.exe".to_string(),
             trust_tier: AppTrustTier::Untrusted,
             signature_state: SignatureState::NotSigned,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         };
         let ctx = make_ctx_with_apps(Classification::T3, None, Some(untrusted_dest));
         let condition = PolicyCondition::DestinationApplication {
@@ -1871,6 +1938,94 @@ mod tests {
             value: "trusted".to_string(),
         };
         assert!(!condition_matches(&condition, &ctx));
+    }
+
+    // ---- APP-07: UWP app field matching ----
+
+    fn make_uwp_app_identity(
+        aumid: &str,
+        package_family_name: &str,
+    ) -> dlp_common::endpoint::AppIdentity {
+        use dlp_common::endpoint::{AppTrustTier, SignatureState};
+        dlp_common::endpoint::AppIdentity {
+            publisher: "Microsoft Corporation".to_string(),
+            image_path:
+                r"C:\Program Files\WindowsApps\Microsoft.Windows.Photos_8wekyb3d8bbwe\Photos.exe"
+                    .to_string(),
+            trust_tier: AppTrustTier::Trusted,
+            signature_state: SignatureState::Valid,
+            aumid: Some(aumid.to_string()),
+            package_family_name: Some(package_family_name.to_string()),
+            is_uwp: true,
+        }
+    }
+
+    #[test]
+    fn test_aumid_eq_match() {
+        let uwp_app = make_uwp_app_identity(
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe!App",
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe",
+        );
+        let ctx = make_ctx_with_apps(Classification::T3, Some(uwp_app), None);
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::Aumid,
+            op: "eq".to_string(),
+            value: "Microsoft.Windows.Photos_8wekyb3d8bbwe!App".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
+    }
+
+    #[test]
+    fn test_package_family_name_eq_and_contains_match() {
+        let uwp_app = make_uwp_app_identity(
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe!App",
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe",
+        );
+        let ctx = make_ctx_with_apps(Classification::T3, Some(uwp_app), None);
+
+        // eq match
+        let condition_eq = PolicyCondition::SourceApplication {
+            field: AppField::PackageFamilyName,
+            op: "eq".to_string(),
+            value: "Microsoft.Windows.Photos_8wekyb3d8bbwe".to_string(),
+        };
+        assert!(condition_matches(&condition_eq, &ctx));
+
+        // contains match (prefix substring)
+        let condition_contains = PolicyCondition::SourceApplication {
+            field: AppField::PackageFamilyName,
+            op: "contains".to_string(),
+            value: "Photos_8wekyb3d8bbwe".to_string(),
+        };
+        assert!(condition_matches(&condition_contains, &ctx));
+    }
+
+    #[test]
+    fn test_aumid_none_fails_closed() {
+        // Non-UWP app has aumid=None — must NOT match a UWP-specific condition.
+        let win32_app = make_app_identity("Microsoft", r"C:\Windows\notepad.exe", true);
+        let ctx = make_ctx_with_apps(Classification::T3, Some(win32_app), None);
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::Aumid,
+            op: "eq".to_string(),
+            value: "Microsoft.Windows.Photos_8wekyb3d8bbwe!App".to_string(),
+        };
+        assert!(!condition_matches(&condition, &ctx));
+    }
+
+    #[test]
+    fn test_aumid_ne_match() {
+        let uwp_app = make_uwp_app_identity(
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe!App",
+            "Microsoft.Windows.Photos_8wekyb3d8bbwe",
+        );
+        let ctx = make_ctx_with_apps(Classification::T3, Some(uwp_app), None);
+        let condition = PolicyCondition::SourceApplication {
+            field: AppField::Aumid,
+            op: "ne".to_string(),
+            value: "Some.Other.App!App".to_string(),
+        };
+        assert!(condition_matches(&condition, &ctx));
     }
 
     // ---- Legacy v0.4.0 payload parity (D-25) ----
@@ -1938,5 +2093,291 @@ mod tests {
         // matched_policy_id differs by id but both must be Some(_)
         assert!(resp_v040.matched_policy_id.is_some());
         assert!(resp_explicit.matched_policy_id.is_some());
+    }
+
+    // ---- Origin condition tests (Phase 41-02) ----
+
+    /// Builds an [`AbacContext`] with the given classification and origin fields.
+    fn make_ctx_with_origin(
+        classification: Classification,
+        source_origin: Option<&str>,
+        destination_origin: Option<&str>,
+    ) -> AbacContext {
+        let mut ctx = make_request(classification);
+        ctx.source_origin = source_origin.map(|s| s.to_string());
+        ctx.destination_origin = destination_origin.map(|s| s.to_string());
+        ctx
+    }
+
+    /// Builds a single-condition `SourceOrigin` policy.
+    fn make_source_origin_policy(op: &str, value: &str, action: Decision) -> Policy {
+        Policy {
+            id: "origin-p1".to_string(),
+            name: "origin-p1".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::SourceOrigin {
+                op: op.to_string(),
+                value: value.to_string(),
+            }],
+            action,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        }
+    }
+
+    /// Builds a single-condition `DestinationOrigin` policy.
+    fn make_dest_origin_policy(op: &str, value: &str, action: Decision) -> Policy {
+        Policy {
+            id: "origin-p2".to_string(),
+            name: "origin-p2".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::DestinationOrigin {
+                op: op.to_string(),
+                value: value.to_string(),
+            }],
+            action,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        }
+    }
+
+    // -- origin_matches helper tests --
+
+    #[test]
+    fn test_origin_matches_eq_exact() {
+        assert!(origin_matches(
+            "eq",
+            "https://sharepoint.com",
+            Some("https://sharepoint.com")
+        ));
+    }
+
+    #[test]
+    fn test_origin_matches_eq_no_match() {
+        assert!(!origin_matches(
+            "eq",
+            "https://sharepoint.com",
+            Some("https://example.com")
+        ));
+    }
+
+    #[test]
+    fn test_origin_matches_ne_match() {
+        assert!(origin_matches(
+            "ne",
+            "https://sharepoint.com",
+            Some("https://example.com")
+        ));
+    }
+
+    #[test]
+    fn test_origin_matches_contains_substring() {
+        assert!(origin_matches(
+            "contains",
+            "sharepoint",
+            Some("https://sharepoint.com")
+        ));
+    }
+
+    #[test]
+    fn test_origin_matches_contains_no_match() {
+        assert!(!origin_matches(
+            "contains",
+            "evil",
+            Some("https://sharepoint.com")
+        ));
+    }
+
+    #[test]
+    fn test_origin_matches_none_fails_closed() {
+        // D-03: None origin fails closed for all operators.
+        assert!(!origin_matches("eq", "https://sharepoint.com", None));
+        assert!(!origin_matches("ne", "https://sharepoint.com", None));
+        assert!(!origin_matches("contains", "sharepoint", None));
+    }
+
+    #[test]
+    fn test_origin_matches_unknown_op_returns_false() {
+        assert!(!origin_matches(
+            "gt",
+            "https://sharepoint.com",
+            Some("https://sharepoint.com")
+        ));
+    }
+
+    // -- End-to-end evaluate() tests with origin policies --
+
+    #[test]
+    fn test_evaluate_source_origin_eq_match() {
+        let policy = make_source_origin_policy("eq", "https://sharepoint.com", Decision::DENY);
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let ctx = make_ctx_with_origin(Classification::T3, Some("https://sharepoint.com"), None);
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-p1"));
+    }
+
+    #[test]
+    fn test_evaluate_source_origin_eq_no_match() {
+        let policy = make_source_origin_policy("eq", "https://sharepoint.com", Decision::DENY);
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let ctx = make_ctx_with_origin(Classification::T2, Some("https://example.com"), None);
+        let resp = store.evaluate(&ctx);
+        // No match -> default-allow for T2
+        assert_eq!(resp.decision, Decision::ALLOW);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_source_origin_contains_match() {
+        let policy = make_source_origin_policy("contains", "sharepoint", Decision::DENY);
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let ctx = make_ctx_with_origin(
+            Classification::T3,
+            Some("https://sharepoint.com/path"),
+            None,
+        );
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-p1"));
+    }
+
+    #[test]
+    fn test_evaluate_destination_origin_eq_match() {
+        let policy = make_dest_origin_policy("eq", "https://example.com", Decision::DENY);
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let ctx = make_ctx_with_origin(Classification::T3, None, Some("https://example.com"));
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-p2"));
+    }
+
+    #[test]
+    fn test_evaluate_source_origin_none_fails_closed() {
+        let policy = make_source_origin_policy("eq", "https://sharepoint.com", Decision::DENY);
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        let ctx = make_ctx_with_origin(Classification::T3, None, None);
+        let resp = store.evaluate(&ctx);
+        // None origin + SourceOrigin condition -> no match -> default-deny for T3
+        assert_eq!(resp.decision, Decision::DENY);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_any_mode_source_origin_and_classification() {
+        let policy = Policy {
+            id: "origin-any".to_string(),
+            name: "origin any".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::SourceOrigin {
+                    op: "eq".to_string(),
+                    value: "https://sharepoint.com".to_string(),
+                },
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ANY,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // SourceOrigin misses (wrong origin) but Classification matches -> ANY fires
+        let ctx = make_ctx_with_origin(Classification::T3, Some("https://example.com"), None);
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-any"));
+    }
+
+    #[test]
+    fn test_evaluate_all_mode_source_origin_and_classification() {
+        let policy = Policy {
+            id: "origin-all".to_string(),
+            name: "origin all".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::SourceOrigin {
+                    op: "eq".to_string(),
+                    value: "https://sharepoint.com".to_string(),
+                },
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // Both match: origin == sharepoint AND classification == T3
+        let ctx = make_ctx_with_origin(Classification::T3, Some("https://sharepoint.com"), None);
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-all"));
+    }
+
+    #[test]
+    fn test_evaluate_all_mode_source_origin_misses_classification_matches() {
+        let policy = Policy {
+            id: "origin-all".to_string(),
+            name: "origin all".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::SourceOrigin {
+                    op: "eq".to_string(),
+                    value: "https://sharepoint.com".to_string(),
+                },
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+        };
+        // SourceOrigin misses (wrong origin) but Classification matches -> ALL does NOT fire
+        let ctx = make_ctx_with_origin(Classification::T3, Some("https://example.com"), None);
+        let resp = store.evaluate(&ctx);
+        assert_eq!(resp.decision, Decision::DENY); // default-deny for T3
+        assert!(resp.matched_policy_id.is_none());
     }
 }

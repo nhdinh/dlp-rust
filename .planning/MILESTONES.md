@@ -1,5 +1,42 @@
 # Milestones
 
+## v0.8.0 Application-Aware DLP (Shipped: 2026-05-07)
+
+**Phases completed:** 4 phases, 15 plans
+**Requirements:** 18/18 satisfied
+**Audit:** PASSED (`.planning/milestones/v0.8.0-MILESTONE-AUDIT.md`)
+
+**Key accomplishments:**
+
+- **UWP App Identity** — `GetApplicationUserModelId` AUMID resolution, `AppIdentity` extended with `aumid`/`package_family_name`/`is_uwp`, ABAC evaluator handles UWP fields without special-casing, admin TUI supports AUMID/PackageFamilyName conditions (Phase 39; APP-07)
+- **Drag-and-Drop Enforcement** — `WH_GETMESSAGE` hook intercepts `WM_DROPFILES`, resolves source/destination app identity (Win32 + UWP), evaluates ABAC policy, blocks denied drops with toast + audit, wired into service lifecycle (Phase 40; APP-08)
+- **Browser Origin Clipboard Policies** — `source_origin`/`destination_origin` PolicyCondition variants, ABAC evaluator origin matching (`eq`/`ne`/`contains`), Chrome handler evaluates paste via `POLICY_EVALUATOR` callback with thread-local test override, admin TUI origin conditions builder with free-text URL input (Phase 41; BRW-04)
+- **Audit Enrichment** — `enrich_audit_with_app_identity()` resolves process path to `AppIdentity`, `ensure_app_identity_fields()` guarantees non-null schema, server-side validation (400 Bad Request), AGENT-UNKNOWN sentinel for unresolvable identity, covers USB/disk/clipboard/drag-drop/Chrome paths (Phase 42; AUDIT-04)
+
+**Known gaps at close:** None.
+
+---
+
+## v0.7.1 Operational Hardening (Shipped: 2026-05-06)
+
+**Phases completed:** 6 phases, 13 plans, 23 tasks
+
+**Key accomplishments:**
+
+- Volume DACL deny-all secondary enforcement layer wired into Blocked-tier USB device handling, providing defense-in-depth if PnP disable fails or is bypassed
+- USB identity reconciliation heuristic fixes VOLUME-before-USB_DEVICE race and startup enforcement gap so Blocked-tier USB devices are enforced on ALL plug-in timing paths
+- Rewrote `find_drive_letter_for_instance_id` with kernel-authoritative volume-to-disk mapping, replacing the buggy heuristic that ignored `instance_id` and returned the first unassigned fixed drive letter
+- 500ms deferred `GUID_DEVINTERFACE_DISK` arrival processing via tokio runtime handle bridge, so volume manager mounts before drive letter lookup
+- Boot drive letter normalization with belt-and-suspenders case-insensitive comparison across dlp-common and dlp-agent
+- One-liner:
+- Agent-side per-user USB device registry lookup with most-restrictive tier merge and audit event owner identity enrichment
+- One-liner:
+- One-liner:
+- One-liner:
+- One-liner:
+
+---
+
 ## v0.7.0 Disk Exfiltration Prevention (Shipped: 2026-05-06)
 
 **Phases completed:** 27 phases, 81 plans, 86 tasks

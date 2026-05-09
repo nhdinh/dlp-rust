@@ -109,6 +109,28 @@ pub async fn ingest_events(
         ));
     }
 
+    // AUDIT-04 (Phase 42): Validate app identity fields on ingestion.
+    for event in &events {
+        if event.source_application.is_none() {
+            tracing::warn!(
+                correlation_id = %event.correlation_id.as_deref().unwrap_or("none"),
+                "Rejecting audit event with missing source_application — agent may need update"
+            );
+            return Err(AppError::BadRequest(
+                "audit event missing source_application".to_string(),
+            ));
+        }
+        if event.destination_application.is_none() {
+            tracing::warn!(
+                correlation_id = %event.correlation_id.as_deref().unwrap_or("none"),
+                "Rejecting audit event with missing destination_application — agent may need update"
+            );
+            return Err(AppError::BadRequest(
+                "audit event missing destination_application".to_string(),
+            ));
+        }
+    }
+
     let count = events.len();
 
     // Clone events before moving into spawn_blocking so we can relay to SIEM after.

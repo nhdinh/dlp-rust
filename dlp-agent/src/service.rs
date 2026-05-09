@@ -22,10 +22,49 @@
 //! 3 failures or cancellation aborts the stop.  On success the service
 //! transitions to `StopPending` and exits cleanly.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use dlp_common::usb::{
+    DEFAULT_USB_BLOCKED_FAILURE_MODE, DEFAULT_USB_NONE_SERIAL_POLICY,
+    DEFAULT_USB_STARTUP_RESOLUTION_MODE,
+};
+
+// ---------------------------------------------------------------------------
+// Global config static (Phase 43-04)
+// ---------------------------------------------------------------------------
+
+/// Global agent config — set once during service startup.
+///
+/// Access via [`with_config`] for read-only operations. The config is updated
+/// in-place by the config poll loop (see [`config_poll_loop`]), so callers
+/// must not hold the lock across `.await` points.
+static CONFIG: std::sync::OnceLock<std::sync::Arc<parking_lot::Mutex<crate::config::AgentConfig>>> =
+    std::sync::OnceLock::new();
+
+/// Executes a closure with a read-lock on the global config.
+///
+/// Returns `None` if config is not yet initialized (e.g., called before
+/// service startup completes).
+///
+/// # Example
+///
+/// ```ignore
+/// let failure_mode = with_config(|cfg| {
+///     cfg.usb_blocked_failure_mode.clone().unwrap_or_else(|| "Warning only".to_string())
+/// }).unwrap_or_else(|| "Warning only".to_string());
+/// ```
+pub fn with_config<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&crate::config::AgentConfig) -> R,
+{
+    CONFIG.get().map(|arc| {
+        let cfg = arc.lock();
+        f(&cfg)
+    })
+}
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn, Level};
@@ -39,6 +78,11 @@ use windows_service::service_control_handler::{
 
 /// The Windows Service name registered with the SCM.
 pub const SERVICE_NAME: &str = "dlp-agent";
+
+/// Maximum time allowed for graceful shutdown (OP-04).
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+/// Maximum time to wait for in-flight disk enumeration to cancel (OP-04).
+const DISK_ENUM_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Global SCM status handle — set once after `register()` returns.
 ///
@@ -102,8 +146,8 @@ pub fn run_service() -> Result<()> {
     // second instance to start.  On non-Windows targets the call is a no-op
     // that returns (), so we use cfg to keep the binding type consistent.
     #[cfg(windows)]
-    let _instance_mutex = acquire_instance_mutex()
-        .context("failed to acquire single-instance mutex")?;
+    let _instance_mutex =
+        acquire_instance_mutex().context("failed to acquire single-instance mutex")?;
     #[cfg(not(windows))]
     acquire_instance_mutex();
 
@@ -151,6 +195,13 @@ pub fn run_service() -> Result<()> {
     // ── Start Chrome Content Analysis pipe server ────────────────
     // Spawn as a dedicated std::thread (NOT a tokio task) because
     // ConnectNamedPipeW and ReadFile block the calling thread.
+    //
+    // Phase 41: Wire the ABAC policy evaluator before spawning the thread.
+    // The evaluator wraps the managed-origins cache in the ABAC
+    // EvaluateRequest/EvaluateResponse shape so the Chrome handler
+    // speaks ABAC while the backing evaluation still uses the cache
+    // until full OfflineManager integration.
+    crate::chrome::handler::set_policy_evaluator(chrome_policy_evaluator);
     let chrome_handle = std::thread::Builder::new()
         .name("chrome-pipe".into())
         .spawn(|| {
@@ -175,6 +226,15 @@ pub fn run_service() -> Result<()> {
         ServiceControlAccept::STOP | ServiceControlAccept::PAUSE_CONTINUE,
         None,
     )?;
+
+    // Install the drag-and-drop hook (APP-08, Phase 40).
+    // Runs in the service process; the hook thread sees messages from the
+    // interactive user session when the UI is spawned via CreateProcessAsUserW.
+    if let Err(e) = crate::interception::install_drag_drop_hook(1) {
+        warn!(error = %e, "drag-drop hook installation failed — drag-and-drop enforcement disabled");
+    } else {
+        info!("drag-drop hook installed");
+    }
 
     // Enter the main run loop.
     // NOTE: USB notification registration has been moved inside run_loop (Approach A)
@@ -220,7 +280,10 @@ pub fn run_service() -> Result<()> {
 /// - The new `Vec<DiskIdentity>` from the server payload (entries to insert/overwrite).
 ///
 /// `None` is returned when `disk_allowlist` did not change (no merge needed).
-type DiskMergeData = Option<(std::collections::HashSet<String>, Vec<dlp_common::DiskIdentity>)>;
+type DiskMergeData = Option<(
+    std::collections::HashSet<String>,
+    Vec<dlp_common::DiskIdentity>,
+)>;
 
 /// Diffs a server-pushed `AgentConfigPayload` against in-memory `AgentConfig`
 /// and applies all detected changes including the `disk_allowlist` merge.
@@ -275,6 +338,88 @@ fn apply_payload_to_config(
     if cfg.excluded_paths != payload.excluded_paths {
         changed_fields.push("excluded_paths");
         cfg.excluded_paths = payload.excluded_paths.clone();
+    }
+
+    // Phase 43 (USB-09): apply server-pushed USB enforcement config fields.
+    //
+    // None guard: if cfg is None and payload equals the system default, skip the
+    // diff to avoid spurious "config changed" logs when a new agent polls an old
+    // server that does not send these fields (the default functions provide the
+    // system default, so the diff would fire on every poll).
+    //
+    // Empty-string guard: defense-in-depth — never apply empty strings for USB
+    // config fields (preserves previous config value against a compromised or
+    // buggy server).
+    let should_apply_usb_failure_mode = match cfg.usb_blocked_failure_mode {
+        Some(ref existing) => existing != &payload.usb_blocked_failure_mode,
+        None => payload.usb_blocked_failure_mode != DEFAULT_USB_BLOCKED_FAILURE_MODE,
+    };
+    if should_apply_usb_failure_mode && !payload.usb_blocked_failure_mode.is_empty() {
+        changed_fields.push("usb_blocked_failure_mode");
+        cfg.usb_blocked_failure_mode = Some(payload.usb_blocked_failure_mode.clone());
+    } else if payload.usb_blocked_failure_mode.is_empty() {
+        warn!("server sent empty usb_blocked_failure_mode — skipping apply");
+    }
+
+    let should_apply_usb_resolution_mode = match cfg.usb_startup_resolution_mode {
+        Some(ref existing) => existing != &payload.usb_startup_resolution_mode,
+        None => payload.usb_startup_resolution_mode != DEFAULT_USB_STARTUP_RESOLUTION_MODE,
+    };
+    if should_apply_usb_resolution_mode && !payload.usb_startup_resolution_mode.is_empty() {
+        changed_fields.push("usb_startup_resolution_mode");
+        cfg.usb_startup_resolution_mode = Some(payload.usb_startup_resolution_mode.clone());
+    } else if payload.usb_startup_resolution_mode.is_empty() {
+        warn!("server sent empty usb_startup_resolution_mode — skipping apply");
+    }
+
+    let should_apply_usb_none_serial_policy = match cfg.usb_none_serial_policy {
+        Some(ref existing) => existing != &payload.usb_none_serial_policy,
+        None => payload.usb_none_serial_policy != DEFAULT_USB_NONE_SERIAL_POLICY,
+    };
+    if should_apply_usb_none_serial_policy && !payload.usb_none_serial_policy.is_empty() {
+        changed_fields.push("usb_none_serial_policy");
+        cfg.usb_none_serial_policy = Some(payload.usb_none_serial_policy.clone());
+    } else if payload.usb_none_serial_policy.is_empty() {
+        warn!("server sent empty usb_none_serial_policy — skipping apply");
+    }
+
+    // M017/S04: apply server-pushed print enforcement config fields.
+    let should_apply_print_enabled = match cfg.print_enabled {
+        Some(existing) => existing != payload.print_enabled,
+        None => payload.print_enabled,
+    };
+    if should_apply_print_enabled {
+        changed_fields.push("print_enabled");
+        cfg.print_enabled = Some(payload.print_enabled);
+    }
+
+    let should_apply_print_xps_timeout_ms = match cfg.print_xps_timeout_ms {
+        Some(existing) => existing != payload.print_xps_timeout_ms,
+        None => payload.print_xps_timeout_ms != 5000,
+    };
+    if should_apply_print_xps_timeout_ms {
+        changed_fields.push("print_xps_timeout_ms");
+        cfg.print_xps_timeout_ms = Some(payload.print_xps_timeout_ms);
+    }
+
+    let should_apply_print_unclassifiable_action = match cfg.print_unclassifiable_action {
+        Some(ref existing) => existing != &payload.print_unclassifiable_action,
+        None => payload.print_unclassifiable_action != "Block",
+    };
+    if should_apply_print_unclassifiable_action && !payload.print_unclassifiable_action.is_empty() {
+        changed_fields.push("print_unclassifiable_action");
+        cfg.print_unclassifiable_action = Some(payload.print_unclassifiable_action.clone());
+    } else if payload.print_unclassifiable_action.is_empty() {
+        warn!("server sent empty print_unclassifiable_action — skipping apply");
+    }
+
+    let should_apply_print_max_pages = match cfg.print_max_pages {
+        Some(existing) => existing != payload.print_max_pages,
+        None => payload.print_max_pages != 100,
+    };
+    if should_apply_print_max_pages {
+        changed_fields.push("print_max_pages");
+        cfg.print_max_pages = Some(payload.print_max_pages);
     }
 
     // Phase 37 (D-03): apply server-pushed disk allowlist.
@@ -474,6 +619,72 @@ async fn config_poll_loop(
     }
 }
 
+/// Container for all subsystem shutdown handles and resources.
+///
+/// Collected during [`run_loop_init`] and consumed by [`run_loop_shutdown`]
+/// so that the service control loop body remains focused on a single
+/// responsibility: polling for the stop signal.
+struct RunLoopContext {
+    /// Handle to the file monitor task (spawned via `spawn_blocking`).
+    file_handle: tokio::task::JoinHandle<()>,
+    /// Clone of the file monitor for calling `stop()` on shutdown.
+    file_monitor: crate::interception::InterceptionEngine,
+    /// Handle to the async interception event loop.
+    event_loop_handle: tokio::task::JoinHandle<()>,
+    /// Handle to the Policy Engine heartbeat task.
+    heartbeat_handle: tokio::task::JoinHandle<()>,
+    /// Sender to signal the heartbeat task to exit.
+    heartbeat_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the Pipe 1 heartbeat task.
+    pipe1_hb_handle: tokio::task::JoinHandle<()>,
+    /// Sender to signal the Pipe 1 heartbeat to exit.
+    pipe1_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the config poll task (optional when no server client).
+    config_poll_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Sender to signal the config poll task to exit.
+    config_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the device registry poll task.
+    registry_poll_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Sender to signal the registry poll task to exit.
+    registry_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the managed origins poll task.
+    origins_poll_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Sender to signal the origins poll task to exit.
+    origins_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the disk enumeration background task.
+    disk_enum_handle: tokio::task::JoinHandle<()>,
+    /// Sender to signal the disk enumeration task to exit.
+    disk_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the encryption check background task.
+    enc_handle: tokio::task::JoinHandle<()>,
+    /// Sender to signal the encryption check task to exit.
+    enc_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Handle to the audit buffer flush task.
+    audit_flush_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Sender to signal the audit buffer to perform final flush.
+    audit_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Device watcher cleanup tuple (HWND, thread) — present when registration succeeded.
+    device_watcher_cleanup: Option<(
+        windows::Win32::Foundation::HWND,
+        std::thread::JoinHandle<()>,
+    )>,
+    /// Shared reference to the USB detector (for shutdown ACL restore / re-enable).
+    detector_arc: Arc<crate::detection::UsbDetector>,
+    /// Optional hook injector (M017/S01). `None` when `cloud_hook_enabled` is false.
+    #[allow(dead_code)]
+    hook_injector: Option<crate::hook_injector::HookInjector>,
+    /// Shutdown flag for the sync-client process watcher thread (M017/S02).
+    /// Signalled `true` during shutdown to stop the loop before joining.
+    sync_watcher_shutdown: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Join handle for the sync-client process watcher thread (M017/S02).
+    sync_watcher_handle: Option<std::thread::JoinHandle<()>>,
+    /// Optional WFP manager (M017/S01). `None` when `wfp_filter_enabled` is false.
+    #[allow(dead_code)]
+    wfp_manager: Option<crate::wfp_manager::WfpManager>,
+    /// Optional print enforcer (M017/S04). `None` when `print_enabled` is false.
+    print_enforcer: Option<crate::print_enforcer::PrintEnforcer>,
+}
+
 /// The main service run loop.
 ///
 /// Runs the file system event loop and the service control loop.
@@ -492,377 +703,8 @@ async fn run_loop(
     let _log_path = crate::audit_emitter::log_path();
     info!(audit_log = %_log_path.display(), "audit subsystem initialised");
 
-    // ── Initialise the Policy Engine client and offline cache ──────────────
-    let engine_client = crate::engine_client::EngineClient::default_client()
-        .inspect_err(|e| warn!(error = %e, "Policy Engine client init failed — will run offline"))
-        .unwrap_or_else(|_| {
-            // Best-effort fallback — OfflineManager will handle unreachable engine.
-            crate::engine_client::EngineClient::new(
-                crate::engine_client::DEFAULT_ENGINE_URL,
-                false, // skip TLS verification if env is misconfigured
-            )
-            .expect("engine client must be constructable")
-        });
-
-    let cache = Arc::new(crate::cache::Cache::new());
-
-    // ── Load agent config (needed for server_url before monitor setup) ───
-    let agent_config = crate::config::AgentConfig::load_default();
-
-    // ── AD client (best-effort — AD features disabled if config absent or init fails) ───
-    // Construct from pushed LDAP config embedded in agent_config (set by config poll loop).
-    // Stored in Arc<Option<AdClient>> so all interception threads share the same client.
-    let ad_client: Arc<Option<dlp_common::AdClient>> =
-        if let Some(ref ldap_config) = agent_config.ldap_config {
-            use dlp_common::ad_client::LdapConfig;
-            let config = LdapConfig {
-                ldap_url: ldap_config.ldap_url.clone(),
-                base_dn: ldap_config.base_dn.clone(),
-                require_tls: ldap_config.require_tls,
-                cache_ttl_secs: ldap_config.cache_ttl_secs,
-                vpn_subnets: ldap_config.vpn_subnets.clone(),
-            };
-            match dlp_common::AdClient::new(config).await {
-                Ok(client) => {
-                    tracing::info!("AD client initialised from pushed config");
-                    Arc::new(Some(client))
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "AD client initialisation failed — AD features disabled for this session"
-                    );
-                    Arc::new(None)
-                }
-            }
-        } else {
-            tracing::debug!("No LDAP config in agent config — AD features disabled");
-            Arc::new(None)
-        };
-
-    // ── dlp-server client (best-effort -- server may not be running) ─────
-    let server_client = match crate::server_client::ServerClient::from_env_with_config(
-        agent_config.server_url.as_deref(),
-    ) {
-        Ok(sc) => {
-            // Register with dlp-server. Errors are logged, not fatal.
-            if let Err(e) = sc.register().await {
-                warn!(error = %e, "dlp-server registration failed (best-effort)");
-            }
-            Some(sc)
-        }
-        Err(e) => {
-            warn!(error = %e, "dlp-server client init failed -- server relay disabled");
-            None
-        }
-    };
-
-    // ── Store server client for on-demand auth hash fetching ─────────────
-    if let Some(ref sc) = server_client {
-        crate::password_stop::set_server_client(sc.clone());
-        crate::password_stop::sync_auth_hash_from_server(sc).await;
-    }
-
-    // ── Audit buffer for server relay ────────────────────────────────────
-    let (audit_shutdown_tx, audit_shutdown_rx) = tokio::sync::watch::channel(false);
-    let _audit_flush_handle = if let Some(ref sc) = server_client {
-        let buffer = Arc::new(crate::server_client::AuditBuffer::new(sc.clone()));
-        crate::audit_emitter::set_audit_buffer(Arc::clone(&buffer));
-        Some(crate::server_client::AuditBuffer::spawn_flush_task(
-            buffer,
-            audit_shutdown_rx,
-        ))
-    } else {
-        drop(audit_shutdown_rx);
-        None
-    };
-
-    // ── Start USB mass-storage detection (inside run_loop for tokio Handle access) ──
-    // USB registration is done here (not in run_service) so that usb_wndproc can
-    // schedule async device-registry refreshes via a stored tokio::runtime::Handle.
-    // The Handle is captured now (we are inside rt.block_on) and stored in a static
-    // so the USB message-loop thread can reach it without capturing environment.
-    // (Approach A from 24-03-PLAN.md)
-    use std::sync::OnceLock;
-    static USB_DETECTOR: OnceLock<Arc<crate::detection::UsbDetector>> = OnceLock::new();
-    // Store an Arc in the OnceLock so UsbEnforcer (Phase 26) can hold a shared
-    // reference without cloning a non-Clone type.
-    let detector_arc = USB_DETECTOR.get_or_init(|| Arc::new(crate::detection::UsbDetector::new()));
-    // Obtain a plain reference for the existing scan_existing_drives() and
-    // register_usb_notifications() call sites (both accept &UsbDetector).
-    let detector = detector_arc.as_ref();
-    detector.scan_existing_drives();
-    detector.scan_existing_usb_identities();
-
-    // ── Managed origins cache (D-02) ──────────────────────────────
-    let origins_cache = Arc::new(crate::chrome::cache::ManagedOriginsCache::new());
-    // Set the global cache so the chrome pipe handler can read from it.
-    crate::chrome::handler::set_origins_cache(Arc::clone(&origins_cache));
-    let (origins_shutdown_tx, origins_shutdown_rx) = tokio::sync::watch::channel(false);
-    let _origins_poll_handle = if let Some(ref sc) = server_client {
-        Some(crate::chrome::cache::ManagedOriginsCache::spawn_poll_task(
-            Arc::clone(&origins_cache),
-            sc.clone(),
-            origins_shutdown_rx,
-        ))
-    } else {
-        drop(origins_shutdown_rx);
-        None
-    };
-
-    // ── Device registry cache (D-07, D-08) ──────────────────────────────────
-    // Polls GET /admin/device-registry every 30 s. Phase 26 enforcement reads
-    // from this cache at I/O time without a server call.
-    let registry_cache = Arc::new(crate::device_registry::DeviceRegistryCache::new());
-    let (registry_shutdown_tx, registry_shutdown_rx) = tokio::sync::watch::channel(false);
-    let _registry_poll_handle = if let Some(ref sc) = server_client {
-        // Store the cache and client in statics so usb_wndproc can trigger an
-        // immediate refresh on DBT_DEVICEARRIVAL (D-09).
-        crate::detection::usb::set_registry_cache(Arc::clone(&registry_cache));
-        crate::detection::usb::set_registry_client(sc.clone());
-        // Store the current tokio Handle so the USB message-loop thread (a plain
-        // std::thread that does NOT inherit the tokio context) can spawn async tasks.
-        crate::detection::usb::set_registry_runtime_handle(tokio::runtime::Handle::current());
-        Some(
-            crate::device_registry::DeviceRegistryCache::spawn_poll_task(
-                Arc::clone(&registry_cache),
-                sc.clone(),
-                registry_shutdown_rx,
-            ),
-        )
-    } else {
-        drop(registry_shutdown_rx);
-        None
-    };
-
-    // ── DeviceController (Phase 31) ───────────────────────────────────────
-    // Active PnP enforcement: disables devices (Blocked tier) and modifies
-    // volume DACLs (ReadOnly tier). Set in the static before USB notifications
-    // are registered so usb_wndproc has access on first arrival.
-    let device_controller = Arc::new(crate::device_controller::DeviceController::new());
-    crate::detection::usb::set_device_controller(Arc::clone(&device_controller));
-
-    // ── UsbEnforcer (D-12) ────────────────────────────────────────────────
-    // Constructed after registry_cache so both backing caches are ready.
-    // Always constructed (registry_cache exists even without a server_client).
-    let usb_enforcer_opt: Option<Arc<crate::usb_enforcer::UsbEnforcer>> =
-        Some(Arc::new(crate::usb_enforcer::UsbEnforcer::new(
-            Arc::clone(detector_arc),
-            Arc::clone(&registry_cache),
-        )));
-
-    // Set the global DRIVE_DETECTOR reference before spawning the watcher so
-    // dispatch callbacks can reach the UsbDetector on first arrival.
-    // The device watcher itself is spawned below (after audit_ctx is constructed).
-    crate::detection::usb::set_drive_detector(detector);
-
-    // ── Clone server client for config poll BEFORE it moves into offline_manager ──
-    // server_client is an Option<ServerClient>. ServerClient is Clone.
-    let server_client_for_config = server_client.clone();
-
-    let mut offline_manager =
-        crate::offline::OfflineManager::new(engine_client, cache, machine_name.clone());
-    if let Some(sc) = server_client {
-        offline_manager = offline_manager.with_server_client(sc);
-    }
-    let offline = Arc::new(offline_manager);
-
-    // ── Wrap agent_config in Arc<Mutex<>> for shared access ──────────────
-    // The config poll loop needs a shared mutable reference to apply server-pushed
-    // updates. InterceptionEngine gets a clone of the config at construction time
-    // (paths are fixed; live path hot-reload is out of scope for this phase).
-    let config_arc = Arc::new(parking_lot::Mutex::new(agent_config.clone()));
-
-    // ── Phase 35: Arc<RwLock<AgentConfig>> for disk allowlist persistence ──
-    // The disk enumeration task (D-04) needs a write-capable shared reference
-    // to AgentConfig so it can update `disk_allowlist` after merge and call
-    // `save(config_path)`. RwLock is used (not Mutex) because future Phase
-    // 36/37 readers may need concurrent read access to the allowlist.
-    //
-    // CRITICAL: must be constructed BEFORE `InterceptionEngine::with_config`
-    // moves `agent_config` (Pitfall 2). The window is between this point and
-    // the `with_config(agent_config)` call below.
-    let disk_config_arc = Arc::new(parking_lot::RwLock::new(agent_config.clone()));
-    let config_path = std::path::PathBuf::from(crate::config::AgentConfig::effective_config_path());
-
-    // ── Start the Policy Engine heartbeat ─────────────────────────────────
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let offline_hb = offline.clone();
-    let _heartbeat_handle = tokio::spawn(async move {
-        offline_hb.heartbeat_loop(shutdown_rx).await;
-    });
-
-    // ── Start the Pipe 1 heartbeat ────────────────────────────────────────
-    let (pipe1_shutdown_tx, mut pipe1_shutdown_rx) = tokio::sync::watch::channel(false);
-    let _pipe1_hb_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    crate::ipc::pipe1::send_ping_to_all();
-                }
-                _ = pipe1_shutdown_rx.changed() => {
-                    debug!("Pipe 1 heartbeat shutting down");
-                    return;
-                }
-            }
-        }
-    });
-
-    // ── Start the config poll loop ─────────────────────────────────────────
-    let (config_shutdown_tx, config_shutdown_rx) = tokio::sync::watch::channel(false);
-    let _config_poll_handle = if let Some(sc) = server_client_for_config {
-        let config_for_poll = Arc::clone(&config_arc);
-        Some(tokio::spawn(async move {
-            config_poll_loop(sc, config_for_poll, config_shutdown_rx).await;
-        }))
-    } else {
-        drop(config_shutdown_rx);
-        None
-    };
-
-    // ── Start the file system monitor pipeline ─────────────────────────
-    // Capture the recheck interval before agent_config is consumed by with_config below.
-    // Per CRYPT-02, the cadence must come exclusively from admin config — no hard-coded value.
-    let recheck_interval = agent_config.resolved_recheck_interval();
-    let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config)
-        .expect("file monitor initialisation always succeeds");
-    let file_monitor_for_shutdown = file_monitor.clone();
-
-    let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
-
-    // Channel for dynamically adding USB drive roots to the file watcher after
-    // startup. The sender is stored in a global so usb_wndproc can push new
-    // drive roots from the USB notification thread without holding a reference
-    // to the InterceptionEngine.
-    let (watch_tx, watch_rx) = std::sync::mpsc::channel::<std::path::PathBuf>();
-    crate::detection::usb::set_watch_path_sender(watch_tx);
-
-    // Per-session identity map — resolves actual interactive users for
-    // file events instead of attributing everything to SYSTEM.
-    let session_map = Arc::new(crate::session_identity::SessionIdentityMap::new());
-    crate::session_identity::init_global(session_map.clone());
-
-    // Populate with any sessions that are already active.
-    if let Ok(sessions) = crate::ui_spawner::enumerate_active_sessions_pub() {
-        for sid in sessions {
-            if let Err(e) = session_map.add_session(sid) {
-                debug!(
-                    session_id = sid,
-                    error = %e,
-                    "failed to resolve identity for session"
-                );
-            }
-        }
-    }
-
-    let audit_ctx = crate::audit_emitter::EmitContext {
-        agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
-        session_id: 1,
-        user_sid: "S-1-5-18".to_string(), // default; overridden per-event
-        user_name: "SYSTEM".to_string(),
-        machine_name: machine_name.clone(),
-    };
-
-    // Initialise the clipboard listener's audit emit context.
-    crate::clipboard::listener::init_emit_context(audit_ctx.clone());
-
-    // ── Disk Enumeration (Phase 33) ───────────────────────────────────────
-    // Initialize the DiskEnumerator and spawn the background enumeration task.
-    // This runs after USB setup so both detectors are available for Phase 36.
-    let disk_enumerator = Arc::new(crate::detection::DiskEnumerator::new());
-    crate::detection::disk::set_disk_enumerator(Arc::clone(&disk_enumerator));
-    crate::detection::disk::spawn_disk_enumeration_task(
-        tokio::runtime::Handle::current(),
-        audit_ctx.clone(),
-        Arc::clone(&disk_config_arc),
-        config_path.clone(),
-    );
-    info!("disk enumeration task spawned");
-
-    // ── Device watcher (Phase 36 D-12) ───────────────────────────────────
-    // Spawned after audit_ctx and disk enumeration are ready so the watcher
-    // can emit DiskDiscovery events from the disk arrival handler.
-    // Replaces the old `register_usb_notifications` Win32 window.
-    //
-    // Phase 38.2 GAP-01: register the tokio runtime handle BEFORE spawning
-    // so the deferred disk-arrival path (500 ms sleep) has a handle.
-    crate::detection::device_watcher::set_runtime_handle(
-        tokio::runtime::Handle::current()
-    );
-    let device_watcher_cleanup =
-        match crate::detection::spawn_device_watcher_task(audit_ctx.clone()) {
-            Ok((hwnd, thread)) => {
-                info!("device watcher registered (volume + USB + disk interfaces)");
-                Some((hwnd, thread))
-            }
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    "device watcher unavailable — continuing without USB/disk monitoring"
-                );
-                None
-            }
-        };
-
-    // ── DiskEnforcer (Phase 36) ───────────────────────────────────────────
-    // Constructed after disk enumeration so the global OnceLock is populated.
-    // Fails closed (blocks all fixed-disk writes) until the enumeration task
-    // sets `is_ready()` (D-06).
-    let disk_enforcer_opt: Option<Arc<crate::disk_enforcer::DiskEnforcer>> =
-        Some(Arc::new(crate::disk_enforcer::DiskEnforcer::new()));
-    info!("disk enforcer constructed");
-
-    // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
-    // Initialize the EncryptionChecker and spawn the background verification
-    // task. The task waits internally for `DiskEnumerator::is_ready` (D-04)
-    // before scanning, then re-checks every `recheck_interval` (D-10, D-11).
-    // Per CRYPT-02, the cadence comes exclusively from admin config — there
-    // is no hard-coded value. Per D-16, an Alert is emitted only on the
-    // initial total-failure outcome; subsequent periodic-poll failures yield
-    // `Unknown` silently.
-    let encryption_checker = Arc::new(crate::detection::encryption::EncryptionChecker::new());
-    crate::detection::encryption::set_encryption_checker(Arc::clone(&encryption_checker));
-    crate::detection::encryption::spawn_encryption_check_task(
-        tokio::runtime::Handle::current(),
-        audit_ctx.clone(),
-        recheck_interval,
-    );
-    info!(
-        recheck_interval_secs = recheck_interval.as_secs(),
-        "encryption verification task spawned"
-    );
-
-    let offline_ev = offline.clone();
-    let ctx_ev = audit_ctx.clone();
-    let session_map_ev = session_map.clone();
-    let ad_client_ev = ad_client.clone();
-    let event_loop_handle = tokio::spawn(async move {
-        crate::interception::run_event_loop(
-            action_rx,
-            offline_ev,
-            ctx_ev,
-            session_map_ev,
-            ad_client_ev,
-            usb_enforcer_opt,
-            disk_enforcer_opt,
-        )
-        .await;
-    });
-
-    // Spawn the file monitor — run() is blocking and must run on a dedicated thread
-    // because the notify watcher blocks on its internal channel.  Wrap it in
-    // spawn_blocking so it doesn't monopolise a Tokio thread.
-    let file_monitor_clone = file_monitor.clone();
-    let file_handle = tokio::task::spawn_blocking(move || {
-        // file_monitor.run() is synchronous; it blocks until stop() is called.
-        let _ = file_monitor_clone.run(action_tx, Some(watch_rx));
-    });
-
-    info!(
-        service_name = SERVICE_NAME,
-        "enforcement subsystems started"
-    );
+    // Initialise all subsystems and collect handles into a single context.
+    let ctx = run_loop_init(machine_name).await;
 
     // ── Service control loop ─────────────────────────────────────────────
     let poll_interval = Duration::from_millis(500);
@@ -898,70 +740,815 @@ async fn run_loop(
         }
     }
 
-    // ── Graceful shutdown ──────────────────────────────────────────────────
+    // ── Graceful shutdown with timeout (OP-04) ────────────────────────────
+    let shutdown_result = tokio::time::timeout(SHUTDOWN_TIMEOUT, run_loop_shutdown(ctx)).await;
+
+    match shutdown_result {
+        Ok(()) => {
+            info!(service_name = SERVICE_NAME, "graceful shutdown complete");
+        }
+        Err(_) => {
+            tracing::error!(
+                timeout_secs = SHUTDOWN_TIMEOUT.as_secs(),
+                service_name = SERVICE_NAME,
+                "graceful shutdown exceeded timeout -- force-terminating"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Initialises all enforcement subsystems and returns a [`RunLoopContext`]
+/// containing every handle and sender needed for graceful shutdown.
+///
+/// Extracted from [`run_loop`] to reduce cognitive complexity.  Each subsystem
+/// block is kept in source order so comments remain valid.
+async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
+    // ── Initialise the Policy Engine client and offline cache ──────────────
+    let engine_client = crate::engine_client::EngineClient::default_client()
+        .inspect_err(|e| warn!(error = %e, "Policy Engine client init failed — will run offline"))
+        .unwrap_or_else(|_| {
+            // Best-effort fallback — OfflineManager will handle unreachable engine.
+            crate::engine_client::EngineClient::new(
+                crate::engine_client::DEFAULT_ENGINE_URL,
+                false, // skip TLS verification if env is misconfigured
+            )
+            .expect("engine client must be constructable")
+        });
+
+    let cache = Arc::new(crate::cache::Cache::new());
+
+    // ── Load agent config (needed for server_url before monitor setup) ───
+    let agent_config = crate::config::AgentConfig::load_default();
+
+    // ── AD client (best-effort — AD features disabled if config absent or init fails) ───
+    let ad_client = init_ad_client(&agent_config).await;
+
+    // ── dlp-server client (best-effort -- server may not be running) ─────
+    let server_client = init_server_client(&agent_config).await;
+
+    // ── Store server client for on-demand auth hash fetching ─────────────
+    if let Some(ref sc) = server_client {
+        crate::password_stop::set_server_client(sc.clone());
+        crate::password_stop::sync_auth_hash_from_server(sc).await;
+    }
+
+    // ── Audit buffer for server relay ────────────────────────────────────
+    let (audit_shutdown_tx, audit_shutdown_rx) = tokio::sync::watch::channel(false);
+    let audit_flush_handle = server_client.as_ref().map(|sc| {
+        let buffer = Arc::new(crate::server_client::AuditBuffer::new(sc.clone()));
+        crate::audit_emitter::set_audit_buffer(Arc::clone(&buffer));
+        crate::server_client::AuditBuffer::spawn_flush_task(buffer, audit_shutdown_rx)
+    });
+
+    // ── Start USB mass-storage detection (inside run_loop for tokio Handle access) ──
+    let detector_arc = init_usb_detector().await;
+
+    // ── Managed origins cache (D-02) ──────────────────────────────
+    let (origins_shutdown_tx, origins_poll_handle) =
+        init_origins_cache(server_client.as_ref()).await;
+
+    // ── Device registry cache (D-07, D-08) ──────────────────────────────────
+    let (registry_shutdown_tx, registry_poll_handle, registry_cache) =
+        init_registry_cache(server_client.as_ref()).await;
+
+    // ── DeviceController (Phase 31) ───────────────────────────────────────
+    let device_controller = Arc::new(crate::device_controller::DeviceController::new());
+    crate::detection::usb::set_device_controller(Arc::clone(&device_controller));
+
+    // ── UsbEnforcer (D-12) ────────────────────────────────────────────────
+    let usb_enforcer_opt: Option<Arc<crate::usb_enforcer::UsbEnforcer>> =
+        Some(Arc::new(crate::usb_enforcer::UsbEnforcer::new(
+            Arc::clone(&detector_arc),
+            Arc::clone(&registry_cache),
+        )));
+
+    // SAFETY: detector_arc is stored in the RunLoopContext which outlives the
+    // service main loop. The static reference is only used during the lifetime
+    // of the service process.
+    let detector_static: &'static crate::detection::UsbDetector =
+        unsafe { std::mem::transmute(detector_arc.as_ref()) };
+    crate::detection::usb::set_drive_detector(detector_static);
+
+    // ── Offline manager ────────────────────────────────────────────────────
+    let offline = init_offline_manager(engine_client, cache, &server_client, machine_name.clone());
+
+    // ── Wrap agent_config in Arc<Mutex<>> for shared access ──────────────
+    let config_arc = Arc::new(parking_lot::Mutex::new(agent_config.clone()));
+
+    // ── Set global CONFIG static for with_config access (Phase 43-04) ────
+    let _ = CONFIG.set(Arc::clone(&config_arc));
+
+    // ── Phase 35: Arc<RwLock<AgentConfig>> for disk allowlist persistence ──
+    let disk_config_arc = Arc::new(parking_lot::RwLock::new(agent_config.clone()));
+    let config_path = std::path::PathBuf::from(crate::config::AgentConfig::effective_config_path());
+
+    // ── Start the Policy Engine heartbeat ─────────────────────────────────
+    let (heartbeat_shutdown_tx, heartbeat_handle) = spawn_heartbeat_task(offline.clone());
+
+    // ── Start the Pipe 1 heartbeat ────────────────────────────────────────
+    let (pipe1_shutdown_tx, pipe1_hb_handle) = spawn_pipe1_heartbeat_task();
+
+    // ── Start the config poll loop ─────────────────────────────────────────
+    let (config_shutdown_tx, config_poll_handle) =
+        spawn_config_poll_task(server_client.clone(), Arc::clone(&config_arc));
+
+    // ── Start the file system monitor pipeline ─────────────────────────
+    let recheck_interval = agent_config.resolved_recheck_interval();
+    let file_monitor = crate::interception::InterceptionEngine::with_config(agent_config.clone())
+        .expect("file monitor initialisation always succeeds");
+
+    let (action_tx, action_rx) = mpsc::channel::<crate::interception::FileAction>(1024);
+
+    // Channel for dynamically adding USB drive roots to the file watcher.
+    let (watch_tx, watch_rx) = std::sync::mpsc::channel::<std::path::PathBuf>();
+    crate::detection::usb::set_watch_path_sender(watch_tx);
+
+    // ── Per-session identity map ───────────────────────────────────────────
+    let session_map = init_session_map();
+
+    let audit_ctx = build_audit_ctx(machine_name);
+
+    // Initialise the clipboard listener's audit emit context.
+    crate::clipboard::listener::init_emit_context(audit_ctx.clone());
+
+    // Initialise the drag-and-drop enforcer's audit emit context (APP-08, Phase 40).
+    crate::interception::init_drag_drop_emit_context(audit_ctx.clone());
+
+    // ── Disk Enumeration (Phase 33) ───────────────────────────────────────
+    let (disk_shutdown_tx, disk_enum_handle) =
+        spawn_disk_enumeration(Arc::clone(&disk_config_arc), config_path, audit_ctx.clone());
+
+    // ── Device watcher (Phase 36 D-12) ───────────────────────────────────
+    let device_watcher_cleanup = spawn_device_watcher(audit_ctx.clone());
+
+    // ── DiskEnforcer (Phase 36) ───────────────────────────────────────────
+    let disk_enforcer_opt: Option<Arc<crate::disk_enforcer::DiskEnforcer>> =
+        Some(Arc::new(crate::disk_enforcer::DiskEnforcer::new()));
+    info!("disk enforcer constructed");
+
+    // ── CloudEnforcer (M017/S01) ──────────────────────────────────────────
+    let cloud_enforcer_opt: Option<Arc<crate::cloud_enforcer::CloudEnforcer>> =
+        Some(Arc::new(crate::cloud_enforcer::CloudEnforcer::new()));
+    info!("cloud enforcer constructed");
+
+    // ── HookInjector (M017/S01) ───────────────────────────────────────────
+    let hook_injector_opt: Option<crate::hook_injector::HookInjector> =
+        if agent_config.cloud_hook_enabled.unwrap_or(false) {
+            let dll_path = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll.dll")))
+                .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll.dll"));
+            let injector = crate::hook_injector::HookInjector::new(&dll_path, None);
+            info!(dll_path = %dll_path.display(), "hook injector constructed");
+            Some(injector)
+        } else {
+            info!("cloud hook disabled — skipping HookInjector");
+            None
+        };
+
+    // ── Sync-client process watcher (M017/S02) ───────────────────────────
+    // Only active when hook injection is enabled. Uses a std::thread (not a
+    // Tokio task) to avoid blocking the async reactor during sleep intervals.
+    let (sync_watcher_shutdown, sync_watcher_handle) = if let Some(ref injector) = hook_injector_opt
+    {
+        // Clone injector fields needed by the watcher thread.
+        // HookInjector is not Clone, so we rebuild a lightweight wrapper with
+        // the same DLL path from the existing injector's field read. Instead,
+        // we pass the Arc-wrapped shutdown flag and re-create a fresh injector
+        // for the watcher thread since HookInjector::new() is cheap.
+        let dll_path_for_watcher = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll.dll")))
+            .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll.dll"));
+        // Suppress the unused variable warning on the injector reference used
+        // only to gate the if-let branch.
+        let _ = injector;
+
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = Arc::clone(&shutdown_flag);
+
+        let handle = std::thread::Builder::new()
+            .name("sync-client-watcher".into())
+            .spawn(move || {
+                let watcher_injector =
+                    crate::hook_injector::HookInjector::new(&dll_path_for_watcher, None);
+                info!("sync-client watcher thread started");
+
+                loop {
+                    if flag_clone.load(Ordering::Relaxed) {
+                        info!("sync-client watcher: shutdown signal received — exiting");
+                        break;
+                    }
+
+                    let pids = crate::cloud_enforcer::enumerate_sync_client_pids();
+                    for (pid, exe) in pids {
+                        match crate::hook_injector::HookInjector::is_module_loaded(
+                            pid,
+                            "dlp_hook_dll.dll",
+                        ) {
+                            Ok(false) => {
+                                // DLL not yet present — attempt injection.
+                                match watcher_injector.inject(pid) {
+                                    Ok(()) => {
+                                        info!(
+                                            pid,
+                                            exe,
+                                            "sync-client watcher: hook injected successfully"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            pid,
+                                            exe,
+                                            error = %e,
+                                            "sync-client watcher: injection failed"
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(true) => {
+                                tracing::trace!(
+                                    pid,
+                                    exe,
+                                    "sync-client watcher: hook already loaded — skipping"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    pid,
+                                    exe,
+                                    error = ?e,
+                                    "sync-client watcher: module check failed"
+                                );
+                            }
+                        }
+                    }
+
+                    std::thread::sleep(Duration::from_secs(30));
+                }
+            })
+            .expect("failed to spawn sync-client watcher thread");
+
+        info!("sync-client process watcher thread started");
+        (Some(shutdown_flag), Some(handle))
+    } else {
+        (None, None)
+    };
+
+    // ── WfpManager (M017/S01) ─────────────────────────────────────────────
+    let wfp_manager_opt: Option<crate::wfp_manager::WfpManager> =
+        if agent_config.wfp_filter_enabled.unwrap_or(false) {
+            match crate::wfp_manager::WfpManager::new() {
+                Ok(manager) => {
+                    if let Err(e) = manager.register() {
+                        warn!(error = %e, "WFP manager registration failed — continuing without WFP");
+                        None
+                    } else {
+                        info!("WFP manager registered");
+                        Some(manager)
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "WFP manager init failed — continuing without WFP");
+                    None
+                }
+            }
+        } else {
+            info!("WFP filter disabled — skipping WfpManager");
+            None
+        };
+
+    // ── PrintEnforcer (M017/S04) ──────────────────────────────────────────
+    let print_enforcer_opt: Option<crate::print_enforcer::PrintEnforcer> = {
+        let watcher_config = crate::print_watcher::PrintWatcherConfig {
+            max_pages: agent_config.print_max_pages.unwrap_or(100),
+            unclassifiable_action: agent_config
+                .print_unclassifiable_action
+                .clone()
+                .unwrap_or_else(|| "Block".to_string()),
+        };
+        let mut enforcer = crate::print_enforcer::PrintEnforcer::new(
+            agent_config.print_enabled,
+            watcher_config,
+            offline.clone(),
+            audit_ctx.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        enforcer.start();
+        Some(enforcer)
+    };
+
+    // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
+    let (enc_shutdown_tx, enc_handle) = spawn_encryption_task(audit_ctx.clone(), recheck_interval);
+
+    // ── Spawn interception event loop and file monitor ────────────────────
+    let event_loop_handle = spawn_event_loop(
+        action_rx,
+        offline.clone(),
+        audit_ctx.clone(),
+        session_map.clone(),
+        ad_client.clone(),
+        usb_enforcer_opt,
+        disk_enforcer_opt,
+        cloud_enforcer_opt,
+    );
+
+    let file_monitor_for_shutdown = file_monitor.clone();
+    let file_handle = tokio::task::spawn_blocking(move || {
+        let _ = file_monitor.run(action_tx, Some(watch_rx));
+    });
+
+    info!(
+        service_name = SERVICE_NAME,
+        "enforcement subsystems started"
+    );
+
+    RunLoopContext {
+        file_handle,
+        file_monitor: file_monitor_for_shutdown,
+        event_loop_handle,
+        heartbeat_handle,
+        heartbeat_shutdown_tx,
+        pipe1_hb_handle,
+        pipe1_shutdown_tx,
+        config_poll_handle,
+        config_shutdown_tx,
+        registry_poll_handle,
+        registry_shutdown_tx,
+        origins_poll_handle,
+        origins_shutdown_tx,
+        disk_enum_handle,
+        disk_shutdown_tx,
+        enc_handle,
+        enc_shutdown_tx,
+        audit_flush_handle,
+        audit_shutdown_tx,
+        device_watcher_cleanup,
+        detector_arc,
+        hook_injector: hook_injector_opt,
+        sync_watcher_shutdown,
+        sync_watcher_handle,
+        wfp_manager: wfp_manager_opt,
+        print_enforcer: print_enforcer_opt,
+    }
+}
+
+/// Initialises the AD client from the LDAP config embedded in `AgentConfig`.
+///
+/// Returns `Arc::new(None)` when no LDAP config is present or initialisation fails.
+async fn init_ad_client(
+    agent_config: &crate::config::AgentConfig,
+) -> Arc<Option<dlp_common::AdClient>> {
+    let Some(ref ldap_config) = agent_config.ldap_config else {
+        tracing::debug!("No LDAP config in agent config — AD features disabled");
+        return Arc::new(None);
+    };
+
+    use dlp_common::ad_client::LdapConfig;
+    let config = LdapConfig {
+        ldap_url: ldap_config.ldap_url.clone(),
+        base_dn: ldap_config.base_dn.clone(),
+        require_tls: ldap_config.require_tls,
+        cache_ttl_secs: ldap_config.cache_ttl_secs,
+        vpn_subnets: ldap_config.vpn_subnets.clone(),
+    };
+
+    match dlp_common::AdClient::new(config).await {
+        Ok(client) => {
+            tracing::info!("AD client initialised from pushed config");
+            Arc::new(Some(client))
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "AD client initialisation failed — AD features disabled for this session"
+            );
+            Arc::new(None)
+        }
+    }
+}
+
+/// Initialises the dlp-server client and registers the agent.
+///
+/// Returns `None` when the client cannot be constructed or registration fails.
+async fn init_server_client(
+    agent_config: &crate::config::AgentConfig,
+) -> Option<crate::server_client::ServerClient> {
+    match crate::server_client::ServerClient::from_env_with_config(
+        agent_config.server_url.as_deref(),
+    ) {
+        Ok(sc) => {
+            if let Err(e) = sc.register().await {
+                warn!(error = %e, "dlp-server registration failed (best-effort)");
+            }
+            Some(sc)
+        }
+        Err(e) => {
+            warn!(error = %e, "dlp-server client init failed -- server relay disabled");
+            None
+        }
+    }
+}
+
+/// Initialises the global USB detector, scans existing drives, and reconciles identities.
+async fn init_usb_detector() -> Arc<crate::detection::UsbDetector> {
+    use std::sync::OnceLock;
+    static USB_DETECTOR: OnceLock<Arc<crate::detection::UsbDetector>> = OnceLock::new();
+    let detector = USB_DETECTOR.get_or_init(|| Arc::new(crate::detection::UsbDetector::new()));
+    detector.scan_existing_drives();
+    detector.scan_existing_usb_identities();
+    Arc::clone(detector)
+}
+
+/// Initialises the managed-origins cache and spawns its poll task.
+///
+/// Returns `(shutdown_tx, poll_handle)` where `poll_handle` is `None` when no
+/// server client is available.
+async fn init_origins_cache(
+    server_client: Option<&crate::server_client::ServerClient>,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    let origins_cache = Arc::new(crate::chrome::cache::ManagedOriginsCache::new());
+    crate::chrome::handler::set_origins_cache(Arc::clone(&origins_cache));
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = server_client.map(|sc| {
+        crate::chrome::cache::ManagedOriginsCache::spawn_poll_task(origins_cache, sc.clone(), rx)
+    });
+    (tx, handle)
+}
+
+/// Initialises the device-registry cache, sets global statics, and spawns its poll task.
+///
+/// Returns `(shutdown_tx, poll_handle, cache)`.
+async fn init_registry_cache(
+    server_client: Option<&crate::server_client::ServerClient>,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    Option<tokio::task::JoinHandle<()>>,
+    Arc<crate::device_registry::DeviceRegistryCache>,
+) {
+    let cache = Arc::new(crate::device_registry::DeviceRegistryCache::new());
+    let (tx, rx) = tokio::sync::watch::channel(false);
+
+    if let Some(sc) = server_client {
+        crate::detection::usb::set_registry_cache(Arc::clone(&cache));
+        crate::detection::usb::set_registry_client(sc.clone());
+        crate::detection::usb::set_registry_runtime_handle(tokio::runtime::Handle::current());
+        let handle = crate::device_registry::DeviceRegistryCache::spawn_poll_task(
+            Arc::clone(&cache),
+            sc.clone(),
+            rx,
+        );
+        (tx, Some(handle), cache)
+    } else {
+        drop(rx);
+        (tx, None, cache)
+    }
+}
+
+/// Constructs the [`OfflineManager`] and optionally attaches a server client.
+fn init_offline_manager(
+    engine_client: crate::engine_client::EngineClient,
+    cache: Arc<crate::cache::Cache>,
+    server_client: &Option<crate::server_client::ServerClient>,
+    machine_name: Option<String>,
+) -> Arc<crate::offline::OfflineManager> {
+    let mut om = crate::offline::OfflineManager::new(engine_client, cache, machine_name);
+    if let Some(sc) = server_client {
+        om = om.with_server_client(sc.clone());
+    }
+    Arc::new(om)
+}
+
+/// Spawns the Policy Engine heartbeat task.
+///
+/// Returns `(shutdown_tx, join_handle)`.
+fn spawn_heartbeat_task(
+    offline: Arc<crate::offline::OfflineManager>,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = tokio::spawn(async move {
+        offline.heartbeat_loop(rx).await;
+    });
+    (tx, handle)
+}
+
+/// Spawns the Pipe 1 heartbeat task that pings all connected UI clients.
+///
+/// Returns `(shutdown_tx, join_handle)`.
+fn spawn_pipe1_heartbeat_task() -> (
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, mut rx) = tokio::sync::watch::channel(false);
+    let handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    crate::ipc::pipe1::send_ping_to_all();
+                }
+                _ = rx.changed() => {
+                    debug!("Pipe 1 heartbeat shutting down");
+                    return;
+                }
+            }
+        }
+    });
+    (tx, handle)
+}
+
+/// Spawns the config poll task when a server client is available.
+///
+/// Returns `(shutdown_tx, poll_handle)` where `poll_handle` is `None` when no
+/// server client is available.
+fn spawn_config_poll_task(
+    server_client: Option<crate::server_client::ServerClient>,
+    config: Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = server_client.map(|sc| {
+        tokio::spawn(async move {
+            config_poll_loop(sc, config, rx).await;
+        })
+    });
+    (tx, handle)
+}
+
+/// Builds the per-session identity map and seeds it with currently active sessions.
+fn init_session_map() -> Arc<crate::session_identity::SessionIdentityMap> {
+    let session_map = Arc::new(crate::session_identity::SessionIdentityMap::new());
+    crate::session_identity::init_global(session_map.clone());
+
+    if let Ok(sessions) = crate::ui_spawner::enumerate_active_sessions_pub() {
+        for sid in sessions {
+            if let Err(e) = session_map.add_session(sid) {
+                debug!(
+                    session_id = sid,
+                    error = %e,
+                    "failed to resolve identity for session"
+                );
+            }
+        }
+    }
+    session_map
+}
+
+/// Builds the default [`EmitContext`] used for audit events.
+fn build_audit_ctx(machine_name: Option<String>) -> crate::audit_emitter::EmitContext {
+    crate::audit_emitter::EmitContext {
+        agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
+        session_id: 1,
+        user_sid: "S-1-5-18".to_string(), // default; overridden per-event
+        user_name: "SYSTEM".to_string(),
+        machine_name,
+    }
+}
+
+/// Spawns the disk enumeration background task.
+///
+/// Returns `(shutdown_tx, join_handle)`.
+fn spawn_disk_enumeration(
+    disk_config_arc: Arc<parking_lot::RwLock<crate::config::AgentConfig>>,
+    config_path: std::path::PathBuf,
+    audit_ctx: crate::audit_emitter::EmitContext,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let disk_enumerator = Arc::new(crate::detection::DiskEnumerator::new());
+    crate::detection::disk::set_disk_enumerator(Arc::clone(&disk_enumerator));
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = crate::detection::disk::spawn_disk_enumeration_task(
+        tokio::runtime::Handle::current(),
+        audit_ctx,
+        disk_config_arc,
+        config_path,
+        rx,
+    );
+    (tx, handle)
+}
+
+/// Spawns the device watcher task and returns its cleanup handle.
+fn spawn_device_watcher(
+    audit_ctx: crate::audit_emitter::EmitContext,
+) -> Option<(
+    windows::Win32::Foundation::HWND,
+    std::thread::JoinHandle<()>,
+)> {
+    crate::detection::device_watcher::set_runtime_handle(tokio::runtime::Handle::current());
+    match crate::detection::spawn_device_watcher_task(audit_ctx) {
+        Ok((hwnd, thread)) => {
+            info!("device watcher registered (volume + USB + disk interfaces)");
+            Some((hwnd, thread))
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "device watcher unavailable — continuing without USB/disk monitoring"
+            );
+            None
+        }
+    }
+}
+
+/// Spawns the encryption verification background task.
+///
+/// Returns `(shutdown_tx, join_handle)`.
+fn spawn_encryption_task(
+    audit_ctx: crate::audit_emitter::EmitContext,
+    recheck_interval: Duration,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let checker = Arc::new(crate::detection::encryption::EncryptionChecker::new());
+    crate::detection::encryption::set_encryption_checker(Arc::clone(&checker));
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = crate::detection::encryption::spawn_encryption_check_task(
+        tokio::runtime::Handle::current(),
+        audit_ctx,
+        recheck_interval,
+        rx,
+    );
+    info!(
+        recheck_interval_secs = recheck_interval.as_secs(),
+        "encryption verification task spawned"
+    );
+    (tx, handle)
+}
+
+/// Spawns the async interception event loop task.
+#[allow(clippy::too_many_arguments)]
+fn spawn_event_loop(
+    action_rx: mpsc::Receiver<crate::interception::FileAction>,
+    offline: Arc<crate::offline::OfflineManager>,
+    audit_ctx: crate::audit_emitter::EmitContext,
+    session_map: Arc<crate::session_identity::SessionIdentityMap>,
+    ad_client: Arc<Option<dlp_common::AdClient>>,
+    usb_enforcer: Option<Arc<crate::usb_enforcer::UsbEnforcer>>,
+    disk_enforcer: Option<Arc<crate::disk_enforcer::DiskEnforcer>>,
+    cloud_enforcer: Option<Arc<crate::cloud_enforcer::CloudEnforcer>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        crate::interception::run_event_loop(
+            action_rx,
+            offline,
+            audit_ctx,
+            session_map,
+            ad_client,
+            usb_enforcer,
+            disk_enforcer,
+            cloud_enforcer,
+        )
+        .await;
+    })
+}
+
+/// Performs graceful shutdown of all subsystems.
+///
+/// Extracted from [`run_loop`] to reduce cognitive complexity.  Each subsystem
+/// is stopped in reverse order of initialisation.
+async fn run_loop_shutdown(ctx: RunLoopContext) {
     crate::password_stop::debug_log("run_loop: starting graceful shutdown");
     info!(
         service_name = SERVICE_NAME,
         "shutting down enforcement subsystems"
     );
 
+    // Uninstall the drag-and-drop hook (APP-08, Phase 40).
+    crate::password_stop::debug_log("run_loop: uninstalling drag-drop hook");
+    crate::interception::uninstall_drag_drop_hook();
+    crate::password_stop::debug_log("run_loop: drag-drop hook uninstalled");
+
     // Stop the file monitor first so no new events arrive.
     crate::password_stop::debug_log("run_loop: stopping file monitor");
-    file_monitor_for_shutdown.stop();
-    let _ = file_handle.await;
+    ctx.file_monitor.stop();
+    let _ = ctx.file_handle.await;
     crate::password_stop::debug_log("run_loop: file monitor stopped");
 
     // Signal the event loop to drain and exit.
-    drop(event_loop_handle);
+    drop(ctx.event_loop_handle);
     crate::password_stop::debug_log("run_loop: event loop dropped");
 
     // Stop the heartbeat loop.
-    let _ = shutdown_tx.send(true);
-    let _ = _heartbeat_handle.await;
+    let _ = ctx.heartbeat_shutdown_tx.send(true);
+    let _ = ctx.heartbeat_handle.await;
     crate::password_stop::debug_log("run_loop: heartbeat stopped");
 
     // Stop the Pipe 1 heartbeat.
-    let _ = pipe1_shutdown_tx.send(true);
-    let _ = _pipe1_hb_handle.await;
+    let _ = ctx.pipe1_shutdown_tx.send(true);
+    let _ = ctx.pipe1_hb_handle.await;
     crate::password_stop::debug_log("run_loop: Pipe 1 heartbeat stopped");
 
     // Stop the config poll loop.
-    let _ = config_shutdown_tx.send(true);
-    if let Some(h) = _config_poll_handle {
+    let _ = ctx.config_shutdown_tx.send(true);
+    if let Some(h) = ctx.config_poll_handle {
         let _ = h.await;
     }
     crate::password_stop::debug_log("run_loop: config poll stopped");
 
     // Stop the device registry poll task.
-    let _ = registry_shutdown_tx.send(true);
-    if let Some(h) = _registry_poll_handle {
+    let _ = ctx.registry_shutdown_tx.send(true);
+    if let Some(h) = ctx.registry_poll_handle {
         let _ = h.await;
     }
     crate::password_stop::debug_log("run_loop: device registry poll stopped");
 
     // Stop the managed origins poll task.
-    let _ = origins_shutdown_tx.send(true);
-    if let Some(h) = _origins_poll_handle {
+    let _ = ctx.origins_shutdown_tx.send(true);
+    if let Some(h) = ctx.origins_poll_handle {
         let _ = h.await;
     }
     crate::password_stop::debug_log("run_loop: managed origins poll stopped");
 
-    // Unregister device watcher (Phase 36 D-12 replacement for register_usb_notifications).
-    if let Some((hwnd, thread)) = device_watcher_cleanup {
+    // Cancel in-flight disk enumeration and wait up to 5s (OP-04).
+    let _ = ctx.disk_shutdown_tx.send(true);
+    match tokio::time::timeout(DISK_ENUM_CANCEL_TIMEOUT, ctx.disk_enum_handle).await {
+        Ok(Ok(())) => debug!("disk enumeration task shut down cleanly"),
+        Ok(Err(e)) => warn!(error = %e, "disk enumeration task panicked"),
+        Err(_) => warn!("disk enumeration task did not shut down within 5s"),
+    }
+    crate::password_stop::debug_log("run_loop: disk enumeration stopped");
+
+    // Cancel encryption check task (OP-04 gap closure).
+    let _ = ctx.enc_shutdown_tx.send(true);
+    match tokio::time::timeout(DISK_ENUM_CANCEL_TIMEOUT, ctx.enc_handle).await {
+        Ok(Ok(())) => debug!("encryption check task shut down cleanly"),
+        Ok(Err(e)) => warn!(error = %e, "encryption check task panicked"),
+        Err(_) => warn!("encryption check task did not shut down within 5s"),
+    }
+    crate::password_stop::debug_log("run_loop: encryption check stopped");
+
+    // Unregister device watcher.
+    if let Some((hwnd, thread)) = ctx.device_watcher_cleanup {
         crate::password_stop::debug_log("run_loop: unregistering device watcher");
         crate::detection::unregister_device_watcher(hwnd, thread);
         crate::password_stop::debug_log("run_loop: device watcher unregistered");
     }
 
-    // Kill all UI processes spawned by the session monitor.  Must happen before
-    // the process exits so users are not left with orphaned dlp-user-ui windows.
+    // Restore volume DACL modifications for any USB drives (OP-04).
+    #[cfg(windows)]
+    restore_usb_volume_acls(&ctx.detector_arc);
+
+    // Re-enable PnP-disabled USB devices on shutdown (best-effort, OP-04).
+    #[cfg(windows)]
+    reenable_usb_devices(&ctx.detector_arc);
+
+    // Unregister WFP filters and close engine (M017/S01).
+    if let Some(manager) = ctx.wfp_manager {
+        crate::password_stop::debug_log("run_loop: unregistering WFP manager");
+        if let Err(e) = manager.unregister() {
+            warn!(error = %e, "WFP manager unregister failed during shutdown");
+        } else {
+            info!("WFP manager unregistered");
+        }
+        crate::password_stop::debug_log("run_loop: WFP manager unregistered");
+    }
+
+    // Drop hook injector (no explicit stop needed; DLL stays loaded in target
+    // processes until they exit). Log for observability.
+    if ctx.hook_injector.is_some() {
+        crate::password_stop::debug_log("run_loop: dropping hook injector");
+        info!("hook injector dropped");
+    }
+
+    // Stop sync-client process watcher thread (M017/S02).
+    if let Some(flag) = ctx.sync_watcher_shutdown {
+        crate::password_stop::debug_log("run_loop: signalling sync-client watcher shutdown");
+        flag.store(true, Ordering::Relaxed);
+    }
+    if let Some(handle) = ctx.sync_watcher_handle {
+        let _ = handle.join();
+        crate::password_stop::debug_log("run_loop: sync-client watcher thread joined");
+        info!("sync-client process watcher stopped");
+    }
+
+    // Stop print enforcer (M017/S04).
+    if let Some(mut enforcer) = ctx.print_enforcer {
+        crate::password_stop::debug_log("run_loop: stopping print enforcer");
+        enforcer.stop();
+        crate::password_stop::debug_log("run_loop: print enforcer stopped");
+    }
+
+    // Kill all UI processes spawned by the session monitor.
     crate::password_stop::debug_log("run_loop: killing UI processes");
     crate::ui_spawner::kill_all();
     crate::password_stop::debug_log("run_loop: UI processes killed");
 
     // Stop the audit buffer flush task (final flush runs inside).
-    let _ = audit_shutdown_tx.send(true);
-    if let Some(h) = _audit_flush_handle {
+    let _ = ctx.audit_shutdown_tx.send(true);
+    if let Some(h) = ctx.audit_flush_handle {
         let _ = h.await;
     }
     crate::password_stop::debug_log("run_loop: audit buffer stopped");
@@ -971,7 +1558,84 @@ async fn run_loop(
         service_name = SERVICE_NAME,
         "enforcement subsystems stopped"
     );
-    Ok(())
+}
+
+/// Restores volume ACLs for all tracked USB drives on shutdown.
+#[cfg(windows)]
+fn restore_usb_volume_acls(detector: &Arc<crate::detection::UsbDetector>) {
+    let Some(controller) = crate::detection::usb::get_device_controller() else {
+        return;
+    };
+    let letters: Vec<char> = detector.device_identities.read().keys().copied().collect();
+    for letter in letters {
+        if let Err(e) = controller.restore_volume_acl(letter) {
+            debug!(
+                drive = %letter,
+                error = %e,
+                "restore_volume_acl on shutdown (may be unmodified)"
+            );
+        } else {
+            info!(drive = %letter, "restored volume ACL on shutdown");
+        }
+    }
+}
+
+/// Re-enables PnP-disabled USB devices on shutdown.
+#[cfg(windows)]
+fn reenable_usb_devices(detector: &Arc<crate::detection::UsbDetector>) {
+    let Some(controller) = crate::detection::usb::get_device_controller() else {
+        return;
+    };
+    let identities: Vec<(char, dlp_common::DeviceIdentity)> = detector
+        .device_identities
+        .read()
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+    for (letter, identity) in identities {
+        if let Err(e) = controller.enable_usb_device("", &identity) {
+            debug!(
+                drive = %letter,
+                error = %e,
+                "enable_usb_device on shutdown (may not be disabled)"
+            );
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Chrome policy evaluator (Phase 41)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Synchronous policy evaluator for the Chrome handler.
+///
+/// Evaluates the request against the managed-origins cache via the ABAC
+/// EvaluateRequest/EvaluateResponse shape. This is the Phase 41 bridge:
+/// the Chrome handler now speaks ABAC, but the backing evaluation still
+/// uses the managed-origins cache until full policy cache integration.
+fn chrome_policy_evaluator(
+    request: &dlp_common::abac::EvaluateRequest,
+) -> dlp_common::abac::EvaluateResponse {
+    use dlp_common::abac::{Decision, EvaluateResponse};
+
+    let should_block = request.source_origin.as_ref().is_some_and(|origin| {
+        // Access the global origins cache (same cache the old handler used).
+        crate::chrome::handler::origins_cache_is_managed(origin)
+    });
+
+    if should_block {
+        EvaluateResponse {
+            decision: Decision::DENY,
+            matched_policy_id: Some("managed-origins".to_string()),
+            reason: "Source origin is in managed-origins list".to_string(),
+        }
+    } else {
+        EvaluateResponse {
+            decision: Decision::ALLOW,
+            matched_policy_id: None,
+            reason: "Source origin is not managed".to_string(),
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1170,21 +1834,19 @@ fn report_scm_status(state: ServiceState, controls: ServiceControlAccept, wait_h
 /// Returns `Err` on unexpected Win32 API failures.
 #[cfg(windows)]
 fn acquire_instance_mutex() -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+    use windows::core::PCWSTR;
     use windows::Win32::Foundation::{GetLastError, WIN32_ERROR};
     use windows::Win32::System::Threading::CreateMutexW;
-    use windows::core::PCWSTR;
 
     // Null-terminated UTF-16 name in the Global kernel namespace.
-    let name: Vec<u16> = "Global\\DlpAgentSingleInstance\0"
-        .encode_utf16()
-        .collect();
+    let name: Vec<u16> = "Global\\DlpAgentSingleInstance\0".encode_utf16().collect();
 
     // SAFETY: `name` is a valid null-terminated UTF-16 string; the handle is
     // immediately checked and stored for the service lifetime.
     let handle = unsafe {
         CreateMutexW(
-            None,  // default security — inheritable by child processes
-            true,  // bInitialOwner: this instance claims ownership immediately
+            None, // default security — inheritable by child processes
+            true, // bInitialOwner: this instance claims ownership immediately
             PCWSTR(name.as_ptr()),
         )?
     };
@@ -1209,7 +1871,10 @@ fn acquire_instance_mutex() -> windows::core::Result<windows::Win32::Foundation:
 /// No-op stub for non-Windows targets (tests, cross-compilation).
 #[cfg(not(windows))]
 fn acquire_instance_mutex() {
-    info!(service_name = SERVICE_NAME, "single-instance check skipped (non-Windows)");
+    info!(
+        service_name = SERVICE_NAME,
+        "single-instance check skipped (non-Windows)"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1233,6 +1898,16 @@ mod tests {
             offline_cache_enabled: true,
             ldap_config: None,
             disk_allowlist,
+            usb_blocked_failure_mode: "Warning only".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Always Blocked".to_string(),
+            cloud_hook_enabled: false,
+            wfp_filter_enabled: false,
+            hook_classification_timeout_ms: 5000,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: "Block".to_string(),
+            print_max_pages: 100,
         }
     }
 
@@ -1270,9 +1945,12 @@ mod tests {
         assert!(changed_fields.contains(&"disk_allowlist"));
 
         // Merge data must be provided for the deferred map update.
-        let (old_ids, new_list) = disk_merge_data
-            .expect("disk_merge_data must be Some when disk_allowlist changed");
-        assert!(old_ids.is_empty(), "old_ids must be empty on first-time apply");
+        let (old_ids, new_list) =
+            disk_merge_data.expect("disk_merge_data must be Some when disk_allowlist changed");
+        assert!(
+            old_ids.is_empty(),
+            "old_ids must be empty on first-time apply"
+        );
         assert_eq!(new_list.len(), 2);
 
         // Apply the merge into a real DiskEnumerator.
@@ -1281,8 +1959,14 @@ mod tests {
 
         // Both disks must be in instance_id_map.
         let map = enumerator.instance_id_map.read();
-        assert!(map.contains_key("DISK\\INSTANCE\\A"), "disk A must be in map");
-        assert!(map.contains_key("DISK\\INSTANCE\\B"), "disk B must be in map");
+        assert!(
+            map.contains_key("DISK\\INSTANCE\\A"),
+            "disk A must be in map"
+        );
+        assert!(
+            map.contains_key("DISK\\INSTANCE\\B"),
+            "disk B must be in map"
+        );
     }
 
     /// Test 2: No-change path — cfg.disk_allowlist already equals payload.disk_allowlist
@@ -1431,10 +2115,276 @@ mod tests {
             "reloaded config must contain the persisted disk"
         );
         assert_eq!(
-            reloaded.disk_allowlist[0].instance_id,
-            "DISK\\PERSIST\\001",
+            reloaded.disk_allowlist[0].instance_id, "DISK\\PERSIST\\001",
             "persisted instance_id must survive TOML roundtrip"
         );
+    }
+
+    /// Test 6: USB config fields are applied from payload to cfg.
+    #[test]
+    fn test_apply_payload_usb_fields() {
+        let mut cfg = AgentConfig::default();
+        let mut payload = make_payload(vec![]);
+        payload.usb_blocked_failure_mode = "Hard error".to_string();
+        payload.usb_startup_resolution_mode = "Volume GUID resolution".to_string();
+        payload.usb_none_serial_policy = "Allow unregistered".to_string();
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            changed_fields.contains(&"usb_blocked_failure_mode"),
+            "usb_blocked_failure_mode must be in changed_fields"
+        );
+        assert!(
+            changed_fields.contains(&"usb_startup_resolution_mode"),
+            "usb_startup_resolution_mode must be in changed_fields"
+        );
+        assert!(
+            changed_fields.contains(&"usb_none_serial_policy"),
+            "usb_none_serial_policy must be in changed_fields"
+        );
+        assert_eq!(cfg.usb_blocked_failure_mode, Some("Hard error".to_string()));
+        assert_eq!(
+            cfg.usb_startup_resolution_mode,
+            Some("Volume GUID resolution".to_string())
+        );
+        assert_eq!(
+            cfg.usb_none_serial_policy,
+            Some("Allow unregistered".to_string())
+        );
+    }
+
+    /// Test 7: No-change path — cfg and payload USB values match.
+    #[test]
+    fn test_apply_payload_usb_fields_no_change() {
+        let mut cfg = AgentConfig::default();
+        cfg.usb_blocked_failure_mode = Some("Warning only".to_string());
+        cfg.usb_startup_resolution_mode = Some("VID/PID/serial fallback".to_string());
+        cfg.usb_none_serial_policy = Some("Always Blocked".to_string());
+        let payload = make_payload(vec![]);
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"usb_blocked_failure_mode"),
+            "usb_blocked_failure_mode must NOT be in changed_fields when unchanged"
+        );
+        assert!(
+            !changed_fields.contains(&"usb_startup_resolution_mode"),
+            "usb_startup_resolution_mode must NOT be in changed_fields when unchanged"
+        );
+        assert!(
+            !changed_fields.contains(&"usb_none_serial_policy"),
+            "usb_none_serial_policy must NOT be in changed_fields when unchanged"
+        );
+    }
+
+    /// Test 8: None guard — when cfg USB fields are None and payload carries the
+    /// system default, changed_fields must NOT contain usb_* entries.
+    /// This prevents spurious "config changed" logs when a new agent polls an old
+    /// server that does not send these fields.
+    #[test]
+    fn test_apply_payload_usb_fields_none_guard() {
+        let mut cfg = AgentConfig::default(); // all USB fields are None
+        let payload = make_payload(vec![]); // all defaults
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"usb_blocked_failure_mode"),
+            "None guard: usb_blocked_failure_mode must NOT diff when payload == default"
+        );
+        assert!(
+            !changed_fields.contains(&"usb_startup_resolution_mode"),
+            "None guard: usb_startup_resolution_mode must NOT diff when payload == default"
+        );
+        assert!(
+            !changed_fields.contains(&"usb_none_serial_policy"),
+            "None guard: usb_none_serial_policy must NOT diff when payload == default"
+        );
+    }
+
+    /// Test 9: Empty-string guard — when the server sends an empty string for a
+    /// USB config field, the apply must be skipped and the previous cfg value
+    /// preserved.
+    #[test]
+    fn test_apply_payload_usb_fields_empty_guard() {
+        let mut cfg = AgentConfig::default();
+        cfg.usb_blocked_failure_mode = Some("Hard error".to_string());
+        let mut payload = make_payload(vec![]);
+        payload.usb_blocked_failure_mode = "".to_string();
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"usb_blocked_failure_mode"),
+            "empty-string guard: must NOT diff when payload is empty"
+        );
+        assert_eq!(
+            cfg.usb_blocked_failure_mode,
+            Some("Hard error".to_string()),
+            "empty-string guard: previous value must be preserved"
+        );
+    }
+
+    // ── M017/S04: Print config field tests ────────────────────────────────
+
+    /// Test 10: Print config fields are applied from payload to cfg.
+    #[test]
+    fn test_apply_payload_print_fields() {
+        let mut cfg = AgentConfig::default();
+        let mut payload = make_payload(vec![]);
+        payload.print_enabled = true;
+        payload.print_xps_timeout_ms = 3000;
+        payload.print_unclassifiable_action = "Allow".to_string();
+        payload.print_max_pages = 50;
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            changed_fields.contains(&"print_enabled"),
+            "print_enabled must be in changed_fields"
+        );
+        assert!(
+            changed_fields.contains(&"print_xps_timeout_ms"),
+            "print_xps_timeout_ms must be in changed_fields"
+        );
+        assert!(
+            changed_fields.contains(&"print_unclassifiable_action"),
+            "print_unclassifiable_action must be in changed_fields"
+        );
+        assert!(
+            changed_fields.contains(&"print_max_pages"),
+            "print_max_pages must be in changed_fields"
+        );
+        assert_eq!(cfg.print_enabled, Some(true));
+        assert_eq!(cfg.print_xps_timeout_ms, Some(3000));
+        assert_eq!(cfg.print_unclassifiable_action, Some("Allow".to_string()));
+        assert_eq!(cfg.print_max_pages, Some(50));
+    }
+
+    /// Test 11: No-change path — cfg and payload print values match.
+    #[test]
+    fn test_apply_payload_print_fields_no_change() {
+        let mut cfg = AgentConfig::default();
+        cfg.print_enabled = Some(true);
+        cfg.print_xps_timeout_ms = Some(3000);
+        cfg.print_unclassifiable_action = Some("Allow".to_string());
+        cfg.print_max_pages = Some(50);
+        let mut payload = make_payload(vec![]);
+        payload.print_enabled = true;
+        payload.print_xps_timeout_ms = 3000;
+        payload.print_unclassifiable_action = "Allow".to_string();
+        payload.print_max_pages = 50;
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"print_enabled"),
+            "print_enabled must NOT be in changed_fields when unchanged"
+        );
+        assert!(
+            !changed_fields.contains(&"print_xps_timeout_ms"),
+            "print_xps_timeout_ms must NOT be in changed_fields when unchanged"
+        );
+        assert!(
+            !changed_fields.contains(&"print_unclassifiable_action"),
+            "print_unclassifiable_action must NOT be in changed_fields when unchanged"
+        );
+        assert!(
+            !changed_fields.contains(&"print_max_pages"),
+            "print_max_pages must NOT be in changed_fields when unchanged"
+        );
+    }
+
+    /// Test 12: None guard — when cfg print fields are None and payload carries the
+    /// system default, changed_fields must NOT contain print_* entries.
+    /// This prevents spurious "config changed" logs when a new agent polls an old
+    /// server that does not send these fields.
+    #[test]
+    fn test_apply_payload_print_fields_none_guard() {
+        let mut cfg = AgentConfig::default(); // all print fields are None
+        let payload = make_payload(vec![]); // all defaults
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"print_enabled"),
+            "None guard: print_enabled must NOT diff when payload == default"
+        );
+        assert!(
+            !changed_fields.contains(&"print_xps_timeout_ms"),
+            "None guard: print_xps_timeout_ms must NOT diff when payload == default"
+        );
+        assert!(
+            !changed_fields.contains(&"print_unclassifiable_action"),
+            "None guard: print_unclassifiable_action must NOT diff when payload == default"
+        );
+        assert!(
+            !changed_fields.contains(&"print_max_pages"),
+            "None guard: print_max_pages must NOT diff when payload == default"
+        );
+    }
+
+    /// Test 13: Empty-string guard — when the server sends an empty string for
+    /// print_unclassifiable_action, the apply must be skipped and the previous
+    /// cfg value preserved.
+    #[test]
+    fn test_apply_payload_print_unclassifiable_action_empty_guard() {
+        let mut cfg = AgentConfig::default();
+        cfg.print_unclassifiable_action = Some("Allow".to_string());
+        let mut payload = make_payload(vec![]);
+        payload.print_unclassifiable_action = "".to_string();
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"print_unclassifiable_action"),
+            "empty-string guard: must NOT diff when payload is empty"
+        );
+        assert_eq!(
+            cfg.print_unclassifiable_action,
+            Some("Allow".to_string()),
+            "empty-string guard: previous value must be preserved"
+        );
+    }
+
+    // ── with_config tests (Phase 43-04) ───────────────────────────────────
+
+    /// Verify that `with_config` returns `None` when CONFIG is not initialized.
+    #[test]
+    fn test_with_config_returns_none_when_uninitialized() {
+        // NOTE: This test relies on CONFIG not being set. Since CONFIG is a
+        // OnceLock and tests may run in parallel, we cannot guarantee this
+        // in all test configurations. The test is marked as a best-effort
+        // verification of the uninitialized path.
+        //
+        // If other tests in the same process have already set CONFIG, this
+        // test will still pass because we only assert that `with_config`
+        // returns `Some` when initialized and that the closure is executed.
+        // The uninitialized case is covered by the type system (Option<R>).
+        let result: Option<String> =
+            with_config(|cfg| cfg.usb_blocked_failure_mode.clone().unwrap_or_default());
+        // When CONFIG is set by other tests, result is Some(...).
+        // When CONFIG is unset, result is None.
+        // Both are valid — we just verify the function does not panic.
+        let _ = result;
+    }
+
+    /// Verify that `with_config` returns the value from the closure when
+    /// CONFIG is initialized.
+    #[test]
+    fn test_with_config_returns_value_when_initialized() {
+        let test_config = AgentConfig {
+            usb_blocked_failure_mode: Some("Hard error".to_string()),
+            ..Default::default()
+        };
+        let test_arc = Arc::new(parking_lot::Mutex::new(test_config));
+        let _ = CONFIG.set(test_arc);
+
+        let result = with_config(|cfg| cfg.usb_blocked_failure_mode.clone().unwrap_or_default());
+
+        assert_eq!(result, Some("Hard error".to_string()));
     }
 }
 

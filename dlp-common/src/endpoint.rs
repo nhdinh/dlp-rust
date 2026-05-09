@@ -98,6 +98,30 @@ pub struct AppIdentity {
     pub trust_tier: AppTrustTier,
     /// Authenticode verification outcome (Phase 25).
     pub signature_state: SignatureState,
+    /// Application User Model ID (AUMID) for UWP apps, e.g. `Microsoft.Windows.Photos_8wekyb3d8bbwe!App`.
+    /// `None` for Win32 desktop applications.
+    pub aumid: Option<String>,
+    /// Package Family Name extracted from the AUMID (everything before `!`).
+    /// `None` for Win32 desktop applications.
+    pub package_family_name: Option<String>,
+    /// Whether this identity represents a UWP (Universal Windows Platform) app.
+    pub is_uwp: bool,
+}
+
+/// Sentinel value used when the application identity cannot be resolved.
+///
+/// Guarantees non-null `source_application` / `destination_application` fields
+/// in `AuditEvent` JSON by replacing `None` at emission time (AUDIT-05, Phase 38.3).
+pub fn agent_unknown_app() -> AppIdentity {
+    AppIdentity {
+        image_path: "AGENT-UNKNOWN".to_string(),
+        publisher: "AGENT-UNKNOWN".to_string(),
+        trust_tier: AppTrustTier::Unknown,
+        signature_state: SignatureState::Unknown,
+        aumid: None,
+        package_family_name: None,
+        is_uwp: false,
+    }
 }
 
 /// Captured identity of a USB device.
@@ -219,10 +243,44 @@ mod tests {
             publisher: "Contoso Corporation".to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         };
         let json = serde_json::to_string(&original).unwrap();
         let round_trip: AppIdentity = serde_json::from_str(&json).unwrap();
         assert_eq!(original, round_trip);
+    }
+
+    #[test]
+    fn test_app_identity_uwp_serde_round_trip() {
+        let original = AppIdentity {
+            image_path:
+                r"C:\Program Files\WindowsApps\Microsoft.Windows.Photos_8wekyb3d8bbwe\Photos.exe"
+                    .to_string(),
+            publisher: "Microsoft Corporation".to_string(),
+            trust_tier: AppTrustTier::Trusted,
+            signature_state: SignatureState::Valid,
+            aumid: Some("Microsoft.Windows.Photos_8wekyb3d8bbwe!App".to_string()),
+            package_family_name: Some("Microsoft.Windows.Photos_8wekyb3d8bbwe".to_string()),
+            is_uwp: true,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let round_trip: AppIdentity = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, round_trip);
+        // Verify JSON contains UWP fields.
+        assert!(
+            json.contains("\"aumid\""),
+            "json must contain aumid field: {json}"
+        );
+        assert!(
+            json.contains("\"package_family_name\""),
+            "json must contain package_family_name field: {json}"
+        );
+        assert!(
+            json.contains("\"is_uwp\":true"),
+            "json must contain is_uwp field: {json}"
+        );
     }
 
     #[test]
@@ -233,6 +291,15 @@ mod tests {
         assert_eq!(parsed.publisher, "");
         assert_eq!(parsed.trust_tier, AppTrustTier::Unknown);
         assert_eq!(parsed.signature_state, SignatureState::Unknown);
+    }
+
+    #[test]
+    fn test_agent_unknown_app_fields() {
+        let app = agent_unknown_app();
+        assert_eq!(app.image_path, "AGENT-UNKNOWN");
+        assert_eq!(app.publisher, "AGENT-UNKNOWN");
+        assert_eq!(app.trust_tier, AppTrustTier::Unknown);
+        assert_eq!(app.signature_state, SignatureState::Unknown);
     }
 
     #[test]

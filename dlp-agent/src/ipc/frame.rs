@@ -98,13 +98,14 @@ fn write_all(pipe: HANDLE, buf: &[u8]) -> Result<()> {
 
     while remaining > 0 {
         let mut bytes_written = 0u32;
-        let slice_len = buf.len() - remaining;
+        let offset = buf.len() - remaining;
+        let slice_len = remaining.min(65536);
 
         // windows-rs 0.58 WriteFile: lpbuffer: Option<&[u8]>
         let result = unsafe {
             WriteFile(
                 pipe,
-                Some(&buf[..slice_len]),
+                Some(&buf[offset..offset + slice_len]),
                 Some(&mut bytes_written),
                 None,
             )

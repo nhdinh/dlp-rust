@@ -9,6 +9,17 @@ use crate::app::{
     LDAP_ROW_COUNT, LDAP_SAVE_ROW,
 };
 use crate::event::AppEvent;
+use crate::screens::cloud_config::{
+    CLOUD_CONFIG_BACK_ROW, CLOUD_CONFIG_KEYS, CLOUD_CONFIG_ROW_COUNT, CLOUD_CONFIG_SAVE_ROW,
+};
+use crate::screens::print_config::{
+    is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_BACK_ROW, PRINT_CONFIG_KEYS,
+    PRINT_CONFIG_ROW_COUNT, PRINT_CONFIG_SAVE_ROW, PRINT_UNCLASSIFIABLE_OPTIONS,
+};
+use crate::screens::usb_enforcement::{
+    USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_OPTIONS,
+    USB_ENFORCEMENT_ROW_COUNT, USB_ENFORCEMENT_SAVE_ROW,
+};
 use dlp_common::abac::PolicyMode;
 
 /// Routes an event to the handler for the current screen.
@@ -40,6 +51,9 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::SiemConfig { .. } => handle_siem_config(app, key),
         Screen::AlertConfig { .. } => handle_alert_config(app, key),
         Screen::LdapConfig { .. } => handle_ldap_config(app, key),
+        Screen::UsbEnforcementConfig { .. } => handle_usb_enforcement_config(app, key),
+        Screen::CloudConfig { .. } => handle_cloud_config(app, key),
+        Screen::PrintConfig { .. } => handle_print_config(app, key),
         Screen::ConditionsBuilder { .. } => handle_conditions_builder(app, key),
         Screen::PolicyCreate { .. } => handle_policy_create(app, key),
         Screen::PolicyEdit { .. } => handle_policy_edit(app, key),
@@ -206,15 +220,19 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        // Phase 38.1: expanded from 5 to 6 items — added "LDAP Config" at index 4.
-        KeyCode::Up | KeyCode::Down => nav(selected, 6, key.code),
+        // Phase 43.05: expanded from 6 to 7 items — added "USB Enforcement" at index 5.
+        // Phase 38.2: expanded from 7 to 9 items — added "Cloud Config" at index 6, "Print Config" at index 7.
+        KeyCode::Up | KeyCode::Down => nav(selected, 9, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
             2 => action_load_siem_config(app),
             3 => action_load_alert_config(app),
             4 => action_load_ldap_config(app),
-            5 => app.screen = Screen::MainMenu { selected: 2 },
+            5 => action_load_usb_enforcement_config(app),
+            6 => action_load_cloud_config(app),
+            7 => action_load_print_config(app),
+            8 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
@@ -244,6 +262,8 @@ fn handle_text_input(app: &mut App, key: KeyEvent) {
                 purpose,
                 InputPurpose::RegisterDeviceSerial { .. }
                     | InputPurpose::RegisterDeviceDescription { .. }
+                    | InputPurpose::RegisterDeviceOwnerSid { .. }
+                    | InputPurpose::RegisterDeviceOwnerUser { .. }
             );
             if value.is_empty() && !allow_empty {
                 app.set_status("Input cannot be empty", StatusKind::Error);
@@ -257,7 +277,9 @@ fn handle_text_input(app: &mut App, key: KeyEvent) {
                 InputPurpose::RegisterDeviceVid
                 | InputPurpose::RegisterDevicePid { .. }
                 | InputPurpose::RegisterDeviceSerial { .. }
-                | InputPurpose::RegisterDeviceDescription { .. } => {
+                | InputPurpose::RegisterDeviceDescription { .. }
+                | InputPurpose::RegisterDeviceOwnerSid { .. }
+                | InputPurpose::RegisterDeviceOwnerUser { .. } => {
                     Screen::DevicesMenu { selected: 0 }
                 }
                 InputPurpose::AddManagedOrigin => Screen::DevicesMenu { selected: 1 },
@@ -265,9 +287,7 @@ fn handle_text_input(app: &mut App, key: KeyEvent) {
                 | InputPurpose::AddDiskRegistryInstanceId { .. }
                 | InputPurpose::AddDiskRegistryBusType { .. }
                 | InputPurpose::AddDiskRegistryEncryption { .. }
-                | InputPurpose::AddDiskRegistryModel { .. } => {
-                    Screen::DevicesMenu { selected: 3 }
-                }
+                | InputPurpose::AddDiskRegistryModel { .. } => Screen::DevicesMenu { selected: 3 },
                 _ => Screen::PolicyMenu { selected: 0 },
             };
         }
@@ -332,11 +352,59 @@ fn on_text_confirmed(app: &mut App, value: &str, purpose: InputPurpose) {
             };
         }
         InputPurpose::RegisterDeviceDescription { vid, pid, serial } => {
+            app.screen = Screen::TextInput {
+                prompt: "Owner SID (optional, press Enter to skip):".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::RegisterDeviceOwnerSid {
+                    vid,
+                    pid,
+                    serial,
+                    description: value.to_string(),
+                },
+            };
+        }
+        InputPurpose::RegisterDeviceOwnerSid {
+            vid,
+            pid,
+            serial,
+            description,
+        } => {
+            app.screen = Screen::TextInput {
+                prompt: "Owner User (optional, press Enter to skip):".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::RegisterDeviceOwnerUser {
+                    vid,
+                    pid,
+                    serial,
+                    description,
+                    owner_sid: value.to_string(),
+                },
+            };
+        }
+        InputPurpose::RegisterDeviceOwnerUser {
+            vid,
+            pid,
+            serial,
+            description,
+            owner_sid,
+        } => {
+            let owner_sid_opt = if owner_sid.is_empty() {
+                None
+            } else {
+                Some(owner_sid)
+            };
+            let owner_user_opt = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
             app.screen = Screen::DeviceTierPicker {
                 vid,
                 pid,
                 serial,
-                description: value.to_string(),
+                description,
+                owner_sid: owner_sid_opt,
+                owner_user: owner_user_opt,
                 selected: 0,
                 caller: TierPickerCaller::DeviceList,
             };
@@ -429,10 +497,7 @@ fn on_text_confirmed(app: &mut App, value: &str, purpose: InputPurpose) {
                     action_load_disk_registry_list(app);
                 }
                 Err(e) => {
-                    app.set_status(
-                        format!("Error adding disk entry: {e}"),
-                        StatusKind::Error,
-                    );
+                    app.set_status(format!("Error adding disk entry: {e}"), StatusKind::Error);
                     app.screen = Screen::DevicesMenu { selected: 3 };
                 }
             }
@@ -1188,6 +1253,60 @@ fn handle_alert_config(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Commits a numeric buffer value to the Alert config field at `selected`.
+fn alert_commit_numeric(app: &mut App, selected: usize) {
+    let buffer_copy = match &app.screen {
+        Screen::AlertConfig { buffer, .. } => buffer.clone(),
+        _ => return,
+    };
+    let port = match buffer_copy.trim().parse::<u16>() {
+        Ok(p) => p,
+        Err(_) => {
+            app.set_status("SMTP port must be a number in 0..=65535", StatusKind::Error);
+            return;
+        }
+    };
+    if let Screen::AlertConfig {
+        config,
+        buffer,
+        editing,
+        ..
+    } = &mut app.screen
+    {
+        let key_name = ALERT_KEYS[selected];
+        config[key_name] = serde_json::Value::Number(serde_json::Number::from(port));
+        buffer.clear();
+        *editing = false;
+    }
+}
+
+/// Commits a string buffer value to the Alert config field at `selected`.
+fn alert_commit_string(app: &mut App, selected: usize) {
+    if let Screen::AlertConfig {
+        config,
+        buffer,
+        editing,
+        ..
+    } = &mut app.screen
+    {
+        let key_name = ALERT_KEYS[selected];
+        config[key_name] = serde_json::Value::String(buffer.clone());
+        buffer.clear();
+        *editing = false;
+    }
+}
+
+/// Cancels editing mode for the Alert config form.
+fn alert_cancel_edit(app: &mut App) {
+    if let Screen::AlertConfig {
+        buffer, editing, ..
+    } = &mut app.screen
+    {
+        buffer.clear();
+        *editing = false;
+    }
+}
+
 /// Handles key events while editing a text/numeric field in the Alert
 /// config form.
 ///
@@ -1207,65 +1326,80 @@ fn handle_alert_config_editing(app: &mut App, key: KeyEvent, selected: usize) {
             }
         }
         KeyCode::Enter => {
-            // G2: commit the buffer. Numeric row 1 requires u16 parsing.
             if alert_is_numeric(selected) {
-                // Parse smtp_port. On failure, set a status error and stay
-                // in edit mode so the user can correct the value.
-                let buffer_copy = match &app.screen {
-                    Screen::AlertConfig { buffer, .. } => buffer.clone(),
-                    _ => return,
-                };
-                match buffer_copy.trim().parse::<u16>() {
-                    Ok(port) => {
-                        if let Screen::AlertConfig {
-                            config,
-                            buffer,
-                            editing,
-                            ..
-                        } = &mut app.screen
-                        {
-                            let key_name = ALERT_KEYS[selected];
-                            // G9: store as JSON Number, not String, so the
-                            // server's `smtp_port: u16` deserialization
-                            // succeeds on PUT.
-                            config[key_name] =
-                                serde_json::Value::Number(serde_json::Number::from(port));
-                            buffer.clear();
-                            *editing = false;
-                        }
-                    }
-                    Err(_) => {
-                        app.set_status(
-                            "SMTP port must be a number in 0..=65535",
-                            StatusKind::Error,
-                        );
-                        // Stay in edit mode so the user can fix the buffer.
-                    }
-                }
-            } else if let Screen::AlertConfig {
-                config,
-                buffer,
-                editing,
-                ..
-            } = &mut app.screen
-            {
-                let key_name = ALERT_KEYS[selected];
-                config[key_name] = serde_json::Value::String(buffer.clone());
-                buffer.clear();
-                *editing = false;
+                alert_commit_numeric(app, selected);
+            } else {
+                alert_commit_string(app, selected);
             }
         }
-        KeyCode::Esc => {
-            if let Screen::AlertConfig {
-                buffer, editing, ..
-            } = &mut app.screen
-            {
-                buffer.clear();
-                *editing = false;
-            }
-        }
+        KeyCode::Esc => alert_cancel_edit(app),
         _ => {}
     }
+}
+
+/// Toggles a boolean field in the Alert config at `selected`.
+fn alert_toggle_bool(app: &mut App, selected: usize) {
+    if let Screen::AlertConfig { config, .. } = &mut app.screen {
+        let key_name = ALERT_KEYS[selected];
+        let cur = config[key_name].as_bool().unwrap_or(false);
+        config[key_name] = serde_json::Value::Bool(!cur);
+    }
+}
+
+/// Enters numeric edit mode for the Alert config field at `selected`.
+fn alert_enter_numeric_edit(app: &mut App, selected: usize) {
+    if let Screen::AlertConfig {
+        config,
+        editing,
+        buffer,
+        ..
+    } = &mut app.screen
+    {
+        let key_name = ALERT_KEYS[selected];
+        let n = config[key_name].as_i64().unwrap_or(587);
+        *buffer = n.to_string();
+        *editing = true;
+    }
+}
+
+/// Enters string edit mode for the Alert config field at `selected`.
+fn alert_enter_string_edit(app: &mut App, selected: usize) {
+    if let Screen::AlertConfig {
+        config,
+        editing,
+        buffer,
+        ..
+    } = &mut app.screen
+    {
+        let key_name = ALERT_KEYS[selected];
+        *buffer = config[key_name].as_str().unwrap_or("").to_string();
+        *editing = true;
+    }
+}
+
+/// Handles Enter key in Alert config navigation.
+fn alert_nav_enter(app: &mut App, selected: usize) {
+    if selected == ALERT_SAVE_ROW {
+        action_save_alert_config(app);
+        return;
+    }
+    if selected == ALERT_TEST_ROW {
+        action_test_alert_config(app);
+        return;
+    }
+    if selected == ALERT_BACK_ROW {
+        app.screen = Screen::SystemMenu { selected: 3 };
+        return;
+    }
+    if alert_is_bool(selected) {
+        alert_toggle_bool(app, selected);
+        return;
+    }
+    if alert_is_numeric(selected) {
+        alert_enter_numeric_edit(app, selected);
+        return;
+    }
+    alert_enter_string_edit(app, selected);
 }
 
 /// Handles key events while navigating the Alert config form.
@@ -1276,49 +1410,7 @@ fn handle_alert_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 nav(sel, ALERT_ROW_COUNT, key.code);
             }
         }
-        KeyCode::Enter => {
-            if selected == ALERT_SAVE_ROW {
-                action_save_alert_config(app);
-            } else if selected == ALERT_TEST_ROW {
-                action_test_alert_config(app);
-            } else if selected == ALERT_BACK_ROW {
-                app.screen = Screen::SystemMenu { selected: 3 };
-            } else if alert_is_bool(selected) {
-                // Toggle the bool in place.
-                if let Screen::AlertConfig { config, .. } = &mut app.screen {
-                    let key_name = ALERT_KEYS[selected];
-                    let cur = config[key_name].as_bool().unwrap_or(false);
-                    config[key_name] = serde_json::Value::Bool(!cur);
-                }
-            } else if alert_is_numeric(selected) {
-                // Enter edit mode pre-filled with the current port value.
-                if let Screen::AlertConfig {
-                    config,
-                    editing,
-                    buffer,
-                    ..
-                } = &mut app.screen
-                {
-                    let key_name = ALERT_KEYS[selected];
-                    let n = config[key_name].as_i64().unwrap_or(587);
-                    *buffer = n.to_string();
-                    *editing = true;
-                }
-            } else {
-                // Enter text-edit mode with the current string value pre-filled.
-                if let Screen::AlertConfig {
-                    config,
-                    editing,
-                    buffer,
-                    ..
-                } = &mut app.screen
-                {
-                    let key_name = ALERT_KEYS[selected];
-                    *buffer = config[key_name].as_str().unwrap_or("").to_string();
-                    *editing = true;
-                }
-            }
-        }
+        KeyCode::Enter => alert_nav_enter(app, selected),
         KeyCode::Esc => {
             app.screen = Screen::SystemMenu { selected: 3 };
         }
@@ -1431,57 +1523,132 @@ fn handle_ldap_config_editing(app: &mut App, key: KeyEvent, selected: usize) {
         }
         KeyCode::Enter => {
             if ldap_is_numeric(selected) {
-                let buffer_copy = match &app.screen {
-                    Screen::LdapConfig { buffer, .. } => buffer.clone(),
-                    _ => return,
-                };
-                match buffer_copy.trim().parse::<u64>() {
-                    Ok(ttl) if (60..=3600).contains(&ttl) => {
-                        if let Screen::LdapConfig {
-                            config,
-                            buffer,
-                            editing,
-                            ..
-                        } = &mut app.screen
-                        {
-                            let key_name = LDAP_KEYS[selected];
-                            config[key_name] =
-                                serde_json::Value::Number(serde_json::Number::from(ttl));
-                            buffer.clear();
-                            *editing = false;
-                        }
-                    }
-                    _ => {
-                        app.set_status(
-                            "Cache TTL must be between 60 and 3600 seconds",
-                            StatusKind::Error,
-                        );
-                    }
-                }
-            } else if let Screen::LdapConfig {
-                config,
-                buffer,
-                editing,
-                ..
-            } = &mut app.screen
-            {
-                let key_name = LDAP_KEYS[selected];
-                config[key_name] = serde_json::Value::String(buffer.clone());
-                buffer.clear();
-                *editing = false;
+                ldap_commit_numeric(app, selected);
+            } else {
+                ldap_commit_string(app, selected);
             }
         }
-        KeyCode::Esc => {
-            if let Screen::LdapConfig {
-                buffer, editing, ..
-            } = &mut app.screen
-            {
-                buffer.clear();
-                *editing = false;
-            }
-        }
+        KeyCode::Esc => ldap_cancel_edit(app),
         _ => {}
     }
+}
+
+/// Commits a numeric buffer value to the LDAP config field at `selected`.
+fn ldap_commit_numeric(app: &mut App, selected: usize) {
+    let buffer_copy = match &app.screen {
+        Screen::LdapConfig { buffer, .. } => buffer.clone(),
+        _ => return,
+    };
+    let ttl = match buffer_copy.trim().parse::<u64>() {
+        Ok(v) if (60..=3600).contains(&v) => v,
+        _ => {
+            app.set_status(
+                "Cache TTL must be between 60 and 3600 seconds",
+                StatusKind::Error,
+            );
+            return;
+        }
+    };
+    if let Screen::LdapConfig {
+        config,
+        buffer,
+        editing,
+        ..
+    } = &mut app.screen
+    {
+        let key_name = LDAP_KEYS[selected];
+        config[key_name] = serde_json::Value::Number(serde_json::Number::from(ttl));
+        buffer.clear();
+        *editing = false;
+    }
+}
+
+/// Commits a string buffer value to the LDAP config field at `selected`.
+fn ldap_commit_string(app: &mut App, selected: usize) {
+    if let Screen::LdapConfig {
+        config,
+        buffer,
+        editing,
+        ..
+    } = &mut app.screen
+    {
+        let key_name = LDAP_KEYS[selected];
+        config[key_name] = serde_json::Value::String(buffer.clone());
+        buffer.clear();
+        *editing = false;
+    }
+}
+
+/// Cancels editing mode for the LDAP config form.
+fn ldap_cancel_edit(app: &mut App) {
+    if let Screen::LdapConfig {
+        buffer, editing, ..
+    } = &mut app.screen
+    {
+        buffer.clear();
+        *editing = false;
+    }
+}
+
+/// Toggles a boolean field in the LDAP config at `selected`.
+fn ldap_toggle_bool(app: &mut App, selected: usize) {
+    if let Screen::LdapConfig { config, .. } = &mut app.screen {
+        let key_name = LDAP_KEYS[selected];
+        let cur = config[key_name].as_bool().unwrap_or(false);
+        config[key_name] = serde_json::Value::Bool(!cur);
+    }
+}
+
+/// Enters numeric edit mode for the LDAP config field at `selected`.
+fn ldap_enter_numeric_edit(app: &mut App, selected: usize) {
+    if let Screen::LdapConfig {
+        config,
+        editing,
+        buffer,
+        ..
+    } = &mut app.screen
+    {
+        let key_name = LDAP_KEYS[selected];
+        let n = config[key_name].as_u64().unwrap_or(300);
+        *buffer = n.to_string();
+        *editing = true;
+    }
+}
+
+/// Enters string edit mode for the LDAP config field at `selected`.
+fn ldap_enter_string_edit(app: &mut App, selected: usize) {
+    if let Screen::LdapConfig {
+        config,
+        editing,
+        buffer,
+        ..
+    } = &mut app.screen
+    {
+        let key_name = LDAP_KEYS[selected];
+        *buffer = config[key_name].as_str().unwrap_or("").to_string();
+        *editing = true;
+    }
+}
+
+/// Handles Enter key in LDAP config navigation.
+fn ldap_nav_enter(app: &mut App, selected: usize) {
+    if selected == LDAP_SAVE_ROW {
+        action_save_ldap_config(app);
+        return;
+    }
+    if selected == LDAP_BACK_ROW {
+        app.screen = Screen::SystemMenu { selected: 4 };
+        return;
+    }
+    if ldap_is_bool(selected) {
+        ldap_toggle_bool(app, selected);
+        return;
+    }
+    if ldap_is_numeric(selected) {
+        ldap_enter_numeric_edit(app, selected);
+        return;
+    }
+    ldap_enter_string_edit(app, selected);
 }
 
 /// Handles key events while navigating the LDAP config form.
@@ -1492,44 +1659,7 @@ fn handle_ldap_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 nav(sel, LDAP_ROW_COUNT, key.code);
             }
         }
-        KeyCode::Enter => {
-            if selected == LDAP_SAVE_ROW {
-                action_save_ldap_config(app);
-            } else if selected == LDAP_BACK_ROW {
-                app.screen = Screen::SystemMenu { selected: 4 };
-            } else if ldap_is_bool(selected) {
-                if let Screen::LdapConfig { config, .. } = &mut app.screen {
-                    let key_name = LDAP_KEYS[selected];
-                    let cur = config[key_name].as_bool().unwrap_or(false);
-                    config[key_name] = serde_json::Value::Bool(!cur);
-                }
-            } else if ldap_is_numeric(selected) {
-                if let Screen::LdapConfig {
-                    config,
-                    editing,
-                    buffer,
-                    ..
-                } = &mut app.screen
-                {
-                    let key_name = LDAP_KEYS[selected];
-                    let n = config[key_name].as_u64().unwrap_or(300);
-                    *buffer = n.to_string();
-                    *editing = true;
-                }
-            } else {
-                if let Screen::LdapConfig {
-                    config,
-                    editing,
-                    buffer,
-                    ..
-                } = &mut app.screen
-                {
-                    let key_name = LDAP_KEYS[selected];
-                    *buffer = config[key_name].as_str().unwrap_or("").to_string();
-                    *editing = true;
-                }
-            }
-        }
+        KeyCode::Enter => ldap_nav_enter(app, selected),
         KeyCode::Esc => {
             app.screen = Screen::SystemMenu { selected: 4 };
         }
@@ -1572,6 +1702,399 @@ mod ldap_config_tests {
         for i in 0..LDAP_ROW_COUNT {
             assert_eq!(ldap_is_numeric(i), i == 3);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// USB enforcement config screen
+// ---------------------------------------------------------------------------
+
+/// Fetches the current agent config from the server and switches to the
+/// `UsbEnforcementConfig` screen.
+fn action_load_usb_enforcement_config(app: &mut App) {
+    match app
+        .rt
+        .block_on(app.client.get::<serde_json::Value>("admin/agent-config"))
+    {
+        Ok(config) => {
+            app.screen = Screen::UsbEnforcementConfig {
+                config,
+                selected: 0,
+                editing: false,
+                buffer: String::new(),
+            };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Persists the in-memory USB enforcement config to the server.
+///
+/// Sends the FULL agent config payload (not just USB fields) because
+/// the server PUT /admin/agent-config expects the complete payload.
+/// NOTE: This is the existing pattern for all config screens. A TOCTOU
+/// risk exists: if another admin changes a different field between load
+/// and save, this screen will overwrite it with the stale value. This is
+/// a pre-existing design limitation, not introduced by this plan.
+fn action_save_usb_enforcement_config(app: &mut App) {
+    let payload = match &app.screen {
+        Screen::UsbEnforcementConfig { config, .. } => config.clone(),
+        _ => return,
+    };
+    match app.rt.block_on(
+        app.client
+            .put::<serde_json::Value, _>("admin/agent-config", &payload),
+    ) {
+        Ok(_) => {
+            app.set_status("USB enforcement config saved", StatusKind::Success);
+            app.screen = Screen::SystemMenu { selected: 5 };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Handles key events while the USB enforcement config form is active.
+fn handle_usb_enforcement_config(app: &mut App, key: KeyEvent) {
+    let (selected, editing) = match &app.screen {
+        Screen::UsbEnforcementConfig {
+            selected, editing, ..
+        } => (*selected, *editing),
+        _ => return,
+    };
+
+    if editing {
+        handle_usb_enforcement_editing(app, key, selected);
+    } else {
+        handle_usb_enforcement_nav(app, key, selected);
+    }
+}
+
+/// Handles key events while editing a picker field in the USB enforcement config form.
+fn handle_usb_enforcement_editing(app: &mut App, key: KeyEvent, selected: usize) {
+    if selected >= USB_ENFORCEMENT_KEYS.len() {
+        return; // Save/Back rows don't enter edit mode
+    }
+
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::UsbEnforcementConfig { config, .. } = &mut app.screen {
+                let key_name = USB_ENFORCEMENT_KEYS[selected];
+                let current = config.get(key_name).and_then(|v| v.as_str()).unwrap_or("");
+                let options = USB_ENFORCEMENT_OPTIONS[selected];
+                let current_idx = options.iter().position(|&o| o == current).unwrap_or(0);
+                let new_idx = match key.code {
+                    KeyCode::Up => current_idx.checked_sub(1).unwrap_or(options.len() - 1),
+                    _ => (current_idx + 1) % options.len(),
+                };
+                config[key_name] = serde_json::Value::String(options[new_idx].to_string());
+            }
+        }
+        KeyCode::Enter => {
+            if let Screen::UsbEnforcementConfig { editing, .. } = &mut app.screen {
+                *editing = false;
+            }
+        }
+        KeyCode::Esc => {
+            if let Screen::UsbEnforcementConfig { editing, .. } = &mut app.screen {
+                *editing = false;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events while navigating the USB enforcement config form.
+fn handle_usb_enforcement_nav(app: &mut App, key: KeyEvent, selected: usize) {
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::UsbEnforcementConfig { selected: s, .. } = &mut app.screen {
+                nav(s, USB_ENFORCEMENT_ROW_COUNT, key.code);
+            }
+        }
+        KeyCode::Enter => match selected {
+            0..=2 => {
+                // Enter edit mode for picker fields
+                if let Screen::UsbEnforcementConfig { editing, .. } = &mut app.screen {
+                    *editing = true;
+                }
+            }
+            USB_ENFORCEMENT_SAVE_ROW => action_save_usb_enforcement_config(app),
+            USB_ENFORCEMENT_BACK_ROW => {
+                app.screen = Screen::SystemMenu { selected: 5 };
+            }
+            _ => {}
+        },
+        KeyCode::Esc => {
+            app.screen = Screen::SystemMenu { selected: 5 };
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cloud config screen
+// ---------------------------------------------------------------------------
+
+/// Fetches the current agent config from the server and switches to the `CloudConfig` screen.
+fn action_load_cloud_config(app: &mut App) {
+    match app
+        .rt
+        .block_on(app.client.get::<serde_json::Value>("admin/agent-config"))
+    {
+        Ok(config) => {
+            app.screen = Screen::CloudConfig {
+                config,
+                selected: 0,
+                editing: false,
+                buffer: String::new(),
+            };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Persists the in-memory cloud config to the server (full payload round-trip).
+fn action_save_cloud_config(app: &mut App) {
+    let payload = match &app.screen {
+        Screen::CloudConfig { config, .. } => config.clone(),
+        _ => return,
+    };
+    match app.rt.block_on(
+        app.client
+            .put::<serde_json::Value, _>("admin/agent-config", &payload),
+    ) {
+        Ok(_) => {
+            app.set_status("Cloud config saved", StatusKind::Success);
+            app.screen = Screen::SystemMenu { selected: 6 };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Handles key events while the cloud config form is active.
+///
+/// `cloud_hook_enabled` (row 0) is a bool that toggles on Enter — no edit mode required.
+fn handle_cloud_config(app: &mut App, key: KeyEvent) {
+    let selected = match &app.screen {
+        Screen::CloudConfig { selected, .. } => *selected,
+        _ => return,
+    };
+
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::CloudConfig { selected: sel, .. } = &mut app.screen {
+                nav(sel, CLOUD_CONFIG_ROW_COUNT, key.code);
+            }
+        }
+        KeyCode::Enter => match selected {
+            0 => {
+                // Toggle the boolean field in-place.
+                if let Screen::CloudConfig { config, .. } = &mut app.screen {
+                    let key_name = CLOUD_CONFIG_KEYS[0];
+                    let cur = config[key_name].as_bool().unwrap_or(false);
+                    config[key_name] = serde_json::Value::Bool(!cur);
+                }
+            }
+            CLOUD_CONFIG_SAVE_ROW => action_save_cloud_config(app),
+            CLOUD_CONFIG_BACK_ROW => {
+                app.screen = Screen::SystemMenu { selected: 6 };
+            }
+            _ => {}
+        },
+        KeyCode::Esc => {
+            app.screen = Screen::SystemMenu { selected: 6 };
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Print config screen
+// ---------------------------------------------------------------------------
+
+/// Fetches the current agent config from the server and switches to the `PrintConfig` screen.
+fn action_load_print_config(app: &mut App) {
+    match app
+        .rt
+        .block_on(app.client.get::<serde_json::Value>("admin/agent-config"))
+    {
+        Ok(config) => {
+            app.screen = Screen::PrintConfig {
+                config,
+                selected: 0,
+                editing: false,
+                buffer: String::new(),
+            };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Persists the in-memory print config to the server (full payload round-trip).
+fn action_save_print_config(app: &mut App) {
+    let payload = match &app.screen {
+        Screen::PrintConfig { config, .. } => config.clone(),
+        _ => return,
+    };
+    match app.rt.block_on(
+        app.client
+            .put::<serde_json::Value, _>("admin/agent-config", &payload),
+    ) {
+        Ok(_) => {
+            app.set_status("Print config saved", StatusKind::Success);
+            app.screen = Screen::SystemMenu { selected: 7 };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Handles key events while the print config form is in edit mode.
+fn handle_print_config_editing(app: &mut App, key: KeyEvent, selected: usize) {
+    if is_print_numeric(selected) {
+        match key.code {
+            KeyCode::Char(c) => {
+                if let Screen::PrintConfig { buffer, .. } = &mut app.screen {
+                    buffer.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Screen::PrintConfig { buffer, .. } = &mut app.screen {
+                    buffer.pop();
+                }
+            }
+            KeyCode::Enter => print_commit_numeric(app, selected),
+            KeyCode::Esc => {
+                if let Screen::PrintConfig {
+                    buffer, editing, ..
+                } = &mut app.screen
+                {
+                    buffer.clear();
+                    *editing = false;
+                }
+            }
+            _ => {}
+        }
+    } else if is_print_picker(selected) {
+        match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                if let Screen::PrintConfig { config, .. } = &mut app.screen {
+                    let key_name = PRINT_CONFIG_KEYS[selected];
+                    let current = config.get(key_name).and_then(|v| v.as_str()).unwrap_or("");
+                    let options = PRINT_UNCLASSIFIABLE_OPTIONS;
+                    let current_idx = options.iter().position(|&o| o == current).unwrap_or(0);
+                    let new_idx = match key.code {
+                        KeyCode::Up => current_idx.checked_sub(1).unwrap_or(options.len() - 1),
+                        _ => (current_idx + 1) % options.len(),
+                    };
+                    config[key_name] = serde_json::Value::String(options[new_idx].to_string());
+                }
+            }
+            KeyCode::Enter | KeyCode::Esc => {
+                if let Screen::PrintConfig { editing, .. } = &mut app.screen {
+                    *editing = false;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Commits a numeric buffer to the print config field at `selected`.
+fn print_commit_numeric(app: &mut App, selected: usize) {
+    let buffer_copy = match &app.screen {
+        Screen::PrintConfig { buffer, .. } => buffer.clone(),
+        _ => return,
+    };
+    let value: u64 = match buffer_copy.trim().parse() {
+        Ok(v) => v,
+        Err(_) => {
+            app.set_status("Value must be a positive integer", StatusKind::Error);
+            return;
+        }
+    };
+    if let Screen::PrintConfig {
+        config,
+        buffer,
+        editing,
+        ..
+    } = &mut app.screen
+    {
+        let key_name = PRINT_CONFIG_KEYS[selected];
+        config[key_name] = serde_json::Value::Number(serde_json::Number::from(value));
+        buffer.clear();
+        *editing = false;
+    }
+}
+
+/// Handles key events while navigating the print config form.
+fn handle_print_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::PrintConfig { selected: sel, .. } = &mut app.screen {
+                nav(sel, PRINT_CONFIG_ROW_COUNT, key.code);
+            }
+        }
+        KeyCode::Enter => {
+            if selected == PRINT_CONFIG_SAVE_ROW {
+                action_save_print_config(app);
+                return;
+            }
+            if selected == PRINT_CONFIG_BACK_ROW {
+                app.screen = Screen::SystemMenu { selected: 7 };
+                return;
+            }
+            if is_print_bool(selected) {
+                // Toggle the boolean in-place.
+                if let Screen::PrintConfig { config, .. } = &mut app.screen {
+                    let key_name = PRINT_CONFIG_KEYS[selected];
+                    let cur = config[key_name].as_bool().unwrap_or(false);
+                    config[key_name] = serde_json::Value::Bool(!cur);
+                }
+                return;
+            }
+            if is_print_numeric(selected) {
+                // Enter numeric edit mode, seeding the buffer with the current value.
+                if let Screen::PrintConfig {
+                    config,
+                    editing,
+                    buffer,
+                    ..
+                } = &mut app.screen
+                {
+                    let key_name = PRINT_CONFIG_KEYS[selected];
+                    let n = config[key_name].as_u64().unwrap_or(0);
+                    *buffer = n.to_string();
+                    *editing = true;
+                }
+                return;
+            }
+            if is_print_picker(selected) {
+                // Enter picker edit mode.
+                if let Screen::PrintConfig { editing, .. } = &mut app.screen {
+                    *editing = true;
+                }
+            }
+        }
+        KeyCode::Esc => {
+            app.screen = Screen::SystemMenu { selected: 7 };
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events while the print config form is active.
+fn handle_print_config(app: &mut App, key: KeyEvent) {
+    let (selected, editing) = match &app.screen {
+        Screen::PrintConfig {
+            selected, editing, ..
+        } => (*selected, *editing),
+        _ => return,
+    };
+
+    if editing {
+        handle_print_config_editing(app, key, selected);
+    } else {
+        handle_print_config_nav(app, key, selected);
     }
 }
 
@@ -1653,6 +2176,65 @@ fn handle_policy_create_editing(app: &mut App, key: KeyEvent, _selected: usize) 
     }
 }
 
+/// Transitions to ConditionsBuilder from PolicyCreate.
+fn policy_create_open_conditions(app: &mut App) {
+    let form = match &app.screen {
+        Screen::PolicyCreate { form, .. } => form.clone(),
+        _ => return,
+    };
+    let mut picker_state = ratatui::widgets::ListState::default();
+    picker_state.select(Some(0));
+    app.screen = Screen::ConditionsBuilder {
+        step: 1,
+        selected_attribute: None,
+        selected_field: None,
+        selected_operator: None,
+        pending: form.conditions.clone(),
+        buffer: String::new(),
+        pending_focused: false,
+        pending_state: ratatui::widgets::ListState::default(),
+        picker_state,
+        caller: CallerScreen::PolicyCreate,
+        form_snapshot: PolicyFormState {
+            conditions: vec![],
+            ..form
+        },
+        edit_index: None,
+        edit_picker_prefill: None,
+    };
+}
+
+/// Handles Enter key in PolicyCreate navigation.
+fn policy_create_nav_enter(app: &mut App, selected: usize) {
+    match selected {
+        POLICY_SAVE_ROW => {
+            let form = match &app.screen {
+                Screen::PolicyCreate { form, .. } => form.clone(),
+                _ => return,
+            };
+            action_submit_policy(app, form);
+        }
+        POLICY_ENABLED_ROW => {
+            if let Screen::PolicyCreate { form, .. } = &mut app.screen {
+                form.enabled = !form.enabled;
+            }
+        }
+        POLICY_MODE_ROW => {
+            if let Screen::PolicyCreate { form, .. } = &mut app.screen {
+                form.mode = cycle_mode(form.mode);
+            }
+        }
+        POLICY_ADD_CONDITIONS_ROW => policy_create_open_conditions(app),
+        POLICY_ACTION_ROW => {
+            if let Screen::PolicyCreate { form, .. } = &mut app.screen {
+                form.action = (form.action + 1) % ACTION_OPTIONS.len();
+            }
+        }
+        POLICY_CONDITIONS_DISPLAY_ROW => {}
+        _ => policy_create_enter_edit(app, selected),
+    }
+}
+
 /// Handles key events while navigating the Policy Create form.
 fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
     match key.code {
@@ -1661,94 +2243,8 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 nav(sel, POLICY_ROW_COUNT, key.code);
             }
         }
-        KeyCode::Enter => match selected {
-            POLICY_SAVE_ROW => {
-                // Two-phase borrow: clone form before calling action (Pitfall 5).
-                let form = match &app.screen {
-                    Screen::PolicyCreate { form, .. } => form.clone(),
-                    _ => return,
-                };
-                action_submit_policy(app, form);
-            }
-            POLICY_ENABLED_ROW => {
-                // Toggle the enabled bool (no edit mode, no buffer).
-                if let Screen::PolicyCreate { form, .. } = &mut app.screen {
-                    form.enabled = !form.enabled;
-                }
-            }
-            POLICY_MODE_ROW => {
-                // Cycle the boolean mode (ALL -> ANY -> NONE -> ALL).
-                if let Screen::PolicyCreate { form, .. } = &mut app.screen {
-                    form.mode = cycle_mode(form.mode);
-                }
-            }
-            POLICY_ADD_CONDITIONS_ROW => {
-                // Transition to ConditionsBuilder, carrying form_snapshot.
-                let form = match &app.screen {
-                    Screen::PolicyCreate { form, .. } => form.clone(),
-                    _ => return,
-                };
-                let mut picker_state = ratatui::widgets::ListState::default();
-                picker_state.select(Some(0));
-                app.screen = Screen::ConditionsBuilder {
-                    step: 1,
-                    selected_attribute: None,
-                    selected_field: None,
-                    selected_operator: None,
-                    // Pre-populate pending with any conditions already added.
-                    pending: form.conditions.clone(),
-                    buffer: String::new(),
-                    pending_focused: false,
-                    pending_state: ratatui::widgets::ListState::default(),
-                    picker_state,
-                    caller: CallerScreen::PolicyCreate,
-                    // conditions field is empty in snapshot — live conditions travel via pending.
-                    form_snapshot: PolicyFormState {
-                        conditions: vec![],
-                        ..form
-                    },
-                    edit_index: None,
-                    edit_picker_prefill: None,
-                };
-            }
-            POLICY_ACTION_ROW => {
-                // Cycle the action index (wraps at end of ACTION_OPTIONS).
-                if let Screen::PolicyCreate { form, .. } = &mut app.screen {
-                    form.action = (form.action + 1) % ACTION_OPTIONS.len();
-                }
-            }
-            POLICY_CONDITIONS_DISPLAY_ROW => {
-                // Read-only row; Enter does nothing.
-            }
-            _ => {
-                // Text field rows: enter edit mode pre-filled with current value.
-                // Guard against out-of-bounds `selected` values — only rows 0..=2
-                // are editable text fields. Any other index is a no-op.
-                if selected > POLICY_PRIORITY_ROW {
-                    return;
-                }
-                if let Screen::PolicyCreate {
-                    form,
-                    editing,
-                    buffer,
-                    ..
-                } = &mut app.screen
-                {
-                    let pre_fill = match selected {
-                        POLICY_NAME_ROW => form.name.clone(),
-                        POLICY_DESC_ROW => form.description.clone(),
-                        POLICY_PRIORITY_ROW => form.priority.clone(),
-                        // Unreachable given the `selected > POLICY_PRIORITY_ROW`
-                        // guard above, but Rust requires an exhaustive match.
-                        _ => return,
-                    };
-                    *buffer = pre_fill;
-                    *editing = true;
-                }
-            }
-        },
+        KeyCode::Enter => policy_create_nav_enter(app, selected),
         KeyCode::Char(' ') if selected == POLICY_MODE_ROW => {
-            // Same cycle-on-activate UX as Enter for the Mode row.
             if let Screen::PolicyCreate { form, .. } = &mut app.screen {
                 form.mode = cycle_mode(form.mode);
             }
@@ -1757,6 +2253,29 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
             app.screen = Screen::PolicyMenu { selected: 0 };
         }
         _ => {}
+    }
+}
+
+/// Enters edit mode for a text field in PolicyCreate.
+fn policy_create_enter_edit(app: &mut App, selected: usize) {
+    if selected > POLICY_PRIORITY_ROW {
+        return;
+    }
+    if let Screen::PolicyCreate {
+        form,
+        editing,
+        buffer,
+        ..
+    } = &mut app.screen
+    {
+        let pre_fill = match selected {
+            POLICY_NAME_ROW => form.name.clone(),
+            POLICY_DESC_ROW => form.description.clone(),
+            POLICY_PRIORITY_ROW => form.priority.clone(),
+            _ => return,
+        };
+        *buffer = pre_fill;
+        *editing = true;
     }
 }
 
@@ -1990,6 +2509,88 @@ fn handle_policy_edit_editing(app: &mut App, key: KeyEvent, _selected: usize) {
     }
 }
 
+/// Transitions to ConditionsBuilder from PolicyEdit.
+fn policy_edit_open_conditions(app: &mut App) {
+    let form = match &app.screen {
+        Screen::PolicyEdit { form, .. } => form.clone(),
+        _ => return,
+    };
+    let mut picker_state = ratatui::widgets::ListState::default();
+    picker_state.select(Some(0));
+    app.screen = Screen::ConditionsBuilder {
+        step: 1,
+        selected_attribute: None,
+        selected_field: None,
+        selected_operator: None,
+        pending: form.conditions.clone(),
+        buffer: String::new(),
+        pending_focused: false,
+        pending_state: ratatui::widgets::ListState::default(),
+        picker_state,
+        caller: CallerScreen::PolicyEdit,
+        form_snapshot: PolicyFormState {
+            conditions: vec![],
+            ..form
+        },
+        edit_index: None,
+        edit_picker_prefill: None,
+    };
+}
+
+/// Enters edit mode for a text field in PolicyEdit.
+fn policy_edit_enter_edit(app: &mut App, selected: usize) {
+    if selected > POLICY_PRIORITY_ROW {
+        return;
+    }
+    if let Screen::PolicyEdit {
+        form,
+        editing,
+        buffer,
+        ..
+    } = &mut app.screen
+    {
+        let pre_fill = match selected {
+            POLICY_NAME_ROW => form.name.clone(),
+            POLICY_DESC_ROW => form.description.clone(),
+            POLICY_PRIORITY_ROW => form.priority.clone(),
+            _ => return,
+        };
+        *buffer = pre_fill;
+        *editing = true;
+    }
+}
+
+/// Handles Enter key in PolicyEdit navigation.
+fn policy_edit_nav_enter(app: &mut App, selected: usize) {
+    match selected {
+        POLICY_SAVE_ROW => {
+            let form = match &app.screen {
+                Screen::PolicyEdit { form, .. } => form.clone(),
+                _ => return,
+            };
+            action_submit_policy_update(app, &form.id.clone(), form);
+        }
+        POLICY_ENABLED_ROW => {
+            if let Screen::PolicyEdit { form, .. } = &mut app.screen {
+                form.enabled = !form.enabled;
+            }
+        }
+        POLICY_MODE_ROW => {
+            if let Screen::PolicyEdit { form, .. } = &mut app.screen {
+                form.mode = cycle_mode(form.mode);
+            }
+        }
+        POLICY_ACTION_ROW => {
+            if let Screen::PolicyEdit { form, .. } = &mut app.screen {
+                form.action = (form.action + 1) % ACTION_OPTIONS.len();
+            }
+        }
+        POLICY_ADD_CONDITIONS_ROW => policy_edit_open_conditions(app),
+        POLICY_CONDITIONS_DISPLAY_ROW => {}
+        _ => policy_edit_enter_edit(app, selected),
+    }
+}
+
 /// Handles key events while navigating the Policy Edit form.
 fn handle_policy_edit_nav(app: &mut App, key: KeyEvent, selected: usize) {
     match key.code {
@@ -1998,80 +2599,7 @@ fn handle_policy_edit_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 nav(sel, POLICY_ROW_COUNT, key.code);
             }
         }
-        KeyCode::Enter => match selected {
-            POLICY_SAVE_ROW => {
-                let form = match &app.screen {
-                    Screen::PolicyEdit { form, .. } => form.clone(),
-                    _ => return,
-                };
-                action_submit_policy_update(app, &form.id.clone(), form);
-            }
-            POLICY_ENABLED_ROW => {
-                if let Screen::PolicyEdit { form, .. } = &mut app.screen {
-                    form.enabled = !form.enabled;
-                }
-            }
-            POLICY_MODE_ROW => {
-                if let Screen::PolicyEdit { form, .. } = &mut app.screen {
-                    form.mode = cycle_mode(form.mode);
-                }
-            }
-            POLICY_ACTION_ROW => {
-                if let Screen::PolicyEdit { form, .. } = &mut app.screen {
-                    form.action = (form.action + 1) % ACTION_OPTIONS.len();
-                }
-            }
-            POLICY_ADD_CONDITIONS_ROW => {
-                let form = match &app.screen {
-                    Screen::PolicyEdit { form, .. } => form.clone(),
-                    _ => return,
-                };
-                let mut picker_state = ratatui::widgets::ListState::default();
-                picker_state.select(Some(0));
-                app.screen = Screen::ConditionsBuilder {
-                    step: 1,
-                    selected_attribute: None,
-                    selected_field: None,
-                    selected_operator: None,
-                    pending: form.conditions.clone(),
-                    buffer: String::new(),
-                    pending_focused: false,
-                    pending_state: ratatui::widgets::ListState::default(),
-                    picker_state,
-                    caller: CallerScreen::PolicyEdit,
-                    form_snapshot: PolicyFormState {
-                        conditions: vec![],
-                        ..form
-                    },
-                    edit_index: None,
-                    edit_picker_prefill: None,
-                };
-            }
-            POLICY_CONDITIONS_DISPLAY_ROW => {
-                // Read-only row; Enter does nothing.
-            }
-            _ => {
-                if selected > POLICY_PRIORITY_ROW {
-                    return;
-                }
-                if let Screen::PolicyEdit {
-                    form,
-                    editing,
-                    buffer,
-                    ..
-                } = &mut app.screen
-                {
-                    let pre_fill = match selected {
-                        POLICY_NAME_ROW => form.name.clone(),
-                        POLICY_DESC_ROW => form.description.clone(),
-                        POLICY_PRIORITY_ROW => form.priority.clone(),
-                        _ => return,
-                    };
-                    *buffer = pre_fill;
-                    *editing = true;
-                }
-            }
-        },
+        KeyCode::Enter => policy_edit_nav_enter(app, selected),
         KeyCode::Char(' ') if selected == POLICY_MODE_ROW => {
             if let Screen::PolicyEdit { form, .. } = &mut app.screen {
                 form.mode = cycle_mode(form.mode);
@@ -2372,6 +2900,66 @@ fn handle_simulate_editing(app: &mut App, key: KeyEvent, _selected: usize) {
     }
 }
 
+/// Cycles a simulate form select field by index.
+fn simulate_cycle_field(app: &mut App, selected: usize) {
+    if let Screen::PolicySimulate { form, .. } = &mut app.screen {
+        match selected {
+            3 => {
+                form.device_trust =
+                    (form.device_trust + 1) % crate::app::SIMULATE_DEVICE_TRUST_OPTIONS.len();
+            }
+            4 => {
+                form.network_location = (form.network_location + 1)
+                    % crate::app::SIMULATE_NETWORK_LOCATION_OPTIONS.len();
+            }
+            6 => {
+                form.classification =
+                    (form.classification + 1) % crate::app::SIMULATE_CLASSIFICATION_OPTIONS.len();
+            }
+            7 => {
+                form.action = (form.action + 1) % crate::app::SIMULATE_ACTION_OPTIONS.len();
+            }
+            8 => {
+                form.access_context =
+                    (form.access_context + 1) % crate::app::SIMULATE_ACCESS_CONTEXT_OPTIONS.len();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Enters edit mode for a simulate form text field.
+fn simulate_enter_text_edit(app: &mut App, selected: usize) {
+    if let Screen::PolicySimulate {
+        form,
+        editing,
+        buffer,
+        ..
+    } = &mut app.screen
+    {
+        let pre_fill = match selected {
+            0 => form.user_sid.clone(),
+            1 => form.user_name.clone(),
+            5 => form.path.clone(),
+            _ => return,
+        };
+        *buffer = pre_fill;
+        *editing = true;
+    }
+}
+
+/// Returns to the caller screen from PolicySimulate.
+fn simulate_return_to_caller(app: &mut App) {
+    let caller = match &app.screen {
+        Screen::PolicySimulate { caller, .. } => *caller,
+        _ => return,
+    };
+    match caller {
+        SimulateCaller::MainMenu => app.screen = Screen::MainMenu { selected: 3 },
+        SimulateCaller::PolicyMenu => app.screen = Screen::PolicyMenu { selected: 5 },
+    }
+}
+
 /// Handles key events while navigating the Policy Simulate form (not editing).
 fn handle_simulate_nav(app: &mut App, key: KeyEvent, selected: usize) {
     use crate::app::SIMULATE_ROW_COUNT;
@@ -2382,26 +2970,7 @@ fn handle_simulate_nav(app: &mut App, key: KeyEvent, selected: usize) {
             }
         }
         KeyCode::Enter => match selected {
-            // Text field rows: 0 (user_sid), 1 (user_name), 5 (path) — enter edit mode.
-            0 | 1 | 5 => {
-                if let Screen::PolicySimulate {
-                    form,
-                    editing,
-                    buffer,
-                    ..
-                } = &mut app.screen
-                {
-                    let pre_fill = match selected {
-                        0 => form.user_sid.clone(),
-                        1 => form.user_name.clone(),
-                        5 => form.path.clone(),
-                        _ => return,
-                    };
-                    *buffer = pre_fill;
-                    *editing = true;
-                }
-            }
-            // Groups row (2): free-text comma-separated SID input.
+            0 | 1 | 5 => simulate_enter_text_edit(app, selected),
             2 => {
                 if let Screen::PolicySimulate {
                     form,
@@ -2414,57 +2983,11 @@ fn handle_simulate_nav(app: &mut App, key: KeyEvent, selected: usize) {
                     *editing = true;
                 }
             }
-            // Select rows: Enter cycles to next option.
-            3 => {
-                if let Screen::PolicySimulate { form, .. } = &mut app.screen {
-                    form.device_trust =
-                        (form.device_trust + 1) % crate::app::SIMULATE_DEVICE_TRUST_OPTIONS.len();
-                }
-            }
-            4 => {
-                if let Screen::PolicySimulate { form, .. } = &mut app.screen {
-                    form.network_location = (form.network_location + 1)
-                        % crate::app::SIMULATE_NETWORK_LOCATION_OPTIONS.len();
-                }
-            }
-            6 => {
-                if let Screen::PolicySimulate { form, .. } = &mut app.screen {
-                    form.classification = (form.classification + 1)
-                        % crate::app::SIMULATE_CLASSIFICATION_OPTIONS.len();
-                }
-            }
-            7 => {
-                if let Screen::PolicySimulate { form, .. } = &mut app.screen {
-                    form.action = (form.action + 1) % crate::app::SIMULATE_ACTION_OPTIONS.len();
-                }
-            }
-            8 => {
-                if let Screen::PolicySimulate { form, .. } = &mut app.screen {
-                    form.access_context = (form.access_context + 1)
-                        % crate::app::SIMULATE_ACCESS_CONTEXT_OPTIONS.len();
-                }
-            }
-            // [Simulate] submit row (index 9).
-            9 => {
-                action_submit_simulate(app);
-            }
+            3 | 4 | 6 | 7 | 8 => simulate_cycle_field(app, selected),
+            9 => action_submit_simulate(app),
             _ => {}
         },
-        KeyCode::Esc | KeyCode::Char('q') => {
-            // Return to the caller screen, keeping the Simulate Policy row selected.
-            let caller = match &app.screen {
-                Screen::PolicySimulate { caller, .. } => *caller,
-                _ => return,
-            };
-            match caller {
-                SimulateCaller::MainMenu => {
-                    app.screen = Screen::MainMenu { selected: 3 };
-                }
-                SimulateCaller::PolicyMenu => {
-                    app.screen = Screen::PolicyMenu { selected: 5 };
-                }
-            }
-        }
+        KeyCode::Esc | KeyCode::Char('q') => simulate_return_to_caller(app),
         _ => {}
     }
 }
@@ -2505,7 +3028,10 @@ pub(crate) fn operators_for(
         ConditionAttribute::AccessContext => &[("eq", true), ("neq", true)],
         ConditionAttribute::SourceApplication | ConditionAttribute::DestinationApplication => {
             match field {
-                Some(AppField::Publisher) | Some(AppField::ImagePath) => {
+                Some(AppField::Publisher)
+                | Some(AppField::ImagePath)
+                | Some(AppField::Aumid)
+                | Some(AppField::PackageFamilyName) => {
                     // String fields support equality, inequality, and substring matching.
                     &[("eq", true), ("ne", true), ("contains", true)]
                 }
@@ -2513,6 +3039,10 @@ pub(crate) fn operators_for(
                 // None means sub-step not yet resolved; conservative set is safe.
                 Some(AppField::TrustTier) | None => &[("eq", true), ("ne", true)],
             }
+        }
+        ConditionAttribute::SourceOrigin | ConditionAttribute::DestinationOrigin => {
+            // Origin URL conditions support equality, inequality, and substring matching.
+            &[("eq", true), ("ne", true), ("contains", true)]
         }
     }
 }
@@ -2543,6 +3073,165 @@ fn value_count_for(attr: ConditionAttribute, field: Option<dlp_common::abac::App
                 _ => 0,                         // Publisher / ImagePath: free-text input
             }
         }
+        ConditionAttribute::SourceOrigin | ConditionAttribute::DestinationOrigin => 0, // text input
+    }
+}
+
+/// Constructs a `PolicyCondition` from the selected attribute, operator, picker index, and buffer.
+///
+/// Returns `None` if the picker index is out of range, the MemberOf buffer is empty,
+/// or an app-identity attribute is provided without a resolved `field` (T-28-02-01 mitigated
+/// by the `field?` early-return, which prevents a malformed condition from being constructed).
+///
+/// # Field name note
+///
+/// `MemberOf` uses `group_sid: String`, NOT `value`. All other variants use `value`.
+///
+/// # Arguments
+///
+/// * `attr` - Condition attribute to build.
+/// * `op` - Operator wire string (e.g. `"eq"`, `"ne"`, `"contains"`).
+/// * `picker_selected` - 0-based index into the Step 3 value picker list.
+/// * `buffer` - Free-text input for MemberOf and app-identity Publisher/ImagePath fields.
+/// * `field` - For `SourceApplication`/`DestinationApplication`: the AppField selected in the
+///   sub-step. `None` causes an early return of `None` (fail-closed, per T-28-02-01).
+///
+/// Builds a Classification condition from picker index.
+fn build_classification_condition(
+    op: String,
+    picker_selected: usize,
+) -> Option<dlp_common::abac::PolicyCondition> {
+    use dlp_common::Classification;
+    let value = match picker_selected {
+        0 => Classification::T1,
+        1 => Classification::T2,
+        2 => Classification::T3,
+        3 => Classification::T4,
+        _ => return None,
+    };
+    Some(dlp_common::abac::PolicyCondition::Classification { op, value })
+}
+
+/// Builds a DeviceTrust condition from picker index.
+fn build_device_trust_condition(
+    op: String,
+    picker_selected: usize,
+) -> Option<dlp_common::abac::PolicyCondition> {
+    use dlp_common::abac::DeviceTrust;
+    let value = match picker_selected {
+        0 => DeviceTrust::Managed,
+        1 => DeviceTrust::Unmanaged,
+        2 => DeviceTrust::Compliant,
+        3 => DeviceTrust::Unknown,
+        _ => return None,
+    };
+    Some(dlp_common::abac::PolicyCondition::DeviceTrust { op, value })
+}
+
+/// Builds a NetworkLocation condition from picker index.
+fn build_network_location_condition(
+    op: String,
+    picker_selected: usize,
+) -> Option<dlp_common::abac::PolicyCondition> {
+    use dlp_common::abac::NetworkLocation;
+    let value = match picker_selected {
+        0 => NetworkLocation::Corporate,
+        1 => NetworkLocation::CorporateVpn,
+        2 => NetworkLocation::Guest,
+        3 => NetworkLocation::Unknown,
+        _ => return None,
+    };
+    Some(dlp_common::abac::PolicyCondition::NetworkLocation { op, value })
+}
+
+/// Builds an AccessContext condition from picker index.
+fn build_access_context_condition(
+    op: String,
+    picker_selected: usize,
+) -> Option<dlp_common::abac::PolicyCondition> {
+    use dlp_common::abac::AccessContext;
+    let value = match picker_selected {
+        0 => AccessContext::Local,
+        1 => AccessContext::Smb,
+        _ => return None,
+    };
+    Some(dlp_common::abac::PolicyCondition::AccessContext { op, value })
+}
+
+/// Builds an app-identity condition value from field and picker/buffer.
+fn build_app_value(
+    field: dlp_common::abac::AppField,
+    picker_selected: usize,
+    buffer: &str,
+) -> Option<String> {
+    use dlp_common::abac::AppField;
+    match field {
+        AppField::TrustTier => Some(match picker_selected {
+            0 => "trusted".to_string(),
+            1 => "untrusted".to_string(),
+            _ => "unknown".to_string(),
+        }),
+        AppField::Publisher
+        | AppField::ImagePath
+        | AppField::Aumid
+        | AppField::PackageFamilyName => {
+            let v = buffer.trim().to_string();
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
+        }
+    }
+}
+
+/// Builds a SourceApplication or DestinationApplication condition.
+fn build_app_condition(
+    attr: ConditionAttribute,
+    op: String,
+    picker_selected: usize,
+    buffer: &str,
+    field: Option<dlp_common::abac::AppField>,
+) -> Option<dlp_common::abac::PolicyCondition> {
+    let f = field?;
+    let value = build_app_value(f, picker_selected, buffer)?;
+    match attr {
+        ConditionAttribute::SourceApplication => {
+            Some(dlp_common::abac::PolicyCondition::SourceApplication {
+                field: f,
+                op,
+                value,
+            })
+        }
+        ConditionAttribute::DestinationApplication => {
+            Some(dlp_common::abac::PolicyCondition::DestinationApplication {
+                field: f,
+                op,
+                value,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Builds an origin condition from buffer text.
+fn build_origin_condition(
+    attr: ConditionAttribute,
+    op: String,
+    buffer: &str,
+) -> Option<dlp_common::abac::PolicyCondition> {
+    let v = buffer.trim().to_string();
+    if v.is_empty() {
+        return None;
+    }
+    match attr {
+        ConditionAttribute::SourceOrigin => {
+            Some(dlp_common::abac::PolicyCondition::SourceOrigin { op, value: v })
+        }
+        ConditionAttribute::DestinationOrigin => {
+            Some(dlp_common::abac::PolicyCondition::DestinationOrigin { op, value: v })
+        }
+        _ => None,
     }
 }
 
@@ -2571,110 +3260,108 @@ fn build_condition(
     buffer: &str,
     field: Option<dlp_common::abac::AppField>,
 ) -> Option<dlp_common::abac::PolicyCondition> {
-    use dlp_common::abac::{
-        AccessContext, AppField, DeviceTrust, NetworkLocation, PolicyCondition,
-    };
-    // Classification is at dlp_common root, NOT dlp_common::abac (see abac.rs line 222).
-    use dlp_common::Classification;
-
     let op = op.to_string();
-    Some(match attr {
-        ConditionAttribute::Classification => {
-            let value = match picker_selected {
-                0 => Classification::T1,
-                1 => Classification::T2,
-                2 => Classification::T3,
-                3 => Classification::T4,
-                _ => return None,
-            };
-            PolicyCondition::Classification { op, value }
-        }
+    match attr {
+        ConditionAttribute::Classification => build_classification_condition(op, picker_selected),
         ConditionAttribute::MemberOf => {
-            // CRITICAL: MemberOf uses group_sid, NOT value (abac.rs line 226).
             if buffer.trim().is_empty() {
                 return None;
             }
-            PolicyCondition::MemberOf {
+            Some(dlp_common::abac::PolicyCondition::MemberOf {
                 op,
                 group_sid: buffer.trim().to_string(),
-            }
+            })
         }
-        ConditionAttribute::DeviceTrust => {
-            let value = match picker_selected {
-                0 => DeviceTrust::Managed,
-                1 => DeviceTrust::Unmanaged,
-                2 => DeviceTrust::Compliant,
-                3 => DeviceTrust::Unknown,
-                _ => return None,
-            };
-            PolicyCondition::DeviceTrust { op, value }
-        }
+        ConditionAttribute::DeviceTrust => build_device_trust_condition(op, picker_selected),
         ConditionAttribute::NetworkLocation => {
-            let value = match picker_selected {
-                0 => NetworkLocation::Corporate,
-                1 => NetworkLocation::CorporateVpn,
-                2 => NetworkLocation::Guest,
-                3 => NetworkLocation::Unknown,
-                _ => return None,
-            };
-            PolicyCondition::NetworkLocation { op, value }
+            build_network_location_condition(op, picker_selected)
         }
-        ConditionAttribute::AccessContext => {
-            let value = match picker_selected {
-                0 => AccessContext::Local,
-                1 => AccessContext::Smb,
-                _ => return None,
-            };
-            PolicyCondition::AccessContext { op, value }
+        ConditionAttribute::AccessContext => build_access_context_condition(op, picker_selected),
+        ConditionAttribute::SourceApplication | ConditionAttribute::DestinationApplication => {
+            build_app_condition(attr, op, picker_selected, buffer, field)
         }
-        ConditionAttribute::SourceApplication => {
-            // `field?` enforces fail-closed: None field means sub-step was skipped
-            // and the condition cannot be constructed (T-28-02-01 mitigation).
-            let f = field?;
-            let value = match f {
-                AppField::TrustTier => match picker_selected {
-                    0 => "trusted".to_string(),
-                    1 => "untrusted".to_string(),
-                    _ => "unknown".to_string(),
-                },
-                AppField::Publisher | AppField::ImagePath => {
-                    let v = buffer.trim().to_string();
-                    if v.is_empty() {
-                        return None;
-                    }
-                    v
-                }
-            };
-            PolicyCondition::SourceApplication {
-                field: f,
-                op,
-                value,
-            }
+        ConditionAttribute::SourceOrigin | ConditionAttribute::DestinationOrigin => {
+            build_origin_condition(attr, op, buffer)
         }
-        ConditionAttribute::DestinationApplication => {
-            // Same fail-closed guard as SourceApplication (T-28-02-01).
-            let f = field?;
-            let value = match f {
-                AppField::TrustTier => match picker_selected {
-                    0 => "trusted".to_string(),
-                    1 => "untrusted".to_string(),
-                    _ => "unknown".to_string(),
-                },
-                AppField::Publisher | AppField::ImagePath => {
-                    let v = buffer.trim().to_string();
-                    if v.is_empty() {
-                        return None;
-                    }
-                    v
-                }
-            };
-            PolicyCondition::DestinationApplication {
-                field: f,
-                op,
-                value,
-            }
-        }
-    })
+    }
+}
+
+/// Decomposes a [`PolicyCondition`] into the `(attribute, op, picker_idx, buffer)`
+/// tuple needed to pre-fill the 3-step picker for in-place editing.
+///
+/// This is the inverse of [`build_condition`]: given a condition, it returns
+/// the four values that, when passed back to `build_condition`, reproduce the
+/// same condition.
+///
+/// # Arguments
+///
+/// * `cond` — The condition to decompose.
+///
+/// # Returns
+///
+/// `(ConditionAttribute, op_wire_string, picker_idx, buffer)` where:
+/// - `picker_idx` is the 0-based index into the Step 3 value list for
+///   select attributes; `0` for `MemberOf` (text path, index unused).
+/// - `buffer` is the `group_sid` string for `MemberOf`; `String::new()`
+///   for all other attributes.
+///
+/// Maps a Classification value to its picker index.
+fn classification_to_idx(value: &dlp_common::Classification) -> usize {
+    match value {
+        dlp_common::Classification::T1 => 0,
+        dlp_common::Classification::T2 => 1,
+        dlp_common::Classification::T3 => 2,
+        dlp_common::Classification::T4 => 3,
+    }
+}
+
+/// Maps a DeviceTrust value to its picker index.
+fn device_trust_to_idx(value: &dlp_common::abac::DeviceTrust) -> usize {
+    match value {
+        dlp_common::abac::DeviceTrust::Managed => 0,
+        dlp_common::abac::DeviceTrust::Unmanaged => 1,
+        dlp_common::abac::DeviceTrust::Compliant => 2,
+        dlp_common::abac::DeviceTrust::Unknown => 3,
+    }
+}
+
+/// Maps a NetworkLocation value to its picker index.
+fn network_location_to_idx(value: &dlp_common::abac::NetworkLocation) -> usize {
+    match value {
+        dlp_common::abac::NetworkLocation::Corporate => 0,
+        dlp_common::abac::NetworkLocation::CorporateVpn => 1,
+        dlp_common::abac::NetworkLocation::Guest => 2,
+        dlp_common::abac::NetworkLocation::Unknown => 3,
+    }
+}
+
+/// Maps an AccessContext value to its picker index.
+fn access_context_to_idx(value: &dlp_common::abac::AccessContext) -> usize {
+    match value {
+        dlp_common::abac::AccessContext::Local => 0,
+        dlp_common::abac::AccessContext::Smb => 1,
+    }
+}
+
+/// Maps a TrustTier string to its picker index.
+fn trust_tier_to_idx(value: &str) -> usize {
+    match value {
+        "trusted" => 0,
+        "untrusted" => 1,
+        _ => 2,
+    }
+}
+
+/// Maps an AppField to its (picker_idx, buffer) prefill values.
+fn app_field_to_prefill(field: &dlp_common::abac::AppField, value: &str) -> (usize, String) {
+    use dlp_common::abac::AppField;
+    match field {
+        AppField::Publisher
+        | AppField::ImagePath
+        | AppField::Aumid
+        | AppField::PackageFamilyName => (0usize, value.to_string()),
+        AppField::TrustTier => (trust_tier_to_idx(value), String::new()),
+    }
 }
 
 /// Decomposes a [`PolicyCondition`] into the `(attribute, op, picker_idx, buffer)`
@@ -2698,88 +3385,40 @@ fn build_condition(
 fn condition_to_prefill(
     cond: &dlp_common::abac::PolicyCondition,
 ) -> (ConditionAttribute, String, usize, String) {
-    use dlp_common::abac::{AccessContext, DeviceTrust, NetworkLocation, PolicyCondition};
-    // Classification is at dlp_common root, NOT dlp_common::abac (see abac.rs line 222).
-    use dlp_common::Classification;
+    use dlp_common::abac::PolicyCondition;
     match cond {
-        PolicyCondition::Classification { op, value } => {
-            let idx = match value {
-                Classification::T1 => 0,
-                Classification::T2 => 1,
-                Classification::T3 => 2,
-                Classification::T4 => 3,
-            };
-            (
-                ConditionAttribute::Classification,
-                op.clone(),
-                idx,
-                String::new(),
-            )
-        }
-        PolicyCondition::MemberOf { op, group_sid } => {
-            // picker_idx is unused for MemberOf (text input); return 0.
-            (
-                ConditionAttribute::MemberOf,
-                op.clone(),
-                0,
-                group_sid.clone(),
-            )
-        }
-        PolicyCondition::DeviceTrust { op, value } => {
-            let idx = match value {
-                DeviceTrust::Managed => 0,
-                DeviceTrust::Unmanaged => 1,
-                DeviceTrust::Compliant => 2,
-                DeviceTrust::Unknown => 3,
-            };
-            (
-                ConditionAttribute::DeviceTrust,
-                op.clone(),
-                idx,
-                String::new(),
-            )
-        }
-        PolicyCondition::NetworkLocation { op, value } => {
-            let idx = match value {
-                NetworkLocation::Corporate => 0,
-                NetworkLocation::CorporateVpn => 1,
-                NetworkLocation::Guest => 2,
-                NetworkLocation::Unknown => 3,
-            };
-            (
-                ConditionAttribute::NetworkLocation,
-                op.clone(),
-                idx,
-                String::new(),
-            )
-        }
-        PolicyCondition::AccessContext { op, value } => {
-            let idx = match value {
-                AccessContext::Local => 0,
-                AccessContext::Smb => 1,
-            };
-            (
-                ConditionAttribute::AccessContext,
-                op.clone(),
-                idx,
-                String::new(),
-            )
-        }
+        PolicyCondition::Classification { op, value } => (
+            ConditionAttribute::Classification,
+            op.clone(),
+            classification_to_idx(value),
+            String::new(),
+        ),
+        PolicyCondition::MemberOf { op, group_sid } => (
+            ConditionAttribute::MemberOf,
+            op.clone(),
+            0,
+            group_sid.clone(),
+        ),
+        PolicyCondition::DeviceTrust { op, value } => (
+            ConditionAttribute::DeviceTrust,
+            op.clone(),
+            device_trust_to_idx(value),
+            String::new(),
+        ),
+        PolicyCondition::NetworkLocation { op, value } => (
+            ConditionAttribute::NetworkLocation,
+            op.clone(),
+            network_location_to_idx(value),
+            String::new(),
+        ),
+        PolicyCondition::AccessContext { op, value } => (
+            ConditionAttribute::AccessContext,
+            op.clone(),
+            access_context_to_idx(value),
+            String::new(),
+        ),
         PolicyCondition::SourceApplication { field, op, value } => {
-            use dlp_common::abac::AppField;
-            // Publisher/ImagePath: value is a text string; picker_idx is unused (0).
-            // TrustTier: value is one of trusted/untrusted/unknown; mapped to picker index.
-            let (picker_idx, buffer) = match field {
-                AppField::Publisher | AppField::ImagePath => (0usize, value.clone()),
-                AppField::TrustTier => {
-                    let idx = match value.as_str() {
-                        "trusted" => 0,
-                        "untrusted" => 1,
-                        _ => 2,
-                    };
-                    (idx, String::new())
-                }
-            };
+            let (picker_idx, buffer) = app_field_to_prefill(field, value);
             (
                 ConditionAttribute::SourceApplication,
                 op.clone(),
@@ -2788,18 +3427,7 @@ fn condition_to_prefill(
             )
         }
         PolicyCondition::DestinationApplication { field, op, value } => {
-            use dlp_common::abac::AppField;
-            let (picker_idx, buffer) = match field {
-                AppField::Publisher | AppField::ImagePath => (0usize, value.clone()),
-                AppField::TrustTier => {
-                    let idx = match value.as_str() {
-                        "trusted" => 0,
-                        "untrusted" => 1,
-                        _ => 2,
-                    };
-                    (idx, String::new())
-                }
-            };
+            let (picker_idx, buffer) = app_field_to_prefill(field, value);
             (
                 ConditionAttribute::DestinationApplication,
                 op.clone(),
@@ -2807,6 +3435,18 @@ fn condition_to_prefill(
                 buffer,
             )
         }
+        PolicyCondition::SourceOrigin { op, value } => (
+            ConditionAttribute::SourceOrigin,
+            op.clone(),
+            0,
+            value.clone(),
+        ),
+        PolicyCondition::DestinationOrigin { op, value } => (
+            ConditionAttribute::DestinationOrigin,
+            op.clone(),
+            0,
+            value.clone(),
+        ),
     }
 }
 
@@ -2831,6 +3471,12 @@ pub fn condition_display(cond: &dlp_common::abac::PolicyCondition) -> String {
         }
         PolicyCondition::DestinationApplication { field, op, value } => {
             format!("DestinationApplication {field:?} {op} {value}")
+        }
+        PolicyCondition::SourceOrigin { op, value } => {
+            format!("SourceOrigin {op} {value}")
+        }
+        PolicyCondition::DestinationOrigin { op, value } => {
+            format!("DestinationOrigin {op} {value}")
         }
     }
 }
@@ -2892,158 +3538,155 @@ fn handle_conditions_builder(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Navigates the pending conditions list up or down.
+fn pending_nav(app: &mut App, pending_len: usize, key: KeyCode) {
+    if pending_len == 0 {
+        return;
+    }
+    if let Screen::ConditionsBuilder { pending_state, .. } = &mut app.screen {
+        let current = pending_state.selected().unwrap_or(0);
+        let new_idx = match key {
+            KeyCode::Up => {
+                if current == 0 {
+                    pending_len - 1
+                } else {
+                    current - 1
+                }
+            }
+            KeyCode::Down => (current + 1) % pending_len,
+            _ => current,
+        };
+        pending_state.select(Some(new_idx));
+    }
+}
+
+/// Deletes the selected condition from the pending list.
+fn pending_delete(app: &mut App) {
+    if let Screen::ConditionsBuilder {
+        pending,
+        pending_state,
+        ..
+    } = &mut app.screen
+    {
+        let Some(idx) = pending_state.selected() else {
+            return;
+        };
+        if idx >= pending.len() {
+            return;
+        }
+        pending.remove(idx);
+        if pending.is_empty() {
+            pending_state.select(None);
+        } else if idx >= pending.len() {
+            pending_state.select(Some(pending.len() - 1));
+        }
+    }
+}
+
+/// Extracts the AppField from an app-identity condition for prefill.
+fn app_field_from_condition(
+    cond: &dlp_common::abac::PolicyCondition,
+) -> Option<dlp_common::abac::AppField> {
+    match cond {
+        dlp_common::abac::PolicyCondition::SourceApplication { field, .. }
+        | dlp_common::abac::PolicyCondition::DestinationApplication { field, .. } => Some(*field),
+        _ => None,
+    }
+}
+
+/// Opens the selected condition for editing in the 3-step picker.
+fn pending_edit(app: &mut App) {
+    let edit_target = match &app.screen {
+        Screen::ConditionsBuilder {
+            pending,
+            pending_state,
+            ..
+        } => pending_state
+            .selected()
+            .and_then(|i| pending.get(i).cloned().map(|c| (i, c))),
+        _ => return,
+    };
+    let Some((edit_i, cond)) = edit_target else {
+        return;
+    };
+
+    let (attr, op_str, picker_idx, buf) = condition_to_prefill(&cond);
+    let prefill_field = app_field_from_condition(&cond);
+    let attr_idx = ATTRIBUTES.iter().position(|a| *a == attr).unwrap_or(0);
+
+    if let Screen::ConditionsBuilder {
+        step,
+        selected_attribute,
+        selected_field,
+        selected_operator,
+        buffer,
+        edit_index,
+        edit_picker_prefill,
+        pending_focused,
+        picker_state,
+        ..
+    } = &mut app.screen
+    {
+        *step = 1;
+        *selected_attribute = Some(attr);
+        *selected_field = prefill_field;
+        *selected_operator = Some(op_str);
+        *buffer = buf;
+        *edit_index = Some(edit_i);
+        *edit_picker_prefill = Some(picker_idx);
+        *pending_focused = false;
+        picker_state.select(Some(attr_idx.min(ATTRIBUTES.len().saturating_sub(1))));
+    }
+}
+
+/// Closes the conditions builder modal and returns to the caller screen.
+fn pending_close_modal(app: &mut App) {
+    let (caller, pending, form_snapshot) = match &app.screen {
+        Screen::ConditionsBuilder {
+            caller,
+            pending,
+            form_snapshot,
+            ..
+        } => (*caller, pending.clone(), form_snapshot.clone()),
+        _ => return,
+    };
+    match caller {
+        CallerScreen::PolicyCreate => {
+            app.screen = Screen::PolicyCreate {
+                form: PolicyFormState {
+                    conditions: pending,
+                    ..form_snapshot
+                },
+                selected: POLICY_ADD_CONDITIONS_ROW,
+                editing: false,
+                buffer: String::new(),
+                validation_error: None,
+            };
+        }
+        CallerScreen::PolicyEdit => {
+            let id = form_snapshot.id.clone();
+            app.screen = Screen::PolicyEdit {
+                form: PolicyFormState {
+                    conditions: pending,
+                    ..form_snapshot
+                },
+                id,
+                selected: POLICY_ADD_CONDITIONS_ROW,
+                editing: false,
+                buffer: String::new(),
+                validation_error: None,
+            };
+        }
+    }
+}
+
 /// Handles key events when the pending conditions list has focus.
 fn handle_conditions_pending(app: &mut App, key: KeyEvent, pending_len: usize) {
     match key.code {
-        KeyCode::Up | KeyCode::Down => {
-            if pending_len > 0 {
-                if let Screen::ConditionsBuilder { pending_state, .. } = &mut app.screen {
-                    let current = pending_state.selected().unwrap_or(0);
-                    let new_idx = match key.code {
-                        KeyCode::Up => {
-                            if current == 0 {
-                                pending_len - 1
-                            } else {
-                                current - 1
-                            }
-                        }
-                        KeyCode::Down => (current + 1) % pending_len,
-                        _ => current,
-                    };
-                    pending_state.select(Some(new_idx));
-                }
-            }
-        }
-        // 'd', 'D', or Delete removes the selected condition (per D-07).
-        KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete => {
-            if let Screen::ConditionsBuilder {
-                pending,
-                pending_state,
-                ..
-            } = &mut app.screen
-            {
-                if let Some(idx) = pending_state.selected() {
-                    if idx < pending.len() {
-                        pending.remove(idx);
-                        // Adjust selection so it stays in range after removal.
-                        if pending.is_empty() {
-                            pending_state.select(None);
-                        } else if idx >= pending.len() {
-                            pending_state.select(Some(pending.len() - 1));
-                        }
-                    }
-                }
-            }
-        }
-        // 'e' or 'E' opens the selected condition in the 3-step picker pre-filled for editing.
-        KeyCode::Char('e') | KeyCode::Char('E') => {
-            // Phase 1: clone the condition and capture its index under a shared borrow.
-            // This must complete before taking &mut app.screen (Rust borrow rules).
-            let edit_target = match &app.screen {
-                Screen::ConditionsBuilder {
-                    pending,
-                    pending_state,
-                    ..
-                } => pending_state
-                    .selected()
-                    .and_then(|i| pending.get(i).cloned().map(|c| (i, c))),
-                _ => return,
-            };
-            let Some((edit_i, cond)) = edit_target else {
-                return;
-            };
-
-            let (attr, op_str, picker_idx, buf) = condition_to_prefill(&cond);
-
-            // For app-identity conditions, extract the AppField directly from the condition
-            // so the sub-step is pre-filled correctly when the edit modal opens.
-            let prefill_field: Option<dlp_common::abac::AppField> = match &cond {
-                dlp_common::abac::PolicyCondition::SourceApplication { field, .. }
-                | dlp_common::abac::PolicyCondition::DestinationApplication { field, .. } => {
-                    Some(*field)
-                }
-                _ => None,
-            };
-
-            // Find the attribute's position in ATTRIBUTES for Step 1 picker pre-fill.
-            let attr_idx = ATTRIBUTES.iter().position(|a| *a == attr).unwrap_or(0);
-
-            // Phase 2: mutate screen state under a mutable borrow.
-            // The shared borrow from Phase 1 is fully dropped at this point.
-            if let Screen::ConditionsBuilder {
-                step,
-                selected_attribute,
-                selected_field,
-                selected_operator,
-                buffer,
-                edit_index,
-                edit_picker_prefill,
-                pending_focused,
-                picker_state,
-                ..
-            } = &mut app.screen
-            {
-                *step = 1;
-                *selected_attribute = Some(attr);
-                // For app-identity conditions: pre-fill selected_field so the sub-step is
-                // skipped on re-open and Step 2 opens directly with the correct operator set.
-                *selected_field = prefill_field;
-                // Pre-set the operator so the SC-1 guard in handle_conditions_attribute_picker
-                // can evaluate it when the user advances through Step 1. The guard will clear
-                // this if they change the attribute to an incompatible one.
-                *selected_operator = Some(op_str);
-                *buffer = buf;
-                *edit_index = Some(edit_i);
-                // Store the Step 3 list index so handle_conditions_step2's Enter arm can
-                // open the value picker on the original item (WR-01 fix).
-                *edit_picker_prefill = Some(picker_idx);
-                *pending_focused = false;
-                // Pre-select the attribute row so Step 1 opens on the correct item.
-                // Clamp to the valid range (WR-03 defensive guard).
-                picker_state.select(Some(attr_idx.min(ATTRIBUTES.len().saturating_sub(1))));
-            }
-        }
-        KeyCode::Esc => {
-            // Per D-06: Esc from pending focus closes the modal.
-            // Dispatch back to the caller screen, restoring form state.
-            let (caller, pending, form_snapshot) = match &app.screen {
-                Screen::ConditionsBuilder {
-                    caller,
-                    pending,
-                    form_snapshot,
-                    ..
-                } => (*caller, pending.clone(), form_snapshot.clone()),
-                _ => return,
-            };
-            match caller {
-                CallerScreen::PolicyCreate => {
-                    app.screen = Screen::PolicyCreate {
-                        form: PolicyFormState {
-                            conditions: pending,
-                            ..form_snapshot
-                        },
-                        selected: POLICY_ADD_CONDITIONS_ROW,
-                        editing: false,
-                        buffer: String::new(),
-                        validation_error: None,
-                    };
-                }
-                CallerScreen::PolicyEdit => {
-                    let id = form_snapshot.id.clone();
-                    app.screen = Screen::PolicyEdit {
-                        form: PolicyFormState {
-                            conditions: pending,
-                            ..form_snapshot
-                        },
-                        id,
-                        selected: POLICY_ADD_CONDITIONS_ROW,
-                        editing: false,
-                        buffer: String::new(),
-                        validation_error: None,
-                    };
-                }
-            }
-        }
+        KeyCode::Up | KeyCode::Down => pending_nav(app, pending_len, key.code),
+        KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete => pending_delete(app),
+        KeyCode::Char('e') | KeyCode::Char('E') => pending_edit(app),
+        KeyCode::Esc => pending_close_modal(app),
         _ => {}
     }
 }
@@ -3079,8 +3722,15 @@ fn handle_conditions_step1(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// The AppField labels shown in picker order: Publisher (0), ImagePath (1), TrustTier (2).
-const APP_FIELD_LABELS: [&str; 3] = ["publisher", "image_path", "trust_tier"];
+/// The AppField labels shown in picker order:
+/// Publisher (0), ImagePath (1), TrustTier (2), AUMID (3), PackageFamilyName (4).
+const APP_FIELD_LABELS: [&str; 5] = [
+    "publisher",
+    "image_path",
+    "trust_tier",
+    "aumid",
+    "package_family_name",
+];
 
 /// Maps a picker index to the corresponding [`dlp_common::abac::AppField`].
 fn app_field_from_idx(idx: usize) -> dlp_common::abac::AppField {
@@ -3088,7 +3738,9 @@ fn app_field_from_idx(idx: usize) -> dlp_common::abac::AppField {
     match idx {
         0 => AppField::Publisher,
         1 => AppField::ImagePath,
-        _ => AppField::TrustTier,
+        2 => AppField::TrustTier,
+        3 => AppField::Aumid,
+        _ => AppField::PackageFamilyName,
     }
 }
 
@@ -3151,132 +3803,85 @@ fn handle_conditions_app_field_sub_step(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Clears the selected operator if it is not valid for the given attribute and field.
+fn clear_stale_operator(
+    selected_operator: &mut Option<String>,
+    attr: ConditionAttribute,
+    field: Option<dlp_common::abac::AppField>,
+) {
+    if let Some(prev_op) = selected_operator.as_deref() {
+        if !operators_for(attr, field)
+            .iter()
+            .any(|(op, _)| *op == prev_op)
+        {
+            *selected_operator = None;
+        }
+    }
+}
+
+/// Navigates the attribute picker up or down.
+fn attribute_picker_nav(app: &mut App, key: KeyCode) {
+    if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
+        let current = picker_state.selected().unwrap_or(0);
+        let new_idx = match key {
+            KeyCode::Up => {
+                if current == 0 {
+                    ATTRIBUTES.len() - 1
+                } else {
+                    current - 1
+                }
+            }
+            KeyCode::Down => (current + 1) % ATTRIBUTES.len(),
+            _ => current,
+        };
+        picker_state.select(Some(new_idx));
+    }
+}
+
+/// Advances from Step 1 attribute picker based on selected attribute type.
+fn attribute_picker_advance(app: &mut App) {
+    if let Screen::ConditionsBuilder {
+        step,
+        selected_attribute,
+        selected_field,
+        selected_operator,
+        picker_state,
+        ..
+    } = &mut app.screen
+    {
+        let idx = picker_state.selected().unwrap_or(0);
+        let attr = ATTRIBUTES
+            .get(idx)
+            .copied()
+            .unwrap_or(ConditionAttribute::Classification);
+        *selected_attribute = Some(attr);
+
+        let is_app_identity = matches!(
+            attr,
+            ConditionAttribute::SourceApplication | ConditionAttribute::DestinationApplication
+        );
+
+        if is_app_identity && selected_field.is_some() {
+            clear_stale_operator(selected_operator, attr, *selected_field);
+            *step = 2;
+            picker_state.select(Some(0));
+        } else if is_app_identity {
+            *selected_operator = None;
+            picker_state.select(Some(0));
+        } else {
+            clear_stale_operator(selected_operator, attr, None);
+            *step = 2;
+            picker_state.select(Some(0));
+        }
+    }
+}
+
 /// Handles key events at the attribute picker (Step 1, before attribute is selected).
 fn handle_conditions_attribute_picker(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Up | KeyCode::Down => {
-            if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
-                let current = picker_state.selected().unwrap_or(0);
-                let new_idx = match key.code {
-                    KeyCode::Up => {
-                        if current == 0 {
-                            ATTRIBUTES.len() - 1
-                        } else {
-                            current - 1
-                        }
-                    }
-                    KeyCode::Down => (current + 1) % ATTRIBUTES.len(),
-                    _ => current,
-                };
-                picker_state.select(Some(new_idx));
-            }
-        }
-        KeyCode::Enter => {
-            // Advance based on attribute type (per D-12).
-            if let Screen::ConditionsBuilder {
-                step,
-                selected_attribute,
-                selected_field,
-                selected_operator,
-                picker_state,
-                ..
-            } = &mut app.screen
-            {
-                let idx = picker_state.selected().unwrap_or(0);
-                // Bounds-checked: ATTRIBUTES.get returns None for out-of-range idx,
-                // falling back to Classification so Step 2 always has a valid attribute.
-                let attr = ATTRIBUTES
-                    .get(idx)
-                    .copied()
-                    .unwrap_or(ConditionAttribute::Classification);
-                *selected_attribute = Some(attr);
-
-                // App-identity attributes need a field sub-step before Step 2.
-                // Exception: if selected_field is already set (edit-mode pre-fill), skip the
-                // sub-step and advance directly to Step 2 with the pre-filled field.
-                if matches!(
-                    attr,
-                    ConditionAttribute::SourceApplication
-                        | ConditionAttribute::DestinationApplication
-                ) {
-                    if selected_field.is_some() {
-                        // Edit mode: field is already set — advance to Step 2 directly.
-                        // SC-1: verify the pre-set operator is valid for this field.
-                        if let Some(prev_op) = selected_operator.as_deref() {
-                            if !operators_for(attr, *selected_field)
-                                .iter()
-                                .any(|(op, _)| *op == prev_op)
-                            {
-                                *selected_operator = None;
-                            }
-                        }
-                        *step = 2;
-                        picker_state.select(Some(0));
-                    } else {
-                        // Normal (new condition) flow: enter the AppField sub-step.
-                        // Clear any residual operator from a previous iteration.
-                        *selected_operator = None;
-                        // Reset picker to top for the sub-picker list (Pitfall 4).
-                        picker_state.select(Some(0));
-                        // step stays 1 — sub-step is triggered by the attribute+no-field state.
-                    }
-                } else {
-                    // Non-app-identity attributes: advance directly to Step 2.
-                    // SC-1: clear a stale operator when it is not valid for the new attribute.
-                    if let Some(prev_op) = selected_operator.as_deref() {
-                        if !operators_for(attr, None)
-                            .iter()
-                            .any(|(op, _)| *op == prev_op)
-                        {
-                            *selected_operator = None;
-                        }
-                    }
-                    *step = 2;
-                    picker_state.select(Some(0));
-                }
-            }
-        }
-        KeyCode::Esc => {
-            // Per D-18: Esc at Step 1 closes the modal.
-            // Dispatch back to the caller screen, restoring form state.
-            let (caller, pending, form_snapshot) = match &app.screen {
-                Screen::ConditionsBuilder {
-                    caller,
-                    pending,
-                    form_snapshot,
-                    ..
-                } => (*caller, pending.clone(), form_snapshot.clone()),
-                _ => return,
-            };
-            match caller {
-                CallerScreen::PolicyCreate => {
-                    app.screen = Screen::PolicyCreate {
-                        form: PolicyFormState {
-                            conditions: pending,
-                            ..form_snapshot
-                        },
-                        selected: POLICY_ADD_CONDITIONS_ROW,
-                        editing: false,
-                        buffer: String::new(),
-                        validation_error: None,
-                    };
-                }
-                CallerScreen::PolicyEdit => {
-                    let id = form_snapshot.id.clone();
-                    app.screen = Screen::PolicyEdit {
-                        form: PolicyFormState {
-                            conditions: pending,
-                            ..form_snapshot
-                        },
-                        id,
-                        selected: POLICY_ADD_CONDITIONS_ROW,
-                        editing: false,
-                        buffer: String::new(),
-                        validation_error: None,
-                    };
-                }
-            }
-        }
+        KeyCode::Up | KeyCode::Down => attribute_picker_nav(app, key.code),
+        KeyCode::Enter => attribute_picker_advance(app),
+        KeyCode::Esc => pending_close_modal(app),
         _ => {}
     }
 }
@@ -3296,88 +3901,101 @@ fn handle_conditions_step2(
     let ops = operators_for(attr, selected_field);
 
     match key.code {
-        KeyCode::Up | KeyCode::Down => {
-            if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
-                let current = picker_state.selected().unwrap_or(0);
-                if ops.is_empty() {
-                    return;
-                }
-                let new_idx = match key.code {
-                    KeyCode::Up => {
-                        if current == 0 {
-                            ops.len() - 1
-                        } else {
-                            current - 1
-                        }
-                    }
-                    KeyCode::Down => (current + 1) % ops.len(),
-                    _ => current,
-                };
-                picker_state.select(Some(new_idx));
-            }
-        }
-        KeyCode::Enter => {
-            // Advance to Step 3 with the selected operator (per D-17).
-            if let Screen::ConditionsBuilder {
-                step,
-                selected_operator,
-                picker_state,
-                buffer,
-                edit_picker_prefill,
-                ..
-            } = &mut app.screen
-            {
-                let idx = picker_state.selected().unwrap_or(0);
-                // Use `.get(idx)` rather than direct indexing: picker state
-                // could be desynchronized from `ops` (e.g. stale state after
-                // navigating away and back). A panic here would crash the
-                // TUI, so out-of-range selection silently aborts the advance.
-                let op_name = match ops.get(idx) {
-                    Some((name, _)) => name.to_string(),
-                    None => return,
-                };
-                *selected_operator = Some(op_name);
-                *step = 3;
-                // Clear any leftover MemberOf input from a previous iteration.
-                buffer.clear();
-                // Apply deferred Step 3 prefill from the 'e' edit handler (WR-01 fix).
-                // On a fresh condition, edit_picker_prefill is None and we start at 0.
-                let prefill = edit_picker_prefill.take().unwrap_or(0);
-                picker_state.select(Some(prefill));
-            }
-        }
-        KeyCode::Esc => {
-            // Per D-18: Esc at Step 2 goes back to Step 1.
-            // For app-identity attributes, also clear selected_field so the user re-enters
-            // the AppField sub-picker (Step 1.5) rather than skipping back to the attribute list.
-            if let Screen::ConditionsBuilder {
-                step,
-                selected_attribute,
-                selected_field,
-                selected_operator,
-                picker_state,
-                ..
-            } = &mut app.screen
-            {
-                *step = 1;
-                // Keep selected_attribute set for app-identity variants so the sub-step
-                // re-activates; clear it for all others so the attribute picker shows.
-                let is_app_identity = matches!(
-                    *selected_attribute,
-                    Some(ConditionAttribute::SourceApplication)
-                        | Some(ConditionAttribute::DestinationApplication)
-                );
-                if is_app_identity {
-                    // Return to the AppField sub-picker, not the top-level attribute picker.
-                    *selected_field = None;
-                } else {
-                    *selected_attribute = None;
-                }
-                *selected_operator = None;
-                picker_state.select(Some(0));
-            }
-        }
+        KeyCode::Up | KeyCode::Down => step2_nav(app, ops, key.code),
+        KeyCode::Enter => step2_advance(app),
+        KeyCode::Esc => step2_go_back(app),
         _ => {}
+    }
+}
+
+/// Navigates the Step 2 operator picker.
+fn step2_nav(app: &mut App, ops: &[(&str, bool)], key: KeyCode) {
+    if ops.is_empty() {
+        return;
+    }
+    if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
+        let current = picker_state.selected().unwrap_or(0);
+        let new_idx = match key {
+            KeyCode::Up => {
+                if current == 0 {
+                    ops.len() - 1
+                } else {
+                    current - 1
+                }
+            }
+            KeyCode::Down => (current + 1) % ops.len(),
+            _ => current,
+        };
+        picker_state.select(Some(new_idx));
+    }
+}
+
+/// Gets the operator name at the given index for the currently selected attribute.
+fn selected_attribute_and_ops(app: &App, idx: usize) -> Option<String> {
+    let (attr, field) = match &app.screen {
+        Screen::ConditionsBuilder {
+            selected_attribute,
+            selected_field,
+            ..
+        } => (*selected_attribute, *selected_field),
+        _ => return None,
+    };
+    let attr = attr?;
+    let ops = operators_for(attr, field);
+    ops.get(idx).map(|(name, _)| name.to_string())
+}
+
+/// Advances from Step 2 to Step 3 with the selected operator.
+fn step2_advance(app: &mut App) {
+    let idx = match &app.screen {
+        Screen::ConditionsBuilder { picker_state, .. } => picker_state.selected().unwrap_or(0),
+        _ => return,
+    };
+    let op_name = match selected_attribute_and_ops(app, idx) {
+        Some(name) => name,
+        None => return,
+    };
+    if let Screen::ConditionsBuilder {
+        step,
+        selected_operator,
+        picker_state,
+        buffer,
+        edit_picker_prefill,
+        ..
+    } = &mut app.screen
+    {
+        *selected_operator = Some(op_name);
+        *step = 3;
+        buffer.clear();
+        let prefill = edit_picker_prefill.take().unwrap_or(0);
+        picker_state.select(Some(prefill));
+    }
+}
+
+/// Goes back from Step 2 to Step 1.
+fn step2_go_back(app: &mut App) {
+    if let Screen::ConditionsBuilder {
+        step,
+        selected_attribute,
+        selected_field,
+        selected_operator,
+        picker_state,
+        ..
+    } = &mut app.screen
+    {
+        *step = 1;
+        let is_app_identity = matches!(
+            *selected_attribute,
+            Some(ConditionAttribute::SourceApplication)
+                | Some(ConditionAttribute::DestinationApplication)
+        );
+        if is_app_identity {
+            *selected_field = None;
+        } else {
+            *selected_attribute = None;
+        }
+        *selected_operator = None;
+        picker_state.select(Some(0));
     }
 }
 
@@ -3409,20 +4027,100 @@ fn handle_conditions_step3(
 
     // Use text input for:
     // - MemberOf (AD group SID)
-    // - app-identity Publisher or ImagePath (free-text string)
+    // - app-identity Publisher, ImagePath, Aumid, or PackageFamilyName (free-text string)
+    // - SourceOrigin / DestinationOrigin (origin URL free-text input)
     let use_text_input = attr == ConditionAttribute::MemberOf
         || matches!(
             (attr, selected_field),
             (
                 ConditionAttribute::SourceApplication | ConditionAttribute::DestinationApplication,
-                Some(AppField::Publisher) | Some(AppField::ImagePath)
+                Some(AppField::Publisher)
+                    | Some(AppField::ImagePath)
+                    | Some(AppField::Aumid)
+                    | Some(AppField::PackageFamilyName)
             )
-        );
+        )
+        || attr == ConditionAttribute::SourceOrigin
+        || attr == ConditionAttribute::DestinationOrigin;
 
     if use_text_input {
         handle_conditions_step3_text(app, key, attr, op, selected_field);
     } else {
         handle_conditions_step3_select(app, key, attr, op, selected_field);
+    }
+}
+
+/// Commits a condition from Step 3 and resets the builder state.
+fn step3_commit_condition(app: &mut App, cond: dlp_common::abac::PolicyCondition) {
+    if let Screen::ConditionsBuilder {
+        pending,
+        pending_state,
+        step,
+        selected_attribute,
+        selected_field,
+        selected_operator,
+        buffer,
+        picker_state,
+        edit_index,
+        ..
+    } = &mut app.screen
+    {
+        match *edit_index {
+            Some(i) if i < pending.len() => {
+                pending[i] = cond;
+                pending_state.select(Some(i));
+                *edit_index = None;
+            }
+            _ => {
+                pending.push(cond);
+                pending_state.select(Some(pending.len() - 1));
+            }
+        }
+        *step = 1;
+        *selected_attribute = None;
+        *selected_field = None;
+        *selected_operator = None;
+        buffer.clear();
+        picker_state.select(Some(0));
+    }
+}
+
+/// Goes back from Step 3 to Step 2.
+fn step3_go_back(app: &mut App) {
+    if let Screen::ConditionsBuilder {
+        step,
+        selected_operator,
+        buffer,
+        picker_state,
+        ..
+    } = &mut app.screen
+    {
+        *step = 2;
+        *selected_operator = None;
+        buffer.clear();
+        picker_state.select(Some(0));
+    }
+}
+
+/// Navigates the Step 3 value picker.
+fn step3_select_nav(app: &mut App, count: usize, key: KeyCode) {
+    if count == 0 {
+        return;
+    }
+    if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
+        let current = picker_state.selected().unwrap_or(0);
+        let new_idx = match key {
+            KeyCode::Up => {
+                if current == 0 {
+                    count - 1
+                } else {
+                    current - 1
+                }
+            }
+            KeyCode::Down => (current + 1) % count,
+            _ => current,
+        };
+        picker_state.select(Some(new_idx));
     }
 }
 
@@ -3447,71 +4145,16 @@ fn handle_conditions_step3_text(
             }
         }
         KeyCode::Enter => {
-            // Snapshot the buffer with a shared borrow before taking &mut.
             let buffer_snapshot = match &app.screen {
                 Screen::ConditionsBuilder { buffer, .. } => buffer.clone(),
                 _ => return,
             };
-            // Pass field so build_condition can construct the correct app-identity variant.
             match build_condition(attr, op, 0, &buffer_snapshot, field) {
-                Some(cond) => {
-                    if let Screen::ConditionsBuilder {
-                        pending,
-                        pending_state,
-                        step,
-                        selected_attribute,
-                        selected_field,
-                        selected_operator,
-                        buffer,
-                        picker_state,
-                        edit_index,
-                        ..
-                    } = &mut app.screen
-                    {
-                        // Replace at original index (edit mode) or append (new condition mode).
-                        match *edit_index {
-                            Some(i) if i < pending.len() => {
-                                // SC-2: replace in-place, preserving list length and position.
-                                pending[i] = cond;
-                                pending_state.select(Some(i));
-                                *edit_index = None;
-                            }
-                            _ => {
-                                pending.push(cond);
-                                pending_state.select(Some(pending.len() - 1));
-                            }
-                        }
-                        // Reset picker state for the next operation (regardless of mode).
-                        *step = 1;
-                        *selected_attribute = None;
-                        *selected_field = None;
-                        *selected_operator = None;
-                        buffer.clear();
-                        picker_state.select(Some(0));
-                    }
-                }
-                None => {
-                    // MemberOf and Publisher/ImagePath both require non-empty input.
-                    app.set_status("Value cannot be empty", StatusKind::Error);
-                }
+                Some(cond) => step3_commit_condition(app, cond),
+                None => app.set_status("Value cannot be empty", StatusKind::Error),
             }
         }
-        KeyCode::Esc => {
-            // Per D-18: Esc at Step 3 goes back to Step 2.
-            if let Screen::ConditionsBuilder {
-                step,
-                selected_operator,
-                buffer,
-                picker_state,
-                ..
-            } = &mut app.screen
-            {
-                *step = 2;
-                *selected_operator = None;
-                buffer.clear();
-                picker_state.select(Some(0));
-            }
-        }
+        KeyCode::Esc => step3_go_back(app),
         _ => {}
     }
 }
@@ -3532,26 +4175,7 @@ fn handle_conditions_step3_select(
     let count = value_count_for(attr, field);
 
     match key.code {
-        KeyCode::Up | KeyCode::Down => {
-            if count == 0 {
-                return;
-            }
-            if let Screen::ConditionsBuilder { picker_state, .. } = &mut app.screen {
-                let current = picker_state.selected().unwrap_or(0);
-                let new_idx = match key.code {
-                    KeyCode::Up => {
-                        if current == 0 {
-                            count - 1
-                        } else {
-                            current - 1
-                        }
-                    }
-                    KeyCode::Down => (current + 1) % count,
-                    _ => current,
-                };
-                picker_state.select(Some(new_idx));
-            }
-        }
+        KeyCode::Up | KeyCode::Down => step3_select_nav(app, count, key.code),
         KeyCode::Enter => {
             let picker_idx = match &app.screen {
                 Screen::ConditionsBuilder { picker_state, .. } => {
@@ -3559,56 +4183,11 @@ fn handle_conditions_step3_select(
                 }
                 _ => return,
             };
-            // Pass field so build_condition constructs the correct app-identity variant.
             if let Some(cond) = build_condition(attr, op, picker_idx, "", field) {
-                if let Screen::ConditionsBuilder {
-                    pending,
-                    pending_state,
-                    step,
-                    selected_attribute,
-                    selected_field,
-                    selected_operator,
-                    picker_state,
-                    edit_index,
-                    ..
-                } = &mut app.screen
-                {
-                    // Replace at original index (edit mode) or append (new condition mode).
-                    match *edit_index {
-                        Some(i) if i < pending.len() => {
-                            // SC-2: replace in-place, preserving list length and position.
-                            pending[i] = cond;
-                            pending_state.select(Some(i));
-                            *edit_index = None;
-                        }
-                        _ => {
-                            pending.push(cond);
-                            pending_state.select(Some(pending.len() - 1));
-                        }
-                    }
-                    // Reset to Step 1 for the next condition (per D-05, Pitfall 4).
-                    *step = 1;
-                    *selected_attribute = None;
-                    *selected_field = None;
-                    *selected_operator = None;
-                    picker_state.select(Some(0));
-                }
+                step3_commit_condition(app, cond);
             }
         }
-        KeyCode::Esc => {
-            // Per D-18: Esc at Step 3 goes back to Step 2.
-            if let Screen::ConditionsBuilder {
-                step,
-                selected_operator,
-                picker_state,
-                ..
-            } = &mut app.screen
-            {
-                *step = 2;
-                *selected_operator = None;
-                picker_state.select(Some(0));
-            }
-        }
+        KeyCode::Esc => step3_go_back(app),
         _ => {}
     }
 }
@@ -3772,9 +4351,115 @@ fn action_import_policies(app: &mut App) {
 /// - Abort on first failure with per-policy error message.
 /// - Transitions to ImportState::Success { created, updated } on success,
 ///   ImportState::Error(msg) on failure.
-fn handle_import_confirm(app: &mut App, key: KeyEvent) {
-    use crate::app::{PolicyPayload, PolicyResponse};
+///
+/// Returns the caller screen for ImportConfirm.
+fn import_confirm_return_screen(caller: ImportCaller) -> Screen {
+    match caller {
+        ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
+    }
+}
 
+/// Posts a single policy to the server during import.
+fn import_post_policy(
+    app: &mut App,
+    policy: crate::app::PolicyResponse,
+) -> Result<(), (String, String)> {
+    let name = policy.name.clone();
+    let payload: crate::app::PolicyPayload = policy.into();
+    match app.rt.block_on(
+        app.client
+            .post::<serde_json::Value, _>("admin/policies", &payload),
+    ) {
+        Ok(_) => Ok(()),
+        Err(e) => Err((name, e.to_string())),
+    }
+}
+
+/// Puts a single policy to the server during import.
+fn import_put_policy(
+    app: &mut App,
+    policy: crate::app::PolicyResponse,
+) -> Result<(), (String, String)> {
+    let name = policy.name.clone();
+    let id = policy.id.clone();
+    let payload: crate::app::PolicyPayload = policy.into();
+    let path = format!("admin/policies/{id}");
+    match app
+        .rt
+        .block_on(app.client.put::<serde_json::Value, _>(&path, &payload))
+    {
+        Ok(_) => Ok(()),
+        Err(e) => Err((name, e.to_string())),
+    }
+}
+
+/// Executes the import: POST new policies, PUT conflicting ones.
+fn import_execute_policies(app: &mut App) {
+    use crate::app::PolicyResponse;
+
+    let (policies, existing_ids): (Vec<PolicyResponse>, Vec<String>) = match &app.screen {
+        Screen::ImportConfirm {
+            policies,
+            existing_ids,
+            ..
+        } => (policies.clone(), existing_ids.clone()),
+        _ => return,
+    };
+
+    if let Screen::ImportConfirm { state, .. } = &mut app.screen {
+        *state = ImportState::InProgress;
+    }
+
+    let existing_set: std::collections::HashSet<String> = existing_ids.into_iter().collect();
+    let (to_create, to_update): (Vec<PolicyResponse>, Vec<PolicyResponse>) = policies
+        .into_iter()
+        .partition(|p| !existing_set.contains(&p.id));
+
+    let mut created = 0usize;
+    let mut updated = 0usize;
+
+    for policy in to_create {
+        match import_post_policy(app, policy) {
+            Ok(()) => created += 1,
+            Err((name, e)) => {
+                if let Screen::ImportConfirm { state, .. } = &mut app.screen {
+                    *state = ImportState::Error(format!("Failed on policy '{name}': {e}"));
+                }
+                return;
+            }
+        }
+    }
+
+    for policy in to_update {
+        match import_put_policy(app, policy) {
+            Ok(()) => updated += 1,
+            Err((name, e)) => {
+                if let Screen::ImportConfirm { state, .. } = &mut app.screen {
+                    *state = ImportState::Error(format!("Failed on policy '{name}': {e}"));
+                }
+                return;
+            }
+        }
+    }
+
+    if let Screen::ImportConfirm { state, .. } = &mut app.screen {
+        *state = ImportState::Success { created, updated };
+    }
+}
+
+/// Handles key events for the `Screen::ImportConfirm` variant.
+///
+/// Navigation: Up/Down cycles only between rows 3 ([Confirm]) and 4 ([Cancel]).
+/// Enter on row 3 -> execute import (POST new policies, PUT conflicting policies).
+/// Enter on row 4 / Esc -> return to PolicyMenu.
+///
+/// Import execution (per Phase 17 D-09, D-11, D-17, D-18, D-19):
+/// - POST non-conflicting policies (IDs not on server).
+/// - PUT conflicting policies (IDs already on server).
+/// - Abort on first failure with per-policy error message.
+/// - Transitions to ImportState::Success { created, updated } on success,
+///   ImportState::Error(msg) on failure.
+fn handle_import_confirm(app: &mut App, key: KeyEvent) {
     let caller = match &app.screen {
         Screen::ImportConfirm { caller, .. } => *caller,
         _ => return,
@@ -3789,10 +4474,7 @@ fn handle_import_confirm(app: &mut App, key: KeyEvent) {
         }
     ) {
         if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
-            let return_to = match caller {
-                ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
-            };
-            app.screen = return_to;
+            app.screen = import_confirm_return_screen(caller);
         }
         return;
     }
@@ -3804,95 +4486,20 @@ fn handle_import_confirm(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Esc => {
-            let return_to = match caller {
-                ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
-            };
-            app.screen = return_to;
+            app.screen = import_confirm_return_screen(caller);
         }
         KeyCode::Enter => {
-            // Determine which button is active.
             let selected = match &app.screen {
                 Screen::ImportConfirm { selected, .. } => *selected,
                 _ => return,
             };
 
             if selected != 3 {
-                // [Cancel] pressed.
-                let return_to = match caller {
-                    ImportCaller::PolicyMenu => Screen::PolicyMenu { selected: 0 },
-                };
-                app.screen = return_to;
+                app.screen = import_confirm_return_screen(caller);
                 return;
             }
 
-            // [Confirm] pressed — extract execution state.
-            let (policies, existing_ids): (Vec<PolicyResponse>, Vec<String>) = match &app.screen {
-                Screen::ImportConfirm {
-                    policies,
-                    existing_ids,
-                    ..
-                } => (policies.clone(), existing_ids.clone()),
-                _ => return,
-            };
-
-            // Transition to InProgress immediately so UI reflects working state.
-            if let Screen::ImportConfirm { state, .. } = &mut app.screen {
-                *state = ImportState::InProgress;
-            }
-
-            // Partition into POST (new) and PUT (existing) using O(1) HashSet lookup.
-            let existing_set: std::collections::HashSet<String> =
-                existing_ids.into_iter().collect();
-            let (to_create, to_update): (Vec<PolicyResponse>, Vec<PolicyResponse>) = policies
-                .into_iter()
-                .partition(|p| !existing_set.contains(&p.id));
-
-            let mut created = 0usize;
-            let mut updated = 0usize;
-
-            // POST non-conflicting policies.
-            for policy in to_create {
-                let name = policy.name.clone();
-                let payload: PolicyPayload = policy.into();
-                let result = app.rt.block_on(
-                    app.client
-                        .post::<serde_json::Value, _>("admin/policies", &payload),
-                );
-                match result {
-                    Ok(_) => created += 1,
-                    Err(e) => {
-                        if let Screen::ImportConfirm { state, .. } = &mut app.screen {
-                            *state = ImportState::Error(format!("Failed on policy '{name}': {e}"));
-                        }
-                        return;
-                    }
-                }
-            }
-
-            // PUT conflicting policies.
-            for policy in to_update {
-                let name = policy.name.clone();
-                let id = policy.id.clone();
-                let payload: PolicyPayload = policy.into();
-                let path = format!("admin/policies/{id}");
-                let result = app
-                    .rt
-                    .block_on(app.client.put::<serde_json::Value, _>(&path, &payload));
-                match result {
-                    Ok(_) => updated += 1,
-                    Err(e) => {
-                        if let Screen::ImportConfirm { state, .. } = &mut app.screen {
-                            *state = ImportState::Error(format!("Failed on policy '{name}': {e}"));
-                        }
-                        return;
-                    }
-                }
-            }
-
-            // All succeeded — invalidate cache and show summary.
-            if let Screen::ImportConfirm { state, .. } = &mut app.screen {
-                *state = ImportState::Success { created, updated };
-            }
+            import_execute_policies(app);
         }
         _ => {}
     }
@@ -3980,6 +4587,11 @@ fn action_open_usb_scan(app: &mut App) {
 /// Builds a `(vid, pid, serial) -> trust_tier` lookup from a JSON array
 /// returned by `GET /admin/device-registry/full`.
 ///
+/// Only includes machine-wide entries (where `owner_sid` is null/None).
+/// Per-user entries are intentionally excluded because the USB scan screen
+/// runs on the admin machine, not the target user's session, so machine-wide
+/// entries are the most relevant for cross-referencing locally-connected devices.
+///
 /// Missing or non-string fields default to empty / `"blocked"` respectively
 /// (matches the existing DeviceList parsing convention).
 pub(crate) fn build_registry_map(
@@ -3987,6 +4599,11 @@ pub(crate) fn build_registry_map(
 ) -> std::collections::HashMap<(String, String, String), String> {
     let mut map = std::collections::HashMap::new();
     for row in registry {
+        // Skip per-user entries: only machine-wide entries matter for the
+        // admin-machine USB scan cross-reference.
+        if row["owner_sid"].as_str().is_some() {
+            continue;
+        }
         let vid = row["vid"].as_str().unwrap_or("").to_string();
         let pid = row["pid"].as_str().unwrap_or("").to_string();
         let serial = row["serial"].as_str().unwrap_or("").to_string();
@@ -4136,6 +4753,8 @@ fn handle_usb_scan(app: &mut App, key: KeyEvent) {
                 pid,
                 serial,
                 description,
+                owner_sid: None,
+                owner_user: None,
                 selected: 0,
                 caller: TierPickerCaller::UsbScan,
             };
@@ -4213,12 +4832,14 @@ fn action_delete_device(app: &mut App, id: &str) {
 /// Handles key events for the DeviceTierPicker screen (final step of device register flow).
 fn handle_device_tier_picker(app: &mut App, key: KeyEvent) {
     // Extract all fields before mutable borrow for the nav branch.
-    let (vid, pid, serial, description, sel, caller) = match &app.screen {
+    let (vid, pid, serial, description, owner_sid, owner_user, sel, caller) = match &app.screen {
         Screen::DeviceTierPicker {
             vid,
             pid,
             serial,
             description,
+            owner_sid,
+            owner_user,
             selected,
             caller,
         } => (
@@ -4226,6 +4847,8 @@ fn handle_device_tier_picker(app: &mut App, key: KeyEvent) {
             pid.clone(),
             serial.clone(),
             description.clone(),
+            owner_sid.clone(),
+            owner_user.clone(),
             *selected,
             *caller,
         ),
@@ -4244,11 +4867,15 @@ fn handle_device_tier_picker(app: &mut App, key: KeyEvent) {
                 1 => "read_only",
                 _ => "full_access",
             };
+            let owner_sid_opt = owner_sid.as_deref();
+            let owner_user_opt = owner_user.as_deref();
             let body = serde_json::json!({
                 "vid": vid,
                 "pid": pid,
                 "serial": serial,
                 "description": description,
+                "owner_sid": owner_sid_opt,
+                "owner_user": owner_user_opt,
                 "trust_tier": trust_tier,
             });
             match app.rt.block_on(
@@ -4262,10 +4889,7 @@ fn handle_device_tier_picker(app: &mut App, key: KeyEvent) {
                     }
                     TierPickerCaller::UsbScan => {
                         action_usb_scan(app);
-                        app.set_status(
-                            "Device registered successfully.",
-                            StatusKind::Success,
-                        );
+                        app.set_status("Device registered successfully.", StatusKind::Success);
                     }
                 },
                 Err(e) => {
@@ -4359,13 +4983,13 @@ fn action_load_disk_registry_list(app: &mut App) {
             .get::<Vec<serde_json::Value>>("admin/disk-registry"),
     ) {
         Ok(disks) => {
-            app.screen = Screen::DiskRegistryList {
-                disks,
-                selected: 0,
-            };
+            app.screen = Screen::DiskRegistryList { disks, selected: 0 };
         }
         Err(e) => {
-            app.set_status(format!("Error loading disk registry: {e}"), StatusKind::Error);
+            app.set_status(
+                format!("Error loading disk registry: {e}"),
+                StatusKind::Error,
+            );
         }
     }
 }
@@ -4679,6 +5303,121 @@ mod tests {
             4
         );
         assert_eq!(value_count_for(ConditionAttribute::AccessContext, None), 2);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 41-04: Origin condition tests.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn build_condition_source_origin_eq() {
+        let cond = build_condition(
+            ConditionAttribute::SourceOrigin,
+            "eq",
+            0,
+            "https://company.sharepoint.com",
+            None,
+        );
+        assert!(cond.is_some());
+        let json = serde_json::to_string(&cond.unwrap()).expect("serialize");
+        assert!(json.contains("\"attribute\":\"source_origin\""));
+        assert!(json.contains("\"op\":\"eq\""));
+        assert!(json.contains("\"value\":\"https://company.sharepoint.com\""));
+    }
+
+    #[test]
+    fn build_condition_destination_origin_contains() {
+        let cond = build_condition(
+            ConditionAttribute::DestinationOrigin,
+            "contains",
+            0,
+            "sharepoint.com",
+            None,
+        );
+        assert!(cond.is_some());
+        let json = serde_json::to_string(&cond.unwrap()).expect("serialize");
+        assert!(json.contains("\"attribute\":\"destination_origin\""));
+        assert!(json.contains("\"op\":\"contains\""));
+        assert!(json.contains("\"value\":\"sharepoint.com\""));
+    }
+
+    #[test]
+    fn build_condition_source_origin_empty_buffer_returns_none() {
+        let cond = build_condition(ConditionAttribute::SourceOrigin, "eq", 0, "  ", None);
+        assert!(cond.is_none());
+    }
+
+    #[test]
+    fn condition_display_source_origin() {
+        use dlp_common::abac::PolicyCondition;
+        let cond = PolicyCondition::SourceOrigin {
+            op: "eq".to_string(),
+            value: "https://company.sharepoint.com".to_string(),
+        };
+        let display = condition_display(&cond);
+        assert_eq!(display, "SourceOrigin eq https://company.sharepoint.com");
+    }
+
+    #[test]
+    fn condition_display_destination_origin() {
+        use dlp_common::abac::PolicyCondition;
+        let cond = PolicyCondition::DestinationOrigin {
+            op: "contains".to_string(),
+            value: "sharepoint.com".to_string(),
+        };
+        let display = condition_display(&cond);
+        assert_eq!(display, "DestinationOrigin contains sharepoint.com");
+    }
+
+    #[test]
+    fn condition_to_prefill_source_origin_round_trip() {
+        use dlp_common::abac::PolicyCondition;
+        let original = PolicyCondition::SourceOrigin {
+            op: "eq".to_string(),
+            value: "https://company.sharepoint.com".to_string(),
+        };
+        let (attr, op_str, picker_idx, buf) = condition_to_prefill(&original);
+        assert_eq!(attr, ConditionAttribute::SourceOrigin);
+        assert_eq!(op_str, "eq");
+        assert_eq!(picker_idx, 0);
+        assert_eq!(buf, "https://company.sharepoint.com");
+
+        let rebuilt = build_condition(attr, &op_str, picker_idx, &buf, None)
+            .expect("roundtrip must produce a valid condition");
+        assert_eq!(&rebuilt, &original);
+    }
+
+    #[test]
+    fn operators_for_source_origin_has_eq_ne_contains() {
+        let ops = operators_for(ConditionAttribute::SourceOrigin, None);
+        assert_eq!(ops.len(), 3);
+        let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+        assert!(wire.contains(&"eq"));
+        assert!(wire.contains(&"ne"));
+        assert!(wire.contains(&"contains"));
+    }
+
+    #[test]
+    fn operators_for_destination_origin_has_eq_ne_contains() {
+        let ops = operators_for(ConditionAttribute::DestinationOrigin, None);
+        assert_eq!(ops.len(), 3);
+        let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+        assert!(wire.contains(&"eq"));
+        assert!(wire.contains(&"ne"));
+        assert!(wire.contains(&"contains"));
+    }
+
+    #[test]
+    fn value_count_for_source_origin_is_zero() {
+        assert_eq!(value_count_for(ConditionAttribute::SourceOrigin, None), 0);
+    }
+
+    #[test]
+    fn value_count_for_destination_origin_is_zero() {
+        assert_eq!(
+            value_count_for(ConditionAttribute::DestinationOrigin, None),
+            0
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -5171,7 +5910,10 @@ mod tests {
 
     #[test]
     fn usb_scan_esc_returns_to_devices_menu_idx_2() {
-        let mut app = make_test_app(Screen::UsbScan { devices: vec![], selected: 0 });
+        let mut app = make_test_app(Screen::UsbScan {
+            devices: vec![],
+            selected: 0,
+        });
         handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Esc)));
         match &app.screen {
             Screen::DevicesMenu { selected } => assert_eq!(*selected, 2),
@@ -5181,14 +5923,20 @@ mod tests {
 
     #[test]
     fn usb_scan_enter_on_empty_list_is_noop() {
-        let mut app = make_test_app(Screen::UsbScan { devices: vec![], selected: 0 });
+        let mut app = make_test_app(Screen::UsbScan {
+            devices: vec![],
+            selected: 0,
+        });
         handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
         assert!(matches!(app.screen, Screen::UsbScan { .. }));
     }
 
     #[test]
     fn usb_scan_up_on_empty_list_is_noop() {
-        let mut app = make_test_app(Screen::UsbScan { devices: vec![], selected: 0 });
+        let mut app = make_test_app(Screen::UsbScan {
+            devices: vec![],
+            selected: 0,
+        });
         handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Up)));
         assert!(matches!(app.screen, Screen::UsbScan { .. }));
     }
@@ -5228,10 +5976,7 @@ mod tests {
             json!({"id": "2", "agent_id": "a2", "instance_id": "i2", "bus_type": "NVMe", "encryption_status": "none", "model": "Model B"}),
             json!({"id": "3", "agent_id": "a3", "instance_id": "i3", "bus_type": "USB", "encryption_status": "encrypted", "model": "Model C"}),
         ];
-        let mut app = make_test_app(Screen::DiskRegistryList {
-            disks,
-            selected: 0,
-        });
+        let mut app = make_test_app(Screen::DiskRegistryList { disks, selected: 0 });
 
         // Down from 0 -> 1
         handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Down)));
@@ -5274,6 +6019,135 @@ mod tests {
             other => panic!("expected DiskRegistryList, got {other:?}"),
         }
     }
+
+    // ---------------------------------------------------------------------------
+    // Register flow with owner fields (Phase 38.4 Plan 03).
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn register_flow_description_to_owner_sid() {
+        let mut app = make_test_app(Screen::TextInput {
+            prompt: "Description".to_string(),
+            input: "My USB".to_string(),
+            purpose: InputPurpose::RegisterDeviceDescription {
+                vid: "0951".into(),
+                pid: "1666".into(),
+                serial: "ABC".into(),
+            },
+        });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        match &app.screen {
+            Screen::TextInput {
+                prompt, purpose, ..
+            } => {
+                assert!(
+                    prompt.contains("Owner SID"),
+                    "expected Owner SID prompt, got: {prompt}"
+                );
+                assert!(
+                    matches!(purpose, InputPurpose::RegisterDeviceOwnerSid { .. }),
+                    "expected RegisterDeviceOwnerSid"
+                );
+            }
+            other => panic!("expected TextInput for Owner SID, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn register_flow_owner_sid_to_owner_user() {
+        let mut app = make_test_app(Screen::TextInput {
+            prompt: "Owner SID".to_string(),
+            input: "S-1-5-21-1".to_string(),
+            purpose: InputPurpose::RegisterDeviceOwnerSid {
+                vid: "0951".into(),
+                pid: "1666".into(),
+                serial: "ABC".into(),
+                description: "My USB".into(),
+            },
+        });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        match &app.screen {
+            Screen::TextInput {
+                prompt, purpose, ..
+            } => {
+                assert!(
+                    prompt.contains("Owner User"),
+                    "expected Owner User prompt, got: {prompt}"
+                );
+                assert!(
+                    matches!(purpose, InputPurpose::RegisterDeviceOwnerUser { .. }),
+                    "expected RegisterDeviceOwnerUser"
+                );
+            }
+            other => panic!("expected TextInput for Owner User, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn register_flow_owner_user_to_tier_picker_with_owner() {
+        let mut app = make_test_app(Screen::TextInput {
+            prompt: "Owner User".to_string(),
+            input: "alice".to_string(),
+            purpose: InputPurpose::RegisterDeviceOwnerUser {
+                vid: "0951".into(),
+                pid: "1666".into(),
+                serial: "ABC".into(),
+                description: "My USB".into(),
+                owner_sid: "S-1-5-21-1".into(),
+            },
+        });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        match &app.screen {
+            Screen::DeviceTierPicker {
+                vid,
+                pid,
+                serial,
+                description,
+                owner_sid,
+                owner_user,
+                selected,
+                caller,
+            } => {
+                assert_eq!(vid, "0951");
+                assert_eq!(pid, "1666");
+                assert_eq!(serial, "ABC");
+                assert_eq!(description, "My USB");
+                assert_eq!(owner_sid.as_deref(), Some("S-1-5-21-1"));
+                assert_eq!(owner_user.as_deref(), Some("alice"));
+                assert_eq!(*selected, 0);
+                assert_eq!(*caller, TierPickerCaller::DeviceList);
+            }
+            other => panic!("expected DeviceTierPicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn register_flow_skipped_owner_fields_are_none() {
+        // Empty owner_sid -> None, empty owner_user -> None.
+        let mut app = make_test_app(Screen::TextInput {
+            prompt: "Owner User".to_string(),
+            input: "".to_string(),
+            purpose: InputPurpose::RegisterDeviceOwnerUser {
+                vid: "0951".into(),
+                pid: "1666".into(),
+                serial: "ABC".into(),
+                description: "My USB".into(),
+                owner_sid: "".into(),
+            },
+        });
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        match &app.screen {
+            Screen::DeviceTierPicker {
+                owner_sid,
+                owner_user,
+                ..
+            } => {
+                assert!(owner_sid.is_none(), "empty owner_sid should be None");
+                assert!(owner_user.is_none(), "empty owner_user should be None");
+            }
+            other => panic!("expected DeviceTierPicker, got {other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5307,6 +6181,28 @@ mod usb_scan_merge_tests {
             Some(&"blocked".to_string())
         );
         assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn build_registry_map_skips_per_user_entries() {
+        // Machine-wide entry (no owner_sid) should be included.
+        // Per-user entry (has owner_sid) should be excluded.
+        let rows = vec![
+            json!({"vid":"0951","pid":"1666","serial":"ABC","trust_tier":"read_only"}),
+            json!({"vid":"05ac","pid":"12a8","serial":"X","trust_tier":"blocked","owner_sid":"S-1-5-21-1","owner_user":"alice"}),
+        ];
+        let map = build_registry_map(&rows);
+        assert_eq!(
+            map.get(&("0951".into(), "1666".into(), "ABC".into())),
+            Some(&"read_only".to_string()),
+            "machine-wide entry should be in map"
+        );
+        assert_eq!(
+            map.get(&("05ac".into(), "12a8".into(), "X".into())),
+            None,
+            "per-user entry should be excluded from map"
+        );
+        assert_eq!(map.len(), 1);
     }
 
     #[test]
@@ -5445,6 +6341,8 @@ mod usb_scan_routing_tests {
             pid: "1666".into(),
             serial: "ABC".into(),
             description: "Kingston".into(),
+            owner_sid: None,
+            owner_user: None,
             selected: 1,
             caller: TierPickerCaller::DeviceList,
         };
@@ -5462,16 +6360,15 @@ mod usb_scan_routing_tests {
             pid: "1666".into(),
             serial: "ABC".into(),
             description: "Kingston".into(),
+            owner_sid: None,
+            owner_user: None,
             selected: 1,
             caller: TierPickerCaller::UsbScan,
         };
         handle_event(&mut app, AppEvent::Key(enter()));
         assert!(matches!(app.screen, Screen::UsbScan { .. }));
         let (msg, kind) = app.status.as_ref().expect("status set");
-        assert!(
-            msg.contains("registered successfully"),
-            "status was: {msg}"
-        );
+        assert!(msg.contains("registered successfully"), "status was: {msg}");
         assert_eq!(*kind, StatusKind::Success);
     }
 
@@ -5484,6 +6381,8 @@ mod usb_scan_routing_tests {
             pid: "1666".into(),
             serial: "ABC".into(),
             description: "Kingston".into(),
+            owner_sid: None,
+            owner_user: None,
             selected: 1,
             caller: TierPickerCaller::DeviceList,
         };
@@ -5503,6 +6402,8 @@ mod usb_scan_routing_tests {
             pid: "1666".into(),
             serial: "ABC".into(),
             description: "Kingston".into(),
+            owner_sid: None,
+            owner_user: None,
             selected: 1,
             caller: TierPickerCaller::UsbScan,
         };
@@ -5510,6 +6411,138 @@ mod usb_scan_routing_tests {
         match &app.screen {
             Screen::DevicesMenu { selected } => assert_eq!(*selected, 0),
             other => panic!("expected DevicesMenu on err, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod usb_enforcement_tests {
+    use super::*;
+
+    fn key_event(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn make_test_app(screen: Screen) -> crate::app::App {
+        let client = crate::client::EngineClient::for_test();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime build must succeed");
+        let mut app = crate::app::App::new(client, rt);
+        app.screen = screen;
+        app
+    }
+
+    #[test]
+    fn usb_enforcement_screen_navigates_all_rows() {
+        let config = serde_json::json!({
+            "usb_blocked_failure_mode": "Warning only",
+            "usb_startup_resolution_mode": "VID/PID/serial fallback",
+            "usb_none_serial_policy": "Always Blocked",
+        });
+        let screen = Screen::UsbEnforcementConfig {
+            config,
+            selected: 0,
+            editing: false,
+            buffer: String::new(),
+        };
+        let mut app = make_test_app(screen);
+
+        // Navigate Down through all 5 rows (0..=4).
+        for expected in [1, 2, 3, 4, 0] {
+            handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Down)));
+            match &app.screen {
+                Screen::UsbEnforcementConfig { selected, .. } => {
+                    assert_eq!(*selected, expected);
+                }
+                other => panic!("expected UsbEnforcementConfig, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn usb_enforcement_editing_cycles_picker_options() {
+        let config = serde_json::json!({
+            "usb_blocked_failure_mode": "Warning only",
+            "usb_startup_resolution_mode": "VID/PID/serial fallback",
+            "usb_none_serial_policy": "Always Blocked",
+        });
+        let screen = Screen::UsbEnforcementConfig {
+            config,
+            selected: 0,
+            editing: true,
+            buffer: String::new(),
+        };
+        let mut app = make_test_app(screen);
+
+        // Row 0 has 3 options; cycle Up from "Warning only" -> "Hard error".
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Up)));
+        match &app.screen {
+            Screen::UsbEnforcementConfig { config, .. } => {
+                let val = config["usb_blocked_failure_mode"].as_str().unwrap_or("");
+                assert_eq!(val, "Hard error");
+            }
+            other => panic!("expected UsbEnforcementConfig, got {other:?}"),
+        }
+
+        // Cycle Down from "Hard error" -> "Warning only" -> "Retry then error".
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Down)));
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Down)));
+        match &app.screen {
+            Screen::UsbEnforcementConfig { config, .. } => {
+                let val = config["usb_blocked_failure_mode"].as_str().unwrap_or("");
+                assert_eq!(val, "Retry then error");
+            }
+            other => panic!("expected UsbEnforcementConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usb_enforcement_enter_exits_edit_mode() {
+        let config = serde_json::json!({
+            "usb_blocked_failure_mode": "Warning only",
+            "usb_startup_resolution_mode": "VID/PID/serial fallback",
+            "usb_none_serial_policy": "Always Blocked",
+        });
+        let screen = Screen::UsbEnforcementConfig {
+            config,
+            selected: 0,
+            editing: true,
+            buffer: String::new(),
+        };
+        let mut app = make_test_app(screen);
+
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Enter)));
+        match &app.screen {
+            Screen::UsbEnforcementConfig { editing, .. } => {
+                assert!(!editing);
+            }
+            other => panic!("expected UsbEnforcementConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usb_enforcement_esc_returns_to_system_menu() {
+        let config = serde_json::json!({
+            "usb_blocked_failure_mode": "Warning only",
+            "usb_startup_resolution_mode": "VID/PID/serial fallback",
+            "usb_none_serial_policy": "Always Blocked",
+        });
+        let screen = Screen::UsbEnforcementConfig {
+            config,
+            selected: 2,
+            editing: false,
+            buffer: String::new(),
+        };
+        let mut app = make_test_app(screen);
+
+        handle_event(&mut app, AppEvent::Key(key_event(KeyCode::Esc)));
+        match &app.screen {
+            Screen::SystemMenu { selected } => {
+                assert_eq!(*selected, 5);
+            }
+            other => panic!("expected SystemMenu, got {other:?}"),
         }
     }
 }

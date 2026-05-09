@@ -22,7 +22,9 @@ fn test_empty_cache_returns_blocked() {
 
     // Act + Assert: unknown device returns Blocked
     assert_eq!(
-        cache.trust_tier_for("0951", "1666", "ABC"),
+        cache
+            .trust_tier_for_with_sid("0951", "1666", "ABC", None)
+            .tier,
         UsbTrustTier::Blocked,
         "empty cache must return Blocked (default deny)"
     );
@@ -42,7 +44,9 @@ fn test_seeded_cache_returns_correct_tier() {
 
     // Act + Assert: exact key returns the seeded tier
     assert_eq!(
-        cache.trust_tier_for("0951", "1666", "ABC"),
+        cache
+            .trust_tier_for_with_sid("0951", "1666", "ABC", None)
+            .tier,
         UsbTrustTier::ReadOnly,
         "cache must return the seeded tier for the exact key"
     );
@@ -63,7 +67,9 @@ fn test_wrong_serial_returns_blocked() {
 
     // Act + Assert: different serial is not in the cache -> Blocked
     assert_eq!(
-        cache.trust_tier_for("0951", "1666", "DIFFERENT"),
+        cache
+            .trust_tier_for_with_sid("0951", "1666", "DIFFERENT", None)
+            .tier,
         UsbTrustTier::Blocked,
         "a different serial must return Blocked (not in registry)"
     );

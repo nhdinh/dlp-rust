@@ -17,9 +17,14 @@
 //!  5. Sends a [`Pipe1AgentMsg::BlockNotify`] to the UI when the engine returns
 //!     a blocking decision.
 
+pub mod drag_drop;
 pub mod file_monitor;
 pub mod policy_mapper;
 
+pub use drag_drop::{
+    init_emit_context as init_drag_drop_emit_context, install_drag_drop_hook,
+    uninstall_drag_drop_hook, DragDropEnforcer,
+};
 pub use file_monitor::{FileAction, InterceptionEngine};
 
 use std::sync::Arc;
@@ -32,6 +37,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::audit_emitter::{self, emit_audit, EmitContext};
+use crate::cloud_enforcer::CloudEnforcer;
 use crate::disk_enforcer::DiskEnforcer;
 use crate::identity::WindowsIdentity;
 use crate::ipc::messages::{Pipe1AgentMsg, Pipe2AgentMsg};
@@ -39,6 +45,231 @@ use crate::ipc::pipe1;
 use crate::offline::OfflineManager;
 use crate::session_identity::SessionIdentityMap;
 use crate::usb_enforcer::UsbEnforcer;
+
+/// Builds the classification string for a USB trust tier.
+fn usb_classification(tier: UsbTrustTier) -> String {
+    match tier {
+        UsbTrustTier::Blocked => "USB-Blocked".to_string(),
+        UsbTrustTier::ReadOnly => "USB-ReadOnly".to_string(),
+        UsbTrustTier::FullAccess => {
+            unreachable!("FullAccess never produces a block result")
+        }
+    }
+}
+
+/// Builds the toast title and body for a USB block result.
+fn usb_toast_message(usb_result: &crate::usb_enforcer::UsbBlockResult) -> (String, String) {
+    match usb_result.tier {
+        UsbTrustTier::Blocked => (
+            "USB Device Blocked".to_string(),
+            format!(
+                "{} - this device is not permitted",
+                usb_result.identity.description
+            ),
+        ),
+        UsbTrustTier::ReadOnly => (
+            "USB Device Read-Only".to_string(),
+            format!(
+                "{} - write operations are not permitted",
+                usb_result.identity.description
+            ),
+        ),
+        UsbTrustTier::FullAccess => {
+            unreachable!("FullAccess never returns a block result from UsbEnforcer::check")
+        }
+    }
+}
+
+/// Emits a USB block audit event and notifies the UI.
+fn handle_usb_block(
+    ctx: &EmitContext,
+    user_sid: &str,
+    user_name: &str,
+    path: &str,
+    pid: u32,
+    usb_result: &crate::usb_enforcer::UsbBlockResult,
+) {
+    let mut audit_event = AuditEvent::new(
+        EventType::Block,
+        user_sid.to_string(),
+        user_name.to_string(),
+        path.to_string(),
+        // Classification not yet resolved at this point; T1 is the
+        // conservative public-tier placeholder (not used for ABAC here).
+        dlp_common::Classification::T1,
+        // Action placeholder — USB check fires before action mapping.
+        dlp_common::Action::WRITE,
+        usb_result.decision,
+        ctx.agent_id.clone(),
+        ctx.session_id,
+    )
+    .with_access_context(AuditAccessContext::Local)
+    .with_device_identity(Some(usb_result.identity.clone()))
+    .with_owner(usb_result.owner_sid.clone(), usb_result.owner_user.clone());
+    // WR-03: no policy matched this enforcement — leave policy_id as None
+    // so SIEM rules that test `policy_id IS NOT NULL` are not misled.
+    // Set only policy_name to convey the enforcement reason.
+    audit_event.policy_name = Some("USB enforcement: device blocked or read-only".to_string());
+
+    // AUDIT-04 (Phase 42): Enrich with app identity from the initiating process.
+    crate::audit_emitter::enrich_audit_with_app_identity(&mut audit_event, pid);
+    crate::audit_emitter::set_destination_application(&mut audit_event, None);
+
+    emit_audit(ctx, &mut audit_event);
+
+    if usb_result.decision.is_denied() {
+        let msg = Pipe1AgentMsg::BlockNotify {
+            reason: "USB enforcement: device blocked or read-only".to_string(),
+            classification: usb_classification(usb_result.tier),
+            resource_path: path.to_string(),
+            policy_id: String::new(),
+        };
+        if let Err(e) = pipe1::send_to_ui(ctx.session_id, &msg) {
+            warn!(
+                error = %e,
+                session_id = ctx.session_id,
+                "failed to send USB BlockNotify to UI"
+            );
+        }
+    }
+
+    // USB-04: toast notification — fires only when per-drive cooldown has not suppressed it.
+    if usb_result.notify {
+        let (title, body) = usb_toast_message(usb_result);
+        crate::ipc::pipe2::BROADCASTER.broadcast(&Pipe2AgentMsg::Toast { title, body });
+    }
+}
+
+/// Emits a disk block audit event and notifies the UI.
+fn handle_disk_block(
+    ctx: &EmitContext,
+    user_sid: &str,
+    user_name: &str,
+    path: &str,
+    pid: u32,
+    disk_result: &crate::disk_enforcer::DiskBlockResult,
+) {
+    let mut audit_event = AuditEvent::new(
+        EventType::Block,
+        user_sid.to_string(),
+        user_name.to_string(),
+        path.to_string(),
+        // Classification not yet resolved at this stage; T1 is the
+        // conservative public-tier placeholder (AUDIT-02).
+        dlp_common::Classification::T1,
+        dlp_common::Action::WRITE,
+        disk_result.decision,
+        ctx.agent_id.clone(),
+        ctx.session_id,
+    )
+    .with_access_context(AuditAccessContext::Local)
+    .with_blocked_disk(disk_result.disk.clone());
+    // WR-03: no policy matched this enforcement — leave policy_id as None
+    // so SIEM rules that test `policy_id IS NOT NULL` are not misled.
+    // Set only policy_name to convey the enforcement reason.
+    audit_event.policy_name = Some("Disk enforcement: unregistered fixed disk".to_string());
+
+    // AUDIT-04 (Phase 42): Enrich with app identity from the initiating process.
+    crate::audit_emitter::enrich_audit_with_app_identity(&mut audit_event, pid);
+    crate::audit_emitter::set_destination_application(&mut audit_event, None);
+
+    emit_audit(ctx, &mut audit_event);
+
+    // AUDIT-02: Pipe 1 BlockNotify for SIEM / dashboard visibility.
+    if disk_result.decision.is_denied() {
+        let msg = Pipe1AgentMsg::BlockNotify {
+            reason: "Disk enforcement: unregistered fixed disk".to_string(),
+            classification: "Disk-Unregistered".to_string(),
+            resource_path: path.to_string(),
+            policy_id: String::new(),
+        };
+        if let Err(e) = pipe1::send_to_ui(ctx.session_id, &msg) {
+            warn!(
+                error = %e,
+                session_id = ctx.session_id,
+                "failed to send disk BlockNotify to UI"
+            );
+        }
+    }
+
+    // Toast notification (D-02 per-drive 30-second cooldown embedded in DiskEnforcer).
+    if disk_result.notify {
+        let drive_part = disk_result
+            .disk
+            .drive_letter
+            .map(|l| format!(" ({l}:)"))
+            .unwrap_or_default();
+        let body = format!(
+            "{}{drive_part} - this disk is not registered",
+            disk_result.disk.model
+        );
+        crate::ipc::pipe2::BROADCASTER.broadcast(&Pipe2AgentMsg::Toast {
+            title: "Unregistered Disk Blocked".to_string(),
+            body,
+        });
+    }
+}
+
+/// Emits a cloud block audit event and notifies the UI.
+fn handle_cloud_block(
+    ctx: &EmitContext,
+    user_sid: &str,
+    user_name: &str,
+    path: &str,
+    pid: u32,
+    cloud_result: &crate::cloud_enforcer::CloudBlockResult,
+) {
+    let mut audit_event = AuditEvent::new(
+        EventType::Block,
+        user_sid.to_string(),
+        user_name.to_string(),
+        path.to_string(),
+        // Classification not yet resolved at this stage; T1 is the
+        // conservative public-tier placeholder (AUDIT-02).
+        dlp_common::Classification::T1,
+        dlp_common::Action::CLOUD_UPLOAD,
+        cloud_result.decision,
+        ctx.agent_id.clone(),
+        ctx.session_id,
+    )
+    .with_access_context(AuditAccessContext::Local);
+    // WR-03: no policy matched this enforcement — leave policy_id as None.
+    audit_event.policy_name = Some(cloud_result.reason.clone());
+
+    // AUDIT-04 (Phase 42): Enrich with app identity from the initiating process.
+    crate::audit_emitter::enrich_audit_with_app_identity(&mut audit_event, pid);
+    crate::audit_emitter::set_destination_application(&mut audit_event, None);
+
+    emit_audit(ctx, &mut audit_event);
+
+    // AUDIT-02: Pipe 1 BlockNotify for SIEM / dashboard visibility.
+    if cloud_result.decision.is_denied() {
+        let msg = Pipe1AgentMsg::BlockNotify {
+            reason: cloud_result.reason.clone(),
+            classification: format!("Cloud-{}", cloud_result.provider),
+            resource_path: path.to_string(),
+            policy_id: String::new(),
+        };
+        if let Err(e) = pipe1::send_to_ui(ctx.session_id, &msg) {
+            warn!(
+                error = %e,
+                session_id = ctx.session_id,
+                "failed to send cloud BlockNotify to UI"
+            );
+        }
+    }
+
+    // Toast notification.
+    if cloud_result.notify {
+        crate::ipc::pipe2::BROADCASTER.broadcast(&Pipe2AgentMsg::Toast {
+            title: "Cloud Sync Blocked".to_string(),
+            body: format!(
+                "{} — upload to {} is blocked",
+                path, cloud_result.provider
+            ),
+        });
+    }
+}
 
 /// Runs the file interception event loop.
 ///
@@ -57,7 +288,8 @@ use crate::usb_enforcer::UsbEnforcer;
 /// * `session_map` — per-session identity map for resolving file owners
 /// * `ad_client` — optional AD client for group/trust/location resolution (None = fallback to placeholder)
 /// * `usb_enforcer` — optional USB trust-tier enforcer; fires before ABAC evaluation (None = USB enforcement disabled)
-/// * `disk_enforcer` — optional fixed-disk write enforcer; fires after USB, before ABAC (None = disk enforcement disabled)
+/// * `cloud_enforcer` — optional cloud sync enforcer; fires after disk, before ABAC (None = cloud enforcement disabled)
+#[allow(clippy::too_many_arguments)]
 pub async fn run_event_loop(
     mut rx: mpsc::Receiver<FileAction>,
     offline: Arc<OfflineManager>,
@@ -66,6 +298,7 @@ pub async fn run_event_loop(
     ad_client: Arc<Option<dlp_common::AdClient>>,
     usb_enforcer: Option<Arc<UsbEnforcer>>,
     disk_enforcer: Option<Arc<DiskEnforcer>>,
+    cloud_enforcer: Option<Arc<CloudEnforcer>>,
 ) {
     info!("interception event loop started");
 
@@ -91,78 +324,7 @@ pub async fn run_event_loop(
         // short-circuit here and emit an audit Block event (D-11).
         if let Some(ref enforcer) = usb_enforcer {
             if let Some(usb_result) = enforcer.check(&path, &action) {
-                let mut audit_event = AuditEvent::new(
-                    EventType::Block,
-                    user_sid.clone(),
-                    user_name.clone(),
-                    path.clone(),
-                    // Classification not yet resolved at this point; T1 is the
-                    // conservative public-tier placeholder (not used for ABAC here).
-                    dlp_common::Classification::T1,
-                    // Action placeholder — USB check fires before action mapping.
-                    dlp_common::Action::WRITE,
-                    usb_result.decision,
-                    ctx.agent_id.clone(),
-                    ctx.session_id,
-                )
-                .with_access_context(AuditAccessContext::Local)
-                .with_device_identity(Some(usb_result.identity.clone()));
-                // WR-03: no policy matched this enforcement — leave policy_id as None
-                // so SIEM rules that test `policy_id IS NOT NULL` are not misled.
-                // Set only policy_name to convey the enforcement reason.
-                audit_event.policy_name =
-                    Some("USB enforcement: device blocked or read-only".to_string());
-
-                emit_audit(&ctx, &mut audit_event);
-
-                if usb_result.decision.is_denied() {
-                    if let Err(e) = pipe1::send_to_ui(
-                        ctx.session_id,
-                        &Pipe1AgentMsg::BlockNotify {
-                            reason: "USB enforcement: device blocked or read-only".to_string(),
-                            classification: match usb_result.tier {
-                                UsbTrustTier::Blocked => "USB-Blocked".to_string(),
-                                UsbTrustTier::ReadOnly => "USB-ReadOnly".to_string(),
-                                UsbTrustTier::FullAccess => {
-                                    unreachable!("FullAccess never produces a block result")
-                                }
-                            },
-                            resource_path: path.clone(),
-                            policy_id: String::new(),
-                        },
-                    ) {
-                        warn!(
-                            error = %e,
-                            session_id = ctx.session_id,
-                            "failed to send USB BlockNotify to UI"
-                        );
-                    }
-                }
-                // USB-04: toast notification — fires only when per-drive cooldown has not suppressed it.
-                if usb_result.notify {
-                    let (title, body) = match usb_result.tier {
-                        UsbTrustTier::Blocked => (
-                            "USB Device Blocked".to_string(),
-                            format!(
-                                "{} - this device is not permitted",
-                                usb_result.identity.description
-                            ),
-                        ),
-                        UsbTrustTier::ReadOnly => (
-                            "USB Device Read-Only".to_string(),
-                            format!(
-                                "{} - write operations are not permitted",
-                                usb_result.identity.description
-                            ),
-                        ),
-                        UsbTrustTier::FullAccess => {
-                            unreachable!(
-                                "FullAccess never returns a block result from UsbEnforcer::check"
-                            )
-                        }
-                    };
-                    crate::ipc::pipe2::BROADCASTER.broadcast(&Pipe2AgentMsg::Toast { title, body });
-                }
+                handle_usb_block(&ctx, &user_sid, &user_name, &path, pid, &usb_result);
                 continue; // skip ABAC evaluation for this event
             }
         }
@@ -173,64 +335,27 @@ pub async fn run_event_loop(
         // to skip ABAC evaluation when blocked, mirroring the USB pattern.
         if let Some(ref enforcer) = disk_enforcer {
             if let Some(disk_result) = enforcer.check(&path, &action) {
-                let mut audit_event = AuditEvent::new(
-                    EventType::Block,
-                    user_sid.clone(),
-                    user_name.clone(),
-                    path.clone(),
-                    // Classification not yet resolved at this stage; T1 is the
-                    // conservative public-tier placeholder (AUDIT-02).
-                    dlp_common::Classification::T1,
-                    dlp_common::Action::WRITE,
-                    disk_result.decision,
-                    ctx.agent_id.clone(),
-                    ctx.session_id,
-                )
-                .with_access_context(AuditAccessContext::Local)
-                .with_blocked_disk(disk_result.disk.clone());
-                // WR-03: no policy matched this enforcement — leave policy_id as None
-                // so SIEM rules that test `policy_id IS NOT NULL` are not misled.
-                // Set only policy_name to convey the enforcement reason.
-                audit_event.policy_name =
-                    Some("Disk enforcement: unregistered fixed disk".to_string());
+                handle_disk_block(&ctx, &user_sid, &user_name, &path, pid, &disk_result);
+                continue; // skip ABAC evaluation for this event
+            }
+        }
 
-                emit_audit(&ctx, &mut audit_event);
-
-                // AUDIT-02: Pipe 1 BlockNotify for SIEM / dashboard visibility.
-                if disk_result.decision.is_denied() {
-                    if let Err(e) = pipe1::send_to_ui(
-                        ctx.session_id,
-                        &Pipe1AgentMsg::BlockNotify {
-                            reason: "Disk enforcement: unregistered fixed disk".to_string(),
-                            classification: "Disk-Unregistered".to_string(),
-                            resource_path: path.clone(),
-                            policy_id: String::new(),
-                        },
-                    ) {
-                        warn!(
-                            error = %e,
-                            session_id = ctx.session_id,
-                            "failed to send disk BlockNotify to UI"
-                        );
-                    }
-                }
-
-                // Toast notification (D-02 per-drive 30-second cooldown embedded in DiskEnforcer).
-                if disk_result.notify {
-                    let drive_part = disk_result
-                        .disk
-                        .drive_letter
-                        .map(|l| format!(" ({l}:)"))
-                        .unwrap_or_default();
-                    let body = format!(
-                        "{}{drive_part} - this disk is not registered",
-                        disk_result.disk.model
-                    );
-                    crate::ipc::pipe2::BROADCASTER.broadcast(&Pipe2AgentMsg::Toast {
-                        title: "Unregistered Disk Blocked".to_string(),
-                        body,
-                    });
-                }
+        // ── Cloud enforcement (pre-ABAC check) ───────────────────────────
+        // Fires after disk enforcement, before the ABAC engine. Resolves
+        // classification via PolicyMapper before calling check() so the
+        // enforcer does not need to infer sensitivity from path text.
+        // provisional_classification is infallible; if a future evaluator
+        // integration introduces a fallible path, fail open with T2 to avoid
+        // blocking legitimate I/O on evaluator unavailability (ADR: M017/S02).
+        if let Some(ref enforcer) = cloud_enforcer {
+            let cloud_classification = PolicyMapper::provisional_classification(&path);
+            tracing::trace!(
+                path_hash = %fnv1a_hex(&path),
+                classification = ?cloud_classification,
+                "cloud enforcer: classification resolved"
+            );
+            if let Some(cloud_result) = enforcer.check(&path, &action, cloud_classification) {
+                handle_cloud_block(&ctx, &user_sid, &user_name, &path, pid, &cloud_result);
                 continue; // skip ABAC evaluation for this event
             }
         }
@@ -312,6 +437,10 @@ pub async fn run_event_loop(
         .with_access_context(AuditAccessContext::Local)
         .with_policy(policy_id_str.clone(), response_reason.clone());
 
+        // AUDIT-04 (Phase 42): Enrich with app identity from the initiating process.
+        crate::audit_emitter::enrich_audit_with_app_identity(&mut audit_event, pid);
+        crate::audit_emitter::set_destination_application(&mut audit_event, None);
+
         emit_audit(&ctx, &mut audit_event);
 
         // ── UI notification for blocking decisions ──────────────────────────
@@ -332,4 +461,18 @@ pub async fn run_event_loop(
 
     info!("interception event loop exited");
 }
+
+/// FNV-1a 64-bit hash of a string, returned as a lowercase hex string.
+///
+/// Used to log a non-sensitive path identifier in audit traces without
+/// exposing the raw path in log sinks that forward to external systems.
+fn fnv1a_hex(s: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
 pub use policy_mapper::PolicyMapper;
