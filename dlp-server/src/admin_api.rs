@@ -294,6 +294,21 @@ pub struct AgentConfigPayload {
     /// Policy for USB devices without serial descriptors (USB-08). Default: "Always Blocked".
     #[serde(default = "default_usb_none_serial_policy")]
     pub usb_none_serial_policy: String,
+    /// Whether the cloud sync hook DLL is enabled (M017/S01). Default: false.
+    #[serde(default)]
+    pub cloud_hook_enabled: bool,
+    /// Whether print spooler interception is enabled (M017/S04). Default: false.
+    #[serde(default)]
+    pub print_enabled: bool,
+    /// Timeout in milliseconds for XPS spool file parsing (M017/S04). Default: 5000.
+    #[serde(default = "default_print_xps_timeout_ms")]
+    pub print_xps_timeout_ms: u64,
+    /// Action when a print job cannot be classified (M017/S04). Default: "Block".
+    #[serde(default = "default_print_unclassifiable_action")]
+    pub print_unclassifiable_action: String,
+    /// Maximum pages to parse from an XPS spool file (M017/S04). Default: 100.
+    #[serde(default = "default_print_max_pages")]
+    pub print_max_pages: usize,
 }
 
 fn default_usb_blocked_failure_mode() -> String {
@@ -304,6 +319,35 @@ fn default_usb_startup_resolution_mode() -> String {
 }
 fn default_usb_none_serial_policy() -> String {
     DEFAULT_USB_NONE_SERIAL_POLICY.to_string()
+}
+fn default_print_xps_timeout_ms() -> u64 {
+    5000
+}
+fn default_print_unclassifiable_action() -> String {
+    "Block".to_string()
+}
+fn default_print_max_pages() -> usize {
+    100
+}
+
+impl Default for AgentConfigPayload {
+    fn default() -> Self {
+        Self {
+            monitored_paths: Vec::new(),
+            excluded_paths: Vec::new(),
+            heartbeat_interval_secs: 30,
+            offline_cache_enabled: true,
+            disk_allowlist: Vec::new(),
+            usb_blocked_failure_mode: default_usb_blocked_failure_mode(),
+            usb_startup_resolution_mode: default_usb_startup_resolution_mode(),
+            usb_none_serial_policy: default_usb_none_serial_policy(),
+            cloud_hook_enabled: false,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: default_print_unclassifiable_action(),
+            print_max_pages: 100,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1452,6 +1496,11 @@ async fn get_agent_config_for_agent(
                 usb_blocked_failure_mode: row.usb_blocked_failure_mode,
                 usb_startup_resolution_mode: row.usb_startup_resolution_mode,
                 usb_none_serial_policy: row.usb_none_serial_policy,
+                cloud_hook_enabled: row.cloud_hook_enabled != 0,
+                print_enabled: row.print_enabled != 0,
+                print_xps_timeout_ms: u64::try_from(row.print_xps_timeout_ms).unwrap_or(5000),
+                print_unclassifiable_action: row.print_unclassifiable_action,
+                print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
             },
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // Fall back to global default.
@@ -1466,6 +1515,11 @@ async fn get_agent_config_for_agent(
                     usb_blocked_failure_mode: row.usb_blocked_failure_mode.clone(),
                     usb_startup_resolution_mode: row.usb_startup_resolution_mode.clone(),
                     usb_none_serial_policy: row.usb_none_serial_policy.clone(),
+                    cloud_hook_enabled: row.cloud_hook_enabled != 0,
+                    print_enabled: row.print_enabled != 0,
+                    print_xps_timeout_ms: u64::try_from(row.print_xps_timeout_ms).unwrap_or(5000),
+                    print_unclassifiable_action: row.print_unclassifiable_action.clone(),
+                    print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
                 }
             }
             Err(e) => return Err(AppError::Database(e)),
@@ -1580,6 +1634,11 @@ async fn get_global_agent_config_handler(
         usb_blocked_failure_mode: row.usb_blocked_failure_mode,
         usb_startup_resolution_mode: row.usb_startup_resolution_mode,
         usb_none_serial_policy: row.usb_none_serial_policy,
+        cloud_hook_enabled: row.cloud_hook_enabled != 0,
+        print_enabled: row.print_enabled != 0,
+        print_xps_timeout_ms: u64::try_from(row.print_xps_timeout_ms).unwrap_or(5000),
+        print_unclassifiable_action: row.print_unclassifiable_action,
+        print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
     }))
 }
 
@@ -1620,6 +1679,13 @@ async fn update_global_agent_config_handler(
             USB_NONE_SERIAL_POLICIES.join(", ")
         )));
     }
+    const PRINT_UNCLASSIFIABLE_ACTIONS: &[&str] = &["Block", "Allow"];
+    if !PRINT_UNCLASSIFIABLE_ACTIONS.contains(&payload.print_unclassifiable_action.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "print_unclassifiable_action must be one of: {}",
+            PRINT_UNCLASSIFIABLE_ACTIONS.join(", ")
+        )));
+    }
 
     // Reject unimplemented modes (review concern #7).
     if payload.usb_startup_resolution_mode == "Volume GUID resolution" {
@@ -1653,6 +1719,11 @@ async fn update_global_agent_config_handler(
             usb_blocked_failure_mode: p.usb_blocked_failure_mode.clone(),
             usb_startup_resolution_mode: p.usb_startup_resolution_mode.clone(),
             usb_none_serial_policy: p.usb_none_serial_policy.clone(),
+            cloud_hook_enabled: if p.cloud_hook_enabled { 1 } else { 0 },
+            print_enabled: if p.print_enabled { 1 } else { 0 },
+            print_xps_timeout_ms: i64::try_from(p.print_xps_timeout_ms).unwrap_or(5000),
+            print_unclassifiable_action: p.print_unclassifiable_action.clone(),
+            print_max_pages: i64::try_from(p.print_max_pages).unwrap_or(100),
         };
         AgentConfigRepository::update_global(&uow, &record).map_err(AppError::Database)?;
         uow.commit().map_err(AppError::Database)?;
@@ -1690,6 +1761,11 @@ async fn get_agent_config_override_handler(
         usb_blocked_failure_mode: row.usb_blocked_failure_mode,
         usb_startup_resolution_mode: row.usb_startup_resolution_mode,
         usb_none_serial_policy: row.usb_none_serial_policy,
+        cloud_hook_enabled: row.cloud_hook_enabled != 0,
+        print_enabled: row.print_enabled != 0,
+        print_xps_timeout_ms: u64::try_from(row.print_xps_timeout_ms).unwrap_or(5000),
+        print_unclassifiable_action: row.print_unclassifiable_action,
+        print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
     }))
 }
 
@@ -1733,6 +1809,11 @@ async fn update_agent_config_override_handler(
             &p.usb_blocked_failure_mode,
             &p.usb_startup_resolution_mode,
             &p.usb_none_serial_policy,
+            if p.cloud_hook_enabled { 1 } else { 0 },
+            if p.print_enabled { 1 } else { 0 },
+            i64::try_from(p.print_xps_timeout_ms).unwrap_or(5000),
+            &p.print_unclassifiable_action,
+            i64::try_from(p.print_max_pages).unwrap_or(100),
         )
         .map_err(AppError::Database)?;
         uow.commit().map_err(AppError::Database)?;
@@ -3672,6 +3753,7 @@ mod tests {
             usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
             usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
             usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
+            ..Default::default()
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -3711,6 +3793,7 @@ mod tests {
             usb_blocked_failure_mode: "Hard error".to_string(),
             usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
             usb_none_serial_policy: "Allow unregistered".to_string(),
+            ..Default::default()
         };
         let json = serde_json::to_string(&full).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -3762,6 +3845,7 @@ mod tests {
             usb_blocked_failure_mode: "Warning only".to_string(),
             usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
             usb_none_serial_policy: "Always Blocked".to_string(),
+            ..Default::default()
         };
         assert!(validate_usb_config(&valid).is_ok());
 
@@ -3854,6 +3938,7 @@ mod tests {
             usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
             usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
             usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
+            ..Default::default()
         };
 
         // PUT the new global config.
@@ -3902,6 +3987,7 @@ mod tests {
             usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
             usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
             usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
+            ..Default::default()
         };
         let req = Request::builder()
             .method("PUT")
@@ -3948,6 +4034,7 @@ mod tests {
             usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
             usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
             usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
+            ..Default::default()
         };
 
         // PUT per-agent override.
@@ -4015,6 +4102,7 @@ mod tests {
             usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
             usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
             usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
+            ..Default::default()
         };
         let put_req = Request::builder()
             .method("PUT")
@@ -4088,6 +4176,7 @@ mod tests {
             usb_blocked_failure_mode: DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string(),
             usb_startup_resolution_mode: DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string(),
             usb_none_serial_policy: DEFAULT_USB_NONE_SERIAL_POLICY.to_string(),
+            ..Default::default()
         };
         let req = Request::builder()
             .method("PUT")

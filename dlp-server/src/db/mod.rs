@@ -341,6 +341,70 @@ pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
         "agent_config_overrides",
     )?;
 
+    // M017: Cloud hook and print interception config columns.
+    run_alter(
+        conn,
+        "ALTER TABLE global_agent_config ADD COLUMN cloud_hook_enabled INTEGER NOT NULL DEFAULT 0",
+        "cloud_hook_enabled",
+        "global_agent_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE global_agent_config ADD COLUMN print_enabled INTEGER NOT NULL DEFAULT 0",
+        "print_enabled",
+        "global_agent_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE global_agent_config ADD COLUMN print_xps_timeout_ms INTEGER NOT NULL DEFAULT 5000",
+        "print_xps_timeout_ms",
+        "global_agent_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE global_agent_config ADD COLUMN print_unclassifiable_action TEXT NOT NULL DEFAULT 'Block'",
+        "print_unclassifiable_action",
+        "global_agent_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE global_agent_config ADD COLUMN print_max_pages INTEGER NOT NULL DEFAULT 100",
+        "print_max_pages",
+        "global_agent_config",
+    )?;
+
+    // M017: Cloud hook and print interception config columns for per-agent overrides.
+    run_alter(
+        conn,
+        "ALTER TABLE agent_config_overrides ADD COLUMN cloud_hook_enabled INTEGER NOT NULL DEFAULT 0",
+        "cloud_hook_enabled",
+        "agent_config_overrides",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE agent_config_overrides ADD COLUMN print_enabled INTEGER NOT NULL DEFAULT 0",
+        "print_enabled",
+        "agent_config_overrides",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE agent_config_overrides ADD COLUMN print_xps_timeout_ms INTEGER NOT NULL DEFAULT 5000",
+        "print_xps_timeout_ms",
+        "agent_config_overrides",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE agent_config_overrides ADD COLUMN print_unclassifiable_action TEXT NOT NULL DEFAULT 'Block'",
+        "print_unclassifiable_action",
+        "agent_config_overrides",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE agent_config_overrides ADD COLUMN print_max_pages INTEGER NOT NULL DEFAULT 100",
+        "print_max_pages",
+        "agent_config_overrides",
+    )?;
+
     Ok(())
 }
 
