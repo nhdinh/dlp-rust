@@ -1,9 +1,9 @@
 # GSD State
 
-**Active Milestone:** M017: v0.9.0 Cloud & Print Exfiltration Prevention
-**Active Slice:** S05: Integration & UAT
-**Phase:** planning
-**Requirements Status:** 2 active · 6 validated · 0 deferred · 0 out of scope
+**Active Milestone:** None
+**Active Slice:** None
+**Phase:** complete
+**Requirements Status:** 1 active · 7 validated · 0 deferred · 0 out of scope
 
 ## Milestone Registry
 - ✅ **M008:** v0.8.1 Deferred Items & Issue Debt
@@ -15,7 +15,7 @@
 - ✅ **M014:** v0.4.0 Policy Authoring
 - ✅ **M015:** v0.3.0 Operational Hardening
 - ✅ **M016:** v0.2.0 Feature Completion
-- 🔄 **M017:** v0.9.0 Cloud & Print Exfiltration Prevention
+- ✅ **M017:** v0.9.0 Cloud & Print Exfiltration Prevention
 
 ## Recent Decisions
 - None recorded
@@ -24,4 +24,4 @@
 - None
 
 ## Next Action
-Slice S05 has no DB tasks. Plan slice tasks before execution.
+All milestones complete. 1 active requirement in REQUIREMENTS.md has not been mapped to a milestone.
