@@ -675,6 +675,8 @@ struct RunLoopContext {
     /// Optional WFP manager (M017/S01). `None` when `wfp_filter_enabled` is false.
     #[allow(dead_code)]
     wfp_manager: Option<crate::wfp_manager::WfpManager>,
+    /// Optional print enforcer (M017/S04). `None` when `print_enabled` is false.
+    print_enforcer: Option<crate::print_enforcer::PrintEnforcer>,
 }
 
 /// The main service run loop.
@@ -923,6 +925,26 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
             None
         };
 
+    // ── PrintEnforcer (M017/S04) ──────────────────────────────────────────
+    let print_enforcer_opt: Option<crate::print_enforcer::PrintEnforcer> = {
+        let watcher_config = crate::print_watcher::PrintWatcherConfig {
+            max_pages: agent_config.print_max_pages.unwrap_or(100),
+            unclassifiable_action: agent_config
+                .print_unclassifiable_action
+                .clone()
+                .unwrap_or_else(|| "Block".to_string()),
+        };
+        let mut enforcer = crate::print_enforcer::PrintEnforcer::new(
+            agent_config.print_enabled,
+            watcher_config,
+            offline.clone(),
+            audit_ctx.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        enforcer.start();
+        Some(enforcer)
+    };
+
     // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
     let (enc_shutdown_tx, enc_handle) = spawn_encryption_task(audit_ctx.clone(), recheck_interval);
 
@@ -972,6 +994,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         detector_arc,
         hook_injector: hook_injector_opt,
         wfp_manager: wfp_manager_opt,
+        print_enforcer: print_enforcer_opt,
     }
 }
 
@@ -1400,6 +1423,13 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     if ctx.hook_injector.is_some() {
         crate::password_stop::debug_log("run_loop: dropping hook injector");
         info!("hook injector dropped");
+    }
+
+    // Stop print enforcer (M017/S04).
+    if let Some(mut enforcer) = ctx.print_enforcer {
+        crate::password_stop::debug_log("run_loop: stopping print enforcer");
+        enforcer.stop();
+        crate::password_stop::debug_log("run_loop: print enforcer stopped");
     }
 
     // Kill all UI processes spawned by the session monitor.
