@@ -1,4 +1,4 @@
-# GSD context snapshot (2026-05-09T01:25:47.273Z)
+# GSD context snapshot (2026-05-09T02:22:37.700Z)
 
 ## Top project memories
 - [MEM017] (architecture) The hook DLL implements fail-closed behavior: if the named pipe client cannot connect, the pipe request times out, or the agent responds DENY, the hook returns ERROR_ACCESS_DENIED. This prevents files from silently bypassing enforcement when the agent is unreachable.

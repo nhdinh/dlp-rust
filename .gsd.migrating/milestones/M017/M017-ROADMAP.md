@@ -25,7 +25,7 @@
 - [x] **S03: S03** `risk:medium` `depends:[]`
   > After this: Copy a https://1drv.ms/... link to clipboard → alert emitted if the linked file is T3/T4. Sync-folder files get stricter ABAC policy applied.
 
-- [ ] **S05: Integration & UAT** `risk:low` `depends:[S02,S03,S04]`
+- [x] **S05: S05** `risk:low` `depends:[]`
   > After this: Run full UAT: cloud upload blocked, print blocked, share link detected, all audit events flow to SIEM, admin CLI configures thresholds, TC-30..33 and TC-50..52 pass.
 
 ## Boundary Map

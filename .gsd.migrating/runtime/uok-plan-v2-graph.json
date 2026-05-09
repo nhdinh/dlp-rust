@@ -1,12 +1,12 @@
 {
-  "compiledAt": "2026-05-09T01:17:10.205Z",
+  "compiledAt": "2026-05-09T02:14:08.033Z",
   "milestoneId": "M017",
   "pipeline": {
     "clarifyRoundLimit": 3,
     "researchSynthesized": true,
     "draftContextIncluded": false,
     "finalizedContextIncluded": true,
-    "sourcePhase": "summarizing"
+    "sourcePhase": "completing-milestone"
   },
   "nodes": [
     {
@@ -352,7 +352,73 @@
         "unitType": "complete-slice",
         "unitId": "M017.S03",
         "title": "S03",
-        "status": "pending"
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S05:T01",
+      "kind": "unit",
+      "dependsOn": [],
+      "writes": [
+        "dlp-admin-cli/src/screens/dispatch.rs"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S05.T01",
+        "title": "Fixed four pre-existing clippy errors in dispatch.rs: three doc_lazy_continuation (added blank separator lines) and one needless_borrow (removed redundant &)",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S05:T02",
+      "kind": "unit",
+      "dependsOn": [
+        "execute-task:M017:S05:T01"
+      ],
+      "writes": [
+        "dlp-server/src/admin_api.rs",
+        "dlp-server/src/db/repositories/agent_config.rs",
+        "dlp-server/src/db/mod.rs"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S05.T02",
+        "title": "Extended AgentConfigPayload and DB repository with cloud_hook_enabled, print_enabled, print_xps_timeout_ms, print_unclassifiable_action, and print_max_pages fields, including migrations and validation",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "execute-task:M017:S05:T03",
+      "kind": "unit",
+      "dependsOn": [
+        "execute-task:M017:S05:T02"
+      ],
+      "writes": [
+        "dlp-admin-cli/src/screens/cloud_config.rs",
+        "dlp-admin-cli/src/screens/print_config.rs",
+        "dlp-admin-cli/src/screens/mod.rs",
+        "dlp-admin-cli/src/app.rs",
+        "dlp-admin-cli/src/screens/dispatch.rs",
+        "dlp-admin-cli/src/screens/render.rs"
+      ],
+      "metadata": {
+        "unitType": "execute-task",
+        "unitId": "M017.S05.T03",
+        "title": "Added CloudConfig and PrintConfig admin CLI screens with constants modules, Screen variants, dispatch handlers, and render functions wired into SystemMenu at indices 6 and 7",
+        "status": "complete"
+      }
+    },
+    {
+      "id": "complete-slice:M017:S05",
+      "kind": "verification",
+      "dependsOn": [
+        "execute-task:M017:S05:T03"
+      ],
+      "metadata": {
+        "unitType": "complete-slice",
+        "unitId": "M017.S05",
+        "title": "S05",
+        "status": "complete"
       }
     }
   ]
