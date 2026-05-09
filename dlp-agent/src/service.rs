@@ -22,6 +22,7 @@
 //! 3 failures or cancellation aborts the stop.  On success the service
 //! transitions to `StopPending` and exits cleanly.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -672,6 +673,11 @@ struct RunLoopContext {
     /// Optional hook injector (M017/S01). `None` when `cloud_hook_enabled` is false.
     #[allow(dead_code)]
     hook_injector: Option<crate::hook_injector::HookInjector>,
+    /// Shutdown flag for the sync-client process watcher thread (M017/S02).
+    /// Signalled `true` during shutdown to stop the loop before joining.
+    sync_watcher_shutdown: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Join handle for the sync-client process watcher thread (M017/S02).
+    sync_watcher_handle: Option<std::thread::JoinHandle<()>>,
     /// Optional WFP manager (M017/S01). `None` when `wfp_filter_enabled` is false.
     #[allow(dead_code)]
     wfp_manager: Option<crate::wfp_manager::WfpManager>,
@@ -902,6 +908,95 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
             None
         };
 
+    // ── Sync-client process watcher (M017/S02) ───────────────────────────
+    // Only active when hook injection is enabled. Uses a std::thread (not a
+    // Tokio task) to avoid blocking the async reactor during sleep intervals.
+    let (sync_watcher_shutdown, sync_watcher_handle) = if let Some(ref injector) = hook_injector_opt
+    {
+        // Clone injector fields needed by the watcher thread.
+        // HookInjector is not Clone, so we rebuild a lightweight wrapper with
+        // the same DLL path from the existing injector's field read. Instead,
+        // we pass the Arc-wrapped shutdown flag and re-create a fresh injector
+        // for the watcher thread since HookInjector::new() is cheap.
+        let dll_path_for_watcher = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll.dll")))
+            .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll.dll"));
+        // Suppress the unused variable warning on the injector reference used
+        // only to gate the if-let branch.
+        let _ = injector;
+
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = Arc::clone(&shutdown_flag);
+
+        let handle = std::thread::Builder::new()
+            .name("sync-client-watcher".into())
+            .spawn(move || {
+                let watcher_injector =
+                    crate::hook_injector::HookInjector::new(&dll_path_for_watcher, None);
+                info!("sync-client watcher thread started");
+
+                loop {
+                    if flag_clone.load(Ordering::Relaxed) {
+                        info!("sync-client watcher: shutdown signal received — exiting");
+                        break;
+                    }
+
+                    let pids = crate::cloud_enforcer::enumerate_sync_client_pids();
+                    for (pid, exe) in pids {
+                        match crate::hook_injector::HookInjector::is_module_loaded(
+                            pid,
+                            "dlp_hook_dll.dll",
+                        ) {
+                            Ok(false) => {
+                                // DLL not yet present — attempt injection.
+                                match watcher_injector.inject(pid) {
+                                    Ok(()) => {
+                                        info!(
+                                            pid,
+                                            exe,
+                                            "sync-client watcher: hook injected successfully"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            pid,
+                                            exe,
+                                            error = %e,
+                                            "sync-client watcher: injection failed"
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(true) => {
+                                tracing::trace!(
+                                    pid,
+                                    exe,
+                                    "sync-client watcher: hook already loaded — skipping"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    pid,
+                                    exe,
+                                    error = ?e,
+                                    "sync-client watcher: module check failed"
+                                );
+                            }
+                        }
+                    }
+
+                    std::thread::sleep(Duration::from_secs(30));
+                }
+            })
+            .expect("failed to spawn sync-client watcher thread");
+
+        info!("sync-client process watcher thread started");
+        (Some(shutdown_flag), Some(handle))
+    } else {
+        (None, None)
+    };
+
     // ── WfpManager (M017/S01) ─────────────────────────────────────────────
     let wfp_manager_opt: Option<crate::wfp_manager::WfpManager> =
         if agent_config.wfp_filter_enabled.unwrap_or(false) {
@@ -993,6 +1088,8 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         device_watcher_cleanup,
         detector_arc,
         hook_injector: hook_injector_opt,
+        sync_watcher_shutdown,
+        sync_watcher_handle,
         wfp_manager: wfp_manager_opt,
         print_enforcer: print_enforcer_opt,
     }
@@ -1423,6 +1520,17 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     if ctx.hook_injector.is_some() {
         crate::password_stop::debug_log("run_loop: dropping hook injector");
         info!("hook injector dropped");
+    }
+
+    // Stop sync-client process watcher thread (M017/S02).
+    if let Some(flag) = ctx.sync_watcher_shutdown {
+        crate::password_stop::debug_log("run_loop: signalling sync-client watcher shutdown");
+        flag.store(true, Ordering::Relaxed);
+    }
+    if let Some(handle) = ctx.sync_watcher_handle {
+        let _ = handle.join();
+        crate::password_stop::debug_log("run_loop: sync-client watcher thread joined");
+        info!("sync-client process watcher stopped");
     }
 
     // Stop print enforcer (M017/S04).

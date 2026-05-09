@@ -83,6 +83,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Rpc",
     # Print spooler wrappers (M017 T02)
     "Win32_Graphics_Printing",
+    # Sync-client process watcher (M017 S02 T03)
+    "Win32_System_Diagnostics_ToolHelp",
 ] }
 
 # WMI for BitLocker queries (Phase 34 - Win32_EncryptableVolume in

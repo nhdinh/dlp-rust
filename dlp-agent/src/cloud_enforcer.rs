@@ -756,6 +756,115 @@ fn is_write_like_action(action: &FileAction) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Sync-client process watcher helpers
+// ---------------------------------------------------------------------------
+
+/// Returns the mapping of sync-client exe names to their cloud providers.
+///
+/// Used by [`enumerate_sync_client_pids`] and unit tests to enumerate running
+/// sync processes without hard-coding the list at each call site.
+///
+/// Google Drive ships under two exe names depending on the version (legacy
+/// `googledrivesync.exe` vs current DriveFS `GoogleDriveFS.exe`).
+pub fn sync_process_names() -> &'static [(&'static str, CloudProvider)] {
+    &[
+        ("OneDrive.exe", CloudProvider::OneDrive),
+        ("googledrivesync.exe", CloudProvider::GoogleDrive),
+        ("GoogleDriveFS.exe", CloudProvider::GoogleDrive),
+        ("Dropbox.exe", CloudProvider::Dropbox),
+        ("Box.exe", CloudProvider::Box),
+        ("BoxSync.exe", CloudProvider::Box),
+    ]
+}
+
+/// Walks the system process list and returns `(pid, exe_name)` pairs for every
+/// process whose executable name matches an entry in [`sync_process_names`].
+///
+/// Uses `CreateToolhelp32Snapshot` + `Process32FirstW` / `Process32NextW` so
+/// no elevated privilege is required to enumerate running processes.
+///
+/// # Returns
+///
+/// An empty `Vec` when the snapshot cannot be created; individual process
+/// entries that fail `Process32NextW` are silently skipped.
+pub fn enumerate_sync_client_pids() -> Vec<(u32, &'static str)> {
+    #[cfg(windows)]
+    {
+        enumerate_sync_client_pids_windows()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(windows)]
+fn enumerate_sync_client_pids_windows() -> Vec<(u32, &'static str)> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let known = sync_process_names();
+    let mut results = Vec::new();
+
+    // SAFETY: CreateToolhelp32Snapshot is a safe Win32 API; the snapshot handle
+    // is owned and cleaned up via CloseHandle on drop.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    let snapshot = match snapshot {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(
+                error = ?e,
+                "sync-process watcher: CreateToolhelp32Snapshot failed"
+            );
+            return results;
+        }
+    };
+
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+
+    // First entry.
+    // SAFETY: snapshot is a valid HANDLE from CreateToolhelp32Snapshot; entry
+    // is initialised with the correct dwSize per the Win32 contract.
+    if unsafe { Process32FirstW(snapshot, &mut entry) }.is_err() {
+        // No processes at all — close handle and return.
+        unsafe { let _ = windows::Win32::Foundation::CloseHandle(snapshot); }
+        return results;
+    }
+
+    loop {
+        // szExeFile is a null-terminated UTF-16 array of length MAX_PATH (260).
+        let len = entry
+            .szExeFile
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(entry.szExeFile.len());
+        let exe = String::from_utf16_lossy(&entry.szExeFile[..len]);
+
+        // Case-insensitive match against the known sync-client list.
+        if let Some((static_name, _)) = known
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(&exe))
+        {
+            results.push((entry.th32ProcessID, *static_name));
+        }
+
+        // Advance to the next entry; ERROR_NO_MORE_FILES (18) signals end.
+        // SAFETY: same safety preconditions as Process32FirstW above.
+        if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
+            break;
+        }
+    }
+
+    unsafe { let _ = windows::Win32::Foundation::CloseHandle(snapshot); }
+    results
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1096,5 +1205,41 @@ mod tests {
         );
         assert!(result.is_some());
         assert_eq!(result.unwrap().provider, "Box");
+    }
+
+    // ------------------------------------------------------------------
+    // Sync-client process watcher helpers (T03)
+    // ------------------------------------------------------------------
+
+    /// sync_process_names must include at least one entry for every provider.
+    #[test]
+    fn test_sync_process_names_covers_all_providers() {
+        let names = sync_process_names();
+
+        let has = |p: CloudProvider| names.iter().any(|(_, provider)| *provider == p);
+
+        assert!(has(CloudProvider::OneDrive), "missing OneDrive entry");
+        assert!(has(CloudProvider::GoogleDrive), "missing GoogleDrive entry");
+        assert!(has(CloudProvider::Dropbox), "missing Dropbox entry");
+        assert!(has(CloudProvider::Box), "missing Box entry");
+    }
+
+    /// enumerate_sync_client_pids must return without panic even when no sync
+    /// clients are running (as in CI).  We only verify the call succeeds.
+    #[test]
+    fn test_enumerate_sync_client_pids_returns_vec() {
+        // This is a smoke test — we do not assert specific PIDs because
+        // sync clients are not guaranteed to be running in CI.
+        let pids = enumerate_sync_client_pids();
+        // A Vec (including empty) is a valid result; no panic = pass.
+        // All returned exe names must appear in sync_process_names().
+        let known: std::collections::HashSet<&'static str> =
+            sync_process_names().iter().map(|(name, _)| *name).collect();
+        for (_, exe) in &pids {
+            assert!(
+                known.contains(exe),
+                "unexpected exe name from enumerate_sync_client_pids: {exe}"
+            );
+        }
     }
 }
