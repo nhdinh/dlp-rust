@@ -20,6 +20,10 @@ pub struct DeviceRegistryRow {
     pub pid: String,
     /// Device serial number, or "(none)" for devices without one.
     pub serial: String,
+    /// Windows Security Identifier of the owning user. NULL means machine-wide entry.
+    pub owner_sid: Option<String>,
+    /// Human-readable username for display. NULL means machine-wide entry.
+    pub owner_user: Option<String>,
     /// Human-readable device description from USB descriptor. Empty string if unknown.
     pub description: String,
     /// Trust tier: "blocked", "read_only", or "full_access".
@@ -46,24 +50,49 @@ impl DeviceRegistryRepository {
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
     pub fn list_all(pool: &Pool) -> rusqlite::Result<Vec<DeviceRegistryRow>> {
-        // Pool::get() returns an r2d2 error type; we must bridge it into
-        // rusqlite::Error since this function's return type is rusqlite::Result.
+        Self::list_all_filtered(pool, None)
+    }
+
+    /// Returns device registry entries with an optional owner_sid filter.
+    ///
+    /// When `owner_sid_filter` is `Some(sid)`: returns entries where
+    /// `owner_sid = sid` OR `owner_sid IS NULL` (per-user + machine-wide).
+    /// When `None`: returns all entries (same as `list_all`).
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - Connection pool to acquire a read connection from.
+    /// * `owner_sid_filter` - Optional Windows SID to filter by.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
+    pub fn list_all_filtered(
+        pool: &Pool,
+        owner_sid_filter: Option<&str>,
+    ) -> rusqlite::Result<Vec<DeviceRegistryRow>> {
         let conn = pool
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
         let mut stmt = conn.prepare(
-            "SELECT id, vid, pid, serial, description, trust_tier, created_at \
-             FROM device_registry ORDER BY created_at ASC",
+            "SELECT id, vid, pid, serial, owner_sid, owner_user, description, trust_tier, created_at \
+             FROM device_registry \
+             WHERE (?1 IS NULL OR owner_sid = ?1 OR owner_sid IS NULL) \
+             ORDER BY created_at ASC",
         )?;
-        let rows = stmt.query_map([], |row| {
+
+        let rows = stmt.query_map(params![owner_sid_filter], |row| {
             Ok(DeviceRegistryRow {
                 id: row.get(0)?,
                 vid: row.get(1)?,
                 pid: row.get(2)?,
                 serial: row.get(3)?,
-                description: row.get(4)?,
-                trust_tier: row.get(5)?,
-                created_at: row.get(6)?,
+                owner_sid: row.get(4)?,
+                owner_user: row.get(5)?,
+                description: row.get(6)?,
+                trust_tier: row.get(7)?,
+                created_at: row.get(8)?,
             })
         })?;
         rows.collect()
@@ -88,16 +117,19 @@ impl DeviceRegistryRepository {
     pub fn upsert(uow: &UnitOfWork<'_>, row: &DeviceRegistryRow) -> rusqlite::Result<()> {
         uow.tx.execute(
             "INSERT INTO device_registry \
-                 (id, vid, pid, serial, description, trust_tier, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
-             ON CONFLICT(vid, pid, serial) DO UPDATE SET \
+                 (id, vid, pid, serial, owner_sid, owner_user, description, trust_tier, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+             ON CONFLICT(vid, pid, serial, COALESCE(owner_sid, '')) DO UPDATE SET \
                  trust_tier  = excluded.trust_tier, \
-                 description = excluded.description",
+                 description = excluded.description, \
+                 owner_user  = excluded.owner_user",
             params![
                 row.id,
                 row.vid,
                 row.pid,
                 row.serial,
+                row.owner_sid,
+                row.owner_user,
                 row.description,
                 row.trust_tier,
                 row.created_at,
@@ -121,31 +153,98 @@ impl DeviceRegistryRepository {
     /// # Errors
     ///
     /// Returns `rusqlite::Error::QueryReturnedNoRows` if no matching row exists.
-    pub fn get_by_device_key(
+    /// Returns the device registry entry matching the given `(vid, pid, serial, owner_sid)` key.
+    ///
+    /// Used after an upsert to retrieve the persisted row — which may carry the
+    /// original UUID when the upsert resolved a conflict rather than inserting.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - Connection pool to acquire a read connection from.
+    /// * `vid` - USB Vendor ID hex string.
+    /// * `pid` - USB Product ID hex string.
+    /// * `serial` - Device serial number.
+    /// * `owner_sid` - Optional Windows SID for per-user entries; `None` for machine-wide.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error::QueryReturnedNoRows` if no matching row exists.
+    pub fn get_by_device_key_and_owner(
         pool: &Pool,
         vid: &str,
         pid: &str,
         serial: &str,
+        owner_sid: Option<&str>,
     ) -> rusqlite::Result<DeviceRegistryRow> {
         let conn = pool
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
-            "SELECT id, vid, pid, serial, description, trust_tier, created_at \
-             FROM device_registry WHERE vid = ?1 AND pid = ?2 AND serial = ?3",
-            params![vid, pid, serial],
+            "SELECT id, vid, pid, serial, owner_sid, owner_user, description, trust_tier, created_at \
+             FROM device_registry WHERE vid = ?1 AND pid = ?2 AND serial = ?3 AND owner_sid IS ?4",
+            params![vid, pid, serial, owner_sid],
             |row| {
                 Ok(DeviceRegistryRow {
                     id: row.get(0)?,
                     vid: row.get(1)?,
                     pid: row.get(2)?,
                     serial: row.get(3)?,
-                    description: row.get(4)?,
-                    trust_tier: row.get(5)?,
-                    created_at: row.get(6)?,
+                    owner_sid: row.get(4)?,
+                    owner_user: row.get(5)?,
+                    description: row.get(6)?,
+                    trust_tier: row.get(7)?,
+                    created_at: row.get(8)?,
                 })
             },
         )
+    }
+
+    /// Returns all device registry entries matching the given `(vid, pid, serial)`
+    /// regardless of owner_sid. This is used by the agent for tier-based merge
+    /// (D-04/D-05): it fetches both the per-user entry (if any) and the machine-wide
+    /// entry (if any), then applies the most restrictive tier.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - Connection pool to acquire a read connection from.
+    /// * `vid` - USB Vendor ID hex string.
+    /// * `pid` - USB Product ID hex string.
+    /// * `serial` - Device serial number.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec` of matching rows (empty if no entries exist for this device).
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
+    pub fn get_by_device_key_fallback(
+        pool: &Pool,
+        vid: &str,
+        pid: &str,
+        serial: &str,
+    ) -> rusqlite::Result<Vec<DeviceRegistryRow>> {
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, vid, pid, serial, owner_sid, owner_user, description, trust_tier, created_at \
+             FROM device_registry WHERE vid = ?1 AND pid = ?2 AND serial = ?3",
+        )?;
+        let rows = stmt.query_map(params![vid, pid, serial], |row| {
+            Ok(DeviceRegistryRow {
+                id: row.get(0)?,
+                vid: row.get(1)?,
+                pid: row.get(2)?,
+                serial: row.get(3)?,
+                owner_sid: row.get(4)?,
+                owner_user: row.get(5)?,
+                description: row.get(6)?,
+                trust_tier: row.get(7)?,
+                created_at: row.get(8)?,
+            })
+        })?;
+        rows.collect()
     }
 
     /// Deletes the device registry entry with the given `id`.
@@ -185,6 +284,31 @@ mod tests {
             vid: vid.to_string(),
             pid: pid.to_string(),
             serial: serial.to_string(),
+            owner_sid: None,
+            owner_user: None,
+            description: "Test device".to_string(),
+            trust_tier: tier.to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    /// Helper: construct a test row with owner fields.
+    fn make_row_with_owner(
+        id: &str,
+        vid: &str,
+        pid: &str,
+        serial: &str,
+        tier: &str,
+        owner_sid: Option<&str>,
+        owner_user: Option<&str>,
+    ) -> DeviceRegistryRow {
+        DeviceRegistryRow {
+            id: id.to_string(),
+            vid: vid.to_string(),
+            pid: pid.to_string(),
+            serial: serial.to_string(),
+            owner_sid: owner_sid.map(String::from),
+            owner_user: owner_user.map(String::from),
             description: "Test device".to_string(),
             trust_tier: tier.to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -250,6 +374,8 @@ mod tests {
                 vid: "0951".to_string(),
                 pid: "1666".to_string(),
                 serial: "SN001".to_string(),
+                owner_sid: None,
+                owner_user: None,
                 description: "Updated description".to_string(),
                 trust_tier: "full_access".to_string(),
                 created_at: "2026-06-01T00:00:00Z".to_string(),
@@ -314,5 +440,164 @@ mod tests {
             affected, 0,
             "expected 0 rows affected for non-existent UUID"
         );
+    }
+
+    #[test]
+    fn test_list_all_filtered_returns_per_user_and_machine_wide() {
+        let pool = make_pool();
+
+        {
+            let mut conn = pool.get().expect("get connection");
+            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let machine = make_row("uuid-mw", "0951", "1666", "SN001", "read_only");
+            let alice = make_row_with_owner(
+                "uuid-a",
+                "0951",
+                "1666",
+                "SN001",
+                "blocked",
+                Some("S-1-5-21-1"),
+                Some("alice"),
+            );
+            let bob = make_row_with_owner(
+                "uuid-b",
+                "0951",
+                "1666",
+                "SN001",
+                "full_access",
+                Some("S-1-5-21-2"),
+                Some("bob"),
+            );
+            DeviceRegistryRepository::upsert(&uow, &machine).expect("upsert machine-wide");
+            DeviceRegistryRepository::upsert(&uow, &alice).expect("upsert alice");
+            DeviceRegistryRepository::upsert(&uow, &bob).expect("upsert bob");
+            uow.commit().expect("commit");
+        }
+
+        // Filter for alice: should get alice's entry + machine-wide entry.
+        let rows = DeviceRegistryRepository::list_all_filtered(&pool, Some("S-1-5-21-1"))
+            .expect("list_all_filtered");
+        assert_eq!(rows.len(), 2, "expected 2 rows: alice + machine-wide");
+        let sids: Vec<Option<&str>> = rows.iter().map(|r| r.owner_sid.as_deref()).collect();
+        assert!(
+            sids.contains(&Some("S-1-5-21-1")),
+            "alice's entry must be present"
+        );
+        assert!(sids.contains(&None), "machine-wide entry must be present");
+
+        // No filter: all 3 rows.
+        let all = DeviceRegistryRepository::list_all(&pool).expect("list_all");
+        assert_eq!(all.len(), 3, "expected 3 rows total");
+    }
+
+    #[test]
+    fn test_get_by_device_key_and_owner_exact_match() {
+        let pool = make_pool();
+
+        {
+            let mut conn = pool.get().expect("get connection");
+            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let machine = make_row("uuid-mw", "0951", "1666", "SN001", "read_only");
+            let alice = make_row_with_owner(
+                "uuid-a",
+                "0951",
+                "1666",
+                "SN001",
+                "blocked",
+                Some("S-1-5-21-1"),
+                Some("alice"),
+            );
+            DeviceRegistryRepository::upsert(&uow, &machine).expect("upsert machine-wide");
+            DeviceRegistryRepository::upsert(&uow, &alice).expect("upsert alice");
+            uow.commit().expect("commit");
+        }
+
+        // Query machine-wide (None owner_sid).
+        let mw = DeviceRegistryRepository::get_by_device_key_and_owner(
+            &pool, "0951", "1666", "SN001", None,
+        )
+        .expect("get machine-wide");
+        assert_eq!(mw.owner_sid, None);
+        assert_eq!(mw.trust_tier, "read_only");
+
+        // Query alice's entry.
+        let user = DeviceRegistryRepository::get_by_device_key_and_owner(
+            &pool,
+            "0951",
+            "1666",
+            "SN001",
+            Some("S-1-5-21-1"),
+        )
+        .expect("get alice");
+        assert_eq!(user.owner_sid, Some("S-1-5-21-1".to_string()));
+        assert_eq!(user.trust_tier, "blocked");
+    }
+
+    #[test]
+    fn test_get_by_device_key_fallback_returns_all_matches() {
+        let pool = make_pool();
+
+        {
+            let mut conn = pool.get().expect("get connection");
+            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let machine = make_row("uuid-mw", "0951", "1666", "SN001", "read_only");
+            let alice = make_row_with_owner(
+                "uuid-a",
+                "0951",
+                "1666",
+                "SN001",
+                "blocked",
+                Some("S-1-5-21-1"),
+                Some("alice"),
+            );
+            DeviceRegistryRepository::upsert(&uow, &machine).expect("upsert machine-wide");
+            DeviceRegistryRepository::upsert(&uow, &alice).expect("upsert alice");
+            uow.commit().expect("commit");
+        }
+
+        let rows =
+            DeviceRegistryRepository::get_by_device_key_fallback(&pool, "0951", "1666", "SN001")
+                .expect("fallback");
+        assert_eq!(rows.len(), 2, "expected 2 rows: machine-wide + alice");
+
+        // Unknown device returns empty vec.
+        let empty =
+            DeviceRegistryRepository::get_by_device_key_fallback(&pool, "9999", "9999", "NONE")
+                .expect("fallback empty");
+        assert!(empty.is_empty(), "unknown device must return empty vec");
+    }
+
+    #[test]
+    fn test_upsert_per_user_does_not_conflict_with_machine_wide() {
+        let pool = make_pool();
+
+        // Insert machine-wide entry.
+        {
+            let mut conn = pool.get().expect("get connection");
+            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let machine = make_row("uuid-mw", "0951", "1666", "SN001", "read_only");
+            DeviceRegistryRepository::upsert(&uow, &machine).expect("upsert machine-wide");
+            uow.commit().expect("commit");
+        }
+
+        // Insert per-user entry for same device — must NOT conflict.
+        {
+            let mut conn = pool.get().expect("get connection");
+            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let alice = make_row_with_owner(
+                "uuid-a",
+                "0951",
+                "1666",
+                "SN001",
+                "blocked",
+                Some("S-1-5-21-1"),
+                Some("alice"),
+            );
+            DeviceRegistryRepository::upsert(&uow, &alice).expect("upsert alice");
+            uow.commit().expect("commit");
+        }
+
+        let all = DeviceRegistryRepository::list_all(&pool).expect("list_all");
+        assert_eq!(all.len(), 2, "expected 2 rows: machine-wide + per-user");
     }
 }

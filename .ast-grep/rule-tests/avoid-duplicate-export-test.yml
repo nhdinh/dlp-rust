@@ -1,0 +1,5 @@
+id: avoid-duplicate-export
+valid:
+- "valid code"
+invalid:
+- "invalid code"

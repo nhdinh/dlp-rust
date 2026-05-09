@@ -435,36 +435,50 @@ pub fn handle_password_submit(request_id: &str, password: String, is_plaintext: 
     } else {
         verify_credentials_dpapi(&password)
     };
-    match result {
-        Ok(true) => {
-            debug_log("handle_password_submit: password CORRECT — confirming stop");
-            info!("dlp-admin password verified — proceeding with stop");
-            // Clear pending state but do NOT call reset_stop_state() —
-            // that would reset STOP_CONFIRMED back to false before the
-            // main loop polls it.
-            clear_pending_request();
-            FAILED_ATTEMPTS.store(0, Ordering::SeqCst);
-            STOP_CONFIRMED.store(true, Ordering::Release);
-            confirm_stop();
-        }
-        Ok(false) => {
-            debug_log(&format!(
-                "handle_password_submit: password INCORRECT (attempt {attempt}/{MAX_ATTEMPTS})"
-            ));
-            warn!(attempt, max = MAX_ATTEMPTS, "incorrect dlp-admin password");
-            if attempt >= MAX_ATTEMPTS {
-                log_failure(attempt);
-                abort_stop();
-            }
-        }
+
+    handle_verification_result(result, attempt);
+}
+
+/// Handles the result of a password verification attempt.
+///
+/// On success: confirms the stop and clears state.
+/// On failure/error: logs and aborts if max attempts reached.
+fn handle_verification_result(result: Result<bool>, attempt: u32) {
+    let is_correct = match result {
+        Ok(matched) => matched,
         Err(e) => {
             debug_log(&format!("handle_password_submit: ERROR: {e}"));
             error!(error = %e, "password verification failed");
-            if attempt >= MAX_ATTEMPTS {
-                log_failure(attempt);
-                abort_stop();
-            }
+            maybe_abort_after_failure(attempt);
+            return;
         }
+    };
+
+    if is_correct {
+        debug_log("handle_password_submit: password CORRECT — confirming stop");
+        info!("dlp-admin password verified — proceeding with stop");
+        // Clear pending state but do NOT call reset_stop_state() —
+        // that would reset STOP_CONFIRMED back to false before the
+        // main loop polls it.
+        clear_pending_request();
+        FAILED_ATTEMPTS.store(0, Ordering::SeqCst);
+        STOP_CONFIRMED.store(true, Ordering::Release);
+        confirm_stop();
+        return;
+    }
+
+    debug_log(&format!(
+        "handle_password_submit: password INCORRECT (attempt {attempt}/{MAX_ATTEMPTS})"
+    ));
+    warn!(attempt, max = MAX_ATTEMPTS, "incorrect dlp-admin password");
+    maybe_abort_after_failure(attempt);
+}
+
+/// Aborts the stop if the maximum number of attempts has been reached.
+fn maybe_abort_after_failure(attempt: u32) {
+    if attempt >= MAX_ATTEMPTS {
+        log_failure(attempt);
+        abort_stop();
     }
 }
 
@@ -906,20 +920,17 @@ fn bcrypt_verify_against_server(password: &str) -> Result<bool> {
     };
 
     debug_log("bcrypt_verify: comparing");
-    match bcrypt::verify(password, &stored_hash) {
-        Ok(true) => {
-            debug_log("bcrypt_verify: MATCH");
-            Ok(true)
-        }
-        Ok(false) => {
-            debug_log("bcrypt_verify: NO MATCH");
-            Ok(false)
-        }
-        Err(e) => {
-            debug_log(&format!("bcrypt_verify: FAILED — {e}"));
-            Err(anyhow::anyhow!("bcrypt verify error: {e}"))
-        }
+    let matched = bcrypt::verify(password, &stored_hash).map_err(|e| {
+        debug_log(&format!("bcrypt_verify: FAILED — {e}"));
+        anyhow::anyhow!("bcrypt verify error: {e}")
+    })?;
+
+    if matched {
+        debug_log("bcrypt_verify: MATCH");
+    } else {
+        debug_log("bcrypt_verify: NO MATCH");
     }
+    Ok(matched)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

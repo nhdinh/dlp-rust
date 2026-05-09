@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.7.1
-milestone_name: Operational Hardening
-status: executing
-stopped_at: Milestone v0.7.1 initialized; PROJECT.md, REQUIREMENTS.md, ROADMAP.md, STATE.md written; ready for /gsd-plan-phase 38.3
-last_updated: "2026-05-06T11:00:02.633Z"
-last_activity: 2026-05-06 -- Phase 38.2 planning complete
+milestone: v0.8.1
+milestone_name: - Deferred Items & Issue Debt
+status: completed
+stopped_at: context exhaustion at 75% (2026-05-08)
+last_updated: "2026-05-08T03:52:14.142Z"
+last_activity: 2026-05-08
 progress:
-  total_phases: 5
-  completed_phases: 0
-  total_plans: 3
-  completed_plans: 0
-  percent: 0
+  total_phases: 4
+  completed_phases: 4
+  total_plans: 8
+  completed_plans: 8
+  percent: 100
 ---
 
 # Project State
@@ -20,65 +20,60 @@ progress:
 
 **Project**: DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value**: Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus**: v0.7.1 Operational Hardening — Phase 38.3 next
+**Current Focus**: Phase 46 UAT & Regression Validation
 
 ---
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Ready to execute
-Last activity: 2026-05-06 -- Phase 38.2 planning complete
+Phase: 46
+Plan: Not started
+Status: Milestone complete
+Last activity: 2026-05-08
 
 ## Progress
 
 v0.7.0 [Phase 33 done | Phase 34 done | Phase 35 done | Phase 36 done | Phase 37 done | Phase 38 done | Phase 38.1 done | Phase 38.2 done]
-v0.7.1 [Phase 38.3 pending | Phase 38.4 pending | Phase 38.5 pending | Phase 38.6 pending]
-v0.8.0 [Phase 39 pending | Phase 40 pending | Phase 41 pending | Phase 42 pending]
+v0.7.1 [Phase 38.3 done | Phase 38.4 done | Phase 38.5 done | Phase 38.6 done]
+v0.8.0 [Phase 39 done | Phase 40 done | Phase 41 done | Phase 42 done]
+v0.8.1 [Phase 43 done | Phase 44 done | Phase 45 done | Phase 46 ready]
 
 ---
 
 ## Decisions Made
 
-1. Phase 38.2 enforcement scope: PnP `CM_Disable_DevNode` + Volume DACL deny-all as two real-time, OS-enforced layers. API hooking REJECTED with concrete rationale; minifilter DEFERRED to v0.8.0+.
-2. Phase 38.2 tier-change semantics: `enable_usb_device` and `restore_volume_acl` both fire on physical removal only — NO new wiring in the 30s registry-cache poll path. Admin instructs users to unplug & re-plug for tier changes to take effect.
-3. Phase 38.2 drive-letter mislabel folded in (was Phase 33 disk-enum bug); AGENT-UNKNOWN remediation split out to Phase 38.3 (operational hardening).
+1. Phase 38.2 enforcement scope: PnP CM_Disable_DevNode + Volume DACL deny-all as two real-time, OS-enforced layers. API hooking REJECTED; minifilter DEFERRED to v0.8.0+.
+2. Phase 38.2 tier-change semantics: enable_usb_device and restore_volume_acl both fire on physical removal only.
+3. Phase 38.3-38.6: v0.7.1 Operational Hardening shipped — all gaps closed.
 4. EncryptionStatus serde mapping is manual: DB stores fully_encrypted/partially_encrypted; Rust enum serializes as encrypted/suspended.
-5. Before merging any worktree branch: git status --short + git checkout -- <file> to discard duplicate main-tree changes.
-6. Always use cargo test -p dlp-server --lib (pre-existing integration test binaries fail on Windows paging file).
-7. Bash CWD can silently drift into a worktree; verify with pwd + git branch --show-current before git ops.
-8. Lock-order invariant: config mutex MUST be acquired and released BEFORE acquiring instance_id_map.write() (T-37-13).
+5. Lock-order invariant: config mutex MUST be acquired and released BEFORE acquiring instance_id_map.write() (T-37-13).
+6. Phase 39: UWP App Identity complete — AUMID resolution via GetApplicationUserModelId, ABAC evaluator extended, TUI conditions builder updated.
+7. Phase 40: Drag-and-Drop Enforcement complete — WH_GETMESSAGE hook, WM_DROPFILES interception, app identity resolution, ABAC evaluation, service lifecycle integration.
+8. Phase 41: Browser Origin Clipboard Policies complete — SourceOrigin/DestinationOrigin ABAC condition variants, origin condition matching in evaluator, Chrome handler ABAC evaluation with thread-local test isolation, admin TUI origin conditions builder.
+9. Chrome Content Analysis API v1 limitation: destination_origin is always None; source_origin maps to the paste page URL.
+10. Thread-local test override (TEST_EVALUATOR_OVERRIDE) eliminates parallel test races for Chrome handler ABAC tests.
+11. Phase 44 mount-time blocking: DefineDosDeviceW + IOCTL_VOLUME_OFFLINE hybrid approach. Unregistered disks blocked before drive letter assignment.
+12. Phase 45 grace period: Configurable read-only window before hard block. Default 0 = immediate block.
 
 ---
-- [Phase 38.2]: Blocked tier defense-in-depth: PnP disable + DACL deny-all fire independently — If primary PnP disable fails or is bypassed, the DACL deny-all fallback still blocks all non-SYSTEM I/O
 
 ## Session Continuity
 
-Last session: 2026-05-06T12:55:11+07:00
-Stopped at: Milestone v0.7.1 initialized; PROJECT.md, REQUIREMENTS.md, ROADMAP.md, STATE.md written; ready for /gsd-plan-phase 38.3
+Last session: 2026-05-08T03:52:14.137Z
+Stopped at: context exhaustion at 75% (2026-05-08)
 Resume file: None
 
 ---
 
 ## Pending Todos
 
-None captured.
+- Plan Phase 46 (UAT & Regression Validation)
 
 ---
 
-## Recent Achievements (Phase 38.2)
-
-- Plan 38.2-01: `set_volume_deny_all` method with deny-all SDDL + original DACL caching + 2 unit tests
-- Plan 38.2-02: WR-01 race fix + startup enforcement gap fix (`scan_existing_usb_identities`) + 12 usb tests
-- Plan 38.2-03: Kernel-authoritative drive-letter correlation (`find_drive_letter_for_instance_id`) + 42 disk tests
-- GAP-01: Deferred disk-arrival processing (500ms) via tokio runtime handle
-- GAP-02: Boot drive letter case-insensitive comparison fix
-- USB-05: Audit events include DeviceIdentity fields (commit f38ce85)
-
 ## Blockers
 
-None. Phase 38.2 complete and verified. v0.7.1 is unblocked.
+None.
 
 ---
 
@@ -86,10 +81,13 @@ None. Phase 38.2 complete and verified. v0.7.1 is unblocked.
 
 ### Roadmap Evolution
 
-- v0.7.1 inserted between v0.7.0 and v0.8.0 to close gaps before feature work: AUDIT-05, USB-06, TECH-01, OP-01..04, UAT-01/02
-- v0.8.0 phases 39-42 remain unchanged in scope
-
-### Deferred Human Verification
-
-- UAT-01 (Phase 34): Unencrypted disk warning on physical Windows machine
-- UAT-02 (Phase 38.2): Drive-letter correlation on physical Windows machine with multiple disks
+- v0.8.0 Application-Aware DLP shipped (Phases 39-42):
+  - Phase 39: UWP App Identity (APP-07) — DONE
+  - Phase 40: Drag-and-Drop Enforcement (APP-08) — DONE
+  - Phase 41: Browser Origin Clipboard Policies (BRW-04) — DONE
+  - Phase 42: Audit Enrichment — App Identity Fields (AUDIT-04) — DONE
+- v0.8.1 Deferred Items & Issue Debt (In Progress):
+  - Phase 43: USB Enforcement Fix — DONE
+  - Phase 44: Mount-Time Blocking — DONE
+  - Phase 45: Grace Period / Quarantine — DONE
+  - Phase 46: UAT & Regression Validation — READY

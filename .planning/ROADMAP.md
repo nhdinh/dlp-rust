@@ -8,8 +8,8 @@
 - v0.5.0 Boolean Logic -- Phases 18-21 (shipped 2026-04-21)
 - v0.6.0 Endpoint Hardening -- Phases 22-30 (shipped 2026-04-29)
 - v0.7.0 Disk Exfiltration Prevention -- Phases 33-38.2 (shipped 2026-05-06)
-- v0.7.1 Operational Hardening -- Phases 38.3-38.6 (planning)
-- v0.8.0 Application-Aware DLP -- Phases 39-42 (planning)
+- v0.7.1 Operational Hardening -- Phases 38.3-38.6 (shipped 2026-05-06)
+- v0.8.0 Application-Aware DLP -- Phases 39-42 (shipped 2026-05-07)
 
 ## Phase Numbering
 
@@ -18,128 +18,40 @@
 
 Phase numbering is continuous across milestones -- never restarts.
 
-## v0.7.1 - Operational Hardening (Planning)
+## Archived Milestones
 
-### Phase 38.2: USB Enforcement Fix — PnP Disable Actually Works (REOPENED)
-**Goal:** Fix the USB enforcement gap where CM_Disable_DevNode fails silently because the constructed instance ID (USB\VID_X&PID_Y\SERIAL) does not match the actual location-based CM instance ID. Ensure blocked USB devices are actually disabled at the PnP level.
-**Depends on:** Phase 31
-**Requirements:** USB-03
-**Success Criteria** (what must be TRUE):
-  1. `DeviceController::disable_usb_device` resolves the actual CM instance ID via SetupDi (not constructed from VID/PID/serial)
-  2. `CM_Disable_DevNode` succeeds with the real instance ID for blocked USB devices
-  3. If PnP disable fails, the failure is logged at ERROR level (not silently returning Ok)
-  4. Devices with `(none)` serial are handled via fallback location-based matching
-  5. File writes to blocked USB devices fail with OS-level access-denied
-**Plans:** 3 plans
-Plans:
-- [ ] 38.2-01-PLAN.md — Add Win32_Devices_Properties feature + instance ID resolution helpers in dlp-common
-- [ ] 38.2-02-PLAN.md — Fix DeviceController disable/enable with real CM instance IDs
-- [ ] 38.2-03-PLAN.md — Wire dbcc_name through enforcement pipeline + error handling
+### v0.8.0 - Application-Aware DLP (Shipped)
 
-### Phase 38.3: AGENT-UNKNOWN Remediation
-**Goal:** Close audit gaps by guaranteeing non-null app identity fields with AGENT-UNKNOWN sentinel and remediation path
-**Depends on:** Phase 25 (App Identity Capture), Phase 26 (ABAC Enforcement)
-**Requirements:** AUDIT-05
-**Success Criteria** (what must be TRUE):
-  1. All file interception audit events include `source_application` and `destination_application` fields
-  2. All clipboard interception audit events include both source and destination application identity
-  3. Missing identity is populated with `AGENT-UNKNOWN` sentinel, not `None`
-  4. Audit schema documents remediation path for AGENT-UNKNOWN events
-  5. Metric counter tracks AGENT-UNKNOWN frequency per interception path
-**Plans**: TBD
+<details>
+<summary>v0.8.0 - archived at <code>.planning/milestones/v0.8.0-ROADMAP.md</code></summary>
 
-### Phase 38.4: Per-User Device Registry
-**Goal:** Support per-user USB device registration for multi-user machines
-**Depends on:** Phase 24 (Device Registry DB + Admin API)
-**Requirements:** USB-06
-**Success Criteria** (what must be TRUE):
-  1. `device_registry` table has nullable `owner_user` column
-  2. Admin API supports filtering by `owner_user`
-  3. Agent evaluates trust tier against current user SID, falling back to machine-wide entry
-  4. Admin TUI shows `owner_user` column
-  5. Audit events include `owner_user` for per-user decisions
-**Plans**: TBD
+Phase details and requirement outcomes archived at `.planning/milestones/v0.8.0-ROADMAP.md` and `.planning/milestones/v0.8.0-REQUIREMENTS.md`. UWP App Identity (APP-07), Drag-and-Drop Enforcement (APP-08), Browser Origin Clipboard Policies (BRW-04), and Audit Enrichment (AUDIT-04) -- all 18 requirements delivered across 4 phases (39-42).
 
-### Phase 38.5: WMI Crate Upgrade
-**Goal:** Eliminate raw CoSetProxyBlanket FFI by upgrading to wmi 0.18+
-**Depends on:** Phase 34 (BitLocker Verification)
-**Requirements:** TECH-01
-**Success Criteria** (what must be TRUE):
-  1. `wmi` crate at 0.18+ (or latest stable)
-  2. Raw `CoSetProxyBlanket` FFI eliminated
-  3. `Win32_EncryptableVolume` queries use typed `wmi` interface
-  4. EncryptionStatus/EncryptionMethod mapping preserved
-  5. All Phase 34 unit tests pass with no behavior change
-**Plans**: TBD
-
-### Phase 38.6: Operational Hardening Bundle
-**Goal:** Improve error handling, logging, telemetry, and shutdown behavior across v0.7.0 code paths
-**Depends on:** Phase 33-38.2 (all v0.7.0 phases)
-**Requirements:** OP-01, OP-02, OP-03, OP-04
-**Success Criteria** (what must be TRUE):
-  1. Disk enumeration handles IOCTL failures gracefully per-disk (no panic, continues enumeration)
-  2. USB enforcement emits structured `tracing::info!` spans for all block/allow decisions
-  3. Agent config TOML validates field ranges at load time with descriptive errors
-  4. Service shutdown cancels in-flight tasks, flushes audit buffer, restores DACLs, unregisters notifications within 10s timeout
-**Plans**: TBD
-
-## v0.8.0 - Application-Aware DLP (Planning)
-
-### Phase 39: UWP App Identity
-**Goal**: Agent can capture UWP application identity via AUMID for ABAC enforcement
-**Depends on**: Phase 25 (App Identity Capture)
-**Requirements**: APP-07
-**Success Criteria** (what must be TRUE):
-  1. Agent resolves UWP process identity to AUMID using `IShellItem::GetApplicationUserModelId` or equivalent Win32 API
-  2. AUMID is captured as a first-class `source_application` / `destination_application` attribute alongside existing Win32 process identity
-  3. UWP identity flows through the same ABAC evaluator without special-casing
-**Plans**: TBD
-
-### Phase 40: Drag-and-Drop Enforcement
-**Goal**: Agent blocks or allows drag-and-drop operations based on source application identity and ABAC policy
-**Depends on**: Phase 26 (ABAC Enforcement Convergence), Phase 39 (UWP App Identity)
-**Requirements**: APP-08
-**Success Criteria** (what must be TRUE):
-  1. Agent intercepts OLE drag-and-drop operations (IDropTarget, DoDragDrop hooks) to identify source application
-  2. Source application identity is resolved for both Win32 and UWP drag sources
-  3. ABAC policy is evaluated before drop completes; denied drops are blocked with a toast notification
-  4. Audit events include source_application, destination_application, and action fields for drag-and-drop blocks
-**Plans**: TBD
-
-### Phase 41: Browser Origin Clipboard Policies
-**Goal**: Extend Chrome Enterprise Connector with origin-specific clipboard policies
-**Depends on**: Phase 29 (Chrome Enterprise Connector)
-**Requirements**: BRW-04
-**Success Criteria** (what must be TRUE):
-  1. Chrome Enterprise Connector messages include tab origin (URL / domain) for clipboard read/write operations
-  2. ABAC evaluator supports `source_origin` and `destination_origin` as condition attributes
-  3. Admin can author policies that allow/deny clipboard operations based on managed-origins list and specific URL patterns
-  4. Paste from protected origin to unmanaged origin is blocked and audited with origin fields populated
-**Plans**: TBD
-
-### Phase 42: Audit Enrichment — App Identity Fields
-**Goal**: Close gaps in app identity fields across all interception paths
-**Depends on**: Phase 25 (App Identity Capture), Phase 39 (UWP App Identity)
-**Requirements**: AUDIT-04
-**Success Criteria** (what must be TRUE):
-  1. All audit events from file interception include `source_application` and `destination_application` fields where applicable
-  2. All audit events from USB interception include device identity fields (VID, PID, serial, description)
-  3. All audit events from clipboard interception include both source and destination application identity
-  4. Audit schema is updated to guarantee non-null app identity fields; missing identity is flagged as AGENT-UNKNOWN with remediation path
-**Plans**: TBD
+**Known gaps at v0.8.0 close:** None.
+</details>
 
 ## Archived Milestones
+
+### v0.7.1 - Operational Hardening (Shipped)
+
+<details>
+<summary>v0.7.1 - archived at <code>.planning/milestones/v0.7.1-ROADMAP.md</code></summary>
+
+Phase details and requirement outcomes archived at `.planning/milestones/v0.7.1-ROADMAP.md` and `.planning/milestones/v0.7.1-REQUIREMENTS.md`. AGENT-UNKNOWN remediation (AUDIT-05), per-user device registry (USB-06), wmi crate upgrade (TECH-01), disk enumeration error resilience (OP-01), structured USB logging (OP-02), agent config validation (OP-03), and graceful service shutdown (OP-04) -- all 7 requirements delivered across 4 phases (38.3-38.6).
+
+**Known gaps at v0.7.1 close:** None. All gaps closed via gap-closure commit.
+</details>
 
 ### v0.7.0 - Disk Exfiltration Prevention (Shipped)
 
 <details>
 <summary>v0.7.0 - archived at <code>.planning/milestones/v0.7.0-ROADMAP.md</code></summary>
 
-Phase details and requirement outcomes archived at `.planning/milestones/v0.7.0-ROADMAP.md` and `.planning/milestones/v0.7.0-REQUIREMENTS.md`. Disk enumeration (DISK-01/02), BitLocker verification (CRYPT-01/02), disk allowlist persistence (DISK-03), runtime disk enforcement (DISK-04/05), server-side disk registry (ADMIN-01..03), admin TUI disk registry (ADMIN-04), LDAP config TUI (ADMIN-05), and USB enforcement fix (PnP disable + Volume DACL deny-all) — all 15 requirements delivered across 8 phases (33-38.2).
+Phase details and requirement outcomes archived at `.planning/milestones/v0.7.0-ROADMAP.md` and `.planning/milestones/v0.7.0-REQUIREMENTS.md`. Disk enumeration (DISK-01/02), BitLocker verification (CRYPT-01/02), disk allowlist persistence (DISK-03), runtime disk enforcement (DISK-04/05), server-side disk registry (ADMIN-01..03), admin TUI disk registry (ADMIN-04), LDAP config TUI (ADMIN-05), and USB enforcement fix (PnP disable + Volume DACL deny-all) -- all 15 requirements delivered across 8 phases (33-38.2).
 
 **Known gaps at v0.7.0 close:**
-- Phase 34 HUMAN-UAT (unencrypted disk warning — requires physical machine)
-- Phase 38.2 HUMAN-UAT (drive-letter correlation — approved from prior session)
+- Phase 34 HUMAN-UAT (unencrypted disk warning -- requires physical machine)
+- Phase 38.2 HUMAN-UAT (drive-letter correlation -- approved from prior session)
 - AGENT-UNKNOWN remediation (split to Phase 38.3)
 - USB-06 per-user device registry (deferred to v0.7.1)
 - wmi crate upgrade (deferred to v0.7.1)
@@ -206,14 +118,65 @@ Phase details and requirement outcomes archived at `.planning/milestones/v0.5.0-
 | 38 | Admin TUI Disk Registry | v0.7.0 | 0/TBD | Complete | 2026-05-06 |
 | 38.1 | LDAP Config TUI | v0.7.0 | 3/3 | Complete | 2026-05-06 |
 | 38.2 | USB Enforcement Fix | v0.7.0 | 3/3 | Complete | 2026-05-06 |
-| 38.3 | AGENT-UNKNOWN Remediation | v0.7.1 | 0/TBD | Not started | - |
-| 38.4 | Per-User Device Registry | v0.7.1 | 0/TBD | Not started | - |
-| 38.5 | WMI Crate Upgrade | v0.7.1 | 0/TBD | Not started | - |
-| 38.6 | Operational Hardening Bundle | v0.7.1 | 0/TBD | Not started | - |
-| 39 | UWP App Identity | v0.8.0 | 0/TBD | Not started | - |
-| 40 | Drag-and-Drop Enforcement | v0.8.0 | 0/TBD | Not started | - |
-| 41 | Browser Origin Clipboard Policies | v0.8.0 | 0/TBD | Not started | - |
-| 42 | Audit Enrichment — App Identity Fields | v0.8.0 | 0/TBD | Not started | - |
+| 38.3 | AGENT-UNKNOWN Remediation | v0.7.1 | 1/1 | Complete | 2026-05-06 |
+| 38.4 | Per-User Device Registry | v0.7.1 | 3/3 | Complete | 2026-05-06 |
+| 38.5 | WMI Crate Upgrade | v0.7.1 | 1/1 | Complete | 2026-05-06 |
+| 38.6 | Operational Hardening Bundle | v0.7.1 | 2/2 | Complete | 2026-05-06 |
+| 39 | UWP App Identity | v0.8.0 | 4/4 | Complete | 2026-05-07 |
+| 40 | Drag-and-Drop Enforcement | v0.8.0 | 4/4 | Complete | 2026-05-07 |
+| 41 | Browser Origin Clipboard Policies | v0.8.0 | 4/4 | Complete | 2026-05-07 |
+| 42 | Audit Enrichment -- App Identity Fields | v0.8.0 | 3/3 | Complete | 2026-05-07 |
+| 43 | USB Enforcement Fix -- PnP Disable Actually Works | v0.8.1 | 5/5 | Complete | 2026-05-08 |
+| 44 | Mount-Time Blocking | v0.8.1 | 1/1 | Complete | 2026-05-08 |
+| 45 | Grace Period / Quarantine | v0.8.1 | 1/1 | Complete | 2026-05-08 |
+| 46 | UAT | 46 | UAT & Regression Validation | v0.8.1 | 0/TBD | Planned | -- | Regression Validation | v0.8.1 | 1/1 | Complete | 2026-05-08 |
+
+## v0.8.1 - Deferred Items & Issue Debt (In Progress)
+
+**Goal:** Close all deferred feature gaps and outstanding issue debt from v0.8.0.
+
+**Requirements:** USB-07..09, DISK-06..07, UAT-05 (6 requirements)
+
+**Phase 43: USB Enforcement Fix -- PnP Disable Actually Works**
+- Goal: Fix `DeviceController::disable_usb_device` to use real CM instance IDs resolved via SetupDi; surface hard failures
+- Requirements: USB-07, USB-08, USB-09
+- **Plans:** 5 plans in 3 waves
+  - Wave 1 (parallel):
+    - [ ] `43-01-PLAN.md` -- Exact path matching for SetupDi description lookup (USB-08)
+    - [ ] `43-02-PLAN.md` -- Server-side config storage and admin API (USB-09 infrastructure)
+  - Wave 2 (parallel, depends on Wave 1):
+    - [ ] `43-03-PLAN.md` -- Agent-side config pipeline wiring (USB-09 propagation)
+  - Wave 3 (parallel, depends on Wave 2):
+    - [ ] `43-04-PLAN.md` -- Enforcement behavior: retry logic, failure mode, (none) serial policy (USB-07, USB-09)
+    - [ ] `43-05-PLAN.md` -- Admin TUI USB Enforcement Settings screen (USB-09 UI)
+- Success criteria:
+  1. `CM_Disable_DevNode` receives the actual CM instance ID from device interface path
+  2. Devices with `(none)` serial are handled gracefully
+  3. Both PnP disable and DACL deny-all return hard errors on failure
+
+**Phase 44: Mount-Time Blocking**
+- Goal: Lock volume at mount time so unregistered disks do not appear in Explorer
+- Requirements: DISK-06
+- Success criteria:
+  1. Unregistered fixed disk does not receive a drive letter on arrival
+  2. I/O-time blocking remains as fallback
+  3. Audit event emitted when mount-time block triggers
+
+**Phase 45: Grace Period / Quarantine**
+- Goal: Configurable read-only window before hard block for new disk arrivals
+- Requirements: DISK-07
+- Success criteria:
+  1. `agent-config.toml` accepts `disk_grace_period_seconds` (default 0 = immediate block)
+  2. During grace period, reads allowed, writes blocked with user notification
+  3. After grace period expires, mount-time block engages
+
+**Phase 46: UAT & Regression Validation**
+- Goal: Complete outstanding UAT and verify no regressions across disk/USB paths
+- Requirements: UAT-05
+- Success criteria:
+  1. SanDisk re-registered with full 128-char serial, ReadOnly/FullAccess enforced correctly
+  2. All workspace tests pass
+  3. SonarQube quality gate passes
 
 ## v0.3.0 - Operational Hardening (Shipped)
 

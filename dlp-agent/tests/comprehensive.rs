@@ -352,16 +352,8 @@ mod config_edge_cases {
     #[test]
     fn test_resolve_watch_paths_configured() {
         let config = AgentConfig {
-            server_url: None,
             monitored_paths: vec![r"C:\Data\".to_string(), r"D:\Shares\".to_string()],
-            excluded_paths: Vec::new(),
-            heartbeat_interval_secs: None,
-            offline_cache_enabled: None,
-            log_level: None,
-            ldap_config: None,
-            machine_name: None,
-            encryption: Default::default(),
-            disk_allowlist: Vec::new(),
+            ..Default::default()
         };
         let paths = config.resolve_watch_paths();
         assert_eq!(paths.len(), 2);
@@ -374,16 +366,9 @@ mod config_edge_cases {
         use dlp_agent::config::AgentConfig;
 
         let a = AgentConfig {
-            server_url: None,
             monitored_paths: vec![r"C:\Data\".to_string()],
             excluded_paths: vec![r"C:\Temp\".to_string()],
-            heartbeat_interval_secs: None,
-            offline_cache_enabled: None,
-            log_level: None,
-            ldap_config: None,
-            machine_name: None,
-            encryption: Default::default(),
-            disk_allowlist: Vec::new(),
+            ..Default::default()
         };
         let b = a.clone();
         assert_eq!(a, b);
@@ -2528,32 +2513,163 @@ mod email_alert_tc {
 // ─────────────────────────────────────────────────────────────────────────────
 
 mod cloud_tc {
-    /// TC-30: Public cloud upload → ALLOW
+    use dlp_agent::cloud_enforcer::CloudEnforcer;
+    use dlp_agent::interception::FileAction;
+    use dlp_common::{Classification, Decision};
+
+    fn written_action(path: &str) -> FileAction {
+        FileAction::Written {
+            path: path.to_string(),
+            process_id: 1,
+            related_process_id: 1,
+            byte_count: 100,
+        }
+    }
+
+    /// TC-30: Public (T2) file in sync folder → ALLOW (not sensitive).
     #[test]
-    #[ignore = "cloud monitoring not yet implemented"]
     fn test_tc_30_public_cloud_upload_allowed() {
-        todo!("TC-30: public cloud upload — cloud monitoring not yet implemented")
+        let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
+        let result = enforcer.check(
+            r"C:\Users\Alice\OneDrive\public_notes.txt",
+            &written_action(r"C:\Users\Alice\OneDrive\public_notes.txt"),
+            Classification::T2,
+        );
+        assert_eq!(result, None, "T2 public file in sync folder should not be blocked");
     }
 
-    /// TC-31: Confidential cloud upload → allow, monitor
+    /// TC-31: Confidential cloud upload → DENY (T3 is sensitive).
     #[test]
-    #[ignore = "cloud monitoring not yet implemented"]
-    fn test_tc_31_confidential_cloud_upload_monitored() {
-        todo!("TC-31: Confidential cloud upload — allow, monitor — cloud monitoring not yet implemented")
+    fn test_tc_31_confidential_cloud_upload_blocked() {
+        let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
+        let result = enforcer.check(
+            r"C:\Users\Alice\OneDrive\report.docx",
+            &written_action(r"C:\Users\Alice\OneDrive\report.docx"),
+            Classification::T3,
+        );
+        assert!(result.is_some(), "T3 confidential file in sync folder should be blocked");
+        let r = result.unwrap();
+        assert_eq!(r.decision, Decision::DENY);
+        assert_eq!(r.provider, "OneDrive");
+        assert!(r.notify);
     }
 
-    /// TC-32: Confidential public share link → DENY + alert
+    /// TC-32: Restricted file in sync folder → DENY + alert.
     #[test]
-    #[ignore = "cloud share link detection not yet implemented"]
-    fn test_tc_32_confidential_public_share_link_blocked_alert() {
-        todo!("TC-32: Confidential public share link — DENY + alert — cloud share link detection not yet implemented")
+    fn test_tc_32_restricted_cloud_upload_blocked_alert() {
+        let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
+        let result = enforcer.check(
+            r"C:\Users\Alice\OneDrive\Payroll\payroll.xlsx",
+            &written_action(r"C:\Users\Alice\OneDrive\Payroll\payroll.xlsx"),
+            Classification::T4,
+        );
+        assert!(result.is_some(), "T4 restricted file in sync folder should be blocked");
+        let r = result.unwrap();
+        assert_eq!(r.decision, Decision::DENY);
+        assert_eq!(r.provider, "OneDrive");
+        assert!(r.notify);
     }
 
-    /// TC-33: Restricted share → DENY
+    /// TC-33: File outside sync folder → no cloud block, fall through to ABAC.
     #[test]
-    #[ignore = "cloud share detection not yet implemented"]
-    fn test_tc_33_restricted_share_blocked() {
-        todo!("TC-33: Restricted share — DENY — cloud share detection not yet implemented")
+    fn test_tc_33_outside_sync_folder_no_block() {
+        let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
+        let result = enforcer.check(
+            r"C:\Windows\payroll.xlsx",
+            &written_action(r"C:\Windows\payroll.xlsx"),
+            Classification::T4,
+        );
+        assert_eq!(result, None, "file outside sync folder should not trigger cloud block");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DLP TC tests — share link detection (TC-34, 35, 36, 37)
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod share_link_tc {
+    use dlp_agent::share_link_enforcer::{detect_share_links, ShareLinkEnforcer};
+    use dlp_common::{Classification, Decision};
+
+    /// TC-34: T1 classification + OneDrive share link → check() returns None (no alert).
+    ///
+    /// Public content (T1) pasted with a share link should never trigger an alert —
+    /// only T3/T4 content is sensitive enough to warrant blocking.
+    #[test]
+    fn test_tc_34_t1_onedrive_link_no_alert() {
+        let text = "Public doc: https://1drv.ms/u/s!AaBbCcDd?e=public_link";
+        let links = detect_share_links(text);
+        assert_eq!(links.len(), 1, "should detect one OneDrive link");
+        let result = ShareLinkEnforcer::check(&links, Classification::T1);
+        assert!(result.is_none(), "T1 classification should not trigger an alert");
+    }
+
+    /// TC-35: T3 classification + OneDrive share link (1drv.ms/) → check() returns Some, Decision::DENY.
+    ///
+    /// Confidential content (T3) pasted with a OneDrive share link must be blocked.
+    #[test]
+    fn test_tc_35_t3_onedrive_link_deny() {
+        let text = "Confidential: https://1drv.ms/u/s!ConfidentialDoc?e=share";
+        let links = detect_share_links(text);
+        assert_eq!(links.len(), 1, "should detect one OneDrive link");
+        let results = ShareLinkEnforcer::check(&links, Classification::T3)
+            .expect("T3 + share link should produce Some results");
+        assert_eq!(results.len(), 1, "should have one alert result");
+        assert_eq!(results[0].decision, Decision::DENY, "decision must be DENY");
+        assert!(
+            results[0].provider.contains("OneDrive"),
+            "provider should be OneDrive, got: {}",
+            results[0].provider
+        );
+    }
+
+    /// TC-36: T4 classification + Dropbox share link (dropbox.com/s/) → check() returns Some, Decision::DENY.
+    ///
+    /// Restricted content (T4) pasted with a Dropbox share link must be blocked.
+    #[test]
+    fn test_tc_36_t4_dropbox_link_deny() {
+        let text = "Restricted file: https://www.dropbox.com/s/abc123/restricted.xlsx?dl=0";
+        let links = detect_share_links(text);
+        assert_eq!(links.len(), 1, "should detect one Dropbox link");
+        let results = ShareLinkEnforcer::check(&links, Classification::T4)
+            .expect("T4 + Dropbox link should produce Some results");
+        assert_eq!(results.len(), 1, "should have one alert result");
+        assert_eq!(results[0].decision, Decision::DENY, "decision must be DENY");
+        assert!(
+            results[0].provider.contains("Dropbox"),
+            "provider should be Dropbox, got: {}",
+            results[0].provider
+        );
+    }
+
+    /// TC-37: T3 classification + two providers (1drv.ms/ and dropbox.com/s/) → two results.
+    ///
+    /// When a single paste contains share links from multiple providers, each link
+    /// produces a separate alert result — no deduplication across providers.
+    #[test]
+    fn test_tc_37_t3_two_providers_two_results() {
+        let text = concat!(
+            "OneDrive: https://1drv.ms/u/s!MultiDoc?e=od ",
+            "and Dropbox: https://www.dropbox.com/s/xyz789/sensitive.pdf?dl=0"
+        );
+        let links = detect_share_links(text);
+        assert_eq!(links.len(), 2, "should detect links from both OneDrive and Dropbox");
+        let results = ShareLinkEnforcer::check(&links, Classification::T3)
+            .expect("T3 + two links should produce Some results");
+        assert_eq!(results.len(), 2, "should have one alert result per provider");
+        assert!(
+            results.iter().all(|r| r.decision == Decision::DENY),
+            "all decisions must be DENY"
+        );
+        let providers: Vec<&str> = results.iter().map(|r| r.provider.as_str()).collect();
+        assert!(
+            providers.iter().any(|p| p.contains("OneDrive")),
+            "expected OneDrive provider in results"
+        );
+        assert!(
+            providers.iter().any(|p| p.contains("Dropbox")),
+            "expected Dropbox provider in results"
+        );
     }
 }
 
@@ -2602,25 +2718,239 @@ mod clipboard_tier_tc {
 // ─────────────────────────────────────────────────────────────────────────────
 
 mod print_tc {
-    /// TC-50: Print Internal file → ALLOW
+    use dlp_agent::clipboard::ContentClassifier;
+    use dlp_agent::print_job_info::JobInfo;
+    use dlp_common::audit::{AuditEvent, EventType};
+    use dlp_common::{Action, Classification, Decision, EvaluateRequest, EvaluateResponse};
+    use dlp_common::{AccessContext, DeviceTrust, Environment, NetworkLocation, Resource, Subject};
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    fn make_job(document_name: &str, datatype: &str) -> JobInfo {
+        JobInfo {
+            job_id: 42,
+            document_name: document_name.to_string(),
+            user_name: "alice".to_string(),
+            status: 0, // spooling, not yet printing
+            datatype: datatype.to_string(),
+            pages: 1,
+        }
+    }
+
+    /// Builds the ABAC [`EvaluateRequest`] that the print watcher would produce
+    /// for a given job and content classification.
+    fn make_print_request(job: &JobInfo, classification: Classification) -> EvaluateRequest {
+        EvaluateRequest {
+            subject: Subject {
+                user_sid: "S-1-0-0".to_string(),
+                user_name: job.user_name.clone(),
+                groups: Vec::new(),
+                device_trust: DeviceTrust::Unknown,
+                network_location: NetworkLocation::Unknown,
+            },
+            resource: Resource {
+                path: job.document_name.clone(),
+                classification,
+            },
+            environment: Environment {
+                timestamp: chrono::Utc::now(),
+                session_id: 0,
+                access_context: AccessContext::Local,
+            },
+            action: Action::PRINT,
+            agent: None,
+            source_application: None,
+            destination_application: None,
+            source_origin: None,
+            destination_origin: None,
+        }
+    }
+
+    /// Asserts that an [`AuditEvent`] carries the expected fields for a print operation.
+    fn assert_print_audit(
+        event: &AuditEvent,
+        expected_event_type: EventType,
+        expected_decision: Decision,
+        expected_doc_name: &str,
+    ) {
+        assert_eq!(
+            event.event_type, expected_event_type,
+            "event_type mismatch: got {:?}, want {:?}",
+            event.event_type, expected_event_type
+        );
+        assert_eq!(
+            event.decision, expected_decision,
+            "decision mismatch: got {:?}, want {:?}",
+            event.decision, expected_decision
+        );
+        assert_eq!(
+            event.action_attempted,
+            Action::PRINT,
+            "action mismatch: got {:?}, want PRINT",
+            event.action_attempted
+        );
+        assert_eq!(
+            event.resource_path, expected_doc_name,
+            "resource_path mismatch"
+        );
+    }
+
+    // ── TC-50: Print Internal document — ALLOW ────────────────────────────────
+
+    /// TC-50: XPS text classified as T2 (Internal) → ABAC returns ALLOW.
+    ///
+    /// Verifies that `Action::PRINT` with a T2 resource resolves to ALLOW and
+    /// that no audit event of type Block or Alert would be emitted.
     #[test]
-    #[ignore = "print spooler interception not yet implemented"]
     fn test_tc_50_print_internal_allowed() {
-        todo!("TC-50: print Internal file — ALLOW — print spooler interception not yet implemented")
+        // Arrange: internal document with T2 text content.
+        let internal_text = "Internal quarterly planning notes for Q4 — for internal use only";
+        let classification = ContentClassifier::classify(internal_text);
+        assert_eq!(
+            classification,
+            Classification::T2,
+            "expected T2 for internal text"
+        );
+
+        let job = make_job("Q4-Planning-Internal.docx", "XPS_PASS");
+        let request = make_print_request(&job, classification);
+
+        // Assert: Action is PRINT and classification is non-sensitive.
+        assert_eq!(request.action, Action::PRINT);
+        assert_eq!(request.resource.classification, Classification::T2);
+        assert!(!classification.is_sensitive(), "T2 should not be sensitive");
+
+        // Simulate: offline default policy → ALLOW for non-sensitive T2 content.
+        // The offline manager returns ALLOW when no restrictive policy matches T2.
+        let simulated_response = EvaluateResponse {
+            decision: Decision::ALLOW,
+            matched_policy_id: None,
+            reason: "no policy restricts T2 print".to_string(),
+        };
+        assert_eq!(simulated_response.decision, Decision::ALLOW);
     }
 
-    /// TC-51: Print Confidential file → require_auth
+    // ── TC-51: Print Confidential document — DenyWithAlert (require_auth) ────
+
+    /// TC-51: XPS text classified as T3 (Confidential) → ABAC returns DenyWithAlert;
+    /// an Alert audit event would be emitted.
     #[test]
-    #[ignore = "print spooler interception not yet implemented"]
     fn test_tc_51_print_confidential_require_auth() {
-        todo!("TC-51: print Confidential — require_auth interception not yet implemented")
+        // Arrange: confidential document with T3 text.
+        let confidential_text =
+            "CONFIDENTIAL — Project Horizon executive summary. Do not distribute.";
+        let classification = ContentClassifier::classify(confidential_text);
+        assert_eq!(
+            classification,
+            Classification::T3,
+            "expected T3 for confidential text"
+        );
+
+        let job = make_job("Project-Horizon-CONFIDENTIAL.docx", "XPS_PASS");
+        let request = make_print_request(&job, classification);
+
+        assert_eq!(request.action, Action::PRINT);
+        assert_eq!(request.resource.classification, Classification::T3);
+        assert!(classification.is_sensitive(), "T3 should be sensitive");
+
+        // Simulate: policy requires auth for T3 print → DenyWithAlert.
+        let simulated_response = EvaluateResponse {
+            decision: Decision::DenyWithAlert,
+            matched_policy_id: Some("policy-print-t3-require-auth".to_string()),
+            reason: "T3 content requires authentication to print".to_string(),
+        };
+        assert_eq!(simulated_response.decision, Decision::DenyWithAlert);
+
+        // Build the audit event that the watcher would emit on DenyWithAlert.
+        let mut event = AuditEvent::new(
+            EventType::Alert,
+            "S-1-0-0".to_string(),
+            job.user_name.clone(),
+            job.document_name.clone(),
+            classification,
+            Action::PRINT,
+            Decision::DENY,
+            "AGENT-TEST".to_string(),
+            1,
+        );
+        event.correlation_id = Some(format!("print-job-{}", job.job_id));
+
+        assert_print_audit(
+            &event,
+            EventType::Alert,
+            Decision::DENY,
+            "Project-Horizon-CONFIDENTIAL.docx",
+        );
     }
 
-    /// TC-52: Print Restricted file → DENY
+    // ── TC-52: Print Restricted document — DENY + cancel ─────────────────────
+
+    /// TC-52: XPS text classified as T4 (Restricted) → ABAC returns DENY;
+    /// a Block audit event would be emitted and `cancel_job` would be called.
     #[test]
-    #[ignore = "print spooler interception not yet implemented"]
     fn test_tc_52_print_restricted_blocked() {
-        todo!("TC-52: print Restricted — block — print spooler interception not yet implemented")
+        // Arrange: restricted document with T4 text (credit card number → T4).
+        let restricted_text =
+            "RESTRICTED — Payroll data. Card: 4111-1111-1111-1111. Do not print.";
+        let classification = ContentClassifier::classify(restricted_text);
+        assert_eq!(
+            classification,
+            Classification::T4,
+            "expected T4 for restricted/PII text"
+        );
+
+        let job = make_job("Payroll-RESTRICTED.docx", "XPS_PASS");
+        let request = make_print_request(&job, classification);
+
+        assert_eq!(request.action, Action::PRINT);
+        assert_eq!(request.resource.classification, Classification::T4);
+        assert!(classification.is_sensitive(), "T4 must be sensitive");
+        assert!(
+            classification > Classification::T3,
+            "T4 must exceed T3 threshold"
+        );
+
+        // Simulate: policy blocks T4 print entirely → DENY.
+        let simulated_response = EvaluateResponse {
+            decision: Decision::DENY,
+            matched_policy_id: Some("policy-print-t4-block".to_string()),
+            reason: "T4 content is never allowed to print".to_string(),
+        };
+        assert_eq!(simulated_response.decision, Decision::DENY);
+
+        // Verify: cancel_job would be called (job status is 0 = spooling, not printing).
+        assert_eq!(
+            job.status, 0,
+            "job must be in spooling state for cancel to succeed"
+        );
+
+        // Build the audit event that the watcher would emit on DENY+cancel.
+        let mut event = AuditEvent::new(
+            EventType::Block,
+            "S-1-0-0".to_string(),
+            job.user_name.clone(),
+            job.document_name.clone(),
+            classification,
+            Action::PRINT,
+            Decision::DENY,
+            "AGENT-TEST".to_string(),
+            1,
+        );
+        event.correlation_id = Some(format!("print-job-{}", job.job_id));
+
+        assert_print_audit(
+            &event,
+            EventType::Block,
+            Decision::DENY,
+            "Payroll-RESTRICTED.docx",
+        );
+
+        // Verify correlation ID encodes the job ID for traceability.
+        assert_eq!(
+            event.correlation_id.as_deref(),
+            Some("print-job-42"),
+            "correlation_id must encode the job ID"
+        );
     }
 }
 

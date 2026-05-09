@@ -186,7 +186,7 @@ impl InterceptionEngine {
         tx: mpsc::Sender<FileAction>,
         watch_rx: Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
     ) -> Result<()> {
-        use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+        use notify::{Config, RecommendedWatcher, Watcher};
         use std::sync::mpsc as std_mpsc;
         use std::time::Duration;
 
@@ -220,11 +220,29 @@ impl InterceptionEngine {
             mode
         );
 
+        self.run_main_loop(&notify_rx, &tx, watch_rx.as_ref(), &mut watcher)
+    }
+
+    /// The core event-processing loop for the file system monitor.
+    ///
+    /// Extracted from [`run()`](InterceptionEngine::run) to reduce cognitive
+    /// complexity.  Polls for `notify` events, drains dynamic watch-path
+    /// additions, and checks the stop flag.
+    fn run_main_loop(
+        &self,
+        notify_rx: &std::sync::mpsc::Receiver<notify::Event>,
+        tx: &mpsc::Sender<FileAction>,
+        watch_rx: Option<&std::sync::mpsc::Receiver<std::path::PathBuf>>,
+        watcher: &mut notify::RecommendedWatcher,
+    ) -> Result<()> {
+        use std::sync::mpsc as std_mpsc;
+        use std::time::Duration;
+
         loop {
             // Use a short timeout so we can check the stop flag between events.
             match notify_rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(event) => {
-                    if !self.dispatch_event(event, &tx) {
+                    if !self.dispatch_event(event, tx) {
                         return Ok(());
                     }
                 }
@@ -239,26 +257,37 @@ impl InterceptionEngine {
             // them to the active watch set. This is the dynamic counterpart to the
             // one-time register_watch_paths() call above: drives plugged in after
             // agent startup are added here so file events reach UsbEnforcer::check().
-            if let Some(ref rx) = watch_rx {
-                while let Ok(new_path) = rx.try_recv() {
-                    if let Err(e) = watcher.watch(&new_path, RecursiveMode::Recursive) {
-                        tracing::warn!(
-                            path = %new_path.display(),
-                            error = %e,
-                            "could not watch new USB drive root"
-                        );
-                    } else {
-                        tracing::info!(
-                            path = %new_path.display(),
-                            "dynamically added USB drive root to watch set"
-                        );
-                    }
-                }
+            if let Some(rx) = watch_rx {
+                self.drain_watch_paths(rx, watcher);
             }
 
             if self.stop_flag.load(Ordering::SeqCst) {
                 tracing::info!("stop flag set — exiting file monitor");
                 return Ok(());
+            }
+        }
+    }
+
+    /// Drains the dynamic watch-path channel and registers each new path.
+    fn drain_watch_paths(
+        &self,
+        rx: &std::sync::mpsc::Receiver<std::path::PathBuf>,
+        watcher: &mut notify::RecommendedWatcher,
+    ) {
+        use notify::{RecursiveMode, Watcher};
+
+        while let Ok(new_path) = rx.try_recv() {
+            if let Err(e) = watcher.watch(&new_path, RecursiveMode::Recursive) {
+                tracing::warn!(
+                    path = %new_path.display(),
+                    error = %e,
+                    "could not watch new USB drive root"
+                );
+            } else {
+                tracing::info!(
+                    path = %new_path.display(),
+                    "dynamically added USB drive root to watch set"
+                );
             }
         }
     }

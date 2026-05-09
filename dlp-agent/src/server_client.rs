@@ -20,6 +20,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dlp_common::ad_client::LdapConfig as AdLdapConfig;
+use dlp_common::usb::{
+    DEFAULT_USB_BLOCKED_FAILURE_MODE, DEFAULT_USB_NONE_SERIAL_POLICY,
+    DEFAULT_USB_STARTUP_RESOLUTION_MODE,
+};
 use dlp_common::AuditEvent;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -136,6 +140,83 @@ pub struct AgentConfigPayload {
     /// not emit the field.
     #[serde(default)]
     pub disk_allowlist: Vec<dlp_common::DiskIdentity>,
+
+    /// USB enforcement failure mode (USB-09). Default: "Warning only".
+    #[serde(default = "default_usb_blocked_failure_mode")]
+    pub usb_blocked_failure_mode: String,
+
+    /// USB startup scan resolution strategy (USB-07).
+    /// Default: "VID/PID/serial fallback".
+    #[serde(default = "default_usb_startup_resolution_mode")]
+    pub usb_startup_resolution_mode: String,
+
+    /// Policy for USB devices without serial descriptors (USB-08).
+    /// Default: "Always Blocked".
+    #[serde(default = "default_usb_none_serial_policy")]
+    pub usb_none_serial_policy: String,
+
+    /// Whether the cloud sync hook DLL is enabled (M017/S01).
+    /// Default: `false`.
+    #[serde(default)]
+    pub cloud_hook_enabled: bool,
+
+    /// Whether the WFP network egress filter is enabled (M017/S01).
+    /// Default: `false`.
+    #[serde(default)]
+    pub wfp_filter_enabled: bool,
+
+    /// Timeout in milliseconds for hook classification pipe requests (M017/S01).
+    /// Default: 5000.
+    #[serde(default = "default_hook_classification_timeout_ms")]
+    pub hook_classification_timeout_ms: u64,
+
+    /// Whether print spooler interception is enabled (M017/S04).
+    /// Default: `false`.
+    #[serde(default)]
+    pub print_enabled: bool,
+
+    /// Timeout in milliseconds for XPS spool file parsing (M017/S04).
+    /// Default: 5000.
+    #[serde(default = "default_print_xps_timeout_ms")]
+    pub print_xps_timeout_ms: u64,
+
+    /// Action to take when a print job cannot be classified (M017/S04).
+    /// Default: `"Block"`.
+    #[serde(default = "default_print_unclassifiable_action")]
+    pub print_unclassifiable_action: String,
+
+    /// Maximum number of pages to parse from an XPS spool file (M017/S04).
+    /// Default: 100.
+    #[serde(default = "default_print_max_pages")]
+    pub print_max_pages: usize,
+}
+
+fn default_usb_blocked_failure_mode() -> String {
+    DEFAULT_USB_BLOCKED_FAILURE_MODE.to_string()
+}
+
+fn default_usb_startup_resolution_mode() -> String {
+    DEFAULT_USB_STARTUP_RESOLUTION_MODE.to_string()
+}
+
+fn default_usb_none_serial_policy() -> String {
+    DEFAULT_USB_NONE_SERIAL_POLICY.to_string()
+}
+
+fn default_hook_classification_timeout_ms() -> u64 {
+    5000
+}
+
+fn default_print_xps_timeout_ms() -> u64 {
+    5000
+}
+
+fn default_print_unclassifiable_action() -> String {
+    "Block".to_string()
+}
+
+fn default_print_max_pages() -> usize {
+    100
 }
 
 // ---------------------------------------------------------------------------
@@ -386,7 +467,30 @@ impl ServerClient {
     pub async fn fetch_device_registry(
         &self,
     ) -> Result<Vec<DeviceRegistryEntry>, ServerClientError> {
-        let url = format!("{}/admin/device-registry", self.base_url);
+        self.fetch_device_registry_with_sid(None).await
+    }
+
+    /// Fetches the device registry with an optional owner SID filter.
+    ///
+    /// When `owner_sid` is `Some`, appends `?owner_sid={sid}` to the GET URL so the
+    /// server returns both machine-wide entries and per-user entries for that SID.
+    /// When `None`, fetches machine-wide entries only (backward-compatible).
+    ///
+    /// # Arguments
+    ///
+    /// * `owner_sid` — Optional Windows user SID to filter per-user entries.
+    ///
+    /// # Errors
+    ///
+    /// Same error variants as [`fetch_device_registry`](Self::fetch_device_registry).
+    pub async fn fetch_device_registry_with_sid(
+        &self,
+        owner_sid: Option<&str>,
+    ) -> Result<Vec<DeviceRegistryEntry>, ServerClientError> {
+        let mut url = format!("{}/admin/device-registry", self.base_url);
+        if let Some(sid) = owner_sid {
+            url = format!("{url}?owner_sid={sid}");
+        }
         let response = self
             .client
             .get(&url)
@@ -495,6 +599,14 @@ pub struct DeviceRegistryEntry {
     pub serial: String,
     /// Trust tier string: `"blocked"`, `"read_only"`, or `"full_access"`.
     pub trust_tier: String,
+    /// Owner SID for per-user device registry entries (USB-06, Phase 38.4).
+    /// `None` indicates a machine-wide entry.
+    #[serde(default)]
+    pub owner_sid: Option<String>,
+    /// Owner username for per-user device registry entries (USB-06, Phase 38.4).
+    /// `None` indicates a machine-wide entry.
+    #[serde(default)]
+    pub owner_user: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -800,6 +912,16 @@ mod tests {
             offline_cache_enabled: false,
             ldap_config: None,
             disk_allowlist: vec![],
+            usb_blocked_failure_mode: "Warning only".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Always Blocked".to_string(),
+            cloud_hook_enabled: false,
+            wfp_filter_enabled: false,
+            hook_classification_timeout_ms: 5000,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: "Block".to_string(),
+            print_max_pages: 100,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -822,6 +944,16 @@ mod tests {
             offline_cache_enabled: false,
             ldap_config: Some(ldap),
             disk_allowlist: vec![],
+            usb_blocked_failure_mode: "Warning only".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Always Blocked".to_string(),
+            cloud_hook_enabled: false,
+            wfp_filter_enabled: false,
+            hook_classification_timeout_ms: 5000,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: "Block".to_string(),
+            print_max_pages: 100,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -843,8 +975,8 @@ mod tests {
             "offline_cache_enabled": false,
             "ldap_config": null
         }"#;
-        let payload: AgentConfigPayload =
-            serde_json::from_str(json).expect("deserialization must succeed without disk_allowlist");
+        let payload: AgentConfigPayload = serde_json::from_str(json)
+            .expect("deserialization must succeed without disk_allowlist");
         // #[serde(default)] must yield an empty Vec when the field is absent.
         assert!(
             payload.disk_allowlist.is_empty(),
@@ -891,11 +1023,24 @@ mod tests {
             offline_cache_enabled: false,
             ldap_config: None,
             disk_allowlist: disks.clone(),
+            usb_blocked_failure_mode: "Warning only".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Always Blocked".to_string(),
+            cloud_hook_enabled: false,
+            wfp_filter_enabled: false,
+            hook_classification_timeout_ms: 5000,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: "Block".to_string(),
+            print_max_pages: 100,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
         // PartialEq on DiskIdentity covers all fields including encryption_status.
-        assert_eq!(rt.disk_allowlist, disks, "disk_allowlist must survive roundtrip unchanged");
+        assert_eq!(
+            rt.disk_allowlist, disks,
+            "disk_allowlist must survive roundtrip unchanged"
+        );
     }
 
     /// Verify that a JSON payload containing a `disk_allowlist` entry with an
@@ -954,10 +1099,103 @@ mod tests {
         assert!(result.is_err(), "unreachable server must return Err");
     }
 
+    /// Verify that a mock server response with owner_sid/owner_user fields
+    /// deserializes correctly (USB-06, Phase 38.4).
+    #[test]
+    fn test_fetch_device_registry_with_sid_includes_owner_fields() {
+        let json = r#"[{
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "SN001",
+            "trust_tier": "blocked",
+            "owner_sid": "S-1-5-21-1",
+            "owner_user": "alice"
+        }]"#;
+        let entries: Vec<DeviceRegistryEntry> = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].owner_sid, Some("S-1-5-21-1".to_string()));
+        assert_eq!(entries[0].owner_user, Some("alice".to_string()));
+    }
+
+    /// Verify backward compatibility with older servers that do not emit
+    /// owner_sid/owner_user fields (USB-06, Phase 38.4).
+    #[test]
+    fn test_fetch_device_registry_backward_compat() {
+        let json = r#"[{
+            "vid": "0951",
+            "pid": "1666",
+            "serial": "SN001",
+            "trust_tier": "full_access"
+        }]"#;
+        let entries: Vec<DeviceRegistryEntry> = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].owner_sid, None);
+        assert_eq!(entries[0].owner_user, None);
+    }
+
     #[tokio::test]
     async fn test_fetch_managed_origins_unreachable_server() {
         let client = unreachable_client();
         let result = client.fetch_managed_origins().await;
         assert!(result.is_err(), "unreachable server must return Err");
+    }
+
+    // --- Phase 43: USB enforcement config payload tests (USB-07, USB-08, USB-09) ---
+
+    /// Verify that JSON missing the `usb_*` fields deserializes to the
+    /// expected default values (backward compatibility with older servers).
+    #[test]
+    fn test_agent_config_payload_usb_fields_default_when_missing() {
+        // Construct JSON without any usb_* fields (simulates an older server).
+        let json = r#"{
+            "monitored_paths": [],
+            "excluded_paths": [],
+            "heartbeat_interval_secs": 30,
+            "offline_cache_enabled": false,
+            "ldap_config": null
+        }"#;
+        let payload: AgentConfigPayload =
+            serde_json::from_str(json).expect("deserialization must succeed without usb fields");
+        assert_eq!(
+            payload.usb_blocked_failure_mode, "Warning only",
+            "usb_blocked_failure_mode must default to 'Warning only'"
+        );
+        assert_eq!(
+            payload.usb_startup_resolution_mode, "VID/PID/serial fallback",
+            "usb_startup_resolution_mode must default to 'VID/PID/serial fallback'"
+        );
+        assert_eq!(
+            payload.usb_none_serial_policy, "Always Blocked",
+            "usb_none_serial_policy must default to 'Always Blocked'"
+        );
+    }
+
+    /// Verify that a payload with custom USB values survives a serialize/deserialize
+    /// roundtrip with all fields intact.
+    #[test]
+    fn test_agent_config_payload_usb_fields_roundtrip() {
+        let payload = AgentConfigPayload {
+            monitored_paths: vec![],
+            excluded_paths: vec![],
+            heartbeat_interval_secs: 30,
+            offline_cache_enabled: false,
+            ldap_config: None,
+            disk_allowlist: vec![],
+            usb_blocked_failure_mode: "Hard error".to_string(),
+            usb_startup_resolution_mode: "Volume GUID resolution".to_string(),
+            usb_none_serial_policy: "Allow unregistered".to_string(),
+            cloud_hook_enabled: true,
+            wfp_filter_enabled: true,
+            hook_classification_timeout_ms: 3000,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: "Block".to_string(),
+            print_max_pages: 100,
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt.usb_blocked_failure_mode, "Hard error");
+        assert_eq!(rt.usb_startup_resolution_mode, "Volume GUID resolution");
+        assert_eq!(rt.usb_none_serial_policy, "Allow unregistered");
     }
 }

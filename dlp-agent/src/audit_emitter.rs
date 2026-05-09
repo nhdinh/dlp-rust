@@ -40,6 +40,9 @@ mod audit_enrichment {
     ///
     /// Returns `(None, None)` if the process cannot be opened (e.g., PID 0
     /// from the `notify` crate which does not provide real PIDs).
+    ///
+    /// NOTE: UWP AUMID resolution is handled by `dlp-user-ui`'s `resolve_app_identity()`
+    /// for clipboard events. File/USB audit enrichment uses Win32 image path only.
     pub fn get_application_metadata(pid: u32) -> (Option<String>, Option<String>) {
         if pid == 0 {
             return (None, None);
@@ -163,11 +166,13 @@ mod audit_enrichment {
 
 pub use audit_enrichment::{get_application_metadata, get_resource_owner};
 
+use dlp_common::endpoint::AppIdentity;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
+use dlp_common::endpoint::agent_unknown_app;
 use dlp_common::AuditEvent;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -317,6 +322,9 @@ pub fn emit_audit(ctx: &EmitContext, event: &mut AuditEvent) {
         event.user_name.clone_from(&ctx.user_name);
     }
 
+    // AUDIT-04 (Phase 42): Guarantee app identity fields are always present.
+    ensure_app_identity_fields(event);
+
     if let Err(e) = EMITTER.emit(event) {
         // Log but do not propagate -- audit failures must never block DLP enforcement.
         error!(
@@ -341,6 +349,66 @@ pub fn emit_audit(ctx: &EmitContext, event: &mut AuditEvent) {
     #[cfg(windows)]
     if let Some(buffer) = AUDIT_BUFFER.get() {
         buffer.enqueue(event.clone());
+    }
+}
+
+/// Enriches an AuditEvent with source application identity from a PID.
+///
+/// Resolves the process image path from `pid` via `get_application_metadata`,
+/// then sets `source_application` on the event. If resolution fails,
+/// uses the AGENT-UNKNOWN sentinel.
+///
+/// # Arguments
+///
+/// * `event` — the audit event to enrich (mutated in place)
+/// * `pid` — the process ID of the operation initiator
+pub fn enrich_audit_with_app_identity(event: &mut AuditEvent, pid: u32) {
+    let (app_path, _app_hash) = get_application_metadata(pid);
+    let app_identity = app_path
+        .map(|path| {
+            let name = std::path::Path::new(&path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("UNKNOWN")
+                .to_string();
+            AppIdentity {
+                image_path: path,
+                publisher: name,
+                trust_tier: dlp_common::endpoint::AppTrustTier::Unknown,
+                signature_state: dlp_common::endpoint::SignatureState::Unknown,
+                aumid: None,
+                package_family_name: None,
+                is_uwp: false,
+            }
+        })
+        .unwrap_or_else(agent_unknown_app);
+    event.source_application = Some(app_identity);
+}
+
+/// Sets destination_application on an AuditEvent.
+///
+/// Used when the destination is known (e.g., copy to a specific path,
+/// paste to a specific application). If None, sets AGENT-UNKNOWN.
+pub fn set_destination_application(event: &mut AuditEvent, dest: Option<AppIdentity>) {
+    event.destination_application = Some(dest.unwrap_or_else(agent_unknown_app));
+}
+
+/// Ensures `source_application` and `destination_application` are never None.
+///
+/// Called by `emit_audit` before writing the event. If either field is None,
+/// replaces it with the AGENT-UNKNOWN sentinel. This guarantees that every
+/// audit event in the log has resolvable app identity fields (even if the
+/// identity itself indicates "unknown").
+///
+/// AUDIT-04 (Phase 42): Audit schema guarantee for app identity fields.
+pub fn ensure_app_identity_fields(event: &mut AuditEvent) {
+    if event.source_application.is_none() {
+        event.source_application = Some(agent_unknown_app());
+        tracing::debug!(correlation_id = %event.correlation_id.as_deref().unwrap_or("none"), "AuditEvent source_application was None — set to AGENT-UNKNOWN");
+    }
+    if event.destination_application.is_none() {
+        event.destination_application = Some(agent_unknown_app());
+        tracing::debug!(correlation_id = %event.correlation_id.as_deref().unwrap_or("none"), "AuditEvent destination_application was None — set to AGENT-UNKNOWN");
     }
 }
 
@@ -526,5 +594,243 @@ mod tests {
         let nested = dir.path().join("a/b/c");
         let emitter = AuditEmitter::open(&nested, "audit.jsonl", DEFAULT_MAX_BYTES);
         assert!(emitter.is_ok());
+    }
+
+    // -- Drag-and-drop audit tests (APP-08.3, AUDIT-04.3) --------------------
+
+    #[test]
+    fn test_drag_drop_audit_event_has_app_identity() {
+        use dlp_common::endpoint::{AppIdentity, AppTrustTier, SignatureState};
+
+        let src = AppIdentity {
+            image_path: r"C:\Source\app.exe".to_string(),
+            publisher: "Contoso Ltd".to_string(),
+            trust_tier: AppTrustTier::Trusted,
+            signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        };
+        let dest = AppIdentity {
+            image_path: r"C:\Dest\app.exe".to_string(),
+            publisher: "Fabrikam Inc".to_string(),
+            trust_tier: AppTrustTier::Untrusted,
+            signature_state: SignatureState::NotSigned,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        };
+
+        let mut event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            "dragdrop://session1".to_string(),
+            Classification::T3,
+            Action::DRAG_DROP,
+            Decision::DENY,
+            "AGENT-WS02-001".to_string(),
+            1,
+        )
+        .with_source_application(Some(src))
+        .with_destination_application(Some(dest));
+
+        let ctx = EmitContext {
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 1,
+            user_sid: "S-1-5-21-TEST".to_string(),
+            user_name: "testuser".to_string(),
+            machine_name: None,
+        };
+
+        emit_audit(&ctx, &mut event);
+
+        // Verify the event has both app identities after emission.
+        assert!(event.source_application.is_some());
+        assert!(event.destination_application.is_some());
+        let src = event.source_application.unwrap();
+        let dest = event.destination_application.unwrap();
+        assert_eq!(src.image_path, r"C:\Source\app.exe");
+        assert_eq!(src.publisher, "Contoso Ltd");
+        assert_eq!(dest.image_path, r"C:\Dest\app.exe");
+        assert_eq!(dest.publisher, "Fabrikam Inc");
+        assert_eq!(event.action_attempted, Action::DRAG_DROP);
+        assert_eq!(event.decision, Decision::DENY);
+    }
+
+    #[test]
+    fn test_drag_drop_audit_event_applies_agent_unknown_when_missing() {
+        // AUDIT-05: When app identity is missing, emit_audit replaces it
+        // with the AGENT-UNKNOWN sentinel.
+        let mut event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            "dragdrop://session1".to_string(),
+            Classification::T3,
+            Action::DRAG_DROP,
+            Decision::DENY,
+            "AGENT-WS02-001".to_string(),
+            1,
+        );
+        // Deliberately do NOT set source/destination application.
+
+        let ctx = EmitContext {
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 1,
+            user_sid: "S-1-5-21-TEST".to_string(),
+            user_name: "testuser".to_string(),
+            machine_name: None,
+        };
+
+        emit_audit(&ctx, &mut event);
+
+        // Both should be AGENT-UNKNOWN.
+        let src = event.source_application.expect("source must be set");
+        let dest = event.destination_application.expect("dest must be set");
+        assert_eq!(src.image_path, "AGENT-UNKNOWN");
+        assert_eq!(dest.image_path, "AGENT-UNKNOWN");
+    }
+
+    // -- Phase 42 enrichment helper tests (AUDIT-04) -----------------------
+
+    fn make_test_event() -> AuditEvent {
+        AuditEvent::new(
+            EventType::Access,
+            "S-1-5-18".to_string(),
+            "SYSTEM".to_string(),
+            r"C:\test.txt".to_string(),
+            Classification::T3,
+            Action::READ,
+            Decision::DENY,
+            "AGENT-TEST".to_string(),
+            1,
+        )
+    }
+
+    #[test]
+    fn test_enrich_audit_with_app_identity_sets_source() {
+        let mut event = make_test_event();
+        enrich_audit_with_app_identity(&mut event, std::process::id());
+        assert!(event.source_application.is_some());
+        // Current process should have a valid path
+        assert!(event.source_application.as_ref().unwrap().image_path.len() > 0);
+    }
+
+    #[test]
+    fn test_enrich_audit_with_app_identity_uses_agent_unknown_for_invalid_pid() {
+        let mut event = make_test_event();
+        enrich_audit_with_app_identity(&mut event, 99999); // non-existent PID
+        assert!(event.source_application.is_some());
+        assert_eq!(
+            event.source_application.as_ref().unwrap().image_path,
+            "AGENT-UNKNOWN"
+        );
+    }
+
+    #[test]
+    fn test_set_destination_application_with_some() {
+        let mut event = make_test_event();
+        let dest = dlp_common::AppIdentity {
+            image_path: r"C:\Windows\notepad.exe".to_string(),
+            publisher: "Notepad".to_string(),
+            trust_tier: dlp_common::endpoint::AppTrustTier::Unknown,
+            signature_state: dlp_common::endpoint::SignatureState::Unknown,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        };
+        set_destination_application(&mut event, Some(dest));
+        assert_eq!(
+            event.destination_application.as_ref().unwrap().image_path,
+            r"C:\Windows\notepad.exe"
+        );
+    }
+
+    #[test]
+    fn test_set_destination_application_with_none_uses_agent_unknown() {
+        let mut event = make_test_event();
+        set_destination_application(&mut event, None);
+        assert_eq!(
+            event.destination_application.as_ref().unwrap().image_path,
+            "AGENT-UNKNOWN"
+        );
+    }
+
+    #[test]
+    fn test_emit_audit_guarantees_source_application() {
+        let mut event = make_test_event();
+        // Deliberately leave source_application as None
+        event.source_application = None;
+
+        let ctx = EmitContext {
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 1,
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "SYSTEM".to_string(),
+            machine_name: None,
+        };
+
+        emit_audit(&ctx, &mut event);
+        assert!(event.source_application.is_some());
+        assert_eq!(
+            event.source_application.as_ref().unwrap().image_path,
+            "AGENT-UNKNOWN"
+        );
+    }
+
+    #[test]
+    fn test_emit_audit_guarantees_destination_application() {
+        let mut event = make_test_event();
+        event.destination_application = None;
+
+        let ctx = EmitContext {
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 1,
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "SYSTEM".to_string(),
+            machine_name: None,
+        };
+
+        emit_audit(&ctx, &mut event);
+        assert!(event.destination_application.is_some());
+        assert_eq!(
+            event.destination_application.as_ref().unwrap().image_path,
+            "AGENT-UNKNOWN"
+        );
+    }
+
+    #[test]
+    fn test_emit_audit_preserves_resolved_identity() {
+        let mut event = make_test_event();
+        let app = dlp_common::AppIdentity {
+            image_path: r"C:\Windows\notepad.exe".to_string(),
+            publisher: "notepad.exe".to_string(),
+            trust_tier: dlp_common::endpoint::AppTrustTier::Unknown,
+            signature_state: dlp_common::endpoint::SignatureState::Unknown,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        };
+        event.source_application = Some(app.clone());
+        event.destination_application = Some(app.clone());
+
+        let ctx = EmitContext {
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 1,
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "SYSTEM".to_string(),
+            machine_name: None,
+        };
+
+        emit_audit(&ctx, &mut event);
+        assert_eq!(
+            event.source_application.as_ref().unwrap().image_path,
+            r"C:\Windows\notepad.exe"
+        );
+        assert_eq!(
+            event.destination_application.as_ref().unwrap().image_path,
+            r"C:\Windows\notepad.exe"
+        );
     }
 }

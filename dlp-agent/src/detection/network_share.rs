@@ -354,33 +354,16 @@ async fn poll_loop(
 fn enumerate_connected_shares() -> HashSet<String> {
     use windows::Win32::Foundation::{HANDLE, WIN32_ERROR};
     use windows::Win32::NetworkManagement::WNet::{
-        WNetCloseEnum, WNetEnumResourceW, WNetOpenEnumW, NETRESOURCEW, RESOURCETYPE_ANY,
-        RESOURCEUSAGE_CONNECTABLE, RESOURCEUSAGE_CONTAINER, RESOURCE_GLOBALNET,
+        WNetCloseEnum, WNetOpenEnumW, RESOURCETYPE_ANY, RESOURCEUSAGE_CONNECTABLE,
+        RESOURCEUSAGE_CONTAINER, RESOURCE_GLOBALNET,
     };
 
     const NO_ERROR: WIN32_ERROR = WIN32_ERROR(0);
-    const ERROR_NO_MORE_ITEMS: WIN32_ERROR = WIN32_ERROR(259);
 
     let mut results = HashSet::new();
 
-    // Allocate a buffer large enough for NETRESOURCEW entries.
-    // The buffer is passed to WNetEnumResourceW which writes structs directly.
-    // We size it for 256 entries; entries beyond this are picked up on the
-    // next poll cycle.
-    const MAX_ENTRIES: u32 = 256;
-    let entry_size = std::mem::size_of::<NETRESOURCEW>();
-    let buf_size_bytes = MAX_ENTRIES as usize * entry_size;
-    // SAFETY: Vec::with_capacity allocates exactly `buf_size_bytes` bytes on
-    // the heap and gives us a valid pointer.  The memory is initialised by
-    // WNetEnumResourceW writing NETRESOURCEW structs directly into it.
-    let mut buffer: Vec<u8> = vec![0u8; buf_size_bytes];
-
     let mut handle: HANDLE = HANDLE::default();
-    let mut entries_read: u32 = 0;
-
-    // SAFETY: WNetOpenEnumW writes the enumeration handle into `handle` and
-    // returns a WIN32_ERROR.  `handle` is a valid out-parameter.
-    let ret = unsafe {
+    let open_ret = unsafe {
         WNetOpenEnumW(
             RESOURCE_GLOBALNET,
             RESOURCETYPE_ANY,
@@ -390,16 +373,54 @@ fn enumerate_connected_shares() -> HashSet<String> {
         )
     };
 
-    if ret != NO_ERROR {
-        debug!(win32_error = %ret.0, "WNetOpenEnumW failed");
+    if open_ret != NO_ERROR {
+        debug!(win32_error = %open_ret.0, "WNetOpenEnumW failed");
         return results;
     }
 
-    // SAFETY: We hold the enumeration handle.  `buffer` is valid for writes of
-    // `buf_size_bytes`.  `entries_read` and `buf_size` are valid out-parameters.
-    // `WNetEnumResourceW` will write at most `MAX_ENTRIES` NETRESOURCEW structs
-    // into the buffer, zeroing any padding bytes.
+    let (entries_read, buffer) = match enumerate_mpr_resources(handle) {
+        Some(data) => data,
+        None => {
+            let _ = unsafe { WNetCloseEnum(handle) };
+            return results;
+        }
+    };
+
+    // Close the enumeration handle regardless of outcome.
+    let close_ret = unsafe { WNetCloseEnum(handle) };
+    if close_ret != NO_ERROR {
+        debug!(win32_error = %close_ret.0, "WNetCloseEnum failed");
+    }
+
+    extract_unc_paths_from_buffer(&buffer, entries_read, &mut results);
+    results
+}
+
+/// Call `WNetEnumResourceW` and return the number of entries read and the buffer.
+///
+/// Returns `None` if the enumeration fails with an unexpected error.
+///
+/// # Arguments
+///
+/// * `handle` -- valid MPR enumeration handle from `WNetOpenEnumW`.
+///
+/// # Returns
+///
+/// `Some((entries_read, buffer))` on success, `None` on error.
+fn enumerate_mpr_resources(handle: windows::Win32::Foundation::HANDLE) -> Option<(u32, Vec<u8>)> {
+    use windows::Win32::Foundation::WIN32_ERROR;
+    use windows::Win32::NetworkManagement::WNet::{WNetEnumResourceW, NETRESOURCEW};
+
+    const NO_ERROR: WIN32_ERROR = WIN32_ERROR(0);
+    const ERROR_NO_MORE_ITEMS: WIN32_ERROR = WIN32_ERROR(259);
+
+    const MAX_ENTRIES: u32 = 256;
+    let entry_size = std::mem::size_of::<NETRESOURCEW>();
+    let buf_size_bytes = MAX_ENTRIES as usize * entry_size;
+    let mut buffer: Vec<u8> = vec![0u8; buf_size_bytes];
+    let mut entries_read: u32 = 0;
     let mut buf_size = u32::try_from(buf_size_bytes).unwrap_or(u32::MAX);
+
     let ret = unsafe {
         WNetEnumResourceW(
             handle,
@@ -409,20 +430,26 @@ fn enumerate_connected_shares() -> HashSet<String> {
         )
     };
 
-    // Close the enumeration handle regardless of outcome.
-    // SAFETY: `handle` was obtained from `WNetOpenEnumW` above and we hold it.
-    let close_ret = unsafe { WNetCloseEnum(handle) };
-    if close_ret != NO_ERROR {
-        debug!(win32_error = %close_ret.0, "WNetCloseEnum failed");
-    }
-
     if ret != NO_ERROR && ret != ERROR_NO_MORE_ITEMS {
         debug!(win32_error = %ret.0, "WNetEnumResourceW failed");
-        return results;
+        return None;
     }
 
-    // SAFETY: WNetEnumResourceW wrote exactly `entries_read` NETRESOURCEW structs
-    // into `buffer` (confirmed by matching ERROR_NO_MORE_ITEMS or NO_ERROR return).
+    Some((entries_read, buffer))
+}
+
+/// Extract UNC paths from a buffer of `NETRESOURCEW` structs.
+///
+/// # Arguments
+///
+/// * `buffer` -- raw bytes containing `NETRESOURCEW` structs.
+/// * `entries_read` -- number of valid entries in the buffer.
+/// * `results` -- output set to populate with UNC paths.
+fn extract_unc_paths_from_buffer(buffer: &[u8], entries_read: u32, results: &mut HashSet<String>) {
+    use windows::Win32::NetworkManagement::WNet::NETRESOURCEW;
+
+    let entry_size = std::mem::size_of::<NETRESOURCEW>();
+
     for i in 0..entries_read as usize {
         // SAFETY: buffer was allocated for `MAX_ENTRIES * entry_size` bytes and
         // entries_read <= MAX_ENTRIES.  NETRESOURCEW is #[repr(C)] so its layout
@@ -443,8 +470,6 @@ fn enumerate_connected_shares() -> HashSet<String> {
             results.insert(unc_path);
         }
     }
-
-    results
 }
 
 /// Extracts the server name from a UNC path.

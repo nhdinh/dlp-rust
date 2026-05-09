@@ -229,5 +229,21 @@ fn route(msg: Pipe3UiMsg) {
             event = event.with_destination_application(destination_application);
             crate::audit_emitter::emit(&event).ok();
         }
+        Pipe3UiMsg::DragDropAlert {
+            session_id,
+            classification,
+            source_application: _,
+            destination_application: _,
+            data_preview,
+        } => {
+            info!(
+                session_id,
+                classification,
+                preview = ?data_preview,
+                "Pipe 3: drag-drop alert — sensitive content dropped"
+            );
+            // Phase 40: audit event emitted by the drag-drop enforcer directly.
+            // The UI route only logs here; enforcement happens in dlp-agent.
+        }
     }
 }

@@ -1,5 +1,5 @@
 ---
-*Last updated: 2026-05-06 — Milestone v0.7.1 Operational Hardening in planning. v0.7.0 Disk Exfiltration Prevention shipped with all 15 requirements validated.*
+*Last updated: 2026-05-07 — Milestone v0.8.1 Deferred Items & Issue Debt started. v0.8.0 Application-Aware DLP shipped with all 18 requirements validated.*
 ---
 
 # PROJECT.md — DLP-RUST
@@ -24,29 +24,36 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - Phase 38.1: LDAP Config TUI — admin screen for LDAP configuration
 - Phase 38.2: USB Enforcement Fix — set_volume_deny_all for Blocked tier, startup scan, race condition fix, deferred disk arrival, boot drive case normalization
 
-## Current Milestone: v0.7.1 Operational Hardening
+## Shipped: v0.7.1 Operational Hardening (2026-05-06)
 
-**Goal:** Close gaps and harden v0.7.0 operational quality before v0.8.0 feature work.
+**Delivered:** All 7 requirements validated (AUDIT-05, USB-06, TECH-01, OP-01..04). Phases 38.3-38.6.
 
-**Target features:**
-- AUDIT-05: AGENT-UNKNOWN remediation — audit schema guarantee for missing app identity with remediation path
-- USB-06: Per-user device registry — owner_user column, per-user allowlists
-- TECH-01: WMI crate upgrade — migrate from raw CoSetProxyBlanket FFI to wmi 0.18+
-- OP-01..04: Operational hardening — error handling, logging, telemetry, config validation across v0.7.0 paths
+- Phase 38.3: AGENT-UNKNOWN Remediation — audit schema guarantee, missing app identity flagged with remediation path
+- Phase 38.4: Per-User Device Registry — owner_user column, per-user allowlists, most-restrictive tier merge
+- Phase 38.5: WMI Crate Upgrade — migrated from raw CoSetProxyBlanket FFI to wmi 0.18+
+- Phase 38.6: Operational Hardening Bundle — disk enumeration error resilience, structured USB logging, agent config validation, graceful service shutdown
 
-**Deferred human verification:**
-- UAT-01: Phase 34 HUMAN-UAT (unencrypted disk warning — requires physical machine)
-- UAT-02: Phase 38.2 HUMAN-UAT (drive-letter correlation — requires physical machine with multiple disks)
+## Current Milestone: v0.8.1 Deferred Items & Issue Debt
 
-## Current Milestone: v0.8.0 Application-Aware DLP
-
-**Goal:** Extend application-aware policy enforcement to UWP apps, drag-and-drop, and browser origin-specific rules.
+**Goal:** Close all deferred feature gaps and outstanding issue debt from v0.8.0.
 
 **Target features:**
-- APP-07: UWP App Identity via AUMID (`IShellItem` / `GetApplicationUserModelId`)
-- APP-08: Drag-and-drop enforcement (OLE drag-drop app-aware blocking)
-- BRW-04: Browser origin-aware clipboard policies (extend Chrome Enterprise Connector)
-- Audit enrichment: Close gaps in app identity fields across all interception paths
+- USB Enforcement Fix — PnP Disable Actually Works (dlp-rust-1vk)
+- USB device description matching fix (dlp-rust-sek)
+- Mount-time blocking for unregistered disks (DISK-F1)
+- Grace period / quarantine for new disk arrivals (DISK-F2)
+- UAT completion for SanDisk full-serial registration (dlp-rust-l79)
+
+**v0.8.0 shipped:** 2026-05-07 — Application-Aware DLP (Phases 39-42)
+
+## Shipped: v0.8.0 Application-Aware DLP (2026-05-07)
+
+**Delivered:** All 18 requirements validated (APP-07..08, BRW-04, AUDIT-04). Phases 39-42.
+
+- Phase 39: UWP App Identity — AUMID resolution, ABAC evaluator extension, TUI conditions builder
+- Phase 40: Drag-and-Drop Enforcement — WH_GETMESSAGE hook, WM_DROPFILES interception, app identity resolution, ABAC evaluation, service lifecycle integration
+- Phase 41: Browser Origin Clipboard Policies — SourceOrigin/DestinationOrigin ABAC conditions, origin condition matching, Chrome handler ABAC evaluation, admin TUI origin conditions builder
+- Phase 42: Audit Enrichment — App identity fields across all interception paths, AGENT-UNKNOWN schema guarantee, server-side validation
 
 ## Shipped: v0.6.0 Endpoint Hardening (2026-04-29)
 
@@ -82,8 +89,14 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 ## Deferred (future milestones)
 
 - **Browser Extension (SEED-002 Path A):** Native Chrome/Edge Manifest V3 extension for tab-level origin control
+
+## Active in v0.8.1
+
+- **USB Enforcement Fix (dlp-rust-1vk):** PnP CM_Disable_DevNode using real CM instance IDs; surface hard failures
+- **USB Description Fix (dlp-rust-sek):** setupdi_description_for_device precise path matching
 - **Mount-time blocking (DISK-F1):** volume lock in addition to I/O-time blocking
 - **Grace period / quarantine (DISK-F2):** configurable read-only window before hard block
+- **UAT SanDisk full serial (dlp-rust-l79):** re-register with full 128-char serial for ReadOnly/FullAccess test
 
 ## Architecture
 
@@ -180,22 +193,25 @@ Real-time file/clipboard/USB interception with ABAC-based policy enforcement, ce
 - ✓ AUDIT-02: Disk block events include disk identity fields when an unregistered fixed disk is blocked — Phase 36
 - ✓ AUDIT-03: Admin override actions (add/remove disk from registry) are emitted as EventType::AdminAction audit events — Phase 37
 
-### Active (v0.7.1)
+### Validated (shipped in v0.7.1)
 
-- [ ] AUDIT-05: Audit schema guarantees non-null app identity fields; missing identity is flagged as AGENT-UNKNOWN with remediation path
-- [ ] USB-06: Per-user device registry (owner_user column) for multi-user machines
-- [ ] TECH-01: Upgrade to wmi 0.18+ to eliminate raw CoSetProxyBlanket FFI workaround
-- [ ] OP-01: Disk enumeration handles IOCTL failures gracefully without panicking
-- [ ] OP-02: USB enforcement emits structured error traces for all block/allow decisions
-- [ ] OP-03: Agent config TOML validates field ranges at load time with descriptive errors
-- [ ] OP-04: Service shutdown gracefully cancels in-flight disk/USB enumeration tasks
+- ✓ AUDIT-05: Audit schema guarantees non-null app identity fields; missing identity is flagged as AGENT-UNKNOWN with remediation path — Phase 38.3
+- ✓ USB-06: Per-user device registry (owner_user column) for multi-user machines — Phase 38.4
+- ✓ TECH-01: Upgrade to wmi 0.18+ to eliminate raw CoSetProxyBlanket FFI workaround — Phase 38.5
+- ✓ OP-01: Disk enumeration handles IOCTL failures gracefully without panicking — Phase 38.6
+- ✓ OP-02: USB enforcement emits structured error traces for all block/allow decisions — Phase 38.6
+- ✓ OP-03: Agent config TOML validates field ranges at load time with descriptive errors — Phase 38.6
+- ✓ OP-04: Service shutdown gracefully cancels in-flight disk/USB enumeration tasks — Phase 38.6
+
+### Validated (shipped in v0.8.0)
+
+- ✓ APP-07: UWP app identity via AUMID (`GetApplicationUserModelId`) — ABAC evaluator + TUI conditions builder — Phase 39
+- ✓ APP-08: Drag-and-drop enforcement (`WH_GETMESSAGE` hook, WM_DROPFILES interception, ABAC evaluation, toast + audit) — Phase 40
+- ✓ BRW-04: Browser origin-aware clipboard policies (SourceOrigin/DestinationOrigin conditions, Chrome handler ABAC evaluation, TUI builder) — Phase 41
+- ✓ AUDIT-04: All audit events include source_application and destination_application fields with AGENT-UNKNOWN schema guarantee — Phase 42
 
 ### Deferred to future milestones
 
-- [ ] APP-07: UWP app identity via AUMID — v0.8.0
-- [ ] APP-08: Drag-and-drop enforcement — v0.8.0
-- [ ] BRW-04: Browser origin-aware clipboard policies — v0.8.0
-- [ ] AUDIT-04: All audit events include source_application and destination_application fields — v0.8.0
 - [ ] Mount-time blocking (DISK-F1): volume lock in addition to I/O-time blocking
 - [ ] Grace period / quarantine (DISK-F2): configurable read-only window before hard block
 

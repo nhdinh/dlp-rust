@@ -53,6 +53,21 @@ pub enum InputPurpose {
         pid: String,
         serial: String,
     },
+    /// Step 5: carries VID + PID + serial + description; prompts for owner SID.
+    RegisterDeviceOwnerSid {
+        vid: String,
+        pid: String,
+        serial: String,
+        description: String,
+    },
+    /// Step 6: carries all previous fields + owner_sid; prompts for owner user.
+    RegisterDeviceOwnerUser {
+        vid: String,
+        pid: String,
+        serial: String,
+        description: String,
+        owner_sid: String,
+    },
     /// Prompts for a URL-pattern string to add as a managed origin.
     AddManagedOrigin,
     /// Step 1 of disk registry add flow: prompts for agent ID.
@@ -121,7 +136,7 @@ pub enum PasswordPurpose {
 // Conditions builder supporting types
 // ---------------------------------------------------------------------------
 
-/// The seven ABAC condition attributes available in the conditions builder.
+/// The nine ABAC condition attributes available in the conditions builder.
 ///
 /// Used across Step 1 display, Step 2 operator lookup, Step 3 value-picker
 /// branching, and `PolicyCondition` construction. A dedicated enum avoids
@@ -142,10 +157,14 @@ pub enum ConditionAttribute {
     SourceApplication,
     /// Destination application identity (process publisher, image path, or app trust tier).
     DestinationApplication,
+    /// Source origin URL for browser clipboard events.
+    SourceOrigin,
+    /// Destination origin URL for browser clipboard events.
+    DestinationOrigin,
 }
 
 /// All condition attributes in display order (Step 1 list).
-pub const ATTRIBUTES: [ConditionAttribute; 7] = [
+pub const ATTRIBUTES: [ConditionAttribute; 9] = [
     ConditionAttribute::Classification,
     ConditionAttribute::MemberOf,
     ConditionAttribute::DeviceTrust,
@@ -153,6 +172,8 @@ pub const ATTRIBUTES: [ConditionAttribute; 7] = [
     ConditionAttribute::AccessContext,
     ConditionAttribute::SourceApplication,
     ConditionAttribute::DestinationApplication,
+    ConditionAttribute::SourceOrigin,
+    ConditionAttribute::DestinationOrigin,
 ];
 
 impl ConditionAttribute {
@@ -169,6 +190,8 @@ impl ConditionAttribute {
             Self::AccessContext => "AccessContext",
             Self::SourceApplication => "SourceApplication",
             Self::DestinationApplication => "DestinationApplication",
+            Self::SourceOrigin => "SourceOrigin",
+            Self::DestinationOrigin => "DestinationOrigin",
         }
     }
 }
@@ -515,6 +538,53 @@ pub enum Screen {
         /// Buffered input while editing.
         buffer: String,
     },
+    /// USB enforcement settings form.
+    ///
+    /// Navigable list of 5 rows (3 picker fields + Save + Back).
+    /// Row 0: usb_blocked_failure_mode (picker: "Hard error", "Warning only", "Retry then error")
+    /// Row 1: usb_startup_resolution_mode (picker: "VID/PID/serial fallback")
+    /// Row 2: usb_none_serial_policy (picker: "Always Blocked", "Allow unregistered")
+    /// Row 3 = [ Save ], Row 4 = [ Back ].
+    /// NOTE: Unimplemented options ("Volume GUID resolution", "Port-based disambiguation")
+    /// are excluded from the picker to prevent admin confusion.
+    UsbEnforcementConfig {
+        /// Currently loaded config as a JSON object.
+        config: serde_json::Value,
+        /// Index of the selected row (0..=4).
+        selected: usize,
+        /// Whether the selected picker field is in edit mode (cycling values).
+        editing: bool,
+        /// Buffered input while editing (unused for pickers, kept for consistency).
+        buffer: String,
+    },
+    /// Cloud sync hook configuration form.
+    ///
+    /// Row 0: cloud_hook_enabled (bool toggle). Row 1 = [Save]. Row 2 = [Back].
+    CloudConfig {
+        /// Currently loaded config as a JSON object.
+        config: serde_json::Value,
+        /// Index of the selected row (0..=2).
+        selected: usize,
+        /// Whether the selected field is in edit mode (unused for bool toggle, kept for consistency).
+        editing: bool,
+        /// Buffered input while editing (unused for bool toggle, kept for consistency).
+        buffer: String,
+    },
+    /// Print spooler interception configuration form.
+    ///
+    /// Row 0: print_enabled (bool). Row 1: print_xps_timeout_ms (numeric).
+    /// Row 2: print_unclassifiable_action (picker). Row 3: print_max_pages (numeric).
+    /// Row 4 = [Save]. Row 5 = [Back].
+    PrintConfig {
+        /// Currently loaded config as a JSON object.
+        config: serde_json::Value,
+        /// Index of the selected row (0..=5).
+        selected: usize,
+        /// Whether the selected text/numeric/picker field is in edit mode.
+        editing: bool,
+        /// Buffered input while editing a numeric field.
+        buffer: String,
+    },
     /// Conditions Builder modal overlay.
     ///
     /// 3-step sequential picker: Attribute -> Operator -> Value.
@@ -665,6 +735,10 @@ pub enum Screen {
         pid: String,
         serial: String,
         description: String,
+        /// Optional owner SID for per-user device registration.
+        owner_sid: Option<String>,
+        /// Optional owner username for per-user device registration.
+        owner_user: Option<String>,
         /// Selected tier index: 0 = blocked, 1 = read_only, 2 = full_access.
         selected: usize,
         /// Which screen opened the picker (for post-registration routing).
@@ -979,7 +1053,10 @@ mod import_export_tests {
 
     #[test]
     fn test_screen_usbscan_variant_constructible() {
-        let s = Screen::UsbScan { devices: vec![], selected: 0 };
+        let s = Screen::UsbScan {
+            devices: vec![],
+            selected: 0,
+        };
         match s {
             Screen::UsbScan { devices, selected } => {
                 assert!(devices.is_empty());

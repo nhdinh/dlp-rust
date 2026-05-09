@@ -387,6 +387,109 @@ fn close_handle(handle: windows::Win32::Foundation::HANDLE) {
     let _ = unsafe { windows::Win32::Foundation::CloseHandle(handle) };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Current process SID query (USB-06, Phase 38.4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Cached process SID to avoid repeated token queries (T-38.4-05 mitigation).
+static PROCESS_SID_CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// Returns the SID of the user running the current process.
+///
+/// Queries the process token (not the thread token) for `TokenUser`, then
+/// converts the SID to a string via `ConvertSidToStringSidW`. The result is
+/// cached in a `OnceLock` so repeated calls are free after the first query.
+///
+/// Returns `None` on any failure (token query error, SID conversion error).
+/// Callers should fall back to machine-wide registry lookup when this returns
+/// `None` (T-38.4-08 mitigation).
+///
+/// # Safety
+///
+/// This function uses `unsafe` to call Win32 token APIs. All pointers are
+/// valid for the duration of the call, and handles are closed on all paths.
+#[cfg(windows)]
+pub fn get_current_process_sid() -> Option<String> {
+    PROCESS_SID_CACHE.get().cloned().unwrap_or_else(|| {
+        let sid = query_process_sid();
+        // OnceLock::set returns Err if already set; we ignore it (race safe).
+        let _ = PROCESS_SID_CACHE.set(sid.clone());
+        sid
+    })
+}
+
+/// Non-Windows fallback: returns `None` (tests).
+#[cfg(not(windows))]
+pub fn get_current_process_sid() -> Option<String> {
+    None
+}
+
+/// Queries the current process token for the user SID.
+#[cfg(windows)]
+fn query_process_sid() -> Option<String> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let process = unsafe { GetCurrentProcess() };
+
+    let mut handle = HANDLE::default();
+    unsafe {
+        OpenProcessToken(process, TOKEN_QUERY, &mut handle).ok()?;
+    }
+
+    const BUF_SIZE: usize = 512;
+    let mut buf = vec![0u8; BUF_SIZE];
+    let mut returned = 0u32;
+
+    let ok = unsafe {
+        GetTokenInformation(
+            handle,
+            TokenUser,
+            Some(buf.as_mut_ptr() as *mut _),
+            BUF_SIZE as u32,
+            &mut returned,
+        )
+    };
+
+    if ok.is_err() {
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(handle) };
+        return None;
+    }
+
+    let sid_ptr = unsafe { *(buf.as_ptr() as *const *const std::ffi::c_void) };
+    if sid_ptr.is_null() {
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(handle) };
+        return None;
+    }
+
+    let sid_str = sid_ptr_to_string(sid_ptr);
+    let _ = unsafe { windows::Win32::Foundation::CloseHandle(handle) };
+    sid_str
+}
+
+/// Converts a raw SID pointer to a string via `ConvertSidToStringSidW`.
+#[cfg(windows)]
+fn sid_ptr_to_string(sid_ptr: *const std::ffi::c_void) -> Option<String> {
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+
+    let psid = windows::Win32::Security::PSID(sid_ptr as *mut _);
+    let mut buf = vec![0u16; 512];
+
+    let ok = unsafe {
+        ConvertSidToStringSidW(psid, &mut windows::core::PWSTR(buf.as_mut_ptr())).is_ok()
+    };
+
+    if !ok {
+        return None;
+    }
+
+    let result = String::from_utf16_lossy(&buf)
+        .trim_end_matches('\0')
+        .to_string();
+    Some(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

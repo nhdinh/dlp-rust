@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// The action the user is attempting to perform on a resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[allow(non_camel_case_types)]
 pub enum Action {
     /// Read a file.
     #[default]
@@ -34,6 +35,14 @@ pub enum Action {
     DiskRegistryAdd,
     /// Admin removed a disk from the server-side disk allowlist (Phase 37, AUDIT-03).
     DiskRegistryRemove,
+    /// Drag-and-drop operation (Phase 40, APP-08).
+    DRAG_DROP,
+    /// Cloud upload operation (Phase 45, M017/S01).
+    CLOUD_UPLOAD,
+    /// Print operation (Phase 46, M017/S04).
+    PRINT,
+    /// Cloud share-link pasted to clipboard (Phase 47, M017/S03).
+    SHARE_LINK,
 }
 
 /// The access context describes how the file operation originated.
@@ -192,6 +201,14 @@ pub struct EvaluateRequest {
     /// paste target). Populated by Phase 25.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_application: Option<AppIdentity>,
+    /// Source origin URL for browser clipboard events (e.g., the page where paste occurs).
+    /// Populated by Phase 41 Chrome handler. `None` on requests from agents that predate Phase 41.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_origin: Option<String>,
+    /// Destination origin URL for browser clipboard events.
+    /// Chrome Content Analysis API v1 does not expose this; always `None` in v0.8.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_origin: Option<String>,
 }
 
 /// Internal ABAC evaluation context.
@@ -217,6 +234,13 @@ pub struct AbacContext {
     /// Resolved identity of the destination application (paste target).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_application: Option<AppIdentity>,
+    /// Source origin URL for browser clipboard events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_origin: Option<String>,
+    /// Destination origin URL for browser clipboard events.
+    /// Chrome Content Analysis API v1 does not expose this; always `None` in v0.8.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_origin: Option<String>,
 }
 
 /// A complete ABAC evaluation response.
@@ -269,6 +293,10 @@ pub enum AppField {
     ImagePath,
     /// Application trust tier assigned by the Phase 25 publisher-verification pipeline.
     TrustTier,
+    /// Application User Model ID (AUMID) for UWP apps (Phase 39).
+    Aumid,
+    /// Package Family Name for UWP apps (Phase 39).
+    PackageFamilyName,
 }
 
 impl From<EvaluateRequest> for AbacContext {
@@ -284,7 +312,8 @@ impl From<EvaluateRequest> for AbacContext {
     /// # Returns
     ///
     /// An [`AbacContext`] with `subject`, `resource`, `environment`, `action`,
-    /// `source_application`, and `destination_application` forwarded from `req`.
+    /// `source_application`, `destination_application`, `source_origin`, and
+    /// `destination_origin` forwarded from `req`.
     fn from(req: EvaluateRequest) -> Self {
         Self {
             subject: req.subject,
@@ -293,6 +322,8 @@ impl From<EvaluateRequest> for AbacContext {
             action: req.action,
             source_application: req.source_application,
             destination_application: req.destination_application,
+            source_origin: req.source_origin,
+            destination_origin: req.destination_origin,
         }
     }
 }
@@ -355,6 +386,28 @@ pub enum PolicyCondition {
         #[serde(rename = "op")]
         op: String,
         /// The value to compare against (string form).
+        value: String,
+    },
+    /// Match by the source origin URL (the page where the clipboard paste is occurring).
+    ///
+    /// If `source_origin` is `None` on the [`AbacContext`], this condition does NOT match
+    /// (fails closed — no origin means the condition cannot be confirmed, per D-03).
+    SourceOrigin {
+        /// Comparison operator: `"eq"`, `"ne"`, or `"contains"`.
+        #[serde(rename = "op")]
+        op: String,
+        /// The origin string to compare against (e.g., `"https://sharepoint.com"`).
+        value: String,
+    },
+    /// Match by the destination origin URL (the page where content is being pasted).
+    ///
+    /// If `destination_origin` is `None` on the [`AbacContext`], this condition does NOT match
+    /// (fails closed — no origin means the condition cannot be confirmed, per D-03).
+    DestinationOrigin {
+        /// Comparison operator: `"eq"`, `"ne"`, or `"contains"`.
+        #[serde(rename = "op")]
+        op: String,
+        /// The origin string to compare against (e.g., `"https://example.com"`).
         value: String,
     },
 }
@@ -423,6 +476,9 @@ mod tests {
                 publisher: "Contoso".to_string(),
                 trust_tier: AppTrustTier::Trusted,
                 signature_state: SignatureState::Valid,
+                aumid: None,
+                package_family_name: None,
+                is_uwp: false,
             }),
             ..Default::default()
         };
@@ -446,12 +502,18 @@ mod tests {
                 publisher: "Adobe Inc.".to_string(),
                 trust_tier: AppTrustTier::Trusted,
                 signature_state: SignatureState::Valid,
+                aumid: None,
+                package_family_name: None,
+                is_uwp: false,
             }),
             destination_application: Some(AppIdentity {
                 image_path: r"C:\dst.exe".to_string(),
                 publisher: "Unknown".to_string(),
                 trust_tier: AppTrustTier::Untrusted,
                 signature_state: SignatureState::NotSigned,
+                aumid: None,
+                package_family_name: None,
+                is_uwp: false,
             }),
             ..Default::default()
         };
@@ -469,6 +531,22 @@ mod tests {
                 .map(|a| a.image_path.as_str()),
             Some(r"C:\dst.exe"),
         );
+    }
+
+    #[test]
+    fn test_app_field_aumid_serde() {
+        let json = serde_json::to_string(&AppField::Aumid).unwrap();
+        assert_eq!(json, "\"aumid\"");
+        let rt: AppField = serde_json::from_str("\"aumid\"").unwrap();
+        assert_eq!(rt, AppField::Aumid);
+    }
+
+    #[test]
+    fn test_app_field_package_family_name_serde() {
+        let json = serde_json::to_string(&AppField::PackageFamilyName).unwrap();
+        assert_eq!(json, "\"package_family_name\"");
+        let rt: AppField = serde_json::from_str("\"package_family_name\"").unwrap();
+        assert_eq!(rt, AppField::PackageFamilyName);
     }
 
     #[test]
@@ -645,6 +723,9 @@ mod tests {
                 image_path: r"C:\app.exe".to_string(),
                 trust_tier: AppTrustTier::Trusted,
                 signature_state: SignatureState::Valid,
+                aumid: None,
+                package_family_name: None,
+                is_uwp: false,
             }),
             ..Default::default()
         };
@@ -680,6 +761,9 @@ mod tests {
                 image_path: r"C:\dst.exe".to_string(),
                 trust_tier: AppTrustTier::Untrusted,
                 signature_state: SignatureState::NotSigned,
+                aumid: None,
+                package_family_name: None,
+                is_uwp: false,
             }),
             ..Default::default()
         };
@@ -704,8 +788,8 @@ mod phase37_action_tests {
     /// Verify `DiskRegistryAdd` serializes to its literal variant name (no rename).
     #[test]
     fn test_disk_registry_add_serializes_as_variant_name() {
-        let json = serde_json::to_string(&Action::DiskRegistryAdd)
-            .expect("serialize DiskRegistryAdd");
+        let json =
+            serde_json::to_string(&Action::DiskRegistryAdd).expect("serialize DiskRegistryAdd");
         assert_eq!(
             json, "\"DiskRegistryAdd\"",
             "DiskRegistryAdd must serialize as its literal variant name per D-08"
@@ -726,8 +810,8 @@ mod phase37_action_tests {
     /// Verify `"DiskRegistryAdd"` deserializes back to the correct variant.
     #[test]
     fn test_disk_registry_add_deserializes_from_variant_name() {
-        let action: Action = serde_json::from_str("\"DiskRegistryAdd\"")
-            .expect("deserialize DiskRegistryAdd");
+        let action: Action =
+            serde_json::from_str("\"DiskRegistryAdd\"").expect("deserialize DiskRegistryAdd");
         assert_eq!(
             action,
             Action::DiskRegistryAdd,
@@ -743,5 +827,125 @@ mod phase37_action_tests {
             Action::DiskRegistryRemove,
             "DiskRegistryAdd and DiskRegistryRemove must be distinct variants"
         );
+    }
+
+    /// Verify `DRAG_DROP` serializes as its literal variant name (no rename).
+    #[test]
+    fn test_drag_drop_serializes_as_variant_name() {
+        let json = serde_json::to_string(&Action::DRAG_DROP).expect("serialize DRAG_DROP");
+        assert_eq!(
+            json, "\"DRAG_DROP\"",
+            "DRAG_DROP must serialize as its literal variant name per APP-08"
+        );
+    }
+
+    /// Verify `"DRAG_DROP"` deserializes back to the correct variant.
+    #[test]
+    fn test_drag_drop_deserializes_from_variant_name() {
+        let action: Action = serde_json::from_str("\"DRAG_DROP\"").expect("deserialize DRAG_DROP");
+        assert_eq!(
+            action,
+            Action::DRAG_DROP,
+            "\"DRAG_DROP\" must deserialize to Action::DRAG_DROP"
+        );
+    }
+
+    /// Verify DRAG_DROP is distinct from other Action variants.
+    #[test]
+    fn test_drag_drop_is_distinct() {
+        assert_ne!(Action::DRAG_DROP, Action::PASTE);
+        assert_ne!(Action::DRAG_DROP, Action::COPY);
+        assert_ne!(Action::DRAG_DROP, Action::READ);
+    }
+
+    /// Verify `CLOUD_UPLOAD` serializes as its literal variant name (no rename).
+    #[test]
+    fn test_cloud_upload_serializes_as_variant_name() {
+        let json = serde_json::to_string(&Action::CLOUD_UPLOAD).expect("serialize CLOUD_UPLOAD");
+        assert_eq!(
+            json, "\"CLOUD_UPLOAD\"",
+            "CLOUD_UPLOAD must serialize as its literal variant name"
+        );
+    }
+
+    /// Verify `"CLOUD_UPLOAD"` deserializes back to the correct variant.
+    #[test]
+    fn test_cloud_upload_deserializes_from_variant_name() {
+        let action: Action =
+            serde_json::from_str("\"CLOUD_UPLOAD\"").expect("deserialize CLOUD_UPLOAD");
+        assert_eq!(
+            action,
+            Action::CLOUD_UPLOAD,
+            "\"CLOUD_UPLOAD\" must deserialize to Action::CLOUD_UPLOAD"
+        );
+    }
+
+    /// Verify CLOUD_UPLOAD is distinct from other Action variants.
+    #[test]
+    fn test_cloud_upload_is_distinct() {
+        assert_ne!(Action::CLOUD_UPLOAD, Action::WRITE);
+        assert_ne!(Action::CLOUD_UPLOAD, Action::COPY);
+        assert_ne!(Action::CLOUD_UPLOAD, Action::DRAG_DROP);
+    }
+
+    /// Verify `PRINT` serializes as its literal variant name (no rename).
+    #[test]
+    fn test_print_serializes_as_variant_name() {
+        let json = serde_json::to_string(&Action::PRINT).expect("serialize PRINT");
+        assert_eq!(
+            json, "\"PRINT\"",
+            "PRINT must serialize as its literal variant name per M017/S04"
+        );
+    }
+
+    /// Verify `"PRINT"` deserializes back to the correct variant.
+    #[test]
+    fn test_print_deserializes_from_variant_name() {
+        let action: Action = serde_json::from_str("\"PRINT\"").expect("deserialize PRINT");
+        assert_eq!(
+            action,
+            Action::PRINT,
+            "\"PRINT\" must deserialize to Action::PRINT"
+        );
+    }
+
+    /// Verify PRINT is distinct from other Action variants.
+    #[test]
+    fn test_print_is_distinct() {
+        assert_ne!(Action::PRINT, Action::READ);
+        assert_ne!(Action::PRINT, Action::WRITE);
+        assert_ne!(Action::PRINT, Action::COPY);
+        assert_ne!(Action::PRINT, Action::CLOUD_UPLOAD);
+    }
+
+    /// Verify `SHARE_LINK` serializes as its literal variant name (no rename).
+    #[test]
+    fn test_share_link_serializes_as_variant_name() {
+        let json = serde_json::to_string(&Action::SHARE_LINK).expect("serialize SHARE_LINK");
+        assert_eq!(
+            json, "\"SHARE_LINK\"",
+            "SHARE_LINK must serialize as its literal variant name per M017/S03"
+        );
+    }
+
+    /// Verify `"SHARE_LINK"` deserializes back to the correct variant.
+    #[test]
+    fn test_share_link_deserializes_from_variant_name() {
+        let action: Action =
+            serde_json::from_str("\"SHARE_LINK\"").expect("deserialize SHARE_LINK");
+        assert_eq!(
+            action,
+            Action::SHARE_LINK,
+            "\"SHARE_LINK\" must deserialize to Action::SHARE_LINK"
+        );
+    }
+
+    /// Verify SHARE_LINK is distinct from other Action variants.
+    #[test]
+    fn test_share_link_is_distinct() {
+        assert_ne!(Action::SHARE_LINK, Action::PASTE);
+        assert_ne!(Action::SHARE_LINK, Action::COPY);
+        assert_ne!(Action::SHARE_LINK, Action::CLOUD_UPLOAD);
+        assert_ne!(Action::SHARE_LINK, Action::PRINT);
     }
 }

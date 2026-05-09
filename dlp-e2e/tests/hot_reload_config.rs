@@ -299,6 +299,8 @@ async fn test_policy_store_hot_reload() {
         agent: None,
         source_application: None,
         destination_application: None,
+        source_origin: None,
+        destination_origin: None,
     };
 
     let eval_req_http = Request::builder()

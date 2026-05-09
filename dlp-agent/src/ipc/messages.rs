@@ -95,6 +95,7 @@ pub enum Pipe2AgentMsg {
 /// Messages sent FROM the UI TO the agent over Pipe 3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
+#[allow(clippy::large_enum_variant)]
 pub enum Pipe3UiMsg {
     /// The UI is alive — sent in response to HEALTH_PING or periodically.
     HealthPong,
@@ -120,6 +121,22 @@ pub enum Pipe3UiMsg {
         /// (populated by Phase 25's destination-resolver).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         destination_application: Option<AppIdentity>,
+    },
+    /// Drag-and-drop operation blocked or alerted (Phase 40).
+    DragDropAlert {
+        /// Session ID where the drop occurred.
+        session_id: u32,
+        /// Classification tier of the dragged content.
+        classification: String,
+        /// Identity of the source application.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_application: Option<AppIdentity>,
+        /// Identity of the destination application.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination_application: Option<AppIdentity>,
+        /// Truncated preview of the dragged data.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_preview: Option<String>,
     },
 }
 
@@ -164,6 +181,9 @@ mod tests {
             publisher: "Contoso".to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         };
         let msg = Pipe3UiMsg::ClipboardAlert {
             session_id: 3,
@@ -252,5 +272,103 @@ mod tests {
         assert!(json.contains("\"type\":\"Pong\""), "json was: {json}");
         let decoded: Pipe1UiMsg = serde_json::from_str(&json).unwrap();
         assert!(matches!(decoded, Pipe1UiMsg::Pong));
+    }
+
+    #[test]
+    fn test_drag_drop_alert_roundtrip_with_app_identity() {
+        use dlp_common::endpoint::{AppIdentity, AppTrustTier, SignatureState};
+        let src = AppIdentity {
+            image_path: r"C:\src.exe".to_string(),
+            publisher: "Contoso".to_string(),
+            trust_tier: AppTrustTier::Trusted,
+            signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
+        };
+        let msg = Pipe3UiMsg::DragDropAlert {
+            session_id: 5,
+            classification: "T4".to_string(),
+            source_application: Some(src),
+            destination_application: None,
+            data_preview: Some("secret data".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            json.contains("\"type\":\"DragDropAlert\""),
+            "json was: {json}"
+        );
+        assert!(json.contains("source_application"));
+        assert!(!json.contains("destination_application"));
+        assert!(json.contains("\"session_id\":5"));
+        assert!(json.contains("\"classification\":\"T4\""));
+        assert!(json.contains("\"data_preview\":\"secret data\""));
+
+        let rt: Pipe3UiMsg = serde_json::from_str(&json).unwrap();
+        match rt {
+            Pipe3UiMsg::DragDropAlert {
+                session_id,
+                classification,
+                source_application,
+                destination_application,
+                data_preview,
+            } => {
+                assert_eq!(session_id, 5);
+                assert_eq!(classification, "T4");
+                assert_eq!(
+                    source_application.as_ref().map(|a| a.publisher.as_str()),
+                    Some("Contoso"),
+                );
+                assert!(destination_application.is_none());
+                assert_eq!(data_preview, Some("secret data".to_string()));
+            }
+            _ => panic!("expected DragDropAlert variant"),
+        }
+    }
+
+    #[test]
+    fn test_drag_drop_alert_skips_none_fields() {
+        let msg = Pipe3UiMsg::DragDropAlert {
+            session_id: 1,
+            classification: "T3".to_string(),
+            source_application: None,
+            destination_application: None,
+            data_preview: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("source_application"), "json was: {json}");
+        assert!(
+            !json.contains("destination_application"),
+            "json was: {json}"
+        );
+        assert!(!json.contains("data_preview"), "json was: {json}");
+    }
+
+    #[test]
+    fn test_drag_drop_alert_deserializes_legacy_payload() {
+        // Payload without optional fields (backward compat).
+        let legacy = r#"{
+            "type": "DragDropAlert",
+            "payload": {
+                "session_id": 2,
+                "classification": "T3"
+            }
+        }"#;
+        let msg: Pipe3UiMsg = serde_json::from_str(legacy).unwrap();
+        match msg {
+            Pipe3UiMsg::DragDropAlert {
+                session_id,
+                source_application,
+                destination_application,
+                data_preview,
+                ..
+            } => {
+                assert_eq!(session_id, 2);
+                assert!(source_application.is_none());
+                assert!(destination_application.is_none());
+                assert!(data_preview.is_none());
+            }
+            _ => panic!("expected DragDropAlert variant"),
+        }
     }
 }

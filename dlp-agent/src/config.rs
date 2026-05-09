@@ -60,13 +60,22 @@ pub const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\DLP\agent-config.toml";
 /// 6 hours (21,600 seconds).
 pub const ENCRYPTION_RECHECK_DEFAULT_SECS: u64 = 21_600;
 
-/// Minimum valid `[encryption].recheck_interval_secs` (D-11). 5 minutes.
+/// Minimum valid `[encryption].recheck_interval_secs` (OP-03). 1 minute.
 /// Values below this are clamped up and a `warn!` log line is emitted at load time.
-pub const ENCRYPTION_RECHECK_MIN_SECS: u64 = 300;
+pub const ENCRYPTION_RECHECK_MIN_SECS: u64 = 60;
 
-/// Maximum valid `[encryption].recheck_interval_secs` (D-11). 24 hours.
+/// Maximum valid `[encryption].recheck_interval_secs` (D-11 / OP-03). 24 hours.
 /// Values above this are clamped down and a `warn!` log line is emitted at load time.
 pub const ENCRYPTION_RECHECK_MAX_SECS: u64 = 86_400;
+
+/// Minimum valid `cache_ttl_secs` in `[ldap]` section (OP-03). 1 minute.
+pub const LDAP_CACHE_TTL_MIN_SECS: u64 = 60;
+/// Maximum valid `cache_ttl_secs` in `[ldap]` section (OP-03). 1 hour.
+pub const LDAP_CACHE_TTL_MAX_SECS: u64 = 3_600;
+/// Minimum valid `poll_interval_secs` (OP-03). 5 seconds.
+pub const POLL_INTERVAL_MIN_SECS: u64 = 5;
+/// Default poll interval when not specified (OP-03).
+pub const POLL_INTERVAL_DEFAULT_SECS: u64 = 30;
 
 /// Phase 34 BitLocker re-check cadence (D-11).
 ///
@@ -173,6 +182,73 @@ pub struct AgentConfig {
     #[serde(default)]
     pub ldap_config: Option<crate::server_client::LdapConfigPayload>,
 
+    /// Agent-side polling interval in seconds (OP-03).
+    ///
+    /// Controls how frequently the agent checks for configuration updates or
+    /// performs housekeeping. Values below 5 seconds are rejected (the default
+    /// of 30 seconds is used instead) to prevent excessive server load.
+    #[serde(default)]
+    pub poll_interval_secs: Option<u64>,
+
+    /// USB enforcement failure mode (USB-09). "Hard error", "Warning only",
+    /// or "Retry then error".
+    #[serde(default)]
+    pub usb_blocked_failure_mode: Option<String>,
+
+    /// USB startup scan resolution strategy (USB-07).
+    /// "Volume GUID resolution" or "VID/PID/serial fallback".
+    #[serde(default)]
+    pub usb_startup_resolution_mode: Option<String>,
+
+    /// Policy for USB devices without serial descriptors (USB-08).
+    /// "Always Blocked", "Port-based disambiguation", or "Allow unregistered".
+    #[serde(default)]
+    pub usb_none_serial_policy: Option<String>,
+
+    /// Grace period in seconds before mount-time block engages for unregistered disks.
+    /// Default 0 = immediate block (backward compatible with Phase 44 behavior).
+    /// During grace period: disk is accessible but writes are blocked.
+    /// After grace period expires: mount-time block engages (drive letter removed).
+    ///
+    /// Config validation: max 3600 seconds (1 hour) per T-45-01 threat mitigation.
+    #[serde(default)]
+    pub disk_grace_period_seconds: u64,
+
+    /// Whether the cloud sync hook DLL is enabled (M017/S01).
+    /// When `None`, defaults to `false`. Populated by server config push.
+    #[serde(default)]
+    pub cloud_hook_enabled: Option<bool>,
+
+    /// Whether the WFP network egress filter is enabled (M017/S01).
+    /// When `None`, defaults to `false`. Populated by server config push.
+    #[serde(default)]
+    pub wfp_filter_enabled: Option<bool>,
+
+    /// Timeout in milliseconds for hook classification pipe requests (M017/S01).
+    /// When `None`, defaults to 5000 ms. Populated by server config push.
+    #[serde(default)]
+    pub hook_classification_timeout_ms: Option<u64>,
+
+    /// Whether print spooler interception is enabled (M017/S04).
+    /// When `None`, defaults to `false`. Populated by server config push.
+    #[serde(default)]
+    pub print_enabled: Option<bool>,
+
+    /// Timeout in milliseconds for XPS spool file parsing (M017/S04).
+    /// When `None`, defaults to 5000 ms. Populated by server config push.
+    #[serde(default)]
+    pub print_xps_timeout_ms: Option<u64>,
+
+    /// Action to take when a print job cannot be classified (M017/S04).
+    /// When `None`, defaults to `"Block"`. Populated by server config push.
+    #[serde(default)]
+    pub print_unclassifiable_action: Option<String>,
+
+    /// Maximum number of pages to parse from an XPS spool file (M017/S04).
+    /// When `None`, defaults to 100. Populated by server config push.
+    #[serde(default)]
+    pub print_max_pages: Option<usize>,
+
     /// Machine hostname, resolved once at startup.
     /// Not persisted to the config file.
     #[serde(skip)]
@@ -213,26 +289,40 @@ impl AgentConfig {
         // Strip UTF-8 BOM if present (PowerShell 5 writes one by default).
         let content = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
 
-        match toml::from_str::<Self>(content) {
-            Ok(config) => {
-                info!(
-                    path = %path.display(),
-                    server_url = ?config.server_url,
-                    monitored = config.monitored_paths.len(),
-                    excluded = config.excluded_paths.len(),
-                    "agent config loaded"
-                );
-                config
-            }
-            Err(e) => {
-                warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "failed to parse config — using defaults"
-                );
-                Self::default()
-            }
-        }
+        // Use serde_ignored to detect unknown TOML keys without aborting load (OP-03).
+        let mut unknown_keys: Vec<String> = Vec::new();
+        let deserializer = toml::de::Deserializer::new(content);
+        let config: AgentConfig =
+            match serde_ignored::deserialize::<_, _, AgentConfig>(deserializer, |path| {
+                unknown_keys.push(path.to_string());
+            }) {
+                Ok(config) => {
+                    if !unknown_keys.is_empty() {
+                        warn!(
+                            path = %path.display(),
+                            keys = ?unknown_keys,
+                            "unknown TOML keys in config -- ignored"
+                        );
+                    }
+                    info!(
+                        path = %path.display(),
+                        server_url = ?config.server_url,
+                        monitored = config.monitored_paths.len(),
+                        excluded = config.excluded_paths.len(),
+                        "agent config loaded"
+                    );
+                    config
+                }
+                Err(e) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "failed to parse config — using defaults"
+                    );
+                    Self::default()
+                }
+            };
+        config
     }
 
     /// Loads configuration from the effective config path.
@@ -350,6 +440,55 @@ impl AgentConfig {
         std::time::Duration::from_secs(clamped)
     }
 
+    /// Returns the clamped LDAP cache TTL as a Duration (OP-03).
+    ///
+    /// # Behavior
+    ///
+    /// - `None` (no LDAP config) returns `None`.
+    /// - In-range values pass through unchanged.
+    /// - Out-of-range values are clamped to [`LDAP_CACHE_TTL_MIN_SECS`,
+    ///   [`LDAP_CACHE_TTL_MAX_SECS`]] and a `warn!` is emitted.
+    pub fn resolved_cache_ttl(&self) -> Option<std::time::Duration> {
+        let ldap = self.ldap_config.as_ref()?;
+        let raw = ldap.cache_ttl_secs;
+        let clamped = raw.clamp(LDAP_CACHE_TTL_MIN_SECS, LDAP_CACHE_TTL_MAX_SECS);
+        if clamped != raw {
+            warn!(
+                requested = raw,
+                applied = clamped,
+                min = LDAP_CACHE_TTL_MIN_SECS,
+                max = LDAP_CACHE_TTL_MAX_SECS,
+                "ldap.cache_ttl_secs out of range -- clamped"
+            );
+        }
+        Some(std::time::Duration::from_secs(clamped))
+    }
+
+    /// Returns the validated poll interval as a Duration (OP-03).
+    ///
+    /// # Behavior
+    ///
+    /// - `None` defaults to [`POLL_INTERVAL_DEFAULT_SECS`] (30 seconds).
+    /// - Values < [`POLL_INTERVAL_MIN_SECS`] (5 seconds) are rejected (return
+    ///   default) and a `warn!` is emitted.
+    /// - In-range values pass through unchanged.
+    pub fn resolved_poll_interval(&self) -> std::time::Duration {
+        let raw = self
+            .poll_interval_secs
+            .unwrap_or(POLL_INTERVAL_DEFAULT_SECS);
+        if raw < POLL_INTERVAL_MIN_SECS {
+            warn!(
+                requested = raw,
+                applied = POLL_INTERVAL_DEFAULT_SECS,
+                min = POLL_INTERVAL_MIN_SECS,
+                "agent.poll_interval_secs below minimum -- using default"
+            );
+            std::time::Duration::from_secs(POLL_INTERVAL_DEFAULT_SECS)
+        } else {
+            std::time::Duration::from_secs(raw)
+        }
+    }
+
     /// Returns the resolved list of paths to watch.
     ///
     /// If `monitored_paths` is empty, returns all existing drive roots
@@ -440,16 +579,8 @@ mod tests {
     #[test]
     fn test_resolve_watch_paths_configured() {
         let config = AgentConfig {
-            server_url: None,
             monitored_paths: vec![r"C:\Data\".to_string()],
-            excluded_paths: Vec::new(),
-            heartbeat_interval_secs: None,
-            offline_cache_enabled: None,
-            log_level: None,
-            encryption: EncryptionConfig::default(),
-            disk_allowlist: Vec::new(),
-            ldap_config: None,
-            machine_name: None,
+            ..Default::default()
         };
         let paths = config.resolve_watch_paths();
         assert_eq!(paths.len(), 1);
@@ -484,6 +615,18 @@ mod tests {
             encryption: EncryptionConfig::default(),
             disk_allowlist: Vec::new(),
             ldap_config: None,
+            poll_interval_secs: None,
+            usb_blocked_failure_mode: None,
+            usb_startup_resolution_mode: None,
+            usb_none_serial_policy: None,
+            disk_grace_period_seconds: 0,
+            cloud_hook_enabled: None,
+            wfp_filter_enabled: None,
+            hook_classification_timeout_ms: None,
+            print_enabled: None,
+            print_xps_timeout_ms: None,
+            print_unclassifiable_action: None,
+            print_max_pages: None,
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
         };
@@ -514,6 +657,18 @@ mod tests {
             encryption: EncryptionConfig::default(),
             disk_allowlist: Vec::new(),
             ldap_config: None,
+            poll_interval_secs: None,
+            usb_blocked_failure_mode: None,
+            usb_startup_resolution_mode: None,
+            usb_none_serial_policy: None,
+            disk_grace_period_seconds: 0,
+            cloud_hook_enabled: None,
+            wfp_filter_enabled: None,
+            hook_classification_timeout_ms: None,
+            print_enabled: None,
+            print_xps_timeout_ms: None,
+            print_unclassifiable_action: None,
+            print_max_pages: None,
             machine_name: None,
         };
 
@@ -803,5 +958,188 @@ mod tests {
             config_max.resolved_recheck_interval(),
             std::time::Duration::from_secs(ENCRYPTION_RECHECK_MAX_SECS)
         );
+    }
+
+    // --- OP-03: Agent Config TOML Field-Range Validation tests ---
+
+    #[test]
+    fn test_recheck_interval_clamp_low_to_60() {
+        // recheck_interval = 30 is below new MIN of 60; clamped UP to 60.
+        let config = AgentConfig {
+            encryption: EncryptionConfig {
+                recheck_interval_secs: Some(30),
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            config.resolved_recheck_interval(),
+            std::time::Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn test_recheck_interval_clamp_high_to_86400() {
+        // recheck_interval = 100_000 is above MAX of 86_400; clamped DOWN.
+        let config = AgentConfig {
+            encryption: EncryptionConfig {
+                recheck_interval_secs: Some(100_000),
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            config.resolved_recheck_interval(),
+            std::time::Duration::from_secs(86_400)
+        );
+    }
+
+    #[test]
+    fn test_cache_ttl_clamp_low_to_60() {
+        let config = AgentConfig {
+            ldap_config: Some(crate::server_client::LdapConfigPayload {
+                ldap_url: "ldaps://dc.corp.internal:636".to_string(),
+                base_dn: "DC=corp,DC=internal".to_string(),
+                require_tls: true,
+                cache_ttl_secs: 30,
+                vpn_subnets: "10.0.0.0/8".to_string(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.resolved_cache_ttl(),
+            Some(std::time::Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn test_cache_ttl_clamp_high_to_3600() {
+        let config = AgentConfig {
+            ldap_config: Some(crate::server_client::LdapConfigPayload {
+                ldap_url: "ldaps://dc.corp.internal:636".to_string(),
+                base_dn: "DC=corp,DC=internal".to_string(),
+                require_tls: true,
+                cache_ttl_secs: 5000,
+                vpn_subnets: "10.0.0.0/8".to_string(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.resolved_cache_ttl(),
+            Some(std::time::Duration::from_secs(3600))
+        );
+    }
+
+    #[test]
+    fn test_poll_interval_rejects_below_5() {
+        // poll_interval = 3 is below MIN of 5; rejected, returns default 30.
+        let config = AgentConfig {
+            poll_interval_secs: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.resolved_poll_interval(),
+            std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn test_poll_interval_passes_through() {
+        // poll_interval = 10 is valid; passes through.
+        let config = AgentConfig {
+            poll_interval_secs: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.resolved_poll_interval(),
+            std::time::Duration::from_secs(10)
+        );
+    }
+
+    #[test]
+    fn test_poll_interval_defaults_to_30() {
+        // poll_interval = None defaults to 30.
+        let config = AgentConfig::default();
+        assert_eq!(
+            config.resolved_poll_interval(),
+            std::time::Duration::from_secs(30)
+        );
+    }
+
+    // --- Phase 43: USB enforcement config fields (USB-07, USB-08, USB-09) ---
+
+    #[test]
+    fn test_agent_config_usb_fields_default() {
+        // Default AgentConfig must have None for all three USB fields.
+        let config = AgentConfig::default();
+        assert!(config.usb_blocked_failure_mode.is_none());
+        assert!(config.usb_startup_resolution_mode.is_none());
+        assert!(config.usb_none_serial_policy.is_none());
+    }
+
+    #[test]
+    fn test_agent_config_usb_fields_deserialize() {
+        let toml_str = r#"
+            usb_blocked_failure_mode = "Hard error"
+            usb_startup_resolution_mode = "VID/PID/serial fallback"
+            usb_none_serial_policy = "Allow unregistered"
+        "#;
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(
+            config.usb_blocked_failure_mode,
+            Some("Hard error".to_string())
+        );
+        assert_eq!(
+            config.usb_startup_resolution_mode,
+            Some("VID/PID/serial fallback".to_string())
+        );
+        assert_eq!(
+            config.usb_none_serial_policy,
+            Some("Allow unregistered".to_string())
+        );
+    }
+
+    #[test]
+    fn test_agent_config_usb_fields_backwards_compatible() {
+        // A TOML config without USB fields must parse successfully.
+        let toml_str = r#"
+            monitored_paths = ['C:\Restricted\']
+        "#;
+        let config: AgentConfig = toml::from_str(toml_str).expect("backwards-compat parse");
+        assert_eq!(config.monitored_paths, vec![r"C:\Restricted\"]);
+        assert!(config.usb_blocked_failure_mode.is_none());
+        assert!(config.usb_startup_resolution_mode.is_none());
+        assert!(config.usb_none_serial_policy.is_none());
+    }
+
+    #[test]
+    fn test_unknown_toml_key_warns_but_loads() {
+        // Unknown TOML key must not abort config loading.
+        let toml_str = r#"
+            monitored_paths = ['C:\Data\']
+            unknown_field = 42
+        "#;
+        let config = load_from_str(toml_str);
+        assert_eq!(config.monitored_paths, vec![r"C:\Data\"]);
+        // unknown_field is ignored; other fields use defaults.
+        assert!(config.excluded_paths.is_empty());
+    }
+
+    #[test]
+    fn test_invalid_toml_syntax_falls_back_to_defaults() {
+        // Invalid TOML syntax must fall back to defaults.
+        let toml_str = "monitored_paths = ['C:\\Data\\'\n"; // missing closing quote/bracket
+        let config = load_from_str(toml_str);
+        assert_eq!(config, AgentConfig::default());
+    }
+
+    /// Helper: parse TOML from a string (for tests that need serde_ignored).
+    fn load_from_str(content: &str) -> AgentConfig {
+        let mut unknown_keys: Vec<String> = Vec::new();
+        let deserializer = toml::de::Deserializer::new(content);
+        match serde_ignored::deserialize::<_, _, AgentConfig>(deserializer, |path| {
+            unknown_keys.push(path.to_string());
+        }) {
+            Ok(config) => config,
+            Err(_) => AgentConfig::default(),
+        }
     }
 }

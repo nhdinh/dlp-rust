@@ -44,6 +44,15 @@ pub enum EventType {
     ServiceStopFailed,
     /// Disk discovery event emitted at agent startup with all enumerated fixed disks.
     DiskDiscovery,
+    /// A fixed disk was blocked at mount time because its instance_id was not
+    /// in the frozen allowlist (DISK-F1, Phase 44).
+    DiskMountBlocked,
+    /// A grace period / quarantine was started for an unregistered disk.
+    /// The disk is mounted read-only during the grace period (DISK-07, Phase 45).
+    DiskQuarantineStarted,
+    /// A grace period expired for an unregistered disk and mount-time blocking
+    /// was applied (DISK-07, Phase 45).
+    DiskQuarantineExpired,
 }
 
 impl EventType {
@@ -60,6 +69,9 @@ impl EventType {
                 | Self::AdminAction
                 | Self::ServiceStopFailed
                 | Self::DiskDiscovery
+                | Self::DiskMountBlocked
+                | Self::DiskQuarantineStarted
+                | Self::DiskQuarantineExpired
         )
     }
 
@@ -158,12 +170,13 @@ pub struct AuditEvent {
     /// Populated via `GetNamedSecurityInfoW` + `ConvertSidToStringSidW`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_owner: Option<String>,
-    /// Resolved identity of the application that initiated the operation
-    /// (populated by Phase 25 for clipboard events).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Resolved identity of the application that initiated the operation.
+    /// Guaranteed non-null at emission time — `None` is replaced with
+    /// the `AGENT-UNKNOWN` sentinel by `emit_audit` (AUDIT-04, Phase 42).
     pub source_application: Option<AppIdentity>,
     /// Resolved identity of the destination application (e.g. the paste target).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Guaranteed non-null at emission time — `None` is replaced with
+    /// the `AGENT-UNKNOWN` sentinel by `emit_audit` (AUDIT-04, Phase 42).
     pub destination_application: Option<AppIdentity>,
     /// USB device identity for block events involving removable storage
     /// (populated by Phase 26/27 on USB blocks).
@@ -190,6 +203,18 @@ pub struct AuditEvent {
     /// `event_type = BLOCK AND blocked_disk IS NOT NULL` for disk enforcement.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked_disk: Option<DiskIdentity>,
+    /// Owner SID of the per-user device registry entry that determined the
+    /// effective trust tier (USB-06, Phase 38.4).
+    ///
+    /// `None` when the decision used a machine-wide entry or default-deny.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_sid: Option<String>,
+    /// Owner username of the per-user device registry entry that determined
+    /// the effective trust tier (USB-06, Phase 38.4).
+    ///
+    /// `None` when the decision used a machine-wide entry or default-deny.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_user: Option<String>,
 }
 
 impl AuditEvent {
@@ -247,6 +272,8 @@ impl AuditEvent {
             destination_origin: None,
             discovered_disks: None,
             blocked_disk: None,
+            owner_sid: None,
+            owner_user: None,
         }
     }
 
@@ -380,6 +407,27 @@ impl AuditEvent {
         self.blocked_disk = Some(disk);
         self
     }
+
+    /// Sets the owner SID of the per-user device registry entry that
+    /// determined the effective trust tier (USB-06, Phase 38.4).
+    pub fn with_owner_sid(mut self, owner_sid: Option<String>) -> Self {
+        self.owner_sid = owner_sid;
+        self
+    }
+
+    /// Sets the owner username of the per-user device registry entry that
+    /// determined the effective trust tier (USB-06, Phase 38.4).
+    pub fn with_owner_user(mut self, owner_user: Option<String>) -> Self {
+        self.owner_user = owner_user;
+        self
+    }
+
+    /// Convenience method to set both owner SID and owner username at once.
+    pub fn with_owner(mut self, owner_sid: Option<String>, owner_user: Option<String>) -> Self {
+        self.owner_sid = owner_sid;
+        self.owner_user = owner_user;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -483,13 +531,17 @@ mod tests {
         assert!(!json.contains("\"application_path\":null"));
         assert!(!json.contains("\"application_hash\":null"));
         assert!(!json.contains("\"resource_owner\":null"));
-        // Phase 22 new fields must also be skipped when None (D-11, D-12, D-13).
-        assert!(!json.contains("\"source_application\":null"));
-        assert!(!json.contains("\"destination_application\":null"));
+        // source_application and destination_application are ALWAYS serialized
+        // (AUDIT-05, Phase 38.3) — null when not populated.
+        assert!(json.contains("\"source_application\":null"));
+        assert!(json.contains("\"destination_application\":null"));
         assert!(!json.contains("\"device_identity\":null"));
         // Phase 29 new fields must also be skipped when None.
         assert!(!json.contains("\"source_origin\":null"));
         assert!(!json.contains("\"destination_origin\":null"));
+        // Phase 38.4 owner fields must be skipped when None.
+        assert!(!json.contains("\"owner_sid\":null"));
+        assert!(!json.contains("\"owner_user\":null"));
     }
 
     #[test]
@@ -500,6 +552,9 @@ mod tests {
             publisher: "Contoso".to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         };
         let event = AuditEvent::new(
             EventType::Block,
@@ -532,6 +587,9 @@ mod tests {
             publisher: "Unknown".to_string(),
             trust_tier: AppTrustTier::Untrusted,
             signature_state: SignatureState::NotSigned,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         };
         let dev = DeviceIdentity {
             vid: "0951".to_string(),
@@ -578,6 +636,9 @@ mod tests {
             publisher: "Contoso".to_string(),
             trust_tier: AppTrustTier::Trusted,
             signature_state: SignatureState::Valid,
+            aumid: None,
+            package_family_name: None,
+            is_uwp: false,
         }))
         .with_device_identity(Some(DeviceIdentity {
             vid: "0951".to_string(),
@@ -588,7 +649,8 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("source_application"));
         assert!(json.contains("device_identity"));
-        assert!(!json.contains("destination_application"));
+        // destination_application is always serialized (AUDIT-05, Phase 38.3).
+        assert!(json.contains("\"destination_application\":null"));
         let rt: AuditEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(
             rt.source_application.as_ref().map(|a| a.publisher.as_str()),
@@ -909,6 +971,90 @@ mod tests {
         assert!(
             event.blocked_disk.is_none(),
             "missing blocked_disk must default to None"
+        );
+    }
+
+    /// USB-06: AuditEvent with owner_sid and owner_user serializes both fields.
+    #[test]
+    fn test_audit_event_with_owner_fields() {
+        let event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-1".to_string(),
+            "alice".to_string(),
+            r"E:\file.txt".to_string(),
+            Classification::T3,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-01".to_string(),
+            1,
+        )
+        .with_owner(Some("S-1-5-21-1".to_string()), Some("alice".to_string()));
+
+        assert_eq!(event.owner_sid, Some("S-1-5-21-1".to_string()));
+        assert_eq!(event.owner_user, Some("alice".to_string()));
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            json.contains("\"owner_sid\""),
+            "owner_sid must be present: {json}"
+        );
+        assert!(json.contains("S-1-5-21-1"), "SID value missing: {json}");
+        assert!(
+            json.contains("\"owner_user\""),
+            "owner_user must be present: {json}"
+        );
+        assert!(json.contains("alice"), "username value missing: {json}");
+    }
+
+    /// USB-06: AuditEvent without owner fields omits them from JSON.
+    #[test]
+    fn test_audit_event_without_owner_fields_skipped() {
+        let event = AuditEvent::new(
+            EventType::Access,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\File.txt".to_string(),
+            Classification::T2,
+            Action::READ,
+            Decision::ALLOW,
+            "AGENT-WS02-001".to_string(),
+            1,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            !json.contains("\"owner_sid\""),
+            "None owner_sid must be omitted: {json}"
+        );
+        assert!(
+            !json.contains("\"owner_user\""),
+            "None owner_user must be omitted: {json}"
+        );
+    }
+
+    /// USB-06: legacy JSON without owner_sid/owner_user deserializes successfully.
+    #[test]
+    fn test_backward_compat_missing_owner_fields() {
+        let legacy_json = r#"{
+            "timestamp": "2026-04-01T00:00:00Z",
+            "event_type": "BLOCK",
+            "user_sid": "S-1-5-21-1",
+            "user_name": "alice",
+            "resource_path": "E:\\file.txt",
+            "classification": "T1",
+            "action_attempted": "WRITE",
+            "decision": "DENY",
+            "agent_id": "AGENT-1",
+            "session_id": 1
+        }"#;
+        let event: AuditEvent = serde_json::from_str(legacy_json)
+            .expect("legacy JSON without owner fields must deserialize");
+        assert!(
+            event.owner_sid.is_none(),
+            "missing owner_sid must default to None"
+        );
+        assert!(
+            event.owner_user.is_none(),
+            "missing owner_user must default to None"
         );
     }
 }

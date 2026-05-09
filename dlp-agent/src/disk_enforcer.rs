@@ -194,7 +194,24 @@ impl DiskEnforcer {
             .map(|(stored, live)| stored != live)
             .unwrap_or(false);
 
+        // Phase 45 (DISK-07): grace period check for unregistered disks.
+        // If the disk is in grace period, allow reads but block writes.
+        // If grace period expired (or never started), use normal block behavior.
         if registered.is_none() || serial_mismatch {
+            // Check if this disk is in an active grace period.
+            if enumerator.is_in_grace_period(&live_disk.instance_id) {
+                // Grace period active: block writes, allow reads.
+                // FileAction filter at top of check() already ensures we only
+                // intercept write-path actions, so reads are implicitly allowed.
+                let notify = self.should_notify(letter);
+                return Some(DiskBlockResult {
+                    decision: Decision::DENY,
+                    disk: live_disk,
+                    notify,
+                });
+            }
+
+            // No grace period (or expired): normal full block.
             let notify = self.should_notify(letter);
             return Some(DiskBlockResult {
                 decision: Decision::DENY,
@@ -581,5 +598,84 @@ mod tests {
         assert_eq!(drive_letter_from_path(r"\\server\share"), None);
         assert_eq!(drive_letter_from_path("/usr/local"), None);
         assert_eq!(drive_letter_from_path(""), None);
+    }
+
+    // ---------- Phase 45: Grace period / quarantine (DISK-07) ----------
+
+    /// DiskEnforcer::check blocks writes for a disk in grace period.
+    #[test]
+    fn test_disk_enforcer_blocks_writes_during_grace_period() {
+        let _guard = DISK_TEST_LOCK.lock();
+        let enumerator = ensure_enumerator();
+        reset_enumerator(&enumerator);
+
+        // Unregistered disk in drive_letter_map with grace period active.
+        let live = make_disk("ID-GRACE", Some('E'), Some("SN-GRACE"));
+        seed_enumerator(&enumerator, &[('E', live.clone())], &[]);
+        enumerator.set_grace_period_seconds(300);
+        enumerator
+            .grace_period_map
+            .write()
+            .insert("ID-GRACE".to_string(), Instant::now());
+
+        let enforcer = DiskEnforcer::new();
+
+        // Write action must be blocked (DENY) even though disk is in drive_letter_map.
+        let result = enforcer
+            .check(r"E:\file.txt", &write_action(r"E:\file.txt"))
+            .expect("write must be blocked during grace period");
+        assert_eq!(result.decision, Decision::DENY);
+        assert_eq!(result.disk.instance_id, "ID-GRACE");
+    }
+
+    /// DiskEnforcer::check allows reads for a disk in grace period.
+    #[test]
+    fn test_disk_enforcer_allows_reads_during_grace_period() {
+        let _guard = DISK_TEST_LOCK.lock();
+        let enumerator = ensure_enumerator();
+        reset_enumerator(&enumerator);
+
+        let live = make_disk("ID-GRACE-READ", Some('F'), Some("SN-GRACE-READ"));
+        seed_enumerator(&enumerator, &[('F', live.clone())], &[]);
+        enumerator.set_grace_period_seconds(300);
+        enumerator
+            .grace_period_map
+            .write()
+            .insert("ID-GRACE-READ".to_string(), Instant::now());
+
+        let enforcer = DiskEnforcer::new();
+
+        // Read action must pass through (None) even for unregistered disk in grace.
+        assert_eq!(
+            enforcer.check(r"F:\file.txt", &read_action(r"F:\file.txt")),
+            None,
+            "read must be allowed during grace period"
+        );
+    }
+
+    /// DiskEnforcer::check uses normal block behavior when grace period expired.
+    #[test]
+    fn test_disk_enforcer_blocks_when_grace_period_expired() {
+        let _guard = DISK_TEST_LOCK.lock();
+        let enumerator = ensure_enumerator();
+        reset_enumerator(&enumerator);
+
+        let live = make_disk("ID-GRACE-EXP", Some('G'), Some("SN-GRACE-EXP"));
+        seed_enumerator(&enumerator, &[('G', live.clone())], &[]);
+        // Very short grace period that has already expired.
+        enumerator.set_grace_period_seconds(1);
+        enumerator.grace_period_map.write().insert(
+            "ID-GRACE-EXP".to_string(),
+            Instant::now() - Duration::from_secs(10),
+        );
+
+        let enforcer = DiskEnforcer::new();
+
+        // Write action still blocks (grace period expired = normal unregistered behavior).
+        let result = enforcer
+            .check(r"G:\file.txt", &write_action(r"G:\file.txt"))
+            .expect("write must be blocked when grace period expired");
+        assert_eq!(result.decision, Decision::DENY);
+        assert_eq!(result.disk.instance_id, "ID-GRACE-EXP");
     }
 }
