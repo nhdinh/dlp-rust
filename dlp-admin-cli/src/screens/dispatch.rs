@@ -9,6 +9,13 @@ use crate::app::{
     LDAP_ROW_COUNT, LDAP_SAVE_ROW,
 };
 use crate::event::AppEvent;
+use crate::screens::cloud_config::{
+    CLOUD_CONFIG_BACK_ROW, CLOUD_CONFIG_KEYS, CLOUD_CONFIG_ROW_COUNT, CLOUD_CONFIG_SAVE_ROW,
+};
+use crate::screens::print_config::{
+    is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_BACK_ROW, PRINT_CONFIG_KEYS,
+    PRINT_CONFIG_ROW_COUNT, PRINT_CONFIG_SAVE_ROW, PRINT_UNCLASSIFIABLE_OPTIONS,
+};
 use crate::screens::usb_enforcement::{
     USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_OPTIONS,
     USB_ENFORCEMENT_ROW_COUNT, USB_ENFORCEMENT_SAVE_ROW,
@@ -45,6 +52,8 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::AlertConfig { .. } => handle_alert_config(app, key),
         Screen::LdapConfig { .. } => handle_ldap_config(app, key),
         Screen::UsbEnforcementConfig { .. } => handle_usb_enforcement_config(app, key),
+        Screen::CloudConfig { .. } => handle_cloud_config(app, key),
+        Screen::PrintConfig { .. } => handle_print_config(app, key),
         Screen::ConditionsBuilder { .. } => handle_conditions_builder(app, key),
         Screen::PolicyCreate { .. } => handle_policy_create(app, key),
         Screen::PolicyEdit { .. } => handle_policy_edit(app, key),
@@ -212,7 +221,8 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
     };
     match key.code {
         // Phase 43.05: expanded from 6 to 7 items — added "USB Enforcement" at index 5.
-        KeyCode::Up | KeyCode::Down => nav(selected, 7, key.code),
+        // Phase 38.2: expanded from 7 to 9 items — added "Cloud Config" at index 6, "Print Config" at index 7.
+        KeyCode::Up | KeyCode::Down => nav(selected, 9, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
@@ -220,7 +230,9 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
             3 => action_load_alert_config(app),
             4 => action_load_ldap_config(app),
             5 => action_load_usb_enforcement_config(app),
-            6 => app.screen = Screen::MainMenu { selected: 2 },
+            6 => action_load_cloud_config(app),
+            7 => action_load_print_config(app),
+            8 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
@@ -1816,6 +1828,273 @@ fn handle_usb_enforcement_nav(app: &mut App, key: KeyEvent, selected: usize) {
             app.screen = Screen::SystemMenu { selected: 5 };
         }
         _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cloud config screen
+// ---------------------------------------------------------------------------
+
+/// Fetches the current agent config from the server and switches to the `CloudConfig` screen.
+fn action_load_cloud_config(app: &mut App) {
+    match app
+        .rt
+        .block_on(app.client.get::<serde_json::Value>("admin/agent-config"))
+    {
+        Ok(config) => {
+            app.screen = Screen::CloudConfig {
+                config,
+                selected: 0,
+                editing: false,
+                buffer: String::new(),
+            };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Persists the in-memory cloud config to the server (full payload round-trip).
+fn action_save_cloud_config(app: &mut App) {
+    let payload = match &app.screen {
+        Screen::CloudConfig { config, .. } => config.clone(),
+        _ => return,
+    };
+    match app.rt.block_on(
+        app.client
+            .put::<serde_json::Value, _>("admin/agent-config", &payload),
+    ) {
+        Ok(_) => {
+            app.set_status("Cloud config saved", StatusKind::Success);
+            app.screen = Screen::SystemMenu { selected: 6 };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Handles key events while the cloud config form is active.
+///
+/// `cloud_hook_enabled` (row 0) is a bool that toggles on Enter — no edit mode required.
+fn handle_cloud_config(app: &mut App, key: KeyEvent) {
+    let selected = match &app.screen {
+        Screen::CloudConfig { selected, .. } => *selected,
+        _ => return,
+    };
+
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::CloudConfig { selected: sel, .. } = &mut app.screen {
+                nav(sel, CLOUD_CONFIG_ROW_COUNT, key.code);
+            }
+        }
+        KeyCode::Enter => match selected {
+            0 => {
+                // Toggle the boolean field in-place.
+                if let Screen::CloudConfig { config, .. } = &mut app.screen {
+                    let key_name = CLOUD_CONFIG_KEYS[0];
+                    let cur = config[key_name].as_bool().unwrap_or(false);
+                    config[key_name] = serde_json::Value::Bool(!cur);
+                }
+            }
+            CLOUD_CONFIG_SAVE_ROW => action_save_cloud_config(app),
+            CLOUD_CONFIG_BACK_ROW => {
+                app.screen = Screen::SystemMenu { selected: 6 };
+            }
+            _ => {}
+        },
+        KeyCode::Esc => {
+            app.screen = Screen::SystemMenu { selected: 6 };
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Print config screen
+// ---------------------------------------------------------------------------
+
+/// Fetches the current agent config from the server and switches to the `PrintConfig` screen.
+fn action_load_print_config(app: &mut App) {
+    match app
+        .rt
+        .block_on(app.client.get::<serde_json::Value>("admin/agent-config"))
+    {
+        Ok(config) => {
+            app.screen = Screen::PrintConfig {
+                config,
+                selected: 0,
+                editing: false,
+                buffer: String::new(),
+            };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Persists the in-memory print config to the server (full payload round-trip).
+fn action_save_print_config(app: &mut App) {
+    let payload = match &app.screen {
+        Screen::PrintConfig { config, .. } => config.clone(),
+        _ => return,
+    };
+    match app.rt.block_on(
+        app.client
+            .put::<serde_json::Value, _>("admin/agent-config", &payload),
+    ) {
+        Ok(_) => {
+            app.set_status("Print config saved", StatusKind::Success);
+            app.screen = Screen::SystemMenu { selected: 7 };
+        }
+        Err(e) => app.set_status(format!("Failed: {e}"), StatusKind::Error),
+    }
+}
+
+/// Handles key events while the print config form is in edit mode.
+fn handle_print_config_editing(app: &mut App, key: KeyEvent, selected: usize) {
+    if is_print_numeric(selected) {
+        match key.code {
+            KeyCode::Char(c) => {
+                if let Screen::PrintConfig { buffer, .. } = &mut app.screen {
+                    buffer.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Screen::PrintConfig { buffer, .. } = &mut app.screen {
+                    buffer.pop();
+                }
+            }
+            KeyCode::Enter => print_commit_numeric(app, selected),
+            KeyCode::Esc => {
+                if let Screen::PrintConfig {
+                    buffer, editing, ..
+                } = &mut app.screen
+                {
+                    buffer.clear();
+                    *editing = false;
+                }
+            }
+            _ => {}
+        }
+    } else if is_print_picker(selected) {
+        match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                if let Screen::PrintConfig { config, .. } = &mut app.screen {
+                    let key_name = PRINT_CONFIG_KEYS[selected];
+                    let current = config.get(key_name).and_then(|v| v.as_str()).unwrap_or("");
+                    let options = PRINT_UNCLASSIFIABLE_OPTIONS;
+                    let current_idx = options.iter().position(|&o| o == current).unwrap_or(0);
+                    let new_idx = match key.code {
+                        KeyCode::Up => current_idx.checked_sub(1).unwrap_or(options.len() - 1),
+                        _ => (current_idx + 1) % options.len(),
+                    };
+                    config[key_name] = serde_json::Value::String(options[new_idx].to_string());
+                }
+            }
+            KeyCode::Enter | KeyCode::Esc => {
+                if let Screen::PrintConfig { editing, .. } = &mut app.screen {
+                    *editing = false;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Commits a numeric buffer to the print config field at `selected`.
+fn print_commit_numeric(app: &mut App, selected: usize) {
+    let buffer_copy = match &app.screen {
+        Screen::PrintConfig { buffer, .. } => buffer.clone(),
+        _ => return,
+    };
+    let value: u64 = match buffer_copy.trim().parse() {
+        Ok(v) => v,
+        Err(_) => {
+            app.set_status("Value must be a positive integer", StatusKind::Error);
+            return;
+        }
+    };
+    if let Screen::PrintConfig {
+        config,
+        buffer,
+        editing,
+        ..
+    } = &mut app.screen
+    {
+        let key_name = PRINT_CONFIG_KEYS[selected];
+        config[key_name] = serde_json::Value::Number(serde_json::Number::from(value));
+        buffer.clear();
+        *editing = false;
+    }
+}
+
+/// Handles key events while navigating the print config form.
+fn handle_print_config_nav(app: &mut App, key: KeyEvent, selected: usize) {
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if let Screen::PrintConfig { selected: sel, .. } = &mut app.screen {
+                nav(sel, PRINT_CONFIG_ROW_COUNT, key.code);
+            }
+        }
+        KeyCode::Enter => {
+            if selected == PRINT_CONFIG_SAVE_ROW {
+                action_save_print_config(app);
+                return;
+            }
+            if selected == PRINT_CONFIG_BACK_ROW {
+                app.screen = Screen::SystemMenu { selected: 7 };
+                return;
+            }
+            if is_print_bool(selected) {
+                // Toggle the boolean in-place.
+                if let Screen::PrintConfig { config, .. } = &mut app.screen {
+                    let key_name = PRINT_CONFIG_KEYS[selected];
+                    let cur = config[key_name].as_bool().unwrap_or(false);
+                    config[key_name] = serde_json::Value::Bool(!cur);
+                }
+                return;
+            }
+            if is_print_numeric(selected) {
+                // Enter numeric edit mode, seeding the buffer with the current value.
+                if let Screen::PrintConfig {
+                    config,
+                    editing,
+                    buffer,
+                    ..
+                } = &mut app.screen
+                {
+                    let key_name = PRINT_CONFIG_KEYS[selected];
+                    let n = config[key_name].as_u64().unwrap_or(0);
+                    *buffer = n.to_string();
+                    *editing = true;
+                }
+                return;
+            }
+            if is_print_picker(selected) {
+                // Enter picker edit mode.
+                if let Screen::PrintConfig { editing, .. } = &mut app.screen {
+                    *editing = true;
+                }
+            }
+        }
+        KeyCode::Esc => {
+            app.screen = Screen::SystemMenu { selected: 7 };
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events while the print config form is active.
+fn handle_print_config(app: &mut App, key: KeyEvent) {
+    let (selected, editing) = match &app.screen {
+        Screen::PrintConfig {
+            selected, editing, ..
+        } => (*selected, *editing),
+        _ => return,
+    };
+
+    if editing {
+        handle_print_config_editing(app, key, selected);
+    } else {
+        handle_print_config_nav(app, key, selected);
     }
 }
 
