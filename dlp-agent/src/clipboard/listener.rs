@@ -47,6 +47,8 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::share_link_enforcer::{detect_share_links, ShareLinkEnforcer};
+
 use crate::audit_emitter::emit_audit;
 use dlp_common::AuditAccessContext;
 
@@ -392,6 +394,53 @@ impl ClipboardListener {
         if let Some(tx) = self.sender.lock().as_ref() {
             if tx.try_send(event).is_err() {
                 warn!("clipboard event channel full or closed");
+            }
+        }
+
+        // ── Share-link detection ─────────────────────────────────────────
+        let share_links = detect_share_links(text);
+        if !share_links.is_empty() {
+            debug!(
+                count = share_links.len(),
+                classification = ?classification,
+                "share links detected in clipboard text"
+            );
+            if let Some(alert_results) = ShareLinkEnforcer::check(&share_links, classification) {
+                if let Some(ctx) = CLIPBOARD_EMIT_CONTEXT.get() {
+                    for result in &alert_results {
+                        let truncated_url = if result.url.len() > 100 {
+                            format!("{}…", &result.url[..100])
+                        } else {
+                            result.url.clone()
+                        };
+                        // source_origin carries the truncated share URL;
+                        // destination_origin carries the provider name — reusing
+                        // the Chrome-origin fields as the closest available string
+                        // slots until a dedicated share_link context field is added.
+                        let mut alert_event = dlp_common::AuditEvent::new(
+                            dlp_common::EventType::Alert,
+                            ctx.user_sid.clone(),
+                            ctx.user_name.clone(),
+                            format!("clipboard://session{}", ctx.session_id),
+                            classification,
+                            dlp_common::Action::SHARE_LINK,
+                            dlp_common::Decision::DENY,
+                            ctx.agent_id.clone(),
+                            ctx.session_id,
+                        )
+                        .with_access_context(AuditAccessContext::Local)
+                        .with_source_origin(Some(truncated_url))
+                        .with_destination_origin(Some(result.provider.clone()));
+                        emit_audit(ctx, &mut alert_event);
+                    }
+                } else {
+                    warn!("share-link alert: CLIPBOARD_EMIT_CONTEXT not set, cannot emit audit event");
+                }
+            } else {
+                tracing::trace!(
+                    classification = ?classification,
+                    "share links detected but classification < T3 — no alert"
+                );
             }
         }
 

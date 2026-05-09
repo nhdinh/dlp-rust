@@ -289,6 +289,7 @@ fn handle_cloud_block(
 /// * `ad_client` — optional AD client for group/trust/location resolution (None = fallback to placeholder)
 /// * `usb_enforcer` — optional USB trust-tier enforcer; fires before ABAC evaluation (None = USB enforcement disabled)
 /// * `cloud_enforcer` — optional cloud sync enforcer; fires after disk, before ABAC (None = cloud enforcement disabled)
+#[allow(clippy::too_many_arguments)]
 pub async fn run_event_loop(
     mut rx: mpsc::Receiver<FileAction>,
     offline: Arc<OfflineManager>,

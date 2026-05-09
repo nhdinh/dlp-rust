@@ -140,15 +140,15 @@ impl HookInjector {
     fn current_architecture() -> &'static str {
         #[cfg(target_arch = "x86_64")]
         {
-            return "x64";
+            "x64"
         }
         #[cfg(target_arch = "x86")]
         {
-            return "x86";
+            "x86"
         }
         #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
         {
-            return "unknown";
+            "unknown"
         }
     }
 
@@ -236,7 +236,7 @@ impl HookInjector {
         if remote_mem.is_null() {
             return Err(HookError::RemoteAllocFailed {
                 pid,
-                detail: format!("VirtualAllocEx returned null"),
+                detail: "VirtualAllocEx returned null".to_string(),
             });
         }
 
@@ -286,7 +286,10 @@ impl HookInjector {
                 process,
                 None,
                 0,
-                Some(std::mem::transmute(load_library_w_addr)),
+                Some(std::mem::transmute::<
+                    usize,
+                    unsafe extern "system" fn(*mut core::ffi::c_void) -> u32,
+                >(load_library_w_addr)),
                 Some(remote_mem),
                 0,
                 None,
