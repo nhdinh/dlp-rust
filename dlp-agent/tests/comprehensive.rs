@@ -2584,6 +2584,96 @@ mod cloud_tc {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DLP TC tests — share link detection (TC-34, 35, 36, 37)
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod share_link_tc {
+    use dlp_agent::share_link_enforcer::{detect_share_links, ShareLinkEnforcer};
+    use dlp_common::{Classification, Decision};
+
+    /// TC-34: T1 classification + OneDrive share link → check() returns None (no alert).
+    ///
+    /// Public content (T1) pasted with a share link should never trigger an alert —
+    /// only T3/T4 content is sensitive enough to warrant blocking.
+    #[test]
+    fn test_tc_34_t1_onedrive_link_no_alert() {
+        let text = "Public doc: https://1drv.ms/u/s!AaBbCcDd?e=public_link";
+        let links = detect_share_links(text);
+        assert_eq!(links.len(), 1, "should detect one OneDrive link");
+        let result = ShareLinkEnforcer::check(&links, Classification::T1);
+        assert!(result.is_none(), "T1 classification should not trigger an alert");
+    }
+
+    /// TC-35: T3 classification + OneDrive share link (1drv.ms/) → check() returns Some, Decision::DENY.
+    ///
+    /// Confidential content (T3) pasted with a OneDrive share link must be blocked.
+    #[test]
+    fn test_tc_35_t3_onedrive_link_deny() {
+        let text = "Confidential: https://1drv.ms/u/s!ConfidentialDoc?e=share";
+        let links = detect_share_links(text);
+        assert_eq!(links.len(), 1, "should detect one OneDrive link");
+        let results = ShareLinkEnforcer::check(&links, Classification::T3)
+            .expect("T3 + share link should produce Some results");
+        assert_eq!(results.len(), 1, "should have one alert result");
+        assert_eq!(results[0].decision, Decision::DENY, "decision must be DENY");
+        assert!(
+            results[0].provider.contains("OneDrive"),
+            "provider should be OneDrive, got: {}",
+            results[0].provider
+        );
+    }
+
+    /// TC-36: T4 classification + Dropbox share link (dropbox.com/s/) → check() returns Some, Decision::DENY.
+    ///
+    /// Restricted content (T4) pasted with a Dropbox share link must be blocked.
+    #[test]
+    fn test_tc_36_t4_dropbox_link_deny() {
+        let text = "Restricted file: https://www.dropbox.com/s/abc123/restricted.xlsx?dl=0";
+        let links = detect_share_links(text);
+        assert_eq!(links.len(), 1, "should detect one Dropbox link");
+        let results = ShareLinkEnforcer::check(&links, Classification::T4)
+            .expect("T4 + Dropbox link should produce Some results");
+        assert_eq!(results.len(), 1, "should have one alert result");
+        assert_eq!(results[0].decision, Decision::DENY, "decision must be DENY");
+        assert!(
+            results[0].provider.contains("Dropbox"),
+            "provider should be Dropbox, got: {}",
+            results[0].provider
+        );
+    }
+
+    /// TC-37: T3 classification + two providers (1drv.ms/ and dropbox.com/s/) → two results.
+    ///
+    /// When a single paste contains share links from multiple providers, each link
+    /// produces a separate alert result — no deduplication across providers.
+    #[test]
+    fn test_tc_37_t3_two_providers_two_results() {
+        let text = concat!(
+            "OneDrive: https://1drv.ms/u/s!MultiDoc?e=od ",
+            "and Dropbox: https://www.dropbox.com/s/xyz789/sensitive.pdf?dl=0"
+        );
+        let links = detect_share_links(text);
+        assert_eq!(links.len(), 2, "should detect links from both OneDrive and Dropbox");
+        let results = ShareLinkEnforcer::check(&links, Classification::T3)
+            .expect("T3 + two links should produce Some results");
+        assert_eq!(results.len(), 2, "should have one alert result per provider");
+        assert!(
+            results.iter().all(|r| r.decision == Decision::DENY),
+            "all decisions must be DENY"
+        );
+        let providers: Vec<&str> = results.iter().map(|r| r.provider.as_str()).collect();
+        assert!(
+            providers.iter().any(|p| p.contains("OneDrive")),
+            "expected OneDrive provider in results"
+        );
+        assert!(
+            providers.iter().any(|p| p.contains("Dropbox")),
+            "expected Dropbox provider in results"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // DLP TC tests — clipboard cross-tier (TC-40, 41, 42)
 // ─────────────────────────────────────────────────────────────────────────────
 

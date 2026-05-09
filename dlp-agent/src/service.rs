@@ -386,7 +386,7 @@ fn apply_payload_to_config(
     // M017/S04: apply server-pushed print enforcement config fields.
     let should_apply_print_enabled = match cfg.print_enabled {
         Some(existing) => existing != payload.print_enabled,
-        None => payload.print_enabled != false,
+        None => payload.print_enabled,
     };
     if should_apply_print_enabled {
         changed_fields.push("print_enabled");
@@ -1389,6 +1389,7 @@ fn spawn_encryption_task(
 }
 
 /// Spawns the async interception event loop task.
+#[allow(clippy::too_many_arguments)]
 fn spawn_event_loop(
     action_rx: mpsc::Receiver<crate::interception::FileAction>,
     offline: Arc<crate::offline::OfflineManager>,

@@ -69,7 +69,6 @@ impl WfpManager {
             providerKey: null_mut(),
             providerData: unsafe { std::mem::zeroed() },
             weight: 0x100,
-            ..Default::default()
         };
 
         let result = unsafe { FwpmSubLayerAdd0(engine_handle, &sublayer, None) };
@@ -137,25 +136,38 @@ impl WfpManager {
         };
 
         // Condition 1: ALE_APP_ID == app_id
-        let mut cond_app_id = FWPM_FILTER_CONDITION0::default();
-        cond_app_id.fieldKey = FWPM_CONDITION_ALE_APP_ID;
-        cond_app_id.matchType = FWP_MATCH_EQUAL;
-        cond_app_id.conditionValue.r#type = FWP_BYTE_BLOB_TYPE;
-        cond_app_id.conditionValue.Anonymous.byteBlob = &*app_id as *const _ as *mut _;
+        let cond_app_id = FWPM_FILTER_CONDITION0 {
+            fieldKey: FWPM_CONDITION_ALE_APP_ID,
+            matchType: FWP_MATCH_EQUAL,
+            conditionValue: FWP_CONDITION_VALUE0 {
+                r#type: FWP_BYTE_BLOB_TYPE,
+                Anonymous: FWP_CONDITION_VALUE0_0 {
+                    byteBlob: &*app_id as *const _ as *mut _,
+                },
+            },
+        };
 
         // Condition 2: IP_PROTOCOL == TCP
-        let mut cond_proto = FWPM_FILTER_CONDITION0::default();
-        cond_proto.fieldKey = FWPM_CONDITION_IP_PROTOCOL;
-        cond_proto.matchType = FWP_MATCH_EQUAL;
-        cond_proto.conditionValue.r#type = FWP_UINT8;
-        cond_proto.conditionValue.Anonymous.uint8 = IPPROTO_TCP.0 as u8;
+        let cond_proto = FWPM_FILTER_CONDITION0 {
+            fieldKey: FWPM_CONDITION_IP_PROTOCOL,
+            matchType: FWP_MATCH_EQUAL,
+            conditionValue: FWP_CONDITION_VALUE0 {
+                r#type: FWP_UINT8,
+                Anonymous: FWP_CONDITION_VALUE0_0 {
+                    uint8: IPPROTO_TCP.0 as u8,
+                },
+            },
+        };
 
         // Condition 3: IP_REMOTE_PORT == 443
-        let mut cond_port = FWPM_FILTER_CONDITION0::default();
-        cond_port.fieldKey = FWPM_CONDITION_IP_REMOTE_PORT;
-        cond_port.matchType = FWP_MATCH_EQUAL;
-        cond_port.conditionValue.r#type = FWP_UINT16;
-        cond_port.conditionValue.Anonymous.uint16 = 443;
+        let cond_port = FWPM_FILTER_CONDITION0 {
+            fieldKey: FWPM_CONDITION_IP_REMOTE_PORT,
+            matchType: FWP_MATCH_EQUAL,
+            conditionValue: FWP_CONDITION_VALUE0 {
+                r#type: FWP_UINT16,
+                Anonymous: FWP_CONDITION_VALUE0_0 { uint16: 443 },
+            },
+        };
 
         let conditions = [cond_app_id, cond_proto, cond_port];
 
