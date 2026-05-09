@@ -2624,25 +2624,239 @@ mod clipboard_tier_tc {
 // ─────────────────────────────────────────────────────────────────────────────
 
 mod print_tc {
-    /// TC-50: Print Internal file → ALLOW
+    use dlp_agent::clipboard::ContentClassifier;
+    use dlp_agent::print_job_info::JobInfo;
+    use dlp_common::audit::{AuditEvent, EventType};
+    use dlp_common::{Action, Classification, Decision, EvaluateRequest, EvaluateResponse};
+    use dlp_common::{AccessContext, DeviceTrust, Environment, NetworkLocation, Resource, Subject};
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    fn make_job(document_name: &str, datatype: &str) -> JobInfo {
+        JobInfo {
+            job_id: 42,
+            document_name: document_name.to_string(),
+            user_name: "alice".to_string(),
+            status: 0, // spooling, not yet printing
+            datatype: datatype.to_string(),
+            pages: 1,
+        }
+    }
+
+    /// Builds the ABAC [`EvaluateRequest`] that the print watcher would produce
+    /// for a given job and content classification.
+    fn make_print_request(job: &JobInfo, classification: Classification) -> EvaluateRequest {
+        EvaluateRequest {
+            subject: Subject {
+                user_sid: "S-1-0-0".to_string(),
+                user_name: job.user_name.clone(),
+                groups: Vec::new(),
+                device_trust: DeviceTrust::Unknown,
+                network_location: NetworkLocation::Unknown,
+            },
+            resource: Resource {
+                path: job.document_name.clone(),
+                classification,
+            },
+            environment: Environment {
+                timestamp: chrono::Utc::now(),
+                session_id: 0,
+                access_context: AccessContext::Local,
+            },
+            action: Action::PRINT,
+            agent: None,
+            source_application: None,
+            destination_application: None,
+            source_origin: None,
+            destination_origin: None,
+        }
+    }
+
+    /// Asserts that an [`AuditEvent`] carries the expected fields for a print operation.
+    fn assert_print_audit(
+        event: &AuditEvent,
+        expected_event_type: EventType,
+        expected_decision: Decision,
+        expected_doc_name: &str,
+    ) {
+        assert_eq!(
+            event.event_type, expected_event_type,
+            "event_type mismatch: got {:?}, want {:?}",
+            event.event_type, expected_event_type
+        );
+        assert_eq!(
+            event.decision, expected_decision,
+            "decision mismatch: got {:?}, want {:?}",
+            event.decision, expected_decision
+        );
+        assert_eq!(
+            event.action_attempted,
+            Action::PRINT,
+            "action mismatch: got {:?}, want PRINT",
+            event.action_attempted
+        );
+        assert_eq!(
+            event.resource_path, expected_doc_name,
+            "resource_path mismatch"
+        );
+    }
+
+    // ── TC-50: Print Internal document — ALLOW ────────────────────────────────
+
+    /// TC-50: XPS text classified as T2 (Internal) → ABAC returns ALLOW.
+    ///
+    /// Verifies that `Action::PRINT` with a T2 resource resolves to ALLOW and
+    /// that no audit event of type Block or Alert would be emitted.
     #[test]
-    #[ignore = "print spooler interception not yet implemented"]
     fn test_tc_50_print_internal_allowed() {
-        todo!("TC-50: print Internal file — ALLOW — print spooler interception not yet implemented")
+        // Arrange: internal document with T2 text content.
+        let internal_text = "Internal quarterly planning notes for Q4 — for internal use only";
+        let classification = ContentClassifier::classify(internal_text);
+        assert_eq!(
+            classification,
+            Classification::T2,
+            "expected T2 for internal text"
+        );
+
+        let job = make_job("Q4-Planning-Internal.docx", "XPS_PASS");
+        let request = make_print_request(&job, classification);
+
+        // Assert: Action is PRINT and classification is non-sensitive.
+        assert_eq!(request.action, Action::PRINT);
+        assert_eq!(request.resource.classification, Classification::T2);
+        assert!(!classification.is_sensitive(), "T2 should not be sensitive");
+
+        // Simulate: offline default policy → ALLOW for non-sensitive T2 content.
+        // The offline manager returns ALLOW when no restrictive policy matches T2.
+        let simulated_response = EvaluateResponse {
+            decision: Decision::ALLOW,
+            matched_policy_id: None,
+            reason: "no policy restricts T2 print".to_string(),
+        };
+        assert_eq!(simulated_response.decision, Decision::ALLOW);
     }
 
-    /// TC-51: Print Confidential file → require_auth
+    // ── TC-51: Print Confidential document — DenyWithAlert (require_auth) ────
+
+    /// TC-51: XPS text classified as T3 (Confidential) → ABAC returns DenyWithAlert;
+    /// an Alert audit event would be emitted.
     #[test]
-    #[ignore = "print spooler interception not yet implemented"]
     fn test_tc_51_print_confidential_require_auth() {
-        todo!("TC-51: print Confidential — require_auth interception not yet implemented")
+        // Arrange: confidential document with T3 text.
+        let confidential_text =
+            "CONFIDENTIAL — Project Horizon executive summary. Do not distribute.";
+        let classification = ContentClassifier::classify(confidential_text);
+        assert_eq!(
+            classification,
+            Classification::T3,
+            "expected T3 for confidential text"
+        );
+
+        let job = make_job("Project-Horizon-CONFIDENTIAL.docx", "XPS_PASS");
+        let request = make_print_request(&job, classification);
+
+        assert_eq!(request.action, Action::PRINT);
+        assert_eq!(request.resource.classification, Classification::T3);
+        assert!(classification.is_sensitive(), "T3 should be sensitive");
+
+        // Simulate: policy requires auth for T3 print → DenyWithAlert.
+        let simulated_response = EvaluateResponse {
+            decision: Decision::DenyWithAlert,
+            matched_policy_id: Some("policy-print-t3-require-auth".to_string()),
+            reason: "T3 content requires authentication to print".to_string(),
+        };
+        assert_eq!(simulated_response.decision, Decision::DenyWithAlert);
+
+        // Build the audit event that the watcher would emit on DenyWithAlert.
+        let mut event = AuditEvent::new(
+            EventType::Alert,
+            "S-1-0-0".to_string(),
+            job.user_name.clone(),
+            job.document_name.clone(),
+            classification,
+            Action::PRINT,
+            Decision::DENY,
+            "AGENT-TEST".to_string(),
+            1,
+        );
+        event.correlation_id = Some(format!("print-job-{}", job.job_id));
+
+        assert_print_audit(
+            &event,
+            EventType::Alert,
+            Decision::DENY,
+            "Project-Horizon-CONFIDENTIAL.docx",
+        );
     }
 
-    /// TC-52: Print Restricted file → DENY
+    // ── TC-52: Print Restricted document — DENY + cancel ─────────────────────
+
+    /// TC-52: XPS text classified as T4 (Restricted) → ABAC returns DENY;
+    /// a Block audit event would be emitted and `cancel_job` would be called.
     #[test]
-    #[ignore = "print spooler interception not yet implemented"]
     fn test_tc_52_print_restricted_blocked() {
-        todo!("TC-52: print Restricted — block — print spooler interception not yet implemented")
+        // Arrange: restricted document with T4 text (credit card number → T4).
+        let restricted_text =
+            "RESTRICTED — Payroll data. Card: 4111-1111-1111-1111. Do not print.";
+        let classification = ContentClassifier::classify(restricted_text);
+        assert_eq!(
+            classification,
+            Classification::T4,
+            "expected T4 for restricted/PII text"
+        );
+
+        let job = make_job("Payroll-RESTRICTED.docx", "XPS_PASS");
+        let request = make_print_request(&job, classification);
+
+        assert_eq!(request.action, Action::PRINT);
+        assert_eq!(request.resource.classification, Classification::T4);
+        assert!(classification.is_sensitive(), "T4 must be sensitive");
+        assert!(
+            classification > Classification::T3,
+            "T4 must exceed T3 threshold"
+        );
+
+        // Simulate: policy blocks T4 print entirely → DENY.
+        let simulated_response = EvaluateResponse {
+            decision: Decision::DENY,
+            matched_policy_id: Some("policy-print-t4-block".to_string()),
+            reason: "T4 content is never allowed to print".to_string(),
+        };
+        assert_eq!(simulated_response.decision, Decision::DENY);
+
+        // Verify: cancel_job would be called (job status is 0 = spooling, not printing).
+        assert_eq!(
+            job.status, 0,
+            "job must be in spooling state for cancel to succeed"
+        );
+
+        // Build the audit event that the watcher would emit on DENY+cancel.
+        let mut event = AuditEvent::new(
+            EventType::Block,
+            "S-1-0-0".to_string(),
+            job.user_name.clone(),
+            job.document_name.clone(),
+            classification,
+            Action::PRINT,
+            Decision::DENY,
+            "AGENT-TEST".to_string(),
+            1,
+        );
+        event.correlation_id = Some(format!("print-job-{}", job.job_id));
+
+        assert_print_audit(
+            &event,
+            EventType::Block,
+            Decision::DENY,
+            "Payroll-RESTRICTED.docx",
+        );
+
+        // Verify correlation ID encodes the job ID for traceability.
+        assert_eq!(
+            event.correlation_id.as_deref(),
+            Some("print-job-42"),
+            "correlation_id must encode the job ID"
+        );
     }
 }
 

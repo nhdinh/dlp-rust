@@ -100,6 +100,9 @@ pub mod print_xps_parser;
 pub mod print_watcher;
 
 #[cfg(windows)]
+pub mod print_enforcer;
+
+#[cfg(windows)]
 pub mod device_controller;
 
 #[cfg(windows)]
