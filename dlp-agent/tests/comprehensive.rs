@@ -2515,7 +2515,7 @@ mod email_alert_tc {
 mod cloud_tc {
     use dlp_agent::cloud_enforcer::CloudEnforcer;
     use dlp_agent::interception::FileAction;
-    use dlp_common::Decision;
+    use dlp_common::{Classification, Decision};
 
     fn written_action(path: &str) -> FileAction {
         FileAction::Written {
@@ -2533,6 +2533,7 @@ mod cloud_tc {
         let result = enforcer.check(
             r"C:\Users\Alice\OneDrive\public_notes.txt",
             &written_action(r"C:\Users\Alice\OneDrive\public_notes.txt"),
+            Classification::T2,
         );
         assert_eq!(result, None, "T2 public file in sync folder should not be blocked");
     }
@@ -2542,8 +2543,9 @@ mod cloud_tc {
     fn test_tc_31_confidential_cloud_upload_blocked() {
         let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
         let result = enforcer.check(
-            r"C:\Users\Alice\OneDrive\confidential.docx",
-            &written_action(r"C:\Users\Alice\OneDrive\confidential.docx"),
+            r"C:\Users\Alice\OneDrive\report.docx",
+            &written_action(r"C:\Users\Alice\OneDrive\report.docx"),
+            Classification::T3,
         );
         assert!(result.is_some(), "T3 confidential file in sync folder should be blocked");
         let r = result.unwrap();
@@ -2557,8 +2559,9 @@ mod cloud_tc {
     fn test_tc_32_restricted_cloud_upload_blocked_alert() {
         let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
         let result = enforcer.check(
-            r"C:\Users\Alice\OneDrive\Restricted\secret.xlsx",
-            &written_action(r"C:\Users\Alice\OneDrive\Restricted\secret.xlsx"),
+            r"C:\Users\Alice\OneDrive\Payroll\payroll.xlsx",
+            &written_action(r"C:\Users\Alice\OneDrive\Payroll\payroll.xlsx"),
+            Classification::T4,
         );
         assert!(result.is_some(), "T4 restricted file in sync folder should be blocked");
         let r = result.unwrap();
@@ -2572,8 +2575,9 @@ mod cloud_tc {
     fn test_tc_33_outside_sync_folder_no_block() {
         let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
         let result = enforcer.check(
-            r"C:\Windows\secret.xlsx",
-            &written_action(r"C:\Windows\secret.xlsx"),
+            r"C:\Windows\payroll.xlsx",
+            &written_action(r"C:\Windows\payroll.xlsx"),
+            Classification::T4,
         );
         assert_eq!(result, None, "file outside sync folder should not trigger cloud block");
     }

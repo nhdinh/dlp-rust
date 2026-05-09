@@ -340,10 +340,20 @@ pub async fn run_event_loop(
         }
 
         // ── Cloud enforcement (pre-ABAC check) ───────────────────────────
-        // Fires after disk enforcement, before the ABAC engine. Blocks T3/T4
-        // writes to known cloud sync folders (M017/S01).
+        // Fires after disk enforcement, before the ABAC engine. Resolves
+        // classification via PolicyMapper before calling check() so the
+        // enforcer does not need to infer sensitivity from path text.
+        // provisional_classification is infallible; if a future evaluator
+        // integration introduces a fallible path, fail open with T2 to avoid
+        // blocking legitimate I/O on evaluator unavailability (ADR: M017/S02).
         if let Some(ref enforcer) = cloud_enforcer {
-            if let Some(cloud_result) = enforcer.check(&path, &action) {
+            let cloud_classification = PolicyMapper::provisional_classification(&path);
+            tracing::trace!(
+                path_hash = %fnv1a_hex(&path),
+                classification = ?cloud_classification,
+                "cloud enforcer: classification resolved"
+            );
+            if let Some(cloud_result) = enforcer.check(&path, &action, cloud_classification) {
                 handle_cloud_block(&ctx, &user_sid, &user_name, &path, pid, &cloud_result);
                 continue; // skip ABAC evaluation for this event
             }
@@ -450,4 +460,18 @@ pub async fn run_event_loop(
 
     info!("interception event loop exited");
 }
+
+/// FNV-1a 64-bit hash of a string, returned as a lowercase hex string.
+///
+/// Used to log a non-sensitive path identifier in audit traces without
+/// exposing the raw path in log sinks that forward to external systems.
+fn fnv1a_hex(s: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
 pub use policy_mapper::PolicyMapper;

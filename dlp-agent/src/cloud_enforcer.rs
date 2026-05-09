@@ -679,13 +679,23 @@ impl CloudEnforcer {
     ///
     /// * `path` - Full file path of the operation.
     /// * `action` - The [`FileAction`] being evaluated.
+    /// * `classification` - The ABAC classification resolved by the caller
+    ///   before invoking this check. The caller is responsible for obtaining
+    ///   this via `PolicyMapper::provisional_classification` or the live ABAC
+    ///   evaluator and for logging any resolution failures before falling back
+    ///   to a safe default (e.g. `Classification::T2`).
     ///
     /// # Returns
     ///
     /// - `Some(CloudBlockResult)` — T3/T4 file in sync folder; block.
     /// - `None` — not a sync path, or non-sensitive classification; proceed to ABAC.
     #[must_use]
-    pub fn check(&self, path: &str, action: &FileAction) -> Option<CloudBlockResult> {
+    pub fn check(
+        &self,
+        path: &str,
+        action: &FileAction,
+        classification: Classification,
+    ) -> Option<CloudBlockResult> {
         if !is_write_like_action(action) {
             return None;
         }
@@ -693,11 +703,9 @@ impl CloudEnforcer {
         let sync_path = self.detect_sync_provider(path)?;
         let provider_name = sync_path.provider.display_name().to_string();
 
-        // Placeholder classification for S02: real ABAC classification will
-        // be wired in S03.
-        let classification = provisional_sync_classification(path);
-
-        if classification.is_sensitive() {
+        // Use the >= operator: T3 and T4 are both sensitive per is_sensitive().
+        // PartialOrd is derived on Classification (T1 < T2 < T3 < T4).
+        if classification >= Classification::T3 {
             tracing::info!(
                 path = %path,
                 provider = %provider_name,
@@ -714,7 +722,7 @@ impl CloudEnforcer {
                 notify: true,
             })
         } else {
-            tracing::info!(
+            tracing::trace!(
                 path = %path,
                 provider = %provider_name,
                 classification = ?classification,
@@ -745,24 +753,6 @@ fn is_write_like_action(action: &FileAction) -> bool {
         action,
         FileAction::Created { .. } | FileAction::Written { .. } | FileAction::Moved { .. }
     )
-}
-
-/// Provisional path-based classification heuristic (S01/S02 placeholder).
-///
-/// - Paths containing "restricted" → T4
-/// - Paths containing "confidential" → T3
-/// - Everything else → T2
-///
-/// Phase S03 will integrate with the real ABAC classification engine.
-fn provisional_sync_classification(path: &str) -> Classification {
-    let lower = path.to_lowercase();
-    if lower.contains(r"\restricted\") || lower.contains("restricted") {
-        Classification::T4
-    } else if lower.contains(r"\confidential\") || lower.contains("confidential") {
-        Classification::T3
-    } else {
-        Classification::T2
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -819,7 +809,10 @@ mod tests {
     #[test]
     fn test_empty_path_returns_none() {
         let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
-        assert_eq!(enforcer.check("", &written_action("")), None);
+        assert_eq!(
+            enforcer.check("", &written_action(""), Classification::T4),
+            None
+        );
     }
 
     #[test]
@@ -828,7 +821,8 @@ mod tests {
         assert_eq!(
             enforcer.check(
                 r"\\server\share\file.txt",
-                &written_action(r"\\server\share\file.txt")
+                &written_action(r"\\server\share\file.txt"),
+                Classification::T4,
             ),
             None
         );
@@ -840,7 +834,8 @@ mod tests {
         assert_eq!(
             enforcer.check(
                 r"C:\Windows\file.txt",
-                &written_action(r"C:\Windows\file.txt")
+                &written_action(r"C:\Windows\file.txt"),
+                Classification::T4,
             ),
             None
         );
@@ -852,7 +847,11 @@ mod tests {
         assert_eq!(
             enforcer.check(
                 r"C:\Users\Alice\OneDrive\secret.txt",
-                &read_action(r"C:\Users\Alice\OneDrive\secret.txt")
+                &read_action(r"C:\Users\Alice\OneDrive\secret.txt"),
+                // Read actions are short-circuited before classification matters,
+                // but we pass T4 to show that even the highest sensitivity
+                // returns None for a non-write action.
+                Classification::T4,
             ),
             None
         );
@@ -864,7 +863,21 @@ mod tests {
         assert_eq!(
             enforcer.check(
                 r"C:\Users\Alice\OneDrive\public.txt",
-                &written_action(r"C:\Users\Alice\OneDrive\public.txt")
+                &written_action(r"C:\Users\Alice\OneDrive\public.txt"),
+                Classification::T1,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_t2_file_in_sync_folder_returns_none() {
+        let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
+        assert_eq!(
+            enforcer.check(
+                r"C:\Users\Alice\OneDrive\internal_notes.txt",
+                &written_action(r"C:\Users\Alice\OneDrive\internal_notes.txt"),
+                Classification::T2,
             ),
             None
         );
@@ -874,8 +887,9 @@ mod tests {
     fn test_t3_file_in_sync_folder_blocked() {
         let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
         let result = enforcer.check(
-            r"C:\Users\Alice\OneDrive\confidential.docx",
-            &written_action(r"C:\Users\Alice\OneDrive\confidential.docx"),
+            r"C:\Users\Alice\OneDrive\report.docx",
+            &written_action(r"C:\Users\Alice\OneDrive\report.docx"),
+            Classification::T3,
         );
         assert!(result.is_some());
         let r = result.unwrap();
@@ -889,8 +903,9 @@ mod tests {
     fn test_t4_file_in_sync_folder_blocked() {
         let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
         let result = enforcer.check(
-            r"C:\Users\Alice\OneDrive\Restricted\secret.xlsx",
-            &written_action(r"C:\Users\Alice\OneDrive\Restricted\secret.xlsx"),
+            r"C:\Users\Alice\OneDrive\Payroll\payroll.xlsx",
+            &written_action(r"C:\Users\Alice\OneDrive\Payroll\payroll.xlsx"),
+            Classification::T4,
         );
         assert!(result.is_some());
         let r = result.unwrap();
@@ -902,8 +917,9 @@ mod tests {
     fn test_created_action_blocked() {
         let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
         let result = enforcer.check(
-            r"C:\Users\Alice\OneDrive\confidential.docx",
-            &created_action(r"C:\Users\Alice\OneDrive\confidential.docx"),
+            r"C:\Users\Alice\OneDrive\new_file.docx",
+            &created_action(r"C:\Users\Alice\OneDrive\new_file.docx"),
+            Classification::T3,
         );
         assert!(result.is_some());
         assert_eq!(result.unwrap().decision, Decision::DENY);
@@ -913,11 +929,12 @@ mod tests {
     fn test_moved_action_blocked() {
         let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
         let result = enforcer.check(
-            r"C:\Users\Alice\OneDrive\confidential.docx",
+            r"C:\Users\Alice\OneDrive\moved_file.docx",
             &moved_action(
-                r"C:\Data\confidential.docx",
-                r"C:\Users\Alice\OneDrive\confidential.docx",
+                r"C:\Data\moved_file.docx",
+                r"C:\Users\Alice\OneDrive\moved_file.docx",
             ),
+            Classification::T3,
         );
         assert!(result.is_some());
         assert_eq!(result.unwrap().decision, Decision::DENY);
@@ -927,8 +944,9 @@ mod tests {
     fn test_custom_sync_path() {
         let enforcer = CloudEnforcer::with_paths(vec![r"D:\GoogleDrive".to_string()]);
         let result = enforcer.check(
-            r"D:\GoogleDrive\confidential.docx",
-            &written_action(r"D:\GoogleDrive\confidential.docx"),
+            r"D:\GoogleDrive\report.docx",
+            &written_action(r"D:\GoogleDrive\report.docx"),
+            Classification::T3,
         );
         assert!(result.is_some());
         let r = result.unwrap();
@@ -941,12 +959,16 @@ mod tests {
     fn test_deleted_action_returns_none() {
         let enforcer = CloudEnforcer::with_paths(vec![r"C:\Users".to_string()]);
         let action = FileAction::Deleted {
-            path: r"C:\Users\Alice\OneDrive\confidential.docx".to_string(),
+            path: r"C:\Users\Alice\OneDrive\report.docx".to_string(),
             process_id: 1,
             related_process_id: 1,
         };
         assert_eq!(
-            enforcer.check(r"C:\Users\Alice\OneDrive\confidential.docx", &action),
+            enforcer.check(
+                r"C:\Users\Alice\OneDrive\report.docx",
+                &action,
+                Classification::T4,
+            ),
             None
         );
     }
@@ -1051,8 +1073,9 @@ mod tests {
             source: PathSource::Fallback,
         }]);
         let result = enforcer.check(
-            r"C:\Users\Alice\Dropbox\confidential.docx",
-            &written_action(r"C:\Users\Alice\Dropbox\confidential.docx"),
+            r"C:\Users\Alice\Dropbox\report.docx",
+            &written_action(r"C:\Users\Alice\Dropbox\report.docx"),
+            Classification::T3,
         );
         assert!(result.is_some());
         assert_eq!(result.unwrap().provider, "Dropbox");
@@ -1067,8 +1090,9 @@ mod tests {
             source: PathSource::Fallback,
         }]);
         let result = enforcer.check(
-            r"C:\Users\Alice\Box\restricted\secret.xlsx",
-            &written_action(r"C:\Users\Alice\Box\restricted\secret.xlsx"),
+            r"C:\Users\Alice\Box\payroll.xlsx",
+            &written_action(r"C:\Users\Alice\Box\payroll.xlsx"),
+            Classification::T4,
         );
         assert!(result.is_some());
         assert_eq!(result.unwrap().provider, "Box");
