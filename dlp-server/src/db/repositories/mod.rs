@@ -15,6 +15,7 @@ pub mod exceptions;
 pub mod ldap_config;
 pub mod managed_origins;
 pub mod policies;
+pub mod secret_kek;
 pub mod siem_config;
 
 pub use admin_users::AdminUserRepository;

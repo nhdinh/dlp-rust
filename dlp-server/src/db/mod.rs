@@ -257,6 +257,26 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 registered_at      TEXT NOT NULL,
                 UNIQUE(agent_id, instance_id)
             );
+
+            -- Phase 47 (HARD-01): KEK version history for secret encryption at rest.
+            -- One row per Key-Encryption-Key generation. `master_seed_dpapi` is the
+            -- 32-byte high-entropy seed wrapped with DPAPI machine-scope
+            -- (CRYPTPROTECT_LOCAL_MACHINE); PBKDF2 over (seed, salt, iterations)
+            -- yields the actual AES-256-GCM KEK. `retired_at IS NULL` identifies
+            -- the active KEK; retired rows are retained so post-rotation rows
+            -- encrypted under an older KEK can still be decrypted for verification
+            -- or rollback within the retention window. The partial index makes
+            -- the highest-active-version lookup an O(1) tree probe.
+            CREATE TABLE IF NOT EXISTS secret_kek_history (
+                version             INTEGER PRIMARY KEY,
+                master_seed_dpapi   BLOB NOT NULL,
+                pbkdf2_salt         BLOB NOT NULL,
+                pbkdf2_iterations   INTEGER NOT NULL DEFAULT 600000,
+                created_at          TEXT NOT NULL,
+                retired_at          TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_secret_kek_active
+                ON secret_kek_history(version DESC) WHERE retired_at IS NULL;
             ",
     )
     .context("failed to initialize database tables")?;
