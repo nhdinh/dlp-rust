@@ -71,6 +71,14 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
+# Secrets-at-rest cryptography
+# Phase 47 HARD-01 — encryption at rest. All pinned to MSRV <= 1.60 to respect project MSRV 1.75 floor (47-RESEARCH §A.3).
+aes-gcm = { version = "0.10.3", features = ["std", "zeroize"] }
+pbkdf2 = { version = "0.12.2", default-features = false, features = ["hmac"] }
+hmac = "0.12.1"
+sha2 = "0.10.8"
+zeroize = { version = "1.8.2", features = ["derive"] }
+
 # Concurrency
 parking_lot = { workspace = true }
 dashmap = "6"
@@ -86,6 +94,7 @@ tower_governor = "0.8"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Cryptography",
     "Win32_System_Registry",
 ] }
 
