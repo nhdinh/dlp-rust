@@ -144,14 +144,14 @@ Phase numbering is continuous across milestones — it never restarts. Phases 0.
 
 ## Archived Milestones
 
-Phase details and requirement outcomes for shipped milestones live in the legacy workspaces:
+Phase details and requirement outcomes for shipped milestones live alongside the active planning workspace:
 
-- **`.planning.legacy/MILESTONES.md`** — top-level milestone summaries (v0.2.0–v0.8.1)
-- **`.planning.legacy/ROADMAP.md`** — full phase listings for v0.2.0–v0.8.0
-- **`.planning.legacy/v0.6.0-MILESTONE-AUDIT.md`**, **`v0.8.0-MILESTONE-AUDIT.md`**, **`v0.8.1-MILESTONE-AUDIT.md`** — milestone retrospectives
-- **`.gsd.legacy/milestones/M008..M017/`** — slice+task breakdown for v0.7.1, v0.8.0, v0.8.1, v0.9.0 in the milestone-slice-task format
+- **`.planning/MILESTONES.md`** — top-level milestone summaries (v0.2.0–v0.8.1)
+- **`.planning/RETROSPECTIVE.md`** — cross-milestone velocity, patterns, lessons (v0.2.0–v0.5.0)
+- **`.planning/milestones/v0.6.0-AUDIT.md`**, **`v0.8.0-AUDIT.md`**, **`v0.8.1-AUDIT.md`** — milestone retrospectives with requirement validation results
+- **`.planning/milestones/v0.9.0-{SUMMARY,CONTEXT,LEARNINGS,VALIDATION}.md`** — the four-doc M017 close-out for v0.9.0 Cloud & Print Exfiltration Prevention
 
-Consult these for context on prior decisions, regression history, and shipped scope.
+Consult these for context on prior decisions, regression history, and shipped scope. No audit exists for v0.2.0–v0.5.0 (covered by `RETROSPECTIVE.md`) or v0.7.0/v0.7.1 (covered by `MILESTONES.md`).
 
 ---
 
