@@ -310,6 +310,19 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 created_at        TEXT    NOT NULL,
                 rotated_at        TEXT
             );
+
+            -- Phase 47 (Task 47-08): system-wide key/value store for
+            -- transient operational flags (e.g. `maintenance_mode`).
+            -- Deliberately schema-less: any future single-row toggle can
+            -- piggyback rather than growing yet another single-row table.
+            -- Both key and value are TEXT (booleans are encoded as the
+            -- single-character strings \"0\" / \"1\" so they survive a
+            -- round-trip through sqlite_dump | jq | etc.).
+            CREATE TABLE IF NOT EXISTS system_kv (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO system_kv (key, value) VALUES ('maintenance_mode', '0');
             ",
     )
     .context("failed to initialize database tables")?;

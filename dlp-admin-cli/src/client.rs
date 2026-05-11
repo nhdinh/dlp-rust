@@ -6,6 +6,26 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use reqwest::Client;
+use serde::Deserialize;
+
+/// Deserialised body of `POST /admin/secrets/rotate`.
+///
+/// Mirrors `dlp_server::secrets_migration::RotationReport`. The struct
+/// is duplicated here (rather than imported from `dlp-server`) so the
+/// admin CLI does not pull the full server crate into its dependency
+/// graph — the public REST contract is the only coupling.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RotationReport {
+    /// KEK version that was active before rotation; now retired.
+    pub old_version: u8,
+    /// KEK version newly inserted into `secret_kek_history`; now active.
+    pub new_version: u8,
+    /// Total `(row, column)` envelopes re-encrypted under the new KEK.
+    pub rows_reencrypted: u32,
+    /// `"<table>.<column>"` strings for every rotation target that had
+    /// at least one row re-encrypted.
+    pub tables_rotated: Vec<String>,
+}
 
 /// The DLP Server HTTP client, built from environment variables.
 ///
@@ -275,6 +295,57 @@ impl EngineClient {
             .await
             .context("response body is not valid JSON")?;
         Ok(body)
+    }
+
+    /// Calls `POST /admin/secrets/rotate` to rotate the KEK and re-encrypt
+    /// every populated secret column under the new key.
+    ///
+    /// Phase 47 Task 47-08. `force_while_running == true` bypasses the
+    /// server-side `system_kv.maintenance_mode` gate so the rotation can
+    /// proceed while the service is still serving traffic. Default
+    /// (`false`) requires the operator to have run `maintenance enter`
+    /// first.
+    ///
+    /// # Errors
+    ///
+    /// Returns the server's error body verbatim if the HTTP call fails
+    /// (e.g. 400 when the maintenance gate is closed and `force=false`).
+    pub async fn rotate_secrets(&self, force_while_running: bool) -> Result<RotationReport> {
+        let body = serde_json::json!({ "force": force_while_running });
+        self.post::<RotationReport, _>("admin/secrets/rotate", &body)
+            .await
+    }
+
+    /// Calls `POST /admin/maintenance/enter`. Idempotent.
+    pub async fn maintenance_enter(&self) -> Result<()> {
+        let url = self.build_url("admin/maintenance/enter");
+        let resp = self
+            .apply_auth(self.inner.post(&url))
+            .send()
+            .await
+            .with_context(|| format!("POST {url} failed"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("POST {url} returned {status}: {body}");
+        }
+        Ok(())
+    }
+
+    /// Calls `POST /admin/maintenance/exit`. Idempotent.
+    pub async fn maintenance_exit(&self) -> Result<()> {
+        let url = self.build_url("admin/maintenance/exit");
+        let resp = self
+            .apply_auth(self.inner.post(&url))
+            .send()
+            .await
+            .with_context(|| format!("POST {url} failed"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("POST {url} returned {status}: {body}");
+        }
+        Ok(())
     }
 
     /// Sends a DELETE request.  Returns `Ok(())` on 204 No Content.
