@@ -177,22 +177,56 @@ The v1.0.0 milestone was abandoned in favor of v0.10.0 Real-Time File Access Pre
 
 ## Traceability
 
-Filled in by `gsd-roadmapper` once `ROADMAP.md` is generated. Maps each v0.10.0 REQ-ID to a phase.
+44/44 active v0.10.0 requirements mapped to phases. Phase 47 (HARD-01) is the carried-forward prerequisite, validated 2026-05-11.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | HARD-01 | 47 | Validated (shipped 2026-05-11) |
-| BLOCK-01..10 | TBD | Active |
-| CACHE-01..06 | TBD | Active |
-| FAIL-01..03 | TBD | Active |
-| DACL-01..05 | TBD | Active |
-| ETW-01..05 | TBD | Active |
-| UX-01..02 | TBD | Active |
-| MODE-01 | TBD | Active |
-| DRIVE-01..04 | TBD | Active |
-| OPS-01..04 | TBD | Active |
-| DIFF-01..04 | TBD | Active (cuttable to v0.10.1) |
+| BLOCK-01 | 48 | Active |
+| BLOCK-02 | 48 | Active |
+| BLOCK-03 | 48 | Active |
+| BLOCK-04 | 48 | Active |
+| BLOCK-05 | 49 | Active |
+| BLOCK-06 | 49 | Active |
+| BLOCK-07 | 49 | Active |
+| BLOCK-08 | 51 | Active |
+| BLOCK-09 | 51 | Active |
+| BLOCK-10 | 48 | Active |
+| CACHE-01 | 50 | Active |
+| CACHE-02 | 50 | Active |
+| CACHE-03 | 50 | Active |
+| CACHE-04 | 50 | Active |
+| CACHE-05 | 50 | Active |
+| CACHE-06 | 50 | Active |
+| FAIL-01 | 50 | Active |
+| FAIL-02 | 50 | Active |
+| FAIL-03 | 50 | Active |
+| DACL-01 | 52 | Active |
+| DACL-02 | 52 | Active |
+| DACL-03 | 52 | Active |
+| DACL-04 | 52 | Active |
+| DACL-05 | 52 | Active |
+| ETW-01 | 53 | Active |
+| ETW-02 | 53 | Active |
+| ETW-03 | 53 | Active |
+| ETW-04 | 53 | Active |
+| ETW-05 | 53 | Active |
+| UX-01 | 54 | Active |
+| UX-02 | 54 | Active |
+| MODE-01 | 55 | Active |
+| DRIVE-01 | 56 | Active |
+| DRIVE-02 | 56 | Active |
+| DRIVE-03 | 56 | Active |
+| DRIVE-04 | 56 | Active |
+| OPS-01 | 57 | Active |
+| OPS-02 | 57 | Active |
+| OPS-03 | 57 | Active |
+| OPS-04 | 57 | Active |
+| DIFF-01 | 58 | Active (cuttable to v0.10.1) |
+| DIFF-02 | 58 | Active (cuttable to v0.10.1) |
+| DIFF-03 | 58 | Active (cuttable to v0.10.1) |
+| DIFF-04 | 58 | Active (cuttable to v0.10.1) |
 
 ---
 
-*Last updated: 2026-05-12 — milestone pivot from v1.0.0 Enterprise Hardening to v0.10.0 Real-Time File Access Prevention. HARD-02..08 dropped; HARD-01 carried forward as validated prerequisite.*
+*Last updated: 2026-05-12 — `gsd-roadmapper` filled traceability. Continuous from Phase 47. HARD-02..08 dropped; HARD-01 carried forward as validated prerequisite.*
