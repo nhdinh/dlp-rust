@@ -18,6 +18,7 @@ pub mod managed_origins;
 pub mod policies;
 pub mod secret_kek;
 pub mod siem_config;
+pub mod system_kv;
 
 pub use admin_users::AdminUserRepository;
 pub use agent_config::{AgentConfigOverrideRow, AgentConfigRepository, GlobalAgentConfigRow};

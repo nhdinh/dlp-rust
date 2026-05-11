@@ -251,6 +251,63 @@ impl SecretCrypto {
         Err(CryptoError::KekNotLoaded)
     }
 
+    /// Load a specific KEK version from `secret_kek_history`, including
+    /// retired versions.
+    ///
+    /// Used by:
+    ///
+    /// 1. The rotation re-encrypt loop (Task 47-08): decrypt under the
+    ///    OLD (still-active) KEK before re-encrypting under the freshly
+    ///    inserted NEW KEK.
+    /// 2. Forensic decrypt of pre-rotation envelopes after rotation
+    ///    completes (Task 47-10): the retired KEK row stays in the
+    ///    table, so historical ciphertexts remain decipherable for
+    ///    delayed-rollback scenarios.
+    ///
+    /// # Errors
+    ///
+    /// - [`CryptoError::KekNotLoaded`] when no row with the given
+    ///   `version` exists.
+    /// - [`CryptoError::DpapiUnprotectFailed`] when the wrapped seed
+    ///   cannot be unwrapped on this machine.
+    /// - [`CryptoError::KdfFailed`] for malformed salt blobs (length
+    ///   mismatch).
+    ///
+    /// Available on Windows only; non-Windows builds always return
+    /// [`CryptoError::KekNotLoaded`].
+    #[cfg(windows)]
+    pub fn load_by_version(conn: &rusqlite::Connection, version: u8) -> Result<Self, CryptoError> {
+        let row: Option<(u8, Vec<u8>, Vec<u8>, u32)> = conn
+            .query_row(
+                "SELECT version, master_seed_dpapi, pbkdf2_salt, pbkdf2_iterations \
+                 FROM secret_kek_history WHERE version = ?1",
+                rusqlite::params![version as i64],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .ok();
+        let (loaded_version, dpapi_blob, salt_blob, iterations) =
+            row.ok_or(CryptoError::KekNotLoaded)?;
+        let seed = dpapi_unprotect(&dpapi_blob)?;
+        if salt_blob.len() != PBKDF2_SALT_LEN {
+            return Err(CryptoError::KdfFailed);
+        }
+        let mut salt = [0u8; PBKDF2_SALT_LEN];
+        salt.copy_from_slice(&salt_blob);
+        let derived = derive_kek(&seed, &salt, iterations);
+        let mut kek = [0u8; 32];
+        kek.copy_from_slice(derived.as_ref());
+        Ok(Self::from_kek(kek, loaded_version))
+    }
+
+    /// Non-Windows stub: DPAPI is unavailable.
+    #[cfg(not(windows))]
+    pub fn load_by_version(
+        _conn: &rusqlite::Connection,
+        _version: u8,
+    ) -> Result<Self, CryptoError> {
+        Err(CryptoError::KekNotLoaded)
+    }
+
     /// Generate a new KEK version, persist the DPAPI-wrapped seed and salt
     /// into `secret_kek_history`, and return the loaded `SecretCrypto`.
     ///

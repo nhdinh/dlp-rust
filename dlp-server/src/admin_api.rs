@@ -803,6 +803,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
             "/admin/managed-origins/{id}",
             delete(delete_managed_origin_handler),
         )
+        // Phase 47 Task 47-08: KEK rotation + maintenance-mode toggle.
+        .route("/admin/secrets/rotate", post(rotate_secrets_handler))
+        .route("/admin/maintenance/enter", post(maintenance_enter_handler))
+        .route("/admin/maintenance/exit", post(maintenance_exit_handler))
         .route_layer(default_config())
         .layer(middleware::from_fn(admin_auth::require_auth));
 
@@ -2571,6 +2575,103 @@ async fn delete_managed_origin_handler(
     }
 
     tracing::info!(origin_id = %id, "managed origin deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 47 Task 47-08: KEK rotation + maintenance-mode toggle
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /admin/secrets/rotate`.
+///
+/// `force` defaults to `false` via `#[serde(default)]`, so an empty
+/// `{}` body (or no body at all) requires the maintenance-mode gate to
+/// be open. The CLI's `--force-while-running` flag flips this to
+/// `true` for operator-controlled bypass.
+#[derive(Debug, Default, Deserialize)]
+pub struct RotateSecretsRequest {
+    /// When `true`, bypass the `system_kv.maintenance_mode` gate.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// `POST /admin/secrets/rotate` — generate a new KEK version, re-encrypt
+/// every populated secret column under it, and retire the previous KEK.
+///
+/// Returns a JSON [`crate::secrets_migration::RotationReport`] summarising
+/// what moved. Returns:
+///
+/// - **400** when the maintenance-mode gate is closed and `force=false`.
+/// - **500** for any underlying crypto or DB failure mid-rotation. The
+///   per-table transactions guarantee that a partial failure does NOT
+///   leave a table in mixed-KEK state — the failing table rolls back
+///   and the operator can re-run `rotate-secrets` to repair it.
+async fn rotate_secrets_handler(
+    State(state): State<Arc<AppState>>,
+    body: Option<Json<RotateSecretsRequest>>,
+) -> Result<Json<crate::secrets_migration::RotationReport>, AppError> {
+    let force = body.map(|Json(b)| b.force).unwrap_or(false);
+    let pool: Arc<db::Pool> = Arc::clone(&state.pool);
+    let crypto = Arc::clone(&state.crypto);
+
+    let report = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        crate::secrets_migration::rotate_kek(&pool, &crypto, force).map_err(|e| {
+            // Distinguish the maintenance gate (BadRequest / 400) from
+            // generic mid-rotation failures (Internal / 500). The
+            // typed-variant downcast keeps the error mapping precise
+            // without a sentinel-string match.
+            if e.downcast_ref::<crate::secrets_migration::RotationError>()
+                .is_some()
+            {
+                AppError::BadRequest(e.to_string())
+            } else {
+                AppError::Internal(e)
+            }
+        })
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::warn!(
+        old_version = report.old_version,
+        new_version = report.new_version,
+        rows_reencrypted = report.rows_reencrypted,
+        "KEK rotation completed"
+    );
+    Ok(Json(report))
+}
+
+/// `POST /admin/maintenance/enter` — set `system_kv.maintenance_mode = "1"`.
+///
+/// Idempotent: calling on an already-entered system is a no-op.
+async fn maintenance_enter_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<StatusCode, AppError> {
+    let pool: Arc<db::Pool> = Arc::clone(&state.pool);
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let conn = pool.get()?;
+        crate::db::repositories::system_kv::maintenance_enter(&conn).map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    tracing::warn!("maintenance mode entered");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /admin/maintenance/exit` — set `system_kv.maintenance_mode = "0"`.
+///
+/// Idempotent: calling on an already-exited system is a no-op.
+async fn maintenance_exit_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<StatusCode, AppError> {
+    let pool: Arc<db::Pool> = Arc::clone(&state.pool);
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let conn = pool.get()?;
+        crate::db::repositories::system_kv::maintenance_exit(&conn).map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    tracing::info!("maintenance mode exited");
     Ok(StatusCode::NO_CONTENT)
 }
 
