@@ -3110,6 +3110,204 @@ mod tests {
         assert_ne!(stored_webhook_secret, ALERT_SECRET_MASK);
     }
 
+    /// Phase 47 Task 47-07: extend the ALERT_SECRET_MASK round-trip
+    /// regression to the SIEM endpoints.
+    ///
+    /// Walks the same TUI-save-without-edit flow as
+    /// [`test_put_alert_config_preserves_masked_secret`] but for the
+    /// `/admin/siem-config` PUT handler. The on-disk
+    /// `splunk_token_encrypted` and `elk_api_key_encrypted` columns
+    /// must continue to decrypt to the original plaintexts after a
+    /// mask-echo PUT, proving the mask sentinel is never written into
+    /// the encrypted blob.
+    ///
+    /// Together with the alert-config sibling test, this is the
+    /// firewall against a regression in [`resolve_secret_field`] /
+    /// [`update_siem_config_handler`] that would silently overwrite a
+    /// stored token with the literal mask string.
+    #[tokio::test]
+    async fn test_put_siem_config_preserves_masked_secret() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use jsonwebtoken::{encode, EncodingKey, Header};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        // Deterministic test KEK — production uses
+        // SecretCrypto::load_active_or_bootstrap which involves DPAPI;
+        // tests bypass that for cross-platform reproducibility.
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x55; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        // Run the Phase 47 Task 47-06 migration so the encrypted-side
+        // columns are populated (no-op on a fresh DB but exercises the
+        // production startup path).
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
+        );
+        let state = Arc::new(AppState {
+            pool: Arc::clone(&pool),
+            crypto: std::sync::Arc::clone(&crypto),
+            policy_store,
+            siem,
+            alert,
+            ad: None,
+        });
+        let app = admin_router(state);
+
+        let claims = crate::admin_auth::Claims {
+            sub: "test-admin".to_string(),
+            exp: (Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
+            iss: "dlp-server".to_string(),
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+        )
+        .expect("encode JWT");
+
+        // ---- Step 1: seed SIEM config with real plaintext secrets. ----
+        // Fixture values are obviously-test sentinels so any leak via
+        // the wire (mask-substitution regression) is unambiguous.
+        let initial = SiemConfigPayload {
+            splunk_url: "https://splunk.internal.corp:8088".to_string(),
+            splunk_token: "fixture-splunk-token-A".to_string(),
+            splunk_enabled: true,
+            elk_url: "https://elastic.internal.corp:9200".to_string(),
+            elk_index: "dlp-events".to_string(),
+            elk_api_key: "fixture-elk-key-B".to_string(),
+            elk_enabled: true,
+        };
+        let put1 = Request::builder()
+            .method("PUT")
+            .uri("/admin/siem-config")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&initial).expect("ser")))
+            .expect("build PUT 1");
+        let put1_resp = app.clone().oneshot(put1).await.expect("PUT 1 oneshot");
+        assert_eq!(put1_resp.status(), StatusCode::OK);
+
+        // ---- Step 2: GET — response must show masked sentinels. -------
+        let get1 = Request::builder()
+            .method("GET")
+            .uri("/admin/siem-config")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build GET 1");
+        let get1_resp = app.clone().oneshot(get1).await.expect("GET 1 oneshot");
+        assert_eq!(get1_resp.status(), StatusCode::OK);
+        let get1_bytes = to_bytes(get1_resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body 1");
+        let masked: SiemConfigPayload = serde_json::from_slice(&get1_bytes).expect("parse body 1");
+        assert_eq!(
+            masked.splunk_token, ALERT_SECRET_MASK,
+            "GET /admin/siem-config must mask splunk_token"
+        );
+        assert_eq!(
+            masked.elk_api_key, ALERT_SECRET_MASK,
+            "GET /admin/siem-config must mask elk_api_key"
+        );
+        // Non-secret fields must round-trip unchanged.
+        assert_eq!(masked.splunk_url, initial.splunk_url);
+        assert_eq!(masked.elk_url, initial.elk_url);
+        assert_eq!(masked.elk_index, initial.elk_index);
+
+        // ---- Step 3: PUT the masked payload unchanged. ----------------
+        // Simulates the TUI's "save without editing the token" flow.
+        let put2 = Request::builder()
+            .method("PUT")
+            .uri("/admin/siem-config")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&masked).expect("ser 2")))
+            .expect("build PUT 2");
+        let put2_resp = app.clone().oneshot(put2).await.expect("PUT 2 oneshot");
+        assert_eq!(put2_resp.status(), StatusCode::OK);
+
+        // ---- Step 4: decrypt the on-disk blob and assert plaintext. ---
+        // Phase 47 Task 47-06: the cleartext columns no longer exist on
+        // disk, so we go through the encrypted-aware repository read
+        // and decrypt via the in-memory SecretCrypto handle.
+        use secrecy::ExposeSecret;
+        let stored_row = crate::db::repositories::SiemConfigRepository::get(&pool, &crypto)
+            .expect("encrypted read");
+        let stored_splunk_token = stored_row
+            .splunk_token
+            .as_ref()
+            .map(|s| s.expose_secret().to_string())
+            .expect("splunk_token must be populated post-PUT");
+        let stored_elk_api_key = stored_row
+            .elk_api_key
+            .as_ref()
+            .map(|s| s.expose_secret().to_string())
+            .expect("elk_api_key must be populated post-PUT");
+        assert_eq!(
+            stored_splunk_token, "fixture-splunk-token-A",
+            "stored splunk_token must match the initial PUT plaintext"
+        );
+        assert_eq!(
+            stored_elk_api_key, "fixture-elk-key-B",
+            "stored elk_api_key must match the initial PUT plaintext"
+        );
+        // Defensive cross-check: the mask sentinel must NEVER appear in
+        // the decrypted ciphertext. A regression in `resolve_secret_field`
+        // would surface here.
+        assert_ne!(stored_splunk_token, ALERT_SECRET_MASK);
+        assert_ne!(stored_elk_api_key, ALERT_SECRET_MASK);
+
+        // ---- Step 5: rotate one field, keep the other masked. ---------
+        // Confirms the per-field mask resolution does not couple the two
+        // secrets — rotating splunk_token must NOT clobber elk_api_key.
+        let mixed = SiemConfigPayload {
+            splunk_token: "rotated-splunk-token-C".to_string(),
+            elk_api_key: ALERT_SECRET_MASK.to_string(),
+            ..masked.clone()
+        };
+        let put3 = Request::builder()
+            .method("PUT")
+            .uri("/admin/siem-config")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&mixed).expect("ser 3")))
+            .expect("build PUT 3");
+        let put3_resp = app.clone().oneshot(put3).await.expect("PUT 3 oneshot");
+        assert_eq!(put3_resp.status(), StatusCode::OK);
+
+        let post_rotate = crate::db::repositories::SiemConfigRepository::get(&pool, &crypto)
+            .expect("encrypted read post-rotate");
+        let rotated_splunk = post_rotate
+            .splunk_token
+            .as_ref()
+            .map(|s| s.expose_secret().to_string())
+            .expect("splunk_token populated");
+        let preserved_elk = post_rotate
+            .elk_api_key
+            .as_ref()
+            .map(|s| s.expose_secret().to_string())
+            .expect("elk_api_key populated");
+        assert_eq!(rotated_splunk, "rotated-splunk-token-C");
+        assert_eq!(
+            preserved_elk, "fixture-elk-key-B",
+            "elk_api_key must survive a sibling-field rotation under mask"
+        );
+    }
+
     // ── Temporary diagnostic: verify DB insert→select round-trip ────────────
 
     #[tokio::test]
