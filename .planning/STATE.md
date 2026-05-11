@@ -9,7 +9,7 @@ progress:
   total_phases: 8
   completed_phases: 0
   total_plans: 11
-  completed_plans: 1
+  completed_plans: 3
   percent: 0
 ---
 
@@ -27,9 +27,9 @@ progress:
 
 - **Milestone:** v1.0.0 — Enterprise Hardening & Scale
 - **Phase:** 47 — Secrets Encryption at Rest (in progress)
-- **Plan:** Wave 1 complete (1/11 tasks); Wave 2 pending
-- **Status:** Task 47-01 landed (crypto core: DPAPI + PBKDF2 + AES-256-GCM envelope, 14 tests green, commit `622268a`)
-- **Last activity:** 2026-05-13 (Task 47-01 execution)
+- **Plan:** Waves 1-2 complete (3/11 tasks); Wave 3 pending
+- **Status:** Crypto core + KEK repo + JWT/LDAP/encrypted-column schema landed. Commits `622268a` (47-01), `a62c735` (47-02), `3c44265` (47-03). 270 tests green workspace-wide, no regressions.
+- **Last activity:** 2026-05-13 (Wave 2 execution)
 
 ## Progress
 
@@ -44,7 +44,7 @@ v0.7.1 [Phase 38.3–38.6 done] (shipped 2026-05-06)
 v0.8.0 [Phase 39–42 done] (shipped 2026-05-07)
 v0.8.1 [Phase 43–46 done] (shipped 2026-05-08)
 v0.9.0 [M017 / pre-Phase 47 done] (shipped 2026-05-09)
-v1.0.0 [Phase 47 in progress: Wave 1/5 done (47-01) | 48–54 pending] (active)
+v1.0.0 [Phase 47 in progress: Waves 1-2/5 done (47-01, 47-02, 47-03) | 48–54 pending] (active)
 ```
 
 ---
@@ -63,10 +63,16 @@ None.
 ## Next Action
 
 ```
-/gsd-execute-phase 47 --wave 2
+/gsd-execute-phase 47 --wave 3
 ```
 
-Wave 2 = Tasks 47-02 (schema/KEK repo) + 47-03 (JWT + LDAP schema additions). Both touch `dlp-server/src/db/mod.rs` — run sequentially within the wave, not parallel.
+Wave 3 = Tasks 47-04 (loader refactor), 47-05 (JWT/LDAP loader integration), 47-09 (logging hygiene audit). These have the highest blast radius — touch many files across `dlp-server/`. Plan sequentially or in parallel after a careful read of 47-PLAN.md.
+
+Schema delta from Wave 2 ready for downstream consumption:
+- `secrets_jwt` (NEW table, single-row CHECK id=1)
+- `alert_router_config.{smtp_password,webhook_secret}_{encrypted,nonce,version}`
+- `siem_config.{splunk_token,elk_api_key}_{encrypted,nonce,version}`
+- `ldap_config.{bind_dn, bind_password_{encrypted,nonce,version}}`
 
 ---
 
