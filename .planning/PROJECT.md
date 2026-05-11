@@ -1,10 +1,10 @@
 ---
 name: DLP-RUST
-version: v1.0.0-planning
-last_updated: 2026-05-11
-status: between-milestones
+version: v0.10.0-planning
+last_updated: 2026-05-12
+status: in_progress
 shipped: v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0, v0.7.1, v0.8.0, v0.8.1, v0.9.0
-next_milestone: v1.0.0
+active_milestone: v0.10.0
 ---
 
 # DLP-RUST — Enterprise Data Loss Prevention System
@@ -87,6 +87,25 @@ If NTFS ALLOW and ABAC DENY → FINAL RESULT = DENY. ABAC always tightens, never
 - ~8 months of development through 2026-05-11
 - 700+ tests across the workspace, clippy-clean
 
+## Current Milestone: v0.10.0 Real-Time File Access Prevention
+
+**Goal:** Convert general file I/O from passive audit-trail-after-the-fact to active real-time blocking at the moment of access, via a hybrid of user-mode IAT hooks (primary enforcement), NTFS DACL tripwires (kernel-enforced backstop), and ETW Kernel-File telemetry (bypass detection). No kernel driver, no EV cert, no minifilter.
+
+**Target features:**
+
+- **Universal hook DLL injection** — generalize the v0.9.0 cloud-sync `dlp-hook-dll` pattern; inject into every user-mode process via `AppInit_DLLs` plus agent-driven `CreateRemoteThread` on process-creation events; allowlist system services and AV/EDR processes.
+- **Expanded file-I/O hook surface** — patch `CreateFileW/A`, `NtCreateFile`, `WriteFile`, `MoveFileExW`, `CopyFileExW`, `DeleteFileW`, `SetFileInformationByHandle`; cover local NTFS, network shares (UNC paths), and SD / optical / virtual drives (SEED-004 folded in).
+- **ntdll syscall-stub patching** — in-memory Detours-style trampoline on ntdll syscall entries to close the direct-syscall bypass hole.
+- **DACL tripwire for T3/T4 root paths** — agent writes explicit Deny ACEs as defense-in-depth; repair watcher reverts and maintains under AD group changes and file moves.
+- **ETW Kernel-File consumer + bypass alerts feed** — agent subscribes to `Microsoft-Windows-Kernel-File`; events that hit ETW but skipped the hook are flagged as suspected syscall-bypass and surfaced via SIEM, alert router, and a new admin TUI alerts feed.
+- **Local classification cache on hook DLL** — in-process `path → classification` cache so fail-mode decisions don't require a live agent pipe.
+- **Asymmetric fail semantics** — agent-unreachable: fail-closed for T3/T4 (return `ERROR_ACCESS_DENIED`), fail-open for T1/T2 (I/O proceeds, telemetry deferred). Cached classification drives the decision.
+- **Admin CLI Protected Paths screen** — new TUI screen to list/add/remove DACL-tripwire path roots, with visible diff between policy-derived defaults and operator overrides.
+- **Admin CLI Bypass Alerts screen** — new TUI screen for ETW-detected suspected-bypass events; integrates with SIEM relay and alert router.
+- **SD/optical/virtual drive enumeration** — fold SEED-004 in; device enumeration for these volume classes; admin TUI policy UX mirrors USB/disk allowlist pattern.
+
+**v1.0.0 Enterprise Hardening dropped.** HARD-02 through HARD-08 move to Out of Scope. HARD-01 (Secrets Encryption at Rest) stays validated — Phase 47 is shipped and carries forward as a v0.10.0 prerequisite. Phase 47's planning artifacts (`.planning/phases/47-secrets-encryption-at-rest/`) are retained, including the DPAPI-recovery handoff originally slated for v1.0.0 Phase 52 (now folded into v0.10.0's operational documentation surface).
+
 ## Requirements
 
 ### Validated
@@ -101,17 +120,20 @@ If NTFS ALLOW and ABAC DENY → FINAL RESULT = DENY. ABAC always tightens, never
 - ✓ **UWP & drag-and-drop enforcement** (v0.8.0) — AUMID for UWP, WH_GETMESSAGE drag-drop interception, browser origin-aware clipboard policies
 - ✓ **Deferred items & issue debt** (v0.8.1) — PnP USB enforcement, mount-time disk blocking, configurable grace period, full SanDisk UAT
 - ✓ **Cloud & print exfiltration prevention** (v0.9.0) — user-mode IAT hook + WFP for cloud sync, FindFirstPrinterChangeNotification + XPS extraction for print, share link detection, admin CLI Cloud/Print screens
+- ✓ **Secrets Encryption at Rest** (v0.10.0 Phase 47, shipped 2026-05-11 as HARD-01) — PBKDF2 + DPAPI machine-bound KEK for SMTP, SIEM, JWT, LDAP bind credentials; cleartext columns dropped; KEK rotation via admin CLI; full migration + log-scan + rotation integration tests
 
-### Active (v1.0.0 — Enterprise Hardening & Scale)
+### Active (v0.10.0 — Real-Time File Access Prevention)
 
-- [ ] **HARD-01** — Encrypt SQLite secrets at rest (PBKDF2 + machine key)
-- [ ] **HARD-02** — Split monolithic `admin_api.rs` (217 KB) into per-domain modules
-- [ ] **HARD-03** — Append-only audit hash chain (SHA-256) for tamper detection
-- [ ] **HARD-04** — End-to-end test coverage for password-protected service stop
-- [ ] **HARD-05** — Manual smoke test on real Windows host with real sync clients and print jobs
-- [ ] **HARD-06** — Operational runbooks + deployment guides
-- [ ] **HARD-07** — Performance baseline at scale (1000+ policies, 100+ agents)
-- [ ] **HARD-08** — SonarQube quality gate clean + v1.0.0 release tag
+REQ-IDs defined in `.planning/REQUIREMENTS.md`. High-level coverage:
+
+- [ ] **BLOCK-** — universal user-mode hook DLL injection (AppInit_DLLs + CreateRemoteThread), expanded file-I/O hook surface, ntdll syscall-stub patching
+- [ ] **DACL-** — defense-in-depth NTFS Deny-ACE tripwire for T3/T4 paths with repair watcher
+- [ ] **ETW-** — Kernel-File consumer for suspected syscall-bypass detection, wired into SIEM and alert router
+- [ ] **CACHE-** — local classification cache on hook DLL for fail-mode decisions
+- [ ] **FAIL-** — asymmetric fail semantics: fail-closed T3/T4, fail-open T1/T2 on agent-unreachable
+- [ ] **UX-** — admin CLI Protected Paths screen + Bypass Alerts screen
+- [ ] **DRIVE-** — SD / optical / virtual drive enumeration and policy UX (SEED-004 fold-in)
+- [ ] **OPS-** — deployment guide covering AV/EDR allowlist procedure for global DLL injection
 
 ### Out of Scope
 
@@ -120,8 +142,15 @@ If NTFS ALLOW and ABAC DENY → FINAL RESULT = DENY. ABAC always tightens, never
 - **Cloud-native policy engine** — on-prem DLP with enterprise AD dependency
 - **File encryption at rest** — NTFS ACLs + ABAC provide access control
 - **Raw JSON policy editing** — replaced by Conditions Builder in v0.4.0
-- **Kernel minifilter driver** — user-mode API hooking + WFP sufficient; no EV cert path
+- **Kernel minifilter driver** — user-mode API hooking + WFP + DACL tripwire + ETW sufficient; no EV cert path (reaffirmed for v0.10.0)
 - **Native browser extension** — deferred to post-v1.0 milestone (v1.3)
+- **Admin API module refactor (HARD-02)** — dropped from v1.0.0; revisit when monolith size becomes a velocity blocker
+- **Audit hash chain (HARD-03)** — dropped from v1.0.0; tamper-evident audit can be revisited as a standalone milestone
+- **Password-protected service-stop E2E in CI (HARD-04)** — dropped from v1.0.0; manual test remains until a Windows CI runner is in place
+- **Acceptance smoke test on real Windows host (HARD-05)** — dropped from v1.0.0; folded informally into v0.10.0 UAT for real-blocking validation
+- **Operational runbooks (HARD-06)** — dropped from v1.0.0; v0.10.0 ships a narrower deployment guide (AV/EDR allowlist + global injection) rather than the full operational bundle
+- **Performance baseline at scale (HARD-07)** — dropped from v1.0.0; revisit when v0.10.0 hook DLL is in production
+- **SonarQube clean gate + v1.0.0 release tag (HARD-08)** — dropped; v1.0.0 will not be tagged. Next release tag is `v0.10.0` after this milestone closes
 
 ## Key Decisions
 
@@ -163,16 +192,19 @@ If NTFS ALLOW and ABAC DENY → FINAL RESULT = DENY. ABAC always tightens, never
 | quick-xml 0.36 changed signatures: pass `reader.decoder()` (not the reader) to `decode_and_unescape_value` | Older code paths break silently when bumping the crate |
 | Clipboard listener uses `unsafe` in three places (Win32 hook proc, `GetMessageW` loop, raw-pointer string parsing) | Mitigated by SAFETY comments, dedicated thread, and a 1M-character sanity limit; risk accepted |
 
-### Outstanding Debt (Carries Into v1.0.0)
+### Outstanding Debt (Carries Into v0.10.0+)
 
-| Item | Severity | Phase |
-|------|----------|-------|
-| Alert router wired but never invoked (dead code path) | Medium | v1.0.0 — mirror SIEM relay pattern |
-| Audit hash chain (tamper detection) | High | v1.0.0 HARD-03 (N-SEC-07) |
-| Webhook HMAC signing for SIEM relay | Medium | v1.0.0 |
-| Password-protected service-stop E2E test | Medium | v1.0.0 HARD-04 |
-| Secrets encryption at rest in SQLite | **High** | v1.0.0 HARD-01 |
-| `admin_api.rs` monolithic 217 KB file | High | v1.0.0 HARD-02 |
+| Item | Severity | Status |
+|------|----------|--------|
+| Secrets encryption at rest in SQLite | **High** | ✓ Validated v0.10.0 Phase 47 (HARD-01) |
+| Direct-syscall bypass of v0.9.0 cloud-sync IAT hook | **High** | v0.10.0 — ntdll syscall-stub patching closes this for all hooks |
+| Audit-only file I/O (Explorer copy/move not blocked in real time) | **High** | v0.10.0 — universal hook DLL + DACL tripwire |
+| AV/EDR may flag global DLL injection | Medium | v0.10.0 OPS- — deployment guide allowlist procedure |
+| Alert router wired but never invoked (dead code path) | Medium | Backlog — mirror SIEM relay pattern in a future minor |
+| Webhook HMAC signing for SIEM relay | Medium | Backlog |
+| Password-protected service-stop E2E test | Medium | Backlog — needs Windows CI runner |
+| Audit hash chain (tamper detection) | High | Backlog — standalone milestone, N-SEC-07 |
+| `admin_api.rs` monolithic 217 KB file | Medium | Backlog — revisit when velocity blocked |
 
 ## Evolution
 
@@ -209,4 +241,4 @@ The earlier `.planning.legacy/` (phase-numbered GSD format) and `.gsd.legacy/` (
 
 ---
 
-*Last updated: 2026-05-11 after re-initialization + legacy consolidation.*
+*Last updated: 2026-05-12 — milestone pivot from v1.0.0 Enterprise Hardening to v0.10.0 Real-Time File Access Prevention.*
