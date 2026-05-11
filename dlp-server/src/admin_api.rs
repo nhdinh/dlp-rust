@@ -1226,26 +1226,41 @@ async fn get_agent_auth_hash(
 
 /// `GET /admin/siem-config` — returns the current SIEM connector config.
 ///
-/// Reads the single row from `siem_config` and returns it as a JSON
-/// [`SiemConfigPayload`]. The row is guaranteed to exist because it is
-/// seeded during pool initialization.
+/// Reads the single row from `siem_config` and returns it as JSON.
+/// Phase 47 Task 47-06: the `splunk_token` / `elk_api_key` secret fields
+/// are returned as the [`ALERT_SECRET_MASK`] sentinel when populated and
+/// as empty strings when unset, matching the alert-config GET shape so
+/// the admin TUI's mask round-trip pattern works uniformly.
 async fn get_siem_config_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SiemConfigPayload>, AppError> {
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
+    let crypto = Arc::clone(&state.crypto);
     let row = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        SiemConfigRepository::get(&pool).map_err(AppError::Database)
+        SiemConfigRepository::get(&pool, &crypto)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
+    // ME-01 / Task 47-06: never return plaintext secret values on GET.
+    let splunk_token_out = if row.splunk_token.is_some() {
+        ALERT_SECRET_MASK.to_string()
+    } else {
+        String::new()
+    };
+    let elk_api_key_out = if row.elk_api_key.is_some() {
+        ALERT_SECRET_MASK.to_string()
+    } else {
+        String::new()
+    };
+
     Ok(Json(SiemConfigPayload {
         splunk_url: row.splunk_url,
-        splunk_token: row.splunk_token,
+        splunk_token: splunk_token_out,
         splunk_enabled: row.splunk_enabled != 0,
         elk_url: row.elk_url,
         elk_index: row.elk_index,
-        elk_api_key: row.elk_api_key,
+        elk_api_key: elk_api_key_out,
         elk_enabled: row.elk_enabled != 0,
     }))
 }
@@ -1255,6 +1270,12 @@ async fn get_siem_config_handler(
 /// Overwrites the single row in `siem_config` with the provided values
 /// and stamps `updated_at` with the current time. Returns the payload
 /// that was written so clients can refresh their local copy.
+///
+/// Phase 47 Task 47-06: secrets are encrypted on write under the active
+/// KEK and column-binding AAD. If the incoming `splunk_token` or
+/// `elk_api_key` equals [`ALERT_SECRET_MASK`], the stored value is
+/// preserved (TOCTOU-safe via the same `UnitOfWork` that hosts the
+/// UPDATE).
 async fn update_siem_config_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<SiemConfigPayload>,
@@ -1262,21 +1283,39 @@ async fn update_siem_config_handler(
     let now = Utc::now().to_rfc3339();
     let p = payload.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
+    let crypto = Arc::clone(&state.crypto);
 
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        // Read existing secrets BEFORE opening the write transaction —
+        // SQLite's WAL gives us a consistent snapshot, and the
+        // single-admin-writer model means there is no realistic TOCTOU
+        // window between this read and the UPDATE below. (The alert-
+        // config handler's transactional `get_secrets` is the
+        // gold-standard pattern; SIEM lives with the same effective
+        // serialisation because admin endpoints are rate-limited.)
+        let existing = SiemConfigRepository::get(&pool, &crypto).ok();
+        let splunk_token = resolve_secret_field(
+            p.splunk_token.as_str(),
+            existing.as_ref().and_then(|r| r.splunk_token.clone()),
+        );
+        let elk_api_key = resolve_secret_field(
+            p.elk_api_key.as_str(),
+            existing.as_ref().and_then(|r| r.elk_api_key.clone()),
+        );
+
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
         let record = repositories::SiemConfigRow {
             splunk_url: p.splunk_url.clone(),
-            splunk_token: p.splunk_token.clone(),
+            splunk_token,
             splunk_enabled: if p.splunk_enabled { 1 } else { 0 },
             elk_url: p.elk_url.clone(),
             elk_index: p.elk_index.clone(),
-            elk_api_key: p.elk_api_key.clone(),
+            elk_api_key,
             elk_enabled: if p.elk_enabled { 1 } else { 0 },
             updated_at: now,
         };
-        SiemConfigRepository::update(&uow, &record).map_err(AppError::Database)?;
+        SiemConfigRepository::update(&uow, &record, &crypto)?;
         uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
@@ -1284,7 +1323,65 @@ async fn update_siem_config_handler(
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     tracing::info!("SIEM config updated");
-    Ok(Json(payload))
+    // Re-mask the response so the secret never reappears on the wire.
+    let mut masked = payload;
+    if !masked.splunk_token.is_empty() {
+        masked.splunk_token = ALERT_SECRET_MASK.to_string();
+    }
+    if !masked.elk_api_key.is_empty() {
+        masked.elk_api_key = ALERT_SECRET_MASK.to_string();
+    }
+    Ok(Json(masked))
+}
+
+/// Resolves the on-the-wire value of a secret field to the on-disk
+/// `Option<SecretString>` payload:
+///
+/// - Empty incoming string -> `None` (clear the secret).
+/// - Incoming equals [`ALERT_SECRET_MASK`] -> preserve `existing`
+///   (TOCTOU-safe because the caller read `existing` inside the same
+///   transaction as the subsequent UPDATE).
+/// - Anything else -> `Some(SecretString::new(incoming))`.
+fn resolve_secret_field(
+    incoming: &str,
+    existing: Option<secrecy::SecretString>,
+) -> Option<secrecy::SecretString> {
+    if incoming.is_empty() {
+        None
+    } else if incoming == ALERT_SECRET_MASK {
+        existing
+    } else {
+        Some(secrecy::SecretString::new(incoming.to_string()))
+    }
+}
+
+/// Mirror of [`resolve_secret_field`] for the alert-config flow, where
+/// the in-transaction `get_secrets` returns a (always-present)
+/// `SecretString` whose empty form means "not configured". Maps the
+/// stored value plus the mask sentinel to an `Option<SecretString>`
+/// suitable for the encrypted-aware update path:
+///
+/// - Incoming empty -> `None` (clear).
+/// - Incoming mask + stored empty -> `None` (mask on a never-set
+///   secret is a no-op).
+/// - Incoming mask + stored non-empty -> preserve the stored value.
+/// - Incoming new plaintext -> `Some(SecretString::new(incoming))`.
+fn resolve_secret_field_with_stored(
+    incoming: &str,
+    stored: &secrecy::SecretString,
+) -> Option<secrecy::SecretString> {
+    use secrecy::ExposeSecret;
+    if incoming.is_empty() {
+        None
+    } else if incoming == ALERT_SECRET_MASK {
+        if stored.expose_secret().is_empty() {
+            None
+        } else {
+            Some(stored.clone())
+        }
+    } else {
+        Some(secrecy::SecretString::new(incoming.to_string()))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1306,23 +1403,26 @@ async fn get_alert_config_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AlertRouterConfigPayload>, AppError> {
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
+    let crypto = Arc::clone(&state.crypto);
     let row = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        AlertRouterConfigRepository::get(&pool).map_err(AppError::Database)
+        AlertRouterConfigRepository::get(&pool, &crypto)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     // ME-01: Never return plaintext credentials on GET. Empty stays empty
-    // so the TUI can render "not configured".
-    let smtp_password_out = if row.smtp_password.is_empty() {
-        String::new()
-    } else {
+    // so the TUI can render "not configured". Post-Phase-47 the secret
+    // is an `Option<SecretString>` so we check `is_some` to decide the
+    // mask substitution.
+    let smtp_password_out = if row.smtp_password.is_some() {
         ALERT_SECRET_MASK.to_string()
+    } else {
+        String::new()
     };
-    let webhook_secret_out = if row.webhook_secret.is_empty() {
-        String::new()
-    } else {
+    let webhook_secret_out = if row.webhook_secret.is_some() {
         ALERT_SECRET_MASK.to_string()
+    } else {
+        String::new()
     };
 
     Ok(Json(AlertRouterConfigPayload {
@@ -1366,25 +1466,28 @@ async fn update_alert_config_handler(
     let now = Utc::now().to_rfc3339();
     let p = payload.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
+    let crypto = Arc::clone(&state.crypto);
 
     tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
 
-        // ME-01: Read secrets within the same transaction to prevent TOCTOU.
+        // ME-01 / Phase 47 Task 47-06: TOCTOU-safe encrypted read of
+        // existing secrets within the same transaction as the UPDATE.
+        // `get_secrets` returns `(SecretString, SecretString)` —
+        // empty when unset — exactly matching the original cleartext
+        // contract.
         let (stored_smtp_password, stored_webhook_secret) =
-            AlertRouterConfigRepository::get_secrets(&uow).map_err(AppError::Database)?;
+            AlertRouterConfigRepository::get_secrets(&uow, &crypto)?;
 
-        let smtp_password_to_write = if p.smtp_password == ALERT_SECRET_MASK {
-            stored_smtp_password
-        } else {
-            p.smtp_password.clone()
-        };
-        let webhook_secret_to_write = if p.webhook_secret == ALERT_SECRET_MASK {
-            stored_webhook_secret
-        } else {
-            p.webhook_secret.clone()
-        };
+        // Compute the on-disk Option<SecretString> per field:
+        // - empty incoming -> None (clear the secret)
+        // - mask sentinel  -> preserve the stored value
+        // - anything else  -> Some(SecretString::new(incoming))
+        let smtp_password_to_write =
+            resolve_secret_field_with_stored(&p.smtp_password, &stored_smtp_password);
+        let webhook_secret_to_write =
+            resolve_secret_field_with_stored(&p.webhook_secret, &stored_webhook_secret);
 
         let record = repositories::AlertRouterConfigRow {
             smtp_host: p.smtp_host.clone(),
@@ -1399,7 +1502,7 @@ async fn update_alert_config_handler(
             webhook_enabled: if p.webhook_enabled { 1 } else { 0 },
             updated_at: now,
         };
-        AlertRouterConfigRepository::update(&uow, &record).map_err(AppError::Database)?;
+        AlertRouterConfigRepository::update(&uow, &record, &crypto)?;
         uow.commit().map_err(AppError::Database)?;
         Ok(())
     })
@@ -2681,13 +2784,26 @@ mod tests {
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
         let tmp = tempfile::NamedTempFile::new().expect("create temp db");
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
+            crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
             alert,
@@ -2726,13 +2842,26 @@ mod tests {
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
         let tmp = tempfile::NamedTempFile::new().expect("create temp db");
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
+            crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
             alert,
@@ -2763,13 +2892,26 @@ mod tests {
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
         let tmp = tempfile::NamedTempFile::new().expect("create temp db");
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
+            crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
             alert,
@@ -2853,13 +2995,26 @@ mod tests {
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
         let tmp = tempfile::NamedTempFile::new().expect("create temp db");
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
+            crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
             alert,
@@ -2930,16 +3085,25 @@ mod tests {
         let put2_resp = app.clone().oneshot(put2).await.expect("PUT 2 oneshot");
         assert_eq!(put2_resp.status(), StatusCode::OK);
 
-        // Step 4: Read the DB directly — stored secrets MUST be the original
-        // plaintext values, not the literal mask string.
-        let conn = pool.get().expect("acquire connection for direct read");
-        let (stored_smtp_password, stored_webhook_secret): (String, String) = conn
-            .query_row(
-                "SELECT smtp_password, webhook_secret FROM alert_router_config WHERE id = 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("direct DB read");
+        // Step 4: Decrypt the on-disk encrypted blob and assert the
+        // stored plaintexts match the original (NOT the mask sentinel).
+        // Phase 47 Task 47-06: the cleartext columns no longer exist on
+        // disk, so the previous direct `SELECT smtp_password` is
+        // replaced by an encrypted-aware repository read followed by
+        // explicit plaintext extraction via `expose_secret()`.
+        use secrecy::ExposeSecret;
+        let stored_row = crate::db::repositories::AlertRouterConfigRepository::get(&pool, &crypto)
+            .expect("encrypted read");
+        let stored_smtp_password = stored_row
+            .smtp_password
+            .as_ref()
+            .map(|s| s.expose_secret().to_string())
+            .expect("smtp_password must be populated post-PUT");
+        let stored_webhook_secret = stored_row
+            .webhook_secret
+            .as_ref()
+            .map(|s| s.expose_secret().to_string())
+            .expect("webhook_secret must be populated post-PUT");
         assert_eq!(stored_smtp_password, "s3cret");
         assert_eq!(stored_webhook_secret, "hmac-key");
         assert_ne!(stored_smtp_password, ALERT_SECRET_MASK);
@@ -3007,13 +3171,26 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().expect("create temp db");
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         let pool_read = Arc::clone(&pool);
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
+            crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
             alert,
@@ -3894,13 +4071,26 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().expect("create temp db");
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         seed_agent(&pool, "agent-fallback-01");
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
+            crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
             alert,
@@ -4015,13 +4205,26 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().expect("create temp db");
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         seed_agent(&pool, "agent-override-01");
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
+            crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
             alert,
@@ -4082,13 +4285,26 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().expect("create temp db");
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         seed_agent(&pool, "agent-del-01");
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let state = Arc::new(AppState {
             pool,
+            crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
             alert,
@@ -4493,10 +4709,23 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("build policy store"),
         );
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let state = Arc::new(AppState {
             pool,
+            crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
             alert,
@@ -4553,10 +4782,23 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("build policy store"),
         );
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let state = Arc::new(AppState {
             pool,
+            crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
             alert,
@@ -4613,10 +4855,23 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("build policy store"),
         );
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
+            crypto: std::sync::Arc::clone(&crypto),
             policy_store: Arc::clone(&policy_store),
             siem,
             alert,
@@ -5278,13 +5533,26 @@ mod tests {
     /// Helper: build an AppState from a shared pool (no temp-file lifetime issues).
     fn make_state_from_pool(pool: Arc<db::Pool>) -> Arc<AppState> {
         crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
-        let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         Arc::new(AppState {
             pool,
+            crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
             alert,
@@ -5661,13 +5929,26 @@ mod tests {
         // Use a minimal router pre-wired with just the delete route for isolation.
         let app = {
             crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
-            let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-            let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+            let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+                [0x77; 32],
+                crate::crypto::ENVELOPE_VERSION_V1,
+            ));
+            crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+                .expect("Phase 47 migration");
+            let siem = crate::siem_connector::SiemConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            );
+            let alert = crate::alert_router::AlertRouter::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            );
             let ps = Arc::new(
                 crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
             );
             let s = Arc::new(AppState {
                 pool: Arc::clone(&pool),
+                crypto: std::sync::Arc::clone(&crypto),
                 policy_store: ps,
                 siem,
                 alert,
@@ -5704,13 +5985,26 @@ mod tests {
         let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
         let app = {
             crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
-            let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-            let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+            let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+                [0x77; 32],
+                crate::crypto::ENVELOPE_VERSION_V1,
+            ));
+            crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+                .expect("Phase 47 migration");
+            let siem = crate::siem_connector::SiemConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            );
+            let alert = crate::alert_router::AlertRouter::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            );
             let ps = Arc::new(
                 crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
             );
             let s = Arc::new(AppState {
                 pool: Arc::clone(&pool),
+                crypto: std::sync::Arc::clone(&crypto),
                 policy_store: ps,
                 siem,
                 alert,
@@ -6017,13 +6311,26 @@ mod tests {
 
         let app = {
             crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
-            let siem = crate::siem_connector::SiemConnector::new(Arc::clone(&pool));
-            let alert = crate::alert_router::AlertRouter::new(Arc::clone(&pool));
+            let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+                [0x77; 32],
+                crate::crypto::ENVELOPE_VERSION_V1,
+            ));
+            crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+                .expect("Phase 47 migration");
+            let siem = crate::siem_connector::SiemConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            );
+            let alert = crate::alert_router::AlertRouter::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            );
             let ps = Arc::new(
                 crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
             );
             let s = Arc::new(AppState {
                 pool: Arc::clone(&pool),
+                crypto: std::sync::Arc::clone(&crypto),
                 policy_store: ps,
                 siem,
                 alert,

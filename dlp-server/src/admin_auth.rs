@@ -62,55 +62,29 @@ impl AdminUsername {
 /// Insecure fallback secret used only when `--dev` is active.
 const DEV_JWT_SECRET: &str = "dlp-server-dev-secret-change-me";
 
-/// Resolves the JWT signing secret.
+/// Resolves the JWT signing secret from the encrypted DB row, falling
+/// back to a one-shot env-var migration and (in dev mode) the insecure
+/// dev secret.
 ///
-/// - If `JWT_SECRET` env var is set, uses it.
-/// - If `dev_mode` is true and env var is absent, uses an insecure fallback.
-/// - Otherwise returns an error (server should refuse to start).
+/// Control flow (Phase 47 Task 47-06 — Wave 4 canonical entry point):
 ///
-/// **Phase 47 transition note (Task 47-05):** kept for compatibility with the
-/// existing `main.rs` bootstrap call site. The new entry point is
-/// [`resolve_jwt_secret_with_crypto`], which prefers the encrypted DB row and
-/// migrates the env-var into it on first start. Task 47-06 will switch
-/// `main.rs` to the new function and this legacy variant will be removed.
-///
-/// # Errors
-///
-/// Returns an error message if `JWT_SECRET` is not set and `dev_mode` is false.
-pub fn resolve_jwt_secret(dev_mode: bool) -> Result<String, String> {
-    match std::env::var("JWT_SECRET") {
-        Ok(s) if !s.is_empty() => Ok(s),
-        _ if dev_mode => {
-            tracing::warn!(
-                "JWT_SECRET not set — using insecure dev secret (--dev mode). \
-                 Do NOT use --dev in production!"
-            );
-            Ok(DEV_JWT_SECRET.to_string())
-        }
-        _ => Err("JWT_SECRET environment variable is required.\n\
-             Set it before starting the server, or use --dev for development:\n\n\
-             \x20 export JWT_SECRET=\"your-secure-random-secret\"\n\
-             \x20 dlp-server.exe\n\n\
-             Or for development only:\n\n\
-             \x20 dlp-server.exe --dev"
-            .to_string()),
-    }
-}
-
-/// Resolves the JWT signing secret with KEK-backed persistence.
-///
-/// Control flow (Phase 47 Task 47-05):
-///
-/// 1. Try `jwt_secret::get(conn)`. If the encrypted row exists, decrypt and
-///    return — the env var is no longer needed once the DB row is seeded.
-/// 2. Else: if `JWT_SECRET` env var is set and non-empty, encrypt + insert
-///    into `secrets_jwt`, emit a one-shot `tracing::warn!` deprecation
-///    notice, and return the plaintext as `SecretString`.
+/// 1. Try `jwt_secret::get(conn)`. If the encrypted row exists, decrypt
+///    and return — the env var is no longer needed once the DB row is
+///    seeded.
+/// 2. Else: if `JWT_SECRET` env var is set and non-empty, encrypt +
+///    insert into `secrets_jwt`, emit a one-shot `tracing::warn!`
+///    deprecation notice, and return the plaintext as `SecretString`.
+///    NOTE: in steady-state production, the Task 47-06 startup
+///    [`crate::secrets_migration::migrate_secrets_to_encrypted`] flow
+///    has already seeded the row before this function runs, so the
+///    env-var branch only fires on a server that was started for the
+///    first time WITHOUT the migration step (e.g., a test that builds
+///    AppState directly).
 /// 3. Else: if `dev_mode == true`, return the `DEV_JWT_SECRET` fallback
 ///    without writing anything to the DB (dev mode keeps the database
 ///    pristine for ephemeral test runs).
-/// 4. Else: production with neither DB row nor env var — return the typed
-///    error message.
+/// 4. Else: production with neither DB row nor env var — return the
+///    typed error message.
 ///
 /// # Arguments
 ///
@@ -126,7 +100,7 @@ pub fn resolve_jwt_secret(dev_mode: bool) -> Result<String, String> {
 /// Returns a human-readable error string suitable for surfacing as a
 /// startup failure message. Database / DPAPI errors are wrapped with a
 /// short context line so the operator can grep for them.
-pub fn resolve_jwt_secret_with_crypto(
+pub fn resolve_jwt_secret(
     pool: &crate::db::Pool,
     crypto: &crate::crypto::SecretCrypto,
     dev_mode: bool,
@@ -584,7 +558,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Phase 47 Task 47-05: resolve_jwt_secret_with_crypto tests
+    // Phase 47 Task 47-05 / 47-06: resolve_jwt_secret tests
     // -----------------------------------------------------------------------
     //
     // These tests mutate the process environment (`JWT_SECRET`). `std::env::set_var`
@@ -622,7 +596,7 @@ mod tests {
         let crypto = resolve_test_crypto();
 
         // First call: no DB row, env var present -> migrate.
-        let secret = resolve_jwt_secret_with_crypto(&pool, &crypto, false).expect("first resolve");
+        let secret = resolve_jwt_secret(&pool, &crypto, false).expect("first resolve");
         assert_eq!(secret.expose_secret(), "env-var-XYZ");
 
         // DB row must now exist.
@@ -635,8 +609,7 @@ mod tests {
 
         // Second call with env-var cleared: read from DB.
         unsafe { std::env::remove_var("JWT_SECRET") };
-        let secret2 =
-            resolve_jwt_secret_with_crypto(&pool, &crypto, false).expect("second resolve");
+        let secret2 = resolve_jwt_secret(&pool, &crypto, false).expect("second resolve");
         assert_eq!(
             secret2.expose_secret(),
             "env-var-XYZ",
@@ -652,7 +625,7 @@ mod tests {
         let pool = new_pool(":memory:").expect("create pool");
         let crypto = resolve_test_crypto();
 
-        let secret = resolve_jwt_secret_with_crypto(&pool, &crypto, true).expect("dev resolve");
+        let secret = resolve_jwt_secret(&pool, &crypto, true).expect("dev resolve");
         assert_eq!(secret.expose_secret(), DEV_JWT_SECRET);
 
         let conn = pool.get().expect("acquire connection");
@@ -670,7 +643,7 @@ mod tests {
         let pool = new_pool(":memory:").expect("create pool");
         let crypto = resolve_test_crypto();
 
-        let err = resolve_jwt_secret_with_crypto(&pool, &crypto, false)
+        let err = resolve_jwt_secret(&pool, &crypto, false)
             .expect_err("production w/o env w/o DB row must fail");
         assert!(
             err.contains("JWT secret not configured"),
@@ -689,11 +662,11 @@ mod tests {
 
         // Seed the DB row with one value.
         unsafe { std::env::set_var("JWT_SECRET", "first-value") };
-        let _ = resolve_jwt_secret_with_crypto(&pool, &crypto, false).expect("seed");
+        let _ = resolve_jwt_secret(&pool, &crypto, false).expect("seed");
 
         // Now change the env var; resolve must return the DB value, not env.
         unsafe { std::env::set_var("JWT_SECRET", "different-value") };
-        let secret = resolve_jwt_secret_with_crypto(&pool, &crypto, false).expect("second resolve");
+        let secret = resolve_jwt_secret(&pool, &crypto, false).expect("second resolve");
         assert_eq!(
             secret.expose_secret(),
             "first-value",

@@ -48,8 +48,17 @@ pub fn new_pool(path: &str) -> anyhow::Result<Pool> {
     let conn = pool
         .get()
         .context("failed to acquire connection for init")?;
-    conn.execute_batch("PRAGMA journal_mode=WAL;")
-        .context("failed to enable WAL journal mode")?;
+    // WAL gives crash-atomic writes (used by the secrets migration's
+    // single-transaction encrypt+DROP-COLUMN flow). `secure_delete = ON`
+    // (Phase 47 Task 47-06) zeroises freed SQLite pages on overwrite/
+    // VACUUM, blocking post-deletion forensic recovery of the cleartext
+    // bytes that the secrets migration removes from disk. The PRAGMA is
+    // file-level (persisted in the DB header), so it remains active
+    // across re-opens; we still set it here so a fresh install picks it
+    // up at create time. See 47-PLAN.md §"PRAGMA secure_delete not
+    // enabled" risk register.
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA secure_delete = ON;")
+        .context("failed to enable WAL + secure_delete pragmas")?;
 
     init_tables(&conn)?;
     run_migrations(&conn)?;

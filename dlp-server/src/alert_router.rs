@@ -27,8 +27,10 @@ use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use reqwest::Client;
 use secrecy::{ExposeSecret, SecretString};
 
+use crate::crypto::SecretCrypto;
 use crate::db;
 use crate::db::repositories::AlertRouterConfigRepository;
+use crate::AppError;
 
 /// SMTP email alert configuration.
 ///
@@ -116,12 +118,26 @@ impl std::fmt::Debug for AlertRouterConfigRow {
 /// from the `alert_router_config` table so that configuration changes
 /// made via the admin API take effect immediately without restarting
 /// the server (hot-reload).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AlertRouter {
     /// Shared SQLite connection pool.
     pool: Arc<db::Pool>,
+    /// Shared active KEK handle (Phase 47 Task 47-06). Decrypts the
+    /// `smtp_password` / `webhook_secret` envelopes on every
+    /// `send_alert` call.
+    crypto: Arc<SecretCrypto>,
     /// Shared HTTP client for outbound webhook requests.
     client: Client,
+}
+
+impl std::fmt::Debug for AlertRouter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AlertRouter")
+            .field("pool", &self.pool)
+            .field("crypto", &"<SecretCrypto>")
+            .field("client", &self.client)
+            .finish()
+    }
 }
 
 /// Error type for alert delivery failures.
@@ -153,6 +169,19 @@ impl From<r2d2::Error> for AlertError {
     }
 }
 
+impl AlertError {
+    /// Funnels [`AppError`] from the encrypted-aware repository into an
+    /// alert-flavoured variant. `AppError::Database` round-trips
+    /// faithfully; decrypt-side `AppError::Internal` is mapped to
+    /// `Email` with the message preserved so operators can grep it.
+    fn from_app_error(e: AppError) -> Self {
+        match e {
+            AppError::Database(db) => AlertError::Database(db),
+            other => AlertError::Email(format!("alert config load: {other}")),
+        }
+    }
+}
+
 impl AlertRouter {
     /// Constructs an `AlertRouter` backed by the given connection pool.
     ///
@@ -164,7 +193,7 @@ impl AlertRouter {
     /// # Arguments
     ///
     /// * `pool` — Shared connection pool; the router keeps a clone.
-    pub fn new(pool: Arc<db::Pool>) -> Self {
+    pub fn new(pool: Arc<db::Pool>, crypto: Arc<SecretCrypto>) -> Self {
         // HI-01: fire-and-forget alert tasks must not pin memory indefinitely on
         // a hung/tarpit webhook endpoint. 5s connect + 10s total is tight enough
         // to cap worst-case task lifetime under DenyWithAlert bursts.
@@ -173,7 +202,11 @@ impl AlertRouter {
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("reqwest client build (static config)");
-        Self { pool, client }
+        Self {
+            pool,
+            crypto,
+            client,
+        }
     }
 
     /// Loads the current alert router configuration row from the database.
@@ -194,17 +227,28 @@ impl AlertRouter {
     /// Returns [`AlertError::Database`] if the row cannot be read or the
     /// stored `smtp_port` is outside the `u16` range.
     fn load_config(&self) -> Result<AlertRouterConfigRow, AlertError> {
-        let repo_row = AlertRouterConfigRepository::get(&self.pool).map_err(AlertError::from)?;
+        let repo_row = AlertRouterConfigRepository::get(&self.pool, &self.crypto)
+            .map_err(AlertError::from_app_error)?;
+        // Empty string stands in for "secret not configured" so the
+        // existing send_email / send_webhook predicates that check
+        // `.is_empty()` keep working unchanged.
+        let smtp_password = repo_row
+            .smtp_password
+            .unwrap_or_else(|| SecretString::new(String::new()));
+        let webhook_secret = repo_row
+            .webhook_secret
+            .map(|s| s.expose_secret().to_string())
+            .unwrap_or_default();
         Ok(AlertRouterConfigRow {
             smtp_host: repo_row.smtp_host,
             smtp_port: repo_row.smtp_port,
             smtp_username: repo_row.smtp_username,
-            smtp_password: SecretString::new(repo_row.smtp_password),
+            smtp_password,
             smtp_from: repo_row.smtp_from,
             smtp_to: repo_row.smtp_to,
             smtp_enabled: repo_row.smtp_enabled != 0,
             webhook_url: repo_row.webhook_url,
-            webhook_secret: repo_row.webhook_secret,
+            webhook_secret,
             webhook_enabled: repo_row.webhook_enabled != 0,
         })
     }
@@ -463,6 +507,26 @@ mod tests {
     use super::*;
     use axum::{extract::Json, http::StatusCode};
 
+    use crate::crypto::ENVELOPE_VERSION_V1;
+    use crate::secrets_migration::migrate_secrets_to_encrypted;
+
+    const TEST_KEK: [u8; 32] = [0x44; 32];
+
+    /// Builds a fresh on-disk pool + active KEK and runs Task 47-06's
+    /// migration so the legacy cleartext `smtp_password` /
+    /// `webhook_secret` columns are physically gone before the router
+    /// is constructed. The named temp file is intentionally leaked (we
+    /// only need it for the test duration; dropping it would `unlink`
+    /// the path while the pool still holds an open handle on Windows).
+    fn migrated_pool_and_crypto() -> (Arc<db::Pool>, Arc<SecretCrypto>) {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        std::mem::forget(tmp);
+        let crypto = Arc::new(SecretCrypto::from_kek(TEST_KEK, ENVELOPE_VERSION_V1));
+        migrate_secrets_to_encrypted(&pool, &crypto, None).expect("run migration");
+        (pool, crypto)
+    }
+
     #[test]
     fn test_smtp_config_fields() {
         let cfg = SmtpConfig {
@@ -491,9 +555,8 @@ mod tests {
     async fn test_alert_router_disabled_default() {
         use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
 
-        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
-        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        let router = AlertRouter::new(Arc::clone(&pool));
+        let (pool, crypto) = migrated_pool_and_crypto();
+        let router = AlertRouter::new(Arc::clone(&pool), crypto);
 
         // Seed row has both enabled=0 — send_alert must be a no-op Ok.
         let event = AuditEvent::new(
@@ -515,34 +578,31 @@ mod tests {
 
     #[test]
     fn test_load_config_roundtrip() {
-        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
-        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        // Phase 47 Task 47-06: cleartext columns are dropped by the
+        // migration, so seed via the encrypted-aware repository update
+        // path instead of writing raw cleartext SQL.
+        let (pool, crypto) = migrated_pool_and_crypto();
         {
-            let conn = pool.get().expect("acquire connection");
-            conn.execute(
-                "UPDATE alert_router_config SET \
-                    smtp_host = ?1, smtp_port = ?2, smtp_username = ?3, \
-                    smtp_password = ?4, smtp_from = ?5, smtp_to = ?6, \
-                    smtp_enabled = ?7, webhook_url = ?8, webhook_secret = ?9, \
-                    webhook_enabled = ?10, updated_at = ?11 WHERE id = 1",
-                rusqlite::params![
-                    "smtp.example.com",
-                    465_i64,
-                    "user",
-                    "pass",
-                    "dlp@example.com",
-                    "a@example.com, b@example.com",
-                    1_i64,
-                    "https://hooks.example.com/x",
-                    "shh",
-                    1_i64,
-                    "2026-04-10T00:00:00Z",
-                ],
-            )
-            .expect("update seed row");
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = db::UnitOfWork::new(&mut conn).expect("begin uow");
+            let record = crate::db::repositories::AlertRouterConfigRow {
+                smtp_host: "smtp.example.com".to_string(),
+                smtp_port: 465,
+                smtp_username: "user".to_string(),
+                smtp_password: Some(SecretString::new("pass".to_string())),
+                smtp_from: "dlp@example.com".to_string(),
+                smtp_to: "a@example.com, b@example.com".to_string(),
+                smtp_enabled: 1,
+                webhook_url: "https://hooks.example.com/x".to_string(),
+                webhook_secret: Some(SecretString::new("shh".to_string())),
+                webhook_enabled: 1,
+                updated_at: "2026-04-10T00:00:00Z".to_string(),
+            };
+            AlertRouterConfigRepository::update(&uow, &record, &crypto).expect("seed");
+            uow.commit().expect("commit");
         }
 
-        let router = AlertRouter::new(Arc::clone(&pool));
+        let router = AlertRouter::new(Arc::clone(&pool), Arc::clone(&crypto));
         let row = router.load_config().expect("load_config");
         assert_eq!(row.smtp_host, "smtp.example.com");
         assert_eq!(row.smtp_port, 465);
@@ -558,8 +618,7 @@ mod tests {
 
     #[test]
     fn test_load_config_port_overflow() {
-        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
-        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let (pool, crypto) = migrated_pool_and_crypto();
         {
             let conn = pool.get().expect("acquire connection");
             conn.execute(
@@ -568,7 +627,7 @@ mod tests {
             )
             .expect("update port to overflow");
         }
-        let router = AlertRouter::new(pool);
+        let router = AlertRouter::new(pool, crypto);
         let err = router.load_config().expect_err("must fail on u16 overflow");
         assert!(matches!(err, AlertError::Database(_)));
     }
@@ -583,9 +642,8 @@ mod tests {
         // like "not-an-email" fails `Mailbox::parse()` deterministically.
         use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
 
-        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
-        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        let router = AlertRouter::new(pool);
+        let (pool, crypto) = migrated_pool_and_crypto();
+        let router = AlertRouter::new(pool, crypto);
 
         let cfg = SmtpConfig {
             host: "smtp.example.com".to_string(),
@@ -632,9 +690,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_hot_reload() {
-        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
-        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        let router = AlertRouter::new(Arc::clone(&pool));
+        let (pool, crypto) = migrated_pool_and_crypto();
+        let router = AlertRouter::new(Arc::clone(&pool), crypto);
 
         // First read: defaults.
         let row1 = router.load_config().expect("load 1");
@@ -683,9 +740,8 @@ mod tests {
             axum::serve(listener, mock_app).await.expect("mock serve");
         });
 
-        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
-        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        let router = AlertRouter::new(pool);
+        let (pool, crypto) = migrated_pool_and_crypto();
+        let router = AlertRouter::new(pool, crypto);
 
         let event = AuditEvent {
             timestamp: chrono::Utc::now(),
@@ -755,9 +811,8 @@ mod tests {
             Action, AuditAccessContext, AuditEvent, Classification, Decision, EventType,
         };
 
-        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
-        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        let router = AlertRouter::new(pool);
+        let (pool, crypto) = migrated_pool_and_crypto();
+        let router = AlertRouter::new(pool, crypto);
 
         let cfg = SmtpConfig {
             host: "127.0.0.1".to_string(),

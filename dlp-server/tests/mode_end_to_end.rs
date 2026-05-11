@@ -34,12 +34,25 @@ fn test_app() -> (axum::Router, Arc<db::Pool>) {
     set_jwt_secret(TEST_JWT_SECRET.to_string());
     let tmp = NamedTempFile::new().expect("create temp db");
     let pool = Arc::new(db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-    let siem = siem_connector::SiemConnector::new(Arc::clone(&pool));
-    let alert = alert_router::AlertRouter::new(Arc::clone(&pool));
+    let crypto = std::sync::Arc::new(dlp_server::crypto::SecretCrypto::from_kek(
+        [0x77; 32],
+        dlp_server::crypto::ENVELOPE_VERSION_V1,
+    ));
+    dlp_server::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+        .expect("Phase 47 migration");
+    let siem = siem_connector::SiemConnector::new(
+        std::sync::Arc::clone(&pool),
+        std::sync::Arc::clone(&crypto),
+    );
+    let alert = alert_router::AlertRouter::new(
+        std::sync::Arc::clone(&pool),
+        std::sync::Arc::clone(&crypto),
+    );
     let policy_store =
         Arc::new(policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"));
     let state = Arc::new(AppState {
         pool: Arc::clone(&pool),
+        crypto: std::sync::Arc::clone(&crypto),
         policy_store,
         siem,
         alert,

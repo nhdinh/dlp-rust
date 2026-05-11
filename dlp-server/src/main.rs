@@ -32,11 +32,14 @@ use dlp_server::admin_api;
 use dlp_server::admin_auth;
 use dlp_server::agent_registry;
 use dlp_server::alert_router::AlertRouter;
+use dlp_server::crypto::SecretCrypto;
 use dlp_server::db;
 use dlp_server::db::repositories::LdapConfigRepository;
 use dlp_server::policy_store::PolicyStore;
+use dlp_server::secrets_migration;
 use dlp_server::siem_connector::SiemConnector;
 use dlp_server::AppState;
+use secrecy::ExposeSecret;
 
 /// Loads the LDAP configuration from the SQLite database via `LdapConfigRepository`.
 ///
@@ -139,33 +142,75 @@ async fn main() -> anyhow::Result<()> {
     let filter = EnvFilter::new(&config.log_level);
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    // Resolve and store the JWT secret (must happen before serving requests).
-    let jwt_secret = admin_auth::resolve_jwt_secret(config.dev_mode).map_err(|msg| {
-        eprintln!("Error: {msg}");
-        anyhow::anyhow!("{msg}")
-    })?;
-    admin_auth::set_jwt_secret(jwt_secret);
-
     // Validate bind address.
     let addr: SocketAddr = config
         .bind_addr
         .parse()
         .with_context(|| format!("invalid bind address: '{}'", config.bind_addr))?;
 
-    // Open (or create) the SQLite database pool.
+    // Open (or create) the SQLite database pool. WAL + `secure_delete`
+    // are enabled by `new_pool` (the latter is the Phase 47 Task 47-06
+    // requirement that frees pages get zero-overwritten so any pre-
+    // migration cleartext bytes on disk become unrecoverable post-
+    // VACUUM).
     let pool = Arc::new(db::new_pool(&config.db_path)?);
     info!(path = %config.db_path, "database pool opened");
+
+    // Phase 47 Task 47-06 bootstrap sequence:
+    //
+    //   (a) Bring up the active KEK. On a fresh DB this generates a
+    //       v1 KEK with DPAPI-wrapped seed; on an existing DB this
+    //       reads the highest active version. Failure here is
+    //       fatal-by-design (CONTEXT D-Q4: DPAPI recovery deferred to
+    //       Phase 52).
+    //   (b) Run the one-shot atomic cleartext-to-encrypted migration.
+    //       This is idempotent: on an already-migrated DB it is a
+    //       no-op (the cleartext columns are absent so the
+    //       `PRAGMA table_info` probe short-circuits). On a pre-
+    //       Phase-47 DB it encrypts every populated cleartext row and
+    //       drops the cleartext columns in the same transaction.
+    //   (c) Migrate the JWT_SECRET env-var into `secrets_jwt` if and
+    //       only if the encrypted row does not already exist.
+    let crypto = Arc::new(SecretCrypto::load_active_or_bootstrap(&pool).map_err(|e| {
+        eprintln!("Error: failed to bootstrap SecretCrypto: {e:?}");
+        anyhow::anyhow!("SecretCrypto bootstrap failed: {e:?}")
+    })?);
+    let migration_report = secrets_migration::migrate_secrets_to_encrypted(
+        &pool,
+        &crypto,
+        std::env::var("JWT_SECRET").ok().as_deref(),
+    )?;
+    info!(
+        rows_encrypted = migration_report.rows_encrypted,
+        jwt_migrated = migration_report.jwt_migrated_from_env,
+        dropped = ?migration_report.cleartext_columns_dropped,
+        "secrets migration complete"
+    );
+
+    // Resolve and store the JWT secret. Reads from the encrypted DB
+    // row, falling back to env-var-bootstrap (already handled by the
+    // migration above) or the dev secret (`--dev`).
+    let jwt_secret =
+        admin_auth::resolve_jwt_secret(&pool, &crypto, config.dev_mode).map_err(|msg| {
+            eprintln!("Error: {msg}");
+            anyhow::anyhow!("{msg}")
+        })?;
+    admin_auth::set_jwt_secret(jwt_secret.expose_secret().to_string());
 
     // Provision the admin user on first run.
     ensure_admin_user(&pool, config.init_admin_password.as_deref())?;
 
     // Initialise the SIEM relay connector. Configuration is loaded on
-    // every relay call from the `siem_config` table (hot-reload).
-    let siem = SiemConnector::new(Arc::clone(&pool));
+    // every relay call from the `siem_config` table (hot-reload). The
+    // `crypto` handle decrypts the on-disk `splunk_token` /
+    // `elk_api_key` envelopes on each load.
+    let siem = SiemConnector::new(Arc::clone(&pool), Arc::clone(&crypto));
 
     // Initialise the alert router. Configuration is loaded on every
-    // send_alert call from the `alert_router_config` table (hot-reload).
-    let alert = AlertRouter::new(Arc::clone(&pool));
+    // send_alert call from the `alert_router_config` table (hot-
+    // reload). The `crypto` handle decrypts the on-disk
+    // `smtp_password` / `webhook_secret` envelopes on each load.
+    let alert = AlertRouter::new(Arc::clone(&pool), Arc::clone(&crypto));
 
     // Attempt to construct the AD client from DB config.
     // Fail-open: server starts even if AD is unreachable.
@@ -197,6 +242,7 @@ async fn main() -> anyhow::Result<()> {
     // Build shared application state.
     let state = Arc::new(AppState {
         pool,
+        crypto,
         policy_store,
         siem,
         alert,

@@ -61,11 +61,21 @@ pub mod server {
         set_jwt_secret(TEST_JWT_SECRET.to_string());
         let tmp = NamedTempFile::new().expect("create temp db");
         let pool = Arc::new(db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        let siem = siem_connector::SiemConnector::new(Arc::clone(&pool));
-        let alert = alert_router::AlertRouter::new(Arc::clone(&pool));
+        // Phase 47 Task 47-06: bootstrap an in-process KEK and run the
+        // cleartext->encrypted migration so the encrypted-aware
+        // repositories see the post-migration schema.
+        let crypto = Arc::new(dlp_server::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            dlp_server::crypto::ENVELOPE_VERSION_V1,
+        ));
+        dlp_server::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = siem_connector::SiemConnector::new(Arc::clone(&pool), Arc::clone(&crypto));
+        let alert = alert_router::AlertRouter::new(Arc::clone(&pool), Arc::clone(&crypto));
         let ps = Arc::new(policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"));
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
+            crypto: Arc::clone(&crypto),
             policy_store: ps,
             siem,
             alert,

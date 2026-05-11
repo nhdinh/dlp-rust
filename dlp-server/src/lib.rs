@@ -15,6 +15,7 @@ pub mod policy_engine_error;
 pub mod policy_store;
 pub mod policy_sync;
 pub mod rate_limiter;
+pub mod secrets_migration;
 pub mod siem_connector;
 
 use std::sync::Arc;
@@ -36,6 +37,12 @@ use crate::policy_store::PolicyStore;
 pub struct AppState {
     /// Shared SQLite connection pool (Arc so AppState is Clone).
     pub pool: Arc<db::Pool>,
+    /// Active KEK handle (Phase 47 Task 47-06). Every encrypted-column
+    /// repository takes `&SecretCrypto` as a parameter; `AppState`
+    /// owns the canonical reference so handlers, background tasks,
+    /// `AlertRouter`, and `SiemConnector` all share the same KEK
+    /// version without re-loading from DB on every request.
+    pub crypto: Arc<crypto::SecretCrypto>,
     /// Policy evaluation cache — loaded at startup, kept fresh by a background task.
     pub policy_store: Arc<PolicyStore>,
     /// SIEM relay connector (Splunk HEC / ELK).
@@ -51,6 +58,7 @@ impl std::fmt::Debug for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppState")
             .field("pool", &self.pool)
+            .field("crypto", &self.crypto)
             .field("policy_store", &"PolicyStore(...)")
             .field("siem", &self.siem)
             .field("alert", &self.alert)
