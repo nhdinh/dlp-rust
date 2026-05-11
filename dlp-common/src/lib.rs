@@ -15,7 +15,10 @@ pub mod hook_ipc;
 pub mod usb;
 
 pub use abac::*;
-pub use ad_client::{get_device_trust, get_network_location, AdClient, AdClientError, LdapConfig};
+pub use ad_client::{
+    get_device_trust, get_network_location, AdClient, AdClientError, LdapBindCredentials,
+    LdapConfig,
+};
 pub use audit::*;
 pub use classification::*;
 pub use classifier::classify_text;

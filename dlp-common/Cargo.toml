@@ -17,6 +17,10 @@ ldap3 = { workspace = true }
 ipnetwork = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
+# Phase 47 (Task 47-05) — wrap LDAP bind credentials so the Debug derive
+# redacts the password and accidental log lines reveal "[REDACTED]" rather
+# than the plaintext bind secret.
+secrecy = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
