@@ -1,0 +1,45 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-05-11T12:38:09Z",
+  "milestone": "v1.0.0",
+  "milestone_name": "Enterprise Hardening & Scale",
+  "phase": "47",
+  "phase_name": "Secrets Encryption at Rest",
+  "phase_dir": ".planning/phases/47-secrets-encryption-at-rest",
+  "phase_req_ids": "HARD-01",
+  "wave": 2,
+  "total_waves": 5,
+  "task": 3,
+  "total_tasks": 11,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": 1, "task_id": "47-01", "wave": 1, "name": "Crypto core — DPAPI + PBKDF2 + AES-256-GCM envelope", "status": "done", "commit": "622268a"},
+    {"id": 2, "task_id": "47-02", "wave": 2, "name": "secret_kek_history schema + storage-only repository", "status": "done", "commit": "a62c735"},
+    {"id": 3, "task_id": "47-03", "wave": 2, "name": "secrets_jwt table + encrypted-column trios", "status": "done", "commit": "3c44265"}
+  ],
+  "remaining_tasks": [
+    {"id": 4, "task_id": "47-04", "wave": 3, "name": "Loader refactor — Arc<SecretCrypto> threading + 4 loader call sites", "status": "not_started"},
+    {"id": 5, "task_id": "47-05", "wave": 3, "name": "JWT + LDAP loader integration (env-var migration + SSPI fallback)", "status": "not_started"},
+    {"id": 6, "task_id": "47-06", "wave": 4, "name": "One-shot migration — encrypt cleartext, NULL old, ALTER TABLE DROP COLUMN (same release)", "status": "not_started"},
+    {"id": 7, "task_id": "47-07", "wave": 4, "name": "ALERT_SECRET_MASK round-trip regression test", "status": "not_started"},
+    {"id": 8, "task_id": "47-08", "wave": 5, "name": "Rotation CLI + maintenance-mode KV row (per plan-fix N5)", "status": "not_started"},
+    {"id": 9, "task_id": "47-09", "wave": 3, "name": "Logging hygiene audit — secrecy::SecretString in dlp-server tracing call sites", "status": "not_started"},
+    {"id": 10, "task_id": "47-10", "wave": 5, "name": "Rotation integration test + forensic decrypt via old KEK version", "status": "not_started"},
+    {"id": 11, "task_id": "47-11", "wave": 5, "name": "Log-scan CI test — assert no secret literal in tracing output", "status": "not_started"}
+  ],
+  "blockers": [],
+  "human_actions_pending": [],
+  "decisions": [
+    {"decision": "Scope expanded to encrypt all 4 secret types including JWT (was env-var) and LDAP (was SSPI-only)", "rationale": "User override of researcher's recommended descope; bigger phase but unified encryption posture", "phase": "47", "doc_ref": "47-CONTEXT.md D-Q1"},
+    {"decision": "PBKDF2-HMAC-SHA256 at 600k iterations (OWASP 2026)", "rationale": "ROADMAP spec; high-entropy machine-bound DPAPI input makes PBKDF2 sufficient (no need for Argon2id)", "phase": "47", "doc_ref": "47-CONTEXT.md D-Q2"},
+    {"decision": "AES-256-GCM with 96-bit random nonce + AAD b\"dlp:secret:<table>:<column>\"", "rationale": "AEAD with column-bound AAD prevents ciphertext substitution across columns", "phase": "47", "doc_ref": "47-CONTEXT.md D-Q3"},
+    {"decision": "Rotation interface: admin CLI only (no HTTP endpoint)", "rationale": "Smaller attack surface, matches operational pattern of other admin maintenance commands", "phase": "47", "doc_ref": "47-CONTEXT.md D-Q5"},
+    {"decision": "Cleartext columns dropped in same release (v1.0.0), not deferred to v1.0.1", "rationale": "User override of recommended one-release backup; tightest security window; transient *_legacy column allowed in-migration only", "phase": "47", "doc_ref": "47-CONTEXT.md D-Q6"},
+    {"decision": "Wave 1 executor switched from secrecy::SecretBox<[u8;32]> to zeroize::Zeroizing<[u8;32]> for KEK storage", "rationale": "secrecy 0.8 SecretBox requires Box<S>: Zeroize but zeroize 1.8 only implements it for Box<[T]> slice form, not Box<[T;N]> sized-array form; Zeroizing provides equivalent on-drop zeroisation with manual Debug redaction on SecretCrypto", "phase": "47", "doc_ref": "commit 622268a deviation note"},
+    {"decision": "Wave 2 47-02 kept SecretCrypto's inline SQL for secret_kek_history; repository is additive (sibling-pattern), not a replacement", "rationale": "Per Wave 1 executor handoff; non-breaking; future refactor can collapse duplication", "phase": "47", "doc_ref": "commit a62c735 deviation note"},
+    {"decision": "Wave 2 47-03 secrets_jwt upsert uses UPDATE-then-INSERT, not INSERT OR REPLACE", "rationale": "INSERT OR REPLACE does DELETE+INSERT internally, would clobber created_at; UPDATE-then-INSERT preserves created_at while stamping rotated_at on rotation", "phase": "47", "doc_ref": "commit 3c44265 deviation note"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "/gsd-execute-phase 47 --wave 3 — execute Tasks 47-04 (loader refactor) + 47-05 (JWT/LDAP loader integration) + 47-09 (logging hygiene audit). Highest blast radius wave — read 47-PLAN.md task blocks carefully; cascading signature changes via Arc<SecretCrypto>; ALERT_SECRET_MASK round-trip in admin_api.rs:1300-1416 MUST be preserved.",
+  "context_notes": "Session re-initialized .planning/ from scratch (commits 0f46795 + d324b32 + 38028a6), then planned + partially executed Phase 47. Three planning workspaces (.planning + .gsd + .gsd.migrating) were consolidated into a single .planning/ tree. 6 broken global hooks in ~/.claude/settings.json were also fixed during the session (stripped PowerShell & operator). Phase 47 progress is on the strict Waves 1-2 scope the user picked; Wave 3 is intentionally next-session work due to its blast radius."
+}
