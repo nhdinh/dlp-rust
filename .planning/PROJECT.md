@@ -159,6 +159,9 @@ If NTFS ALLOW and ABAC DENY → FINAL RESULT = DENY. ABAC always tightens, never
 | Hook DLL fail-closed: if named-pipe client can't connect, request times out, or agent responds DENY → return `ERROR_ACCESS_DENIED` | Prevents silent enforcement bypass when agent unreachable (MEM017) |
 | WFP filter registration requires admin privileges; may fail on non-Windows targets | `WfpManager` constructed conditionally; registration failures logged as warnings without blocking startup (MEM019) |
 | Thread-local `TEST_EVALUATOR_OVERRIDE` for Chrome handler parallel test isolation | Eliminates parallel test races without restructuring evaluator (MEM007) |
+| `FindFirstPrinterChangeNotification` returns a raw `HANDLE`, not `Result` — the `?` operator does not apply | Manual `INVALID_HANDLE_VALUE` / null check at the call site |
+| quick-xml 0.36 changed signatures: pass `reader.decoder()` (not the reader) to `decode_and_unescape_value` | Older code paths break silently when bumping the crate |
+| Clipboard listener uses `unsafe` in three places (Win32 hook proc, `GetMessageW` loop, raw-pointer string parsing) | Mitigated by SAFETY comments, dedicated thread, and a 1M-character sanity limit; risk accepted |
 
 ### Outstanding Debt (Carries Into v1.0.0)
 
@@ -190,15 +193,20 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-## Legacy Reference
+## Workspace Layout
 
-Two prior planning workspaces are preserved:
+All historical context now lives in-tree under `.planning/`:
 
-- **`.planning.legacy/`** (git-tracked) — phase-numbered workspace covering v0.2.0–v0.8.1 (Phases 0.1–46). Contains: ROADMAP.md, MILESTONES.md, RETROSPECTIVE.md, three milestone audits (v0.6.0, v0.8.0, v0.8.1), per-phase directories, research, codebase docs.
-- **`.gsd.legacy/`** (gitignored, local-only) — milestone+slice+task format used by the newer GSD tooling. Contains M008–M017 (M017 = v0.9.0) with full slice/task breakdown, `gsd.db` SQLite state, journal, runtime, safety evidence.
+- `PROJECT.md`, `REQUIREMENTS.md`, `ROADMAP.md`, `STATE.md`, `config.json` — active planning surface
+- `MILESTONES.md`, `RETROSPECTIVE.md` — top-level project history (v0.2.0–v0.8.1)
+- `milestones/` — per-milestone audits (v0.6.0, v0.8.0, v0.8.1) and the v0.9.0 four-doc close-out
+- `codebase/` — architecture / stack / structure / integrations / conventions / testing / concerns reference docs
+- `incidents/` — post-mortem write-ups for non-obvious bugs (start: clipboard monitoring no-alerts RCA)
+- `research/` — strategic notes feeding future milestones
+- `deferred-ideas/` — captured ideas (SEED-001..004), some delivered, some pending
 
-Consult these when investigating decisions, regression context, or implementation history. They are read-only artifacts; all new planning happens in `.planning/`.
+The earlier `.planning.legacy/` (phase-numbered GSD format) and `.gsd.legacy/` (milestone-slice-task format) workspaces were consolidated into this tree and removed; commit `0f46795` and the consolidation commit preserve full history.
 
 ---
 
-*Last updated: 2026-05-11 after re-initialization from IDEA-DOC.md (consolidating .planning + .gsd + .gsd.migrating).*
+*Last updated: 2026-05-11 after re-initialization + legacy consolidation.*
