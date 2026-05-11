@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0.0
 milestone_name: Enterprise Hardening & Scale
-status: not_started
-last_updated: "2026-05-11T00:00:00Z"
-last_activity: 2026-05-11
+status: in_progress
+last_updated: "2026-05-13T00:00:00Z"
+last_activity: 2026-05-13
 progress:
   total_phases: 8
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 11
+  completed_plans: 1
   percent: 0
 ---
 
@@ -26,10 +26,10 @@ progress:
 ## Current Position
 
 - **Milestone:** v1.0.0 — Enterprise Hardening & Scale
-- **Phase:** 47 (not started)
-- **Plan:** Not started
-- **Status:** Re-initialized; ready to plan Phase 47
-- **Last activity:** 2026-05-11 (planning re-init from IDEA-DOC.md)
+- **Phase:** 47 — Secrets Encryption at Rest (in progress)
+- **Plan:** Wave 1 complete (1/11 tasks); Wave 2 pending
+- **Status:** Task 47-01 landed (crypto core: DPAPI + PBKDF2 + AES-256-GCM envelope, 14 tests green, commit `622268a`)
+- **Last activity:** 2026-05-13 (Task 47-01 execution)
 
 ## Progress
 
@@ -44,7 +44,7 @@ v0.7.1 [Phase 38.3–38.6 done] (shipped 2026-05-06)
 v0.8.0 [Phase 39–42 done] (shipped 2026-05-07)
 v0.8.1 [Phase 43–46 done] (shipped 2026-05-08)
 v0.9.0 [M017 / pre-Phase 47 done] (shipped 2026-05-09)
-v1.0.0 [Phase 47 ready | 48–54 pending] (active)
+v1.0.0 [Phase 47 in progress: Wave 1/5 done (47-01) | 48–54 pending] (active)
 ```
 
 ---
@@ -63,8 +63,10 @@ None.
 ## Next Action
 
 ```
-/gsd-plan-phase 47
+/gsd-execute-phase 47 --wave 2
 ```
+
+Wave 2 = Tasks 47-02 (schema/KEK repo) + 47-03 (JWT + LDAP schema additions). Both touch `dlp-server/src/db/mod.rs` — run sequentially within the wave, not parallel.
 
 ---
 
