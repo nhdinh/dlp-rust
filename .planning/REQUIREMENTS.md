@@ -1,34 +1,79 @@
 # DLP-RUST — Requirements
 
-## Active Milestone: v1.0.0 — Enterprise Hardening & Scale
+## Active Milestone: v0.10.0 — Real-Time File Access Prevention
 
-Goal: take a feature-complete DLP system through hardening, refactor, scale validation, and operational readiness to a 1.0 release tag.
+Goal: convert general file I/O from passive audit-trail-after-the-fact to active real-time blocking at the moment of access via a hybrid of user-mode IAT hooks (primary), NTFS DACL deny-ACE tripwires (kernel-enforced backstop), and ETW Kernel-File telemetry (bypass detection). No kernel driver, no EV cert, no minifilter.
 
-### Hardening & Refactor
+### Universal hook DLL + expanded surface (BLOCK)
 
-- [ ] **HARD-01** — Encrypt secrets at rest in operator SQLite (PBKDF2 key derivation + machine-bound DPAPI key). Covers JWT signing key, SMTP creds, LDAP bind creds, SIEM webhook tokens. Migration must read existing cleartext rows, write encrypted, retain backup column for one release.
-- [ ] **HARD-02** — Split `dlp-server/src/admin_api.rs` (217 KB monolith) into per-domain modules (policies, devices, users, audit, alerts, system). Preserve existing route paths; refactor must be behavior-preserving with 100% test pass-through.
-- [ ] **HARD-03** — Append-only audit hash chain. Each `AuditEvent` carries `prev_hash` and `current_hash` (SHA-256 over canonical serialization). Verifier CLI walks the chain and reports any breaks. Tamper detection requirement for compliance (N-SEC-07).
+- [ ] **BLOCK-01** — Hook DLL crash-hardened: `std::panic::catch_unwind` + SEH `__try/__except` wrappers in every patched stub; 32K-char cap on wide-string conversion; pipe buffers pre-allocated in `init()`. Mitigates CRIT-02 (host-process abort).
+- [ ] **BLOCK-02** — Expanded IAT hook surface: `WriteFile`, `WriteFileEx`, `MoveFileExW`, `CopyFileExW`, `CopyFile2`, `DeleteFileW`, `ReplaceFileW`, `SetFileInformationByHandle`, `NtOpenFile`, `NtWriteFile`, `NtSetInformationFile`. In addition to v0.9.0's `CreateFileW`/`CreateFileA`/`CreateFile2`/`NtCreateFile`. Each with documented fail-closed return value (BOOL(0)/INVALID_HANDLE_VALUE/NTSTATUS).
+- [ ] **BLOCK-03** — Unified single hook DLL replaces v0.9.0 cloud-sync DLL (no parallel DLLs sharing target processes). All v0.9.0 cloud-sync regression tests in `dlp-e2e/` pass green-bar.
+- [ ] **BLOCK-04** — x86 sibling hook DLL built from same source via `i686-pc-windows-msvc` target; CI matrix builds both architectures; injector dispatches to the matching DLL based on `IsWow64Process`.
+- [ ] **BLOCK-05** — Universal injection: `process_watcher.rs` subscribes to ETW `Microsoft-Windows-Kernel-Process` Event ID 1 (primary, sub-millisecond latency); WMI `Win32_ProcessStartTrace` as backstop; `universal_injector.rs` calls `CreateRemoteThread + LoadLibraryW` into every non-allowlisted PID; startup `EnumProcesses` sweep for already-running processes.
+- [ ] **BLOCK-06** — Per-process allowlist with categories: self (DLP binaries), AV/EDR (signer-cert-subject match for top 10 vendors, operator-extendable), system-critical (PIDs 0/4, csrss/smss/wininit/services/lsass/fontdrvhost/dwm), Protected Process Light (detected via `GetProcessMitigationPolicy`), WoW64-dispatched (routed to x86 DLL).
+- [ ] **BLOCK-07** — AppInit_DLLs tertiary fallback registered at install time (`HKLM\...\AppInit_DLLs` + `LoadAppInit_DLLs=1` + `RequireSignedAppInit_DLLs=1`); agent emits `siem.appinit_dlls_disabled` audit event at boot when Secure Boot is detected (CRIT-01); deployment guide flags AppInit as inert under Secure Boot.
+- [ ] **BLOCK-08** — ntdll syscall-stub Detours-style 5-byte JMP trampolines on `NtCreateFile`/`NtOpenFile`/`NtWriteFile`/`NtSetInformationFile`; suspend-all-other-threads protocol with RIP boundary check; atomic 8-byte aligned write; `FlushInstructionCache` after patch; gated behind `enable_ntdll_patching` policy flag (default off, per-customer rollout).
+- [ ] **BLOCK-09** — EDR-coexistence detection: detect-before-patch (`stub[0] == 0xE9` → walk JMP target, if it lands in known-EDR module range → skip and chain through EDR); 30-second re-verification thread raises `BypassAlert(reason=HookOverwritten)` on tampering; never restore "clean" ntdll bytes from disk (DoppelGate evasion-malware classifier risk).
+- [ ] **BLOCK-10** — Authenticode signing pipeline: every shipped binary (`dlp-agent.exe`, `dlp-user-ui.exe`, `dlp-admin-cli.exe`, `dlp-server.exe`, `dlp_hook_dll.dll`, `dlp_hook_dll_x86.dll`) signed with regular Authenticode cert (NOT EV); RFC-3161 timestamping; signing integrated into CI release builds.
 
-### Test Coverage
+### Classification cache + fail semantics (CACHE / FAIL)
 
-- [ ] **HARD-04** — End-to-end test for password-protected service stop. Currently manual-only. Integrate to CI: install service, set password, attempt unauthenticated stop (expect failure), authenticate, stop succeeds.
+- [ ] **CACHE-01** — Shared-memory `Global\DlpClassificationCache` (2 MiB, double-buffered, atomic version flip) created and owned by agent; populated from server-pushed `ClassificationDelta`s and policy_store changes.
+- [ ] **CACHE-02** — Hook DLL maps cache read-only via `OpenFileMappingW` at DllMain (after self-allowlist gate); thread-local LRU of last 128 path lookups.
+- [ ] **CACHE-03** — Extended `HookRequest`/`HookResponse` protocol: requests carry `pid`, `tid`, `file_object`, `journal_seq`, `op: HookOp`; responses carry `cache_hint: Option<(PathBuf, Tier, ttl_secs)>` and `cache_version` so every round-trip warms the DLL.
+- [ ] **CACHE-04** — Server pushes `HookMessage::CacheDelta { added, removed, version }` to agent on every classification policy change; agent rebuilds shared mapping and atomically flips global version word.
+- [ ] **CACHE-05** — In-DLL trusted-path allowlist (System32, WinSxS, WindowsApps, Program Files\Common Files) bypasses both cache lookup and pipe; mitigates CRIT-04 build-workload death-spiral.
+- [ ] **CACHE-06** — Per-process host allowlist (devenv.exe, cargo.exe, msbuild.exe, rustc.exe, link.exe, gcc.exe, etc.) bypasses pipe entirely for build-workload processes (operator-extendable).
+- [ ] **FAIL-01** — Hook DLL fail-mode state machine: HEALTHY → DEGRADED (3 consecutive pipe failures) → ISOLATED (10 consecutive failures OR cache stale) → RESYNC (pipe recovered + new CacheDelta with greater version).
+- [ ] **FAIL-02** — Asymmetric tier-gated fail semantics: T3/T4 fail-closed (`ERROR_ACCESS_DENIED`/`STATUS_ACCESS_DENIED`) when ISOLATED; T1/T2 fail-open. Cached classification authoritative for fail decisions; root-prefix table consulted on cache miss.
+- [ ] **FAIL-03** — Per-tier staleness budgets: T4=30s, T3=60s, T2=5min, T1=30min; per-entry `ttl_bits` field in shared mapping; DLL stamps `cache_version_seen_at` on each successful round-trip.
 
-### Smoke & Acceptance
+### NTFS DACL tripwire (DACL)
 
-- [ ] **HARD-05** — Manual smoke test on real Windows host. Real OneDrive/Google Drive/Dropbox/Box clients (not mocks). Real print jobs against real printers. Real USB devices. Record results in `.planning/milestones/v1.0.0-SMOKE.md`. Acceptance gate before release tag.
+- [ ] **DACL-01** — Tripwire writer (`dacl_tripwire.rs` in agent) using `SetNamedSecurityInfoW` + `PROTECTED_DACL_SECURITY_INFORMATION`; explicit `ACCESS_DENIED_ACE` placed at top of DACL with `OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE`; access mask covers `FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE | FILE_WRITE_ATTRIBUTES | WRITE_DAC | WRITE_OWNER`; SID = `S-1-5-11` (Authenticated Users); 60 KB ACL size guard.
+- [ ] **DACL-02** — Repair watcher (`dacl_repair_watcher.rs`) using `ReadDirectoryChangesW` with `FILE_NOTIFY_CHANGE_SECURITY` per root; 60-second poll backstop comparing live security descriptor against expected; subtree-walk replace-not-append for ACE updates (canonical ACE order per MS-DTYP).
+- [ ] **DACL-03** — `protected_paths` + `protected_path_aces` SQLite tables (with foreign keys); `dlp-server/src/db/repositories/protected_paths.rs` repository; admin API CRUD endpoints (`GET`/`POST`/`PUT`/`DELETE /admin/protected-paths/:id`); agent pulls via `policy_sync` cadence.
+- [ ] **DACL-04** — Two-phase staged updates: server sends `protected_paths_pending_change` first → agent stages expected-state diff → on next ACE event watcher knows operator-initiated removals don't trigger spurious tamper alerts.
+- [ ] **DACL-05** — DPAPI-master-key recovery runbook (folded in from former v1.0.0 Phase 52 handoff): documents `re-init-from-env-vars` and `restore-from-backup` flows when DPAPI unprotect fails on agent restart; lives at `docs/operations/dpapi-recovery.md`.
 
-### Documentation
+### ETW bypass detection (ETW)
 
-- [ ] **HARD-06** — Operational runbooks + deployment guides. Coverage: install/upgrade/uninstall, AD bind configuration, certificate management, log shipping, troubleshooting (10 most common issues), disaster recovery. Lives in `docs/operations/`.
+- [ ] **ETW-01** — Real-time `Microsoft-Windows-Kernel-File` consumer (`etw_kernel_file.rs` in agent) via `ferrisetw` 1.2.0; 256 KB × 200 buffers; subscribes to CREATE/WRITE/DELETE_PATH/OP_END keywords; `TRACE_LEVEL_INFORMATION`; consumer-side filter drops events from System32/WinSxS to keep volume manageable.
+- [ ] **ETW-02** — Hook-DLL journal ring buffer (`Global\DlpHookJournal_<pid>`, 64 KiB shared mapping, single-producer single-consumer); journal entry `(seq, file_object, op, path_hash, ts_qpc)` written *before* decision so denials are also journaled.
+- [ ] **ETW-03** — Bypass correlator (`bypass_correlator.rs` in agent): for each ETW event, look up `(file_object, op)` in matching process's journal within ±5 ms QPC tolerance; absence → `BypassAlert {agent_id, pid, image, path, op, ts, file_object, correlation_reason}`; allowlisted PIDs dropped pre-correlation.
+- [ ] **ETW-04** — `bypass_alerts` SQLite table + `dlp-server/src/db/repositories/bypass_alerts.rs` repository + `POST /audit/bypass` (agent → server ingest) + `GET /admin/bypass-alerts?since=&severity=` (admin TUI feed) + `POST /admin/bypass-alerts/:id/ack` (acknowledge).
+- [ ] **ETW-05** — Bypass alerts route through existing SIEM relay (`siem_connector::relay`) and alert router (`alert_router::send` when `severity ≥ ALERT`); no new outbound transport.
 
-### Scale Validation
+### Operator UX (UX)
 
-- [ ] **HARD-07** — Performance baseline at scale. 1000 policies in PolicyStore, 100 simultaneous agents polling, sustained 1000 audit events/sec to server. Document p50/p95/p99 latency for policy evaluation, audit ingest, admin API. Capture in `.planning/milestones/v1.0.0-PERF.md`.
+- [ ] **UX-01** — Admin CLI Protected Paths screen (`dlp-admin-cli/src/screens/protected_paths.rs`): list T3/T4 root paths with visible diff between policy-derived defaults and operator overrides; add/remove via TUI; mirrors `screens/usb_enforcement.rs` pattern.
+- [ ] **UX-02** — Admin CLI Bypass Alerts screen (`dlp-admin-cli/src/screens/bypass_alerts.rs`): paginated event feed with per-event detail (image path + SHA-256, file path, operation, QPC timestamp, correlation reason); ack/dismiss actions; severity filter; mirrors hybrid of `screens/cloud_config.rs` + `screens/print_config.rs` patterns.
 
-### Release Gate
+### Monitor mode (MODE)
 
-- [ ] **HARD-08** — SonarQube quality gate clean (zero bugs, zero security issues, ≥80% coverage on new code) + v1.0.0 git tag + release notes. Blocking on all above.
+- [ ] **MODE-01** — Per-policy `enforcement_mode: Audit | Block | AuditAndBlock` field added to policy schema; admin TUI Conditions Builder dropdown; hook DLL respects mode (Audit = log + always ALLOW; Block = log + DENY on violation; AuditAndBlock = both); audit events carry `policy_mode` field. Required for safe production rollout per industry DLP norms.
+
+### SD/Optical/Virtual drives (DRIVE — SEED-004 fold-in)
+
+- [ ] **DRIVE-01** — Volume-class disambiguation via `Win32_DiskDrive` + `Win32_LogicalDisk` WMI queries; classes: `LocalNTFS`, `USBRemovable`, `SDCard`, `Optical`, `Virtual` (Daemon Tools / VHD / VHDX), `NetworkShare` (UNC).
+- [ ] **DRIVE-02** — `source_volume_class` + `destination_volume_class` ABAC attributes added to ABAC engine (5 → 7 attrs); ABAC evaluator handles new variants; admin TUI Conditions Builder dropdown.
+- [ ] **DRIVE-03** — `WM_DEVICECHANGE` branch for virtual mounts (Daemon Tools, ISO mounting via Windows Explorer, VHD mount); registers `GUID_DEVINTERFACE_VOLUME` notification handlers for non-USB volume classes.
+- [ ] **DRIVE-04** — Admin TUI device-list extension surfaces non-USB volume classes alongside the existing USB/disk allowlist screens.
+
+### Operational documentation + UAT (OPS)
+
+- [ ] **OPS-01** — `docs/operations/deployment-guide.md` covering per-vendor AV/EDR allowlist procedures for at minimum Microsoft Defender for Endpoint, CrowdStrike Falcon, SentinelOne, Carbon Black, Sophos, Trend Micro Apex One; each with screenshots + console steps + IOC/hash exclusion documentation.
+- [ ] **OPS-02** — Hash publishing on release: SHA-256 + SHA-512 for every shipped binary published in `RELEASE_NOTES.md`; Microsoft binary submission flow (`wdsi/filesubmission`) documented; Authenticode timestamp verification command included.
+- [ ] **OPS-03** — Deployment-guide sections covering: Secure Boot reality (AppInit_DLLs is inert), PPL coverage gap (lsass/MsMpEng/EDR-self) and DACL-tripwire backstop, `SeSystemProfilePrivilege` preservation across upgrades, post-install reboot requirement for hook activation.
+- [ ] **OPS-04** — UAT smoke-test plan executed on real Windows 11 host (folds in former HARD-05 acceptance gate): real OneDrive/Google Drive/Dropbox/Box clients (real-blocking verified), real printers, real USB/SD/optical/virtual drives; benchmark gate (≤ 25% wall-clock overhead on representative `cargo build` + `Office app launch` workloads); results captured in `.planning/milestones/v0.10.0-UAT.md`.
+
+### Differentiators (DIFF — cuttable to v0.10.1 if scope pressure hits)
+
+- [ ] **DIFF-01** — Override-with-justification: user-side `dlp-user-ui` toast offers "Request override" on DENY; user enters justification; agent forwards to server; admin can grant TTL-bounded approval (default 1 hour) via new `/admin/overrides` endpoint and admin TUI screen.
+- [ ] **DIFF-02** — Diagnostic mode admin TUI screen: full decision tree per blocked event (which hook fired, classification source + age, ABAC subject/resource/action/environment values, matched policy ID + mode, decision latency).
+- [ ] **DIFF-03** — Block-event SHA-256 hash evidence: when blocking a write, agent computes SHA-256 of the would-be-written content (hash, NOT bytes); audit event carries hash for forensic chain-of-custody. Buffered through OS file-handle, not via second open.
+- [ ] **DIFF-04** — Hook DLL self-health telemetry: per-host counters (injected_pids, patched_modules, pipe_round_trips, cache_hit_rate, fail_state); admin TUI dashboard surfacing AV/EDR coexistence status across deployed endpoints.
 
 ---
 
@@ -101,6 +146,9 @@ Goal: take a feature-complete DLP system through hardening, refactor, scale vali
 - ✓ **R005** Cloud share link clipboard detection (all 4 providers; Box anchored to prevent Dropbox false-positive)
 - ✓ **R006** Admin CLI Cloud + Print configuration screens
 
+### v0.10.0 — Real-Time File Access Prevention (in progress)
+- ✓ **HARD-01** Encrypt secrets at rest in operator SQLite (PBKDF2 + DPAPI machine-bound KEK; AES-256-GCM with versioned envelope; KEK rotation via admin CLI). Shipped Phase 47 on 2026-05-11. Carries forward into v0.10.0 as a prerequisite. Cleartext columns dropped; rotation + migration + log-scan integration tests green on Windows.
+
 ---
 
 ## Out of Scope
@@ -110,26 +158,41 @@ Goal: take a feature-complete DLP system through hardening, refactor, scale vali
 - **Cloud-native policy engine** — on-prem DLP with enterprise AD dependency.
 - **File encryption at rest** — NTFS ACLs + ABAC provide access control; full-disk encryption is BitLocker's concern.
 - **Raw JSON policy editing** — replaced by Conditions Builder in v0.4.0.
-- **Kernel minifilter driver** — user-mode IAT hooks + WFP sufficient; EV cert path not justified by risk.
+- **Kernel minifilter driver** — user-mode IAT hooks + WFP + DACL tripwire + ETW Kernel-File telemetry sufficient; EV cert path not justified by risk. Reaffirmed for v0.10.0.
 - **Native browser extension** — deferred to v1.3.
+
+### Dropped from v1.0.0 Enterprise Hardening (2026-05-12)
+
+The v1.0.0 milestone was abandoned in favor of v0.10.0 Real-Time File Access Prevention. The following requirements move to Out of Scope:
+
+- ~~**HARD-02**~~ — Split monolithic `admin_api.rs` (217 KB) into per-domain modules. Dropped: revisit when monolith size becomes a velocity blocker; not on the v0.10.0 critical path.
+- ~~**HARD-03**~~ — Append-only audit hash chain (SHA-256) for tamper detection. Dropped from v1.0.0; viable as a standalone milestone (N-SEC-07 compliance requirement).
+- ~~**HARD-04**~~ — End-to-end test for password-protected service stop. Dropped: manual test remains until a Windows CI runner is provisioned.
+- ~~**HARD-05**~~ — Manual smoke test on real Windows host. Folded informally into v0.10.0 OPS-04 UAT scope (real-blocking validation requires real Windows host anyway).
+- ~~**HARD-06**~~ — Operational runbooks + deployment guides. Dropped as a standalone milestone; v0.10.0 ships a narrower deployment guide via OPS-01..03 (AV/EDR allowlist + global injection ops procedure). DPAPI-recovery handoff folded into v0.10.0 DACL-05.
+- ~~**HARD-07**~~ — Performance baseline at scale (1000 policies, 100 agents, 1000 events/sec). Dropped: revisit once v0.10.0 hook DLL is in production and real perf data is available.
+- ~~**HARD-08**~~ — SonarQube quality gate clean + v1.0.0 release tag. Dropped: v1.0.0 will not be tagged. Next release tag is `v0.10.0` after this milestone closes.
 
 ---
 
 ## Traceability
 
-Filled in by `gsd-roadmapper` once `ROADMAP.md` is generated. Maps each `HARD-NN` requirement to a phase.
+Filled in by `gsd-roadmapper` once `ROADMAP.md` is generated. Maps each v0.10.0 REQ-ID to a phase.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| HARD-01 | TBD | Active |
-| HARD-02 | TBD | Active |
-| HARD-03 | TBD | Active |
-| HARD-04 | TBD | Active |
-| HARD-05 | TBD | Active |
-| HARD-06 | TBD | Active |
-| HARD-07 | TBD | Active |
-| HARD-08 | TBD | Active |
+| HARD-01 | 47 | Validated (shipped 2026-05-11) |
+| BLOCK-01..10 | TBD | Active |
+| CACHE-01..06 | TBD | Active |
+| FAIL-01..03 | TBD | Active |
+| DACL-01..05 | TBD | Active |
+| ETW-01..05 | TBD | Active |
+| UX-01..02 | TBD | Active |
+| MODE-01 | TBD | Active |
+| DRIVE-01..04 | TBD | Active |
+| OPS-01..04 | TBD | Active |
+| DIFF-01..04 | TBD | Active (cuttable to v0.10.1) |
 
 ---
 
-*Last updated: 2026-05-11 from IDEA-DOC.md consolidation.*
+*Last updated: 2026-05-12 — milestone pivot from v1.0.0 Enterprise Hardening to v0.10.0 Real-Time File Access Prevention. HARD-02..08 dropped; HARD-01 carried forward as validated prerequisite.*
