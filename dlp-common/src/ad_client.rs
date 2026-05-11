@@ -14,8 +14,33 @@ use std::collections::HashMap;
 use ipnetwork::IpNetwork;
 use ldap3::{Ldap, LdapConnAsync, Scope, SearchEntry};
 use parking_lot::Mutex;
+use secrecy::{ExposeSecret, SecretString};
 use thiserror::Error;
 use tracing::{debug, warn};
+
+// ---------------------------------------------------------------------------
+// LDAP bind credentials (Phase 47 Task 47-05)
+// ---------------------------------------------------------------------------
+
+/// Optional explicit-bind credentials for the LDAP connection.
+///
+/// When [`AdClient::new`] is called the bind path uses SSPI passwordless
+/// (machine-account TGT) — `simple_bind(&machine_account_dn, "")`. Phase 47
+/// Task 47-05 adds an opt-in alternative: operator-configured `bind_dn` +
+/// encrypted `bind_password` (stored in `ldap_config` and decrypted by
+/// `dlp-server`). When the operator populates both fields the server
+/// constructs an [`LdapBindCredentials`] and calls [`AdClient::new_with_bind`].
+///
+/// The struct is `Clone` because the background LDAP task takes ownership of
+/// the credentials but the caller may keep them for diagnostics. The `Debug`
+/// derive is safe: [`SecretString`] redacts its bytes in formatted output.
+#[derive(Clone, Debug)]
+pub struct LdapBindCredentials {
+    /// Fully-qualified bind DN (e.g. `"CN=svc-dlp,OU=Service,DC=corp,DC=local"`).
+    pub bind_dn: String,
+    /// Bind password wrapped so accidental logging surfaces as `[REDACTED]`.
+    pub bind_password: SecretString,
+}
 
 // ---------------------------------------------------------------------------
 // Binary SID parsing (MS-DTYP)
@@ -215,6 +240,27 @@ impl AdClient {
     /// Returns `AdClientError::LdapConnect` if the initial TCP connection
     /// cannot be established.
     pub async fn new(config: LdapConfig) -> Result<Self, AdClientError> {
+        Self::new_with_bind(config, None).await
+    }
+
+    /// Constructs a new `AdClient` with optional explicit-bind credentials.
+    ///
+    /// Phase 47 Task 47-05 entry point. When `bind_credentials` is `Some`,
+    /// the background LDAP task issues `simple_bind(&bind_dn, password)`
+    /// using the supplied credentials. When `None`, the task falls back to
+    /// the historical SSPI passwordless bind (machine-account TGT) —
+    /// preserving the default for deployments that have not configured
+    /// explicit-bind credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AdClientError::LdapConnect` if VPN subnet parsing fails.
+    /// LDAP connect/bind failures are handled in the background task with
+    /// a retry loop; they do not surface from this constructor.
+    pub async fn new_with_bind(
+        config: LdapConfig,
+        bind_credentials: Option<LdapBindCredentials>,
+    ) -> Result<Self, AdClientError> {
         let vpn_subnets = config
             .parse_vpn_subnets()
             .map_err(|e| AdClientError::LdapConnect(format!("invalid VPN subnet: {}", e)))?;
@@ -225,7 +271,9 @@ impl AdClient {
         let ldap_url = config.ldap_url.clone();
         let base_dn = config.base_dn.clone();
         let require_tls = config.require_tls;
-        tokio::spawn(async move { run_ldap_task(ldap_url, base_dn, require_tls, rx).await });
+        tokio::spawn(async move {
+            run_ldap_task(ldap_url, base_dn, require_tls, bind_credentials, rx).await
+        });
 
         // Brief pause to allow background task to establish the connection.
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -348,10 +396,17 @@ enum AdRequest {
 }
 
 /// Background task that owns the LDAP connection and processes requests serially.
+///
+/// When `bind_credentials` is `Some`, every reconnect attempts an explicit
+/// `simple_bind(&bind_dn, password)`. When `None`, the original passwordless
+/// SSPI bind path is used (machine-account TGT). The `bind_credentials`
+/// value lives entirely inside this task — its [`SecretString`] is dropped
+/// (and zeroized) when the task exits.
 async fn run_ldap_task(
     ldap_url: String,
     base_dn: String,
     require_tls: bool,
+    bind_credentials: Option<LdapBindCredentials>,
     mut rx: tokio::sync::mpsc::Receiver<AdRequest>,
 ) {
     let computer_name = std::env::var("COMPUTERNAME").unwrap_or_default();
@@ -361,7 +416,12 @@ async fn run_ldap_task(
     } else {
         format!("CN={}$,CN=Computers,{}", computer_name, base_dn)
     };
-    debug!(machine = %computer_name, domain = %userdomain, "AD client background task starting");
+    debug!(
+        machine = %computer_name,
+        domain = %userdomain,
+        explicit_bind = bind_credentials.is_some(),
+        "AD client background task starting"
+    );
 
     loop {
         let mut ldap = match ldap_connect(&ldap_url, require_tls).await {
@@ -373,7 +433,23 @@ async fn run_ldap_task(
             }
         };
 
-        match ldap.simple_bind(&machine_account_dn, "").await {
+        // Choose bind path: explicit (DN + password) if configured, else
+        // SSPI passwordless via the machine account.
+        //
+        // `expose_secret()` is the sanctioned call site for the bind
+        // password — `simple_bind` requires `&str`, and the exposed value
+        // does not leave this scope. Do NOT log this string under any
+        // circumstance (the password is the entire trust root of the
+        // explicit-bind path).
+        let bind_result = match bind_credentials.as_ref() {
+            Some(creds) => {
+                ldap.simple_bind(&creds.bind_dn, creds.bind_password.expose_secret())
+                    .await
+            }
+            None => ldap.simple_bind(&machine_account_dn, "").await,
+        };
+
+        match bind_result {
             Ok(r) => {
                 // Zero rc means success per RFC 4511.
                 if r.rc != 0 {

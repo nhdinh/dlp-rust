@@ -68,6 +68,12 @@ const DEV_JWT_SECRET: &str = "dlp-server-dev-secret-change-me";
 /// - If `dev_mode` is true and env var is absent, uses an insecure fallback.
 /// - Otherwise returns an error (server should refuse to start).
 ///
+/// **Phase 47 transition note (Task 47-05):** kept for compatibility with the
+/// existing `main.rs` bootstrap call site. The new entry point is
+/// [`resolve_jwt_secret_with_crypto`], which prefers the encrypted DB row and
+/// migrates the env-var into it on first start. Task 47-06 will switch
+/// `main.rs` to the new function and this legacy variant will be removed.
+///
 /// # Errors
 ///
 /// Returns an error message if `JWT_SECRET` is not set and `dev_mode` is false.
@@ -89,6 +95,99 @@ pub fn resolve_jwt_secret(dev_mode: bool) -> Result<String, String> {
              \x20 dlp-server.exe --dev"
             .to_string()),
     }
+}
+
+/// Resolves the JWT signing secret with KEK-backed persistence.
+///
+/// Control flow (Phase 47 Task 47-05):
+///
+/// 1. Try `jwt_secret::get(conn)`. If the encrypted row exists, decrypt and
+///    return — the env var is no longer needed once the DB row is seeded.
+/// 2. Else: if `JWT_SECRET` env var is set and non-empty, encrypt + insert
+///    into `secrets_jwt`, emit a one-shot `tracing::warn!` deprecation
+///    notice, and return the plaintext as `SecretString`.
+/// 3. Else: if `dev_mode == true`, return the `DEV_JWT_SECRET` fallback
+///    without writing anything to the DB (dev mode keeps the database
+///    pristine for ephemeral test runs).
+/// 4. Else: production with neither DB row nor env var — return the typed
+///    error message.
+///
+/// # Arguments
+///
+/// * `pool` — connection pool used both for the SELECT and the
+///   first-run INSERT (steps 1 and 2).
+/// * `crypto` — active KEK handle. Decryption (step 1) and encryption
+///   (step 2) both run under this version.
+/// * `dev_mode` — set to true for `--dev`. When true, step 3 fires
+///   instead of the production error.
+///
+/// # Errors
+///
+/// Returns a human-readable error string suitable for surfacing as a
+/// startup failure message. Database / DPAPI errors are wrapped with a
+/// short context line so the operator can grep for them.
+pub fn resolve_jwt_secret_with_crypto(
+    pool: &crate::db::Pool,
+    crypto: &crate::crypto::SecretCrypto,
+    dev_mode: bool,
+) -> Result<secrecy::SecretString, String> {
+    use crate::crypto::{aad_for, Envelope};
+    use crate::db::repositories::jwt_secret;
+
+    let conn = pool
+        .get()
+        .map_err(|e| format!("acquire connection for JWT secret read: {e}"))?;
+
+    // Step 1: encrypted DB row already exists -> decrypt and return.
+    if let Some((envelope, _kek_version)) =
+        jwt_secret::get(&conn).map_err(|e| format!("read secrets_jwt: {e}"))?
+    {
+        let aad = aad_for("secrets_jwt", "secret");
+        let plaintext = crypto
+            .decrypt(&envelope, &aad)
+            .map_err(|_| "decrypt failed for secrets_jwt.secret (KEK mismatch?)".to_string())?;
+        return Ok(plaintext);
+    }
+    // Explicit drop so the immutable borrow ends before any later write.
+    drop(conn);
+
+    // Step 2: env var present -> migrate into encrypted DB row.
+    if let Ok(env_value) = std::env::var("JWT_SECRET") {
+        if !env_value.is_empty() {
+            let aad = aad_for("secrets_jwt", "secret");
+            let envelope: Envelope = crypto
+                .encrypt(env_value.as_bytes(), &aad)
+                .map_err(|_| "encrypt failed for secrets_jwt.secret".to_string())?;
+            let conn = pool
+                .get()
+                .map_err(|e| format!("acquire connection for JWT secret write: {e}"))?;
+            jwt_secret::upsert_encrypted(&conn, &envelope, crypto.version(), chrono::Utc::now())
+                .map_err(|e| format!("upsert secrets_jwt: {e}"))?;
+            tracing::warn!(
+                "JWT_SECRET env-var migrated into encrypted DB row; the env var is no \
+                 longer required and will be ignored on future startups"
+            );
+            return Ok(secrecy::SecretString::new(env_value));
+        }
+    }
+
+    // Step 3: dev-mode fallback — never writes to the DB.
+    if dev_mode {
+        tracing::warn!(
+            "JWT_SECRET not set and no encrypted DB row — using insecure dev secret \
+             (--dev mode). Do NOT use --dev in production!"
+        );
+        return Ok(secrecy::SecretString::new(DEV_JWT_SECRET.to_string()));
+    }
+
+    // Step 4: production failure.
+    Err("JWT secret not configured.\n\
+         Set JWT_SECRET environment variable on first startup, or use --dev for development:\n\n\
+         \x20 export JWT_SECRET=\"your-secure-random-secret\"\n\
+         \x20 dlp-server.exe\n\n\
+         Or for development only:\n\n\
+         \x20 dlp-server.exe --dev"
+        .to_string())
 }
 
 /// Process-wide JWT secret, set once at startup via [`resolve_jwt_secret`].
@@ -482,5 +581,125 @@ mod tests {
         let json = r#"{"username":"admin","password":"secret"}"#;
         let req: LoginRequest = serde_json::from_str(json).expect("deserialize");
         assert_eq!(req.username, "admin");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 47 Task 47-05: resolve_jwt_secret_with_crypto tests
+    // -----------------------------------------------------------------------
+    //
+    // These tests mutate the process environment (`JWT_SECRET`). `std::env::set_var`
+    // is documented as unsafe-with-respect-to-multithreading; we serialize the
+    // four tests below behind a process-wide mutex so the threaded cargo test
+    // runner doesn't race them.
+
+    use crate::crypto::{SecretCrypto, ENVELOPE_VERSION_V1};
+    use crate::db::new_pool;
+    use secrecy::ExposeSecret;
+
+    const RESOLVE_TEST_KEK: [u8; 32] = [
+        0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
+        0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
+        0x55, 0x55,
+    ];
+
+    fn resolve_test_crypto() -> SecretCrypto {
+        SecretCrypto::from_kek(RESOLVE_TEST_KEK, ENVELOPE_VERSION_V1)
+    }
+
+    /// Process-wide serialization for the JWT-env-var tests. Two
+    /// concurrently-running tests would race on `set_var("JWT_SECRET", ...)`.
+    static JWT_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn resolve_jwt_with_crypto_migrates_env_var_into_db() {
+        let _guard = JWT_ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // SAFETY: env-var mutation is gated by JWT_ENV_TEST_LOCK above and
+        // the test binary is the only consumer; no concurrent reads.
+        unsafe { std::env::set_var("JWT_SECRET", "env-var-XYZ") };
+
+        let pool = new_pool(":memory:").expect("create pool");
+        let crypto = resolve_test_crypto();
+
+        // First call: no DB row, env var present -> migrate.
+        let secret = resolve_jwt_secret_with_crypto(&pool, &crypto, false).expect("first resolve");
+        assert_eq!(secret.expose_secret(), "env-var-XYZ");
+
+        // DB row must now exist.
+        let conn = pool.get().expect("acquire connection");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM secrets_jwt", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(n, 1, "first resolve must seed the encrypted DB row");
+        drop(conn);
+
+        // Second call with env-var cleared: read from DB.
+        unsafe { std::env::remove_var("JWT_SECRET") };
+        let secret2 =
+            resolve_jwt_secret_with_crypto(&pool, &crypto, false).expect("second resolve");
+        assert_eq!(
+            secret2.expose_secret(),
+            "env-var-XYZ",
+            "second resolve must read from DB, env var no longer needed"
+        );
+    }
+
+    #[test]
+    fn resolve_jwt_with_crypto_dev_mode_fallback_does_not_write_db() {
+        let _guard = JWT_ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("JWT_SECRET") };
+
+        let pool = new_pool(":memory:").expect("create pool");
+        let crypto = resolve_test_crypto();
+
+        let secret = resolve_jwt_secret_with_crypto(&pool, &crypto, true).expect("dev resolve");
+        assert_eq!(secret.expose_secret(), DEV_JWT_SECRET);
+
+        let conn = pool.get().expect("acquire connection");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM secrets_jwt", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(n, 0, "dev-mode fallback must NOT write secrets_jwt");
+    }
+
+    #[test]
+    fn resolve_jwt_with_crypto_production_without_env_returns_error() {
+        let _guard = JWT_ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("JWT_SECRET") };
+
+        let pool = new_pool(":memory:").expect("create pool");
+        let crypto = resolve_test_crypto();
+
+        let err = resolve_jwt_secret_with_crypto(&pool, &crypto, false)
+            .expect_err("production w/o env w/o DB row must fail");
+        assert!(
+            err.contains("JWT secret not configured"),
+            "expected typed error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_jwt_with_crypto_prefers_db_over_env_var() {
+        // Once the DB row exists, the env var is silently ignored — this
+        // is the post-migration steady state per the deprecation warn.
+        let _guard = JWT_ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let pool = new_pool(":memory:").expect("create pool");
+        let crypto = resolve_test_crypto();
+
+        // Seed the DB row with one value.
+        unsafe { std::env::set_var("JWT_SECRET", "first-value") };
+        let _ = resolve_jwt_secret_with_crypto(&pool, &crypto, false).expect("seed");
+
+        // Now change the env var; resolve must return the DB value, not env.
+        unsafe { std::env::set_var("JWT_SECRET", "different-value") };
+        let secret = resolve_jwt_secret_with_crypto(&pool, &crypto, false).expect("second resolve");
+        assert_eq!(
+            secret.expose_secret(),
+            "first-value",
+            "DB row must win over env var"
+        );
+
+        unsafe { std::env::remove_var("JWT_SECRET") };
     }
 }

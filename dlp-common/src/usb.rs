@@ -299,13 +299,12 @@ fn setupdi_description_by_vid_pid_serial(device_path: &str) -> String {
             // device have synthesised "(none)" serials and must not match a target
             // that has a real serial number.
             let serial_match = match (parsed.serial.as_str(), candidate.serial.as_str()) {
-                ("(none)", "(none)") => true,  // both have no serial
-                ("(none)", _) => true,          // target has no serial; accept any candidate
-                (_, "(none)") => false,         // target has real serial; candidate has none → no match
-                (t, c) => t == c,               // both have real serials; must match exactly
+                ("(none)", "(none)") => true, // both have no serial
+                ("(none)", _) => true,        // target has no serial; accept any candidate
+                (_, "(none)") => false, // target has real serial; candidate has none → no match
+                (t, c) => t == c,       // both have real serials; must match exactly
             };
-            if candidate.vid == parsed.vid && candidate.pid == parsed.pid && serial_match
-            {
+            if candidate.vid == parsed.vid && candidate.pid == parsed.pid && serial_match {
                 let desc = read_string_property(hdev, &devinfo, SPDRP_FRIENDLYNAME)
                     .filter(|s| !s.is_empty())
                     .or_else(|| read_string_property(hdev, &devinfo, SPDRP_DEVICEDESC))

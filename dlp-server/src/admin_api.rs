@@ -1598,6 +1598,11 @@ async fn update_ldap_config_handler(
             cache_ttl_secs: p.cache_ttl_secs,
             vpn_subnets: p.vpn_subnets.clone(),
             updated_at: now,
+            // Phase 47 Task 47-05: bind_dn is managed by the encrypted-
+            // bind path (set_bind_password / clear_bind_password). The
+            // legacy update() method ignores this field — value is
+            // irrelevant.
+            bind_dn: None,
         };
         LdapConfigRepository::update(&uow, &record).map_err(AppError::Database)?;
         uow.commit().map_err(AppError::Database)?;
