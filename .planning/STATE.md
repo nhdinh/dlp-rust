@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0.0
 milestone_name: Enterprise Hardening & Scale
 status: in_progress
-last_updated: "2026-05-14T00:00:00Z"
-last_activity: 2026-05-14
+last_updated: "2026-05-15T00:00:00Z"
+last_activity: 2026-05-15
 progress:
   total_phases: 8
   completed_phases: 0
   total_plans: 11
-  completed_plans: 6
+  completed_plans: 8
   percent: 0
 ---
 
@@ -27,17 +27,29 @@ progress:
 
 - **Milestone:** v1.0.0 — Enterprise Hardening & Scale
 - **Phase:** 47 — Secrets Encryption at Rest (in progress)
-- **Plan:** Waves 1-3 complete (6/11 tasks); Wave 4 pending
-- **Status:** Wave 3 lands the loader layer. Encrypt-aware reads/writes for
-  SMTP/webhook/SIEM (47-04), JWT env→DB migration + LDAP explicit-bind
-  loader (47-05), and SecretString hardening + tracing audit (47-09). All
-  three repository-level encryption paths and the new admin_auth JWT
-  loader are exercised by colocated unit tests. AppState wiring of
-  `Arc<SecretCrypto>` is intentionally deferred to Task 47-06 (Wave 4)
-  per the plan — legacy cleartext code paths remain functional in the
-  meantime. Commits `a44a08a` (47-04), `682a247` (47-05), `853c38e` (47-09).
-  293 tests green workspace-wide, no regressions vs Wave 2's 270.
-- **Last activity:** 2026-05-14 (Wave 3 execution)
+- **Plan:** Waves 1-4 complete (8/11 tasks); Wave 5 pending
+- **Status:** Wave 4 lands the migration + bootstrap and the
+  ALERT_SECRET_MASK round-trip firewall. Task 47-06 ships the
+  one-shot atomic cleartext-to-encrypted migration
+  (`secrets_migration::migrate_secrets_to_encrypted`), wires
+  `Arc<SecretCrypto>` into `AppState`, and bootstraps the active KEK
+  in `main.rs` via `SecretCrypto::load_active_or_bootstrap`. CONTEXT
+  D-Q6 is honored: cleartext columns are physically dropped via
+  `ALTER TABLE ... DROP COLUMN` in the same transaction as the
+  encrypt-and-verify pass, so no cleartext persists after the
+  migration commits. `PRAGMA secure_delete = ON` is now enabled at
+  pool init so freed pages are zero-overwritten. Legacy
+  `*_with_crypto` method names retired in the same commit; canonical
+  `get`/`update`/`get_secrets`/`resolve_jwt_secret` are the only
+  surface remaining. Task 47-07 adds the SIEM-side mask round-trip
+  regression test (alert-side was already covered as part of 47-06).
+  Commits `765e875` (47-06), `b86a962` (47-07). 298 dlp-server lib
+  tests green (up from 293 in Wave 3); workspace-wide tests pass.
+  Pre-existing clippy lints in `dlp-hook-dll`, `device_registry.rs`,
+  `disk_registry.rs`, and `managed_origins.rs` are out of Wave 4
+  scope (count unchanged: 31 pre-existing dlp-server errors before
+  and after this wave).
+- **Last activity:** 2026-05-15 (Wave 4 execution)
 
 ## Progress
 
@@ -52,7 +64,7 @@ v0.7.1 [Phase 38.3–38.6 done] (shipped 2026-05-06)
 v0.8.0 [Phase 39–42 done] (shipped 2026-05-07)
 v0.8.1 [Phase 43–46 done] (shipped 2026-05-08)
 v0.9.0 [M017 / pre-Phase 47 done] (shipped 2026-05-09)
-v1.0.0 [Phase 47 in progress: Waves 1-3/5 done (47-01..47-05, 47-09) | 47-06..47-08, 47-10, 47-11 pending | 48–54 pending] (active)
+v1.0.0 [Phase 47 in progress: Waves 1-4/5 done (47-01..47-07, 47-09) | 47-08, 47-10, 47-11 pending | 48–54 pending] (active)
 ```
 
 ---
@@ -71,27 +83,32 @@ None.
 ## Next Action
 
 ```
-/gsd-execute-phase 47 --wave 4
+/gsd-execute-phase 47 --wave 5
 ```
 
-Wave 4 = Tasks 47-06 (one-shot atomic cleartext→encrypted migration +
-AppState wiring + first-run KEK bootstrap) and 47-07 (verify
-ALERT_SECRET_MASK round-trip survives through the encrypted layer in
-`admin_api.rs`). 47-06 owns the `main.rs` bootstrap sequence and the
-one-and-only `ALTER TABLE ... DROP COLUMN` invocation that lands the
-CONTEXT D-Q6 commitment (no persisted cleartext after migration commit).
+Wave 5 = Tasks 47-08 (admin CLI `rotate-secrets` + server-side
+`POST /admin/secrets/rotate` endpoint with maintenance-mode gating),
+47-10 (full rotation-cycle integration test under
+`dlp-server/tests/secrets_rotation_integration.rs`), and 47-11
+(end-to-end log-scan + migration-fixture + encryption integration
+tests). 47-08 must land before 47-10; 47-11 can run in parallel with
+either once the encrypted production path is exercised end-to-end.
 
-Loader surface ready for downstream consumption from Wave 3:
-- `SiemConfigRepository::{get,update}_with_crypto`
-- `AlertRouterConfigRepository::{get,update,get_secrets}_with_crypto`
+Active surface ready for Wave 5 consumption:
+- `SiemConfigRepository::{get,update}` (canonical, encrypted)
+- `AlertRouterConfigRepository::{get,update,get_secrets}` (canonical)
 - `LdapConfigRepository::{get_bind_credentials,set_bind_password,clear_bind_password}`
-- `admin_auth::resolve_jwt_secret_with_crypto`
+- `admin_auth::resolve_jwt_secret(pool, crypto, dev_mode)` (canonical)
 - `AdClient::new_with_bind` (passwordless default preserved by `new`)
+- `secrets_migration::migrate_secrets_to_encrypted(pool, crypto, jwt_env_fallback)`
+- `SecretCrypto::load_active_or_bootstrap(pool)` (first-run KEK bootstrap)
+- `SecretCrypto::create_new_version(&mut conn)` (rotation primitive — 47-08)
+- `AppState.crypto: Arc<SecretCrypto>` wired through `main.rs` and
+  consumed by `SiemConnector::new` / `AlertRouter::new`.
 
-47-06 wires AppState's `Arc<SecretCrypto>`, swaps `main.rs` from
-`resolve_jwt_secret(dev_mode)` to `resolve_jwt_secret_with_crypto`, runs
-the per-row encrypt+verify+NULL+DROP migration, and starts the encrypted
-path serving production traffic.
+ALERT_SECRET_MASK round-trip is now regression-tested on BOTH the
+alert-config endpoint (`test_put_alert_config_preserves_masked_secret`)
+and the SIEM endpoint (`test_put_siem_config_preserves_masked_secret`).
 
 ---
 
