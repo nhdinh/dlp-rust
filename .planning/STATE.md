@@ -3,14 +3,16 @@ gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
 status: planning
-last_updated: "2026-05-11T18:13:54.761Z"
-last_activity: 2026-05-11
+last_updated: "2026-05-12T00:00:00.000Z"
+last_activity: 2026-05-12
 progress:
-  total_phases: 0
+  total_phases: 11
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
   percent: 0
+prerequisite_phases:
+  - 47   # HARD-01 Secrets Encryption at Rest (shipped 2026-05-11)
 ---
 
 # Project State
@@ -19,16 +21,16 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Milestone v0.10.0 (Real-Time File Access Prevention) — defining requirements. Phase 47 (HARD-01 Secrets Encryption at Rest) shipped 2026-05-11 and carries forward as a v0.10.0 prerequisite. v1.0.0 Enterprise Hardening dropped; HARD-02..08 moved to Out of Scope (see PROJECT.md).
+**Current Focus:** Milestone v0.10.0 (Real-Time File Access Prevention) — roadmap drafted (Phases 48–58); next step is `/gsd-plan-phase 48`. Phase 47 (HARD-01 Secrets Encryption at Rest) shipped 2026-05-11 and carries forward as a validated prerequisite. v1.0.0 Enterprise Hardening dropped 2026-05-12; HARD-02..08 moved to Out of Scope (see PROJECT.md).
 
 ---
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: Not started (roadmap drafted; awaiting plan-phase for Phase 48)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-05-11 — Milestone v0.10.0 started
+Status: Roadmap drafted (44/44 active v0.10.0 requirements mapped to Phases 48–58; HARD-01 referenced under prerequisite Phase 47)
+Last activity: 2026-05-12 — `/gsd-roadmapper` wrote ROADMAP.md (Phases 48–58, continuous from Phase 47)
 
 ## Progress
 
@@ -43,8 +45,32 @@ v0.7.1 [Phase 38.3–38.6 done] (shipped 2026-05-06)
 v0.8.0 [Phase 39–42 done] (shipped 2026-05-07)
 v0.8.1 [Phase 43–46 done] (shipped 2026-05-08)
 v0.9.0 [M017 / pre-Phase 47 done] (shipped 2026-05-09)
-v0.10.0 [Phase 47 done | next phases TBD by roadmapper] (active — defining requirements)
+v1.0.0 [abandoned 2026-05-12 — only Phase 47 (HARD-01) shipped]
+v0.10.0 [Phase 47 done (prereq) | Phases 48–58 not started] (active — roadmap drafted)
 ```
+
+---
+
+## Roadmap Summary (v0.10.0)
+
+11 active phases, continuous from prerequisite Phase 47. 44/44 active requirements mapped.
+
+| Phase | Goal | Requirements |
+|-------|------|--------------|
+| 47 (prereq) | Secrets Encryption at Rest (shipped 2026-05-11) | HARD-01 |
+| 48 | Hook DLL Surface Expansion + Crash Hardening + Build Harness | BLOCK-01..04, BLOCK-10 |
+| 49 | Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | BLOCK-05..07 |
+| 50 | Shared-Memory Classification Cache + Fail-Mode State Machine | CACHE-01..06, FAIL-01..03 |
+| 51 | ntdll Syscall-Stub Trampolines + EDR Coexistence | BLOCK-08, BLOCK-09 |
+| 52 | DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | DACL-01..05 |
+| 53 | ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | ETW-01..05 |
+| 54 | Admin TUI Protected Paths + Bypass Alerts Screens | UX-01, UX-02 |
+| 55 | Monitor-Only / Audit-Only Per-Policy Enforcement Mode | MODE-01 |
+| 56 | SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | DRIVE-01..04 |
+| 57 | Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | OPS-01..04 |
+| 58 | Differentiators Bundle (cuttable to v0.10.1) | DIFF-01..04 |
+
+Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlation), 57 (MEDIUM — vendor allowlist procedures). See ROADMAP.md "Research Flags" section.
 
 ---
 
@@ -52,14 +78,16 @@ v0.10.0 [Phase 47 done | next phases TBD by roadmapper] (active — defining req
 
 1. Milestone pivot 2026-05-12: v1.0.0 Enterprise Hardening dropped; v0.10.0 Real-Time File Access Prevention is the new active milestone.
 2. Architecture stays user-mode: no kernel minifilter, no kernel driver, no EV cert. Real-blocking achieved via hybrid Option C (IAT hooks + DACL tripwire + ETW bypass detection).
-3. v0.10.0 generalizes the v0.9.0 cloud-sync hook DLL pattern to all user-mode processes via `AppInit_DLLs` + agent-driven `CreateRemoteThread` on process-creation events.
-4. Direct-syscall bypass closed by in-memory Detours-style trampoline on ntdll syscall stubs.
-5. Asymmetric fail semantics: fail-closed for T3/T4 on agent-unreachable, fail-open for T1/T2. Hook DLL holds a local `path → classification` cache to make decisions without a live pipe.
-6. DACL tripwire is defense-in-depth on T3/T4 root paths only (not blanket); repair watcher reverts/maintains under AD group changes and file moves.
-7. ETW Kernel-File consumer surfaces suspected syscall-bypass events through SIEM, alert router, and a new admin TUI Bypass Alerts screen.
-8. SEED-004 (SD / optical / virtual drive monitoring) folded into v0.10.0; coverage comes mostly for free via the IAT-hook surface, plus admin TUI policy UX.
-9. HARD-01 Phase 47 artifacts retained at `.planning/phases/47-secrets-encryption-at-rest/` — the DPAPI-recovery handoff originally slated for v1.0.0 Phase 52 now folds into v0.10.0's narrower operational documentation surface.
-10. AV/EDR allowlist for global DLL injection is an operational landmine — v0.10.0 ships a deployment guide phase rather than running through smoke testing without it.
+3. v0.10.0 generalizes the v0.9.0 cloud-sync hook DLL pattern to all user-mode processes via agent-driven `CreateRemoteThread` (primary) and AppInit_DLLs (tertiary fallback on non-Secure-Boot endpoints only).
+4. Direct-syscall bypass closed by in-memory `retour`-based Detours-style 5-byte JMP trampoline on ntdll syscall stubs; gated behind `enable_ntdll_patching` policy flag (default off; per-customer rollout).
+5. Asymmetric fail semantics: fail-closed for T3/T4 on agent-unreachable, fail-open for T1/T2. Hook DLL holds a shared-memory `Global\DlpClassificationCache` to make decisions without a live pipe.
+6. DACL tripwire is defense-in-depth on T3/T4 root paths only (not blanket); repair watcher uses `ReadDirectoryChangesW(FILE_NOTIFY_CHANGE_SECURITY)` + 60-s polling backstop with two-phase staged updates to suppress operator-initiated removal false-positives.
+7. ETW Kernel-File consumer (via `ferrisetw` 1.2.0) surfaces suspected syscall-bypass events through the existing SIEM relay + alert router and a new admin TUI Bypass Alerts screen.
+8. SEED-004 (SD / optical / virtual drive monitoring) folded into v0.10.0 Phase 56; I/O coverage comes for free via the universal hook, plus admin TUI policy UX and two new ABAC attributes (`source_volume_class`, `destination_volume_class`).
+9. HARD-01 Phase 47 artifacts retained at `.planning/phases/47-secrets-encryption-at-rest/`. The DPAPI-recovery handoff originally slated for v1.0.0 Phase 52 now folds into v0.10.0 Phase 52 as DACL-05 (`docs/operations/dpapi-recovery.md`).
+10. AV/EDR allowlist for global DLL injection is an operational landmine — v0.10.0 ships a deployment guide phase (Phase 57) rather than running through smoke testing without it. Vendor outreach starts at Phase 48 so reference customers exist by Phase 57.
+11. Roadmap continuous-numbering: Phase 47 last shipped → v0.10.0 starts at Phase 48 with no gaps (per project convention). 11 active phases total.
+12. Monitor-only / audit-only per-policy mode (Phase 55) is a hard requirement for safe production rollout — every industry DLP comparable ships this; not shipping it would make v0.10.0 unable to deploy to production.
 
 ## Blockers
 
@@ -68,27 +96,21 @@ None.
 ## Next Action
 
 ```
-/gsd-roadmapper  (auto-invoked by /gsd-new-milestone)
+/gsd-plan-phase 48
 ```
 
-After the roadmapper writes ROADMAP.md, the immediate next step will be:
-
-```
-/gsd-discuss-phase 48
-```
-
-Phase 48 will be the first v0.10.0 phase (continuous numbering — Phase 47 was the last shipped). The roadmapper will determine the exact phase breakdown from REQUIREMENTS.md.
+Phase 48 (Hook DLL Surface Expansion + Crash Hardening + Build Harness) is the first active v0.10.0 phase. Standard pattern — no `/gsd-research-phase` needed.
 
 Active surface to consume in v0.10.0 implementation:
 
-- `dlp-hook-dll/` — cloud-sync hook DLL. v0.10.0 generalizes injection target, expands patched IAT surface, adds ntdll syscall-stub patching.
-- `dlp-agent/src/cloud_enforcer.rs` and `hook_injector.rs` — proven injection / named-pipe / fail-closed templates that the universal hook DLL will reuse.
-- `dlp-agent/src/wfp_manager.rs` — defense-in-depth pattern; DACL tripwire watcher follows similar shape.
-- `dlp-common/src/classification.rs` — classification feeds the local hook DLL cache and the asymmetric fail semantics.
-- `AppState { pool, crypto, policy_store, siem, alert, ad }` (Phase 47) — every new admin TUI screen and ETW consumer reads from this struct.
+- `dlp-hook-dll/` — cloud-sync hook DLL. v0.10.0 Phase 48 generalizes injection target, expands patched IAT surface, adds `catch_unwind` + SEH hardening; Phase 51 adds ntdll syscall-stub patching via `retour` 0.3.1.
+- `dlp-agent/src/cloud_enforcer.rs` and `hook_injector.rs` — proven injection / named-pipe / fail-closed templates that the universal hook DLL will reuse (Phase 49 generalizes the injector via ETW Kernel-Process trigger).
+- `dlp-agent/src/wfp_manager.rs` — defense-in-depth pattern; DACL tripwire watcher (Phase 52) follows similar shape.
+- `dlp-common/src/classification.rs` — classification feeds the local hook DLL cache (Phase 50) and the asymmetric fail semantics.
+- `AppState { pool, crypto, policy_store, siem, alert, ad }` (Phase 47) — every new admin TUI screen and ETW consumer reads from this struct; Phase 52/53 add `protected_paths`, `bypass_alerts`, `classification_publisher` Arcs.
 
 ---
 
 ## Historical Context
 
-`.planning.legacy/STATE.md` preserves the v0.8.1-era state at the time of the GSD format migration. `.gsd.legacy/STATE.md` (gitignored) preserves the milestone-slice-task tooling state through M017 (v0.9.0). All historical decisions surface through `.planning.legacy/` milestone audits and `.gsd.legacy/milestones/M*/`.
+`.planning.legacy/STATE.md` preserves the v0.8.1-era state at the time of the GSD format migration. `.gsd.legacy/STATE.md` (gitignored) preserves the milestone-slice-task tooling state through M017 (v0.9.0). All historical decisions surface through `.planning.legacy/` milestone audits and `.gsd.legacy/milestones/M*/`. The v1.0.0 abandonment (2026-05-12) is captured in PROJECT.md "Dropped from v1.0.0 Enterprise Hardening" and REQUIREMENTS.md Out of Scope; HARD-01 remains the sole shipped v1.0.0 artifact and carries forward as v0.10.0 Phase 47 prerequisite.
