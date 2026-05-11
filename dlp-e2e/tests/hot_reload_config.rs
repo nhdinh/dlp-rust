@@ -107,11 +107,16 @@ async fn test_siem_config_hot_reload() {
         fetched["splunk_url"],
         "https://splunk.example.com/services/collector/event"
     );
-    assert_eq!(fetched["splunk_token"], "test-token-123");
+    // Phase 47 Task 47-06: GET /admin/siem-config now returns the
+    // ALERT_SECRET_MASK sentinel for populated secret columns, matching
+    // the alert-config GET shape. The plaintext token survives on disk
+    // as an AES-GCM envelope and can be round-tripped via the mask
+    // sentinel on subsequent PUTs.
+    assert_eq!(fetched["splunk_token"], "***MASKED***");
     assert_eq!(fetched["splunk_enabled"], true);
     assert_eq!(fetched["elk_url"], "https://elastic.example.com:9200");
     assert_eq!(fetched["elk_index"], "dlp_test");
-    assert_eq!(fetched["elk_api_key"], "elk-key-456");
+    assert_eq!(fetched["elk_api_key"], "***MASKED***");
     assert_eq!(fetched["elk_enabled"], false);
 }
 

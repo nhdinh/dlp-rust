@@ -19,8 +19,10 @@ use reqwest::Client;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 
+use crate::crypto::SecretCrypto;
 use crate::db;
 use crate::db::repositories::SiemConfigRepository;
+use crate::AppError;
 
 /// Splunk HTTP Event Collector configuration.
 ///
@@ -70,16 +72,30 @@ struct SiemConfigRow {
 
 /// SIEM relay that forwards audit events to Splunk and/or ELK.
 ///
-/// Construct via `SiemConnector::new(pool)`. On every `relay_events` call,
-/// the connector re-reads the single row from the `siem_config` table so
-/// that configuration changes made via the admin API take effect
-/// immediately without restarting the server.
-#[derive(Debug, Clone)]
+/// Construct via `SiemConnector::new(pool, crypto)`. On every
+/// `relay_events` call, the connector re-reads the single row from the
+/// `siem_config` table so that configuration changes made via the admin
+/// API take effect immediately without restarting the server. The
+/// `crypto` handle (Phase 47 Task 47-06) is the active KEK that
+/// decrypts `splunk_token` / `elk_api_key` on read.
+#[derive(Clone)]
 pub struct SiemConnector {
     /// Shared SQLite connection pool.
     pool: Arc<db::Pool>,
+    /// Shared active KEK handle for decrypting on-disk secret blobs.
+    crypto: Arc<SecretCrypto>,
     /// Shared HTTP client for outbound requests.
     client: Client,
+}
+
+impl std::fmt::Debug for SiemConnector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SiemConnector")
+            .field("pool", &self.pool)
+            .field("crypto", &"<SecretCrypto>")
+            .field("client", &self.client)
+            .finish()
+    }
 }
 
 /// Wrapper for Splunk HEC event payload.
@@ -123,33 +139,69 @@ impl From<r2d2::Error> for SiemError {
     }
 }
 
+impl SiemError {
+    /// Funnels [`AppError`] from the encrypted-aware repository into a
+    /// SIEM-flavoured error variant. `AppError::Database` is mapped to
+    /// [`SiemError::Database`]; everything else (`Internal`/decrypt
+    /// failures) is mapped to [`SiemError::Database`] wrapping an
+    /// `InvalidParameterName` placeholder — the message text is
+    /// preserved so callers can `format!("{e}")` and grep it.
+    fn from_app_error(e: AppError) -> Self {
+        match e {
+            AppError::Database(db) => SiemError::Database(db),
+            other => SiemError::Database(rusqlite::Error::InvalidParameterName(format!(
+                "siem config load: {other}"
+            ))),
+        }
+    }
+}
+
 impl SiemConnector {
-    /// Constructs a `SiemConnector` backed by the given connection pool.
+    /// Constructs a `SiemConnector` backed by the given connection
+    /// pool and active KEK handle.
     ///
     /// The connector reads SIEM configuration from the `siem_config`
     /// table on each `relay_events` call. No caching is performed, so
-    /// admin updates via the API take effect on the next relay.
-    pub fn new(pool: Arc<db::Pool>) -> Self {
+    /// admin updates via the API take effect on the next relay. The
+    /// `crypto` handle is the active KEK shared across `AppState`; it
+    /// decrypts the on-disk `splunk_token_encrypted` /
+    /// `elk_api_key_encrypted` blobs.
+    pub fn new(pool: Arc<db::Pool>, crypto: Arc<SecretCrypto>) -> Self {
         Self {
             pool,
+            crypto,
             client: Client::new(),
         }
     }
 
-    /// Loads the current SIEM configuration row from the database.
+    /// Loads the current SIEM configuration row from the database,
+    /// decrypting the `splunk_token` / `elk_api_key` envelopes under
+    /// the active KEK.
     ///
     /// # Errors
     ///
-    /// Returns [`SiemError::Database`] if the row cannot be read.
+    /// Returns [`SiemError::Database`] if the SELECT fails, or
+    /// [`SiemError::Config`] if a populated envelope fails to decrypt
+    /// (typically a KEK-version mismatch or on-disk tampering).
     fn load_config(&self) -> Result<SiemConfigRow, SiemError> {
-        let repo_row = SiemConfigRepository::get(&self.pool).map_err(SiemError::from)?;
+        let repo_row = SiemConfigRepository::get(&self.pool, &self.crypto)
+            .map_err(SiemError::from_app_error)?;
+        // Empty SecretString stands in for "not configured" so the
+        // existing relay_events code (which checks
+        // `expose_secret().is_empty()`) keeps working unchanged.
+        let splunk_token = repo_row
+            .splunk_token
+            .unwrap_or_else(|| SecretString::new(String::new()));
+        let elk_api_key = repo_row
+            .elk_api_key
+            .unwrap_or_else(|| SecretString::new(String::new()));
         Ok(SiemConfigRow {
             splunk_url: repo_row.splunk_url,
-            splunk_token: SecretString::new(repo_row.splunk_token),
+            splunk_token,
             splunk_enabled: repo_row.splunk_enabled != 0,
             elk_url: repo_row.elk_url,
             elk_index: repo_row.elk_index,
-            elk_api_key: SecretString::new(repo_row.elk_api_key),
+            elk_api_key,
             elk_enabled: repo_row.elk_enabled != 0,
         })
     }
@@ -304,6 +356,25 @@ impl SiemConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::ENVELOPE_VERSION_V1;
+    use crate::secrets_migration::migrate_secrets_to_encrypted;
+
+    const TEST_KEK: [u8; 32] = [0x33; 32];
+
+    /// Builds a fresh pool, runs Task 47-06's migration, and wraps the
+    /// active KEK in `Arc<SecretCrypto>` so the connector can be
+    /// constructed against the post-migration schema.
+    fn migrated_pool_and_crypto() -> (Arc<db::Pool>, Arc<SecretCrypto>) {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        // Leak the temp file's lifetime: we only need it for the test
+        // duration, and dropping the NamedTempFile would `unlink` the
+        // path while the pool still holds an open connection on Windows.
+        std::mem::forget(tmp);
+        let crypto = Arc::new(SecretCrypto::from_kek(TEST_KEK, ENVELOPE_VERSION_V1));
+        migrate_secrets_to_encrypted(&pool, &crypto, None).expect("run migration");
+        (pool, crypto)
+    }
 
     #[test]
     fn test_splunk_config_fields() {
@@ -355,11 +426,10 @@ mod tests {
 
     #[test]
     fn test_new_with_in_memory_db() {
-        // `SiemConnector::new` should succeed with a fresh in-memory DB
-        // and the seed row inserted by `init_tables`.
-        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
-        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        let connector = SiemConnector::new(Arc::clone(&pool));
+        // `SiemConnector::new` should succeed with a fresh DB whose
+        // schema has been migrated by Task 47-06.
+        let (pool, crypto) = migrated_pool_and_crypto();
+        let connector = SiemConnector::new(Arc::clone(&pool), crypto);
         // Loading config from the seed row should yield disabled backends.
         let row = connector.load_config().expect("load config");
         assert!(!row.splunk_enabled);
@@ -370,9 +440,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_relay_events_empty_is_noop() {
-        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
-        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        let connector = SiemConnector::new(pool);
+        let (pool, crypto) = migrated_pool_and_crypto();
+        let connector = SiemConnector::new(pool, crypto);
         // Empty slice must short-circuit before touching the DB/network.
         connector
             .relay_events(&[])

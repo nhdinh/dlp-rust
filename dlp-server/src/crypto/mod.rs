@@ -314,4 +314,43 @@ impl SecretCrypto {
             source: error::DpapiError,
         })
     }
+
+    /// Convenience bootstrap entry point used by `main.rs` at server start.
+    ///
+    /// - If `secret_kek_history` already has an active row, returns the
+    ///   loaded KEK ([`Self::load_active`]).
+    /// - Else generates a fresh v1 KEK ([`Self::create_new_version`]) and
+    ///   persists the DPAPI-wrapped seed + salt as version 1.
+    ///
+    /// Acquires its own pooled connection so callers do not have to
+    /// reason about read/write connection lifetimes. The acquire path is
+    /// fallible and is mapped into [`CryptoError::KdfFailed`] for
+    /// compactness — the only realistic failure here is pool exhaustion
+    /// at startup, which is a hard error.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`CryptoError::DpapiUnprotectFailed`] /
+    /// [`CryptoError::DpapiProtectFailed`] from the underlying ops, plus
+    /// [`CryptoError::KdfFailed`] for pool-acquisition failures.
+    pub fn load_active_or_bootstrap(pool: &crate::db::Pool) -> Result<Self, CryptoError> {
+        // First try the active-row read with an immutable connection.
+        let active_present = {
+            let conn = pool.get().map_err(|_| CryptoError::KdfFailed)?;
+            crate::db::repositories::secret_kek::get_active(&conn)
+                .map_err(|_| CryptoError::KdfFailed)?
+                .is_some()
+        };
+
+        if active_present {
+            let conn = pool.get().map_err(|_| CryptoError::KdfFailed)?;
+            Self::load_active(&conn)
+        } else {
+            // Bootstrap: need a mutable connection because `create_new_version`
+            // takes `&mut Connection` for symmetry with rusqlite's
+            // transaction APIs (even though this insert is auto-commit).
+            let mut conn = pool.get().map_err(|_| CryptoError::KdfFailed)?;
+            Self::create_new_version(&mut conn)
+        }
+    }
 }
