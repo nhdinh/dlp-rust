@@ -22,7 +22,9 @@ pub mod siem_config;
 pub use admin_users::AdminUserRepository;
 pub use agent_config::{AgentConfigOverrideRow, AgentConfigRepository, GlobalAgentConfigRow};
 pub use agents::AgentRepository;
-pub use alert_router_config::{AlertRouterConfigRepository, AlertRouterConfigRow};
+pub use alert_router_config::{
+    AlertRouterConfigEncrypted, AlertRouterConfigRepository, AlertRouterConfigRow,
+};
 pub use audit_events::{AuditEventRepository, AuditEventRow};
 pub use credentials::CredentialsRepository;
 pub use device_registry::{DeviceRegistryRepository, DeviceRegistryRow};
@@ -31,4 +33,4 @@ pub use exceptions::ExceptionRepository;
 pub use ldap_config::{LdapConfigRepository, LdapConfigRow};
 pub use managed_origins::{ManagedOriginRow, ManagedOriginsRepository};
 pub use policies::{PolicyRepository, PolicyRow, PolicyUpdateRow};
-pub use siem_config::{SiemConfigRepository, SiemConfigRow};
+pub use siem_config::{SiemConfigEncrypted, SiemConfigRepository, SiemConfigRow};
