@@ -4,45 +4,67 @@
 //! every relay call (hot-reload) and relays audit events to one or both
 //! backends. Events are batched in a single HTTP request per backend
 //! for efficiency.
+//!
+//! Phase 47 Task 47-09: every in-memory representation of a Splunk HEC
+//! token or ELK API key is wrapped in [`secrecy::SecretString`] so the
+//! default `Debug` derive redacts them. `expose_secret()` is called
+//! ONLY at the HTTP boundary (`Authorization` header construction).
+//! Secret-bearing structs use `SecretString` to ensure Debug redacts.
+//! Do not add naked-String secret fields.
 
 use std::sync::Arc;
 
 use dlp_common::AuditEvent;
 use reqwest::Client;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 
 use crate::db;
 use crate::db::repositories::SiemConfigRepository;
 
 /// Splunk HTTP Event Collector configuration.
+///
+/// `token` is wrapped in [`SecretString`] so `Debug` redacts it. The
+/// single sanctioned `expose_secret()` site is the `Authorization` header
+/// construction in [`SiemConnector::send_to_splunk`].
 #[derive(Debug, Clone)]
 pub struct SplunkConfig {
     /// Splunk HEC endpoint URL (e.g., `https://splunk:8088`).
     pub url: String,
-    /// HEC authentication token.
-    pub token: String,
+    /// HEC authentication token (Debug-redacted).
+    pub token: SecretString,
 }
 
 /// Elasticsearch / ELK configuration.
+///
+/// `api_key` is wrapped in [`SecretString`]; the sanctioned
+/// `expose_secret()` site is the `Authorization` header in
+/// [`SiemConnector::send_to_elk`].
 #[derive(Debug, Clone)]
 pub struct ElkConfig {
     /// Elasticsearch base URL (e.g., `https://elastic:9200`).
     pub url: String,
     /// Target index name.
     pub index: String,
-    /// Optional API key for authentication.
-    pub api_key: Option<String>,
+    /// Optional API key for authentication (Debug-redacted).
+    pub api_key: Option<SecretString>,
 }
 
 /// Snapshot of the single `siem_config` row loaded from the database.
+///
+/// Secret fields (`splunk_token`, `elk_api_key`) are wrapped in
+/// [`SecretString`] so the auto-derived `Debug` cannot leak them via a
+/// stray `tracing::debug!("{:?}", row)`. The fields stay private so
+/// nothing outside this module can read them without going through one
+/// of the controlled accessors.
 #[derive(Debug, Clone)]
 struct SiemConfigRow {
     splunk_url: String,
-    splunk_token: String,
+    splunk_token: SecretString,
     splunk_enabled: bool,
     elk_url: String,
     elk_index: String,
-    elk_api_key: String,
+    elk_api_key: SecretString,
     elk_enabled: bool,
 }
 
@@ -123,11 +145,11 @@ impl SiemConnector {
         let repo_row = SiemConfigRepository::get(&self.pool).map_err(SiemError::from)?;
         Ok(SiemConfigRow {
             splunk_url: repo_row.splunk_url,
-            splunk_token: repo_row.splunk_token,
+            splunk_token: SecretString::new(repo_row.splunk_token),
             splunk_enabled: repo_row.splunk_enabled != 0,
             elk_url: repo_row.elk_url,
             elk_index: repo_row.elk_index,
-            elk_api_key: repo_row.elk_api_key,
+            elk_api_key: SecretString::new(repo_row.elk_api_key),
             elk_enabled: repo_row.elk_enabled != 0,
         })
     }
@@ -168,7 +190,8 @@ impl SiemConnector {
         }
 
         if row.elk_enabled && !row.elk_url.is_empty() {
-            let api_key = if row.elk_api_key.is_empty() {
+            // Treat an empty SecretString as "no API key configured".
+            let api_key = if row.elk_api_key.expose_secret().is_empty() {
                 None
             } else {
                 Some(row.elk_api_key.clone())
@@ -210,10 +233,17 @@ impl SiemConnector {
         }
 
         let url = format!("{}/services/collector/event", config.url);
+        // expose_secret() is the sanctioned site: the token is concatenated
+        // into the Authorization header for one outbound request and the
+        // resulting String is dropped (and the reqwest internals zero on
+        // free) — it does not leak into tracing.
         let resp = self
             .client
             .post(&url)
-            .header("Authorization", format!("Splunk {}", config.token))
+            .header(
+                "Authorization",
+                format!("Splunk {}", config.token.expose_secret()),
+            )
             .header("Content-Type", "application/json")
             .body(body)
             .send()
@@ -254,7 +284,8 @@ impl SiemConnector {
             .header("Content-Type", "application/x-ndjson");
 
         if let Some(ref key) = config.api_key {
-            req = req.header("Authorization", format!("ApiKey {key}"));
+            // Sanctioned expose_secret() at the HTTP boundary.
+            req = req.header("Authorization", format!("ApiKey {}", key.expose_secret()));
         }
 
         let resp = req.body(body).send().await?;
@@ -278,10 +309,10 @@ mod tests {
     fn test_splunk_config_fields() {
         let cfg = SplunkConfig {
             url: "https://splunk:8088".to_string(),
-            token: "abc-123".to_string(),
+            token: SecretString::new("abc-123".to_string()),
         };
         assert!(!cfg.url.is_empty());
-        assert!(!cfg.token.is_empty());
+        assert!(!cfg.token.expose_secret().is_empty());
     }
 
     #[test]
@@ -289,9 +320,37 @@ mod tests {
         let cfg = ElkConfig {
             url: "https://elastic:9200".to_string(),
             index: "dlp-events".to_string(),
-            api_key: Some("key123".to_string()),
+            api_key: Some(SecretString::new("key123".to_string())),
         };
         assert_eq!(cfg.index, "dlp-events");
+    }
+
+    /// Phase 47 Task 47-09: prove `Debug` does not leak the Splunk token
+    /// or ELK API key into formatted output. The `SecretString` field
+    /// renders as `Secret([REDACTED ...])`; the fixture token's literal
+    /// substring MUST NOT appear.
+    #[test]
+    fn test_splunk_and_elk_config_debug_redacts_secrets() {
+        let splunk = SplunkConfig {
+            url: "https://splunk:8088".to_string(),
+            token: SecretString::new("FIXTURE-TOKEN-XYZ".to_string()),
+        };
+        let elk = ElkConfig {
+            url: "https://elastic:9200".to_string(),
+            index: "dlp-events".to_string(),
+            api_key: Some(SecretString::new("FIXTURE-API-KEY-ABC".to_string())),
+        };
+
+        let splunk_dbg = format!("{splunk:?}");
+        let elk_dbg = format!("{elk:?}");
+        assert!(
+            !splunk_dbg.contains("FIXTURE-TOKEN-XYZ"),
+            "Splunk token must be redacted in Debug; got: {splunk_dbg}"
+        );
+        assert!(
+            !elk_dbg.contains("FIXTURE-API-KEY-ABC"),
+            "ELK API key must be redacted in Debug; got: {elk_dbg}"
+        );
     }
 
     #[test]

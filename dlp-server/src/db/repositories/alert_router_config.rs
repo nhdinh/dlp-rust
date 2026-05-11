@@ -815,6 +815,38 @@ mod tests {
         assert_eq!(got.updated_at, "2026-05-13T01:00:00Z");
     }
 
+    /// Phase 47 Task 47-09: prove `Debug` on `AlertRouterConfigEncrypted`
+    /// redacts the secret fields. The fixture password's literal substring
+    /// MUST NOT appear in the formatted output — `SecretString` renders as
+    /// `Secret([REDACTED ...])`.
+    #[test]
+    fn secret_debug_redacts() {
+        let row = AlertRouterConfigEncrypted {
+            smtp_host: "smtp.example.com".to_string(),
+            smtp_port: 587,
+            smtp_username: "alerts@example.com".to_string(),
+            smtp_password: Some(SecretString::new("FIXTURE-PASSWORD-XYZ".to_string())),
+            smtp_from: "alerts@example.com".to_string(),
+            smtp_to: "soc@example.com".to_string(),
+            smtp_enabled: 1,
+            webhook_url: "https://hooks.example.com".to_string(),
+            webhook_secret: Some(SecretString::new("FIXTURE-WEBHOOK-ABC".to_string())),
+            webhook_enabled: 1,
+            updated_at: "2026-05-13T00:00:00Z".to_string(),
+        };
+        let dbg = format!("{row:?}");
+        assert!(
+            !dbg.contains("FIXTURE-PASSWORD-XYZ"),
+            "smtp_password must be redacted in Debug; got: {dbg}"
+        );
+        assert!(
+            !dbg.contains("FIXTURE-WEBHOOK-ABC"),
+            "webhook_secret must be redacted in Debug; got: {dbg}"
+        );
+        // Sanity: non-secret fields ARE present (the redaction is targeted).
+        assert!(dbg.contains("smtp.example.com"));
+    }
+
     #[test]
     fn get_secrets_with_crypto_falls_back_to_cleartext_when_unencrypted() {
         // Pre-migration row (legacy update()) — encrypted columns NULL.
