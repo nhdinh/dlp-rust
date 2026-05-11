@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0.0
 milestone_name: Enterprise Hardening & Scale
 status: in_progress
-last_updated: "2026-05-13T00:00:00Z"
-last_activity: 2026-05-13
+last_updated: "2026-05-14T00:00:00Z"
+last_activity: 2026-05-14
 progress:
   total_phases: 8
   completed_phases: 0
   total_plans: 11
-  completed_plans: 3
+  completed_plans: 6
   percent: 0
 ---
 
@@ -27,9 +27,17 @@ progress:
 
 - **Milestone:** v1.0.0 — Enterprise Hardening & Scale
 - **Phase:** 47 — Secrets Encryption at Rest (in progress)
-- **Plan:** Waves 1-2 complete (3/11 tasks); Wave 3 pending
-- **Status:** Crypto core + KEK repo + JWT/LDAP/encrypted-column schema landed. Commits `622268a` (47-01), `a62c735` (47-02), `3c44265` (47-03). 270 tests green workspace-wide, no regressions.
-- **Last activity:** 2026-05-13 (Wave 2 execution)
+- **Plan:** Waves 1-3 complete (6/11 tasks); Wave 4 pending
+- **Status:** Wave 3 lands the loader layer. Encrypt-aware reads/writes for
+  SMTP/webhook/SIEM (47-04), JWT env→DB migration + LDAP explicit-bind
+  loader (47-05), and SecretString hardening + tracing audit (47-09). All
+  three repository-level encryption paths and the new admin_auth JWT
+  loader are exercised by colocated unit tests. AppState wiring of
+  `Arc<SecretCrypto>` is intentionally deferred to Task 47-06 (Wave 4)
+  per the plan — legacy cleartext code paths remain functional in the
+  meantime. Commits `a44a08a` (47-04), `682a247` (47-05), `853c38e` (47-09).
+  293 tests green workspace-wide, no regressions vs Wave 2's 270.
+- **Last activity:** 2026-05-14 (Wave 3 execution)
 
 ## Progress
 
@@ -44,7 +52,7 @@ v0.7.1 [Phase 38.3–38.6 done] (shipped 2026-05-06)
 v0.8.0 [Phase 39–42 done] (shipped 2026-05-07)
 v0.8.1 [Phase 43–46 done] (shipped 2026-05-08)
 v0.9.0 [M017 / pre-Phase 47 done] (shipped 2026-05-09)
-v1.0.0 [Phase 47 in progress: Waves 1-2/5 done (47-01, 47-02, 47-03) | 48–54 pending] (active)
+v1.0.0 [Phase 47 in progress: Waves 1-3/5 done (47-01..47-05, 47-09) | 47-06..47-08, 47-10, 47-11 pending | 48–54 pending] (active)
 ```
 
 ---
@@ -63,16 +71,27 @@ None.
 ## Next Action
 
 ```
-/gsd-execute-phase 47 --wave 3
+/gsd-execute-phase 47 --wave 4
 ```
 
-Wave 3 = Tasks 47-04 (loader refactor), 47-05 (JWT/LDAP loader integration), 47-09 (logging hygiene audit). These have the highest blast radius — touch many files across `dlp-server/`. Plan sequentially or in parallel after a careful read of 47-PLAN.md.
+Wave 4 = Tasks 47-06 (one-shot atomic cleartext→encrypted migration +
+AppState wiring + first-run KEK bootstrap) and 47-07 (verify
+ALERT_SECRET_MASK round-trip survives through the encrypted layer in
+`admin_api.rs`). 47-06 owns the `main.rs` bootstrap sequence and the
+one-and-only `ALTER TABLE ... DROP COLUMN` invocation that lands the
+CONTEXT D-Q6 commitment (no persisted cleartext after migration commit).
 
-Schema delta from Wave 2 ready for downstream consumption:
-- `secrets_jwt` (NEW table, single-row CHECK id=1)
-- `alert_router_config.{smtp_password,webhook_secret}_{encrypted,nonce,version}`
-- `siem_config.{splunk_token,elk_api_key}_{encrypted,nonce,version}`
-- `ldap_config.{bind_dn, bind_password_{encrypted,nonce,version}}`
+Loader surface ready for downstream consumption from Wave 3:
+- `SiemConfigRepository::{get,update}_with_crypto`
+- `AlertRouterConfigRepository::{get,update,get_secrets}_with_crypto`
+- `LdapConfigRepository::{get_bind_credentials,set_bind_password,clear_bind_password}`
+- `admin_auth::resolve_jwt_secret_with_crypto`
+- `AdClient::new_with_bind` (passwordless default preserved by `new`)
+
+47-06 wires AppState's `Arc<SecretCrypto>`, swaps `main.rs` from
+`resolve_jwt_secret(dev_mode)` to `resolve_jwt_secret_with_crypto`, runs
+the per-row encrypt+verify+NULL+DROP migration, and starts the encrypted
+path serving production traffic.
 
 ---
 
