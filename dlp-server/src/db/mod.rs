@@ -277,6 +277,30 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_secret_kek_active
                 ON secret_kek_history(version DESC) WHERE retired_at IS NULL;
+
+            -- Phase 47 (Task 47-03): JWT signing secret encrypted at rest.
+            -- Single-row table (CHECK id = 1) holds the active JWT secret
+            -- envelope. Rotations UPDATE the row in place, bumping
+            -- `secret_version` (the KEK version the envelope was wrapped under)
+            -- and stamping `rotated_at`. The CHECK constraint rejects any
+            -- INSERT with id != 1, so the single-row invariant cannot drift
+            -- (resolves plan-check N6).
+            --
+            -- Column shape:
+            --   secret_encrypted -- AES-GCM ciphertext+tag (no version prefix;
+            --                       version is a separate column).
+            --   secret_nonce     -- 12-byte AES-GCM nonce (NONCE_LEN).
+            --   secret_version   -- KEK version stamped by SecretCrypto::encrypt,
+            --                       used to look up the right KEK row in
+            --                       secret_kek_history at decrypt time.
+            CREATE TABLE IF NOT EXISTS secrets_jwt (
+                id                INTEGER PRIMARY KEY CHECK (id = 1),
+                secret_encrypted  BLOB    NOT NULL,
+                secret_nonce      BLOB    NOT NULL,
+                secret_version    INTEGER NOT NULL,
+                created_at        TEXT    NOT NULL,
+                rotated_at        TEXT
+            );
             ",
     )
     .context("failed to initialize database tables")?;
@@ -423,6 +447,129 @@ pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
         "ALTER TABLE agent_config_overrides ADD COLUMN print_max_pages INTEGER NOT NULL DEFAULT 100",
         "print_max_pages",
         "agent_config_overrides",
+    )?;
+
+    // Phase 47 (Task 47-03): encrypted-secret column trios on existing
+    // cleartext-secret tables. Each `<col>` gains three siblings:
+    //   <col>_encrypted BLOB     -- AES-GCM ciphertext + 16-byte GCM tag.
+    //   <col>_nonce     BLOB     -- 12-byte AES-GCM nonce per envelope.
+    //   <col>_version   INTEGER  -- KEK version stamped at encrypt time.
+    //
+    // The legacy cleartext column is RETAINED in this task. Task 47-06
+    // performs the one-shot atomic migration (encrypt + verify-decrypt +
+    // NULL the cleartext + DROP COLUMN in a single transaction).
+    //
+    // BLOB columns are nullable (no NOT NULL) so the migration window can
+    // mark "not yet encrypted" with NULL; INTEGER `_version` is nullable
+    // for the same reason -- a row with NULL `_version` has not been
+    // encrypted yet under the current schema.
+
+    // alert_router_config.smtp_password
+    run_alter(
+        conn,
+        "ALTER TABLE alert_router_config ADD COLUMN smtp_password_encrypted BLOB",
+        "smtp_password_encrypted",
+        "alert_router_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE alert_router_config ADD COLUMN smtp_password_nonce BLOB",
+        "smtp_password_nonce",
+        "alert_router_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE alert_router_config ADD COLUMN smtp_password_version INTEGER",
+        "smtp_password_version",
+        "alert_router_config",
+    )?;
+
+    // alert_router_config.webhook_secret
+    run_alter(
+        conn,
+        "ALTER TABLE alert_router_config ADD COLUMN webhook_secret_encrypted BLOB",
+        "webhook_secret_encrypted",
+        "alert_router_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE alert_router_config ADD COLUMN webhook_secret_nonce BLOB",
+        "webhook_secret_nonce",
+        "alert_router_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE alert_router_config ADD COLUMN webhook_secret_version INTEGER",
+        "webhook_secret_version",
+        "alert_router_config",
+    )?;
+
+    // siem_config.splunk_token
+    run_alter(
+        conn,
+        "ALTER TABLE siem_config ADD COLUMN splunk_token_encrypted BLOB",
+        "splunk_token_encrypted",
+        "siem_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE siem_config ADD COLUMN splunk_token_nonce BLOB",
+        "splunk_token_nonce",
+        "siem_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE siem_config ADD COLUMN splunk_token_version INTEGER",
+        "splunk_token_version",
+        "siem_config",
+    )?;
+
+    // siem_config.elk_api_key
+    run_alter(
+        conn,
+        "ALTER TABLE siem_config ADD COLUMN elk_api_key_encrypted BLOB",
+        "elk_api_key_encrypted",
+        "siem_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE siem_config ADD COLUMN elk_api_key_nonce BLOB",
+        "elk_api_key_nonce",
+        "siem_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE siem_config ADD COLUMN elk_api_key_version INTEGER",
+        "elk_api_key_version",
+        "siem_config",
+    )?;
+
+    // ldap_config: new bind_dn column plus bind_password encrypted trio.
+    // SSPI passwordless bind remains the default (per CONTEXT D-Q1);
+    // explicit-bind is opt-in by populating bind_dn + bind_password.
+    run_alter(
+        conn,
+        "ALTER TABLE ldap_config ADD COLUMN bind_dn TEXT",
+        "bind_dn",
+        "ldap_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE ldap_config ADD COLUMN bind_password_encrypted BLOB",
+        "bind_password_encrypted",
+        "ldap_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE ldap_config ADD COLUMN bind_password_nonce BLOB",
+        "bind_password_nonce",
+        "ldap_config",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE ldap_config ADD COLUMN bind_password_version INTEGER",
+        "bind_password_version",
+        "ldap_config",
     )?;
 
     Ok(())
@@ -1004,5 +1151,205 @@ mod tests {
         assert_eq!(failure_mode, "Warning only");
         assert_eq!(resolution_mode, "VID/PID/serial fallback");
         assert_eq!(none_policy, "Always Blocked");
+    }
+
+    /// Phase 47 Task 47-03: simulates the pre-Phase-47 -> Phase-47 upgrade for
+    /// every encrypted-column trio added by `run_migrations`. Models this on
+    /// `test_migration_add_mode_column` (lines 751-822):
+    ///
+    /// 1. Stand up a pre-Phase-47 schema containing the four cleartext-secret
+    ///    tables WITHOUT any encrypted columns. Seed one row per single-row
+    ///    config table so the pre-existing data is observable post-migration.
+    /// 2. Open via `new_pool` -- triggers `init_tables` (creates the new
+    ///    `secrets_jwt` table) followed by `run_migrations` (adds the
+    ///    encrypted column trios + ldap bind_dn).
+    /// 3. Assert each new column exists via `PRAGMA table_info`.
+    /// 4. Verify the pre-existing cleartext rows still read correctly --
+    ///    migrations are additive in Task 47-03 (the destructive cleartext
+    ///    drop happens in Task 47-06).
+    /// 5. Re-run `run_migrations` directly to prove duplicate-column-error
+    ///    swallowing renders the migration idempotent.
+    #[test]
+    fn test_migration_add_secret_encrypted_columns() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db file");
+        let path = tmp.path().to_str().expect("temp path utf8");
+
+        // Step 1: stand up the pre-Phase-47 schema directly. These DDLs
+        // mirror the cleartext-only column layout as of Phase 46.
+        {
+            let conn = rusqlite::Connection::open(path).expect("open temp db");
+            conn.execute_batch(
+                "CREATE TABLE alert_router_config (
+                    id              INTEGER PRIMARY KEY CHECK (id = 1),
+                    smtp_host       TEXT NOT NULL DEFAULT '',
+                    smtp_port       INTEGER NOT NULL DEFAULT 587,
+                    smtp_username   TEXT NOT NULL DEFAULT '',
+                    smtp_password   TEXT NOT NULL DEFAULT '',
+                    smtp_from       TEXT NOT NULL DEFAULT '',
+                    smtp_to         TEXT NOT NULL DEFAULT '',
+                    smtp_enabled    INTEGER NOT NULL DEFAULT 0,
+                    webhook_url     TEXT NOT NULL DEFAULT '',
+                    webhook_secret  TEXT NOT NULL DEFAULT '',
+                    webhook_enabled INTEGER NOT NULL DEFAULT 0,
+                    updated_at      TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO alert_router_config
+                    (id, smtp_password, webhook_secret)
+                VALUES (1, 'legacy-smtp-pwd', 'legacy-webhook-secret');
+
+                CREATE TABLE siem_config (
+                    id              INTEGER PRIMARY KEY CHECK (id = 1),
+                    splunk_url      TEXT NOT NULL DEFAULT '',
+                    splunk_token    TEXT NOT NULL DEFAULT '',
+                    splunk_enabled  INTEGER NOT NULL DEFAULT 0,
+                    elk_url         TEXT NOT NULL DEFAULT '',
+                    elk_index       TEXT NOT NULL DEFAULT '',
+                    elk_api_key     TEXT NOT NULL DEFAULT '',
+                    elk_enabled     INTEGER NOT NULL DEFAULT 0,
+                    updated_at      TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO siem_config
+                    (id, splunk_token, elk_api_key)
+                VALUES (1, 'legacy-splunk-token', 'legacy-elk-key');
+
+                CREATE TABLE ldap_config (
+                    id              INTEGER PRIMARY KEY CHECK (id = 1),
+                    ldap_url        TEXT NOT NULL DEFAULT 'ldaps://dc.corp.internal:636',
+                    base_dn         TEXT NOT NULL DEFAULT '',
+                    require_tls     INTEGER NOT NULL DEFAULT 1,
+                    cache_ttl_secs  INTEGER NOT NULL DEFAULT 300,
+                    vpn_subnets     TEXT NOT NULL DEFAULT '',
+                    updated_at      TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO ldap_config (id) VALUES (1);",
+            )
+            .expect("create pre-Phase-47 schema");
+        }
+
+        // Step 2: opening via new_pool runs init_tables + run_migrations.
+        let pool = new_pool(path).expect("open pool with migrations");
+        let conn = pool.get().expect("acquire connection");
+
+        // Step 3: assert every new column landed.
+        //
+        // Helper: returns the set of column names for a table.
+        fn cols(c: &rusqlite::Connection, table: &str) -> Vec<String> {
+            c.prepare(&format!("PRAGMA table_info({table})"))
+                .expect("prepare pragma")
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("query pragma")
+                .filter_map(Result::ok)
+                .collect()
+        }
+
+        let alert_cols = cols(&conn, "alert_router_config");
+        for col in &[
+            "smtp_password_encrypted",
+            "smtp_password_nonce",
+            "smtp_password_version",
+            "webhook_secret_encrypted",
+            "webhook_secret_nonce",
+            "webhook_secret_version",
+        ] {
+            assert!(
+                alert_cols.contains(&col.to_string()),
+                "alert_router_config must have column '{col}'; found {alert_cols:?}"
+            );
+        }
+
+        let siem_cols = cols(&conn, "siem_config");
+        for col in &[
+            "splunk_token_encrypted",
+            "splunk_token_nonce",
+            "splunk_token_version",
+            "elk_api_key_encrypted",
+            "elk_api_key_nonce",
+            "elk_api_key_version",
+        ] {
+            assert!(
+                siem_cols.contains(&col.to_string()),
+                "siem_config must have column '{col}'; found {siem_cols:?}"
+            );
+        }
+
+        let ldap_cols = cols(&conn, "ldap_config");
+        for col in &[
+            "bind_dn",
+            "bind_password_encrypted",
+            "bind_password_nonce",
+            "bind_password_version",
+        ] {
+            assert!(
+                ldap_cols.contains(&col.to_string()),
+                "ldap_config must have column '{col}'; found {ldap_cols:?}"
+            );
+        }
+
+        // The new secrets_jwt table also exists (created by init_tables, not
+        // by an ALTER -- the table is brand new in Phase 47).
+        let jwt_table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type='table' AND name='secrets_jwt'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count secrets_jwt");
+        assert_eq!(
+            jwt_table_count, 1,
+            "secrets_jwt table must exist after Phase 47 migration"
+        );
+
+        // Step 4: pre-existing cleartext rows survived the additive migration.
+        // The migration window keeps cleartext alongside the empty new columns
+        // until Task 47-06 performs the destructive drop.
+        let (legacy_smtp, legacy_webhook): (String, String) = conn
+            .query_row(
+                "SELECT smtp_password, webhook_secret FROM alert_router_config WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("read alert_router_config row");
+        assert_eq!(legacy_smtp, "legacy-smtp-pwd");
+        assert_eq!(legacy_webhook, "legacy-webhook-secret");
+
+        let (legacy_splunk, legacy_elk): (String, String) = conn
+            .query_row(
+                "SELECT splunk_token, elk_api_key FROM siem_config WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("read siem_config row");
+        assert_eq!(legacy_splunk, "legacy-splunk-token");
+        assert_eq!(legacy_elk, "legacy-elk-key");
+
+        // The newly-added BLOB / INTEGER columns are NULL for pre-existing
+        // rows (no DEFAULT was applied -- ALTER TABLE ... ADD COLUMN <BLOB>
+        // leaves existing rows with NULL).
+        let smtp_enc: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT smtp_password_encrypted FROM alert_router_config WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read smtp_password_encrypted");
+        assert!(
+            smtp_enc.is_none(),
+            "newly-added encrypted column must be NULL for pre-existing row"
+        );
+
+        // Step 5: idempotency -- re-running migrations must be a no-op.
+        run_migrations(&conn).expect("second run must not error");
+        run_migrations(&conn).expect("third run must not error either");
+
+        // Data is still intact after the redundant migration passes.
+        let still_smtp: String = conn
+            .query_row(
+                "SELECT smtp_password FROM alert_router_config WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("re-read smtp_password");
+        assert_eq!(still_smtp, "legacy-smtp-pwd");
     }
 }

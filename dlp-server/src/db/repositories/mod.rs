@@ -12,6 +12,7 @@ pub mod credentials;
 pub mod device_registry;
 pub mod disk_registry;
 pub mod exceptions;
+pub mod jwt_secret;
 pub mod ldap_config;
 pub mod managed_origins;
 pub mod policies;
