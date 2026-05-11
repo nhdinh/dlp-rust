@@ -54,6 +54,8 @@ target-test/
 
 # ── GSD baseline (auto-generated) ──
 .gsd
+.gsd.legacy/
+.gsd.migrating/
 .gsd-id
 .mcp.json
 .bg-shell/
