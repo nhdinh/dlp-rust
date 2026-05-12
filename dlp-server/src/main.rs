@@ -38,6 +38,7 @@ use dlp_server::db::repositories::LdapConfigRepository;
 use dlp_server::policy_store::PolicyStore;
 use dlp_server::secrets_migration;
 use dlp_server::siem_connector::SiemConnector;
+use dlp_server::label_service::LabelService;
 use dlp_server::AppState;
 use secrecy::ExposeSecret;
 
@@ -239,6 +240,10 @@ async fn main() -> anyhow::Result<()> {
         "policy store loaded"
     );
 
+    // Initialise the label resolution service.
+    let label_service = Arc::new(LabelService::new(Arc::clone(&pool)));
+    info!("label service initialized");
+
     // Build shared application state.
     let state = Arc::new(AppState {
         pool,
@@ -247,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
         siem,
         alert,
         ad: ad_client,
+        label_service,
     });
 
     // Start the background heartbeat sweeper (marks agents offline

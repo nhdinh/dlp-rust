@@ -11,6 +11,7 @@ pub mod audit_store;
 pub mod crypto;
 pub mod db;
 pub mod exception_store;
+pub mod label_service;
 pub mod policy_engine_error;
 pub mod policy_store;
 pub mod policy_sync;
@@ -52,6 +53,8 @@ pub struct AppState {
     /// Active Directory LDAP client for group resolution and admin SID lookup.
     /// None when AD is unreachable (fail-open at startup).
     pub ad: Option<AdClient>,
+    /// Label resolution service with TTL caching and folder inheritance.
+    pub label_service: Arc<label_service::LabelService>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -70,6 +73,7 @@ impl std::fmt::Debug for AppState {
                     "None"
                 },
             )
+            .field("label_service", &"LabelService(...)")
             .finish()
     }
 }

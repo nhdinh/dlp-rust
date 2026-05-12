@@ -73,6 +73,7 @@ pub mod server {
         let siem = siem_connector::SiemConnector::new(Arc::clone(&pool), Arc::clone(&crypto));
         let alert = alert_router::AlertRouter::new(Arc::clone(&pool), Arc::clone(&crypto));
         let ps = Arc::new(policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"));
+        let label_service = Arc::new(dlp_server::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
             crypto: Arc::clone(&crypto),
@@ -80,6 +81,7 @@ pub mod server {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         (admin_router(state), pool)
     }
