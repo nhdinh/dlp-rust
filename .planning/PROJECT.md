@@ -180,6 +180,13 @@ Requirements merged from target architecture gap analysis (`new_docs/`, 2026-05-
 - [ ] **BT-** — Bluetooth file transfer blocking for T3/T4 (v0.12.0)
 - [ ] **BCK-** — Backup policy documentation, ransomware heuristics, canary files (v0.12.0)
 
+### Architecture Constraints (Cross-Cutting)
+
+Requirements merged from updated target architecture (`new_docs/` 2026-05-12). These are non-functional constraints verified at every phase.
+
+- [ ] **ARCH-** — No Windows Minifilter driver or kernel-mode filesystem filter dependency. Build audit verifies no `.sys` files, no minifilter headers, no `FltRegisterFilter`. Every control documents its enforcement point (GPO/AppLocker, user-mode API, server-side ACL, etc.).
+- [ ] **ARCH-** — Pilot acceptance test TC-017: no minifilter dependency in code, build artifacts, install steps, requirements, or tests. Hard gate for pilot readiness.
+
 ### Out of Scope
 
 - **Mobile app** — Windows-first product

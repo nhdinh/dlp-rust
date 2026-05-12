@@ -222,6 +222,15 @@ These requirements emerge from the gap analysis against the target architecture 
 - [ ] **BCK-02** — Ransomware detection heuristics in agent: monitor for mass rename, mass delete, sudden write spikes, VSS shadow copy deletion. Emit `RansomwareDetected` alert.
 - [ ] **BCK-03** — Canary file: agent writes hidden canary files to monitored paths; detects modification/deletion and triggers immediate lockdown + alert.
 
+### Architecture Constraints (Cross-Cutting)
+
+These are non-functional constraints that apply to all phases. Updated from target architecture (`new_docs/` 2026-05-12) to explicitly document the minifilter-free commitment.
+
+- [ ] **ARCH-01** — No Windows Minifilter driver dependency: the agent must not use kernel-mode filesystem filters, pre-open/pre-read/pre-write/pre-copy interception, or any design requiring EV certificate signing. Verified by build audit (no `.sys` files, no minifilter headers, no `FltRegisterFilter` references).
+- [ ] **ARCH-02** — Enforcement point documentation: every endpoint control must document its feasibility category — GPO/AppLocker/WDAC, Windows API/user-mode hooks, print driver/filter, browser extension/policy, network proxy/gateway, server-side ACL/quarantine, or not reliably enforceable. Controls requiring minifilter are forbidden and must be redesigned.
+- [ ] **ARCH-03** — File server-side enforcement: T3/T4 blocking on SMB shares must use NTFS ACL/SACL, share permissions, and folder quarantine on the file server as the primary enforcement point. The endpoint agent provides telemetry and channel-specific controls; it does not claim reliable pre-access filesystem interception.
+- [ ] **ARCH-04** — Pilot acceptance test TC-017: verify no minifilter dependency exists in code, build artifacts, install steps, requirements, or tests. This is a hard gate for pilot readiness.
+
 ---
 
 ## Out of Scope
