@@ -348,6 +348,45 @@ impl EngineClient {
         Ok(())
     }
 
+    /// Calls GET /admin/labels with optional state filter.
+    pub async fn list_labels(&self, state_filter: Option<&str>) -> Result<Vec<serde_json::Value>> {
+        let path = match state_filter {
+            Some(f) => format!("admin/labels?state={}", f),
+            None => "admin/labels".to_string(),
+        };
+        self.get(&path).await
+    }
+
+    /// Calls GET /admin/labels/:id.
+    pub async fn get_label(&self, id: &str) -> Result<serde_json::Value> {
+        self.get(&format!("admin/labels/{}", id)).await
+    }
+
+    /// Calls POST /admin/labels.
+    pub async fn create_label(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+        self.post("admin/labels", body).await
+    }
+
+    /// Calls PUT /admin/labels/:id.
+    pub async fn update_label(&self, id: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+        self.put(&format!("admin/labels/{}", id), body).await
+    }
+
+    /// Calls POST /admin/labels/:id/confirm.
+    pub async fn confirm_label(&self, id: &str) -> Result<serde_json::Value> {
+        self.post(&format!("admin/labels/{}/confirm", id), &serde_json::json!({})).await
+    }
+
+    /// Calls POST /admin/labels/:id/reject.
+    pub async fn reject_label(&self, id: &str) -> Result<serde_json::Value> {
+        self.post(&format!("admin/labels/{}/reject", id), &serde_json::json!({})).await
+    }
+
+    /// Calls DELETE /admin/labels/:id.
+    pub async fn delete_label(&self, id: &str) -> Result<()> {
+        self.delete(&format!("admin/labels/{}", id)).await
+    }
+
     /// Sends a DELETE request.  Returns `Ok(())` on 204 No Content.
     pub async fn delete(&self, path: &str) -> Result<()> {
         let url = self.build_url(path);

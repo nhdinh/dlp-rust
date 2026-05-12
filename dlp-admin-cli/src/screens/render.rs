@@ -9,10 +9,11 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::app::{
-    App, ConditionAttribute, ImportState, Screen, SimulateFormState, SimulateOutcome, StatusKind,
-    UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, SIMULATE_ACCESS_CONTEXT_OPTIONS,
-    SIMULATE_ACTION_OPTIONS, SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
-    SIMULATE_NETWORK_LOCATION_OPTIONS,
+    App, ConditionAttribute, ImportState, LabelFilter, LabelFormMode, Screen, SimulateFormState,
+    SimulateOutcome, StatusKind, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES,
+    OBJECT_TYPE_OPTIONS, SIMULATE_ACCESS_CONTEXT_OPTIONS, SIMULATE_ACTION_OPTIONS,
+    SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
+    SIMULATE_NETWORK_LOCATION_OPTIONS, TIER_OPTIONS,
 };
 use crate::screens::dispatch::condition_display;
 use crate::screens::dispatch::operators_for;
@@ -51,6 +52,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                     "Password Management",
                     "Policy Management",
                     "System",
+                    "Label Management",
                     "Devices & Origins",
                     "Simulate Policy",
                     "Exit",
@@ -105,6 +107,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                     "USB Enforcement",
                     "Cloud Config",
                     "Print Config",
+                    "Label Review Queue",
                     "Back",
                 ],
                 *selected,
@@ -315,6 +318,37 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         }
         Screen::DiskRegistryList { disks, selected } => {
             draw_disk_registry_list(frame, area, disks, *selected);
+        }
+        Screen::LabelList { labels, selected, filter } => {
+            draw_label_list(frame, area, labels, *selected, *filter);
+        }
+        Screen::LabelReviewQueue { labels, selected } => {
+            draw_label_review_queue(frame, area, labels, *selected);
+        }
+        Screen::LabelDetail { label } => {
+            draw_label_detail(frame, area, label);
+        }
+        Screen::LabelForm {
+            mode,
+            step,
+            path,
+            object_type,
+            tier,
+            owner_sid,
+            parent_label_id,
+            ..
+        } => {
+            draw_label_form(
+                frame,
+                area,
+                *mode,
+                *step,
+                path,
+                *object_type,
+                *tier,
+                owner_sid,
+                parent_label_id,
+            );
         }
     }
 }
@@ -2524,6 +2558,349 @@ fn draw_print_config(
         "Type to edit | Enter: commit | Esc: cancel"
     } else {
         "Up/Down: navigate | Enter: edit/toggle | Esc: back"
+    };
+    draw_hints(frame, area, hints);
+}
+
+// ---------------------------------------------------------------------------
+// Label management screens
+// ---------------------------------------------------------------------------
+
+pub use crate::screens::labels::{
+    LABEL_LIST_EMPTY, LABEL_LIST_HINTS, LABEL_REVIEW_EMPTY, LABEL_REVIEW_HINTS,
+};
+
+/// Draws the Label Management list screen as a scrollable table.
+///
+/// Columns: Path (truncated), Type, Tier, State, Owner.
+fn draw_label_list(
+    frame: &mut Frame,
+    area: Rect,
+    labels: &[serde_json::Value],
+    selected: usize,
+    filter: LabelFilter,
+) {
+    if labels.is_empty() {
+        let paragraph = Paragraph::new(LABEL_LIST_EMPTY)
+            .block(
+                Block::default()
+                    .title(" Label Management (0) ")
+                    .borders(Borders::ALL),
+            )
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(paragraph, area);
+        draw_hints(frame, area, LABEL_LIST_HINTS);
+        return;
+    }
+
+    let filter_suffix = if filter != LabelFilter::All {
+        format!(" [Filter: {}]", filter.label())
+    } else {
+        String::new()
+    };
+
+    let header = Row::new(vec!["Path", "Type", "Tier", "State", "Owner"])
+        .style(Style::default().add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = labels
+        .iter()
+        .map(|l| {
+            let path = l["path"].as_str().unwrap_or("-");
+            let path_display = if path.len() > 40 {
+                format!("{}...", &path[..37])
+            } else {
+                path.to_string()
+            };
+            let object_type = l["object_type"].as_str().unwrap_or("-");
+            let tier = l["tier"].as_str().unwrap_or("-");
+            let state = l["label_state"].as_str().unwrap_or("-");
+            let owner = l["owner_sid"].as_str().unwrap_or("(none)");
+            Row::new(vec![
+                path_display,
+                object_type.to_string(),
+                tier.to_string(),
+                state.to_string(),
+                owner.to_string(),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(40), // Path
+        Constraint::Percentage(10), // Type
+        Constraint::Percentage(10), // Tier
+        Constraint::Percentage(15), // State
+        Constraint::Percentage(25), // Owner
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .title(format!(
+                    " Label Management ({}){filter_suffix} ",
+                    labels.len()
+                ))
+                .borders(Borders::ALL),
+        )
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(table, area, &mut state);
+
+    draw_hints(frame, area, LABEL_LIST_HINTS);
+}
+
+/// Draws the Data Owner Review Queue screen.
+///
+/// Columns: Path, Tier, Owner SID, Created.
+fn draw_label_review_queue(
+    frame: &mut Frame,
+    area: Rect,
+    labels: &[serde_json::Value],
+    selected: usize,
+) {
+    if labels.is_empty() {
+        let paragraph = Paragraph::new(LABEL_REVIEW_EMPTY)
+            .block(
+                Block::default()
+                    .title(" Data Owner Review Queue (0) ")
+                    .borders(Borders::ALL),
+            )
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(paragraph, area);
+        draw_hints(frame, area, LABEL_REVIEW_HINTS);
+        return;
+    }
+
+    let header = Row::new(vec!["Path", "Tier", "Owner SID", "Created"])
+        .style(Style::default().add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = labels
+        .iter()
+        .map(|l| {
+            let path = l["path"].as_str().unwrap_or("-");
+            let tier = l["tier"].as_str().unwrap_or("-");
+            let owner = l["owner_sid"].as_str().unwrap_or("(none)");
+            let created = l["created_at"].as_str().unwrap_or("-");
+            Row::new(vec![
+                path.to_string(),
+                tier.to_string(),
+                owner.to_string(),
+                created.to_string(),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(40), // Path
+        Constraint::Percentage(10), // Tier
+        Constraint::Percentage(25), // Owner SID
+        Constraint::Percentage(25), // Created
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .title(format!(
+                    " Data Owner Review Queue ({}) ",
+                    labels.len()
+                ))
+                .borders(Borders::ALL),
+        )
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(table, area, &mut state);
+
+    draw_hints(frame, area, LABEL_REVIEW_HINTS);
+}
+
+/// Draws the Label Detail read-only view.
+fn draw_label_detail(frame: &mut Frame, area: Rect, label: &serde_json::Value) {
+    let id = label["id"].as_str().unwrap_or("-");
+    let path = label["path"].as_str().unwrap_or("-");
+    let object_type = label["object_type"].as_str().unwrap_or("-");
+    let tier = label["tier"].as_str().unwrap_or("-");
+    let state = label["label_state"].as_str().unwrap_or("-");
+    let owner = label["owner_sid"].as_str().unwrap_or("(none)");
+    let parent = label["parent_label_id"].as_str().unwrap_or("(none)");
+    let created = label["created_at"].as_str().unwrap_or("-");
+    let updated = label["updated_at"].as_str().unwrap_or("-");
+
+    let body = format!(
+        "ID:              {id}\n\
+         Path:            {path}\n\
+         Object Type:     {object_type}\n\
+         Tier:            {tier}\n\
+         State:           {state}\n\
+         Owner SID:       {owner}\n\
+         Parent Label ID: {parent}\n\
+         Created At:      {created}\n\
+         Updated At:      {updated}"
+    );
+
+    draw_result(frame, area, "Label Detail", &body);
+}
+
+/// Draws the multi-step Label Form (creation or edit).
+///
+/// Steps 1-5 show the current field with navigation hints.
+/// Step 6 shows a summary with submit/cancel options.
+fn draw_label_form(
+    frame: &mut Frame,
+    area: Rect,
+    mode: LabelFormMode,
+    step: u8,
+    path: &str,
+    object_type: usize,
+    tier: usize,
+    owner_sid: &str,
+    parent_label_id: &str,
+) {
+    let title = match mode {
+        LabelFormMode::New => " Create Label ",
+        LabelFormMode::Edit => " Edit Label ",
+    };
+
+    let mut items: Vec<ListItem> = Vec::with_capacity(8);
+
+    // Step indicator line
+    let step_line = format!("Step {step} of 6");
+    items.push(ListItem::new(Line::styled(
+        step_line,
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+    items.push(ListItem::new(Line::raw("")));
+
+    match step {
+        1 => {
+            items.push(ListItem::new(Line::from(format!(
+                "Path: [{path}_]"
+            ))));
+            items.push(ListItem::new(Line::raw("")));
+            items.push(ListItem::new(Line::styled(
+                "Enter the file or folder path to label.",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        2 => {
+            let ot = OBJECT_TYPE_OPTIONS
+                .get(object_type)
+                .unwrap_or(&"file");
+            items.push(ListItem::new(Line::from(format!(
+                "Object Type: {ot}"
+            ))));
+            items.push(ListItem::new(Line::raw("")));
+            items.push(ListItem::new(Line::styled(
+                "Up/Down: cycle options | Enter: confirm",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        3 => {
+            let t = TIER_OPTIONS.get(tier).unwrap_or(&"T1");
+            items.push(ListItem::new(Line::from(format!("Tier: {t}"))));
+            items.push(ListItem::new(Line::raw("")));
+            items.push(ListItem::new(Line::styled(
+                "Up/Down: cycle options | Enter: confirm",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        4 => {
+            let display = if owner_sid.is_empty() {
+                "(none)"
+            } else {
+                owner_sid
+            };
+            items.push(ListItem::new(Line::from(format!(
+                "Owner SID: [{display}_]"
+            ))));
+            items.push(ListItem::new(Line::raw("")));
+            items.push(ListItem::new(Line::styled(
+                "Enter owner SID (optional). Press Enter to skip.",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        5 => {
+            let display = if parent_label_id.is_empty() {
+                "(none)"
+            } else {
+                parent_label_id
+            };
+            items.push(ListItem::new(Line::from(format!(
+                "Parent Label ID: [{display}_]"
+            ))));
+            items.push(ListItem::new(Line::raw("")));
+            items.push(ListItem::new(Line::styled(
+                "Enter parent label ID (optional). Press Enter to skip.",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        6 => {
+            let ot = OBJECT_TYPE_OPTIONS
+                .get(object_type)
+                .unwrap_or(&"file");
+            let t = TIER_OPTIONS.get(tier).unwrap_or(&"T1");
+            let owner_disp = if owner_sid.is_empty() {
+                "(none)"
+            } else {
+                owner_sid
+            };
+            let parent_disp = if parent_label_id.is_empty() {
+                "(none)"
+            } else {
+                parent_label_id
+            };
+            items.push(ListItem::new(Line::styled(
+                "Review and confirm:",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            items.push(ListItem::new(Line::raw("")));
+            items.push(ListItem::new(Line::from(format!("Path:            {path}"))));
+            items.push(ListItem::new(Line::from(format!("Object Type:     {ot}"))));
+            items.push(ListItem::new(Line::from(format!("Tier:            {t}"))));
+            items.push(ListItem::new(Line::from(format!(
+                "Owner SID:       {owner_disp}"
+            ))));
+            items.push(ListItem::new(Line::from(format!(
+                "Parent Label ID: {parent_disp}"
+            ))));
+            items.push(ListItem::new(Line::raw("")));
+            items.push(ListItem::new(Line::styled(
+                "[Enter] Submit  [Esc] Cancel",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        _ => {}
+    }
+
+    let list = List::new(items)
+        .block(Block::default().title(title).borders(Borders::ALL));
+
+    frame.render_widget(list, area);
+
+    let hints = match step {
+        1 | 4 | 5 => "Type to enter | Enter: confirm | Esc: cancel",
+        2 | 3 => "Up/Down: cycle | Enter: confirm | Esc: cancel",
+        6 => "Enter: Submit | Esc: Cancel",
+        _ => "",
     };
     draw_hints(frame, area, hints);
 }
