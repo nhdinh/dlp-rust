@@ -229,6 +229,15 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 **Plans:** 1 plan (60-01)
 **UI hint**: yes
 
+### Phase 61: Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature
+**Goal**: Users can request time-bounded approvals for blocked operations. T3 requests route to Data Owners; T4 requests require Board-level digital signature. Approved operations carry a signed token validated by the agent before allowing the blocked action.
+**Depends on**: Phase 60 (Data Owner review queue must exist for T3 routing)
+**Requirements**: WORKFLOW-01, WORKFLOW-02, WORKFLOW-03, WORKFLOW-04, WORKFLOW-05, WORKFLOW-06
+**Success Criteria** (what must be TRUE):
+  1. TBD — will be defined during discuss phase
+**Plans**: TBD
+**UI hint**: yes
+
 ---
 
 ## Progress Table
@@ -249,6 +258,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-12 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
+| 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 0/0 | Not started | - |
 
 ---
 
