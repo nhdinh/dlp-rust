@@ -71,21 +71,21 @@ fn inject(app: &mut App, key: KeyEvent) {
 /// Navigate from the initial `MainMenu` state to `DeviceList`.
 ///
 /// Key sequence:
-/// - Down x3, Enter  -> `DevicesMenu`
+/// - Down x4, Enter  -> `DevicesMenu`
 /// - Enter           -> `DeviceList` (selects "Device Registry" at index 0)
 fn navigate_to_device_list(app: &mut App) {
     let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
     let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
 
-    // MainMenu: Down x3 to select "Devices & Origins" (index 3).
-    for _ in 0..3 {
+    // MainMenu: Down x4 to select "Devices & Origins" (index 4).
+    for _ in 0..4 {
         inject(app, down);
     }
     inject(app, enter);
 
     assert!(
         matches!(app.screen, Screen::DevicesMenu { selected: 0 }),
-        "expected DevicesMenu after Down x3 + Enter"
+        "expected DevicesMenu after Down x4 + Enter"
     );
 
     // DevicesMenu: Enter on index 0 ("Device Registry") -> DeviceList.
