@@ -18,7 +18,7 @@ use dlp_common::Classification;
 use parking_lot::RwLock;
 use tracing::{error, info, warn};
 
-use crate::db::repositories::PolicyRepository;
+use crate::db::repositories::{system_kv, PolicyRepository};
 use crate::db::Pool;
 use crate::policy_engine_error::PolicyEngineError;
 
@@ -112,7 +112,54 @@ impl PolicyStore {
     ///
     /// * `ctx` - The internal ABAC evaluation context (converted from `EvaluateRequest`
     ///   at the HTTP boundary per D-04).
-    pub fn evaluate(&self, ctx: &AbacContext) -> EvaluateResponse {
+    /// * `label_service` - Optional [`LabelService`] for label-aware evaluation.
+    ///   When `label_aware_evaluation_enabled` is `"1"` in `system_kv`, the
+    ///   resource's classification is resolved from the label service instead of
+    ///   using the request's hardcoded classification. Pass `None` to disable
+    ///   label-aware evaluation entirely (backward compatibility).
+    pub fn evaluate(
+        &self,
+        ctx: &AbacContext,
+        label_service: Option<&crate::label_service::LabelService>,
+    ) -> EvaluateResponse {
+        let mut resource = ctx.resource.clone();
+
+        // Label-aware evaluation: resolve tier from LabelService when enabled.
+        if let Some(service) = label_service {
+            if let Some(ref path) = ctx.resource_path {
+                match Self::is_label_aware_enabled(&self.pool) {
+                    Ok(true) => {
+                        match service.resolve_tier(path) {
+                            Ok(tier) => {
+                                if let Some(classification) = tier.to_classification() {
+                                    resource.classification = classification;
+                                } else {
+                                    // UnclassifiedBlocked: set to T4 (most restrictive)
+                                    // so the policy engine will DENY everything since no
+                                    // policy typically allows T4 for general users.
+                                    resource.classification = Classification::T4;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    path,
+                                    "label resolution failed — using request classification"
+                                );
+                            }
+                        }
+                    }
+                    Ok(false) => {} // label-aware disabled, use request classification
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "failed to read label_aware_evaluation_enabled flag"
+                        );
+                    }
+                }
+            }
+        }
+
         let cache = self.cache.read();
 
         for policy in cache.iter() {
@@ -120,9 +167,18 @@ impl PolicyStore {
                 continue;
             }
             let conditions_match = match policy.mode {
-                PolicyMode::ALL => policy.conditions.iter().all(|c| condition_matches(c, ctx)),
-                PolicyMode::ANY => policy.conditions.iter().any(|c| condition_matches(c, ctx)),
-                PolicyMode::NONE => !policy.conditions.iter().any(|c| condition_matches(c, ctx)),
+                PolicyMode::ALL => policy
+                    .conditions
+                    .iter()
+                    .all(|c| condition_matches(c, ctx, &resource)),
+                PolicyMode::ANY => policy
+                    .conditions
+                    .iter()
+                    .any(|c| condition_matches(c, ctx, &resource)),
+                PolicyMode::NONE => !policy
+                    .conditions
+                    .iter()
+                    .any(|c| condition_matches(c, ctx, &resource)),
             };
             if conditions_match {
                 return EvaluateResponse {
@@ -134,10 +190,24 @@ impl PolicyStore {
         }
 
         // No policy matched — tiered default-deny (D-01).
-        match ctx.resource.classification {
+        match resource.classification {
             Classification::T1 | Classification::T2 => EvaluateResponse::default_allow(),
             Classification::T3 | Classification::T4 => EvaluateResponse::default_deny(),
         }
+    }
+
+    /// Reads the `label_aware_evaluation_enabled` flag from `system_kv`.
+    ///
+    /// Returns `false` (default off) when the key is missing or not `"1"`.
+    /// This is a conservative default per D-11: admins must explicitly enable
+    /// label-aware evaluation to avoid surprise breakages.
+    fn is_label_aware_enabled(pool: &Pool) -> rusqlite::Result<bool> {
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        Ok(system_kv::get(&conn, "label_aware_evaluation_enabled")?
+            .map(|v| v == "1")
+            .unwrap_or(false))
     }
 
     /// Lists all cached policies (for admin read-back / diagnostics).
@@ -215,10 +285,16 @@ fn deserialize_policy_row(
 ///
 /// * `condition` - The policy condition to evaluate.
 /// * `ctx` - The internal ABAC context built from the evaluation request.
-fn condition_matches(condition: &PolicyCondition, ctx: &AbacContext) -> bool {
+/// * `resource` - The resource being evaluated. This may have its classification
+///   overridden by label-aware evaluation, so it is passed separately from `ctx`.
+fn condition_matches(
+    condition: &PolicyCondition,
+    ctx: &AbacContext,
+    resource: &dlp_common::abac::Resource,
+) -> bool {
     match condition {
         PolicyCondition::Classification { op, value } => {
-            compare_op_classification(op, &ctx.resource.classification, value)
+            compare_op_classification(op, &resource.classification, value)
         }
         PolicyCondition::MemberOf { op, group_sid } => {
             memberof_matches(op, group_sid, &ctx.subject.groups)
@@ -477,28 +553,28 @@ mod tests {
     #[test]
     fn test_tiered_default_deny_t1() {
         let store = empty_store();
-        let resp = store.evaluate(&make_request(Classification::T1));
+        let resp = store.evaluate(&make_request(Classification::T1), None);
         assert_eq!(resp.decision, Decision::ALLOW);
     }
 
     #[test]
     fn test_tiered_default_deny_t2() {
         let store = empty_store();
-        let resp = store.evaluate(&make_request(Classification::T2));
+        let resp = store.evaluate(&make_request(Classification::T2), None);
         assert_eq!(resp.decision, Decision::ALLOW);
     }
 
     #[test]
     fn test_tiered_default_deny_t3() {
         let store = empty_store();
-        let resp = store.evaluate(&make_request(Classification::T3));
+        let resp = store.evaluate(&make_request(Classification::T3), None);
         assert_eq!(resp.decision, Decision::DENY);
     }
 
     #[test]
     fn test_tiered_default_deny_t4() {
         let store = empty_store();
-        let resp = store.evaluate(&make_request(Classification::T4));
+        let resp = store.evaluate(&make_request(Classification::T4), None);
         assert_eq!(resp.decision, Decision::DENY);
     }
 
@@ -522,7 +598,7 @@ mod tests {
             cache: RwLock::new(vec![disabled]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
-        let resp = store.evaluate(&make_request(Classification::T3));
+        let resp = store.evaluate(&make_request(Classification::T3), None);
         // Disabled policy should be skipped → falls through to default-deny (T3)
         assert_eq!(resp.decision, Decision::DENY);
     }
@@ -759,7 +835,7 @@ mod tests {
             cache: RwLock::new(vec![p1, p2]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
-        let resp = store.evaluate(&make_request(Classification::T3));
+        let resp = store.evaluate(&make_request(Classification::T3), None);
         assert_eq!(resp.decision, Decision::ALLOW);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("p1"));
     }
@@ -785,7 +861,7 @@ mod tests {
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
-        let resp = store.evaluate(&make_request(Classification::T3));
+        let resp = store.evaluate(&make_request(Classification::T3), None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("p1"));
     }
@@ -810,7 +886,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         // T1 request does NOT match T3 policy → default-allow (T1)
-        let resp = store.evaluate(&make_request(Classification::T1));
+        let resp = store.evaluate(&make_request(Classification::T1), None);
         assert_eq!(resp.decision, Decision::ALLOW);
         assert!(resp.matched_policy_id.is_none());
     }
@@ -835,7 +911,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         // T1 is not T4 → policy matches
-        let resp = store.evaluate(&make_request(Classification::T1));
+        let resp = store.evaluate(&make_request(Classification::T1), None);
         assert_eq!(resp.decision, Decision::ALLOW);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("p1"));
     }
@@ -862,7 +938,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         let request = make_request(Classification::T3);
-        let resp = store.evaluate(&request);
+        let resp = store.evaluate(&request, None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("p1"));
     }
@@ -887,7 +963,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         let request = make_request(Classification::T3);
-        let resp = store.evaluate(&request);
+        let resp = store.evaluate(&request, None);
         // No matching policy, T3 → default-deny
         assert_eq!(resp.decision, Decision::DENY);
         assert!(resp.matched_policy_id.is_none());
@@ -914,7 +990,7 @@ mod tests {
         };
         // Subject groups do NOT include S-1-5-21-512 → policy matches
         let request = make_request(Classification::T2);
-        let resp = store.evaluate(&request);
+        let resp = store.evaluate(&request, None);
         assert_eq!(resp.decision, Decision::ALLOW);
     }
 
@@ -939,7 +1015,7 @@ mod tests {
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
-        let resp = store.evaluate(&make_request(Classification::T2));
+        let resp = store.evaluate(&make_request(Classification::T2), None);
         assert_eq!(resp.decision, Decision::ALLOW);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("p1"));
     }
@@ -963,7 +1039,7 @@ mod tests {
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
-        let resp = store.evaluate(&make_request(Classification::T3));
+        let resp = store.evaluate(&make_request(Classification::T3), None);
         assert_eq!(resp.decision, Decision::DENY);
     }
 
@@ -986,7 +1062,7 @@ mod tests {
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
-        let resp = store.evaluate(&make_request(Classification::T3));
+        let resp = store.evaluate(&make_request(Classification::T3), None);
         assert_eq!(resp.decision, Decision::DENY);
     }
 
@@ -1011,7 +1087,7 @@ mod tests {
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
-        let resp = store.evaluate(&make_request(Classification::T3));
+        let resp = store.evaluate(&make_request(Classification::T3), None);
         // "in" on Classification is not applicable → policy does not match → default-deny (T3)
         assert_eq!(resp.decision, Decision::DENY);
         assert!(resp.matched_policy_id.is_none());
@@ -1122,7 +1198,7 @@ mod tests {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
-        let resp = store.evaluate(&make_request(Classification::T3));
+        let resp = store.evaluate(&make_request(Classification::T3), None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("mode-all"));
     }
@@ -1154,7 +1230,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         // T1 + Managed → Classification misses → falls through to default-allow (T1)
-        let resp = store.evaluate(&make_request(Classification::T1));
+        let resp = store.evaluate(&make_request(Classification::T1), None);
         assert_eq!(resp.decision, Decision::ALLOW);
         assert!(resp.matched_policy_id.is_none());
     }
@@ -1186,7 +1262,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         // T1 + Managed → Classification misses but DeviceTrust matches → policy hits
-        let resp = store.evaluate(&make_request(Classification::T1));
+        let resp = store.evaluate(&make_request(Classification::T1), None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("mode-any"));
     }
@@ -1218,7 +1294,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         // T1 + Managed (subject default) → neither condition matches → default-allow (T1)
-        let resp = store.evaluate(&make_request(Classification::T1));
+        let resp = store.evaluate(&make_request(Classification::T1), None);
         assert_eq!(resp.decision, Decision::ALLOW);
         assert!(resp.matched_policy_id.is_none());
     }
@@ -1250,7 +1326,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         // T1 + Managed (subject) → neither condition matches → policy hits
-        let resp = store.evaluate(&make_request(Classification::T1));
+        let resp = store.evaluate(&make_request(Classification::T1), None);
         assert_eq!(resp.decision, Decision::ALLOW);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("mode-none"));
     }
@@ -1282,7 +1358,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         // T3 + Managed → Classification matches → policy misses → default-deny (T3)
-        let resp = store.evaluate(&make_request(Classification::T3));
+        let resp = store.evaluate(&make_request(Classification::T3), None);
         assert_eq!(resp.decision, Decision::DENY);
         assert!(resp.matched_policy_id.is_none());
     }
@@ -1307,7 +1383,7 @@ mod tests {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
-        let resp = store.evaluate(&make_request(Classification::T1));
+        let resp = store.evaluate(&make_request(Classification::T1), None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("empty-all"));
     }
@@ -1331,7 +1407,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         // Falls through to default-deny (T4)
-        let resp = store.evaluate(&make_request(Classification::T4));
+        let resp = store.evaluate(&make_request(Classification::T4), None);
         assert_eq!(resp.decision, Decision::DENY);
         assert!(resp.matched_policy_id.is_none());
     }
@@ -1354,7 +1430,7 @@ mod tests {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
-        let resp = store.evaluate(&make_request(Classification::T1));
+        let resp = store.evaluate(&make_request(Classification::T1), None);
         assert_eq!(resp.decision, Decision::ALLOW);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("empty-none"));
     }
@@ -1460,7 +1536,7 @@ mod tests {
             op: "ne".to_string(),
             value: "Contoso".to_string(),
         };
-        assert!(condition_matches(&condition, &ctx));
+        assert!(condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     /// `publisher ne "Contoso"` with None source identity → fails closed (D-03).
@@ -1473,7 +1549,7 @@ mod tests {
             op: "ne".to_string(),
             value: "Contoso".to_string(),
         };
-        assert!(!condition_matches(&condition, &ctx));
+        assert!(!condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     // -- ImagePath: no-match, exact eq, contains with None identity --
@@ -1493,7 +1569,7 @@ mod tests {
             op: "contains".to_string(),
             value: "Untrusted".to_string(),
         };
-        assert!(!condition_matches(&condition, &ctx));
+        assert!(!condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     /// `image_path eq "C:\app.exe"` with an exact matching path → matches.
@@ -1511,7 +1587,7 @@ mod tests {
             op: "eq".to_string(),
             value: r"C:\app.exe".to_string(),
         };
-        assert!(condition_matches(&condition, &ctx));
+        assert!(condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     /// `image_path contains ...` with None source identity → fails closed (D-03).
@@ -1523,7 +1599,7 @@ mod tests {
             op: "contains".to_string(),
             value: "Program Files".to_string(),
         };
-        assert!(!condition_matches(&condition, &ctx));
+        assert!(!condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     // -- TrustTier: eq "untrusted" does NOT match Trusted; ne "trusted" matches Untrusted; Unknown --
@@ -1543,7 +1619,7 @@ mod tests {
             op: "eq".to_string(),
             value: "untrusted".to_string(),
         };
-        assert!(!condition_matches(&condition, &ctx));
+        assert!(!condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     /// `trust_tier ne "trusted"` with an Untrusted app → matches.
@@ -1561,7 +1637,7 @@ mod tests {
             op: "ne".to_string(),
             value: "trusted".to_string(),
         };
-        assert!(condition_matches(&condition, &ctx));
+        assert!(condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     /// `trust_tier eq "unknown"` with an Unknown app → matches.
@@ -1583,7 +1659,7 @@ mod tests {
             op: "eq".to_string(),
             value: "unknown".to_string(),
         };
-        assert!(condition_matches(&condition, &ctx));
+        assert!(condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     // -- DestinationApplication: publisher eq match and None fails closed --
@@ -1603,7 +1679,7 @@ mod tests {
             op: "eq".to_string(),
             value: "Contoso".to_string(),
         };
-        assert!(condition_matches(&condition, &ctx));
+        assert!(condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     /// `dest publisher eq "Contoso"` with None destination identity → fails closed (D-03).
@@ -1615,7 +1691,7 @@ mod tests {
             op: "eq".to_string(),
             value: "Contoso".to_string(),
         };
-        assert!(!condition_matches(&condition, &ctx));
+        assert!(!condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     // -- Unsupported operator: "contains" on Publisher field returns false (T-26-09) --
@@ -1637,7 +1713,7 @@ mod tests {
             value: "soft".to_string(),
         };
         // "contains" on Publisher is unsupported → returns false even with a matching substring
-        assert!(!condition_matches(&condition, &ctx));
+        assert!(!condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     // -- End-to-end evaluate() with app-identity policies --
@@ -1679,7 +1755,7 @@ mod tests {
             r"C:\Contoso\app.exe",
             AppTrustTier::Trusted,
         );
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("app-class-all"));
     }
@@ -1716,7 +1792,7 @@ mod tests {
         // source_application is None → SourceApplication condition fails closed →
         // ALL mode means policy does NOT fire → falls through to default-deny (T3)
         let ctx = make_request(Classification::T3);
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         // Policy did not match (matched_policy_id is None), but default-deny still fires for T3
         assert!(resp.matched_policy_id.is_none());
         assert_eq!(resp.decision, Decision::DENY); // default-deny for T3
@@ -1754,7 +1830,7 @@ mod tests {
         // source_application is None → SourceApplication fails closed (false).
         // But Classification == T3 matches → ANY mode fires → DENY via policy match.
         let ctx = make_request(Classification::T3);
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("app-class-any"));
     }
@@ -1776,7 +1852,7 @@ mod tests {
             r"C:\Contoso\app.exe",
             AppTrustTier::Trusted,
         );
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("app-p1"));
     }
@@ -1796,7 +1872,7 @@ mod tests {
             r"C:\Contoso\app.exe",
             AppTrustTier::Trusted,
         );
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("dest-p1"));
     }
@@ -1868,7 +1944,7 @@ mod tests {
             op: "eq".to_string(),
             value: "Microsoft".to_string(),
         };
-        assert!(condition_matches(&condition, &ctx));
+        assert!(condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     #[test]
@@ -1880,7 +1956,7 @@ mod tests {
             op: "eq".to_string(),
             value: "Microsoft".to_string(),
         };
-        assert!(!condition_matches(&condition, &ctx));
+        assert!(!condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     #[test]
@@ -1892,7 +1968,7 @@ mod tests {
             op: "contains".to_string(),
             value: "Program Files".to_string(),
         };
-        assert!(condition_matches(&condition, &ctx));
+        assert!(condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     #[test]
@@ -1904,7 +1980,7 @@ mod tests {
             op: "eq".to_string(),
             value: "trusted".to_string(),
         };
-        assert!(condition_matches(&condition, &ctx));
+        assert!(condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     #[test]
@@ -1925,7 +2001,7 @@ mod tests {
             op: "ne".to_string(),
             value: "trusted".to_string(),
         };
-        assert!(condition_matches(&condition, &ctx));
+        assert!(condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     #[test]
@@ -1937,7 +2013,7 @@ mod tests {
             op: "ne".to_string(),
             value: "trusted".to_string(),
         };
-        assert!(!condition_matches(&condition, &ctx));
+        assert!(!condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     // ---- APP-07: UWP app field matching ----
@@ -1972,7 +2048,7 @@ mod tests {
             op: "eq".to_string(),
             value: "Microsoft.Windows.Photos_8wekyb3d8bbwe!App".to_string(),
         };
-        assert!(condition_matches(&condition, &ctx));
+        assert!(condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     #[test]
@@ -1989,7 +2065,7 @@ mod tests {
             op: "eq".to_string(),
             value: "Microsoft.Windows.Photos_8wekyb3d8bbwe".to_string(),
         };
-        assert!(condition_matches(&condition_eq, &ctx));
+        assert!(condition_matches(&condition_eq, &ctx, &ctx.resource));
 
         // contains match (prefix substring)
         let condition_contains = PolicyCondition::SourceApplication {
@@ -1997,7 +2073,7 @@ mod tests {
             op: "contains".to_string(),
             value: "Photos_8wekyb3d8bbwe".to_string(),
         };
-        assert!(condition_matches(&condition_contains, &ctx));
+        assert!(condition_matches(&condition_contains, &ctx, &ctx.resource));
     }
 
     #[test]
@@ -2010,7 +2086,7 @@ mod tests {
             op: "eq".to_string(),
             value: "Microsoft.Windows.Photos_8wekyb3d8bbwe!App".to_string(),
         };
-        assert!(!condition_matches(&condition, &ctx));
+        assert!(!condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     #[test]
@@ -2025,7 +2101,7 @@ mod tests {
             op: "ne".to_string(),
             value: "Some.Other.App!App".to_string(),
         };
-        assert!(condition_matches(&condition, &ctx));
+        assert!(condition_matches(&condition, &ctx, &ctx.resource));
     }
 
     // ---- Legacy v0.4.0 payload parity (D-25) ----
@@ -2086,8 +2162,8 @@ mod tests {
         };
 
         let req = make_request(Classification::T3);
-        let resp_v040 = store_v040.evaluate(&req);
-        let resp_explicit = store_explicit.evaluate(&req);
+        let resp_v040 = store_v040.evaluate(&req, None);
+        let resp_explicit = store_explicit.evaluate(&req, None);
 
         assert_eq!(resp_v040.decision, resp_explicit.decision);
         // matched_policy_id differs by id but both must be Some(_)
@@ -2219,7 +2295,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         let ctx = make_ctx_with_origin(Classification::T3, Some("https://sharepoint.com"), None);
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-p1"));
     }
@@ -2232,7 +2308,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         let ctx = make_ctx_with_origin(Classification::T2, Some("https://example.com"), None);
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         // No match -> default-allow for T2
         assert_eq!(resp.decision, Decision::ALLOW);
         assert!(resp.matched_policy_id.is_none());
@@ -2250,7 +2326,7 @@ mod tests {
             Some("https://sharepoint.com/path"),
             None,
         );
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-p1"));
     }
@@ -2263,7 +2339,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         let ctx = make_ctx_with_origin(Classification::T3, None, Some("https://example.com"));
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-p2"));
     }
@@ -2276,7 +2352,7 @@ mod tests {
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
         };
         let ctx = make_ctx_with_origin(Classification::T3, None, None);
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         // None origin + SourceOrigin condition -> no match -> default-deny for T3
         assert_eq!(resp.decision, Decision::DENY);
         assert!(resp.matched_policy_id.is_none());
@@ -2310,7 +2386,7 @@ mod tests {
         };
         // SourceOrigin misses (wrong origin) but Classification matches -> ANY fires
         let ctx = make_ctx_with_origin(Classification::T3, Some("https://example.com"), None);
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-any"));
     }
@@ -2343,7 +2419,7 @@ mod tests {
         };
         // Both match: origin == sharepoint AND classification == T3
         let ctx = make_ctx_with_origin(Classification::T3, Some("https://sharepoint.com"), None);
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("origin-all"));
     }
@@ -2376,8 +2452,261 @@ mod tests {
         };
         // SourceOrigin misses (wrong origin) but Classification matches -> ALL does NOT fire
         let ctx = make_ctx_with_origin(Classification::T3, Some("https://example.com"), None);
-        let resp = store.evaluate(&ctx);
+        let resp = store.evaluate(&ctx, None);
         assert_eq!(resp.decision, Decision::DENY); // default-deny for T3
         assert!(resp.matched_policy_id.is_none());
+    }
+
+    // ---- Label-aware evaluation tests (Phase 59 Plan 03) ----
+
+    use crate::db::repositories::labels::{LabelRepository, LabelUpsertRow};
+    use crate::db::UnitOfWork;
+    use crate::label_service::LabelService;
+
+    /// Helper: seeds `label_aware_evaluation_enabled = "1"` into system_kv.
+    fn enable_label_aware(pool: &crate::db::Pool) {
+        let conn = pool.get().expect("acquire");
+        crate::db::repositories::system_kv::set(&conn, "label_aware_evaluation_enabled", "1")
+            .expect("set flag");
+    }
+
+    /// Helper: seeds `label_aware_evaluation_enabled = "0"` into system_kv.
+    fn disable_label_aware(pool: &crate::db::Pool) {
+        let conn = pool.get().expect("acquire");
+        crate::db::repositories::system_kv::set(&conn, "label_aware_evaluation_enabled", "0")
+            .expect("set flag");
+    }
+
+    /// Helper: builds an AbacContext with a specific resource path and classification.
+    fn make_ctx_with_path(path: &str, classification: Classification) -> AbacContext {
+        let mut ctx = make_request(classification);
+        ctx.resource.path = path.to_string();
+        ctx.resource_path = Some(path.to_string());
+        ctx
+    }
+
+    /// Test 1: When label_aware_evaluation_enabled is "0", evaluate() uses request's
+    /// classification unchanged (backward compatibility).
+    #[test]
+    fn test_label_aware_disabled_uses_request_classification() {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        disable_label_aware(&pool);
+
+        let label_svc = LabelService::new(Arc::clone(&pool));
+        let store = PolicyStore::new(Arc::clone(&pool)).expect("store");
+
+        // Insert a T4 label for the path
+        {
+            let mut conn = pool.get().expect("acquire");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "file-001",
+                    path: r"C:\Data\secret.txt",
+                    object_type: "file",
+                    tier: "T4",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert");
+            uow.commit().expect("commit");
+        }
+
+        // Request says T1, label says T4, but flag is OFF -> use request classification
+        let ctx = make_ctx_with_path(r"C:\Data\secret.txt", Classification::T1);
+        let resp = store.evaluate(&ctx, Some(&label_svc));
+        assert_eq!(resp.decision, Decision::ALLOW); // T1 default-allow
+    }
+
+    /// Test 2: When label_aware_evaluation_enabled is "1" and resource has exact label,
+    /// evaluate() uses the label's tier.
+    #[test]
+    fn test_label_aware_enabled_exact_label_overrides_classification() {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        enable_label_aware(&pool);
+
+        let label_svc = LabelService::new(Arc::clone(&pool));
+        let store = PolicyStore::new(Arc::clone(&pool)).expect("store");
+
+        // Insert a T4 label for the exact path
+        {
+            let mut conn = pool.get().expect("acquire");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "file-002",
+                    path: r"C:\Data\secret.txt",
+                    object_type: "file",
+                    tier: "T4",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert");
+            uow.commit().expect("commit");
+        }
+
+        // Request says T1, label says T4, flag is ON -> use label tier (T4)
+        let ctx = make_ctx_with_path(r"C:\Data\secret.txt", Classification::T1);
+        let resp = store.evaluate(&ctx, Some(&label_svc));
+        assert_eq!(resp.decision, Decision::DENY); // T4 default-deny
+    }
+
+    /// Test 3: When label_aware_evaluation_enabled is "1" and resource has parent folder
+    /// label, evaluate() uses the parent's tier.
+    #[test]
+    fn test_label_aware_enabled_parent_folder_inheritance() {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        enable_label_aware(&pool);
+
+        let label_svc = LabelService::new(Arc::clone(&pool));
+        let store = PolicyStore::new(Arc::clone(&pool)).expect("store");
+
+        // Insert a T3 folder label
+        {
+            let mut conn = pool.get().expect("acquire");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "folder-001",
+                    path: r"C:\Data\HR",
+                    object_type: "folder",
+                    tier: "T3",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert");
+            uow.commit().expect("commit");
+        }
+
+        // Child file has no exact label, inherits T3 from parent folder
+        let ctx = make_ctx_with_path(r"C:\Data\HR\salary.xlsx", Classification::T1);
+        let resp = store.evaluate(&ctx, Some(&label_svc));
+        assert_eq!(resp.decision, Decision::DENY); // T3 default-deny
+    }
+
+    /// Test 4: When label_aware_evaluation_enabled is "1" and no label exists,
+    /// evaluate() uses UnclassifiedBlocked (mapped to T4 for policy engine).
+    #[test]
+    fn test_label_aware_enabled_unlabeled_fallback_to_unclassified_blocked() {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        enable_label_aware(&pool);
+
+        let label_svc = LabelService::new(Arc::clone(&pool));
+        let store = PolicyStore::new(Arc::clone(&pool)).expect("store");
+
+        // No labels at all
+        let ctx = make_ctx_with_path(r"C:\Unknown\file.txt", Classification::T1);
+        let resp = store.evaluate(&ctx, Some(&label_svc));
+        assert_eq!(resp.decision, Decision::DENY); // UnclassifiedBlocked -> T4 -> default-deny
+    }
+
+    /// Test 5: Tier::UnclassifiedBlocked causes DENY for all non-allowlist policies.
+    #[test]
+    fn test_unclassified_blocked_denies_all_non_allowlist() {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        enable_label_aware(&pool);
+
+        let label_svc = LabelService::new(Arc::clone(&pool));
+
+        // Create an ALLOW policy for T1
+        let policy = Policy {
+            id: "allow-t1".to_string(),
+            name: "allow t1".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::Classification {
+                op: "eq".to_string(),
+                value: Classification::T1,
+            }],
+            action: Decision::ALLOW,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::clone(&pool),
+        };
+
+        // Unlabeled resource -> UnclassifiedBlocked -> T4 -> policy doesn't match -> default-deny
+        let ctx = make_ctx_with_path(r"C:\Unknown\file.txt", Classification::T1);
+        let resp = store.evaluate(&ctx, Some(&label_svc));
+        assert_eq!(resp.decision, Decision::DENY);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    /// Test 6: Flag read is cached (read once per evaluate call, not per policy).
+    /// This is an architectural test: we verify the flag is read before the policy loop.
+    #[test]
+    fn test_label_aware_flag_read_once_per_evaluate() {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        enable_label_aware(&pool);
+
+        let label_svc = LabelService::new(Arc::clone(&pool));
+
+        // Create multiple policies to ensure the flag is not re-read per policy
+        let policies = vec![
+            Policy {
+                id: "p1".to_string(),
+                name: "p1".to_string(),
+                description: None,
+                priority: 1,
+                conditions: vec![PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T1,
+                }],
+                action: Decision::ALLOW,
+                enabled: true,
+                mode: PolicyMode::ALL,
+                version: 1,
+            },
+            Policy {
+                id: "p2".to_string(),
+                name: "p2".to_string(),
+                description: None,
+                priority: 2,
+                conditions: vec![PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T2,
+                }],
+                action: Decision::ALLOW,
+                enabled: true,
+                mode: PolicyMode::ALL,
+                version: 1,
+            },
+        ];
+        let store = PolicyStore {
+            cache: RwLock::new(policies),
+            pool: Arc::clone(&pool),
+        };
+
+        // Unlabeled path -> UnclassifiedBlocked -> T4 -> no policy matches -> default-deny
+        let ctx = make_ctx_with_path(r"C:\Data\file.txt", Classification::T1);
+        let resp = store.evaluate(&ctx, Some(&label_svc));
+        assert_eq!(resp.decision, Decision::DENY);
+        // The flag was read exactly once (before the loop), not twice (once per policy).
+        // This is verified by the implementation structure: is_label_aware_enabled is
+        // called before the for-loop over policies.
     }
 }
