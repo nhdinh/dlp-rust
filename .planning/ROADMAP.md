@@ -248,7 +248,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 0/0 | Not started | - |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-12 |
-| 60. Data Owner Review Queue + Admin TUI Screen | 0/1 | Planned | - |
+| 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
 
 ---
 
