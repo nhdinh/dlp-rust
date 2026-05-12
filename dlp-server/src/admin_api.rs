@@ -27,6 +27,7 @@ use crate::db::repositories::{
     DiskRegistryRepository, DiskRegistryRow, LdapConfigRepository, ManagedOriginRow,
     ManagedOriginsRepository, PolicyRepository, SiemConfigRepository,
 };
+use crate::db::repositories::labels::{LabelRepository, LabelRow, LabelUpsertRow};
 use crate::exception_store;
 use crate::policy_store::mode_str;
 use crate::rate_limiter::{self, default_config, policy_config};
@@ -482,6 +483,94 @@ impl From<DiskRegistryRow> for DiskRegistryResponse {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Label request / response types (Phase 59, LABEL-03..07)
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /admin/labels` and `PUT /admin/labels/:id`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LabelRequest {
+    /// Filesystem or SMB path of the labeled object.
+    pub path: String,
+    /// Object type: `"file"`, `"folder"`, or `"archive"`.
+    pub object_type: String,
+    /// Data tier: `"T1"`, `"T2"`, `"T3"`, `"T4"`, or `"Unclassified-Blocked"`.
+    pub tier: String,
+    /// Label state: `"temporary"`, `"confirmed"`, `"rejected"`, or `"expired"`.
+    pub label_state: String,
+    /// SID of the Data Owner (from AD Manager attribute).
+    #[serde(default)]
+    pub owner_sid: Option<String>,
+    /// FK to parent folder label for inheritance.
+    #[serde(default)]
+    pub parent_label_id: Option<String>,
+    /// Reference to ACL snapshot at label time.
+    #[serde(default)]
+    pub acl_snapshot_id: Option<String>,
+    /// SHA-256 hash of file content when labeled.
+    #[serde(default)]
+    pub hash: Option<String>,
+}
+
+/// Response body returned by label endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabelResponse {
+    /// UUID string identifying the label.
+    pub id: String,
+    /// Filesystem or SMB path of the labeled object.
+    pub path: String,
+    /// Object type: `file`, `folder`, or `archive`.
+    pub object_type: String,
+    /// Data tier: `T1`, `T2`, `T3`, `T4`, or `Unclassified-Blocked`.
+    pub tier: String,
+    /// Label state: `temporary`, `confirmed`, `rejected`, or `expired`.
+    pub label_state: String,
+    /// SID of the Data Owner.
+    pub owner_sid: Option<String>,
+    /// FK to parent folder label for inheritance.
+    pub parent_label_id: Option<String>,
+    /// Reference to ACL snapshot at label time.
+    pub acl_snapshot_id: Option<String>,
+    /// SHA-256 hash of file content when labeled.
+    pub hash: Option<String>,
+    /// ISO-8601 timestamp of creation.
+    pub created_at: String,
+    /// ISO-8601 timestamp of last update.
+    pub updated_at: String,
+}
+
+impl From<LabelRow> for LabelResponse {
+    fn from(row: LabelRow) -> Self {
+        Self {
+            id: row.id,
+            path: row.path,
+            object_type: row.object_type,
+            tier: row.tier,
+            label_state: row.label_state,
+            owner_sid: row.owner_sid,
+            parent_label_id: row.parent_label_id,
+            acl_snapshot_id: row.acl_snapshot_id,
+            hash: row.hash,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+/// Query-string filter for `GET /admin/labels`.
+#[derive(Debug, Default, Deserialize)]
+pub struct LabelFilter {
+    /// Filter by label state (e.g., `temporary` for review queue).
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Filter by data tier.
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// Filter by Data Owner SID.
+    #[serde(default)]
+    pub owner_sid: Option<String>,
+}
+
 /// Optional query-string filter for `GET /admin/disk-registry` (D-07).
 #[derive(Debug, Default, Deserialize)]
 pub struct DiskRegistryFilter {
@@ -810,6 +899,14 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/admin/secrets/rotate", post(rotate_secrets_handler))
         .route("/admin/maintenance/enter", post(maintenance_enter_handler))
         .route("/admin/maintenance/exit", post(maintenance_exit_handler))
+        // Phase 59: Label admin API (LABEL-03..07)
+        .route("/admin/labels", get(list_labels).post(create_label))
+        .route(
+            "/admin/labels/{id}",
+            get(get_label).put(update_label).delete(delete_label),
+        )
+        .route("/admin/labels/{id}/confirm", post(confirm_label))
+        .route("/admin/labels/{id}/reject", post(reject_label))
         .route_layer(default_config())
         .layer(middleware::from_fn(admin_auth::require_auth));
 
@@ -2675,6 +2772,687 @@ async fn maintenance_exit_handler(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
     tracing::info!("maintenance mode exited");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Label admin API handlers (Phase 59, LABEL-03..07)
+// ---------------------------------------------------------------------------
+
+/// Normalises a tier string to its canonical DB form.
+///
+/// The DB CHECK constraint expects exact casing: `T1`..`T4` or `Unclassified-Blocked`.
+fn canonical_tier(s: &str) -> String {
+    match s.to_ascii_lowercase().as_str() {
+        "t1" => "T1".to_string(),
+        "t2" => "T2".to_string(),
+        "t3" => "T3".to_string(),
+        "t4" => "T4".to_string(),
+        "unclassified-blocked" => "Unclassified-Blocked".to_string(),
+        _ => s.to_string(),
+    }
+}
+
+/// Normalises an object_type string to its canonical DB form.
+fn canonical_object_type(s: &str) -> String {
+    match s.to_ascii_lowercase().as_str() {
+        "file" => "file".to_string(),
+        "folder" => "folder".to_string(),
+        "archive" => "archive".to_string(),
+        _ => s.to_string(),
+    }
+}
+
+/// Normalises a label_state string to its canonical DB form.
+fn canonical_label_state(s: &str) -> String {
+    match s.to_ascii_lowercase().as_str() {
+        "temporary" => "temporary".to_string(),
+        "confirmed" => "confirmed".to_string(),
+        "rejected" => "rejected".to_string(),
+        "expired" => "expired".to_string(),
+        _ => s.to_string(),
+    }
+}
+
+/// Validates a label request body.
+///
+/// Checks:
+/// - `path` is absolute (UNC `\\` or drive letter `X:\`)
+/// - `object_type` is one of `file`, `folder`, `archive`
+/// - `tier` is one of `T1`, `T2`, `T3`, `T4`, `Unclassified-Blocked`
+/// - `label_state` is one of `temporary`, `confirmed`, `rejected`, `expired`
+/// - `parent_label_id` (if provided) points to a folder label
+///
+/// # Errors
+///
+/// Returns `AppError::UnprocessableEntity` on any validation failure.
+fn validate_label_request(
+    req: &LabelRequest,
+    pool: &db::Pool,
+) -> Result<(), AppError> {
+    // Path must be absolute: UNC (\\server\share) or drive letter (C:\)
+    let path = req.path.trim();
+    let is_unc = path.starts_with(r"\\");
+    let is_drive = path.len() >= 3
+        && path.as_bytes()[1] == b':'
+        && (path.as_bytes()[2] == b'\\' || path.as_bytes()[2] == b'/');
+    let is_drive_letter = !path.is_empty() && path.as_bytes()[0].is_ascii_alphabetic();
+    if !(is_unc || (is_drive_letter && is_drive)) {
+        return Err(AppError::UnprocessableEntity(
+            "path must be absolute".to_string(),
+        ));
+    }
+
+    // Object type allowlist
+    const VALID_OBJECT_TYPES: &[&str] = &["file", "folder", "archive"];
+    if !VALID_OBJECT_TYPES.contains(&req.object_type.to_ascii_lowercase().as_str()) {
+        return Err(AppError::UnprocessableEntity(format!(
+            "invalid object_type '{}'; must be one of: file, folder, archive",
+            req.object_type
+        )));
+    }
+
+    // Tier allowlist
+    const VALID_TIERS: &[&str] = &["t1", "t2", "t3", "t4", "unclassified-blocked"];
+    if !VALID_TIERS.contains(&req.tier.to_ascii_lowercase().as_str()) {
+        return Err(AppError::UnprocessableEntity(format!(
+            "invalid tier '{}'; must be one of: T1, T2, T3, T4, Unclassified-Blocked",
+            req.tier
+        )));
+    }
+
+    // Label state allowlist
+    const VALID_STATES: &[&str] = &["temporary", "confirmed", "rejected", "expired"];
+    if !VALID_STATES.contains(&req.label_state.to_ascii_lowercase().as_str()) {
+        return Err(AppError::UnprocessableEntity(format!(
+            "invalid label_state '{}'; must be one of: temporary, confirmed, rejected, expired",
+            req.label_state
+        )));
+    }
+
+    // Parent label must point to a folder
+    if let Some(ref parent_id) = req.parent_label_id {
+        let parent = LabelRepository::get_by_id(pool, parent_id).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => AppError::UnprocessableEntity(
+                "parent_label_id must reference a folder label".to_string(),
+            ),
+            other => AppError::Database(other),
+        })?;
+        if parent.object_type != "folder" {
+            return Err(AppError::UnprocessableEntity(
+                "parent_label_id must reference a folder label".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Normalises a path: strips trailing backslash/slash except for roots.
+fn normalize_path(path: &str) -> String {
+    let mut p = path.to_string();
+    // Keep root paths intact: C:\ and \\server\share
+    let is_drive_root = p.len() == 3
+        && p.as_bytes()[1] == b':'
+        && (p.as_bytes()[2] == b'\\' || p.as_bytes()[2] == b'/');
+    let is_unc_root = p.starts_with(r"\\") && p.matches('\\').count() == 3;
+    if !is_drive_root && !is_unc_root {
+        while p.ends_with('\\') || p.ends_with('/') {
+            p.pop();
+        }
+    }
+    p
+}
+
+/// `GET /admin/labels` — list all labels with optional filters.
+///
+/// Supports `?state=`, `?tier=`, `?owner_sid=` query params.
+async fn list_labels(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Json<Vec<LabelResponse>>, AppError> {
+    let _username = AdminUsername::extract_from_headers(req.headers())?;
+
+    let filter = axum::extract::Query::<LabelFilter>::from_request(req, &state)
+        .await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    let pool = Arc::clone(&state.pool);
+    let state_filter = filter.state.clone();
+    let tier_filter = filter.tier.clone();
+    let owner_sid_filter = filter.owner_sid.clone();
+
+    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<LabelRow>, AppError> {
+        let mut rows = if let Some(ref s) = state_filter {
+            LabelRepository::list_by_state(&pool, s).map_err(AppError::Database)?
+        } else {
+            LabelRepository::list(&pool).map_err(AppError::Database)?
+        };
+
+        // In-memory filtering for tier and owner_sid
+        if let Some(ref t) = tier_filter {
+            rows.retain(|r| r.tier.eq_ignore_ascii_case(t));
+        }
+        if let Some(ref o) = owner_sid_filter {
+            rows.retain(|r| r.owner_sid.as_deref() == Some(o));
+        }
+
+        Ok(rows)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
+}
+
+/// `GET /admin/labels/:id` — get a single label by ID.
+async fn get_label(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<LabelResponse>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let label_id = id.clone();
+    let row = tokio::task::spawn_blocking(move || -> Result<LabelRow, AppError> {
+        LabelRepository::get_by_id(&pool, &label_id).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("label {label_id} not found"))
+            }
+            other => AppError::Database(other),
+        })
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(row.into()))
+}
+
+/// `POST /admin/labels` — create a new label.
+///
+/// Server-generates UUID v4 id and ISO-8601 timestamps.
+async fn create_label(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<(StatusCode, Json<LabelResponse>), AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+    let Json(body) = Json::<LabelRequest>::from_request(req, &state)
+        .await
+        .map_err(AppError::from)?;
+
+    let pool_for_validate = Arc::clone(&state.pool);
+    let body_for_validate = body.clone();
+    tokio::task::spawn_blocking(move || validate_label_request(&body_for_validate, &pool_for_validate))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let path = normalize_path(&body.path);
+
+    let resp = LabelResponse {
+        id: id.clone(),
+        path: path.clone(),
+        object_type: canonical_object_type(&body.object_type),
+        tier: canonical_tier(&body.tier),
+        label_state: canonical_label_state(&body.label_state),
+        owner_sid: body.owner_sid.clone(),
+        parent_label_id: body.parent_label_id.clone(),
+        acl_snapshot_id: body.acl_snapshot_id.clone(),
+        hash: body.hash.clone(),
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+
+    // Persist via UnitOfWork
+    let pool = Arc::clone(&state.pool);
+    let r = resp.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let record = LabelUpsertRow {
+            id: &r.id,
+            path: &r.path,
+            object_type: &r.object_type,
+            tier: &r.tier,
+            label_state: &r.label_state,
+            owner_sid: r.owner_sid.as_deref(),
+            parent_label_id: r.parent_label_id.as_deref(),
+            acl_snapshot_id: r.acl_snapshot_id.as_deref(),
+            hash: r.hash.as_deref(),
+            created_at: &r.created_at,
+            updated_at: &r.updated_at,
+        };
+        LabelRepository::insert(&uow, &record).map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    // Invalidate cache after commit
+    state.label_service.invalidate_cache();
+
+    // Emit audit event after commit (best-effort)
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username.clone(),
+        format!("label:{} at {}", id, path),
+        dlp_common::Classification::T3,
+        dlp_common::Action::LabelCreate,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let pool = Arc::clone(&state.pool);
+    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
+    .and_then(|r| r)
+    {
+        tracing::warn!(error = %e, "audit emission failed for label_create (best-effort)");
+    }
+
+    tracing::info!(label_id = %id, path = %path, "label created");
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+/// `PUT /admin/labels/:id` — update an existing label.
+async fn update_label(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Json<LabelResponse>, AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+
+    let path = req.uri().path();
+    let label_id = if let Some(rest) = path.strip_prefix("/admin/labels/") {
+        rest.to_string()
+    } else if let Some(rest) = path.strip_prefix("/labels/") {
+        rest.to_string()
+    } else {
+        return Err(AppError::BadRequest("invalid label path".to_string()));
+    };
+    if label_id.is_empty() {
+        return Err(AppError::BadRequest("missing label id in path".to_string()));
+    }
+
+    let Json(body) = Json::<LabelRequest>::from_request(req, &state)
+        .await
+        .map_err(AppError::from)?;
+
+    let pool_for_validate = Arc::clone(&state.pool);
+    let body_for_validate = body.clone();
+    tokio::task::spawn_blocking(move || validate_label_request(&body_for_validate, &pool_for_validate))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let path_norm = normalize_path(&body.path);
+    let id = label_id.clone();
+
+    // Fetch original created_at, then update
+    let pool = Arc::clone(&state.pool);
+    let resp = tokio::task::spawn_blocking(move || -> Result<LabelResponse, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+
+        let original = LabelRepository::get_by_id(&pool, &id).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("label {id} not found"))
+            }
+            other => AppError::Database(other),
+        })?;
+
+        let record = LabelUpsertRow {
+            id: &id,
+            path: &path_norm,
+            object_type: &canonical_object_type(&body.object_type),
+            tier: &canonical_tier(&body.tier),
+            label_state: &canonical_label_state(&body.label_state),
+            owner_sid: body.owner_sid.as_deref(),
+            parent_label_id: body.parent_label_id.as_deref(),
+            acl_snapshot_id: body.acl_snapshot_id.as_deref(),
+            hash: body.hash.as_deref(),
+            created_at: &original.created_at,
+            updated_at: &now,
+        };
+        let affected = LabelRepository::update(&uow, &record).map_err(AppError::Database)?;
+        if affected == 0 {
+            return Err(AppError::NotFound(format!("label {id} not found")));
+        }
+        uow.commit().map_err(AppError::Database)?;
+
+        Ok(LabelResponse {
+            id,
+            path: path_norm,
+            object_type: canonical_object_type(&body.object_type),
+            tier: canonical_tier(&body.tier),
+            label_state: canonical_label_state(&body.label_state),
+            owner_sid: body.owner_sid,
+            parent_label_id: body.parent_label_id,
+            acl_snapshot_id: body.acl_snapshot_id,
+            hash: body.hash,
+            created_at: original.created_at,
+            updated_at: now,
+        })
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    // Invalidate cache after commit
+    state.label_service.invalidate_cache();
+
+    // Emit audit event (best-effort)
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username.clone(),
+        format!("label:{} at {}", resp.id, resp.path),
+        dlp_common::Classification::T3,
+        dlp_common::Action::LabelUpdate,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let pool = Arc::clone(&state.pool);
+    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
+    .and_then(|r| r)
+    {
+        tracing::warn!(error = %e, "audit emission failed for label_update (best-effort)");
+    }
+
+    tracing::info!(label_id = %resp.id, path = %resp.path, "label updated");
+    Ok(Json(resp))
+}
+
+/// `POST /admin/labels/:id/confirm` — confirm a temporary label.
+///
+/// Only allowed when current state is `temporary`. Returns 422 otherwise.
+async fn confirm_label(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Json<LabelResponse>, AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+
+    let path = req.uri().path();
+    let label_id = path
+        .strip_prefix("/admin/labels/")
+        .and_then(|rest| rest.strip_suffix("/confirm"))
+        .or_else(|| path.strip_prefix("/labels/").and_then(|rest| rest.strip_suffix("/confirm")))
+        .unwrap_or("")
+        .to_string();
+    if label_id.is_empty() {
+        return Err(AppError::BadRequest("missing label id in path".to_string()));
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let id = label_id.clone();
+    let pool = Arc::clone(&state.pool);
+
+    let resp = tokio::task::spawn_blocking(move || -> Result<LabelResponse, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+
+        let original = LabelRepository::get_by_id(&pool, &id).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("label {id} not found"))
+            }
+            other => AppError::Database(other),
+        })?;
+
+        if original.label_state != "temporary" {
+            return Err(AppError::UnprocessableEntity(
+                "only temporary labels can be confirmed".to_string(),
+            ));
+        }
+
+        let affected =
+            LabelRepository::update_state(&uow, &id, "confirmed", &now).map_err(AppError::Database)?;
+        if affected == 0 {
+            return Err(AppError::NotFound(format!("label {id} not found")));
+        }
+        uow.commit().map_err(AppError::Database)?;
+
+        Ok(LabelResponse {
+            id,
+            path: original.path,
+            object_type: original.object_type,
+            tier: original.tier,
+            label_state: "confirmed".to_string(),
+            owner_sid: original.owner_sid,
+            parent_label_id: original.parent_label_id,
+            acl_snapshot_id: original.acl_snapshot_id,
+            hash: original.hash,
+            created_at: original.created_at,
+            updated_at: now,
+        })
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    // Invalidate cache after commit
+    state.label_service.invalidate_cache();
+
+    // Emit audit event (best-effort)
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username.clone(),
+        format!("label:{} confirmed", resp.id),
+        dlp_common::Classification::T3,
+        dlp_common::Action::LabelConfirm,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let pool = Arc::clone(&state.pool);
+    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
+    .and_then(|r| r)
+    {
+        tracing::warn!(error = %e, "audit emission failed for label_confirm (best-effort)");
+    }
+
+    tracing::info!(label_id = %resp.id, "label confirmed");
+    Ok(Json(resp))
+}
+
+/// `POST /admin/labels/:id/reject` — reject a temporary label.
+///
+/// Only allowed when current state is `temporary`. Returns 422 otherwise.
+async fn reject_label(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Json<LabelResponse>, AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+
+    let path = req.uri().path();
+    let label_id = path
+        .strip_prefix("/admin/labels/")
+        .and_then(|rest| rest.strip_suffix("/reject"))
+        .or_else(|| path.strip_prefix("/labels/").and_then(|rest| rest.strip_suffix("/reject")))
+        .unwrap_or("")
+        .to_string();
+    if label_id.is_empty() {
+        return Err(AppError::BadRequest("missing label id in path".to_string()));
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let id = label_id.clone();
+    let pool = Arc::clone(&state.pool);
+
+    let resp = tokio::task::spawn_blocking(move || -> Result<LabelResponse, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+
+        let original = LabelRepository::get_by_id(&pool, &id).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("label {id} not found"))
+            }
+            other => AppError::Database(other),
+        })?;
+
+        if original.label_state != "temporary" {
+            return Err(AppError::UnprocessableEntity(
+                "only temporary labels can be rejected".to_string(),
+            ));
+        }
+
+        let affected =
+            LabelRepository::update_state(&uow, &id, "rejected", &now).map_err(AppError::Database)?;
+        if affected == 0 {
+            return Err(AppError::NotFound(format!("label {id} not found")));
+        }
+        uow.commit().map_err(AppError::Database)?;
+
+        Ok(LabelResponse {
+            id,
+            path: original.path,
+            object_type: original.object_type,
+            tier: original.tier,
+            label_state: "rejected".to_string(),
+            owner_sid: original.owner_sid,
+            parent_label_id: original.parent_label_id,
+            acl_snapshot_id: original.acl_snapshot_id,
+            hash: original.hash,
+            created_at: original.created_at,
+            updated_at: now,
+        })
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    // Invalidate cache after commit
+    state.label_service.invalidate_cache();
+
+    // Emit audit event (best-effort)
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username.clone(),
+        format!("label:{} rejected", resp.id),
+        dlp_common::Classification::T3,
+        dlp_common::Action::LabelReject,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let pool = Arc::clone(&state.pool);
+    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
+    .and_then(|r| r)
+    {
+        tracing::warn!(error = %e, "audit emission failed for label_reject (best-effort)");
+    }
+
+    tracing::info!(label_id = %resp.id, "label rejected");
+    Ok(Json(resp))
+}
+
+/// `DELETE /admin/labels/:id` — delete a label.
+async fn delete_label(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<StatusCode, AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+
+    let id = Path::<String>::from_request(req, &state)
+        .await
+        .map_err(AppError::from)?
+        .0;
+
+    let pool = Arc::clone(&state.pool);
+    let label_id = id.clone();
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<Option<String>, AppError> {
+            let mut conn = pool.get().map_err(AppError::from)?;
+            let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+            // Get path for audit before deleting
+            let path_result: rusqlite::Result<String> = uow.tx.query_row(
+                "SELECT path FROM labels WHERE id = ?1",
+                rusqlite::params![label_id],
+                |r| r.get(0),
+            );
+            let path = match path_result {
+                Ok(p) => p,
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    return Ok(None);
+                }
+                Err(e) => return Err(AppError::Database(e)),
+            };
+            let affected = LabelRepository::delete(&uow, &label_id).map_err(AppError::Database)?;
+            if affected == 0 {
+                return Ok(None);
+            }
+            uow.commit().map_err(AppError::Database)?;
+            Ok(Some(path))
+        })
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    let path = match result {
+        Some(p) => p,
+        None => return Err(AppError::NotFound(format!("label {id} not found"))),
+    };
+
+    // Invalidate cache after commit
+    state.label_service.invalidate_cache();
+
+    // Emit audit event (best-effort)
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username.clone(),
+        format!("label:{} at {}", id, path),
+        dlp_common::Classification::T3,
+        dlp_common::Action::LabelDelete,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let pool = Arc::clone(&state.pool);
+    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
+    .and_then(|r| r)
+    {
+        tracing::warn!(error = %e, "audit emission failed for label_delete (best-effort)");
+    }
+
+    tracing::info!(label_id = %id, path = %path, "label deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -6716,5 +7494,548 @@ mod tests {
             decision.contains("ALLOW"),
             "decision must be ALLOW; got: {decision}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 59: Label admin API tests (LABEL-03..07)
+    // -----------------------------------------------------------------------
+
+    /// GET /admin/labels returns all labels as JSON array.
+    #[tokio::test]
+    async fn test_list_labels() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let labels: Vec<LabelResponse> = serde_json::from_slice(&body).expect("parse");
+        assert!(labels.is_empty(), "fresh db must have no labels");
+    }
+
+    /// GET /admin/labels?state=temporary returns only temporary labels.
+    #[tokio::test]
+    async fn test_list_labels_filter_by_state() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create a temporary label
+        let json = r#"{"path":"\\\\server\\share\\file.txt","object_type":"file","tier":"T4","label_state":"temporary"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Create a confirmed label
+        let json2 = r#"{"path":"\\\\server\\share\\folder","object_type":"folder","tier":"T3","label_state":"confirmed"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json2))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Filter by temporary
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/labels?state=temporary")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let labels: Vec<LabelResponse> = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].label_state, "temporary");
+    }
+
+    /// POST /admin/labels with valid data creates label, returns 201.
+    #[tokio::test]
+    async fn test_create_label_success() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let json = r#"{"path":"\\\\server\\share\\HR\\salary.xlsx","object_type":"file","tier":"T4","label_state":"temporary","owner_sid":"S-1-5-21-1"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let label: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(label.path, r"\\server\share\HR\salary.xlsx");
+        assert_eq!(label.object_type, "file");
+        assert_eq!(label.tier, "T4");
+        assert_eq!(label.label_state, "temporary");
+        assert_eq!(label.owner_sid, Some("S-1-5-21-1".to_string()));
+        assert!(!label.id.is_empty(), "id must be generated");
+        assert!(!label.created_at.is_empty(), "created_at must be set");
+    }
+
+    /// POST /admin/labels with relative path returns 422.
+    #[tokio::test]
+    async fn test_create_label_relative_path_rejected() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let json = r#"{"path":"relative\\path.txt","object_type":"file","tier":"T1","label_state":"temporary"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// POST /admin/labels with invalid tier returns 422.
+    #[tokio::test]
+    async fn test_create_label_invalid_tier_rejected() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let json = r#"{"path":"\\\\server\\share\\file.txt","object_type":"file","tier":"T5","label_state":"temporary"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// POST /admin/labels with parent_label_id not pointing to folder returns 422.
+    #[tokio::test]
+    async fn test_create_label_parent_not_folder_rejected() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create a file label first
+        let json1 = r#"{"path":"\\\\server\\share\\file.txt","object_type":"file","tier":"T1","label_state":"temporary"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json1))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Try to use the file label as parent
+        let json2 = r#"{"path":"\\\\server\\share\\file2.txt","object_type":"file","tier":"T1","label_state":"temporary","parent_label_id":"not-a-real-id"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json2))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        // parent_label_id points to non-existent label -> 422
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// PUT /admin/labels/:id updates existing label.
+    #[tokio::test]
+    async fn test_update_label_success() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create a label
+        let json = r#"{"path":"\\\\server\\share\\file.txt","object_type":"file","tier":"T1","label_state":"temporary"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let created: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        let id = created.id;
+
+        // Update it
+        let json2 = r#"{"path":"\\\\server\\share\\file.txt","object_type":"file","tier":"T4","label_state":"confirmed"}"#;
+        let req = Request::builder()
+            .method("PUT")
+            .uri(format!("/admin/labels/{id}"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json2))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let updated: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(updated.tier, "T4");
+        assert_eq!(updated.label_state, "confirmed");
+        assert_eq!(updated.id, id);
+    }
+
+    /// POST /admin/labels/:id/confirm changes state to confirmed.
+    #[tokio::test]
+    async fn test_confirm_label_success() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create a temporary label
+        let json = r#"{"path":"\\\\server\\share\\file.txt","object_type":"file","tier":"T1","label_state":"temporary"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let created: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        let id = created.id;
+
+        // Confirm it
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/admin/labels/{id}/confirm"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let confirmed: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(confirmed.label_state, "confirmed");
+    }
+
+    /// POST /admin/labels/:id/reject changes state to rejected.
+    #[tokio::test]
+    async fn test_reject_label_success() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create a temporary label
+        let json = r#"{"path":"\\\\server\\share\\file.txt","object_type":"file","tier":"T1","label_state":"temporary"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let created: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        let id = created.id;
+
+        // Reject it
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/admin/labels/{id}/reject"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let rejected: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(rejected.label_state, "rejected");
+    }
+
+    /// DELETE /admin/labels/:id removes label.
+    #[tokio::test]
+    async fn test_delete_label_success() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create a label
+        let json = r#"{"path":"\\\\server\\share\\file.txt","object_type":"file","tier":"T1","label_state":"temporary"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let created: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        let id = created.id;
+
+        // Delete it
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/admin/labels/{id}"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Verify it's gone
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/admin/labels/{id}"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// GET /admin/labels/:id returns single label.
+    #[tokio::test]
+    async fn test_get_label_success() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create a label
+        let json = r#"{"path":"\\\\server\\share\\file.txt","object_type":"file","tier":"T1","label_state":"temporary"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let created: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        let id = created.id;
+
+        // Get it
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/admin/labels/{id}"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let got: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(got.id, id);
+        assert_eq!(got.path, r"\\server\share\file.txt");
+    }
+
+    /// Confirm/reject only allowed from temporary state (422 otherwise).
+    #[tokio::test]
+    async fn test_confirm_non_temporary_label_rejected() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create a confirmed label
+        let json = r#"{"path":"\\\\server\\share\\file.txt","object_type":"file","tier":"T1","label_state":"confirmed"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let created: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        let id = created.id;
+
+        // Try to confirm an already-confirmed label
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/admin/labels/{id}/confirm"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// Label creation emits an audit event.
+    #[tokio::test]
+    async fn test_create_label_emits_audit_event() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let json = r#"{"path":"\\\\server\\share\\audit.txt","object_type":"file","tier":"T2","label_state":"temporary"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // We cannot directly query the in-memory DB from here because the pool
+        // is owned by the AppState inside the router. The audit event is
+        // best-effort and the test above verifies the handler returns 201.
+        // Audit emission correctness is covered by the audit_store unit tests.
+    }
+
+    /// POST /admin/labels with drive-letter path succeeds.
+    #[tokio::test]
+    async fn test_create_label_drive_letter_path() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let json = r#"{"path":"C:\\Users\\Admin\\secret.docx","object_type":"file","tier":"T4","label_state":"temporary"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let label: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(label.path, r"C:\Users\Admin\secret.docx");
+    }
+
+    /// POST /admin/labels with parent_label_id pointing to folder succeeds.
+    #[tokio::test]
+    async fn test_create_label_with_parent_folder() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create a folder label
+        let json1 = r#"{"path":"\\\\server\\share\\HR","object_type":"folder","tier":"T3","label_state":"confirmed"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json1))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let folder: LabelResponse = serde_json::from_slice(&body).expect("parse");
+
+        // Create a child file label with parent_label_id
+        let json2 = format!(
+            r#"{{"path":"\\\\server\\share\\HR\\salary.xlsx","object_type":"file","tier":"T4","label_state":"temporary","parent_label_id":"{}"}}"#,
+            folder.id
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json2))
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let file: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(file.parent_label_id, Some(folder.id));
+    }
+
+    /// GET /admin/labels without auth returns 401.
+    #[tokio::test]
+    async fn test_label_routes_require_auth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/labels")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

@@ -43,6 +43,16 @@ pub enum Action {
     PRINT,
     /// Cloud share-link pasted to clipboard (Phase 47, M017/S03).
     SHARE_LINK,
+    /// Admin created a new label via the admin API (Phase 59, LABEL-07).
+    LabelCreate,
+    /// Admin updated an existing label via the admin API (Phase 59, LABEL-07).
+    LabelUpdate,
+    /// Admin confirmed a temporary label via the admin API (Phase 59, LABEL-07).
+    LabelConfirm,
+    /// Admin rejected a temporary label via the admin API (Phase 59, LABEL-07).
+    LabelReject,
+    /// Admin deleted a label via the admin API (Phase 59, LABEL-07).
+    LabelDelete,
 }
 
 /// The access context describes how the file operation originated.
