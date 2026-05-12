@@ -922,6 +922,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         )
         .route("/admin/labels/{id}/confirm", post(confirm_label))
         .route("/admin/labels/{id}/reject", post(reject_label))
+        .route("/admin/labels/departments", get(list_label_departments))
         .route_layer(default_config())
         .layer(middleware::from_fn(admin_auth::require_auth));
 
@@ -3571,6 +3572,31 @@ async fn delete_label(
     Ok(StatusCode::NO_CONTENT)
 }
 
+///  -- returns distinct non-null department values.
+async fn list_label_departments(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<String>>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let depts = tokio::task::spawn_blocking(move || -> Result<Vec<String>, AppError> {
+        let conn = pool.get().map_err(AppError::from)?;
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT department FROM labels WHERE department IS NOT NULL ORDER BY department")?;
+        let rows = stmt.query_map([], |row| {
+            let dept: String = row.get(0)?;
+            Ok(dept)
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(AppError::Database)?);
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(depts))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4330,7 +4356,7 @@ mod tests {
         let pool2 = Arc::clone(&pool);
 
         tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-            let conn = pool.get().map_err(AppError::from)?;
+            let mut conn = pool.get().map_err(AppError::from)?;
             conn.execute(
                 "INSERT INTO policies (id, name, description, priority, conditions,                  action, enabled, version, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
                 rusqlite::params![
@@ -5262,7 +5288,7 @@ mod tests {
 
     /// Register a test agent directly in the DB so agent_config_overrides FK is satisfied.
     fn seed_agent(pool: &crate::db::Pool, agent_id: &str) {
-        let conn = pool.get().expect("acquire connection");
+        let mut conn = pool.get().expect("acquire connection");
         conn.execute(
             "INSERT OR IGNORE INTO agents \
              (agent_id, hostname, ip, os_version, agent_version, last_heartbeat, status, registered_at) \
@@ -7091,7 +7117,7 @@ mod tests {
             .expect("handler must succeed");
 
         // Verify audit_events table has exactly one row with the expected fields.
-        let conn = pool.get().expect("conn");
+        let mut conn = pool.get().expect("conn");
         let (event_type, action, resource_path, classification, decision, machine, pid): (
             String,
             String,
@@ -7586,7 +7612,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
         // Verify audit event.
-        let conn = pool.get().expect("conn");
+        let mut conn = pool.get().expect("conn");
         let (event_type, action, resource_path, classification, decision): (
             String,
             String,

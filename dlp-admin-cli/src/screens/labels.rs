@@ -5,7 +5,7 @@
 /// Footer hint for LabelList screen.
 pub const LABEL_LIST_HINTS: &str = "[n] New  [e] Edit  [d] Delete  [v] View  [f] Filter  [Esc] Back";
 /// Footer hint for LabelReviewQueue screen.
-pub const LABEL_REVIEW_HINTS: &str = "[c] Confirm  [r] Reject  [↑/↓] Navigate  [Esc] Back";
+pub const LABEL_REVIEW_HINTS: &str = "[c] Confirm  [r] Reject  [d] Dept Filter  [↑/↓] Navigate  [Esc] Back";
 /// Empty state message for LabelList.
 pub const LABEL_LIST_EMPTY: &str = "No labels found. Press [n] to create one.";
 /// Empty state message for LabelReviewQueue.
