@@ -106,6 +106,34 @@ If NTFS ALLOW and ABAC DENY → FINAL RESULT = DENY. ABAC always tightens, never
 
 **v1.0.0 Enterprise Hardening dropped.** HARD-02 through HARD-08 move to Out of Scope. HARD-01 (Secrets Encryption at Rest) stays validated — Phase 47 is shipped and carries forward as a v0.10.0 prerequisite. Phase 47's planning artifacts (`.planning/phases/47-secrets-encryption-at-rest/`) are retained, including the DPAPI-recovery handoff originally slated for v1.0.0 Phase 52 (now folded into v0.10.0's operational documentation surface).
 
+## Next Milestones (Pilot-First Path)
+
+### v0.11.0 — Label Service + Data Owner Queue + Approval Workflow
+
+**Goal:** Unblock pilot deployment by giving operators a way to label data, review temporary labels, and grant time-bounded approvals for T3/T4 exceptions. This milestone does NOT include the scanner (manual labels only) — the scanner comes in v0.12.0.
+
+**Target features:**
+
+- **Label Service** — central database for file/folder labels with states (temporary/confirmed/rejected/expired), folder inheritance, and manual assignment API.
+- **Data Owner Review Queue** — admin TUI screen for Data Owners to confirm or reject temporary labels assigned during pilot onboarding.
+- **Approval Workflow Engine** — T3 Data Owner approval with expiry; T4 Board digital signature; approval token validation in agent; `/admin/overrides` endpoint and TUI screen.
+- **Syslog Forwarder** — RFC 5424 syslog to SIEM/SOC over TLS; encrypted offline queue.
+- **Tamper-Evident Audit (Hash Chain)** — SHA-256 append-only hash chain on agent audit logs; server-side verification.
+- **Device Identity Expansion** — fingerprint hash, MAC addresses, VPN state, domain state, health status in agent heartbeat and ABAC context.
+
+### v0.12.0 — Scanner Integration + Endpoint Controls
+
+**Goal:** Add automated data discovery and close remaining endpoint enforcement gaps.
+
+**Target features:**
+
+- **File Scanner** — share/folder enumeration, metadata collection, rule-based classifier (Vietnamese PII), temporary label auto-assignment. OCR deferred to v0.12.1+.
+- **Screenshot Control** — detect and block/alert on screenshots involving T3/T4 data.
+- **Print Watermarking** — overlay user/timestamp/device/tier/approval ID on approved print output.
+- **Email/Outlook Interception** — block T3/T4 attachments to unauthorized recipients.
+- **RDP/Bluetooth Blocking** — block file redirection and Bluetooth transfer for T3/T4.
+- **Backup/Ransomware Documentation** — backup policy docs, ransomware heuristics, canary files.
+
 ## Requirements
 
 ### Validated
@@ -135,22 +163,39 @@ REQ-IDs defined in `.planning/REQUIREMENTS.md`. High-level coverage:
 - [ ] **DRIVE-** — SD / optical / virtual drive enumeration and policy UX (SEED-004 fold-in)
 - [ ] **OPS-** — deployment guide covering AV/EDR allowlist procedure for global DLL injection
 
+### Active (Post-v0.10.0 — Pilot-First Path)
+
+Requirements merged from target architecture gap analysis (`new_docs/`, 2026-05-12). Delivered across v0.11.0 and v0.12.0.
+
+- [ ] **LABEL-** — Label Service: temporary/confirmed labels, folder inheritance, Data Owner review queue, manual assignment (v0.11.0)
+- [ ] **WORKFLOW-** — Approval Workflow Engine: T3 Data Owner approval, T4 Board digital signature, approval token validation (v0.11.0)
+- [ ] **SYSLOG-** — Native RFC 5424 syslog forwarding to SIEM/SOC with encrypted offline queue (v0.11.0)
+- [ ] **HASH-** — SHA-256 append-only hash chain for tamper-evident audit logging (v0.11.0)
+- [ ] **DEVICE-** — Device fingerprint hash, MAC collection, VPN state detection, domain state, health status (v0.11.0)
+- [ ] **SCANNER-** — File enumeration, metadata collection, rule-based classifier, temporary label auto-assignment (v0.12.0)
+- [ ] **SCREENSHOT-** — Screenshot detection and blocking based on ABAC policy (v0.12.0)
+- [ ] **WATERMARK-** — Print watermarking with user/timestamp/device/tier/approval ID overlay (v0.12.0)
+- [ ] **EMAIL-** — Outlook attachment interception, browser upload detection (v0.12.0)
+- [ ] **RDP-** — RDP file redirection blocking for T3/T4 (v0.12.0)
+- [ ] **BT-** — Bluetooth file transfer blocking for T3/T4 (v0.12.0)
+- [ ] **BCK-** — Backup policy documentation, ransomware heuristics, canary files (v0.12.0)
+
 ### Out of Scope
 
 - **Mobile app** — Windows-first product
 - **macOS/Linux agent** — NTFS enforcement requires Windows
 - **Cloud-native policy engine** — on-prem DLP with enterprise AD dependency
-- **File encryption at rest** — NTFS ACLs + ABAC provide access control
+- **File encryption at rest** — NTFS ACLs + ABAC provide access control; BitLocker for disk encryption
 - **Raw JSON policy editing** — replaced by Conditions Builder in v0.4.0
 - **Kernel minifilter driver** — user-mode API hooking + WFP + DACL tripwire + ETW sufficient; no EV cert path (reaffirmed for v0.10.0)
 - **Native browser extension** — deferred to post-v1.0 milestone (v1.3)
 - **Admin API module refactor (HARD-02)** — dropped from v1.0.0; revisit when monolith size becomes a velocity blocker
-- **Audit hash chain (HARD-03)** — dropped from v1.0.0; tamper-evident audit can be revisited as a standalone milestone
 - **Password-protected service-stop E2E in CI (HARD-04)** — dropped from v1.0.0; manual test remains until a Windows CI runner is in place
-- **Acceptance smoke test on real Windows host (HARD-05)** — dropped from v1.0.0; folded informally into v0.10.0 UAT for real-blocking validation
-- **Operational runbooks (HARD-06)** — dropped from v1.0.0; v0.10.0 ships a narrower deployment guide (AV/EDR allowlist + global injection) rather than the full operational bundle
 - **Performance baseline at scale (HARD-07)** — dropped from v1.0.0; revisit when v0.10.0 hook DLL is in production
-- **SonarQube clean gate + v1.0.0 release tag (HARD-08)** — dropped; v1.0.0 will not be tagged. Next release tag is `v0.10.0` after this milestone closes
+- **OCR pipeline (full)** — Tesseract/OCRmyPDF integration deferred to v0.12.1+. v0.12.0 scanner identifies image-only PDFs but does not extract text from them.
+- **Seismic/survey file parsers** — folder-level labeling sufficient per organizational non-goals
+- **Microsoft Purview/Intune as primary DLP** — endpoint agent is the primary enforcement layer
+- **Backup tool implementation** — backup policy documented; external tools (Restic, Veeam, Kopia) recommended rather than built
 
 ## Key Decisions
 

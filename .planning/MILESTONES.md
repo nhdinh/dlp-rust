@@ -1,5 +1,48 @@
 # Milestones
 
+## v0.12.0 Scanner Integration + Endpoint Controls (Planned)
+
+**Phases:** 65–70 (6 phases)
+**Requirements:** SCANNER-01..06, SCREENSHOT-01..02, WATERMARK-01..02, EMAIL-01..02, RDP-01, BT-01, BCK-01..03
+
+**Goal:** Add automated data discovery and close remaining endpoint enforcement gaps.
+
+**Planned features:**
+- File Scanner — share/folder enumeration, metadata collection, rule-based classifier (Vietnamese PII), temporary label auto-assignment. OCR deferred to v0.12.1+.
+- Screenshot Control — detect and block/alert on screenshots involving T3/T4 data.
+- Print Watermarking — overlay user/timestamp/device/tier/approval ID on approved print output.
+- Email/Outlook Interception — block T3/T4 attachments to unauthorized recipients.
+- RDP/Bluetooth Blocking — block file redirection and Bluetooth transfer for T3/T4.
+- Backup/Ransomware Documentation — backup policy docs, ransomware heuristics, canary files.
+
+---
+
+## v0.11.0 Label Service + Data Owner Queue + Approval Workflow (Planned)
+
+**Phases:** 59–64 (6 phases)
+**Requirements:** LABEL-01..07, WORKFLOW-01..06, SYSLOG-01..04, HASH-01..04, DEVICE-01..05
+
+**Goal:** Unblock pilot deployment by giving operators a way to label data, review temporary labels, and grant time-bounded approvals for T3/T4 exceptions. Manual labels only — scanner comes in v0.12.0.
+
+**Planned features:**
+- Label Service — central database for file/folder labels with states (temporary/confirmed/rejected/expired), folder inheritance, and manual assignment API.
+- Data Owner Review Queue — admin TUI screen for Data Owners to confirm or reject temporary labels.
+- Approval Workflow Engine — T3 Data Owner approval with expiry; T4 Board digital signature; approval token validation in agent.
+- Syslog Forwarder — RFC 5424 syslog to SIEM/SOC over TLS; encrypted offline queue.
+- Tamper-Evident Audit — SHA-256 append-only hash chain on agent audit logs; server-side verification.
+- Device Identity Expansion — fingerprint hash, MAC addresses, VPN state, domain state, health status.
+
+---
+
+## v0.10.0 Real-Time File Access Prevention (In Progress)
+
+**Phases:** 47 (prereq, shipped) + 48–58 (11 active phases)
+**Requirements:** HARD-01 (validated), BLOCK-01..10, CACHE-01..06, FAIL-01..03, DACL-01..05, ETW-01..05, UX-01..02, MODE-01, DRIVE-01..04, OPS-01..04, DIFF-01..04
+
+**Status:** Roadmap drafted 2026-05-12. Phase 48 is next. See `.planning/ROADMAP.md` for full phase details.
+
+---
+
 ## v0.8.0 Application-Aware DLP (Shipped: 2026-05-07)
 
 **Phases completed:** 4 phases, 15 plans
