@@ -122,6 +122,13 @@ pub enum AppError {
     /// resource already exists (e.g., duplicate origin string).
     #[error("conflict: {0}")]
     Conflict(String),
+
+    /// The caller lacks permission for the requested action.
+    ///
+    /// Maps to HTTP 403 Forbidden. Use this when an authenticated user
+    /// attempts an action they are not authorized to perform.
+    #[error("forbidden: {0}")]
+    Forbidden(String),
 }
 
 /// Converts axum extract rejections into `AppError::BadRequest`.
@@ -167,6 +174,7 @@ impl IntoResponse for AppError {
                 (StatusCode::UNPROCESSABLE_ENTITY, self.to_string())
             }
             AppError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
+            AppError::Forbidden(_) => (StatusCode::FORBIDDEN, self.to_string()),
         };
 
         let body = serde_json::json!({ "error": message });

@@ -217,6 +217,8 @@ pub struct Claims {
     pub exp: usize,
     /// Issuer.
     pub iss: String,
+    /** User SID (from AD lookup). Optional for local admin accounts. */
+    pub sid: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +268,7 @@ pub async fn login(
         sub: username,
         exp: expires_at.timestamp() as usize,
         iss: "dlp-server".to_string(),
+        sid: None,
     };
 
     let token = encode(
@@ -485,7 +488,8 @@ pub async fn require_auth(
     let claims = verify_jwt(token)?;
 
     let mut req = req;
-    req.extensions_mut().insert(claims.sub);
+    req.extensions_mut().insert(claims.sub.clone());
+    req.extensions_mut().insert(claims.sid);
 
     Ok(next.run(req).await)
 }
@@ -508,6 +512,7 @@ mod tests {
             sub: "admin".to_string(),
             exp: (Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
             iss: "dlp-server".to_string(),
+        sid: None,
         };
 
         let token = encode(
@@ -530,6 +535,7 @@ mod tests {
             // Expired 1 hour ago.
             exp: (Utc::now() - chrono::Duration::hours(1)).timestamp() as usize,
             iss: "dlp-server".to_string(),
+        sid: None,
         };
 
         let token = encode(
@@ -674,5 +680,24 @@ mod tests {
         );
 
         unsafe { std::env::remove_var("JWT_SECRET") };
+    }
+}
+
+// Temporary extension trait for SID extraction
+pub trait AdminSidExt {
+    fn extract_sid_from_headers(headers: &axum::http::HeaderMap) -> Result<Option<String>, AppError>;
+}
+
+impl AdminSidExt for AdminUsername {
+    fn extract_sid_from_headers(headers: &axum::http::HeaderMap) -> Result<Option<String>, AppError> {
+        let auth_header = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?;
+        let token = auth_header
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?;
+        let claims = verify_jwt(token)?;
+        Ok(claims.sid)
     }
 }

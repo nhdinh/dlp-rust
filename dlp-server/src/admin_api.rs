@@ -1032,6 +1032,14 @@ async fn create_policy(
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<(StatusCode, Json<PolicyResponse>), AppError> {
     let username = AdminUsername::extract_from_headers(req.headers())?;
+    let _caller_sid = crate::admin_auth::verify_jwt(
+        req.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
+    )?.sid;
     let payload: Json<PolicyPayload> = Json::from_request(req, &state)
         .await
         .map_err(AppError::from)?;
@@ -1116,6 +1124,14 @@ async fn update_policy(
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<PolicyResponse>, AppError> {
     let username = AdminUsername::extract_from_headers(req.headers())?;
+    let _caller_sid = crate::admin_auth::verify_jwt(
+        req.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
+    )?.sid;
 
     // Extract path param from URI. Supports both /policies/:id and /admin/policies/:id.
     let path = req.uri().path();
@@ -1227,6 +1243,14 @@ async fn delete_policy(
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<StatusCode, AppError> {
     let username = AdminUsername::extract_from_headers(req.headers())?;
+    let _caller_sid = crate::admin_auth::verify_jwt(
+        req.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
+    )?.sid;
     let policy_id = Path::<String>::from_request(req, &state)
         .await
         .map_err(AppError::from)?
@@ -2237,6 +2261,14 @@ async fn insert_disk_registry_handler(
 ) -> Result<(StatusCode, Json<DiskRegistryResponse>), AppError> {
     // (1) Authenticate the admin via JWT extraction (T-37-04).
     let username = AdminUsername::extract_from_headers(req.headers())?;
+    let _caller_sid = crate::admin_auth::verify_jwt(
+        req.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
+    )?.sid;
 
     // (2) Deserialize the body. Must follow username extraction so the headers
     //     are available before the body is consumed.
@@ -2387,6 +2419,14 @@ async fn delete_disk_registry_handler(
 ) -> Result<StatusCode, AppError> {
     // (1) Authenticate.
     let username = AdminUsername::extract_from_headers(req.headers())?;
+    let _caller_sid = crate::admin_auth::verify_jwt(
+        req.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
+    )?.sid;
     // (2) Extract path param.
     let id = Path::<String>::from_request(req, &state)
         .await
@@ -2984,6 +3024,14 @@ async fn create_label(
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<(StatusCode, Json<LabelResponse>), AppError> {
     let username = AdminUsername::extract_from_headers(req.headers())?;
+    let _caller_sid = crate::admin_auth::verify_jwt(
+        req.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
+    )?.sid;
     let Json(body) = Json::<LabelRequest>::from_request(req, &state)
         .await
         .map_err(AppError::from)?;
@@ -3082,6 +3130,14 @@ async fn update_label(
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<LabelResponse>, AppError> {
     let username = AdminUsername::extract_from_headers(req.headers())?;
+    let _caller_sid = crate::admin_auth::verify_jwt(
+        req.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
+    )?.sid;
 
     let path = req.uri().path();
     let label_id = if let Some(rest) = path.strip_prefix("/admin/labels/") {
@@ -3204,6 +3260,14 @@ async fn confirm_label(
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<LabelResponse>, AppError> {
     let username = AdminUsername::extract_from_headers(req.headers())?;
+    let caller_sid = crate::admin_auth::verify_jwt(
+        req.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
+    )?.sid;
 
     let path = req.uri().path();
     let label_id = path
@@ -3219,6 +3283,7 @@ async fn confirm_label(
     let now = chrono::Utc::now().to_rfc3339();
     let id = label_id.clone();
     let pool = Arc::clone(&state.pool);
+    let username2 = username.clone();
 
     let resp = tokio::task::spawn_blocking(move || -> Result<LabelResponse, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
@@ -3230,6 +3295,12 @@ async fn confirm_label(
             }
             other => AppError::Database(other),
         })?;
+
+        if let Some(ref sid) = caller_sid {
+            if username2 != "dlp-admin" && original.owner_sid.as_ref() != Some(sid) {
+                return Err(AppError::Forbidden("not the data owner of this label".to_string()));
+            }
+        }
 
         if original.label_state != "temporary" {
             return Err(AppError::UnprocessableEntity(
@@ -3305,6 +3376,14 @@ async fn reject_label(
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<Json<LabelResponse>, AppError> {
     let username = AdminUsername::extract_from_headers(req.headers())?;
+    let caller_sid = crate::admin_auth::verify_jwt(
+        req.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
+    )?.sid;
 
     let path = req.uri().path();
     let label_id = path
@@ -3320,6 +3399,7 @@ async fn reject_label(
     let now = chrono::Utc::now().to_rfc3339();
     let id = label_id.clone();
     let pool = Arc::clone(&state.pool);
+    let username2 = username.clone();
 
     let resp = tokio::task::spawn_blocking(move || -> Result<LabelResponse, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
@@ -3331,6 +3411,11 @@ async fn reject_label(
             }
             other => AppError::Database(other),
         })?;
+        if let Some(ref sid) = caller_sid {
+            if username2 != "dlp-admin" && original.owner_sid.as_ref() != Some(sid) {
+                return Err(AppError::Forbidden("not the data owner of this label".to_string()));
+            }
+        }
 
         if original.label_state != "temporary" {
             return Err(AppError::UnprocessableEntity(
@@ -3404,6 +3489,14 @@ async fn delete_label(
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<StatusCode, AppError> {
     let username = AdminUsername::extract_from_headers(req.headers())?;
+    let _caller_sid = crate::admin_auth::verify_jwt(
+        req.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
+    )?.sid;
 
     let id = Path::<String>::from_request(req, &state)
         .await
@@ -3725,6 +3818,7 @@ mod tests {
             sub: "test-admin".to_string(),
             exp: (Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
             iss: "dlp-server".to_string(),
+            sid: None,
         };
         encode(
             &Header::default(),
@@ -3834,6 +3928,7 @@ mod tests {
             sub: "test-admin".to_string(),
             exp: (Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
             iss: "dlp-server".to_string(),
+            sid: None,
         };
         let token = encode(
             &Header::default(),
@@ -3938,6 +4033,7 @@ mod tests {
             sub: "test-admin".to_string(),
             exp: (Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
             iss: "dlp-server".to_string(),
+            sid: None,
         };
         let token = encode(
             &Header::default(),
@@ -4086,6 +4182,7 @@ mod tests {
             sub: "test-admin".to_string(),
             exp: (Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
             iss: "dlp-server".to_string(),
+            sid: None,
         };
         let token = encode(
             &Header::default(),

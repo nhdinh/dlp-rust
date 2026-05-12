@@ -103,6 +103,7 @@ fn mint_jwt(username: &str) -> String {
         sub: username.to_string(),
         exp: (Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
         iss: "dlp-server".to_string(),
+        sid: None,
     };
     encode(
         &Header::default(),
