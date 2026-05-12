@@ -241,6 +241,14 @@ pub struct AbacContext {
     /// Chrome Content Analysis API v1 does not expose this; always `None` in v0.8.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_origin: Option<String>,
+    /// The filesystem path of the resource, used for label-aware evaluation.
+    ///
+    /// When present, the PolicyStore may resolve the classification from the
+    /// LabelService instead of using the request's hardcoded classification.
+    /// This field is populated from [`Resource::path`] during conversion from
+    /// [`EvaluateRequest`] (Phase 59, D-09).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_path: Option<String>,
 }
 
 /// A complete ABAC evaluation response.
@@ -305,6 +313,10 @@ impl From<EvaluateRequest> for AbacContext {
     /// The `agent` field is intentionally dropped — `AgentInfo` is
     /// request-tracing metadata, not an ABAC attribute (Phase 22 D-10).
     ///
+    /// The `resource.path` field is copied into `resource_path` so that the
+    /// policy engine can resolve labels from the LabelService at evaluation
+    /// time (Phase 59, D-09).
+    ///
     /// # Arguments
     ///
     /// * `req` - The wire-format evaluation request to convert.
@@ -312,9 +324,10 @@ impl From<EvaluateRequest> for AbacContext {
     /// # Returns
     ///
     /// An [`AbacContext`] with `subject`, `resource`, `environment`, `action`,
-    /// `source_application`, `destination_application`, `source_origin`, and
-    /// `destination_origin` forwarded from `req`.
+    /// `source_application`, `destination_application`, `source_origin`,
+    /// `destination_origin`, and `resource_path` forwarded from `req`.
     fn from(req: EvaluateRequest) -> Self {
+        let resource_path = Some(req.resource.path.clone());
         Self {
             subject: req.subject,
             resource: req.resource,
@@ -324,6 +337,7 @@ impl From<EvaluateRequest> for AbacContext {
             destination_application: req.destination_application,
             source_origin: req.source_origin,
             destination_origin: req.destination_origin,
+            resource_path,
         }
     }
 }
