@@ -70,6 +70,16 @@ pub enum InputPurpose {
     },
     /// Prompts for a URL-pattern string to add as a managed origin.
     AddManagedOrigin,
+    /// Step 1 of label creation: path input.
+    LabelPath,
+    /// Step 2: object type picker (carries path).
+    LabelObjectType { path: String },
+    /// Step 3: tier picker (carries path + object_type index).
+    LabelTier { path: String, object_type: usize },
+    /// Step 4: owner SID input (carries path + object_type + tier).
+    LabelOwnerSid { path: String, object_type: usize, tier: usize },
+    /// Step 5: parent label ID input (carries path + object_type + tier + owner_sid).
+    LabelParentId { path: String, object_type: usize, tier: usize, owner_sid: String },
     /// Step 1 of disk registry add flow: prompts for agent ID.
     AddDiskRegistryAgentId,
     /// Step 2: carries agent_id; prompts for instance ID.
@@ -117,6 +127,10 @@ pub enum ConfirmPurpose {
     },
     /// Confirm deletion of a disk registry entry by UUID.
     DeleteDiskRegistry {
+        id: String,
+    },
+    /// Confirm deletion of a label by ID.
+    DeleteLabel {
         id: String,
     },
 }
@@ -270,6 +284,11 @@ pub struct PolicyFormState {
 /// case-insensitively.
 pub const ACTION_OPTIONS: [&str; 4] = ["ALLOW", "DENY", "AllowWithLog", "DenyWithAlert"];
 
+/// Object type picker options for label creation.
+pub const OBJECT_TYPE_OPTIONS: [&str; 3] = ["file", "folder", "archive"];
+/// Tier picker options for label creation.
+pub const TIER_OPTIONS: [&str; 5] = ["T1", "T2", "T3", "T4", "Unclassified-Blocked"];
+
 // ---------------------------------------------------------------------------
 // Policy simulate supporting types
 // ---------------------------------------------------------------------------
@@ -354,6 +373,48 @@ pub const LDAP_BACK_ROW: usize = 6;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportCaller {
     PolicyMenu,
+}
+
+/// Filter state for the LabelList screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LabelFilter {
+    #[default]
+    All,
+    Temporary,
+    Confirmed,
+    Rejected,
+    Expired,
+}
+
+impl LabelFilter {
+    /// Cycles to the next filter state.
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::Temporary,
+            Self::Temporary => Self::Confirmed,
+            Self::Confirmed => Self::Rejected,
+            Self::Rejected => Self::Expired,
+            Self::Expired => Self::All,
+        }
+    }
+
+    /// Returns the wire-format query parameter value.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Temporary => "temporary",
+            Self::Confirmed => "confirmed",
+            Self::Rejected => "rejected",
+            Self::Expired => "expired",
+        }
+    }
+}
+
+/// Mode for the LabelForm multi-step flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelFormMode {
+    New,
+    Edit,
 }
 
 /// Validation state for the ImportConfirm screen.
@@ -805,6 +866,35 @@ pub enum Screen {
         state: ImportState,
         /// Which menu opened this screen.
         caller: ImportCaller,
+    },
+
+    /// Label management list screen.
+    /// Pattern: PolicyList — scrollable table with inline actions.
+    LabelList {
+        labels: Vec<serde_json::Value>,
+        selected: usize,
+        filter: LabelFilter,
+    },
+    /// Data Owner review queue for temporary labels.
+    /// Pattern: Simplified PolicyList with confirm/reject actions.
+    LabelReviewQueue {
+        labels: Vec<serde_json::Value>,
+        selected: usize,
+    },
+    /// Single label detail (read-only popup).
+    LabelDetail { label: serde_json::Value },
+    /// Multi-step label creation/edit flow: carries accumulated fields.
+    LabelForm {
+        /// "new" or existing label ID for edit mode.
+        mode: LabelFormMode,
+        step: u8,
+        path: String,
+        object_type: usize, // index into OBJECT_TYPE_OPTIONS
+        tier: usize,        // index into TIER_OPTIONS
+        owner_sid: String,
+        parent_label_id: String,
+        /// Pre-filled values for edit mode.
+        existing_id: Option<String>,
     },
 }
 

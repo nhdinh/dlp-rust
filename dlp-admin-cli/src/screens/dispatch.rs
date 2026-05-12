@@ -4,9 +4,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use crate::app::{
     App, CallerScreen, ConditionAttribute, ConfirmPurpose, ImportCaller, ImportState, InputPurpose,
-    PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState, SimulateOutcome,
-    StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, LDAP_BACK_ROW,
-    LDAP_ROW_COUNT, LDAP_SAVE_ROW,
+    LabelFilter, LabelFormMode, PasswordPurpose, PolicyFormState, Screen, SimulateCaller,
+    SimulateFormState, SimulateOutcome, StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS,
+    ATTRIBUTES, LDAP_BACK_ROW, LDAP_ROW_COUNT, LDAP_SAVE_ROW, OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
 };
 use crate::event::AppEvent;
 use crate::screens::cloud_config::{
@@ -65,6 +65,10 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::ManagedOriginList { .. } => handle_managed_origin_list(app, key),
         Screen::DiskRegistryList { .. } => handle_disk_registry_list(app, key),
         Screen::UsbScan { .. } => handle_usb_scan(app, key),
+        Screen::LabelList { .. } => handle_label_list(app, key),
+        Screen::LabelReviewQueue { .. } => handle_label_review_queue(app, key),
+        Screen::LabelDetail { .. } => handle_label_detail(app, key),
+        Screen::LabelForm { .. } => handle_label_form(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -99,15 +103,16 @@ fn handle_main_menu(app: &mut App, key: KeyEvent) {
         _ => return,
     };
     match key.code {
-        // Updated from 5 to 6 items: added "Devices & Origins" at index 3.
-        KeyCode::Up | KeyCode::Down => nav(selected, 6, key.code),
+        // 7 items: added "Label Management" at index 3.
+        KeyCode::Up | KeyCode::Down => nav(selected, 7, key.code),
         KeyCode::Enter => match *selected {
             0 => app.screen = Screen::PasswordMenu { selected: 0 },
             1 => app.screen = Screen::PolicyMenu { selected: 0 },
             2 => app.screen = Screen::SystemMenu { selected: 0 },
-            3 => app.screen = Screen::DevicesMenu { selected: 0 },
-            4 => action_open_simulate(app, SimulateCaller::MainMenu),
-            5 => app.should_quit = true,
+            3 => action_load_label_list(app, LabelFilter::All),
+            4 => app.screen = Screen::DevicesMenu { selected: 0 },
+            5 => action_open_simulate(app, SimulateCaller::MainMenu),
+            6 => app.should_quit = true,
             _ => {}
         },
         KeyCode::Esc | KeyCode::Char('q') => app.should_quit = true,
@@ -222,7 +227,8 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
     match key.code {
         // Phase 43.05: expanded from 6 to 7 items — added "USB Enforcement" at index 5.
         // Phase 38.2: expanded from 7 to 9 items — added "Cloud Config" at index 6, "Print Config" at index 7.
-        KeyCode::Up | KeyCode::Down => nav(selected, 9, key.code),
+        // Phase 59: expanded from 9 to 10 items — added "Label Review Queue" at index 8.
+        KeyCode::Up | KeyCode::Down => nav(selected, 10, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
@@ -232,7 +238,8 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
             5 => action_load_usb_enforcement_config(app),
             6 => action_load_cloud_config(app),
             7 => action_load_print_config(app),
-            8 => app.screen = Screen::MainMenu { selected: 2 },
+            8 => action_load_label_review_queue(app),
+            9 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
@@ -502,6 +509,18 @@ fn on_text_confirmed(app: &mut App, value: &str, purpose: InputPurpose) {
                 }
             }
         }
+        // Label form InputPurpose variants are handled directly by Screen::LabelForm
+        // and should not be reached through the TextInput flow.
+        InputPurpose::LabelPath
+        | InputPurpose::LabelObjectType { .. }
+        | InputPurpose::LabelTier { .. }
+        | InputPurpose::LabelOwnerSid { .. }
+        | InputPurpose::LabelParentId { .. } => {
+            app.set_status(
+                "Internal error: label form reached text input handler",
+                StatusKind::Error,
+            );
+        }
     }
 }
 
@@ -626,6 +645,7 @@ fn on_confirm_yes(app: &mut App, purpose: &ConfirmPurpose) {
         ConfirmPurpose::DeleteDevice { id } => action_delete_device(app, id),
         ConfirmPurpose::DeleteManagedOrigin { id } => action_delete_managed_origin(app, id),
         ConfirmPurpose::DeleteDiskRegistry { id } => action_delete_disk_registry(app, id),
+        ConfirmPurpose::DeleteLabel { id } => action_delete_label(app, id),
     }
 }
 
@@ -638,6 +658,7 @@ fn on_confirm_cancel(app: &mut App, purpose: &ConfirmPurpose) {
         ConfirmPurpose::DeleteDevice { .. } => action_load_device_list(app),
         ConfirmPurpose::DeleteManagedOrigin { .. } => action_load_managed_origin_list(app),
         ConfirmPurpose::DeleteDiskRegistry { .. } => action_load_disk_registry_list(app),
+        ConfirmPurpose::DeleteLabel { .. } => action_load_label_list(app, LabelFilter::All),
     }
 }
 
@@ -5054,6 +5075,464 @@ fn action_delete_disk_registry(app: &mut App, id: &str) {
             app.set_status(format!("Error deleting disk entry: {e}"), StatusKind::Error);
             app.screen = Screen::DevicesMenu { selected: 3 };
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Label management screens
+// ---------------------------------------------------------------------------
+
+/// Loads the label list from the server and navigates to LabelList.
+fn action_load_label_list(app: &mut App, filter: LabelFilter) {
+    let path = if filter == LabelFilter::All {
+        "admin/labels".to_string()
+    } else {
+        format!("admin/labels?state={}", filter.label())
+    };
+    match app
+        .rt
+        .block_on(app.client.get::<Vec<serde_json::Value>>(&path))
+    {
+        Ok(labels) => {
+            app.set_status(
+                format!("Loaded {} labels", labels.len()),
+                StatusKind::Success,
+            );
+            app.screen = Screen::LabelList {
+                labels,
+                selected: 0,
+                filter,
+            };
+        }
+        Err(e) => app.set_status(format!("Error loading labels: {e}"), StatusKind::Error),
+    }
+}
+
+/// Loads temporary labels for the Data Owner Review Queue.
+fn action_load_label_review_queue(app: &mut App) {
+    match app
+        .rt
+        .block_on(app.client.get::<Vec<serde_json::Value>>("admin/labels?state=temporary"))
+    {
+        Ok(labels) => {
+            app.set_status(
+                format!("{} temporary labels pending review", labels.len()),
+                StatusKind::Success,
+            );
+            app.screen = Screen::LabelReviewQueue {
+                labels,
+                selected: 0,
+            };
+        }
+        Err(e) => app.set_status(
+            format!("Error loading review queue: {e}"),
+            StatusKind::Error,
+        ),
+    }
+}
+
+/// Deletes a label by ID and reloads the label list.
+fn action_delete_label(app: &mut App, id: &str) {
+    let path = format!("admin/labels/{id}");
+    match app.rt.block_on(app.client.delete(&path)) {
+        Ok(()) => {
+            app.set_status("Label deleted.", StatusKind::Success);
+            action_load_label_list(app, LabelFilter::All);
+        }
+        Err(e) => {
+            app.set_status(format!("Error deleting label: {e}"), StatusKind::Error);
+            app.screen = Screen::MainMenu { selected: 3 };
+        }
+    }
+}
+
+/// Submits a new label to the server.
+fn action_create_label(app: &mut App, path: &str, object_type: usize, tier: usize, owner_sid: &str, parent_label_id: &str) {
+    let object_type_str = OBJECT_TYPE_OPTIONS.get(object_type).unwrap_or(&"file");
+    let tier_str = TIER_OPTIONS.get(tier).unwrap_or(&"T1");
+    let body = serde_json::json!({
+        "path": path,
+        "object_type": object_type_str,
+        "tier": tier_str,
+        "owner_sid": if owner_sid.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(owner_sid.to_string()) },
+        "parent_label_id": if parent_label_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(parent_label_id.to_string()) },
+    });
+    match app.rt.block_on(
+        app.client
+            .post::<serde_json::Value, _>("admin/labels", &body),
+    ) {
+        Ok(_) => {
+            app.set_status("Label created.", StatusKind::Success);
+            action_load_label_list(app, LabelFilter::All);
+        }
+        Err(e) => {
+            app.set_status(format!("Error creating label: {e}"), StatusKind::Error);
+            app.screen = Screen::MainMenu { selected: 3 };
+        }
+    }
+}
+
+/// Updates an existing label on the server.
+fn action_update_label(app: &mut App, id: &str, path: &str, object_type: usize, tier: usize, owner_sid: &str, parent_label_id: &str) {
+    let object_type_str = OBJECT_TYPE_OPTIONS.get(object_type).unwrap_or(&"file");
+    let tier_str = TIER_OPTIONS.get(tier).unwrap_or(&"T1");
+    let body = serde_json::json!({
+        "path": path,
+        "object_type": object_type_str,
+        "tier": tier_str,
+        "owner_sid": if owner_sid.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(owner_sid.to_string()) },
+        "parent_label_id": if parent_label_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(parent_label_id.to_string()) },
+    });
+    let url = format!("admin/labels/{id}");
+    match app.rt.block_on(
+        app.client
+            .put::<serde_json::Value, _>(&url, &body),
+    ) {
+        Ok(_) => {
+            app.set_status("Label updated.", StatusKind::Success);
+            action_load_label_list(app, LabelFilter::All);
+        }
+        Err(e) => {
+            app.set_status(format!("Error updating label: {e}"), StatusKind::Error);
+            app.screen = Screen::MainMenu { selected: 3 };
+        }
+    }
+}
+
+/// Confirms a temporary label.
+fn action_confirm_label(app: &mut App, id: &str) {
+    let path = format!("admin/labels/{id}/confirm");
+    match app.rt.block_on(
+        app.client
+            .post::<serde_json::Value, _>(&path, &serde_json::json!({})),
+    ) {
+        Ok(_) => {
+            app.set_status("Label confirmed.", StatusKind::Success);
+            action_load_label_review_queue(app);
+        }
+        Err(e) => {
+            app.set_status(format!("Error confirming label: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+/// Rejects a temporary label.
+fn action_reject_label(app: &mut App, id: &str) {
+    let path = format!("admin/labels/{id}/reject");
+    match app.rt.block_on(
+        app.client
+            .post::<serde_json::Value, _>(&path, &serde_json::json!({})),
+    ) {
+        Ok(_) => {
+            app.set_status("Label rejected.", StatusKind::Success);
+            action_load_label_review_queue(app);
+        }
+        Err(e) => {
+            app.set_status(format!("Error rejecting label: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+/// Handles key events for the LabelList screen.
+fn handle_label_list(app: &mut App, key: KeyEvent) {
+    let (labels, selected, filter) = match &mut app.screen {
+        Screen::LabelList {
+            labels,
+            selected,
+            filter,
+        } => (labels.clone(), selected, *filter),
+        _ => return,
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if !labels.is_empty() {
+                nav(selected, labels.len(), key.code);
+            }
+        }
+        KeyCode::Char('n') => {
+            app.screen = Screen::LabelForm {
+                mode: LabelFormMode::New,
+                step: 1,
+                path: String::new(),
+                object_type: 0,
+                tier: 0,
+                owner_sid: String::new(),
+                parent_label_id: String::new(),
+                existing_id: None,
+            };
+        }
+        KeyCode::Char('e') => {
+            if let Some(label) = labels.get(*selected) {
+                let id = label["id"].as_str().unwrap_or_default().to_string();
+                if !id.is_empty() {
+                    action_load_label_for_edit(app, &id);
+                }
+            }
+        }
+        KeyCode::Char('d') => {
+            if let Some(label) = labels.get(*selected) {
+                let id = label["id"].as_str().unwrap_or_default().to_string();
+                let path = label["path"].as_str().unwrap_or("<unnamed>").to_string();
+                if !id.is_empty() {
+                    app.screen = Screen::Confirm {
+                        message: format!("Delete label '{path}'?"),
+                        yes_selected: false,
+                        purpose: ConfirmPurpose::DeleteLabel { id },
+                    };
+                }
+            }
+        }
+        KeyCode::Char('v') | KeyCode::Enter => {
+            if let Some(label) = labels.get(*selected) {
+                app.screen = Screen::LabelDetail {
+                    label: label.clone(),
+                };
+            }
+        }
+        KeyCode::Char('f') => {
+            let new_filter = filter.next();
+            action_load_label_list(app, new_filter);
+        }
+        KeyCode::Esc => {
+            app.screen = Screen::MainMenu { selected: 3 };
+        }
+        _ => {}
+    }
+}
+
+/// Loads an existing label for editing and opens the LabelForm.
+fn action_load_label_for_edit(app: &mut App, id: &str) {
+    let path = format!("admin/labels/{id}");
+    match app.rt.block_on(app.client.get::<serde_json::Value>(&path)) {
+        Ok(label) => {
+            let path_str = label["path"].as_str().unwrap_or("").to_string();
+            let object_type_str = label["object_type"].as_str().unwrap_or("file");
+            let tier_str = label["tier"].as_str().unwrap_or("T1");
+            let owner = label["owner_sid"].as_str().unwrap_or("").to_string();
+            let parent = label["parent_label_id"].as_str().unwrap_or("").to_string();
+
+            let object_type_idx = OBJECT_TYPE_OPTIONS
+                .iter()
+                .position(|&o| o == object_type_str)
+                .unwrap_or(0);
+            let tier_idx = TIER_OPTIONS
+                .iter()
+                .position(|&t| t == tier_str)
+                .unwrap_or(0);
+
+            app.screen = Screen::LabelForm {
+                mode: LabelFormMode::Edit,
+                step: 1,
+                path: path_str,
+                object_type: object_type_idx,
+                tier: tier_idx,
+                owner_sid: owner,
+                parent_label_id: parent,
+                existing_id: Some(id.to_string()),
+            };
+        }
+        Err(e) => {
+            app.set_status(format!("Error loading label: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+/// Handles key events for the LabelReviewQueue screen.
+fn handle_label_review_queue(app: &mut App, key: KeyEvent) {
+    let (labels, selected) = match &mut app.screen {
+        Screen::LabelReviewQueue { labels, selected } => (labels.clone(), selected),
+        _ => return,
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if !labels.is_empty() {
+                nav(selected, labels.len(), key.code);
+            }
+        }
+        KeyCode::Char('c') => {
+            if let Some(label) = labels.get(*selected) {
+                let id = label["id"].as_str().unwrap_or_default().to_string();
+                if !id.is_empty() {
+                    action_confirm_label(app, &id);
+                }
+            }
+        }
+        KeyCode::Char('r') => {
+            if let Some(label) = labels.get(*selected) {
+                let id = label["id"].as_str().unwrap_or_default().to_string();
+                if !id.is_empty() {
+                    action_reject_label(app, &id);
+                }
+            }
+        }
+        KeyCode::Esc => {
+            app.screen = Screen::SystemMenu { selected: 8 };
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events for the LabelDetail screen.
+fn handle_label_detail(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter | KeyCode::Esc => {
+            app.screen = Screen::LabelList {
+                labels: Vec::new(),
+                selected: 0,
+                filter: LabelFilter::All,
+            };
+            action_load_label_list(app, LabelFilter::All);
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events for the LabelForm multi-step screen.
+fn handle_label_form(app: &mut App, key: KeyEvent) {
+    let (mode, step, path, object_type, tier, owner_sid, parent_label_id, existing_id) =
+        match &mut app.screen {
+            Screen::LabelForm {
+                mode,
+                step,
+                path,
+                object_type,
+                tier,
+                owner_sid,
+                parent_label_id,
+                existing_id,
+            } => (*mode, *step, path.clone(), *object_type, *tier, owner_sid.clone(), parent_label_id.clone(), existing_id.clone()),
+            _ => return,
+        };
+
+    match step {
+        1 => match key.code {
+            KeyCode::Char(c) => {
+                if let Screen::LabelForm { path, .. } = &mut app.screen {
+                    path.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Screen::LabelForm { path, .. } = &mut app.screen {
+                    path.pop();
+                }
+            }
+            KeyCode::Enter => {
+                if path.is_empty() {
+                    app.set_status("Path cannot be empty", StatusKind::Error);
+                    return;
+                }
+                if let Screen::LabelForm { step, .. } = &mut app.screen {
+                    *step = 2;
+                }
+            }
+            KeyCode::Esc => {
+                app.screen = Screen::MainMenu { selected: 3 };
+            }
+            _ => {}
+        },
+        2 => match key.code {
+            KeyCode::Up => {
+                if let Screen::LabelForm { object_type, .. } = &mut app.screen {
+                    *object_type = object_type.checked_sub(1).unwrap_or(OBJECT_TYPE_OPTIONS.len() - 1);
+                }
+            }
+            KeyCode::Down => {
+                if let Screen::LabelForm { object_type, .. } = &mut app.screen {
+                    *object_type = (*object_type + 1) % OBJECT_TYPE_OPTIONS.len();
+                }
+            }
+            KeyCode::Enter => {
+                if let Screen::LabelForm { step, .. } = &mut app.screen {
+                    *step = 3;
+                }
+            }
+            KeyCode::Esc => {
+                app.screen = Screen::MainMenu { selected: 3 };
+            }
+            _ => {}
+        },
+        3 => match key.code {
+            KeyCode::Up => {
+                if let Screen::LabelForm { tier, .. } = &mut app.screen {
+                    *tier = tier.checked_sub(1).unwrap_or(TIER_OPTIONS.len() - 1);
+                }
+            }
+            KeyCode::Down => {
+                if let Screen::LabelForm { tier, .. } = &mut app.screen {
+                    *tier = (*tier + 1) % TIER_OPTIONS.len();
+                }
+            }
+            KeyCode::Enter => {
+                if let Screen::LabelForm { step, .. } = &mut app.screen {
+                    *step = 4;
+                }
+            }
+            KeyCode::Esc => {
+                app.screen = Screen::MainMenu { selected: 3 };
+            }
+            _ => {}
+        },
+        4 => match key.code {
+            KeyCode::Char(c) => {
+                if let Screen::LabelForm { owner_sid, .. } = &mut app.screen {
+                    owner_sid.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Screen::LabelForm { owner_sid, .. } = &mut app.screen {
+                    owner_sid.pop();
+                }
+            }
+            KeyCode::Enter => {
+                if let Screen::LabelForm { step, .. } = &mut app.screen {
+                    *step = 5;
+                }
+            }
+            KeyCode::Esc => {
+                app.screen = Screen::MainMenu { selected: 3 };
+            }
+            _ => {}
+        },
+        5 => match key.code {
+            KeyCode::Char(c) => {
+                if let Screen::LabelForm { parent_label_id, .. } = &mut app.screen {
+                    parent_label_id.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Screen::LabelForm { parent_label_id, .. } = &mut app.screen {
+                    parent_label_id.pop();
+                }
+            }
+            KeyCode::Enter => {
+                if let Screen::LabelForm { step, .. } = &mut app.screen {
+                    *step = 6;
+                }
+            }
+            KeyCode::Esc => {
+                app.screen = Screen::MainMenu { selected: 3 };
+            }
+            _ => {}
+        },
+        6 => match key.code {
+            KeyCode::Enter => {
+                match mode {
+                    LabelFormMode::New => {
+                        action_create_label(app, &path, object_type, tier, &owner_sid, &parent_label_id);
+                    }
+                    LabelFormMode::Edit => {
+                        if let Some(id) = existing_id {
+                            action_update_label(app, &id, &path, object_type, tier, &owner_sid, &parent_label_id);
+                        }
+                    }
+                }
+            }
+            KeyCode::Esc => {
+                app.screen = Screen::MainMenu { selected: 3 };
+            }
+            _ => {}
+        },
+        _ => {}
     }
 }
 

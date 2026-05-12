@@ -2,6 +2,7 @@
 
 mod cloud_config;
 mod dispatch;
+mod labels;
 mod print_config;
 mod render;
 mod usb_enforcement;
