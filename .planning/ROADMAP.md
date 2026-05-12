@@ -234,8 +234,13 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 **Depends on**: Phase 60 (Data Owner review queue must exist for T3 routing)
 **Requirements**: WORKFLOW-01, WORKFLOW-02, WORKFLOW-03, WORKFLOW-04, WORKFLOW-05, WORKFLOW-06
 **Success Criteria** (what must be TRUE):
-  1. TBD — will be defined during discuss phase
-**Plans**: TBD
+  1. `approvals` SQLite table exists with all required fields and foreign keys (WORKFLOW-01)
+  2. T3 approval flow works end-to-end: user request → server → Data Owner grants via admin TUI → signed token delivered to agent (WORKFLOW-02)
+  3. T4 approval flow requires Board digital signature (Ed25519) verified server-side before grant (WORKFLOW-03)
+  4. Agent validates approval tokens during ABAC evaluation, checking scope, expiry, and signature (WORKFLOW-04)
+  5. Admin TUI ApprovalList screen supports list, grant, revoke, filter with keyboard navigation (WORKFLOW-05)
+  6. Every approval request, grant, and use emits a SIEM-ready audit event (WORKFLOW-06)
+**Plans**: 3 plans (61-01 through 61-03)
 **UI hint**: yes
 
 ---
@@ -258,7 +263,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-12 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
-| 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 0/0 | Not started | - |
+| 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 3/3 | Ready to execute | - |
 
 ---
 
