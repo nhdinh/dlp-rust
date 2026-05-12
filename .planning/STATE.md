@@ -7,10 +7,10 @@ last_updated: "2026-05-12T08:26:05.831Z"
 last_activity: 2026-05-12 -- Phase 59 complete, starting Phase 60
 progress:
   total_phases: 6
-  completed_phases: 1
-  total_plans: 5
-  completed_plans: 5
-  percent: 16
+  completed_phases: 2
+  total_plans: 6
+  completed_plans: 6
+  percent: 33
 ---
 
 # Project State
@@ -25,10 +25,10 @@ progress:
 
 ## Current Position
 
-Phase: 60 (data-owner-review) — EXECUTING
-Plan: TBD
-Status: Executing Phase 60
-Last activity: 2026-05-12 -- Phase 59 complete, starting Phase 60
+Phase: 60 (data-owner-review) — COMPLETED
+Plan: 01
+Status: Completed Phase 60
+Last activity: 2026-05-12 -- Phase 60 complete, all tasks committed
 
 ## Progress
 
@@ -90,7 +90,8 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 
 ## Recent Decisions
 
-1. Milestone pivot 2026-05-12: v1.0.0 Enterprise Hardening dropped; v0.10.0 Real-Time File Access Prevention is the new active milestone.
+1. Phase 60 completed 2026-05-12: Added SIEM audit events on confirm/reject, Data Owner scoping via JWT SID claims, scanner_confidence column, department filtering, and ABAC cache invalidation. All tests pass (1576 passed, 9 ignored). Clippy clean.
+2. Milestone pivot 2026-05-12: v1.0.0 Enterprise Hardening dropped; v0.10.0 Real-Time File Access Prevention is the new active milestone.
 2. Architecture stays user-mode: no kernel minifilter, no kernel driver, no EV cert. Real-blocking achieved via hybrid Option C (IAT hooks + DACL tripwire + ETW bypass detection).
 3. v0.10.0 generalizes the v0.9.0 cloud-sync hook DLL pattern to all user-mode processes via agent-driven `CreateRemoteThread` (primary) and AppInit_DLLs (tertiary fallback on non-Secure-Boot endpoints only).
 4. Direct-syscall bypass closed by in-memory `retour`-based Detours-style 5-byte JMP trampoline on ntdll syscall stubs; gated behind `enable_ntdll_patching` policy flag (default off; per-customer rollout).
