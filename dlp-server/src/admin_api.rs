@@ -94,7 +94,10 @@ async fn evaluate_handler(
     let ctx: AbacContext = request.into();
 
     // NOTE: evaluate() is synchronous — no .await here.
-    let response = state.policy_store.evaluate(&ctx);
+    // Pass label_service for label-aware evaluation (Phase 59, D-10).
+    let response = state
+        .policy_store
+        .evaluate(&ctx, Some(&state.label_service));
     Ok(Json(response))
 }
 
@@ -6271,7 +6274,8 @@ mod tests {
             let ps = Arc::new(
                 crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
             );
-            let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+            let label_service =
+                Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
             let s = Arc::new(AppState {
                 pool: Arc::clone(&pool),
                 crypto: std::sync::Arc::clone(&crypto),
@@ -6279,7 +6283,7 @@ mod tests {
                 siem,
                 alert,
                 ad: None,
-            label_service,
+                label_service,
             });
             // Minimal router with just the disk-registry delete route for isolation.
             axum::Router::new()
@@ -6329,7 +6333,8 @@ mod tests {
             let ps = Arc::new(
                 crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
             );
-            let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+            let label_service =
+                Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
             let s = Arc::new(AppState {
                 pool: Arc::clone(&pool),
                 crypto: std::sync::Arc::clone(&crypto),
@@ -6337,7 +6342,7 @@ mod tests {
                 siem,
                 alert,
                 ad: None,
-            label_service,
+                label_service,
             });
             axum::Router::new()
                 .route(
@@ -6657,7 +6662,8 @@ mod tests {
             let ps = Arc::new(
                 crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
             );
-            let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+            let label_service =
+                Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
             let s = Arc::new(AppState {
                 pool: Arc::clone(&pool),
                 crypto: std::sync::Arc::clone(&crypto),
@@ -6665,7 +6671,7 @@ mod tests {
                 siem,
                 alert,
                 ad: None,
-            label_service,
+                label_service,
             });
             axum::Router::new()
                 .route(
