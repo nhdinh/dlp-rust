@@ -240,7 +240,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   4. Agent validates approval tokens during ABAC evaluation, checking scope, expiry, and signature (WORKFLOW-04)
   5. Admin TUI ApprovalList screen supports list, grant, revoke, filter with keyboard navigation (WORKFLOW-05)
   6. Every approval request, grant, and use emits a SIEM-ready audit event (WORKFLOW-06)
-**Plans**: 3 plans (61-01 through 61-03)
+**Plans**: 4 plans (61-01 through 61-04)
 **UI hint**: yes
 
 ---
