@@ -5110,18 +5110,39 @@ fn action_load_label_list(app: &mut App, filter: LabelFilter) {
 
 /// Loads temporary labels for the Data Owner Review Queue.
 fn action_load_label_review_queue(app: &mut App) {
-    match app
-        .rt
-        .block_on(app.client.get::<Vec<serde_json::Value>>("admin/labels?state=temporary"))
-    {
+    action_load_label_review_queue_with_filter(app, None);
+}
+
+/// Loads temporary labels with optional department filter.
+fn action_load_label_review_queue_with_filter(
+    app: &mut App,
+    department_filter: Option<String>,
+) {
+    let mut path = String::from("admin/labels?state=temporary");
+    if let Some(ref dept) = department_filter {
+        path.push_str(&format!("&department={}", urlencoding::encode(dept)));
+    }
+    match app.rt.block_on(app.client.get::<Vec<serde_json::Value>>(&path)) {
         Ok(labels) => {
             app.set_status(
                 format!("{} temporary labels pending review", labels.len()),
                 StatusKind::Success,
             );
+            // Preserve existing department list if already fetched
+            let (existing_depts, existing_idx) = match &app.screen {
+                Screen::LabelReviewQueue {
+                    departments,
+                    department_index,
+                    ..
+                } => (departments.clone(), *department_index),
+                _ => (Vec::new(), 0),
+            };
             app.screen = Screen::LabelReviewQueue {
                 labels,
                 selected: 0,
+                department_filter,
+                departments: existing_depts,
+                department_index: existing_idx,
             };
         }
         Err(e) => app.set_status(
@@ -5339,18 +5360,21 @@ fn action_load_label_for_edit(app: &mut App, id: &str) {
 
 /// Handles key events for the LabelReviewQueue screen.
 fn handle_label_review_queue(app: &mut App, key: KeyEvent) {
-    let (labels, selected) = match &mut app.screen {
-        Screen::LabelReviewQueue { labels, selected } => (labels.clone(), selected),
+    // Clone labels first to avoid borrow issues
+    let (labels, selected) = match &app.screen {
+        Screen::LabelReviewQueue { labels, selected, .. } => (labels.clone(), *selected),
         _ => return,
     };
     match key.code {
         KeyCode::Up | KeyCode::Down => {
             if !labels.is_empty() {
-                nav(selected, labels.len(), key.code);
+                if let Screen::LabelReviewQueue { selected, .. } = &mut app.screen {
+                    nav(selected, labels.len(), key.code);
+                }
             }
         }
         KeyCode::Char('c') => {
-            if let Some(label) = labels.get(*selected) {
+            if let Some(label) = labels.get(selected) {
                 let id = label["id"].as_str().unwrap_or_default().to_string();
                 if !id.is_empty() {
                     action_confirm_label(app, &id);
@@ -5358,12 +5382,61 @@ fn handle_label_review_queue(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Char('r') => {
-            if let Some(label) = labels.get(*selected) {
+            if let Some(label) = labels.get(selected) {
                 let id = label["id"].as_str().unwrap_or_default().to_string();
                 if !id.is_empty() {
                     action_reject_label(app, &id);
                 }
             }
+        }
+        KeyCode::Char('d') => {
+            // Cycle department filter — all screen mutations done via re-borrow
+            let has_depts = match &app.screen {
+                Screen::LabelReviewQueue { departments, .. } => !departments.is_empty(),
+                _ => false,
+            };
+            let new_filter = if !has_depts {
+                // Fetch departments first
+                match app.rt.block_on(app.client.list_departments()) {
+                    Ok(depts) => {
+                        if depts.is_empty() {
+                            app.set_status("No departments found.", StatusKind::Info);
+                            None
+                        } else {
+                            let filter = Some(depts[0].clone());
+                            if let Screen::LabelReviewQueue { departments, department_index, .. } = &mut app.screen {
+                                *departments = depts;
+                                *department_index = 0;
+                            }
+                            filter
+                        }
+                    }
+                    Err(e) => {
+                        app.set_status(format!("Error loading departments: {e}"), StatusKind::Error);
+                        None
+                    }
+                }
+            } else {
+                let (next_idx, filter) = match &mut app.screen {
+                    Screen::LabelReviewQueue { departments, department_index, department_filter, .. } => {
+                        let next = (*department_index + 1) % (departments.len() + 1);
+                        let f = if next == departments.len() {
+                            None
+                        } else {
+                            Some(departments[next].clone())
+                        };
+                        *department_index = next;
+                        *department_filter = f.clone();
+                        (next, f)
+                    }
+                    _ => (0, None),
+                };
+                if next_idx == 0 && filter.is_none() {
+                    app.set_status("Department filter cleared.", StatusKind::Info);
+                }
+                filter
+            };
+            action_load_label_review_queue_with_filter(app, new_filter);
         }
         KeyCode::Esc => {
             app.screen = Screen::SystemMenu { selected: 8 };

@@ -348,41 +348,67 @@ impl EngineClient {
         Ok(())
     }
 
-    /// Calls GET /admin/labels with optional state filter.
-    pub async fn list_labels(&self, state_filter: Option<&str>) -> Result<Vec<serde_json::Value>> {
-        let path = match state_filter {
-            Some(f) => format!("admin/labels?state={}", f),
-            None => "admin/labels".to_string(),
-        };
+    /// Calls GET /admin/labels with optional state and department filters.
+    #[allow(dead_code)]
+    pub async fn list_labels(
+        &self,
+        state_filter: Option<&str>,
+        department_filter: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>> {
+        let mut path = String::from("admin/labels");
+        let mut has_param = false;
+        if let Some(f) = state_filter {
+            path.push_str(&format!("?state={}", urlencoding::encode(f)));
+            has_param = true;
+        }
+        if let Some(d) = department_filter {
+            if has_param {
+                path.push_str(&format!("&department={}", urlencoding::encode(d)));
+            } else {
+                path.push_str(&format!("?department={}", urlencoding::encode(d)));
+            }
+        }
         self.get(&path).await
     }
 
+    /// Calls GET /admin/labels/departments to fetch distinct department values.
+    #[allow(dead_code)]
+    pub async fn list_departments(&self) -> Result<Vec<String>> {
+        self.get("admin/labels/departments").await
+    }
+
     /// Calls GET /admin/labels/:id.
+    #[allow(dead_code)]
     pub async fn get_label(&self, id: &str) -> Result<serde_json::Value> {
         self.get(&format!("admin/labels/{}", id)).await
     }
 
     /// Calls POST /admin/labels.
+    #[allow(dead_code)]
     pub async fn create_label(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
         self.post("admin/labels", body).await
     }
 
     /// Calls PUT /admin/labels/:id.
+    #[allow(dead_code)]
     pub async fn update_label(&self, id: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
         self.put(&format!("admin/labels/{}", id), body).await
     }
 
     /// Calls POST /admin/labels/:id/confirm.
+    #[allow(dead_code)]
     pub async fn confirm_label(&self, id: &str) -> Result<serde_json::Value> {
         self.post(&format!("admin/labels/{}/confirm", id), &serde_json::json!({})).await
     }
 
     /// Calls POST /admin/labels/:id/reject.
+    #[allow(dead_code)]
     pub async fn reject_label(&self, id: &str) -> Result<serde_json::Value> {
         self.post(&format!("admin/labels/{}/reject", id), &serde_json::json!({})).await
     }
 
     /// Calls DELETE /admin/labels/:id.
+    #[allow(dead_code)]
     pub async fn delete_label(&self, id: &str) -> Result<()> {
         self.delete(&format!("admin/labels/{}", id)).await
     }

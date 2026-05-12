@@ -322,8 +322,22 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         Screen::LabelList { labels, selected, filter } => {
             draw_label_list(frame, area, labels, *selected, *filter);
         }
-        Screen::LabelReviewQueue { labels, selected } => {
-            draw_label_review_queue(frame, area, labels, *selected);
+        Screen::LabelReviewQueue {
+            labels,
+            selected,
+            department_filter,
+            departments,
+            department_index,
+        } => {
+            draw_label_review_queue(
+                frame,
+                area,
+                labels,
+                *selected,
+                department_filter.as_deref(),
+                departments,
+                *department_index,
+            );
         }
         Screen::LabelDetail { label } => {
             draw_label_detail(frame, area, label);
@@ -2661,18 +2675,32 @@ fn draw_label_list(
 
 /// Draws the Data Owner Review Queue screen.
 ///
-/// Columns: Path, Tier, Owner SID, Created.
+/// Columns: Path, Tier, Owner SID, Confidence, Created.
 fn draw_label_review_queue(
     frame: &mut Frame,
     area: Rect,
     labels: &[serde_json::Value],
     selected: usize,
+    department_filter: Option<&str>,
+    _departments: &[String],
+    _department_index: usize,
 ) {
+    // Build title with department filter indicator
+    let title = if let Some(dept) = department_filter {
+        format!(
+            " Data Owner Review Queue ({}) [Dept: {}] ",
+            labels.len(),
+            dept
+        )
+    } else {
+        format!(" Data Owner Review Queue ({}) ", labels.len())
+    };
+
     if labels.is_empty() {
         let paragraph = Paragraph::new(LABEL_REVIEW_EMPTY)
             .block(
                 Block::default()
-                    .title(" Data Owner Review Queue (0) ")
+                    .title(title)
                     .borders(Borders::ALL),
             )
             .alignment(ratatui::layout::Alignment::Center);
@@ -2681,7 +2709,7 @@ fn draw_label_review_queue(
         return;
     }
 
-    let header = Row::new(vec!["Path", "Tier", "Owner SID", "Created"])
+    let header = Row::new(vec!["Path", "Tier", "Owner SID", "Confidence", "Created"])
         .style(Style::default().add_modifier(Modifier::BOLD))
         .bottom_margin(1);
 
@@ -2691,20 +2719,26 @@ fn draw_label_review_queue(
             let path = l["path"].as_str().unwrap_or("-");
             let tier = l["tier"].as_str().unwrap_or("-");
             let owner = l["owner_sid"].as_str().unwrap_or("(none)");
+            let confidence = l["scanner_confidence"]
+                .as_f64()
+                .map(|v| format!("{:.0}%", v * 100.0))
+                .unwrap_or_else(|| "--".to_string());
             let created = l["created_at"].as_str().unwrap_or("-");
             Row::new(vec![
                 path.to_string(),
                 tier.to_string(),
                 owner.to_string(),
+                confidence,
                 created.to_string(),
             ])
         })
         .collect();
 
     let widths = [
-        Constraint::Percentage(40), // Path
-        Constraint::Percentage(10), // Tier
-        Constraint::Percentage(25), // Owner SID
+        Constraint::Percentage(35), // Path
+        Constraint::Percentage(8),  // Tier
+        Constraint::Percentage(22), // Owner SID
+        Constraint::Percentage(10), // Confidence
         Constraint::Percentage(25), // Created
     ];
 
@@ -2712,10 +2746,7 @@ fn draw_label_review_queue(
         .header(header)
         .block(
             Block::default()
-                .title(format!(
-                    " Data Owner Review Queue ({}) ",
-                    labels.len()
-                ))
+                .title(title)
                 .borders(Borders::ALL),
         )
         .row_highlight_style(
@@ -2745,16 +2776,24 @@ fn draw_label_detail(frame: &mut Frame, area: Rect, label: &serde_json::Value) {
     let created = label["created_at"].as_str().unwrap_or("-");
     let updated = label["updated_at"].as_str().unwrap_or("-");
 
+    let confidence = label["scanner_confidence"]
+        .as_f64()
+        .map(|v| format!("{:.0}%", v * 100.0))
+        .unwrap_or_else(|| "--".to_string());
+    let department = label["department"].as_str().unwrap_or("(none)");
+
     let body = format!(
-        "ID:              {id}\n\
-         Path:            {path}\n\
-         Object Type:     {object_type}\n\
-         Tier:            {tier}\n\
-         State:           {state}\n\
-         Owner SID:       {owner}\n\
-         Parent Label ID: {parent}\n\
-         Created At:      {created}\n\
-         Updated At:      {updated}"
+        "ID:                {id}\n\
+         Path:              {path}\n\
+         Object Type:       {object_type}\n\
+         Tier:              {tier}\n\
+         State:             {state}\n\
+         Owner SID:         {owner}\n\
+         Parent Label ID:   {parent}\n\
+         Scanner Confidence: {confidence}\n\
+         Department:        {department}\n\
+         Created At:        {created}\n\
+         Updated At:        {updated}"
     );
 
     draw_result(frame, area, "Label Detail", &body);
@@ -2764,6 +2803,7 @@ fn draw_label_detail(frame: &mut Frame, area: Rect, label: &serde_json::Value) {
 ///
 /// Steps 1-5 show the current field with navigation hints.
 /// Step 6 shows a summary with submit/cancel options.
+#[allow(clippy::too_many_arguments)]
 fn draw_label_form(
     frame: &mut Frame,
     area: Rect,

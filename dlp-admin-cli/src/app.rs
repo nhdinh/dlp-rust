@@ -71,14 +71,19 @@ pub enum InputPurpose {
     /// Prompts for a URL-pattern string to add as a managed origin.
     AddManagedOrigin,
     /// Step 1 of label creation: path input.
+    #[allow(dead_code)]
     LabelPath,
     /// Step 2: object type picker (carries path).
+    #[allow(dead_code)]
     LabelObjectType { path: String },
     /// Step 3: tier picker (carries path + object_type index).
+    #[allow(dead_code)]
     LabelTier { path: String, object_type: usize },
     /// Step 4: owner SID input (carries path + object_type + tier).
+    #[allow(dead_code)]
     LabelOwnerSid { path: String, object_type: usize, tier: usize },
     /// Step 5: parent label ID input (carries path + object_type + tier + owner_sid).
+    #[allow(dead_code)]
     LabelParentId { path: String, object_type: usize, tier: usize, owner_sid: String },
     /// Step 1 of disk registry add flow: prompts for agent ID.
     AddDiskRegistryAgentId,
@@ -880,6 +885,12 @@ pub enum Screen {
     LabelReviewQueue {
         labels: Vec<serde_json::Value>,
         selected: usize,
+        /// Active department filter (None = all departments).
+        department_filter: Option<String>,
+        /// Available departments for cycling (fetched from server).
+        departments: Vec<String>,
+        /// Current index into departments list.
+        department_index: usize,
     },
     /// Single label detail (read-only popup).
     LabelDetail { label: serde_json::Value },
