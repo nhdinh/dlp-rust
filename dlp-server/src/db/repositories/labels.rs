@@ -27,6 +27,10 @@ pub struct LabelRow {
     pub acl_snapshot_id: Option<String>,
     /// SHA-256 hash of file content when labeled.
     pub hash: Option<String>,
+    /// Scanner confidence score (0.0-1.0), nullable.
+    pub scanner_confidence: Option<f32>,
+    /// Department or business unit owning the data.
+    pub department: Option<String>,
     /// ISO-8601 timestamp of creation.
     pub created_at: String,
     /// ISO-8601 timestamp of last update.
@@ -54,6 +58,10 @@ pub struct LabelUpsertRow<'a> {
     pub acl_snapshot_id: Option<&'a str>,
     /// Content hash.
     pub hash: Option<&'a str>,
+    /// Scanner confidence score (0.0-1.0), nullable.
+    pub scanner_confidence: Option<f32>,
+    /// Department or business unit owning the data.
+    pub department: Option<&'a str>,
     /// ISO-8601 timestamp.
     pub created_at: &'a str,
     /// ISO-8601 timestamp.
@@ -71,7 +79,8 @@ impl LabelRepository {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let mut stmt = conn.prepare(
             "SELECT id, path, object_type, tier, label_state, owner_sid, \
-             parent_label_id, acl_snapshot_id, hash, created_at, updated_at \
+             parent_label_id, acl_snapshot_id, hash, scanner_confidence, department, \
+             created_at, updated_at \
              FROM labels ORDER BY path ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -85,24 +94,64 @@ impl LabelRepository {
                 parent_label_id: row.get(6)?,
                 acl_snapshot_id: row.get(7)?,
                 hash: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
+                scanner_confidence: row.get(9)?,
+                department: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })?;
         rows.collect()
     }
 
-    /// Returns labels filtered by state (e.g., `temporary` for review queue).
-    pub fn list_by_state(pool: &Pool, state: &str) -> rusqlite::Result<Vec<LabelRow>> {
+    /// Returns labels filtered by optional criteria at the DB level.
+    ///
+    /// Builds a parameterized query with WHERE clauses for each provided filter.
+    /// This avoids in-memory filtering and supports Data Owner scoping.
+    pub fn list_by_filters(
+        pool: &Pool,
+        state: Option<&str>,
+        tier: Option<&str>,
+        owner_sid: Option<&str>,
+        department: Option<&str>,
+    ) -> rusqlite::Result<Vec<LabelRow>> {
         let conn = pool
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        let mut stmt = conn.prepare(
+
+        let mut sql = String::from(
             "SELECT id, path, object_type, tier, label_state, owner_sid, \
-             parent_label_id, acl_snapshot_id, hash, created_at, updated_at \
-             FROM labels WHERE label_state = ?1 ORDER BY path ASC",
-        )?;
-        let rows = stmt.query_map(params![state], |row| {
+             parent_label_id, acl_snapshot_id, hash, scanner_confidence, department, \
+             created_at, updated_at FROM labels WHERE 1=1",
+        );
+        let mut param_count = 0;
+        if state.is_some() {
+            param_count += 1;
+            sql.push_str(&format!(" AND label_state = ?{param_count}"));
+        }
+        if tier.is_some() {
+            param_count += 1;
+            sql.push_str(&format!(" AND tier = ?{param_count}"));
+        }
+        if owner_sid.is_some() {
+            param_count += 1;
+            sql.push_str(&format!(" AND owner_sid = ?{param_count}"));
+        }
+        if department.is_some() {
+            param_count += 1;
+            sql.push_str(&format!(" AND department = ?{param_count}"));
+        }
+
+        sql.push_str(" ORDER BY path ASC");
+
+        let mut stmt = conn.prepare(&sql)?;
+        // Build a Vec of references with stable lifetimes to satisfy ToSql.
+        let mut params: Vec<&str> = Vec::new();
+        if let Some(s) = state { params.push(s); }
+        if let Some(t) = tier { params.push(t); }
+        if let Some(o) = owner_sid { params.push(o); }
+        if let Some(d) = department { params.push(d); }
+        let to_sql_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(to_sql_refs), |row| {
             Ok(LabelRow {
                 id: row.get(0)?,
                 path: row.get(1)?,
@@ -113,8 +162,10 @@ impl LabelRepository {
                 parent_label_id: row.get(6)?,
                 acl_snapshot_id: row.get(7)?,
                 hash: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
+                scanner_confidence: row.get(9)?,
+                department: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })?;
         rows.collect()
@@ -127,7 +178,8 @@ impl LabelRepository {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         conn.query_row(
             "SELECT id, path, object_type, tier, label_state, owner_sid, \
-             parent_label_id, acl_snapshot_id, hash, created_at, updated_at \
+             parent_label_id, acl_snapshot_id, hash, scanner_confidence, department, \
+             created_at, updated_at \
              FROM labels WHERE id = ?1",
             params![id],
             |row| {
@@ -141,8 +193,10 @@ impl LabelRepository {
                     parent_label_id: row.get(6)?,
                     acl_snapshot_id: row.get(7)?,
                     hash: row.get(8)?,
-                    created_at: row.get(9)?,
-                    updated_at: row.get(10)?,
+                    scanner_confidence: row.get(9)?,
+                    department: row.get(10)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
                 })
             },
         )
@@ -155,7 +209,8 @@ impl LabelRepository {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let mut stmt = conn.prepare(
             "SELECT id, path, object_type, tier, label_state, owner_sid, \
-             parent_label_id, acl_snapshot_id, hash, created_at, updated_at \
+             parent_label_id, acl_snapshot_id, hash, scanner_confidence, department, \
+             created_at, updated_at \
              FROM labels WHERE path = ?1 LIMIT 1",
         )?;
         let mut rows = stmt.query_map(params![path], |row| {
@@ -169,8 +224,10 @@ impl LabelRepository {
                 parent_label_id: row.get(6)?,
                 acl_snapshot_id: row.get(7)?,
                 hash: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
+                scanner_confidence: row.get(9)?,
+                department: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })?;
         rows.next().transpose()
@@ -180,8 +237,9 @@ impl LabelRepository {
     pub fn insert(uow: &UnitOfWork<'_>, record: &LabelUpsertRow<'_>) -> rusqlite::Result<()> {
         uow.tx.execute(
             "INSERT INTO labels (id, path, object_type, tier, label_state, \
-             owner_sid, parent_label_id, acl_snapshot_id, hash, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             owner_sid, parent_label_id, acl_snapshot_id, hash, scanner_confidence, department, \
+             created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 record.id,
                 record.path,
@@ -192,6 +250,8 @@ impl LabelRepository {
                 record.parent_label_id,
                 record.acl_snapshot_id,
                 record.hash,
+                record.scanner_confidence,
+                record.department,
                 record.created_at,
                 record.updated_at,
             ],
@@ -205,8 +265,8 @@ impl LabelRepository {
             "UPDATE labels SET \
                     path = ?1, object_type = ?2, tier = ?3, label_state = ?4, \
                     owner_sid = ?5, parent_label_id = ?6, acl_snapshot_id = ?7, \
-                    hash = ?8, updated_at = ?9 \
-             WHERE id = ?10",
+                    hash = ?8, scanner_confidence = ?9, department = ?10, updated_at = ?11 \
+             WHERE id = ?12",
             params![
                 record.path,
                 record.object_type,
@@ -216,6 +276,8 @@ impl LabelRepository {
                 record.parent_label_id,
                 record.acl_snapshot_id,
                 record.hash,
+                record.scanner_confidence,
+                record.department,
                 record.updated_at,
                 record.id,
             ],
@@ -257,7 +319,8 @@ impl LabelRepository {
             let result: Option<LabelRow> = conn
                 .query_row(
                     "SELECT id, path, object_type, tier, label_state, owner_sid, \
-                     parent_label_id, acl_snapshot_id, hash, created_at, updated_at \
+                     parent_label_id, acl_snapshot_id, hash, scanner_confidence, department, \
+                     created_at, updated_at \
                      FROM labels WHERE path = ?1 AND object_type = 'folder' LIMIT 1",
                     params![parent],
                     |row| {
@@ -271,8 +334,10 @@ impl LabelRepository {
                             parent_label_id: row.get(6)?,
                             acl_snapshot_id: row.get(7)?,
                             hash: row.get(8)?,
-                            created_at: row.get(9)?,
-                            updated_at: row.get(10)?,
+                            scanner_confidence: row.get(9)?,
+                            department: row.get(10)?,
+                            created_at: row.get(11)?,
+                            updated_at: row.get(12)?,
                         })
                     },
                 )
@@ -326,6 +391,8 @@ mod tests {
                     parent_label_id: None,
                     acl_snapshot_id: None,
                     hash: None,
+                    scanner_confidence: None,
+                    department: None,
                     created_at: "2026-05-12T00:00:00Z",
                     updated_at: "2026-05-12T00:00:00Z",
                 },
@@ -351,6 +418,8 @@ mod tests {
                     parent_label_id: Some(folder_id),
                     acl_snapshot_id: Some("acl-001"),
                     hash: Some("sha256-abc"),
+                    scanner_confidence: Some(0.85),
+                    department: Some("HR"),
                     created_at: "2026-05-12T01:00:00Z",
                     updated_at: "2026-05-12T01:00:00Z",
                 },
@@ -363,8 +432,10 @@ mod tests {
         let all = LabelRepository::list(&pool).expect("list");
         assert_eq!(all.len(), 2);
 
-        // List by state
-        let temporary = LabelRepository::list_by_state(&pool, "temporary").expect("list temporary");
+        // List by state using list_by_filters
+        let temporary =
+            LabelRepository::list_by_filters(&pool, Some("temporary"), None, None, None)
+                .expect("list temporary");
         assert_eq!(temporary.len(), 1);
         assert_eq!(temporary[0].id, file_id);
 
@@ -384,7 +455,9 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        let confirmed = LabelRepository::list_by_state(&pool, "confirmed").expect("list confirmed");
+        let confirmed =
+            LabelRepository::list_by_filters(&pool, Some("confirmed"), None, None, None)
+                .expect("list confirmed");
         assert_eq!(confirmed.len(), 2); // folder + confirmed file
 
         // Find parent label
@@ -403,6 +476,106 @@ mod tests {
         }
         let remaining = LabelRepository::list(&pool).expect("list after delete");
         assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn test_list_by_filters_department() {
+        let pool = new_pool(":memory:").expect("create pool");
+
+        // Insert labels with different departments
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "label-hr",
+                    path: r"\\server\share\HR\doc1.txt",
+                    object_type: "file",
+                    tier: "T3",
+                    label_state: "temporary",
+                    owner_sid: Some("S-1-5-21-1"),
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: Some(0.85),
+                    department: Some("HR"),
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert HR label");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "label-it",
+                    path: r"\\server\share\IT\doc2.txt",
+                    object_type: "file",
+                    tier: "T2",
+                    label_state: "temporary",
+                    owner_sid: Some("S-1-5-21-2"),
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: Some(0.72),
+                    department: Some("IT"),
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert IT label");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "label-none",
+                    path: r"\\server\share\doc3.txt",
+                    object_type: "file",
+                    tier: "T1",
+                    label_state: "temporary",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert no-dept label");
+            uow.commit().expect("commit");
+        }
+
+        // Filter by department = HR
+        let hr_labels =
+            LabelRepository::list_by_filters(&pool, None, None, None, Some("HR"))
+                .expect("list HR");
+        assert_eq!(hr_labels.len(), 1);
+        assert_eq!(hr_labels[0].id, "label-hr");
+        assert_eq!(hr_labels[0].scanner_confidence, Some(0.85));
+
+        // Filter by department = IT
+        let it_labels =
+            LabelRepository::list_by_filters(&pool, None, None, None, Some("IT"))
+                .expect("list IT");
+        assert_eq!(it_labels.len(), 1);
+        assert_eq!(it_labels[0].id, "label-it");
+
+        // Filter by state = temporary AND department = HR
+        let hr_temp = LabelRepository::list_by_filters(
+            &pool,
+            Some("temporary"),
+            None,
+            None,
+            Some("HR"),
+        )
+        .expect("list HR temporary");
+        assert_eq!(hr_temp.len(), 1);
+        assert_eq!(hr_temp[0].id, "label-hr");
+
+        // No filter returns all 3
+        let all = LabelRepository::list_by_filters(&pool, None, None, None, None).expect("list all");
+        assert_eq!(all.len(), 3);
     }
 
     #[test]

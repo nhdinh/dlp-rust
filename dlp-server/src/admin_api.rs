@@ -510,6 +510,12 @@ pub struct LabelRequest {
     /// SHA-256 hash of file content when labeled.
     #[serde(default)]
     pub hash: Option<String>,
+    /// Scanner confidence score (0.0-1.0), nullable.
+    #[serde(default)]
+    pub scanner_confidence: Option<f32>,
+    /// Department or business unit owning the data.
+    #[serde(default)]
+    pub department: Option<String>,
 }
 
 /// Response body returned by label endpoints.
@@ -529,11 +535,15 @@ pub struct LabelResponse {
     pub owner_sid: Option<String>,
     /// FK to parent folder label for inheritance.
     pub parent_label_id: Option<String>,
+    /// SHA-256 hash of file content when labeled.
     /// Reference to ACL snapshot at label time.
     pub acl_snapshot_id: Option<String>,
-    /// SHA-256 hash of file content when labeled.
     pub hash: Option<String>,
-    /// ISO-8601 timestamp of creation.
+    /// Scanner confidence score (0.0-1.0), nullable.
+    #[serde(default)]
+    pub scanner_confidence: Option<f32>,
+    /// Department or business unit owning the data.
+    pub department: Option<String>,
     pub created_at: String,
     /// ISO-8601 timestamp of last update.
     pub updated_at: String,
@@ -551,6 +561,8 @@ impl From<LabelRow> for LabelResponse {
             parent_label_id: row.parent_label_id,
             acl_snapshot_id: row.acl_snapshot_id,
             hash: row.hash,
+            scanner_confidence: row.scanner_confidence,
+            department: row.department,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -569,6 +581,9 @@ pub struct LabelFilter {
     /// Filter by Data Owner SID.
     #[serde(default)]
     pub owner_sid: Option<String>,
+    /// Filter by department.
+    #[serde(default)]
+    pub department: Option<String>,
 }
 
 /// Optional query-string filter for `GET /admin/disk-registry` (D-07).
@@ -2921,22 +2936,17 @@ async fn list_labels(
     let state_filter = filter.state.clone();
     let tier_filter = filter.tier.clone();
     let owner_sid_filter = filter.owner_sid.clone();
+    let department_filter = filter.department.clone();
 
     let rows = tokio::task::spawn_blocking(move || -> Result<Vec<LabelRow>, AppError> {
-        let mut rows = if let Some(ref s) = state_filter {
-            LabelRepository::list_by_state(&pool, s).map_err(AppError::Database)?
-        } else {
-            LabelRepository::list(&pool).map_err(AppError::Database)?
-        };
-
-        // In-memory filtering for tier and owner_sid
-        if let Some(ref t) = tier_filter {
-            rows.retain(|r| r.tier.eq_ignore_ascii_case(t));
-        }
-        if let Some(ref o) = owner_sid_filter {
-            rows.retain(|r| r.owner_sid.as_deref() == Some(o));
-        }
-
+        let rows = LabelRepository::list_by_filters(
+            &pool,
+            state_filter.as_deref(),
+            tier_filter.as_deref(),
+            owner_sid_filter.as_deref(),
+            department_filter.as_deref(),
+        )
+        .map_err(AppError::Database)?;
         Ok(rows)
     })
     .await
@@ -2998,6 +3008,8 @@ async fn create_label(
         parent_label_id: body.parent_label_id.clone(),
         acl_snapshot_id: body.acl_snapshot_id.clone(),
         hash: body.hash.clone(),
+        scanner_confidence: body.scanner_confidence,
+        department: body.department.clone(),
         created_at: now.clone(),
         updated_at: now.clone(),
     };
@@ -3018,6 +3030,8 @@ async fn create_label(
             parent_label_id: r.parent_label_id.as_deref(),
             acl_snapshot_id: r.acl_snapshot_id.as_deref(),
             hash: r.hash.as_deref(),
+            scanner_confidence: r.scanner_confidence,
+            department: None,
             created_at: &r.created_at,
             updated_at: &r.updated_at,
         };
@@ -3118,6 +3132,8 @@ async fn update_label(
             parent_label_id: body.parent_label_id.as_deref(),
             acl_snapshot_id: body.acl_snapshot_id.as_deref(),
             hash: body.hash.as_deref(),
+            scanner_confidence: body.scanner_confidence,
+            department: body.department.as_deref(),
             created_at: &original.created_at,
             updated_at: &now,
         };
@@ -3137,6 +3153,8 @@ async fn update_label(
             parent_label_id: body.parent_label_id,
             acl_snapshot_id: body.acl_snapshot_id,
             hash: body.hash,
+            scanner_confidence: body.scanner_confidence,
+            department: body.department,
             created_at: original.created_at,
             updated_at: now,
         })
@@ -3236,6 +3254,8 @@ async fn confirm_label(
             parent_label_id: original.parent_label_id,
             acl_snapshot_id: original.acl_snapshot_id,
             hash: original.hash,
+            scanner_confidence: original.scanner_confidence,
+            department: original.department,
             created_at: original.created_at,
             updated_at: now,
         })
@@ -3335,6 +3355,8 @@ async fn reject_label(
             parent_label_id: original.parent_label_id,
             acl_snapshot_id: original.acl_snapshot_id,
             hash: original.hash,
+            scanner_confidence: original.scanner_confidence,
+            department: original.department,
             created_at: original.created_at,
             updated_at: now,
         })
