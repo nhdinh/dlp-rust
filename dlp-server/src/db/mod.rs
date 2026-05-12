@@ -323,7 +323,30 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 value TEXT NOT NULL
             );
             INSERT OR IGNORE INTO system_kv (key, value) VALUES ('maintenance_mode', '0');
-            ",
+
+            -- Phase 59: Label Service table for pilot data classification.
+            -- Stores file/folder/archive labels with tier, state, and inheritance.
+            -- CHECK constraints enforce valid tier and label_state values.
+            -- parent_label_id is self-referencing FK for folder inheritance.
+            CREATE TABLE IF NOT EXISTS labels (
+                id              TEXT PRIMARY KEY,
+                path            TEXT NOT NULL,
+                object_type     TEXT NOT NULL CHECK(object_type IN ('file', 'folder', 'archive')),
+                tier            TEXT NOT NULL CHECK(tier IN ('T1', 'T2', 'T3', 'T4', 'Unclassified-Blocked')),
+                label_state     TEXT NOT NULL CHECK(label_state IN ('temporary', 'confirmed', 'rejected', 'expired')),
+                owner_sid       TEXT,
+                parent_label_id TEXT REFERENCES labels(id) ON DELETE SET NULL,
+                acl_snapshot_id TEXT,
+                hash            TEXT,
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_labels_path ON labels(path);
+            CREATE INDEX IF NOT EXISTS idx_labels_tier ON labels(tier);
+            CREATE INDEX IF NOT EXISTS idx_labels_state ON labels(label_state);
+            CREATE INDEX IF NOT EXISTS idx_labels_owner ON labels(owner_sid);
+            CREATE INDEX IF NOT EXISTS idx_labels_parent ON labels(parent_label_id);
+",
     )
     .context("failed to initialize database tables")?;
 
