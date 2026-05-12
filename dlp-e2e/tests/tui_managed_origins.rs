@@ -85,18 +85,18 @@ fn test_navigate_to_managed_origins() {
         "expected MainMenu at start"
     );
 
-    // MainMenu -> DevicesMenu: Down x3, Enter.
+    // MainMenu -> DevicesMenu: Down x4, Enter.
     let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
     let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
 
-    for _ in 0..3 {
+    for _ in 0..4 {
         inject(&mut app, down);
     }
     inject(&mut app, enter);
 
     assert!(
         matches!(app.screen, Screen::DevicesMenu { selected: 0 }),
-        "expected DevicesMenu after Down x3 + Enter"
+        "expected DevicesMenu after Down x4 + Enter"
     );
 
     // DevicesMenu -> ManagedOriginList: Down x1, Enter.
@@ -136,7 +136,7 @@ fn test_add_managed_origin() {
     let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
     let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
 
-    for _ in 0..3 {
+    for _ in 0..4 {
         inject(&mut app, down);
     }
     inject(&mut app, enter);
@@ -210,7 +210,7 @@ fn test_remove_managed_origin() {
     let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
     let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
 
-    for _ in 0..3 {
+    for _ in 0..4 {
         inject(&mut app, down);
     }
     inject(&mut app, enter);
