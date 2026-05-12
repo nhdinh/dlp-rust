@@ -161,7 +161,7 @@ These requirements emerge from the gap analysis against the target architecture 
 - [ ] **LABEL-02** — Folder label inheritance: child files inherit the parent folder's label unless they have a stricter explicit label. Inheritance rules documented and enforced at label resolution time.
 - [ ] **LABEL-03** — Temporary label state machine: scanner assigns `temporary` → Data Owner review queue → confirm (`confirmed`) or reject (`rejected` or `Unclassified-Blocked`). No downgrade without logged approval.
 - [ ] **LABEL-04** — Data Owner review queue: admin API `GET /admin/labels/pending` with filters (department, tier, scanner_confidence); `POST /admin/labels/:id/confirm` and `POST /admin/labels/:id/reject`. Admin TUI screen mirrors `screens/usb_enforcement.rs` pattern.
-- [ ] **LABEL-05** — Label-aware ABAC evaluation: `Resource.tier` resolves from the label service (not just hardcoded policy condition). Fallback to `Unclassified-Blocked` when no label exists.
+- [x] **LABEL-05** — Label-aware ABAC evaluation: `Resource.tier` resolves from the label service (not just hardcoded policy condition). Fallback to `Unclassified-Blocked` when no label exists. *(Completed in Phase 59 Plan 03, 2026-05-12)*
 - [ ] **LABEL-06** — Label metadata layers: central DB (primary), NTFS ADS (optional, write-on-confirm), sidecar metadata (for survey folders, protected from modification).
 - [ ] **LABEL-07** — Manual label assignment API: `POST /admin/labels` for operator-initiated labels (pre-scanner pilot phase). Required for pilot before scanner is built.
 
