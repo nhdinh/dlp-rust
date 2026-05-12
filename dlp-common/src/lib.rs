@@ -12,6 +12,7 @@ pub mod classifier;
 pub mod disk;
 pub mod endpoint;
 pub mod hook_ipc;
+pub mod label;
 pub mod usb;
 
 pub use abac::*;
@@ -28,6 +29,7 @@ pub use disk::{
 };
 pub use endpoint::{AppIdentity, AppTrustTier, DeviceIdentity, SignatureState, UsbTrustTier};
 pub use hook_ipc::{HookRequest, HookResponse};
+pub use label::{Label, LabelState, ObjectType, Tier};
 pub use usb::{
     enumerate_connected_usb_devices, parse_usb_device_path, DEFAULT_USB_BLOCKED_FAILURE_MODE,
     DEFAULT_USB_NONE_SERIAL_POLICY, DEFAULT_USB_STARTUP_RESOLUTION_MODE, USB_FAILURE_MODES,
