@@ -63,6 +63,7 @@ fn build_test_app() -> (axum::Router, Arc<db::Pool>) {
         std::sync::Arc::clone(&crypto),
     );
     let ps = Arc::new(policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"));
+    let label_service = Arc::new(dlp_server::label_service::LabelService::new(Arc::clone(&pool)));
     let state = Arc::new(AppState {
         pool: Arc::clone(&pool),
         crypto: std::sync::Arc::clone(&crypto),
@@ -70,6 +71,7 @@ fn build_test_app() -> (axum::Router, Arc<db::Pool>) {
         siem,
         alert,
         ad: None,
+        label_service,
     });
     (admin_router(state), pool)
 }

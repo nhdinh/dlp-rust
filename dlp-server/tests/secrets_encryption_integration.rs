@@ -62,6 +62,7 @@ fn test_app() -> (NamedTempFile, axum::Router, Arc<db::Pool>) {
     let alert = alert_router::AlertRouter::new(Arc::clone(&pool), Arc::clone(&crypto));
     let policy_store =
         Arc::new(policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"));
+    let label_service = Arc::new(dlp_server::label_service::LabelService::new(Arc::clone(&pool)));
     let state = Arc::new(AppState {
         pool: Arc::clone(&pool),
         crypto,
@@ -69,6 +70,7 @@ fn test_app() -> (NamedTempFile, axum::Router, Arc<db::Pool>) {
         siem,
         alert,
         ad: None,
+        label_service,
     });
     (tmp, admin_router(state), pool)
 }

@@ -249,7 +249,7 @@ impl LabelRepository {
         // Walk up the path: for \\server\share\dir\file.txt, try:
         // \\server\share\dir, \\server\share, \\server
         let mut current = child_path.to_string();
-        while let Some(parent_end) = current.rfind(|c| c == '\\' || c == '/') {
+        while let Some(parent_end) = current.rfind(['\\', '/']) {
             let parent = &current[..parent_end];
             if parent.is_empty() {
                 break;
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn test_labels_table_exists() {
         let pool = new_pool(":memory:").expect("create pool");
-        let mut conn = pool.get().expect("acquire connection");
+        let conn = pool.get().expect("acquire connection");
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='labels'",

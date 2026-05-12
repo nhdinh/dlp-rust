@@ -2902,6 +2902,7 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -2909,6 +2910,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         admin_router(state)
     }
@@ -2960,6 +2962,7 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -2967,6 +2970,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         let app = admin_router(state);
 
@@ -3010,6 +3014,7 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -3017,6 +3022,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         let app = admin_router(state);
 
@@ -3113,6 +3119,7 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
@@ -3120,6 +3127,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         let app = admin_router(state);
 
@@ -3259,6 +3267,7 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
@@ -3266,6 +3275,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         let app = admin_router(state);
 
@@ -3487,6 +3497,7 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -3494,6 +3505,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -4387,6 +4399,7 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -4394,6 +4407,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         let app = admin_router(state);
 
@@ -4521,6 +4535,7 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -4528,6 +4543,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -4601,6 +4617,7 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -4608,6 +4625,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -5022,6 +5040,7 @@ mod tests {
             std::sync::Arc::clone(&pool),
             std::sync::Arc::clone(&crypto),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -5029,6 +5048,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         let app = admin_router(state);
 
@@ -5095,6 +5115,7 @@ mod tests {
             std::sync::Arc::clone(&pool),
             std::sync::Arc::clone(&crypto),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -5102,6 +5123,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         let app = admin_router(state);
 
@@ -5168,6 +5190,7 @@ mod tests {
             std::sync::Arc::clone(&pool),
             std::sync::Arc::clone(&crypto),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
@@ -5175,6 +5198,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         });
         let app = admin_router(state);
 
@@ -5849,6 +5873,7 @@ mod tests {
         let policy_store = Arc::new(
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
         Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -5856,6 +5881,7 @@ mod tests {
             siem,
             alert,
             ad: None,
+            label_service,
         })
     }
 
@@ -6245,6 +6271,7 @@ mod tests {
             let ps = Arc::new(
                 crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
             );
+            let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
             let s = Arc::new(AppState {
                 pool: Arc::clone(&pool),
                 crypto: std::sync::Arc::clone(&crypto),
@@ -6252,6 +6279,7 @@ mod tests {
                 siem,
                 alert,
                 ad: None,
+            label_service,
             });
             // Minimal router with just the disk-registry delete route for isolation.
             axum::Router::new()
@@ -6301,6 +6329,7 @@ mod tests {
             let ps = Arc::new(
                 crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
             );
+            let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
             let s = Arc::new(AppState {
                 pool: Arc::clone(&pool),
                 crypto: std::sync::Arc::clone(&crypto),
@@ -6308,6 +6337,7 @@ mod tests {
                 siem,
                 alert,
                 ad: None,
+            label_service,
             });
             axum::Router::new()
                 .route(
@@ -6627,6 +6657,7 @@ mod tests {
             let ps = Arc::new(
                 crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
             );
+            let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
             let s = Arc::new(AppState {
                 pool: Arc::clone(&pool),
                 crypto: std::sync::Arc::clone(&crypto),
@@ -6634,6 +6665,7 @@ mod tests {
                 siem,
                 alert,
                 ad: None,
+            label_service,
             });
             axum::Router::new()
                 .route(
