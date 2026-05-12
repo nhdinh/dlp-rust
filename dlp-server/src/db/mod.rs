@@ -329,23 +329,26 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
             -- CHECK constraints enforce valid tier and label_state values.
             -- parent_label_id is self-referencing FK for folder inheritance.
             CREATE TABLE IF NOT EXISTS labels (
-                id              TEXT PRIMARY KEY,
-                path            TEXT NOT NULL,
-                object_type     TEXT NOT NULL CHECK(object_type IN ('file', 'folder', 'archive')),
-                tier            TEXT NOT NULL CHECK(tier IN ('T1', 'T2', 'T3', 'T4', 'Unclassified-Blocked')),
-                label_state     TEXT NOT NULL CHECK(label_state IN ('temporary', 'confirmed', 'rejected', 'expired')),
-                owner_sid       TEXT,
-                parent_label_id TEXT REFERENCES labels(id) ON DELETE SET NULL,
-                acl_snapshot_id TEXT,
-                hash            TEXT,
-                created_at      TEXT NOT NULL,
-                updated_at      TEXT NOT NULL
+                id                  TEXT PRIMARY KEY,
+                path                TEXT NOT NULL,
+                object_type         TEXT NOT NULL CHECK(object_type IN ('file', 'folder', 'archive')),
+                tier                TEXT NOT NULL CHECK(tier IN ('T1', 'T2', 'T3', 'T4', 'Unclassified-Blocked')),
+                label_state         TEXT NOT NULL CHECK(label_state IN ('temporary', 'confirmed', 'rejected', 'expired')),
+                owner_sid           TEXT,
+                parent_label_id     TEXT REFERENCES labels(id) ON DELETE SET NULL,
+                acl_snapshot_id     TEXT,
+                hash                TEXT,
+                scanner_confidence  REAL,
+                department          TEXT,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_labels_path ON labels(path);
             CREATE INDEX IF NOT EXISTS idx_labels_tier ON labels(tier);
             CREATE INDEX IF NOT EXISTS idx_labels_state ON labels(label_state);
             CREATE INDEX IF NOT EXISTS idx_labels_owner ON labels(owner_sid);
             CREATE INDEX IF NOT EXISTS idx_labels_parent ON labels(parent_label_id);
+            CREATE INDEX IF NOT EXISTS idx_labels_department ON labels(department);
 ",
     )
     .context("failed to initialize database tables")?;
@@ -615,6 +618,20 @@ pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
         "ALTER TABLE ldap_config ADD COLUMN bind_password_version INTEGER",
         "bind_password_version",
         "ldap_config",
+    )?;
+
+    // Phase 60: scanner_confidence and department columns for labels table.
+    run_alter(
+        conn,
+        "ALTER TABLE labels ADD COLUMN scanner_confidence REAL",
+        "scanner_confidence",
+        "labels",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE labels ADD COLUMN department TEXT",
+        "department",
+        "labels",
     )?;
 
     Ok(())

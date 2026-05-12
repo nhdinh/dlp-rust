@@ -195,7 +195,7 @@ impl TryFrom<&str> for Tier {
 ///
 /// Labels are stored in the central SQLite database and resolved at
 /// enforcement time via [`LabelService`](dlp_server::label_service::LabelService).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Label {
     /// UUID string identifying the label.
     pub id: String,
@@ -215,6 +215,8 @@ pub struct Label {
     pub acl_snapshot_id: Option<String>,
     /// SHA-256 hash of file content when labeled.
     pub hash: Option<String>,
+    /// Scanner confidence score (0.0-1.0), nullable.
+    pub scanner_confidence: Option<f32>,
     /// ISO-8601 timestamp of creation.
     pub created_at: String,
     /// ISO-8601 timestamp of last update.
@@ -259,6 +261,7 @@ mod tests {
             parent_label_id: Some("parent-001".to_string()),
             acl_snapshot_id: Some("acl-001".to_string()),
             hash: Some("sha256-abc".to_string()),
+            scanner_confidence: Some(0.85),
             created_at: "2026-05-12T00:00:00Z".to_string(),
             updated_at: "2026-05-12T01:00:00Z".to_string(),
         };
