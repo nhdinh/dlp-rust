@@ -151,6 +151,79 @@ Goal: convert general file I/O from passive audit-trail-after-the-fact to active
 
 ---
 
+## Post-v0.10.0 — Pilot-First Path
+
+These requirements emerge from the gap analysis against the target architecture (merged from `new_docs/` 2026-05-12). They are organized by delivery milestone.
+
+### v0.11.0 — Label Service + Data Owner Queue
+
+- [ ] **LABEL-01** — `labels` SQLite table with fields: id, path, object_type (file/folder/archive), tier (T1/T2/T3/T4/Unclassified-Blocked), label_state (temporary/confirmed/rejected/expired), owner_sid, parent_label_id (FK for folder inheritance), acl_snapshot_id, hash, created_at, updated_at. Foreign keys and CHECK constraints enforced.
+- [ ] **LABEL-02** — Folder label inheritance: child files inherit the parent folder's label unless they have a stricter explicit label. Inheritance rules documented and enforced at label resolution time.
+- [ ] **LABEL-03** — Temporary label state machine: scanner assigns `temporary` → Data Owner review queue → confirm (`confirmed`) or reject (`rejected` or `Unclassified-Blocked`). No downgrade without logged approval.
+- [ ] **LABEL-04** — Data Owner review queue: admin API `GET /admin/labels/pending` with filters (department, tier, scanner_confidence); `POST /admin/labels/:id/confirm` and `POST /admin/labels/:id/reject`. Admin TUI screen mirrors `screens/usb_enforcement.rs` pattern.
+- [ ] **LABEL-05** — Label-aware ABAC evaluation: `Resource.tier` resolves from the label service (not just hardcoded policy condition). Fallback to `Unclassified-Blocked` when no label exists.
+- [ ] **LABEL-06** — Label metadata layers: central DB (primary), NTFS ADS (optional, write-on-confirm), sidecar metadata (for survey folders, protected from modification).
+- [ ] **LABEL-07** — Manual label assignment API: `POST /admin/labels` for operator-initiated labels (pre-scanner pilot phase). Required for pilot before scanner is built.
+
+### v0.11.0 — Approval Workflow Engine
+
+- [ ] **WORKFLOW-01** — `approvals` SQLite table with: id, requester_sid, approver_sid, data_object_id, allowed_action, destination_scope, valid_from, valid_until, signature (for T4), status (pending/approved/rejected/revoked/expired), created_at. Foreign keys to `labels` and `admin_users`.
+- [ ] **WORKFLOW-02** — T3 approval flow: user requests via `dlp-user-ui` toast → agent forwards to server → Data Owner (AD Manager attribute) receives notification → approves with expiry via admin TUI → agent receives approval token.
+- [ ] **WORKFLOW-03** — T4 approval flow: same as T3 but requires Board digital signature. Signature verification via configured public key or certificate. `POST /admin/approvals/:id/sign` endpoint.
+- [ ] **WORKFLOW-04** — Approval token validator in agent: validates token scope (user SID, device fingerprint, action, destination, expiry) before allowing the blocked operation. Token is signed by server and cached locally.
+- [ ] **WORKFLOW-05** — Admin TUI approval management screen: list pending/approved/rejected approvals, grant/revoke actions, filter by requester/approver/status. Mirrors `screens/print_config.rs` pattern.
+- [ ] **WORKFLOW-06** — Approval-aware audit events: every approval request, grant, and use is logged with full context (requester, approver, action, expiry, token_id).
+
+### v0.11.0 — Syslog Forwarder
+
+- [ ] **SYSLOG-01** — Native RFC 5424 syslog forwarding from `dlp-server` to configured SIEM/SOC collector over TLS. New `syslog_config` table (host, port, protocol, facility, format).
+- [ ] **SYSLOG-02** — Stable JSON payload format with all required fields: event_id, timestamp (UTC + local), user_sid, user_upn, device_id, mac_addresses, fingerprint, hostname, source_path, destination, tier, data_owner, action, decision, rule_id, policy_version, approval_id, severity.
+- [ ] **SYSLOG-03** — Agent-side syslog queue: when offline, events queued locally and forwarded on reconnect. Queue encrypted with DPAPI (reuse Phase 47 crypto infrastructure).
+- [ ] **SYSLOG-04** — Admin TUI syslog configuration screen: host, port, protocol toggle, test button. Mirrors `screens/siem_config.rs` pattern.
+
+### v0.11.0 — Tamper-Evident Audit (Hash Chain)
+
+- [ ] **HASH-01** — Append-only SHA-256 hash chain in `dlp-agent/src/audit_emitter.rs`: each event hash = SHA256(prev_hash || event_json). First event uses a seeded genesis hash.
+- [ ] **HASH-02** — Server-side chain verification: `audit_store.rs` verifies chain integrity on ingestion. Breaks in chain trigger `tamper_detected` alert via alert router.
+- [ ] **HASH-03** — Per-event hash and chain hash stored in `audit_events` table (new columns: `event_hash`, `chain_hash`).
+- [ ] **HASH-04** — Periodic chain integrity report: admin API `GET /admin/audit/integrity` returns last verified block, chain length, and any gaps.
+
+### v0.11.0 — Device Identity Expansion
+
+- [ ] **DEVICE-01** — Device fingerprint hash: SHA-256 of (hostname + MAC addresses + OS version + install date), computed at agent install and stored in registry.
+- [ ] **DEVICE-02** — MAC address collection: enumerate all active NICs via `GetAdaptersAddresses`, store in agent config and send with every heartbeat.
+- [ ] **DEVICE-03** — VPN state detection: query active VPN interfaces (RAS, WireGuard, OpenVPN adapters) via WMI or `GetAdaptersAddresses`. Populates `NetworkLocation::CorporateVpn` at runtime.
+- [ ] **DEVICE-04** — Domain join state detection: `NetGetJoinInformation` already used in AD client; expose in agent heartbeat and ABAC `Environment` context.
+- [ ] **DEVICE-05** — Device health status: `healthy/degraded/offline/tampered` enum in agent heartbeat. Tampered = hash chain break or agent modification detected.
+
+### v0.12.0 — Scanner Integration (OCR Deferred)
+
+- [ ] **SCANNER-01** — File enumeration API: `POST /admin/scans` triggers share/folder walk; `GET /admin/scans/:id/status` reports progress. Background job with `indicatif`-style progress tracking.
+- [ ] **SCANNER-02** — Metadata collection: path, owner, ACL, size, extension, timestamps, hash (SHA-256) for every file. Results stored in `scanner_results` table.
+- [ ] **SCANNER-03** — Rule-based classifier engine: regex patterns for Vietnamese citizen ID, tax code, bank account, salary terms, employee records, labor contracts. Supports Vietnamese with and without diacritics.
+- [ ] **SCANNER-04** — Scanned document detection: identify image-only PDFs and flag for OCR pipeline (OCR deferred to v0.12.1+).
+- [ ] **SCANNER-05** — Temporary label auto-assignment: suspected T3/T4 files receive `temporary` label, are blocked, and added to Data Owner review queue.
+- [ ] **SCANNER-06** — Archive handling: ZIP/RAR metadata inspection; block unlabeled archives; prompt Data Owner to provide access for deep scanning.
+
+### v0.12.0 — Endpoint Controls
+
+- [ ] **SCREENSHOT-01** — Windows screenshot detection: hook `PrintScreen`, `Alt+PrintScreen`, `Win+Shift+S` via low-level keyboard hook or `SetWinEventHook` for screen capture events. Block or alert based on policy.
+- [ ] **SCREENSHOT-02** — Screenshot policy condition: new `Action::SCREENSHOT` in ABAC engine; `ScreenshotsBlocked` toast via `dlp-user-ui`.
+- [ ] **WATERMARK-01** — Print watermarking: overlay user UPN, timestamp, device fingerprint, tier, approval ID on XPS output before spooling. Use `XpsDocument` API or post-process XPS XML.
+- [ ] **WATERMARK-02** — Watermark policy obligation: `obligations` field in `EvaluateResponse` (new) includes `watermark` flag. Print enforcer applies watermark when `Decision::Allow` + `obligations.contains(Watermark)`.
+- [ ] **EMAIL-01** — Outlook attachment interception: MAPI hook or COM interception to scan attachments before send. Block T3/T4 attachments to unauthorized recipients.
+- [ ] **EMAIL-02** — Browser upload detection: extend cloud enforcer to detect generic file upload forms (not just cloud sync clients). Use `URLMon` or browser extension deferred pattern.
+- [ ] **RDP-01** — RDP file redirection blocking: detect `WTSQueryUserToken` + `WTSVirtualChannelQuery` for clipboard/drive redirection; block T3/T4 file transfers via RDP.
+- [ ] **BT-01** — Bluetooth file transfer blocking: detect `BluetoothFileTransfer` or ObexFS operations; block T3/T4 transfers.
+
+### v0.12.0 — Backup / Ransomware (Documented, Not Built)
+
+- [ ] **BCK-01** — Document 3-2-1-1-0 backup policy in `docs/operations/backup-policy.md`. Recommend external tools (Restic, Veeam, Kopia).
+- [ ] **BCK-02** — Ransomware detection heuristics in agent: monitor for mass rename, mass delete, sudden write spikes, VSS shadow copy deletion. Emit `RansomwareDetected` alert.
+- [ ] **BCK-03** — Canary file: agent writes hidden canary files to monitored paths; detects modification/deletion and triggers immediate lockdown + alert.
+
+---
+
 ## Out of Scope
 
 - **Mobile app** — Windows-first product, no MDM scope.

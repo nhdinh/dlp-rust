@@ -46,7 +46,9 @@ v0.8.0 [Phase 39–42 done] (shipped 2026-05-07)
 v0.8.1 [Phase 43–46 done] (shipped 2026-05-08)
 v0.9.0 [M017 / pre-Phase 47 done] (shipped 2026-05-09)
 v1.0.0 [abandoned 2026-05-12 — only Phase 47 (HARD-01) shipped]
-v0.10.0 [Phase 47 done (prereq) | Phases 48–58 not started] (active — roadmap drafted)
+v0.10.0 [Phase 47 done (prereq) | Phases 48–58 active] (in progress)
+v0.11.0 [Phases 59–64 planned] (planned — Label Service + Workflow + Syslog + Hash + Device)
+v0.12.0 [Phases 65–70 planned] (planned — Scanner + Screenshot + Watermark + Email + RDP + BT)
 ```
 
 ---
@@ -69,6 +71,20 @@ v0.10.0 [Phase 47 done (prereq) | Phases 48–58 not started] (active — roadma
 | 56 | SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | DRIVE-01..04 |
 | 57 | Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | OPS-01..04 |
 | 58 | Differentiators Bundle (cuttable to v0.10.1) | DIFF-01..04 |
+| **v0.11.0** | | |
+| 59 | Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | LABEL-01..07 |
+| 60 | Data Owner Review Queue + Admin TUI Screen | LABEL-04 |
+| 61 | Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | WORKFLOW-01..06 |
+| 62 | Syslog Forwarder — RFC 5424 + Encrypted Offline Queue | SYSLOG-01..04 |
+| 63 | Tamper-Evident Audit — SHA-256 Hash Chain | HASH-01..04 |
+| 64 | Device Identity Expansion — Fingerprint + MAC + VPN + Health | DEVICE-01..05 |
+| **v0.12.0** | | |
+| 65 | File Scanner — Enumeration + Metadata + Rule Classifier (OCR deferred) | SCANNER-01..06 |
+| 66 | Screenshot Control + Policy Condition | SCREENSHOT-01..02 |
+| 67 | Print Watermarking — XPS Overlay | WATERMARK-01..02 |
+| 68 | Email/Outlook Interception + Browser Upload Detection | EMAIL-01..02 |
+| 69 | RDP File Redirection + Bluetooth Transfer Blocking | RDP-01, BT-01 |
+| 70 | Backup Policy Docs + Ransomware Heuristics + Canary Files | BCK-01..03 |
 
 Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlation), 57 (MEDIUM — vendor allowlist procedures). See ROADMAP.md "Research Flags" section.
 
@@ -88,6 +104,8 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 10. AV/EDR allowlist for global DLL injection is an operational landmine — v0.10.0 ships a deployment guide phase (Phase 57) rather than running through smoke testing without it. Vendor outreach starts at Phase 48 so reference customers exist by Phase 57.
 11. Roadmap continuous-numbering: Phase 47 last shipped → v0.10.0 starts at Phase 48 with no gaps (per project convention). 11 active phases total.
 12. Monitor-only / audit-only per-policy mode (Phase 55) is a hard requirement for safe production rollout — every industry DLP comparable ships this; not shipping it would make v0.10.0 unable to deploy to production.
+13. **2026-05-12: Target architecture documents (`new_docs/`) merged into planning surface.** 47 gap items identified across 10 document areas. Gaps mapped to new requirements (LABEL-, WORKFLOW-, SYSLOG-, HASH-, DEVICE-, SCANNER-, SCREENSHOT-, WATERMARK-, EMAIL-, RDP-, BT-, BCK-). `new_docs/` deleted after merge to maintain single source of truth in `.planning/`.
+14. **Pilot-first path selected:** v0.11.0 focuses on Label Service + Data Owner Queue + Approval Workflow (manual labels, no scanner yet). v0.12.0 adds Scanner + remaining endpoint controls. This prioritizes pilot readiness over building a complete scanner first.
 
 ## Blockers
 
@@ -95,11 +113,33 @@ None.
 
 ## Next Action
 
+### Immediate: Continue v0.10.0
+
 ```
 /gsd-plan-phase 48
 ```
 
 Phase 48 (Hook DLL Surface Expansion + Crash Hardening + Build Harness) is the first active v0.10.0 phase. Standard pattern — no `/gsd-research-phase` needed.
+
+### Pilot-First Path (post-v0.10.0)
+
+After v0.10.0 ships (Phase 57 ship gate), the next milestone is **v0.11.0**:
+
+1. **Phase 59** — Label Service DB schema + API + folder inheritance + manual assignment
+2. **Phase 60** — Data Owner Review Queue + admin TUI screen
+3. **Phase 61** — Approval Workflow Engine (T3 Data Owner + T4 Board digital signature)
+4. **Phase 62** — Syslog Forwarder (RFC 5424 + encrypted offline queue)
+5. **Phase 63** — Tamper-Evident Audit (SHA-256 hash chain)
+6. **Phase 64** — Device Identity Expansion (fingerprint + MAC + VPN + health)
+
+Then **v0.12.0**:
+
+7. **Phase 65** — File Scanner (enumeration + metadata + classifier, OCR deferred)
+8. **Phase 66** — Screenshot Control
+9. **Phase 67** — Print Watermarking
+10. **Phase 68** — Email/Outlook Interception
+11. **Phase 69** — RDP + Bluetooth Blocking
+12. **Phase 70** — Backup Policy + Ransomware Heuristics + Canary Files
 
 Active surface to consume in v0.10.0 implementation:
 
