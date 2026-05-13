@@ -50,7 +50,7 @@ Phase 47 (Secrets Encryption at Rest, HARD-01) shipped 2026-05-11 under the aban
 
 | Phase | Goal | Requirements | Status |
 |-------|------|--------------|--------|
-| 47 | Encrypt secrets at rest in operator SQLite (PBKDF2 + DPAPI machine-bound KEK; AES-256-GCM versioned envelope; admin-CLI rotation) | HARD-01 | Validated (shipped 2026-05-11; commits `7846671`, `5a0619f`, `e6e4aa4`, `68f5e0c`) |
+| 47 | Encrypt secrets at rest in operator SQLite (PBKDF2 + DPAPI machine-bound KEK; AES-256-GCM versioned envelope; admin-CLI rotation) | HARD-01 | Reopened for review (was Validated 2026-05-11; commits `7846671`, `5a0619f`, `e6e4aa4`, `68f5e0c`) |
 
 The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is folded into v0.10.0 **Phase 52** (DACL-05) as `docs/operations/dpapi-recovery.md`.
 
@@ -213,7 +213,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   2. The admin API exposes CRUD endpoints for labels with path-based lookup, folder inheritance resolution, and validation.
   3. The ABAC PolicyStore evaluates labels as a resource attribute (`resource_label_tier`) with automatic path-to-label resolution.
   4. The admin TUI provides full label management (list, create, edit, delete, review queue) with keyboard navigation matching existing screens.
-**Plans**: 4 plans complete (59-01 through 59-04)
+**Plans**: 4 plans (59-01 through 59-04) — under review
 **UI hint**: yes
 
 ### Phase 60: Data Owner Review Queue + Admin TUI Screen
@@ -249,7 +249,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 47. Secrets Encryption at Rest (prerequisite) | n/a | Validated | 2026-05-11 |
+| 47. Secrets Encryption at Rest (prerequisite) | n/a | Reopened for review | - |
 | 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 0/0 | Not started | - |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 0/0 | Not started | - |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 0/0 | Not started | - |
@@ -261,9 +261,9 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 0/0 | Not started | - |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 0/0 | Not started | - |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
-| 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-12 |
-| 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
-| 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 3/3 | Ready to execute | - |
+| 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Reopened for review | - |
+| 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Reopened for review | - |
+| 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Reopened for review | - |
 
 ---
 
