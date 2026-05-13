@@ -74,6 +74,16 @@ pub mod server {
         let alert = alert_router::AlertRouter::new(Arc::clone(&pool), Arc::clone(&crypto));
         let ps = Arc::new(policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"));
         let label_service = Arc::new(dlp_server::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            dlp_server::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            dlp_server::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
             crypto: Arc::clone(&crypto),
@@ -82,6 +92,7 @@ pub mod server {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         (admin_router(state), pool)
     }
