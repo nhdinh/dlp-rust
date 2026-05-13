@@ -12,10 +12,12 @@ pub mod classifier;
 pub mod disk;
 pub mod endpoint;
 pub mod hook_ipc;
+pub mod approval;
 pub mod label;
 pub mod usb;
 
 pub use abac::*;
+pub use approval::*;
 pub use ad_client::{
     get_device_trust, get_network_location, AdClient, AdClientError, LdapBindCredentials,
     LdapConfig,
