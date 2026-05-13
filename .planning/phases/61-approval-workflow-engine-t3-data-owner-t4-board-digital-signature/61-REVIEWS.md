@@ -1,8 +1,8 @@
 ---
 phase: 61
 reviewers: [claude, opencode, codex-unavailable]
-reviewed_at: 2026-05-13T01:05:00Z
-review_cycle: 2
+reviewed_at: 2026-05-13T10:30:00Z
+review_cycle: 3
 plans_reviewed: [61-01-PLAN.md, 61-02-PLAN.md, 61-03-PLAN.md, 61-04-PLAN.md]
 ---
 
@@ -12,6 +12,7 @@ plans_reviewed: [61-01-PLAN.md, 61-02-PLAN.md, 61-03-PLAN.md, 61-04-PLAN.md]
 
 - **Cycle 1 (2026-05-13T01:05:00Z)**: Claude CLI + OpenCode reviewed initial plans. Identified 5 HIGH, 7 MEDIUM, 7 LOW concerns.
 - **Cycle 2 (2026-05-13)**: Plans revised to address all Cycle 1 concerns. OpenCode re-reviewed revised plans. Codex CLI unavailable (401 Unauthorized — not logged in).
+- **Cycle 3 (2026-05-13T10:30:00Z)**: OpenCode re-reviewed revised plans (Cycle 2 + additional fixes). Codex CLI still unavailable (401 Unauthorized).
 
 ---
 
@@ -255,6 +256,113 @@ The core architecture is well-considered and the prior HIGH issues are genuinely
 
 ---
 
+## OpenCode Review (Cycle 3 — Revised Plans, Post-Cycle-2 Fixes)
+
+### Summary
+
+The revised plans demonstrate strong architectural maturity with well-addressed prior concerns. The Ed25519 compilation spike, TOCTOU guard, encrypted key storage, and cache re-verification all represent genuine security improvements. However, several integration gaps remain that could cause significant rework during Plan 03 execution: the agent's offline approval validation is unspecified, the three-stage pipeline location is ambiguous (agent-side vs server-side), approval event types are not extended in the audit enum, and the DB migration pattern introduces a new mechanism that conflicts with existing conventions.
+
+### Strengths
+
+- **Ed25519 compilation spike (Task 0)** prevents mid-implementation API discovery failures
+- **TOCTOU guard with `WHERE status='pending'`** correctly prevents double-grant races
+- **Encrypted key storage via Phase 47 Envelope** eliminates raw-env-var exposure
+- **Cache key includes destination_scope** with hierarchical wildcard matching prevents scope bypass
+- **JWT re-verification on every cache read** eliminates cache-poisoning as an attack vector
+- **Wave ordering (01 -> 02/03 -> 04)** correctly isolates foundation from integration from UI
+- **T4 canonical message with jti anti-replay** is cryptographically sound
+
+### Concerns
+
+- **HIGH: Approvals are unusable offline.** The agent's `OfflineManager` has no mechanism to validate approval tokens when the server is unreachable. No cached public key, no way to check JWT signature, and no fallback. Any legitimate approval granted just before a network partition becomes unenforceable. If the agent enforces fail-closed (DENY when approval can't be verified), users are blocked. If it fail-opens (ALLOW), security is defeated. The plans must specify offline behavior explicitly.
+- **MEDIUM: Three-stage pipeline location is ambiguous.** Plan 03 says "Three-stage ABAC pipeline (NTFS -> ABAC -> approval override)" in "PolicyStore", but the actual evaluation flow is split: NTFS enforcement is agent-side (in `interception/mod.rs`), ABAC evaluation is server-side (`PolicyStore::evaluate()` via `POST /evaluate`), and approval tokens exist on the server. Where does the third stage live? If agent-side: modify `OfflineManager::evaluate()` to check the approval cache after a DENY response. If server-side: `PolicyStore::evaluate()` needs approval token lookup by `(sid, obj_id)` at evaluation time, which is expensive and leaks approval data into the hot path. This must be clarified before Plan 03 execution.
+- **MEDIUM: EventType enum is not extended for approval events.** `WORKFLOW-06` requires approval-aware audit events (request, grant, use, expiry, revocation), but the plans do not add new `EventType` variants. The existing enum at `dlp-common/src/audit.rs:30` uses `SCREAMING_SNAKE_CASE` serde. At minimum: `APPROVAL_REQUESTED`, `APPROVAL_GRANTED`, `APPROVAL_REJECTED`, `APPROVAL_REVOKED`, `APPROVAL_EXPIRED`. These must be added to `routed_to_siem()` and `triggers_alert()`.
+- **MEDIUM: DB migration pattern doesn't match existing codebase.** Plan 01 Task 4 says "Database migration with PRAGMA user_version", but the project's established pattern (in `dlp-server/src/db/mod.rs`) uses `run_alter()` inside `run_migrations()` for additive changes and `CREATE TABLE IF NOT EXISTS` in `init_tables()` for new tables. Introducing `PRAGMA user_version` as a new mechanism adds complexity and potential for drift. The `approvals` table should be added directly in `init_tables()` following existing conventions.
+- **MEDIUM: Revoke race condition in TOCTOU guard.** The TOCTOU guard uses `WHERE status='pending'` for state transitions, but revocation must also match `'approved'` status. The `update_state` method signature accepts any status string for the WHERE guard, but Plan 02's revoke handler calls it without specifying the correct guard. Revoke should use `WHERE status IN ('pending','approved')` or the handler should check status before calling update_state.
+- **MEDIUM: ApprovalRepository location unspecified.** Types go in `dlp-common` (correct), but the repository implementation location is not stated. Following existing conventions (`policies.rs`, `labels.rs`), it should be `dlp-server/src/db/repositories/approvals.rs` with `pub mod approvals;` added to `repositories/mod.rs`.
+- **LOW: Agent push-token endpoint contradicts poll-based architecture.** The server endpoint `POST /agent/approval-token` implies server-to-agent push, but the agent communicates via poll (heartbeat every 30s, config poll every 60s, registry/device cache polls). There is no push mechanism. The token delivery should be folded into the agent's existing heartbeat iteration or a separate approval poll loop — not a push endpoint the agent never reads.
+- **LOW: T4 board signature logistics unclear.** The T4 flow requires board members to compute an Ed25519 signature over the canonical message. The plan doesn't specify how the canonical message reaches the board member (copy-paste from admin TUI? Email? External signing ceremony?) or how the signature is returned to the admin for input into the grant form. This is an operational gap, not a code gap, but affects T4 adoption.
+- **LOW: Phase 60 dependency is fragile.** T3 routing depends on the Data Owner concept from Phase 60, which maps Departments -> Data Owners via the label review queue. Resources classified at interception time (content-based scan, no pre-existing label) have no department and therefore no routable Data Owner. The plans don't address fallback routing for unlabeled T3 resources.
+- **LOW: Cache key scope grammar is undefined.** The cache key includes `dst` (destination_scope), and `scope_matches` supports hierarchical wildcards (`USB:*` matching `USB:DRIVE_E`), but no grammar is defined. Without a defined grammar, scoped approval creation in the admin UI is ambiguous and scope settings are likely to be misconfigured.
+
+### Suggestions
+
+1. **Add public key distribution**: `GET /agent/approvals/public-key` endpoint returning the raw 32-byte Ed25519 public key (hex-encoded). The agent caches it at startup.
+2. **Specify offline behavior**: When the agent is offline and a previously cached, non-expired approval token exists, the agent should honor it (the JWT's `exp` claim was already valid when cached). Only tokens that can't be signature-verified should fail closed.
+3. **Clarify pipeline location**: State explicitly whether the three-stage pipeline is agent-side or server-side. Recommend agent-side: the approval cache lives on the agent, avoiding a DB lookup on the hot `/evaluate` path.
+4. **Extend EventType**: Add `APPROVAL_REQUESTED`, `APPROVAL_GRANTED`, `APPROVAL_REJECTED`, `APPROVAL_REVOKED`, `APPROVAL_EXPIRED` variants to `dlp-common/src/audit.rs`. Wire them into `routed_to_siem()` (all true).
+5. **Remove `PRAGMA user_version` from plan** — Use `CREATE TABLE IF NOT EXISTS approvals` in `init_tables()` and `run_alter()` in `run_migrations()`, matching existing project conventions.
+6. **Fix revoke TOCTOU**: `UPDATE approvals SET status='revoked' WHERE id=? AND status IN ('pending','approved')`.
+7. **Add approval poll to agent startup** — Add an `ApprovalCache` poll loop (every 60s) that calls `GET /agent/approvals/active` to sync active approvals. Remove the push endpoint concept.
+8. **Define scope grammar** in the implementation contract (e.g., `USB:<instance_id>`, `CLIPBOARD`, `FILE:<path>`, `NET:<host>:<path>`) so `scope_matches` has enforceable semantics.
+
+### Risk Assessment
+
+**MEDIUM**
+
+The crypto architecture, TOCTOU guard, cache strategy, and wave ordering are sound. The primary risk is the underspecified agent-side integration — particularly public key distribution and the three-stage pipeline location. If Plan 03 is executed without these clarifications, expect rework when the implementer discovers the agent has no way to verify JWT signatures. The DB migration approach should also be aligned with project conventions before Plan 01 execution to avoid inconsistency.
+
+---
+
+## Codex Review
+
+**Status: UNAVAILABLE** — Codex CLI v0.130.0 is installed but not authenticated (401 Unauthorized on API call). `OPENAI_API_KEY` or `codex login` required to enable Codex reviews.
+
+---
+
+## Consensus Summary (Across All Cycles)
+
+### Cycle 1 -> Cycle 2 Resolution Status
+
+(See Cycle 1/2 consensus table above — all 18 Cycle 1 concerns resolved.)
+
+### Cycle 2 -> Cycle 3: New / Remaining Concerns
+
+| Concern | Severity | Reviewer | Status |
+|---------|----------|----------|--------|
+| Approvals unusable offline (no public key distribution, no offline validation) | **HIGH** | OpenCode (Cycle 3) | **NEW** — Not previously raised |
+| Three-stage pipeline location ambiguous (agent-side vs server-side) | MEDIUM | OpenCode (Cycle 3) | **NEW** — Not previously raised |
+| EventType enum not extended for approval events | MEDIUM | OpenCode (Cycle 3) | **NEW** — Not previously raised |
+| DB migration pattern conflicts with existing conventions | MEDIUM | OpenCode (Cycle 3) | **NEW** — Not previously raised |
+| Revoke TOCTOU guard incomplete (only checks 'pending', not 'approved') | MEDIUM | OpenCode (Cycle 3) | **NEW** — Not previously raised |
+| ApprovalRepository location unspecified | MEDIUM | OpenCode (Cycle 3) | **NEW** — Not previously raised |
+| Agent push-token contradicts poll architecture | LOW | OpenCode (Cycle 3) | **NEW** — Not previously raised |
+| T4 signature logistics unclear | LOW | OpenCode (Cycle 3) | **NEW** — Not previously raised |
+| Phase 60 dependency fragile (unlabeled T3 resources) | LOW | OpenCode (Cycle 3) | **NEW** — Not previously raised |
+| Cache key scope grammar undefined | LOW | OpenCode (Cycle 3) | **NEW** — Not previously raised |
+
+### Agreed Strengths (All Cycles)
+
+- Wave ordering and dependency sequencing is correct
+- Threat modeling with STRIDE register is thorough
+- DashMap approval cache is appropriate for read-heavy, write-rare workload
+- Cache key includes SID preventing cross-user replay
+- Reuse of existing architectural patterns reduces implementation risk
+- T4 Board signature adds a meaningful cryptographic boundary
+- Ed25519 compilation spike (Task 0) prevents mid-implementation blockers
+- TOCTOU guard with rows_affected check is correctly implemented
+- JWT re-verification on cache read eliminates cache-poisoning attack vector
+- Encrypted key storage (Phase 47 Envelope) is the correct security posture
+
+### Divergent Views
+
+- **Offline behavior**: OpenCode (Cycle 3) raised HIGH concern about offline approval validation. Not raised in Cycles 1 or 2. This is a new gap discovered through deeper agent architecture analysis.
+- **Pipeline location**: OpenCode (Cycle 3) flagged ambiguity about where the three-stage pipeline lives. Cycle 2 assumed server-side PolicyStore; Cycle 3 questions this given the agent-side NTFS enforcement.
+- **Migration pattern**: OpenCode (Cycle 3) prefers existing `init_tables()` + `run_alter()` conventions over `PRAGMA user_version`. Cycle 2 recommended `PRAGMA user_version`. Divergence on migration strategy.
+- **Push vs poll**: OpenCode (Cycle 3) argues token delivery should be poll-based (existing agent pattern). Cycle 2 specified server push via HTTP POST. Divergence on delivery mechanism.
+
+### Recommended Actions Before Execution
+
+1. **HIGH — Offline approval validation**: Add `GET /agent/approvals/public-key` endpoint and specify agent offline behavior. Without this, approved tokens are unverifiable during network partitions.
+2. **MEDIUM — Clarify pipeline location**: Document whether three-stage pipeline is agent-side (recommended) or server-side. If agent-side, modify `OfflineManager::evaluate()` to check approval cache post-DENY.
+3. **MEDIUM — Extend EventType**: Add approval event variants to `dlp-common/src/audit.rs` and wire into SIEM routing.
+4. **MEDIUM — Align migration pattern**: Use existing `init_tables()` + `run_alter()` conventions instead of introducing `PRAGMA user_version`.
+5. **MEDIUM — Fix revoke TOCTOU**: Ensure revoke handler checks for `status IN ('pending','approved')`.
+6. **LOW — Define scope grammar**: Document valid destination_scope values for `scope_matches`.
+7. **LOW — Document T4 logistics**: Add operational note about how board members obtain canonical messages and return signatures.
+
+---
+
 *Review generated by cross-AI peer review (Claude CLI + OpenCode).*
-*Cycle 1: 2026-05-13T01:05:00Z. Cycle 2: 2026-05-13.*
+*Cycle 1: 2026-05-13T01:05:00Z. Cycle 2: 2026-05-13. Cycle 3: 2026-05-13T10:30:00Z.*
 *To incorporate feedback: /gsd-plan-phase 61 --reviews*
