@@ -119,6 +119,15 @@ fn build_state(pool: &Arc<db::Pool>, crypto: &Arc<SecretCrypto>) -> Arc<AppState
     let policy_store =
         Arc::new(policy_store::PolicyStore::new(Arc::clone(pool)).expect("policy store"));
     let label_service = Arc::new(dlp_server::label_service::LabelService::new(Arc::clone(pool)));
+    let approval_token_crypto = SecretCrypto::from_kek([0x77; 32], 1);
+    let approval_token_conn = pool.get().expect("pool");
+    let approval_token_service = Arc::new(
+        dlp_server::approval_token::ApprovalTokenService::new(
+            &approval_token_crypto,
+            &approval_token_conn,
+        )
+        .expect("approval token service"),
+    );
     Arc::new(AppState {
         pool: Arc::clone(pool),
         crypto: Arc::clone(crypto),
@@ -127,6 +136,7 @@ fn build_state(pool: &Arc<db::Pool>, crypto: &Arc<SecretCrypto>) -> Arc<AppState
         alert,
         ad: None,
         label_service,
+        approval_token_service,
     })
 }
 
