@@ -253,6 +253,7 @@ impl Default for ApprovalCache {
 /// # Examples
 ///
 /// ```
+/// use dlp_agent::approval_cache::scope_matches;
 /// assert!(scope_matches("USB:DRIVE_E", "USB:*"));
 /// assert!(!scope_matches("USB:DRIVE_E", "USB:DRIVE_F"));
 /// assert!(scope_matches("C:\\Data", "C:\\Data"));
