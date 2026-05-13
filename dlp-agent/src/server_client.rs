@@ -577,6 +577,131 @@ impl ServerClient {
         debug!(count = events.len(), "audit events relayed to server");
         Ok(())
     }
+
+    // ---------------------------------------------------------------------------
+    // Phase 61 — Approval Workflow Engine: agent-side public key + approval sync
+    // ---------------------------------------------------------------------------
+
+    /// Fetches the server's Ed25519 public key for offline JWT verification.
+    ///
+    /// Calls `GET /agent/approvals/public-key` and returns the hex-encoded
+    /// 32-byte public key string. The agent caches this key at startup and
+    /// uses it to re-verify approval tokens on every cache read.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerClientError::Http` on network failures.
+    /// Returns `ServerClientError::ServerError` on non-2xx responses.
+    pub async fn fetch_public_key(&self) -> Result<String, ServerClientError> {
+        let url = format!("{}/agent/approvals/public-key", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
+            return Err(ServerClientError::ServerError { status, body });
+        }
+        #[derive(serde::Deserialize)]
+        struct PubkeyResponse {
+            pubkey: String,
+        }
+        let body: PubkeyResponse = resp.json().await.map_err(ServerClientError::Http)?;
+        debug!("fetched server Ed25519 public key for approval verification");
+        Ok(body.pubkey)
+    }
+
+    /// Fetches the list of active approvals for this agent.
+    ///
+    /// Calls `GET /agent/approvals/active` and returns a list of
+    /// [`ServerApprovalEntry`] objects. The agent merges these into its
+    /// local approval cache, removing entries that are no longer active.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerClientError::Http` on network failures.
+    /// Returns `ServerClientError::ServerError` on non-2xx responses.
+    pub async fn sync_active_approvals(
+        &self,
+    ) -> Result<Vec<ServerApprovalEntry>, ServerClientError> {
+        let url = format!("{}/agent/approvals/active", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
+            return Err(ServerClientError::ServerError { status, body });
+        }
+        let entries = resp
+            .json::<Vec<ServerApprovalEntry>>()
+            .await
+            .map_err(ServerClientError::Http)?;
+        debug!(count = entries.len(), "fetched active approvals from server");
+        Ok(entries)
+    }
+
+    /// Submits an approval request on behalf of a user.
+    ///
+    /// Calls `POST /agent/approval-request` with the approval request payload.
+    /// The server creates a pending approval and returns the request ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerClientError::Http` on network failures.
+    /// Returns `ServerClientError::ServerError` on non-2xx responses.
+    pub async fn submit_approval_request(
+        &self,
+        request: &dlp_common::approval::ApprovalRequest,
+    ) -> Result<String, ServerClientError> {
+        let url = format!("{}/agent/approval-request", self.base_url);
+        let resp = self.client.post(&url).json(request).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
+            return Err(ServerClientError::ServerError { status, body });
+        }
+        #[derive(serde::Deserialize)]
+        struct RequestResponse {
+            request_id: String,
+        }
+        let body: RequestResponse = resp.json().await.map_err(ServerClientError::Http)?;
+        debug!(request_id = %body.request_id, "submitted approval request to server");
+        Ok(body.request_id)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ServerApprovalEntry -- deserialization target for GET /agent/approvals/active
+// ---------------------------------------------------------------------------
+
+/// A single active approval entry returned by the server.
+///
+/// Mirrors the server-side `Approval` shape but only includes the fields
+/// needed by the agent to populate its local approval cache.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ServerApprovalEntry {
+    /// Approval UUID (used as `jti` in the JWT).
+    pub id: String,
+    /// AD SID of the requesting user.
+    pub requester_sid: String,
+    /// ID of the data object being accessed.
+    pub data_object_id: String,
+    /// Action being approved (e.g. "WRITE", "COPY").
+    pub allowed_action: String,
+    /// Destination scope restriction (None = any).
+    pub destination_scope: Option<String>,
+    /// ISO-8601 timestamp when the approval expires.
+    pub valid_until: String,
+    /// The signed JWT approval token.
+    pub token: String,
+    /// Device fingerprint for binding the approval to a specific endpoint.
+    pub device_fingerprint: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,6 +1263,77 @@ mod tests {
         let client = unreachable_client();
         let result = client.fetch_managed_origins().await;
         assert!(result.is_err(), "unreachable server must return Err");
+    }
+
+    // --- Phase 61: Approval Workflow Engine agent-side tests ---
+
+    #[tokio::test]
+    async fn test_fetch_public_key_unreachable_server() {
+        let client = unreachable_client();
+        let result = client.fetch_public_key().await;
+        assert!(result.is_err(), "unreachable server must return Err");
+    }
+
+    #[tokio::test]
+    async fn test_sync_active_approvals_unreachable_server() {
+        let client = unreachable_client();
+        let result = client.sync_active_approvals().await;
+        assert!(result.is_err(), "unreachable server must return Err");
+    }
+
+    #[tokio::test]
+    async fn test_submit_approval_request_unreachable_server() {
+        let client = unreachable_client();
+        let request = dlp_common::approval::ApprovalRequest {
+            requester_sid: "S-1-5-21-1".to_string(),
+            data_object_id: "label-001".to_string(),
+            allowed_action: "WRITE".to_string(),
+            destination_scope: None,
+            justification: "Business need".to_string(),
+            device_fingerprint: None,
+        };
+        let result = client.submit_approval_request(&request).await;
+        assert!(result.is_err(), "unreachable server must return Err");
+    }
+
+    /// Verify that `ServerApprovalEntry` deserializes from the expected server JSON shape.
+    #[test]
+    fn test_server_approval_entry_deserialize() {
+        let json = r#"{
+            "id": "approval-001",
+            "requester_sid": "S-1-5-21-1",
+            "data_object_id": "label-001",
+            "allowed_action": "WRITE",
+            "destination_scope": "C:\\Data",
+            "valid_until": "2026-05-15T00:00:00Z",
+            "token": "eyJhbGciOiJFZERTQSJ9.test",
+            "device_fingerprint": "fp-abc"
+        }"#;
+        let entry: ServerApprovalEntry = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(entry.id, "approval-001");
+        assert_eq!(entry.requester_sid, "S-1-5-21-1");
+        assert_eq!(entry.data_object_id, "label-001");
+        assert_eq!(entry.allowed_action, "WRITE");
+        assert_eq!(entry.destination_scope, Some(r"C:\Data".to_string()));
+        assert_eq!(entry.valid_until, "2026-05-15T00:00:00Z");
+        assert_eq!(entry.token, "eyJhbGciOiJFZERTQSJ9.test");
+        assert_eq!(entry.device_fingerprint, Some("fp-abc".to_string()));
+    }
+
+    /// Verify that `ServerApprovalEntry` deserializes when optional fields are absent.
+    #[test]
+    fn test_server_approval_entry_deserialize_optional_absent() {
+        let json = r#"{
+            "id": "approval-002",
+            "requester_sid": "S-1-5-21-1",
+            "data_object_id": "label-002",
+            "allowed_action": "COPY",
+            "valid_until": "2026-05-15T00:00:00Z",
+            "token": "eyJhbGciOiJFZERTQSJ9.test2"
+        }"#;
+        let entry: ServerApprovalEntry = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(entry.destination_scope, None);
+        assert_eq!(entry.device_fingerprint, None);
     }
 
     // --- Phase 43: USB enforcement config payload tests (USB-07, USB-08, USB-09) ---

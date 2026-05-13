@@ -683,6 +683,14 @@ struct RunLoopContext {
     wfp_manager: Option<crate::wfp_manager::WfpManager>,
     /// Optional print enforcer (M017/S04). `None` when `print_enabled` is false.
     print_enforcer: Option<crate::print_enforcer::PrintEnforcer>,
+    /// Approval cache (Phase 61) — agent-side approval token cache with JWT verification.
+    /// Stored for future integration with the interception engine's three-stage pipeline.
+    #[allow(dead_code)]
+    approval_cache: Arc<crate::approval_cache::ApprovalCache>,
+    /// Handle to the approval cache poll task.
+    approval_poll_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Sender to signal the approval poll task to exit.
+    approval_shutdown_tx: tokio::sync::watch::Sender<bool>,
 }
 
 /// The main service run loop.
@@ -787,6 +795,27 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
 
     // ── dlp-server client (best-effort -- server may not be running) ─────
     let server_client = init_server_client(&agent_config).await;
+
+    // ── Approval cache (Phase 61) ────────────────────────────────────────
+    let approval_cache = Arc::new(crate::approval_cache::ApprovalCache::new());
+    // Fetch the server's Ed25519 public key at startup for offline JWT verification.
+    if let Some(ref sc) = server_client {
+        match sc.fetch_public_key().await {
+            Ok(pubkey_hex) => {
+                if let Err(e) = approval_cache.set_public_key(&pubkey_hex) {
+                    warn!(error = %e, "failed to set approval cache public key");
+                } else {
+                    info!("approval cache public key cached for offline JWT verification");
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to fetch approval public key from server");
+            }
+        }
+    }
+    // Spawn the approval cache poll loop (syncs active approvals every 60s).
+    let (approval_shutdown_tx, approval_poll_handle) =
+        spawn_approval_poll_task(server_client.clone(), Arc::clone(&approval_cache));
 
     // ── Store server client for on-demand auth hash fetching ─────────────
     if let Some(ref sc) = server_client {
@@ -1092,6 +1121,9 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         sync_watcher_handle,
         wfp_manager: wfp_manager_opt,
         print_enforcer: print_enforcer_opt,
+        approval_cache,
+        approval_poll_handle,
+        approval_shutdown_tx,
     }
 }
 
@@ -1283,6 +1315,126 @@ fn spawn_config_poll_task(
         })
     });
     (tx, handle)
+}
+
+/// Spawns the approval cache poll task when a server client is available.
+///
+/// Returns `(shutdown_tx, poll_handle)` where `poll_handle` is `None` when no
+/// server client is available.
+///
+/// The poll loop fetches active approvals from the server every 60 seconds,
+/// parses their JWT claims, and updates the local approval cache. Entries
+/// that are no longer returned by the server are removed.
+fn spawn_approval_poll_task(
+    server_client: Option<crate::server_client::ServerClient>,
+    approval_cache: Arc<crate::approval_cache::ApprovalCache>,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = server_client.map(|sc| {
+        tokio::spawn(async move {
+            approval_poll_loop(sc, approval_cache, rx).await;
+        })
+    });
+    (tx, handle)
+}
+
+/// Periodically polls the server for active approvals and syncs the local cache.
+///
+/// On each tick:
+/// 1. Fetch active approvals from `GET /agent/approvals/active`.
+/// 2. Parse each token's JWT claims and insert/update cache entries.
+/// 3. Remove cache entries whose `jti` is no longer in the server response.
+/// 4. Sweep expired entries.
+///
+/// The loop runs every 60 seconds. Errors are logged but never propagated.
+async fn approval_poll_loop(
+    server_client: crate::server_client::ServerClient,
+    approval_cache: Arc<crate::approval_cache::ApprovalCache>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    use dlp_common::approval::ApprovalCacheKey;
+    use dlp_common::approval::ApprovalClaims;
+    use tracing::{debug, info, warn};
+
+    let mut interval = tokio::time::interval(Duration::from_secs(60));
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {}
+            _ = shutdown_rx.changed() => {
+                info!("approval poll loop shutting down");
+                return;
+            }
+        }
+
+        match server_client.sync_active_approvals().await {
+            Ok(entries) => {
+                // Build a set of active jtis for cache eviction.
+                let mut active_jtis = std::collections::HashSet::new();
+
+                for entry in entries {
+                    active_jtis.insert(entry.id.clone());
+
+                    // Parse the JWT claims from the token.
+                    // We use jsonwebtoken::decode without verification here because
+                    // the token was just fetched from the trusted server over HTTPS.
+                    // The signature is re-verified on every cache read via
+                    // ApprovalCache::check() using the cached public key.
+                    let token_data = match jsonwebtoken::decode::<ApprovalClaims>(
+                        &entry.token,
+                        &jsonwebtoken::DecodingKey::from_secret(&[]),
+                        &{
+                            let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::EdDSA);
+                            v.insecure_disable_signature_validation();
+                            v.set_issuer(&["dlp-server"]);
+                            v
+                        },
+                    ) {
+                        Ok(data) => data.claims,
+                        Err(e) => {
+                            warn!(approval_id = %entry.id, error = %e, "failed to parse approval token claims");
+                            continue;
+                        }
+                    };
+
+                    let key = ApprovalCacheKey::new(
+                        &entry.requester_sid,
+                        &entry.data_object_id,
+                        &entry.allowed_action,
+                        entry.destination_scope.as_deref(),
+                    );
+                    approval_cache.insert(key, entry.token, token_data);
+                    debug!(approval_id = %entry.id, "cached active approval");
+                }
+
+                // Evict cache entries whose jti is no longer active.
+                let to_remove: Vec<String> = approval_cache
+                    .cache
+                    .iter()
+                    .filter(|e| !active_jtis.contains(&e.claims.jti))
+                    .map(|e| e.key().clone())
+                    .collect();
+                for key in to_remove {
+                    approval_cache.cache.remove(&key);
+                    debug!(key = %key, "removed stale approval from cache");
+                }
+
+                // Sweep expired entries.
+                approval_cache.sweep_expired();
+
+                info!(
+                    cache_size = approval_cache.len(),
+                    "approval cache synced with server"
+                );
+            }
+            Err(e) => {
+                debug!(error = %e, "approval sync failed — retaining current cache");
+            }
+        }
+    }
 }
 
 /// Builds the per-session identity map and seeds it with currently active sessions.
@@ -1540,6 +1692,13 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
         enforcer.stop();
         crate::password_stop::debug_log("run_loop: print enforcer stopped");
     }
+
+    // Stop the approval cache poll task (Phase 61).
+    let _ = ctx.approval_shutdown_tx.send(true);
+    if let Some(h) = ctx.approval_poll_handle {
+        let _ = h.await;
+    }
+    crate::password_stop::debug_log("run_loop: approval poll stopped");
 
     // Kill all UI processes spawned by the session monitor.
     crate::password_stop::debug_log("run_loop: killing UI processes");

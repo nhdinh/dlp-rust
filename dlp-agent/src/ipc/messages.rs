@@ -37,6 +37,22 @@ pub enum Pipe1AgentMsg {
     /// The UI should respond with `Pong` or silently continue; missing pings
     /// trigger the watchdog self-terminate path.
     Ping,
+    /// An approval has been granted — UI should notify the user.
+    ApprovalGranted {
+        /// The request ID that was approved.
+        request_id: String,
+        /// The signed JWT approval token.
+        token: String,
+        /// Human-readable expiry timestamp (ISO-8601).
+        valid_until: String,
+    },
+    /// An approval has been rejected — UI should notify the user.
+    ApprovalRejected {
+        /// The request ID that was rejected.
+        request_id: String,
+        /// Optional reason for rejection.
+        reason: Option<String>,
+    },
 }
 
 /// Messages sent FROM the UI TO the agent over Pipe 1.
@@ -103,6 +119,25 @@ pub enum Pipe3UiMsg {
     UiReady { session_id: u32 },
     /// The UI is closing (user logged out or closed voluntarily).
     UiClosing { session_id: u32 },
+    /// User requests an override for a blocked operation.
+    RequestApproval {
+        /// The request ID for correlation.
+        request_id: String,
+        /// AD SID of the requesting user.
+        requester_sid: String,
+        /// Full path to the resource being accessed.
+        resource_path: String,
+        /// Action being requested (e.g. "WRITE", "COPY").
+        allowed_action: String,
+        /// Destination scope restriction (None = any).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination_scope: Option<String>,
+        /// User-provided justification text.
+        justification: String,
+        /// Device fingerprint for binding the approval to a specific endpoint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_fingerprint: Option<String>,
+    },
     /// Clipboard paste detected with sensitive content.
     ClipboardAlert {
         /// Session ID where the paste occurred.
@@ -245,6 +280,42 @@ mod tests {
     }
 
     #[test]
+    fn test_request_approval_deserializes_legacy_payload() {
+        // Payload without optional fields (backward compat).
+        let legacy = r#"{
+            "type": "RequestApproval",
+            "payload": {
+                "request_id": "req-legacy",
+                "requester_sid": "S-1-5-21-1",
+                "resource_path": "C:\\Data\\file.txt",
+                "allowed_action": "WRITE",
+                "justification": "Need access"
+            }
+        }"#;
+        let msg: Pipe3UiMsg = serde_json::from_str(legacy).unwrap();
+        match msg {
+            Pipe3UiMsg::RequestApproval {
+                request_id,
+                requester_sid,
+                resource_path,
+                allowed_action,
+                destination_scope,
+                justification,
+                device_fingerprint,
+            } => {
+                assert_eq!(request_id, "req-legacy");
+                assert_eq!(requester_sid, "S-1-5-21-1");
+                assert_eq!(resource_path, r"C:\Data\file.txt");
+                assert_eq!(allowed_action, "WRITE");
+                assert!(destination_scope.is_none());
+                assert_eq!(justification, "Need access");
+                assert!(device_fingerprint.is_none());
+            }
+            _ => panic!("expected RequestApproval variant"),
+        }
+    }
+
+    #[test]
     fn test_pipe2_toast_unchanged() {
         // D-16: Toast does NOT carry app identity.
         let toast = Pipe2AgentMsg::Toast {
@@ -370,5 +441,99 @@ mod tests {
             }
             _ => panic!("expected DragDropAlert variant"),
         }
+    }
+
+    // --- Phase 61: Approval IPC variant tests ---
+
+    #[test]
+    fn test_approval_granted_roundtrip() {
+        let msg = Pipe1AgentMsg::ApprovalGranted {
+            request_id: "req-001".to_string(),
+            token: "eyJhbGciOiJFZERTQSJ9.test".to_string(),
+            valid_until: "2026-05-15T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("ApprovalGranted"), "json was: {json}");
+        assert!(json.contains("req-001"), "json was: {json}");
+        let rt: Pipe1AgentMsg = serde_json::from_str(&json).unwrap();
+        match rt {
+            Pipe1AgentMsg::ApprovalGranted { request_id, token, valid_until } => {
+                assert_eq!(request_id, "req-001");
+                assert_eq!(token, "eyJhbGciOiJFZERTQSJ9.test");
+                assert_eq!(valid_until, "2026-05-15T00:00:00Z");
+            }
+            _ => panic!("expected ApprovalGranted variant"),
+        }
+    }
+
+    #[test]
+    fn test_approval_rejected_roundtrip() {
+        let msg = Pipe1AgentMsg::ApprovalRejected {
+            request_id: "req-002".to_string(),
+            reason: Some("not needed".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("ApprovalRejected"), "json was: {json}");
+        let rt: Pipe1AgentMsg = serde_json::from_str(&json).unwrap();
+        match rt {
+            Pipe1AgentMsg::ApprovalRejected { request_id, reason } => {
+                assert_eq!(request_id, "req-002");
+                assert_eq!(reason, Some("not needed".to_string()));
+            }
+            _ => panic!("expected ApprovalRejected variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_approval_roundtrip() {
+        let msg = Pipe3UiMsg::RequestApproval {
+            request_id: "req-003".to_string(),
+            requester_sid: "S-1-5-21-1".to_string(),
+            resource_path: r"C:\Data\secret.xlsx".to_string(),
+            allowed_action: "COPY".to_string(),
+            destination_scope: Some("E:\\".to_string()),
+            justification: "Business need".to_string(),
+            device_fingerprint: Some("fp-abc".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("RequestApproval"), "json was: {json}");
+        assert!(json.contains("req-003"), "json was: {json}");
+        let rt: Pipe3UiMsg = serde_json::from_str(&json).unwrap();
+        match rt {
+            Pipe3UiMsg::RequestApproval {
+                request_id,
+                requester_sid,
+                resource_path,
+                allowed_action,
+                destination_scope,
+                justification,
+                device_fingerprint,
+            } => {
+                assert_eq!(request_id, "req-003");
+                assert_eq!(requester_sid, "S-1-5-21-1");
+                assert_eq!(resource_path, r"C:\Data\secret.xlsx");
+                assert_eq!(allowed_action, "COPY");
+                assert_eq!(destination_scope, Some("E:\\".to_string()));
+                assert_eq!(justification, "Business need");
+                assert_eq!(device_fingerprint, Some("fp-abc".to_string()));
+            }
+            _ => panic!("expected RequestApproval variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_approval_none_fields_skipped() {
+        let msg = Pipe3UiMsg::RequestApproval {
+            request_id: "req-004".to_string(),
+            requester_sid: "S-1-5-21-1".to_string(),
+            resource_path: r"C:\Data\file.txt".to_string(),
+            allowed_action: "WRITE".to_string(),
+            destination_scope: None,
+            justification: "Need access".to_string(),
+            device_fingerprint: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("destination_scope"), "json was: {json}");
+        assert!(!json.contains("device_fingerprint"), "json was: {json}");
     }
 }
