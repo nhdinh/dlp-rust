@@ -198,6 +198,33 @@ impl SecretCrypto {
         Ok(SecretString::new(plaintext))
     }
 
+    /// Decrypt `env` under AAD `aad`, returning the raw plaintext bytes.
+    ///
+    /// This is the binary equivalent of [`decrypt`], used for secrets that
+    /// are not valid UTF-8 (e.g. Ed25519 signing keys).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`decrypt`], except never returns [`CryptoError::InvalidEnvelope`]
+    /// (there is no UTF-8 conversion step).
+    pub fn decrypt_bytes(&self, env: &Envelope, aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        if env.version != ENVELOPE_VERSION_V1 {
+            return Err(CryptoError::UnsupportedVersion(env.version));
+        }
+        let key = Key::<Aes256Gcm>::from_slice(self.kek.as_ref());
+        let cipher = Aes256Gcm::new(key);
+        let nonce = Nonce::<aes_gcm::aes::cipher::consts::U12>::from_slice(&env.nonce);
+        cipher
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: &env.ciphertext,
+                    aad,
+                },
+            )
+            .map_err(|_| CryptoError::AuthTagMismatch)
+    }
+
     /// Load the active KEK from `secret_kek_history`.
     ///
     /// This is the production entry point used at server startup. It reads

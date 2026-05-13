@@ -349,6 +349,34 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
             CREATE INDEX IF NOT EXISTS idx_labels_owner ON labels(owner_sid);
             CREATE INDEX IF NOT EXISTS idx_labels_parent ON labels(parent_label_id);
             CREATE INDEX IF NOT EXISTS idx_labels_department ON labels(department);
+
+            -- Phase 61: Approval Workflow Engine table.
+            -- Stores approval requests and grants for T3 Data Owner and
+            -- T4 Board digital-signature workflows.
+            --
+            -- data_object_id is a SOFT reference to labels(id) -- not enforced
+            -- at DB level so path-based approvals work during pilot phase.
+            CREATE TABLE IF NOT EXISTS approvals (
+                id               TEXT PRIMARY KEY,
+                requester_sid    TEXT NOT NULL,
+                approver_sid     TEXT,
+                data_object_id   TEXT NOT NULL,
+                allowed_action   TEXT NOT NULL,
+                destination_scope TEXT,
+                valid_from       TEXT,
+                valid_until      TEXT,
+                signature        TEXT,
+                status           TEXT NOT NULL
+                                 CHECK(status IN ('pending', 'approved', 'rejected', 'revoked', 'expired')),
+                justification    TEXT NOT NULL DEFAULT '',
+                created_at       TEXT NOT NULL,
+                updated_at       TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+            CREATE INDEX IF NOT EXISTS idx_approvals_requester ON approvals(requester_sid);
+            CREATE INDEX IF NOT EXISTS idx_approvals_object ON approvals(data_object_id);
+            CREATE INDEX IF NOT EXISTS idx_approvals_valid_until ON approvals(valid_until);
+            CREATE INDEX IF NOT EXISTS idx_approvals_created_at ON approvals(created_at);
 ",
     )
     .context("failed to initialize database tables")?;
