@@ -3,12 +3,14 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use crate::app::{
-    App, CallerScreen, ConditionAttribute, ConfirmPurpose, ImportCaller, ImportState, InputPurpose,
-    LabelFilter, LabelFormMode, PasswordPurpose, PolicyFormState, Screen, SimulateCaller,
-    SimulateFormState, SimulateOutcome, StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS,
-    ATTRIBUTES, LDAP_BACK_ROW, LDAP_ROW_COUNT, LDAP_SAVE_ROW, OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
+    App, ApprovalFilter, CallerScreen, ConditionAttribute, ConfirmPurpose, ImportCaller,
+    ImportState, InputPurpose, LabelFilter, LabelFormMode, PasswordPurpose, PolicyFormState,
+    Screen, SimulateCaller, SimulateFormState, SimulateOutcome, StatusKind, TierPickerCaller,
+    UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, LDAP_BACK_ROW, LDAP_ROW_COUNT, LDAP_SAVE_ROW,
+    OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
 };
 use crate::event::AppEvent;
+use crate::screens::approvals::EXPIRY_OPTIONS;
 use crate::screens::cloud_config::{
     CLOUD_CONFIG_BACK_ROW, CLOUD_CONFIG_KEYS, CLOUD_CONFIG_ROW_COUNT, CLOUD_CONFIG_SAVE_ROW,
 };
@@ -69,6 +71,10 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::LabelReviewQueue { .. } => handle_label_review_queue(app, key),
         Screen::LabelDetail { .. } => handle_label_detail(app, key),
         Screen::LabelForm { .. } => handle_label_form(app, key),
+        // Approval workflow screens (Phase 61)
+        Screen::ApprovalList { .. } => handle_approval_list(app, key),
+        Screen::ApprovalDetail { .. } => handle_approval_detail(app, key),
+        Screen::ApprovalGrant { .. } => handle_approval_grant(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -228,7 +234,8 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
         // Phase 43.05: expanded from 6 to 7 items — added "USB Enforcement" at index 5.
         // Phase 38.2: expanded from 7 to 9 items — added "Cloud Config" at index 6, "Print Config" at index 7.
         // Phase 59: expanded from 9 to 10 items — added "Label Review Queue" at index 8.
-        KeyCode::Up | KeyCode::Down => nav(selected, 10, key.code),
+        // Phase 61: expanded from 10 to 11 items — added "Approval Management" at index 9.
+        KeyCode::Up | KeyCode::Down => nav(selected, 11, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
@@ -239,7 +246,8 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
             6 => action_load_cloud_config(app),
             7 => action_load_print_config(app),
             8 => action_load_label_review_queue(app),
-            9 => app.screen = Screen::MainMenu { selected: 2 },
+            9 => action_load_approval_list(app, ApprovalFilter::All, 1),
+            10 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
@@ -646,6 +654,7 @@ fn on_confirm_yes(app: &mut App, purpose: &ConfirmPurpose) {
         ConfirmPurpose::DeleteManagedOrigin { id } => action_delete_managed_origin(app, id),
         ConfirmPurpose::DeleteDiskRegistry { id } => action_delete_disk_registry(app, id),
         ConfirmPurpose::DeleteLabel { id } => action_delete_label(app, id),
+        ConfirmPurpose::RevokeApproval { id } => action_revoke_approval(app, id),
     }
 }
 
@@ -659,6 +668,10 @@ fn on_confirm_cancel(app: &mut App, purpose: &ConfirmPurpose) {
         ConfirmPurpose::DeleteManagedOrigin { .. } => action_load_managed_origin_list(app),
         ConfirmPurpose::DeleteDiskRegistry { .. } => action_load_disk_registry_list(app),
         ConfirmPurpose::DeleteLabel { .. } => action_load_label_list(app, LabelFilter::All),
+        ConfirmPurpose::RevokeApproval { .. } => {
+            // Return to approval list after cancel
+            action_load_approval_list(app, ApprovalFilter::All, 1);
+        }
     }
 }
 
@@ -5114,15 +5127,15 @@ fn action_load_label_review_queue(app: &mut App) {
 }
 
 /// Loads temporary labels with optional department filter.
-fn action_load_label_review_queue_with_filter(
-    app: &mut App,
-    department_filter: Option<String>,
-) {
+fn action_load_label_review_queue_with_filter(app: &mut App, department_filter: Option<String>) {
     let mut path = String::from("admin/labels?state=temporary");
     if let Some(ref dept) = department_filter {
         path.push_str(&format!("&department={}", urlencoding::encode(dept)));
     }
-    match app.rt.block_on(app.client.get::<Vec<serde_json::Value>>(&path)) {
+    match app
+        .rt
+        .block_on(app.client.get::<Vec<serde_json::Value>>(&path))
+    {
         Ok(labels) => {
             app.set_status(
                 format!("{} temporary labels pending review", labels.len()),
@@ -5168,7 +5181,14 @@ fn action_delete_label(app: &mut App, id: &str) {
 }
 
 /// Submits a new label to the server.
-fn action_create_label(app: &mut App, path: &str, object_type: usize, tier: usize, owner_sid: &str, parent_label_id: &str) {
+fn action_create_label(
+    app: &mut App,
+    path: &str,
+    object_type: usize,
+    tier: usize,
+    owner_sid: &str,
+    parent_label_id: &str,
+) {
     let object_type_str = OBJECT_TYPE_OPTIONS.get(object_type).unwrap_or(&"file");
     let tier_str = TIER_OPTIONS.get(tier).unwrap_or(&"T1");
     let body = serde_json::json!({
@@ -5194,7 +5214,15 @@ fn action_create_label(app: &mut App, path: &str, object_type: usize, tier: usiz
 }
 
 /// Updates an existing label on the server.
-fn action_update_label(app: &mut App, id: &str, path: &str, object_type: usize, tier: usize, owner_sid: &str, parent_label_id: &str) {
+fn action_update_label(
+    app: &mut App,
+    id: &str,
+    path: &str,
+    object_type: usize,
+    tier: usize,
+    owner_sid: &str,
+    parent_label_id: &str,
+) {
     let object_type_str = OBJECT_TYPE_OPTIONS.get(object_type).unwrap_or(&"file");
     let tier_str = TIER_OPTIONS.get(tier).unwrap_or(&"T1");
     let body = serde_json::json!({
@@ -5205,10 +5233,10 @@ fn action_update_label(app: &mut App, id: &str, path: &str, object_type: usize, 
         "parent_label_id": if parent_label_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(parent_label_id.to_string()) },
     });
     let url = format!("admin/labels/{id}");
-    match app.rt.block_on(
-        app.client
-            .put::<serde_json::Value, _>(&url, &body),
-    ) {
+    match app
+        .rt
+        .block_on(app.client.put::<serde_json::Value, _>(&url, &body))
+    {
         Ok(_) => {
             app.set_status("Label updated.", StatusKind::Success);
             action_load_label_list(app, LabelFilter::All);
@@ -5250,6 +5278,350 @@ fn action_reject_label(app: &mut App, id: &str) {
         }
         Err(e) => {
             app.set_status(format!("Error rejecting label: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Approval workflow handlers (Phase 61)
+// ---------------------------------------------------------------------------
+
+/// Handles key events for the ApprovalList screen.
+fn handle_approval_list(app: &mut App, key: KeyEvent) {
+    let (approvals, selected, filter, page, per_page, total) = match &mut app.screen {
+        Screen::ApprovalList {
+            approvals,
+            selected,
+            filter,
+            page,
+            per_page,
+            total,
+            ..
+        } => (
+            approvals.clone(),
+            selected,
+            *filter,
+            *page,
+            *per_page,
+            *total,
+        ),
+        _ => return,
+    };
+
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if !approvals.is_empty() {
+                nav(selected, approvals.len(), key.code);
+            }
+        }
+        KeyCode::Char('g') => {
+            // Grant selected pending approval
+            if let Some(resp) = approvals.get(*selected) {
+                let approval = resp.get("approval").and_then(|a| a.as_object());
+                let status = approval
+                    .and_then(|a| a.get("status"))
+                    .and_then(|s| s.as_str());
+                if status == Some("pending") {
+                    let approval_id = approval
+                        .and_then(|a| a.get("id"))
+                        .and_then(|id| id.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let requester_sid = approval
+                        .and_then(|a| a.get("requester_sid"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let data_object_id = approval
+                        .and_then(|a| a.get("data_object_id"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let allowed_action = approval
+                        .and_then(|a| a.get("allowed_action"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let destination = approval
+                        .and_then(|a| a.get("destination_scope"))
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string());
+                    let tier = resp
+                        .get("tier")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string());
+
+                    app.screen = Screen::ApprovalGrant {
+                        approval_id,
+                        requester_sid,
+                        object_path: data_object_id,
+                        action: allowed_action,
+                        destination,
+                        tier,
+                        expiry_hours: 4,
+                        signature_hex: String::new(),
+                        selected_field: 0,
+                    };
+                } else {
+                    if let Screen::ApprovalList { status_message, .. } = &mut app.screen {
+                        status_message.clear();
+                        status_message.push_str("Can only grant pending approvals");
+                    }
+                    app.set_status("Can only grant pending approvals", StatusKind::Error);
+                }
+            }
+        }
+        KeyCode::Char('r') => {
+            // Revoke selected approved approval
+            if let Some(resp) = approvals.get(*selected) {
+                let approval = resp.get("approval").and_then(|a| a.as_object());
+                let status = approval
+                    .and_then(|a| a.get("status"))
+                    .and_then(|s| s.as_str());
+                if status == Some("approved") {
+                    let id = approval
+                        .and_then(|a| a.get("id"))
+                        .and_then(|id| id.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    app.screen = Screen::Confirm {
+                        message: format!("Revoke approval '{id}'?"),
+                        yes_selected: false,
+                        purpose: ConfirmPurpose::RevokeApproval { id },
+                    };
+                }
+            }
+        }
+        KeyCode::Char('v') | KeyCode::Enter => {
+            // View detail
+            if let Some(resp) = approvals.get(*selected) {
+                app.screen = Screen::ApprovalDetail {
+                    detail: resp.clone(),
+                };
+            }
+        }
+        KeyCode::Char('f') => {
+            // Cycle filter and trigger reload (reset to page 1)
+            let new_filter = filter.next();
+            action_load_approval_list(app, new_filter, 1);
+        }
+        KeyCode::PageUp => {
+            if page > 1 {
+                action_load_approval_list(app, filter, page - 1);
+            }
+        }
+        KeyCode::PageDown => {
+            let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+            if page < total_pages {
+                action_load_approval_list(app, filter, page + 1);
+            } else if let Screen::ApprovalList { status_message, .. } = &mut app.screen {
+                status_message.clear();
+                status_message.push_str("Last page");
+                app.set_status("Last page", StatusKind::Info);
+            }
+        }
+        KeyCode::Esc => {
+            app.screen = Screen::SystemMenu { selected: 0 };
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events for the ApprovalDetail screen.
+fn handle_approval_detail(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter | KeyCode::Esc => {
+            // Return to list, preserving context (no reload)
+            if let Screen::ApprovalDetail { detail: _ } = &app.screen {
+                // Return to approval list. Since we don't have the list state
+                // preserved in ApprovalDetail, reload it.
+                action_load_approval_list(app, ApprovalFilter::All, 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handles key events for the ApprovalGrant screen.
+fn handle_approval_grant(app: &mut App, key: KeyEvent) {
+    let (
+        approval_id,
+        tier,
+        expiry_hours,
+        signature_hex,
+        selected_field,
+        _requester_sid,
+        _object_path,
+        _action,
+        _destination,
+    ) = match &mut app.screen {
+        Screen::ApprovalGrant {
+            approval_id,
+            tier,
+            expiry_hours,
+            signature_hex,
+            selected_field,
+            requester_sid,
+            object_path,
+            action,
+            destination,
+        } => (
+            approval_id.clone(),
+            tier.clone(),
+            expiry_hours,
+            signature_hex,
+            selected_field,
+            requester_sid.clone(),
+            object_path.clone(),
+            action.clone(),
+            destination.clone(),
+        ),
+        _ => return,
+    };
+
+    let is_t4 = tier.as_deref() == Some("T4");
+    let max_field = if is_t4 { 1 } else { 0 };
+
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            // Navigate between fields
+            if let Screen::ApprovalGrant { selected_field, .. } = &mut app.screen {
+                *selected_field = if *selected_field == 0 { max_field } else { 0 };
+            }
+        }
+        KeyCode::Left | KeyCode::Right => {
+            // Cycle expiry options
+            if *selected_field == 0 {
+                let current_idx = EXPIRY_OPTIONS
+                    .iter()
+                    .position(|(h, _)| *h == *expiry_hours)
+                    .unwrap_or(0);
+                let new_idx = match key.code {
+                    KeyCode::Left => {
+                        if current_idx == 0 {
+                            EXPIRY_OPTIONS.len() - 1
+                        } else {
+                            current_idx - 1
+                        }
+                    }
+                    KeyCode::Right => (current_idx + 1) % EXPIRY_OPTIONS.len(),
+                    _ => current_idx,
+                };
+                if let Screen::ApprovalGrant { expiry_hours, .. } = &mut app.screen {
+                    *expiry_hours = EXPIRY_OPTIONS[new_idx].0;
+                }
+            }
+        }
+        KeyCode::Enter => {
+            // Submit grant
+            if is_t4 && signature_hex.is_empty() {
+                app.set_status("T4 approval requires Board signature", StatusKind::Error);
+                return;
+            }
+
+            let valid_until = chrono::Utc::now()
+                + chrono::TimeDelta::try_hours(*expiry_hours as i64)
+                    .unwrap_or_else(|| chrono::TimeDelta::try_hours(1).unwrap());
+            let valid_until_str = valid_until.to_rfc3339();
+            let signature = if is_t4 {
+                Some(signature_hex.as_str())
+            } else {
+                None
+            };
+
+            match app.rt.block_on(app.client.grant_approval(
+                &approval_id,
+                &valid_until_str,
+                signature,
+            )) {
+                Ok(_) => {
+                    app.set_status("Approval granted", StatusKind::Success);
+                    action_load_approval_list(app, ApprovalFilter::All, 1);
+                }
+                Err(e) => {
+                    app.set_status(format!("Grant failed: {e}"), StatusKind::Error);
+                }
+            }
+        }
+        KeyCode::Esc => {
+            // Cancel and return to list
+            action_load_approval_list(app, ApprovalFilter::All, 1);
+        }
+        KeyCode::Char(c) => {
+            // Text input for signature field
+            if is_t4 && *selected_field == 1 {
+                if let Screen::ApprovalGrant { signature_hex, .. } = &mut app.screen {
+                    signature_hex.push(c);
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            if is_t4 && *selected_field == 1 {
+                if let Screen::ApprovalGrant { signature_hex, .. } = &mut app.screen {
+                    signature_hex.pop();
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Loads the approval list from the API and transitions to ApprovalList screen.
+fn action_load_approval_list(app: &mut App, filter: ApprovalFilter, page: u32) {
+    let per_page = 50u32;
+    let status_filter = filter.as_str();
+    match app
+        .rt
+        .block_on(app.client.list_approvals(status_filter, page, per_page))
+    {
+        Ok(response) => {
+            let approvals = response
+                .get("approvals")
+                .and_then(|a| a.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let total = response.get("total").and_then(|t| t.as_i64()).unwrap_or(0);
+            let returned_page = response
+                .get("page")
+                .and_then(|p| p.as_u64())
+                .map(|p| p as u32)
+                .unwrap_or(page);
+            let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+            app.set_status(
+                format!(
+                    "Loaded {} approvals (page {} of {})",
+                    approvals.len(),
+                    returned_page,
+                    total_pages.max(1)
+                ),
+                StatusKind::Success,
+            );
+            app.screen = Screen::ApprovalList {
+                approvals,
+                selected: 0,
+                filter,
+                page: returned_page,
+                per_page,
+                total,
+                status_message: String::new(),
+            };
+        }
+        Err(e) => {
+            app.set_status(format!("Error loading approvals: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+/// Revokes an approval and reloads the list.
+fn action_revoke_approval(app: &mut App, id: &str) {
+    match app.rt.block_on(app.client.revoke_approval(id)) {
+        Ok(_) => {
+            app.set_status("Approval revoked", StatusKind::Success);
+            action_load_approval_list(app, ApprovalFilter::All, 1);
+        }
+        Err(e) => {
+            app.set_status(format!("Revoke failed: {e}"), StatusKind::Error);
+            action_load_approval_list(app, ApprovalFilter::All, 1);
         }
     }
 }
@@ -5362,7 +5734,9 @@ fn action_load_label_for_edit(app: &mut App, id: &str) {
 fn handle_label_review_queue(app: &mut App, key: KeyEvent) {
     // Clone labels first to avoid borrow issues
     let (labels, selected) = match &app.screen {
-        Screen::LabelReviewQueue { labels, selected, .. } => (labels.clone(), *selected),
+        Screen::LabelReviewQueue {
+            labels, selected, ..
+        } => (labels.clone(), *selected),
         _ => return,
     };
     match key.code {
@@ -5404,7 +5778,12 @@ fn handle_label_review_queue(app: &mut App, key: KeyEvent) {
                             None
                         } else {
                             let filter = Some(depts[0].clone());
-                            if let Screen::LabelReviewQueue { departments, department_index, .. } = &mut app.screen {
+                            if let Screen::LabelReviewQueue {
+                                departments,
+                                department_index,
+                                ..
+                            } = &mut app.screen
+                            {
                                 *departments = depts;
                                 *department_index = 0;
                             }
@@ -5412,13 +5791,21 @@ fn handle_label_review_queue(app: &mut App, key: KeyEvent) {
                         }
                     }
                     Err(e) => {
-                        app.set_status(format!("Error loading departments: {e}"), StatusKind::Error);
+                        app.set_status(
+                            format!("Error loading departments: {e}"),
+                            StatusKind::Error,
+                        );
                         None
                     }
                 }
             } else {
                 let (next_idx, filter) = match &mut app.screen {
-                    Screen::LabelReviewQueue { departments, department_index, department_filter, .. } => {
+                    Screen::LabelReviewQueue {
+                        departments,
+                        department_index,
+                        department_filter,
+                        ..
+                    } => {
                         let next = (*department_index + 1) % (departments.len() + 1);
                         let f = if next == departments.len() {
                             None
@@ -5473,7 +5860,16 @@ fn handle_label_form(app: &mut App, key: KeyEvent) {
                 owner_sid,
                 parent_label_id,
                 existing_id,
-            } => (*mode, *step, path.clone(), *object_type, *tier, owner_sid.clone(), parent_label_id.clone(), existing_id.clone()),
+            } => (
+                *mode,
+                *step,
+                path.clone(),
+                *object_type,
+                *tier,
+                owner_sid.clone(),
+                parent_label_id.clone(),
+                existing_id.clone(),
+            ),
             _ => return,
         };
 
@@ -5506,7 +5902,9 @@ fn handle_label_form(app: &mut App, key: KeyEvent) {
         2 => match key.code {
             KeyCode::Up => {
                 if let Screen::LabelForm { object_type, .. } = &mut app.screen {
-                    *object_type = object_type.checked_sub(1).unwrap_or(OBJECT_TYPE_OPTIONS.len() - 1);
+                    *object_type = object_type
+                        .checked_sub(1)
+                        .unwrap_or(OBJECT_TYPE_OPTIONS.len() - 1);
                 }
             }
             KeyCode::Down => {
@@ -5568,12 +5966,18 @@ fn handle_label_form(app: &mut App, key: KeyEvent) {
         },
         5 => match key.code {
             KeyCode::Char(c) => {
-                if let Screen::LabelForm { parent_label_id, .. } = &mut app.screen {
+                if let Screen::LabelForm {
+                    parent_label_id, ..
+                } = &mut app.screen
+                {
                     parent_label_id.push(c);
                 }
             }
             KeyCode::Backspace => {
-                if let Screen::LabelForm { parent_label_id, .. } = &mut app.screen {
+                if let Screen::LabelForm {
+                    parent_label_id, ..
+                } = &mut app.screen
+                {
                     parent_label_id.pop();
                 }
             }
@@ -5588,18 +5992,31 @@ fn handle_label_form(app: &mut App, key: KeyEvent) {
             _ => {}
         },
         6 => match key.code {
-            KeyCode::Enter => {
-                match mode {
-                    LabelFormMode::New => {
-                        action_create_label(app, &path, object_type, tier, &owner_sid, &parent_label_id);
-                    }
-                    LabelFormMode::Edit => {
-                        if let Some(id) = existing_id {
-                            action_update_label(app, &id, &path, object_type, tier, &owner_sid, &parent_label_id);
-                        }
+            KeyCode::Enter => match mode {
+                LabelFormMode::New => {
+                    action_create_label(
+                        app,
+                        &path,
+                        object_type,
+                        tier,
+                        &owner_sid,
+                        &parent_label_id,
+                    );
+                }
+                LabelFormMode::Edit => {
+                    if let Some(id) = existing_id {
+                        action_update_label(
+                            app,
+                            &id,
+                            &path,
+                            object_type,
+                            tier,
+                            &owner_sid,
+                            &parent_label_id,
+                        );
                     }
                 }
-            }
+            },
             KeyCode::Esc => {
                 app.screen = Screen::MainMenu { selected: 3 };
             }

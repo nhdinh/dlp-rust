@@ -4,22 +4,25 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Table, Wrap,
+    Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, Wrap,
 };
 use ratatui::Frame;
 
 use crate::app::{
-    App, ConditionAttribute, ImportState, LabelFilter, LabelFormMode, Screen, SimulateFormState,
-    SimulateOutcome, StatusKind, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES,
+    App, ApprovalFilter, ConditionAttribute, ImportState, LabelFilter, LabelFormMode, Screen,
+    SimulateFormState, SimulateOutcome, StatusKind, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES,
     OBJECT_TYPE_OPTIONS, SIMULATE_ACCESS_CONTEXT_OPTIONS, SIMULATE_ACTION_OPTIONS,
     SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
     SIMULATE_NETWORK_LOCATION_OPTIONS, TIER_OPTIONS,
 };
-use crate::screens::dispatch::condition_display;
-use crate::screens::dispatch::operators_for;
+use crate::screens::approvals::{
+    APPROVAL_GRANT_HINTS, APPROVAL_LIST_EMPTY, APPROVAL_LIST_HINTS, EXPIRY_OPTIONS,
+};
 use crate::screens::cloud_config::{
     CLOUD_CONFIG_BACK_ROW, CLOUD_CONFIG_KEYS, CLOUD_CONFIG_LABELS, CLOUD_CONFIG_SAVE_ROW,
 };
+use crate::screens::dispatch::condition_display;
+use crate::screens::dispatch::operators_for;
 use crate::screens::print_config::{
     is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_KEYS, PRINT_CONFIG_LABELS,
 };
@@ -108,6 +111,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                     "Cloud Config",
                     "Print Config",
                     "Label Review Queue",
+                    "Approval Management",
                     "Back",
                 ],
                 *selected,
@@ -319,7 +323,11 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         Screen::DiskRegistryList { disks, selected } => {
             draw_disk_registry_list(frame, area, disks, *selected);
         }
-        Screen::LabelList { labels, selected, filter } => {
+        Screen::LabelList {
+            labels,
+            selected,
+            filter,
+        } => {
             draw_label_list(frame, area, labels, *selected, *filter);
         }
         Screen::LabelReviewQueue {
@@ -362,6 +370,48 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 *tier,
                 owner_sid,
                 parent_label_id,
+            );
+        }
+        // Approval workflow screens (Phase 61)
+        Screen::ApprovalList {
+            approvals,
+            selected,
+            filter,
+            page,
+            per_page,
+            total,
+            ..
+        } => {
+            draw_approval_list(
+                frame, area, approvals, *selected, *filter, *page, *per_page, *total,
+            );
+        }
+        Screen::ApprovalDetail { detail } => {
+            draw_approval_detail(frame, area, detail);
+        }
+        Screen::ApprovalGrant {
+            approval_id,
+            requester_sid,
+            object_path,
+            action,
+            destination,
+            tier,
+            expiry_hours,
+            signature_hex,
+            selected_field,
+        } => {
+            draw_approval_grant(
+                frame,
+                area,
+                approval_id,
+                requester_sid,
+                object_path,
+                action,
+                destination.as_deref(),
+                tier.as_deref(),
+                *expiry_hours,
+                signature_hex,
+                *selected_field,
             );
         }
     }
@@ -2454,9 +2504,10 @@ fn draw_cloud_config(
     for (i, key) in CLOUD_CONFIG_KEYS.iter().enumerate() {
         let label = CLOUD_CONFIG_LABELS[i];
         // cloud_hook_enabled is a bool — display as "Enabled"/"Disabled".
-        let value_str = config[key].as_bool().map_or("Disabled", |b| {
-            if b { "Enabled" } else { "Disabled" }
-        });
+        let value_str =
+            config[key]
+                .as_bool()
+                .map_or("Disabled", |b| if b { "Enabled" } else { "Disabled" });
         let line = if i == selected {
             format!("> {label}: {value_str}")
         } else {
@@ -2482,7 +2533,11 @@ fn draw_cloud_config(
     let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::BOLD));
     frame.render_widget(list, inner);
 
-    draw_hints(frame, area, "Up/Down: navigate | Enter: toggle/action | Esc: back");
+    draw_hints(
+        frame,
+        area,
+        "Up/Down: navigate | Enter: toggle/action | Esc: back",
+    );
 }
 
 /// Draws the Print Config form.
@@ -2698,11 +2753,7 @@ fn draw_label_review_queue(
 
     if labels.is_empty() {
         let paragraph = Paragraph::new(LABEL_REVIEW_EMPTY)
-            .block(
-                Block::default()
-                    .title(title)
-                    .borders(Borders::ALL),
-            )
+            .block(Block::default().title(title).borders(Borders::ALL))
             .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(paragraph, area);
         draw_hints(frame, area, LABEL_REVIEW_HINTS);
@@ -2744,11 +2795,7 @@ fn draw_label_review_queue(
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL),
-        )
+        .block(Block::default().title(title).borders(Borders::ALL))
         .row_highlight_style(
             Style::default()
                 .fg(Color::Black)
@@ -2832,9 +2879,7 @@ fn draw_label_form(
 
     match step {
         1 => {
-            items.push(ListItem::new(Line::from(format!(
-                "Path: [{path}_]"
-            ))));
+            items.push(ListItem::new(Line::from(format!("Path: [{path}_]"))));
             items.push(ListItem::new(Line::raw("")));
             items.push(ListItem::new(Line::styled(
                 "Enter the file or folder path to label.",
@@ -2842,12 +2887,8 @@ fn draw_label_form(
             )));
         }
         2 => {
-            let ot = OBJECT_TYPE_OPTIONS
-                .get(object_type)
-                .unwrap_or(&"file");
-            items.push(ListItem::new(Line::from(format!(
-                "Object Type: {ot}"
-            ))));
+            let ot = OBJECT_TYPE_OPTIONS.get(object_type).unwrap_or(&"file");
+            items.push(ListItem::new(Line::from(format!("Object Type: {ot}"))));
             items.push(ListItem::new(Line::raw("")));
             items.push(ListItem::new(Line::styled(
                 "Up/Down: cycle options | Enter: confirm",
@@ -2894,9 +2935,7 @@ fn draw_label_form(
             )));
         }
         6 => {
-            let ot = OBJECT_TYPE_OPTIONS
-                .get(object_type)
-                .unwrap_or(&"file");
+            let ot = OBJECT_TYPE_OPTIONS.get(object_type).unwrap_or(&"file");
             let t = TIER_OPTIONS.get(tier).unwrap_or(&"T1");
             let owner_disp = if owner_sid.is_empty() {
                 "(none)"
@@ -2913,7 +2952,9 @@ fn draw_label_form(
                 Style::default().add_modifier(Modifier::BOLD),
             )));
             items.push(ListItem::new(Line::raw("")));
-            items.push(ListItem::new(Line::from(format!("Path:            {path}"))));
+            items.push(ListItem::new(Line::from(format!(
+                "Path:            {path}"
+            ))));
             items.push(ListItem::new(Line::from(format!("Object Type:     {ot}"))));
             items.push(ListItem::new(Line::from(format!("Tier:            {t}"))));
             items.push(ListItem::new(Line::from(format!(
@@ -2931,8 +2972,7 @@ fn draw_label_form(
         _ => {}
     }
 
-    let list = List::new(items)
-        .block(Block::default().title(title).borders(Borders::ALL));
+    let list = List::new(items).block(Block::default().title(title).borders(Borders::ALL));
 
     frame.render_widget(list, area);
 
@@ -3363,6 +3403,310 @@ mod device_list_render_tests {
             "truncated SID prefix should appear: {s}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Approval workflow render functions (Phase 61)
+// ---------------------------------------------------------------------------
+
+/// Draws the ApprovalList screen.
+///
+/// Renders a scrollable table with columns: Requester, Object, Action, Status, Expires.
+/// Shows pagination info, filter suffix in title, and status colors per UI-SPEC.
+#[allow(clippy::too_many_arguments)]
+fn draw_approval_list(
+    frame: &mut Frame,
+    area: Rect,
+    approvals: &[serde_json::Value],
+    selected: usize,
+    filter: ApprovalFilter,
+    page: u32,
+    per_page: u32,
+    total: i64,
+) {
+    if approvals.is_empty() {
+        let filter_suffix = if filter != ApprovalFilter::All {
+            format!(" [{}]", filter.as_str().unwrap_or(""))
+        } else {
+            String::new()
+        };
+        let paragraph = Paragraph::new(APPROVAL_LIST_EMPTY)
+            .block(
+                Block::default()
+                    .title(format!(
+                        " Approval Management (0){filter_suffix} — Page {page} "
+                    ))
+                    .borders(Borders::ALL),
+            )
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(paragraph, area);
+        draw_hints(frame, area, APPROVAL_LIST_HINTS);
+        return;
+    }
+
+    let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+    let total_pages = total_pages.max(1);
+
+    let filter_suffix = if filter != ApprovalFilter::All {
+        format!(" [{}]", filter.as_str().unwrap_or(""))
+    } else {
+        String::new()
+    };
+
+    let header = Row::new(vec!["Requester", "Object", "Action", "Status", "Expires"])
+        .style(Style::default().add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = approvals
+        .iter()
+        .map(|resp| {
+            let approval = resp.get("approval").and_then(|a| a.as_object());
+            let requester = approval
+                .and_then(|a| a.get("requester_sid"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("-");
+            let object = approval
+                .and_then(|a| a.get("data_object_id"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("-");
+            let action = approval
+                .and_then(|a| a.get("allowed_action"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("-");
+            let status = approval
+                .and_then(|a| a.get("status"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("-");
+            let expires = approval
+                .and_then(|a| a.get("valid_until"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("—");
+
+            let status_style = match status {
+                "pending" => Style::default().fg(Color::Yellow),
+                "approved" => Style::default().fg(Color::Green),
+                "rejected" => Style::default().fg(Color::Red),
+                "revoked" => Style::default().fg(Color::DarkGray),
+                "expired" => Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::CROSSED_OUT),
+                _ => Style::default(),
+            };
+
+            let tier = resp.get("tier").and_then(|t| t.as_str());
+            let t4_badge = if tier == Some("T4") { " [T4]" } else { "" };
+            let status_text = format!("{status}{t4_badge}");
+
+            let cells = vec![
+                Cell::from(requester.to_string()),
+                Cell::from(object.to_string()),
+                Cell::from(action.to_string()),
+                Cell::from(status_text).style(status_style),
+                Cell::from(expires.to_string()),
+            ];
+
+            Row::new(cells)
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(20), // Requester
+        Constraint::Percentage(25), // Object
+        Constraint::Percentage(15), // Action
+        Constraint::Percentage(20), // Status
+        Constraint::Percentage(20), // Expires
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .title(format!(
+                    " Approval Management ({total}){filter_suffix} — Page {page} of {total_pages} "
+                ))
+                .borders(Borders::ALL),
+        )
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(table, area, &mut state);
+
+    draw_hints(frame, area, APPROVAL_LIST_HINTS);
+}
+
+/// Draws the ApprovalDetail read-only view.
+///
+/// Shows all approval fields plus T4 canonical message for board member copy-paste.
+fn draw_approval_detail(frame: &mut Frame, area: Rect, detail: &serde_json::Value) {
+    let approval = detail.get("approval").and_then(|a| a.as_object());
+
+    let id = approval
+        .and_then(|a| a.get("id"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("-");
+    let requester = approval
+        .and_then(|a| a.get("requester_sid"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("-");
+    let approver = approval
+        .and_then(|a| a.get("approver_sid"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("—");
+    let object = approval
+        .and_then(|a| a.get("data_object_id"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("-");
+    let action = approval
+        .and_then(|a| a.get("allowed_action"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("-");
+    let destination = approval
+        .and_then(|a| a.get("destination_scope"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("Any");
+    let status = approval
+        .and_then(|a| a.get("status"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("-");
+    let justification = approval
+        .and_then(|a| a.get("justification"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("-");
+    let created = approval
+        .and_then(|a| a.get("created_at"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("-");
+    let updated = approval
+        .and_then(|a| a.get("updated_at"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("-");
+
+    let tier = detail.get("tier").and_then(|t| t.as_str()).unwrap_or("—");
+
+    let mut body = format!(
+        "ID:           {id}\n\
+         Requester:    {requester}\n\
+         Approver:     {approver}\n\
+         Object:       {object}\n\
+         Action:       {action}\n\
+         Destination:  {destination}\n\
+         Status:       {status}\n\
+         Tier:         {tier}\n\
+         Justification: {justification}\n\
+         Created:      {created}\n\
+         Updated:      {updated}"
+    );
+
+    // Display T4 canonical message for board member copy-paste
+    if let Some(msg) = detail.get("t4_canonical_message").and_then(|m| m.as_str()) {
+        body.push_str("\n\n");
+        body.push_str("T4 CANONICAL MESSAGE (copy for signing):\n");
+        body.push_str(msg);
+    }
+
+    draw_result(frame, area, "Approval Detail", &body);
+}
+
+/// Draws the ApprovalGrant form.
+///
+/// Shows read-only request info and editable expiry picker + T4 signature input.
+#[allow(clippy::too_many_arguments)]
+fn draw_approval_grant(
+    frame: &mut Frame,
+    area: Rect,
+    _approval_id: &str,
+    requester_sid: &str,
+    object_path: &str,
+    action: &str,
+    destination: Option<&str>,
+    tier: Option<&str>,
+    expiry_hours: u32,
+    signature_hex: &str,
+    selected_field: usize,
+) {
+    let is_t4 = tier == Some("T4");
+
+    let mut items: Vec<ListItem> = Vec::with_capacity(12);
+
+    items.push(ListItem::new(Line::styled(
+        "Grant Approval",
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+    items.push(ListItem::new(Line::raw("")));
+
+    // Read-only request info
+    items.push(ListItem::new(Line::from(format!(
+        "Requester: {requester_sid}"
+    ))));
+    items.push(ListItem::new(Line::from(format!(
+        "Object:    {object_path}"
+    ))));
+    items.push(ListItem::new(Line::from(format!("Action:    {action}"))));
+    items.push(ListItem::new(Line::from(format!(
+        "Destination: {}",
+        destination.unwrap_or("—")
+    ))));
+
+    if is_t4 {
+        items.push(ListItem::new(Line::raw("")));
+        items.push(ListItem::new(Line::styled(
+            "T4 REQUIREMENT: Board signature required",
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+
+    items.push(ListItem::new(Line::raw("")));
+
+    // Expiry picker
+    let expiry_label = EXPIRY_OPTIONS
+        .iter()
+        .find(|(h, _)| *h == expiry_hours)
+        .map(|(_, label)| *label)
+        .unwrap_or("Custom");
+    let expiry_selected = selected_field == 0;
+    items.push(ListItem::new(Line::from(format!(
+        "{} Expiry:     {}",
+        if expiry_selected { ">" } else { " " },
+        expiry_label
+    ))));
+
+    // T4 signature input (only for T4)
+    if is_t4 {
+        let sig_selected = selected_field == 1;
+        let sig_display = if signature_hex.is_empty() {
+            "[paste hex signature]"
+        } else {
+            signature_hex
+        };
+        items.push(ListItem::new(Line::from(format!(
+            "{} Signature:  {}",
+            if sig_selected { ">" } else { " " },
+            sig_display
+        ))));
+    }
+
+    items.push(ListItem::new(Line::raw("")));
+    items.push(ListItem::new(Line::styled(
+        "[Enter] Grant  [Esc] Cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(" Grant Approval ")
+            .borders(Borders::ALL),
+    );
+
+    frame.render_widget(list, area);
+
+    draw_hints(frame, area, APPROVAL_GRANT_HINTS);
 }
 
 #[cfg(test)]

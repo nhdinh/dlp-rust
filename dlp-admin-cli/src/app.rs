@@ -75,16 +75,30 @@ pub enum InputPurpose {
     LabelPath,
     /// Step 2: object type picker (carries path).
     #[allow(dead_code)]
-    LabelObjectType { path: String },
+    LabelObjectType {
+        path: String,
+    },
     /// Step 3: tier picker (carries path + object_type index).
     #[allow(dead_code)]
-    LabelTier { path: String, object_type: usize },
+    LabelTier {
+        path: String,
+        object_type: usize,
+    },
     /// Step 4: owner SID input (carries path + object_type + tier).
     #[allow(dead_code)]
-    LabelOwnerSid { path: String, object_type: usize, tier: usize },
+    LabelOwnerSid {
+        path: String,
+        object_type: usize,
+        tier: usize,
+    },
     /// Step 5: parent label ID input (carries path + object_type + tier + owner_sid).
     #[allow(dead_code)]
-    LabelParentId { path: String, object_type: usize, tier: usize, owner_sid: String },
+    LabelParentId {
+        path: String,
+        object_type: usize,
+        tier: usize,
+        owner_sid: String,
+    },
     /// Step 1 of disk registry add flow: prompts for agent ID.
     AddDiskRegistryAgentId,
     /// Step 2: carries agent_id; prompts for instance ID.
@@ -136,6 +150,10 @@ pub enum ConfirmPurpose {
     },
     /// Confirm deletion of a label by ID.
     DeleteLabel {
+        id: String,
+    },
+    /// Confirm revocation of an approval by ID.
+    RevokeApproval {
         id: String,
     },
 }
@@ -411,6 +429,44 @@ impl LabelFilter {
             Self::Confirmed => "confirmed",
             Self::Rejected => "rejected",
             Self::Expired => "expired",
+        }
+    }
+}
+
+/// Filter state for the ApprovalList screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApprovalFilter {
+    #[default]
+    All,
+    Pending,
+    Approved,
+    Rejected,
+    Revoked,
+    Expired,
+}
+
+impl ApprovalFilter {
+    /// Cycles to the next filter state.
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::Pending,
+            Self::Pending => Self::Approved,
+            Self::Approved => Self::Rejected,
+            Self::Rejected => Self::Revoked,
+            Self::Revoked => Self::Expired,
+            Self::Expired => Self::All,
+        }
+    }
+
+    /// Returns the wire-format query parameter value, or None for "all".
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::All => None,
+            Self::Pending => Some("pending"),
+            Self::Approved => Some("approved"),
+            Self::Rejected => Some("rejected"),
+            Self::Revoked => Some("revoked"),
+            Self::Expired => Some("expired"),
         }
     }
 }
@@ -906,6 +962,59 @@ pub enum Screen {
         parent_label_id: String,
         /// Pre-filled values for edit mode.
         existing_id: Option<String>,
+    },
+
+    // ---------------------------------------------------------------------------
+    // Approval Workflow screens (Phase 61)
+    // ---------------------------------------------------------------------------
+    /// Approval management list screen with pagination.
+    ///
+    /// Pattern: LabelList — scrollable table with inline actions and filter cycling.
+    ApprovalList {
+        /// Raw JSON approval responses from the API (each contains `approval` + `tier`).
+        approvals: Vec<serde_json::Value>,
+        /// Currently highlighted row index.
+        selected: usize,
+        /// Active status filter.
+        filter: ApprovalFilter,
+        /// Current page number (1-based).
+        page: u32,
+        /// Items per page.
+        per_page: u32,
+        /// Total count from server (for pagination).
+        total: i64,
+        /// Status message displayed in the status bar.
+        status_message: String,
+    },
+    /// Single approval detail (read-only popup).
+    ///
+    /// Shows all approval fields plus T4 canonical message for board member copy-paste.
+    ApprovalDetail {
+        /// Raw JSON detail response from the API (contains `approval`, `tier`, `t4_canonical_message`).
+        detail: serde_json::Value,
+    },
+    /// Approval grant form for Data Owner (T3) or Board (T4) approval.
+    ///
+    /// Shows read-only request info and editable expiry picker + T4 signature input.
+    ApprovalGrant {
+        /// Approval ID being granted.
+        approval_id: String,
+        /// Requester SID (read-only display).
+        requester_sid: String,
+        /// Object path / data object ID (read-only display).
+        object_path: String,
+        /// Action being approved (read-only display).
+        action: String,
+        /// Destination scope restriction (read-only display).
+        destination: Option<String>,
+        /// Tier of the data object (determines T4 signature requirement).
+        tier: Option<String>,
+        /// Selected expiry duration in hours (1, 4, 8, 24).
+        expiry_hours: u32,
+        /// Hex-encoded Ed25519 signature for T4 Board approval.
+        signature_hex: String,
+        /// Selected field index: 0 = expiry, 1 = signature (T4 only).
+        selected_field: usize,
     },
 }
 
