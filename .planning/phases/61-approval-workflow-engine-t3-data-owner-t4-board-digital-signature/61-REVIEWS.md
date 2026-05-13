@@ -1,13 +1,21 @@
 ---
 phase: 61
-reviewers: [claude, opencode]
+reviewers: [claude, opencode, codex-unavailable]
 reviewed_at: 2026-05-13T01:05:00Z
+review_cycle: 2
 plans_reviewed: [61-01-PLAN.md, 61-02-PLAN.md, 61-03-PLAN.md, 61-04-PLAN.md]
 ---
 
 # Cross-AI Plan Review — Phase 61
 
-## Claude Review
+## Review Cycle History
+
+- **Cycle 1 (2026-05-13T01:05:00Z)**: Claude CLI + OpenCode reviewed initial plans. Identified 5 HIGH, 7 MEDIUM, 7 LOW concerns.
+- **Cycle 2 (2026-05-13)**: Plans revised to address all Cycle 1 concerns. OpenCode re-reviewed revised plans. Codex CLI unavailable (401 Unauthorized — not logged in).
+
+---
+
+## Claude Review (Cycle 1 — Initial Plans)
 
 ### Summary
 
@@ -59,7 +67,7 @@ Phase 61 plans are well-structured and follow established patterns from prior ph
 
 ---
 
-## OpenCode Review
+## OpenCode Review (Cycle 1 — Initial Plans)
 
 ### Summary
 
@@ -108,11 +116,110 @@ Phase 61 plans demonstrate solid architectural thinking with appropriate reuse o
 
 ---
 
-## Consensus Summary
+## OpenCode Review (Cycle 2 — Revised Plans)
 
-Both reviewers independently identified the same three HIGH-severity issues and several MEDIUM concerns. Agreement is strong on the critical gaps.
+### Summary
 
-### Agreed Strengths
+The plans are structurally sound and the prior review cycle demonstrably improved them. The TOCTOU guard, encrypted key storage, cache re-verification, and justification validation all address real attack vectors. However, three systemic gaps remain: agent-offline resilience (token delivery/startup sync), destination scope leakage in cache key design, and a T4 canonical message format inconsistency with the documented user decisions.
+
+### Strengths
+
+- **Ed25519 compilation spike first (Task 0)** — This prevents a class of integration failures that typically surface mid-implementation
+- **TOCTOU guard with WHERE status='pending' + rows_affected check** — Correctly prevents double-grant on concurrent requests
+- **Re-verification on every cache read** — Eliminates cache-poisoning as an attack vector
+- **Wave dependency ordering** — Foundation->API->Agent->UI correctly isolates concerns
+- **Revocation confirmation via Confirm screen** — Guards against accidental destructive actions
+- **SIEM audit on all state transitions** — Covers the full lifecycle
+
+### Concerns
+
+- **HIGH: Agent-offline token delivery has no retry or startup sync mechanism.**
+  Plan 02 says "server pushes token to agent via HTTP POST." If the agent is restarting, disconnected, or the POST fails, the token is created server-side but never reaches the agent cache. The agent never learns about it unless it explicitly syncs on startup. A user with a valid granted approval will be denied until someone notices. Fix: add a startup sync (agent queries `GET /agent/approvals/active?since=<last_known>`) and a server-side retry queue with exponential backoff for failed deliveries.
+
+- **MEDIUM: T4 canonical message format conflicts with user decisions.**
+  User decisions state: *"Signature input: JWT payload bytes (the T3 approval token) signed with board member's private key."* Plan 01 Task 3 defines: `"DLP-T4-SIGNATURE:{jti}:{sub}:{obj}:{act}:{valid_until}"` — a *different* format. If the board member signs the JWT payload (as decided) but the server verifies the canonical message, verification always fails. These must be reconciled. Recommend aligning on the canonical message format (simpler for board members to produce with external tooling) and updating the decision document to match.
+
+- **MEDIUM: Cache key `(sub, obj, act)` omits `destination_scope`, creating a scope bypass.**
+  The approval schema includes `destination_scope` (e.g. `USB:DRIVE_E` vs `USB:*`). If the cache key is only `(sub, obj, act)`, an approval scoped to one specific USB drive will match a request targeting a *different* USB drive. The `check_approval` method must verify `dst` is within the approved scope *in addition to* the cache key match. Either `destination_scope` becomes part of the cache key, or a separate scope-matching check runs after the cache hit. Either way this must be explicit.
+
+- **MEDIUM: ABAC evaluation integration point is underspecified.**
+  The plan says "approval check in agent service — hook DLL sends policy eval request to agent; agent checks approval cache as part of ABAC evaluation." But the ABAC engine currently returns a binary ALLOW/DENY. Where exactly does the approval cache hook in? The critical invariant *("NTFS ALLOW + ABAC DENY -> DENY")* needs a third path: *("NTFS ALLOW + ABAC DENY + APPROVED TOKEN -> ALLOW")*. The `evaluate()` function needs an explicit ordered pipeline: (1) NTFS check, (2) ABAC policy check, (3) approval cache override for DENY results. Without this specification, the agent integration could produce wrong results.
+
+- **MEDIUM: No migration strategy for the approvals table.**
+  The existing SQLite database presumably has a schema version. Plan 01 creates a new table but doesn't mention `PRAGMA user_version` checks, migration scripts, or how the schema upgrade integrates with the existing database initialization path. Without this, deploying Phase 61 on an existing Phase 60 database may crash at startup.
+
+- **MEDIUM: No testing strategy mentioned across any plan.**
+  No plans include test tasks — neither unit tests for `ApprovalTokenService`/`ApprovalRepository`, nor integration tests for the API handlers, nor CI checks. For a security-critical subsystem handling cryptographic signing and policy override, this is a significant gap.
+
+- **LOW: T4 signature UX is unaddressed.**
+  A board member needs to: (1) see the canonical message somehow, (2) use external tooling to produce a 128-hex-char Ed25519 signature, (3) paste it into a TUI text field. The plan doesn't mention how the board member obtains the canonical message to sign. The admin TUI should display the exact canonical message string in the approval detail screen so the board member can copy it to their signing tool.
+
+- **LOW: No pagination in approval list.**
+  An enterprise deployment may have thousands of approvals. The TUI list currently loads all records. Should add `LIMIT/OFFSET` with page-up/page-down navigation or virtual scrolling.
+
+### Suggestions
+
+1. **Add agent startup sync endpoint** — `GET /api/v1/agent/approvals/active` returning approved+unexpired tokens. Agent calls this on startup and on IPC reconnection. Include `last_sync_ts` to return deltas only.
+2. **Add destination scope matching** — Extend `check_approval` to accept the request's `destination_scope` and validate it against the approval's scope. Use a hierarchical pattern match (e.g., `USB:*` matches `USB:DRIVE_E`).
+3. **Reconcile T4 format** — Either adopt the canonical message format everywhere (preferred: simpler for offline signing) and update the user decisions document, or use raw JWT payload bytes. Pick one.
+4. **Specify ABAC evaluation pipeline** — Document the three-stage flow: NTFS check -> ABAC policy -> approval override. The approval override only applies when step 1 is ALLOW and step 2 is DENY, AND the approval is for the specific `(sub, obj, act, dst)`.
+5. **Add migration step** — In the server startup, check `PRAGMA user_version` and apply `CREATE TABLE IF NOT EXISTS approvals (...)` + indexes. Bump `user_version` to the next version.
+6. **Add test tasks to each plan** — At minimum: (a) `ApprovalTokenService` sign/verify round-trip with valid and tampered tokens, (b) `ApprovalRepository` CRUD + TOCTOU race test, (c) API handler integration test for the full grant flow, (d) agent cache sweep expiry test.
+
+### Risk Assessment
+
+**MEDIUM**
+
+The core architecture is well-considered and the prior HIGH issues are genuinely resolved. Remaining risk centers on three areas: (1) the T4 format inconsistency will produce a non-functional integration unless reconciled before coding, (2) the agent-offline gap means granted approvals can be silently lost, (3) the destination scope escape in cache key design could allow broader access than intended. All are fixable with specification clarifications and one additional plan addition (startup sync). Recommend resolving T4 format and destination scope before execution begins; agent startup sync and testing can be added as tasks during execution.
+
+---
+
+## Codex Review
+
+**Status: UNAVAILABLE** — Codex CLI is installed but not authenticated (401 Unauthorized on API call). Login required to enable Codex reviews.
+
+---
+
+## Consensus Summary (Across Both Cycles)
+
+### Cycle 1 -> Cycle 2 Resolution Status
+
+| Concern | Severity (Cycle 1) | Status | How Addressed |
+|---------|-------------------|--------|---------------|
+| Missing approval creation endpoint | HIGH | **RESOLVED** | Plan 02 Task 2: create_approval + submit_approval_request handlers added |
+| Ed25519 API incompatibility | HIGH | **RESOLVED** | Plan 01 Task 0: Compilation spike verifies pkcs8 + to_pkcs8_der() before service code |
+| Cache key mismatch | HIGH | **RESOLVED** | Plan 03 Task 1: evaluate() resolves path to data_object_id via LabelService |
+| Token delivery gap | HIGH | **RESOLVED** | Plan 02 Task 2: Server pushes token via HTTP POST; Plan 03 Task 2: /agent/approval-token endpoint |
+| Unencrypted signing key | HIGH | **RESOLVED** | Plan 01 Task 3: Uses Phase 47 Envelope encrypted storage |
+| Double-grant / TOCTOU | MEDIUM | **RESOLVED** | Plan 01 Task 2: WHERE status='pending' guard; Plan 02 Task 2: rows_affected check |
+| Missing iss claim | MEDIUM | **RESOLVED** | Plan 01 Task 3: iss:"dlp-server" + validation in verify_token |
+| T4 signature anti-replay | MEDIUM | **RESOLVED** | Plan 01 Task 3: t4_canonical_message includes jti |
+| valid_until not validated | MEDIUM | **RESOLVED** | Plan 02 Task 2: valid_until > now check before signing |
+| Board public key unrestricted | MEDIUM | **RESOLVED** | Plan 02 Task 2: PUT /admin/board-public-key restricted to dlp-admin |
+| Agent cache re-verification | MEDIUM | **RESOLVED** | Plan 03 Task 1: check_approval re-verifies JWT signature on read |
+| Instant vs chrono | MEDIUM | **RESOLVED** | Plan 03 Task 1: Uses chrono::DateTime<Utc> |
+| Orphaned pending approvals | LOW | **RESOLVED** | Plan 01 Task 2: cleanup_orphaned + created_at index |
+| ApprovalRejected IPC | LOW | **RESOLVED** | Plan 03 Task 2: Pipe1AgentMsg::ApprovalRejected variant |
+| Justification length limit | LOW | **RESOLVED** | Plan 02 Task 1/2: validate() rejects > 500 chars |
+| Tier field for TUI | LOW | **RESOLVED** | Plan 02 Task 2: ApprovalResponse includes tier |
+| T4 signature input in TUI | LOW | **RESOLVED** | Plan 04 Task 1/2: ApprovalGrantForm.signature_hex + text input |
+| Stale data on filter switch | LOW | **RESOLVED** | Plan 04 Task 3: 'f' triggers actual API reload |
+| Empty approval list after Esc | LOW | **RESOLVED** | Plan 04 Task 3: Esc preserves approvals Vec |
+
+### Cycle 2: New / Remaining Concerns
+
+| Concern | Severity | Reviewer | Status |
+|---------|----------|----------|--------|
+| Agent-offline token delivery (no retry/startup sync) | **HIGH** | OpenCode (Cycle 2) | **NEW** — Not previously raised |
+| T4 canonical message format conflicts with user decisions | MEDIUM | OpenCode (Cycle 2) | **NEW** — Not previously raised |
+| Cache key omits destination_scope (scope bypass) | MEDIUM | OpenCode (Cycle 2) | **NEW** — Not previously raised |
+| ABAC evaluation integration point underspecified | MEDIUM | OpenCode (Cycle 2) | **NEW** — Not previously raised |
+| No migration strategy for approvals table | MEDIUM | OpenCode (Cycle 2) | **NEW** — Not previously raised |
+| No testing strategy across plans | MEDIUM | OpenCode (Cycle 2) | **NEW** — Not previously raised |
+| T4 signature UX (how board member gets canonical message) | LOW | OpenCode (Cycle 2) | **NEW** — Not previously raised |
+| No pagination in approval list | LOW | OpenCode (Cycle 2) | **NEW** — Not previously raised |
+
+### Agreed Strengths (Both Cycles)
 
 - Wave ordering and dependency sequencing is correct
 - Threat modeling with STRIDE register is thorough
@@ -120,41 +227,34 @@ Both reviewers independently identified the same three HIGH-severity issues and 
 - Cache key includes SID preventing cross-user replay
 - Reuse of existing architectural patterns reduces implementation risk
 - T4 Board signature adds a meaningful cryptographic boundary
-
-### Agreed Concerns
-
-1. **HIGH — Ed25519 API incompatibility**: Both reviewers flagged that `ed25519-dalek` v2 + `jsonwebtoken` 9.x interaction is untested and likely broken as written. `to_keypair_bytes()` probably doesn't exist; DER encoding needs verification.
-2. **HIGH — Cache key mismatch**: Both identified that `evaluate()` uses `resource.path` while `grant_approval` caches by `data_object_id` (UUID). The cache will never hit.
-3. **HIGH — Missing approval creation endpoint**: Both noted that no plan implements how approvals enter the `pending` state. The user UI flow references creation but no handler exists.
-4. **MEDIUM — Double-grant / TOCTOU race**: Both flagged concurrent grant vulnerability. `update_state` needs `WHERE status = 'pending'`.
-5. **MEDIUM — Token delivery gap**: Both noted server generates token but never delivers it to agent. No push mechanism or polling strategy is planned.
-6. **MEDIUM — T4 signature anti-replay**: OpenCode specifically noted the board-signed payload lacks `jti`, enabling signature replay across different approvals.
-7. **MEDIUM — `valid_until` not validated**: Claude noted no check that expiry is in the future.
-8. **LOW — T4 signature input in TUI incomplete**: Both noted the grant form references a signature input mechanism that doesn't exist.
-9. **LOW — `approval["tier"]` in TUI**: References non-existent field on `Approval` struct.
+- Ed25519 compilation spike (Task 0) prevents mid-implementation blockers
+- TOCTOU guard with rows_affected check is correctly implemented
+- JWT re-verification on cache read eliminates cache-poisoning attack vector
 
 ### Divergent Views
 
-- **Key storage**: OpenCode raised HIGH concern about `DLP_APPROVAL_PRIVATE_KEY` being a raw env var (vs Phase 47 encrypted storage). Claude did not flag this, treating it as consistent with existing `JWT_SECRET` pattern.
-- **`iss` claim**: OpenCode flagged missing `iss` as MEDIUM. Claude did not mention it.
-- **`Instant` vs chrono**: OpenCode noted `Instant` drifts across hibernation. Claude did not mention this.
-- **Agent cache re-verification**: OpenCode flagged that `check_approval` should re-verify JWT signature. Claude accepted the current design.
-- **Orphaned pending approvals**: OpenCode noted unbounded growth. Claude did not flag this.
-- **Scope creep on `RejectRequest.reason`**: OpenCode called this scope creep. Claude did not mention it.
+- **Key storage**: OpenCode (Cycle 1) raised HIGH concern about raw env var. Claude (Cycle 1) did not flag. **RESOLVED in Cycle 2** via Phase 47 Envelope.
+- **`iss` claim**: OpenCode (Cycle 1) flagged missing `iss` as MEDIUM. Claude did not mention. **RESOLVED in Cycle 2** via ApprovalClaims.iss.
+- **`Instant` vs chrono**: OpenCode (Cycle 1) noted `Instant` drifts. Claude did not. **RESOLVED in Cycle 2** via chrono::DateTime<Utc>.
+- **Agent cache re-verification**: OpenCode (Cycle 1) flagged need for re-verification. Claude accepted current design. **RESOLVED in Cycle 2** via check_approval signature re-verification.
+- **Orphaned pending approvals**: OpenCode (Cycle 1) noted unbounded growth. Claude did not. **RESOLVED in Cycle 2** via cleanup_orphaned.
+- **Agent-offline resilience**: OpenCode (Cycle 2) raised as NEW HIGH. Not in Cycle 1.
+- **Destination scope in cache key**: OpenCode (Cycle 2) raised as NEW MEDIUM. Not in Cycle 1.
+- **T4 format inconsistency**: OpenCode (Cycle 2) raised as NEW MEDIUM. Not in Cycle 1 — Cycle 1 reviewers did not compare user decisions against plan implementation.
 
 ### Recommended Actions Before Execution
 
-1. **Spike**: Verify `ed25519-dalek` v2 + `jsonwebtoken` 9.x EdDSA compilation. Add `pkcs8` feature if needed.
-2. **Fix cache key**: Either (a) resolve path to UUID in `evaluate()` before cache lookup, or (b) cache by path instead of UUID. Document the choice.
-3. **Add creation endpoint**: Add `POST /admin/approvals` and `POST /agent/approval-request` to Plan 02 (or create Plan 02b).
-4. **Fix TOCTOU**: Add `WHERE status = 'pending'` guard to `update_state` with `rows_affected` check.
-5. **Add token delivery**: Server `grant_approval` must push token to agent via `POST /agent/approval-token`, or agent must poll.
-6. **Validate expiry**: Reject grants where `valid_until <= now`.
-7. **Document T4 signature format**: Specify exact canonical serialization for board-signed payload.
-8. **Fix TUI**: Add actual signature text input screen or change T4 flow to collect signature before grant form.
-9. **Add `tier` to Approval**: Denormalize or resolve at API level so TUI can access it.
+1. **HIGH — Agent startup sync**: Add `GET /agent/approvals/active` endpoint and agent startup sync task. Without this, granted approvals are lost when agent restarts.
+2. **MEDIUM — Reconcile T4 format**: Update 61-CONTEXT.md user decisions to match the canonical message format, OR change t4_canonical_message to sign raw JWT payload bytes. Must be consistent.
+3. **MEDIUM — Destination scope in cache key**: Add `dst` to cache key OR add scope-matching check in check_approval after cache hit. Prevents USB drive A approval from allowing USB drive B.
+4. **MEDIUM — Specify ABAC pipeline**: Document three-stage flow: NTFS check -> ABAC policy -> approval override. Override only applies when NTFS=ALLOW and ABAC=DENY.
+5. **MEDIUM — Add migration**: `CREATE TABLE IF NOT EXISTS approvals` in init_tables() handles new installs; document `PRAGMA user_version` for existing DBs.
+6. **MEDIUM — Add test tasks**: Each plan needs explicit test tasks (unit + integration). Security-critical subsystem demands it.
+7. **LOW — T4 signature UX**: Display canonical message in ApprovalDetail screen for board member copy-paste.
+8. **LOW — Pagination**: Add LIMIT/OFFSET to list_approvals for enterprise scale.
 
 ---
 
 *Review generated by cross-AI peer review (Claude CLI + OpenCode).*
+*Cycle 1: 2026-05-13T01:05:00Z. Cycle 2: 2026-05-13.*
 *To incorporate feedback: /gsd-plan-phase 61 --reviews*
