@@ -3825,6 +3825,16 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -3833,6 +3843,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         admin_router(state)
     }
@@ -3886,6 +3897,16 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -3894,6 +3915,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         let app = admin_router(state);
 
@@ -3938,6 +3960,16 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -3946,6 +3978,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         let app = admin_router(state);
 
@@ -4044,6 +4077,16 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
@@ -4052,6 +4095,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         let app = admin_router(state);
 
@@ -4193,6 +4237,16 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
@@ -4201,6 +4255,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         let app = admin_router(state);
 
@@ -4424,6 +4479,16 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -4432,6 +4497,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -5326,6 +5392,16 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -5334,6 +5410,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         let app = admin_router(state);
 
@@ -5462,6 +5539,16 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -5470,6 +5557,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -5544,6 +5632,16 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -5552,6 +5650,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -5967,6 +6066,16 @@ mod tests {
             std::sync::Arc::clone(&crypto),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -5975,6 +6084,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         let app = admin_router(state);
 
@@ -6042,6 +6152,16 @@ mod tests {
             std::sync::Arc::clone(&crypto),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -6050,6 +6170,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         let app = admin_router(state);
 
@@ -6117,6 +6238,16 @@ mod tests {
             std::sync::Arc::clone(&crypto),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto =
+            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
@@ -6125,6 +6256,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         });
         let app = admin_router(state);
 
@@ -6800,6 +6932,11 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(&crypto, &conn)
+                .expect("approval token service"),
+        );
         Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -6808,6 +6945,7 @@ mod tests {
             alert,
             ad: None,
             label_service,
+            approval_token_service,
         })
     }
 
@@ -7199,6 +7337,16 @@ mod tests {
             );
             let label_service =
                 Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+            let approval_token_crypto =
+                crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+            let approval_token_conn = pool.get().expect("pool");
+            let approval_token_service = Arc::new(
+                crate::approval_token::ApprovalTokenService::new(
+                    &approval_token_crypto,
+                    &approval_token_conn,
+                )
+                .expect("approval token service"),
+            );
             let s = Arc::new(AppState {
                 pool: Arc::clone(&pool),
                 crypto: std::sync::Arc::clone(&crypto),
@@ -7207,6 +7355,7 @@ mod tests {
                 alert,
                 ad: None,
                 label_service,
+                approval_token_service,
             });
             // Minimal router with just the disk-registry delete route for isolation.
             axum::Router::new()
@@ -7258,6 +7407,16 @@ mod tests {
             );
             let label_service =
                 Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+            let approval_token_crypto =
+                crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+            let approval_token_conn = pool.get().expect("pool");
+            let approval_token_service = Arc::new(
+                crate::approval_token::ApprovalTokenService::new(
+                    &approval_token_crypto,
+                    &approval_token_conn,
+                )
+                .expect("approval token service"),
+            );
             let s = Arc::new(AppState {
                 pool: Arc::clone(&pool),
                 crypto: std::sync::Arc::clone(&crypto),
@@ -7266,6 +7425,7 @@ mod tests {
                 alert,
                 ad: None,
                 label_service,
+                approval_token_service,
             });
             axum::Router::new()
                 .route(
@@ -7587,6 +7747,16 @@ mod tests {
             );
             let label_service =
                 Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+            let approval_token_crypto =
+                crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+            let approval_token_conn = pool.get().expect("pool");
+            let approval_token_service = Arc::new(
+                crate::approval_token::ApprovalTokenService::new(
+                    &approval_token_crypto,
+                    &approval_token_conn,
+                )
+                .expect("approval token service"),
+            );
             let s = Arc::new(AppState {
                 pool: Arc::clone(&pool),
                 crypto: std::sync::Arc::clone(&crypto),
@@ -7595,6 +7765,7 @@ mod tests {
                 alert,
                 ad: None,
                 label_service,
+                approval_token_service,
             });
             axum::Router::new()
                 .route(

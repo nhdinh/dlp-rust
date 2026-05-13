@@ -7,6 +7,7 @@ pub mod admin_api;
 pub mod admin_auth;
 pub mod agent_registry;
 pub mod alert_router;
+pub mod approval_token;
 pub mod audit_store;
 pub mod crypto;
 pub mod db;
@@ -55,6 +56,8 @@ pub struct AppState {
     pub ad: Option<AdClient>,
     /// Label resolution service with TTL caching and folder inheritance.
     pub label_service: Arc<label_service::LabelService>,
+    /// Approval token signing and verification service.
+    pub approval_token_service: Arc<approval_token::ApprovalTokenService>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -74,6 +77,7 @@ impl std::fmt::Debug for AppState {
                 },
             )
             .field("label_service", &"LabelService(...)")
+            .field("approval_token_service", &"ApprovalTokenService(...)")
             .finish()
     }
 }

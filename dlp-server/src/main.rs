@@ -244,6 +244,19 @@ async fn main() -> anyhow::Result<()> {
     let label_service = Arc::new(LabelService::new(Arc::clone(&pool)));
     info!("label service initialized");
 
+    // Initialise the approval token service (Phase 61).
+    // This loads or generates the Ed25519 keypair using Phase 47 encrypted storage.
+    let approval_token_service = {
+        let conn = pool.get().map_err(|e| {
+            anyhow::anyhow!("failed to acquire connection for approval token service: {e}")
+        })?;
+        Arc::new(dlp_server::approval_token::ApprovalTokenService::new(
+            &crypto,
+            &conn,
+        )?)
+    };
+    info!("approval token service initialized");
+
     // Build shared application state.
     let state = Arc::new(AppState {
         pool,
@@ -253,6 +266,7 @@ async fn main() -> anyhow::Result<()> {
         alert,
         ad: ad_client,
         label_service,
+        approval_token_service,
     });
 
     // Start the background heartbeat sweeper (marks agents offline
