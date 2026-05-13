@@ -108,6 +108,13 @@ chrono = { version = "0.4", features = ["serde"] }
 prost = "0.14"
 bytes = "1"
 
+# Phase 61 — Approval Workflow Engine: agent-side cache with Ed25519 JWT verification
+dashmap = "6"
+ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
+jsonwebtoken = "9"
+hex = "0.4"
+rand = "0.8"
+
 # Print spooler XPS parsing (M017/S04)
 zip = "2"
 quick-xml = "0.36"
