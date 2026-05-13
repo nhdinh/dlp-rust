@@ -39,7 +39,7 @@ Phase 61 delivers the **Approval Workflow Engine** — a time-bounded approval s
 ### T4 Digital Signature
 - **Ed25519** for T4 signatures too — single key type, simpler key management
 - **Public key stored in `system_kv` table** — `board_public_key` row, hex-encoded; configurable via admin API/TUI
-- **Signature input**: JWT payload bytes (the T3 approval token) signed with board member's private key
+- **Signature input**: Canonical message format `DLP-T4-SIGNATURE:{jti}:{sub}:{obj}:{act}:{valid_until}` signed with board member's private key. This format is simpler for offline signing tools and includes `jti` for anti-replay.
 - **Board member identity**: AD SID stored in `approver_sid`; signature verification is cryptographic against stored pubkey
 
 ### Agent Integration and Hook Flow
@@ -56,10 +56,12 @@ Phase 61 delivers the **Approval Workflow Engine** — a time-bounded approval s
 - **Immediate revocation** — sets status `revoked`, pushes cache delta to agent; subsequent operations denied
 
 ### Claude's Discretion
-- Token cache key format: `"{sid}:{obj_id}:{action}"` — simple string join, no JSON
+- Token cache key format: `"{sid}:{obj_id}:{action}:{dst}"` — includes destination_scope to prevent scope bypass (e.g., USB:DRIVE_E approval cannot be reused for USB:DRIVE_F)
 - Approval request from user UI carries minimal payload: justification text (max 500 chars), action, path. Server resolves data_object_id from path.
 - Board signature verification happens server-side at grant time; agent only validates the JWT token signature (server's Ed25519 key, not board's).
 - Expiry check is lazy (on-demand during evaluation) plus a 60s background sweep for cache cleanup. No cron/scheduler needed.
+- Agent startup sync: On startup (and IPC reconnection), agent calls `GET /agent/approvals/active` to fetch all approved+unexpired tokens. This prevents token loss after agent restart.
+- ABAC evaluation pipeline: (1) NTFS check, (2) ABAC policy check, (3) approval cache override. Override only applies when NTFS=ALLOW and ABAC=DENY, AND the approval matches the specific (sub, obj, act, dst) tuple.
 
 </decisions>
 
