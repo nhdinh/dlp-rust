@@ -1,5 +1,6 @@
 //! TUI screen rendering and event handling.
 
+mod approvals;
 mod cloud_config;
 mod dispatch;
 mod labels;

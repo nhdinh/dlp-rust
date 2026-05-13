@@ -391,26 +391,108 @@ impl EngineClient {
 
     /// Calls PUT /admin/labels/:id.
     #[allow(dead_code)]
-    pub async fn update_label(&self, id: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn update_label(
+        &self,
+        id: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
         self.put(&format!("admin/labels/{}", id), body).await
     }
 
     /// Calls POST /admin/labels/:id/confirm.
     #[allow(dead_code)]
     pub async fn confirm_label(&self, id: &str) -> Result<serde_json::Value> {
-        self.post(&format!("admin/labels/{}/confirm", id), &serde_json::json!({})).await
+        self.post(
+            &format!("admin/labels/{}/confirm", id),
+            &serde_json::json!({}),
+        )
+        .await
     }
 
     /// Calls POST /admin/labels/:id/reject.
     #[allow(dead_code)]
     pub async fn reject_label(&self, id: &str) -> Result<serde_json::Value> {
-        self.post(&format!("admin/labels/{}/reject", id), &serde_json::json!({})).await
+        self.post(
+            &format!("admin/labels/{}/reject", id),
+            &serde_json::json!({}),
+        )
+        .await
     }
 
     /// Calls DELETE /admin/labels/:id.
     #[allow(dead_code)]
     pub async fn delete_label(&self, id: &str) -> Result<()> {
         self.delete(&format!("admin/labels/{}", id)).await
+    }
+
+    // -----------------------------------------------------------------------
+    // Approval Workflow API (Phase 61)
+    // -----------------------------------------------------------------------
+
+    /// Calls GET /admin/approvals with optional status filter and pagination.
+    ///
+    /// Returns a JSON object with `approvals`, `total`, `page`, `per_page` fields.
+    #[allow(dead_code)]
+    pub async fn list_approvals(
+        &self,
+        status: Option<&str>,
+        page: u32,
+        per_page: u32,
+    ) -> Result<serde_json::Value> {
+        let mut path = format!("admin/approvals?page={page}&per_page={per_page}");
+        if let Some(s) = status {
+            path.push_str(&format!("&status={}", urlencoding::encode(s)));
+        }
+        self.get(&path).await
+    }
+
+    /// Calls GET /admin/approvals/:id.
+    ///
+    /// Returns a JSON object with `approval`, `tier`, `t4_canonical_message` fields.
+    #[allow(dead_code)]
+    pub async fn get_approval(&self, id: &str) -> Result<serde_json::Value> {
+        self.get(&format!("admin/approvals/{id}")).await
+    }
+
+    /// Calls POST /admin/approvals/:id/grant.
+    ///
+    /// `valid_until` is an RFC 3339 timestamp string. `signature` is the hex-encoded
+    /// Ed25519 signature required for T4 Board approvals; pass `None` for T3.
+    #[allow(dead_code)]
+    pub async fn grant_approval(
+        &self,
+        id: &str,
+        valid_until: &str,
+        signature: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "valid_until": valid_until,
+            "signature": signature,
+        });
+        self.post(&format!("admin/approvals/{id}/grant"), &body)
+            .await
+    }
+
+    /// Calls POST /admin/approvals/:id/reject.
+    #[allow(dead_code)]
+    pub async fn reject_approval(
+        &self,
+        id: &str,
+        reason: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({ "reason": reason });
+        self.post(&format!("admin/approvals/{id}/reject"), &body)
+            .await
+    }
+
+    /// Calls POST /admin/approvals/:id/revoke.
+    #[allow(dead_code)]
+    pub async fn revoke_approval(&self, id: &str) -> Result<serde_json::Value> {
+        self.post(
+            &format!("admin/approvals/{id}/revoke"),
+            &serde_json::json!({}),
+        )
+        .await
     }
 
     /// Sends a DELETE request.  Returns `Ok(())` on 204 No Content.
