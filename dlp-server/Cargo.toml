@@ -79,6 +79,11 @@ hmac = "0.12.1"
 sha2 = "0.10.8"
 zeroize = { version = "1.8.2", features = ["derive"] }
 
+# Phase 61 — Approval Workflow Engine: Ed25519 JWT signing for approval tokens
+ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
+rand = "0.8"
+hex = "0.4"
+
 # Concurrency
 parking_lot = { workspace = true }
 dashmap = "6"
