@@ -53,6 +53,18 @@ pub enum EventType {
     /// A grace period expired for an unregistered disk and mount-time blocking
     /// was applied (DISK-07, Phase 45).
     DiskQuarantineExpired,
+    /// An approval request was submitted (WORKFLOW-02, Phase 61).
+    ApprovalRequest,
+    /// An approval was granted by a Data Owner or Board member (WORKFLOW-02, Phase 61).
+    ApprovalGrant,
+    /// An approval was revoked by an administrator (WORKFLOW-02, Phase 61).
+    ApprovalRevoke,
+    /// An approval token was used to allow a blocked operation (WORKFLOW-03, Phase 61).
+    ApprovalUse,
+    /// An approval expired automatically (WORKFLOW-03, Phase 61).
+    ApprovalExpiry,
+    /// The Board public key was updated (WORKFLOW-06, Phase 61).
+    ApprovalBoardKeyUpdate,
 }
 
 impl EventType {
@@ -72,13 +84,22 @@ impl EventType {
                 | Self::DiskMountBlocked
                 | Self::DiskQuarantineStarted
                 | Self::DiskQuarantineExpired
+                | Self::ApprovalRequest
+                | Self::ApprovalGrant
+                | Self::ApprovalRevoke
+                | Self::ApprovalUse
+                | Self::ApprovalExpiry
+                | Self::ApprovalBoardKeyUpdate
         )
     }
 
     /// Returns `true` if this event type should trigger a real-time user alert.
     #[must_use]
     pub fn triggers_alert(self) -> bool {
-        matches!(self, Self::Alert | Self::ServiceStopFailed)
+        matches!(
+            self,
+            Self::Alert | Self::ServiceStopFailed | Self::ApprovalGrant
+        )
     }
 }
 

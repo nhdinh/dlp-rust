@@ -7,6 +7,7 @@ pub mod admin_api;
 pub mod admin_auth;
 pub mod agent_registry;
 pub mod alert_router;
+pub mod approval_api;
 pub mod approval_token;
 pub mod audit_store;
 pub mod crypto;
