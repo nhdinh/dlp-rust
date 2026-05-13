@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::admin_auth::{self, AdminUsername};
 use crate::agent_registry;
+use crate::approval_api;
 use crate::audit_store;
 use crate::db;
 use crate::db::repositories;
@@ -825,7 +826,11 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/agent-credentials/auth-hash", get(get_agent_auth_hash))
         .route("/agent-config/{id}", get(get_agent_config_for_agent))
         .route("/admin/device-registry", get(list_device_registry_handler))
-        .route("/admin/managed-origins", get(list_managed_origins_handler));
+        .route("/admin/managed-origins", get(list_managed_origins_handler))
+        // Phase 61: Agent-facing approval endpoints (no JWT — agent-authenticated)
+        .route("/agent/approval-request", post(approval_api::submit_approval_request))
+        .route("/agent/approvals/active", get(approval_api::list_active_approvals))
+        .route("/agent/approvals/public-key", get(approval_api::get_public_key));
 
     // Routes that require a valid JWT.
     // Policy routes get a tighter limit (60/min) via `.route_layer()`.
@@ -923,6 +928,13 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/admin/labels/{id}/confirm", post(confirm_label))
         .route("/admin/labels/{id}/reject", post(reject_label))
         .route("/admin/labels/departments", get(list_label_departments))
+        // Phase 61: Approval Workflow Engine admin API (WORKFLOW-02..06)
+        .route("/admin/approvals", get(approval_api::list_approvals).post(approval_api::create_approval))
+        .route("/admin/approvals/{id}", get(approval_api::get_approval))
+        .route("/admin/approvals/{id}/grant", post(approval_api::grant_approval))
+        .route("/admin/approvals/{id}/reject", post(approval_api::reject_approval))
+        .route("/admin/approvals/{id}/revoke", post(approval_api::revoke_approval))
+        .route("/admin/board-public-key", put(approval_api::update_board_public_key))
         .route_layer(default_config())
         .layer(middleware::from_fn(admin_auth::require_auth));
 

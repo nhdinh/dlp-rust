@@ -476,7 +476,6 @@ pub async fn grant_approval(
             tokio::task::spawn_blocking(move || -> Result<Option<String>, AppError> {
                 let conn = pool.get().map_err(AppError::from)?;
                 crate::approval_token::ApprovalTokenService::get_board_public_key(&conn)
-                    .map_err(AppError::from)
             })
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??
@@ -590,7 +589,7 @@ pub async fn grant_approval(
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
-        audit_store::store_events_sync(&uow, &[audit_event.clone()])?;
+        audit_store::store_events_sync(&uow, std::slice::from_ref(&audit_event))?;
         uow.commit().map_err(AppError::from)?;
         Ok(())
     })
@@ -876,7 +875,7 @@ pub async fn list_active_approvals(
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AppError::Database(e))
+            .map_err(AppError::Database)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
@@ -935,8 +934,7 @@ pub async fn update_board_public_key(
     let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let conn = pool.get().map_err(AppError::from)?;
-        crate::approval_token::ApprovalTokenService::store_board_public_key(&conn, &pubkey_hex)
-            .map_err(AppError::from)?;
+        crate::approval_token::ApprovalTokenService::store_board_public_key(&conn, &pubkey_hex)?;
         Ok(())
     })
     .await

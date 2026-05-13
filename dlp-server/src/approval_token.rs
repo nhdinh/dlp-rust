@@ -37,7 +37,9 @@
 //! ```
 
 use ed25519_dalek::pkcs8::EncodePrivateKey;
-use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{SigningKey, Verifier, VerifyingKey};
+#[cfg(test)]
+use ed25519_dalek::Signer;
 use jsonwebtoken::{
     decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
 };
