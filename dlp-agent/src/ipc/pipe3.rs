@@ -245,5 +245,29 @@ fn route(msg: Pipe3UiMsg) {
             // Phase 40: audit event emitted by the drag-drop enforcer directly.
             // The UI route only logs here; enforcement happens in dlp-agent.
         }
+        Pipe3UiMsg::RequestApproval {
+            request_id,
+            requester_sid,
+            resource_path,
+            allowed_action,
+            destination_scope,
+            justification,
+            device_fingerprint,
+        } => {
+            info!(
+                request_id,
+                requester_sid,
+                resource_path,
+                allowed_action,
+                destination_scope = ?destination_scope,
+                justification,
+                device_fingerprint = ?device_fingerprint,
+                "Pipe 3: approval request from UI"
+            );
+            // Phase 61: forward the approval request to the agent's
+            // approval-cache subsystem for processing.
+            // TODO(61): wire to approval_cache::submit_request() once the
+            //           agent-side approval pipeline is integrated.
+        }
     }
 }
