@@ -279,7 +279,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Reopened for review | - |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Reopened for review | - |
-| 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 1/4 | In Progress|  |
+| 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete   | 2026-05-13 |
 
 ---
 
