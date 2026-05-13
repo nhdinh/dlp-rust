@@ -1,7 +1,7 @@
 ---
 milestone: v0.11.0
 milestone_name: Label Service + Workflow + Audit
-last_updated: 2026-05-12
+last_updated: 2026-05-13
 total_phases: 6
 v1_requirements: 26
 coverage: 26/26
@@ -249,7 +249,23 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 47. Secrets Encryption at Rest (prerequisite) | n/a | Reopened for review | - |
+| 13. Conditions Builder | 2/2 | Reopened for review | - |
+| 14. Policy Create | 2/2 | Reopened for review | - |
+| 15. Policy Edit/Delete | 1/1 | Reopened for review | - |
+| 16. Policy List/Simulate | 2/2 | Reopened for review | - |
+| 17. Import/Export | 2/2 | Reopened for review | - |
+| 18. Boolean Mode Engine + Wire Format | 2/2 | Reopened for review | - |
+| 19. Boolean Mode TUI Import/Export | 2/2 | Reopened for review | - |
+| 20. Operator Expansion | 2/2 | Reopened for review | - |
+| 21. In-Place Condition Editing | 1/1 | Reopened for review | - |
+| 22. DLP-Common Foundation | 4/4 | Reopened for review | - |
+| 23. USB Enumeration in DLP-Agent | 2/2 | Reopened for review | - |
+| 24. Device Registry DB + Admin API | 4/4 | Reopened for review | - |
+| 25. App Identity Capture in DLP-User-UI | 4/4 | Reopened for review | - |
+| 26. ABAC Enforcement Convergence | 5/5 | Reopened for review | - |
+| 27. USB Toast Notification | 2/2 | Reopened for review | - |
+| 28. Admin TUI Screens | 5/5 | Reopened for review | - |
+| 47. Secrets Encryption at Rest (prerequisite) | 1/1 | Reopened for review | - |
 | 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 0/0 | Not started | - |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 0/0 | Not started | - |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 0/0 | Not started | - |
@@ -306,4 +322,4 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 
 ---
 
-*Last updated: 2026-05-12 — v1.0.0 Enterprise Hardening abandoned; v0.10.0 Real-Time File Access Prevention is the active milestone. Continuous numbering: Phase 47 shipped, Phases 48–58 active.*
+*Last updated: 2026-05-13 — All phases with plans (13–28, 47, 59–61) reopened for re-review. v0.10.0 phases 48–58 remain not started (no plans yet).*
