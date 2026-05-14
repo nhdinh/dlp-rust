@@ -100,6 +100,7 @@ webpki-roots = "1.0"
 # Rate limiting
 governor = "0.10"
 tower_governor = "0.8"
+once_cell.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

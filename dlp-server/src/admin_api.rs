@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use axum::extract::{FromRequest, Path, State};
+use once_cell::sync::Lazy;
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::routing::{delete, get, post, put};
@@ -24,9 +25,11 @@ use crate::audit_store;
 use crate::db;
 use crate::db::repositories;
 use crate::db::repositories::{
-    AgentConfigRepository, AlertRouterConfigRepository, CredentialsRepository,
-    DiskRegistryRepository, DiskRegistryRow, LdapConfigRepository, ManagedOriginRow,
+    validate_facility_code, validate_severity, AgentConfigRepository,
+    AlertRouterConfigRepository, CredentialsRepository, DiskRegistryRepository,
+    DiskRegistryRow, LdapConfigRepository, ManagedOriginRow,
     ManagedOriginsRepository, PolicyRepository, SiemConfigRepository,
+    SyslogConfigRepository, SyslogConfigRow,
 };
 use crate::db::repositories::labels::{LabelRepository, LabelRow, LabelUpsertRow};
 use crate::exception_store;
@@ -200,6 +203,44 @@ pub struct SiemConfigPayload {
     pub elk_api_key: String,
     /// Whether the ELK backend is active.
     pub elk_enabled: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Syslog config request / response types
+// ---------------------------------------------------------------------------
+
+/// Request/response payload for syslog configuration endpoints.
+///
+/// Mirrors [`SyslogConfigRow`] with `bool` for boolean columns (enabled,
+/// batching_enabled) so the JSON wire format is idiomatic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyslogConfigPayload {
+    /// Syslog collector hostname or IP address.
+    pub host: String,
+    /// Syslog collector port (1-65535).
+    pub port: i64,
+    /// Whether syslog forwarding is enabled.
+    pub enabled: bool,
+    /// Transport protocol -- 'tls' only in Phase 62.
+    pub protocol: String,
+    /// RFC 5424 facility code (16-23 for LOCAL0-LOCAL7).
+    pub facility_code: i64,
+    /// Message format -- 'json' for JSON-in-MSG.
+    pub format: String,
+    /// Whether batched newline-delimited JSON is enabled.
+    pub batching_enabled: bool,
+    /// Severity for Alert events (0-7).
+    pub severity_alert: i64,
+    /// Severity for Block events (0-7).
+    pub severity_block: i64,
+    /// Severity for all other audit events (0-7).
+    pub severity_audit: i64,
+    /// Queue eviction policy -- 'fifo_tail_drop', 'fifo_head_drop', 'ring_buffer'.
+    pub queue_policy: String,
+    /// Maximum queue size (default 100,000).
+    pub queue_max_size: i64,
+    /// Minimum TLS version -- '1.2' or '1.3'.
+    pub tls_min_version: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -935,6 +976,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/admin/approvals/{id}/reject", post(approval_api::reject_approval))
         .route("/admin/approvals/{id}/revoke", post(approval_api::revoke_approval))
         .route("/admin/board-public-key", put(approval_api::update_board_public_key))
+        // Phase 62: Syslog Forwarder admin API (SYSLOG-01..02)
+        .route("/admin/syslog-config", get(get_syslog_config_handler))
+        .route("/admin/syslog-config", put(update_syslog_config_handler))
+        .route("/admin/syslog-config/test", post(test_syslog_config_handler))
         .route_layer(default_config())
         .layer(middleware::from_fn(admin_auth::require_auth));
 
@@ -1537,6 +1582,181 @@ fn resolve_secret_field_with_stored(
         }
     } else {
         Some(secrecy::SecretString::new(incoming.to_string()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Syslog config handlers
+// ---------------------------------------------------------------------------
+
+/// `GET /admin/syslog-config` -- returns the current syslog configuration.
+///
+/// Reads the single row from `syslog_config` and returns it as JSON.
+/// No secret fields are present in syslog config (system CA store only,
+/// no custom CA or mTLS per D-10/D-11), so no masking is needed.
+async fn get_syslog_config_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<SyslogConfigPayload>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let crypto = Arc::clone(&state.crypto);
+    let row = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        SyslogConfigRepository::get(&pool, &crypto)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(SyslogConfigPayload {
+        host: row.host,
+        port: row.port,
+        enabled: row.enabled != 0,
+        protocol: row.protocol,
+        facility_code: row.facility_code,
+        format: row.format,
+        batching_enabled: row.batching_enabled != 0,
+        severity_alert: row.severity_alert,
+        severity_block: row.severity_block,
+        severity_audit: row.severity_audit,
+        queue_policy: row.queue_policy,
+        queue_max_size: row.queue_max_size,
+        tls_min_version: row.tls_min_version,
+    }))
+}
+
+/// `PUT /admin/syslog-config` -- updates the syslog connector config.
+///
+/// Overwrites the single row in `syslog_config` with the provided values
+/// and stamps `updated_at` with the current time. Returns the payload
+/// that was written so clients can refresh their local copy.
+///
+/// Validates port range (1-65535), facility_code (16-23), severity (0-7),
+/// queue_policy enum, and tls_min_version enum before writing to DB.
+async fn update_syslog_config_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SyslogConfigPayload>,
+) -> Result<Json<SyslogConfigPayload>, AppError> {
+    // Validation (per R-62-06).
+    if payload.port < 1 || payload.port > 65535 {
+        return Err(AppError::BadRequest("port must be 1-65535".to_string()));
+    }
+    validate_facility_code(payload.facility_code)?;
+    validate_severity(payload.severity_alert)?;
+    validate_severity(payload.severity_block)?;
+    validate_severity(payload.severity_audit)?;
+    let valid_policies = ["fifo_tail_drop", "fifo_head_drop", "ring_buffer"];
+    if !valid_policies.contains(&payload.queue_policy.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "queue_policy must be one of: {}",
+            valid_policies.join(", ")
+        )));
+    }
+    let valid_tls = ["1.2", "1.3"];
+    if !valid_tls.contains(&payload.tls_min_version.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "tls_min_version must be one of: {}",
+            valid_tls.join(", ")
+        )));
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let p = payload.clone();
+    let pool = Arc::clone(&state.pool);
+    let crypto = Arc::clone(&state.crypto);
+
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let record = SyslogConfigRow {
+            host: p.host,
+            port: p.port,
+            enabled: if p.enabled { 1 } else { 0 },
+            protocol: p.protocol,
+            facility_code: p.facility_code,
+            format: p.format,
+            batching_enabled: if p.batching_enabled { 1 } else { 0 },
+            severity_alert: p.severity_alert,
+            severity_block: p.severity_block,
+            severity_audit: p.severity_audit,
+            queue_policy: p.queue_policy,
+            queue_max_size: p.queue_max_size,
+            tls_min_version: p.tls_min_version,
+            updated_at: now,
+        };
+        SyslogConfigRepository::update(&uow, &record, &crypto)?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!("syslog config updated");
+    Ok(Json(payload))
+}
+
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
+
+// In-memory rate limiter: session_id -> last_test_time.
+// Note: In production, this should use a distributed cache. For Phase 62,
+// an in-memory Mutex<HashMap> is sufficient since dlp-server is single-instance.
+static TEST_RATE_LIMITER: Lazy<Arc<Mutex<HashMap<String, Instant>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+/// `POST /admin/syslog-config/test` -- sends a synthetic test event through
+/// the SyslogConnector.
+///
+/// Rate limited to 1 test per 10 seconds per session (per R-62-10).
+/// Returns 200 OK with JSON status even on failure so the TUI can display
+/// the error message.
+async fn test_syslog_config_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Rate limiting: extract session/jwt identifier from Authorization header.
+    let session_key = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("anonymous")
+        .to_string();
+
+    {
+        let mut limiter = TEST_RATE_LIMITER.lock().await;
+        let now = Instant::now();
+        let min_interval = Duration::from_secs(10);
+        if let Some(last) = limiter.get(&session_key) {
+            if now.duration_since(*last) < min_interval {
+                return Err(AppError::BadRequest(
+                    "Rate limit: max 1 test per 10 seconds".to_string(),
+                ));
+            }
+        }
+        limiter.insert(session_key, now);
+    }
+
+    let test_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::Alert,
+        "TEST\\syslog-test".to_string(),
+        "syslog-test".to_string(),
+        r"C:\test\file.txt".to_string(),
+        dlp_common::Classification::T3,
+        dlp_common::Action::WRITE,
+        dlp_common::Decision::DenyWithAlert,
+        "test-device".to_string(),
+        0,
+    );
+
+    match state.syslog.forward(&[test_event]).await {
+        Ok(()) => Ok(Json(serde_json::json!({
+            "status": "ok",
+            "message": "Test event forwarded successfully"
+        }))),
+        Err(e) => {
+            tracing::warn!(error = %e, "syslog test forward failed");
+            Ok(Json(serde_json::json!({
+                "status": "error",
+                "message": e.to_string()
+            })))
+        }
     }
 }
 
@@ -3847,6 +4067,10 @@ mod tests {
             )
             .expect("approval token service"),
         );
+        let syslog = crate::syslog_connector::SyslogConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
         let state = Arc::new(AppState {
             pool,
             crypto: std::sync::Arc::clone(&crypto),
@@ -3856,6 +4080,7 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog,
         });
         admin_router(state)
     }
@@ -3920,7 +4145,7 @@ mod tests {
             .expect("approval token service"),
         );
         let state = Arc::new(AppState {
-            pool,
+            pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
@@ -3928,6 +4153,10 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
         });
         let app = admin_router(state);
 
@@ -3983,7 +4212,7 @@ mod tests {
             .expect("approval token service"),
         );
         let state = Arc::new(AppState {
-            pool,
+            pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
@@ -3991,6 +4220,10 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
         });
         let app = admin_router(state);
 
@@ -4108,6 +4341,10 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
         });
         let app = admin_router(state);
 
@@ -4268,6 +4505,10 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
         });
         let app = admin_router(state);
 
@@ -4502,7 +4743,7 @@ mod tests {
             .expect("approval token service"),
         );
         let state = Arc::new(AppState {
-            pool,
+            pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
@@ -4510,6 +4751,10 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -5415,7 +5660,7 @@ mod tests {
             .expect("approval token service"),
         );
         let state = Arc::new(AppState {
-            pool,
+            pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
@@ -5423,6 +5668,10 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
         });
         let app = admin_router(state);
 
@@ -5562,7 +5811,7 @@ mod tests {
             .expect("approval token service"),
         );
         let state = Arc::new(AppState {
-            pool,
+            pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
@@ -5570,6 +5819,10 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -5655,7 +5908,7 @@ mod tests {
             .expect("approval token service"),
         );
         let state = Arc::new(AppState {
-            pool,
+            pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
@@ -5663,6 +5916,10 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -6089,7 +6346,7 @@ mod tests {
             .expect("approval token service"),
         );
         let state = Arc::new(AppState {
-            pool,
+            pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
@@ -6097,6 +6354,10 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
         });
         let app = admin_router(state);
 
@@ -6175,7 +6436,7 @@ mod tests {
             .expect("approval token service"),
         );
         let state = Arc::new(AppState {
-            pool,
+            pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
@@ -6183,6 +6444,10 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
         });
         let app = admin_router(state);
 
@@ -6269,6 +6534,10 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
         });
         let app = admin_router(state);
 
@@ -6950,7 +7219,7 @@ mod tests {
                 .expect("approval token service"),
         );
         Arc::new(AppState {
-            pool,
+            pool: Arc::clone(&pool),
             crypto: std::sync::Arc::clone(&crypto),
             policy_store,
             siem,
@@ -6958,6 +7227,10 @@ mod tests {
             ad: None,
             label_service,
             approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
         })
     }
 
@@ -7368,6 +7641,10 @@ mod tests {
                 ad: None,
                 label_service,
                 approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
             });
             // Minimal router with just the disk-registry delete route for isolation.
             axum::Router::new()
@@ -7438,6 +7715,10 @@ mod tests {
                 ad: None,
                 label_service,
                 approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
             });
             axum::Router::new()
                 .route(
@@ -7778,6 +8059,10 @@ mod tests {
                 ad: None,
                 label_service,
                 approval_token_service,
+            syslog: crate::syslog_connector::SyslogConnector::new(
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&crypto),
+            ),
             });
             axum::Router::new()
                 .route(
@@ -8361,6 +8646,339 @@ mod tests {
         let req = Request::builder()
             .method("GET")
             .uri("/admin/labels")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Phase 62: Syslog config handler tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_syslog_config_returns_defaults() {
+        use axum::body::to_bytes;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/syslog-config")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(axum::body::Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let payload: SyslogConfigPayload = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(payload.host, "");
+        assert_eq!(payload.port, 514);
+        assert!(!payload.enabled);
+        assert_eq!(payload.protocol, "tls");
+        assert_eq!(payload.facility_code, 20);
+        assert_eq!(payload.format, "json");
+        assert!(payload.batching_enabled);
+        assert_eq!(payload.severity_alert, 3);
+        assert_eq!(payload.severity_block, 4);
+        assert_eq!(payload.severity_audit, 6);
+        assert_eq!(payload.queue_policy, "fifo_tail_drop");
+        assert_eq!(payload.queue_max_size, 100000);
+        assert_eq!(payload.tls_min_version, "1.2");
+    }
+
+    #[tokio::test]
+    async fn test_put_syslog_config_updates_all_fields() {
+        use axum::body::to_bytes;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let payload = SyslogConfigPayload {
+            host: "syslog.example.com".to_string(),
+            port: 6514,
+            enabled: true,
+            protocol: "tls".to_string(),
+            facility_code: 22,
+            format: "json".to_string(),
+            batching_enabled: false,
+            severity_alert: 2,
+            severity_block: 5,
+            severity_audit: 7,
+            queue_policy: "fifo_head_drop".to_string(),
+            queue_max_size: 50000,
+            tls_min_version: "1.3".to_string(),
+        };
+
+        let put = Request::builder()
+            .method("PUT")
+            .uri("/admin/syslog-config")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_string(&payload).expect("serialize"),
+            ))
+            .expect("build PUT");
+        let put_resp = app.clone().oneshot(put).await.expect("PUT oneshot");
+        assert_eq!(put_resp.status(), StatusCode::OK);
+
+        let get = Request::builder()
+            .method("GET")
+            .uri("/admin/syslog-config")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(axum::body::Body::empty())
+            .expect("build GET");
+        let get_resp = app.clone().oneshot(get).await.expect("GET oneshot");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+
+        let body = to_bytes(get_resp.into_body(), 64 * 1024).await.expect("body");
+        let rt: SyslogConfigPayload = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(rt.host, payload.host);
+        assert_eq!(rt.port, payload.port);
+        assert_eq!(rt.enabled, payload.enabled);
+        assert_eq!(rt.facility_code, payload.facility_code);
+        assert_eq!(rt.batching_enabled, payload.batching_enabled);
+        assert_eq!(rt.severity_alert, payload.severity_alert);
+        assert_eq!(rt.severity_block, payload.severity_block);
+        assert_eq!(rt.severity_audit, payload.severity_audit);
+        assert_eq!(rt.queue_policy, payload.queue_policy);
+        assert_eq!(rt.queue_max_size, payload.queue_max_size);
+        assert_eq!(rt.tls_min_version, payload.tls_min_version);
+    }
+
+    #[tokio::test]
+    async fn test_put_syslog_config_rejects_invalid_port() {
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let payload = SyslogConfigPayload {
+            host: "syslog.example.com".to_string(),
+            port: 0,
+            enabled: true,
+            protocol: "tls".to_string(),
+            facility_code: 20,
+            format: "json".to_string(),
+            batching_enabled: true,
+            severity_alert: 3,
+            severity_block: 4,
+            severity_audit: 6,
+            queue_policy: "fifo_tail_drop".to_string(),
+            queue_max_size: 100000,
+            tls_min_version: "1.2".to_string(),
+        };
+
+        let put = Request::builder()
+            .method("PUT")
+            .uri("/admin/syslog-config")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_string(&payload).expect("serialize"),
+            ))
+            .expect("build PUT");
+        let resp = app.oneshot(put).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_put_syslog_config_rejects_invalid_facility() {
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let payload = SyslogConfigPayload {
+            host: "syslog.example.com".to_string(),
+            port: 6514,
+            enabled: true,
+            protocol: "tls".to_string(),
+            facility_code: 15,
+            format: "json".to_string(),
+            batching_enabled: true,
+            severity_alert: 3,
+            severity_block: 4,
+            severity_audit: 6,
+            queue_policy: "fifo_tail_drop".to_string(),
+            queue_max_size: 100000,
+            tls_min_version: "1.2".to_string(),
+        };
+
+        let put = Request::builder()
+            .method("PUT")
+            .uri("/admin/syslog-config")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_string(&payload).expect("serialize"),
+            ))
+            .expect("build PUT");
+        let resp = app.oneshot(put).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn test_put_syslog_config_rejects_invalid_severity() {
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let payload = SyslogConfigPayload {
+            host: "syslog.example.com".to_string(),
+            port: 6514,
+            enabled: true,
+            protocol: "tls".to_string(),
+            facility_code: 20,
+            format: "json".to_string(),
+            batching_enabled: true,
+            severity_alert: 8,
+            severity_block: 4,
+            severity_audit: 6,
+            queue_policy: "fifo_tail_drop".to_string(),
+            queue_max_size: 100000,
+            tls_min_version: "1.2".to_string(),
+        };
+
+        let put = Request::builder()
+            .method("PUT")
+            .uri("/admin/syslog-config")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_string(&payload).expect("serialize"),
+            ))
+            .expect("build PUT");
+        let resp = app.oneshot(put).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn test_put_syslog_config_rejects_invalid_queue_policy() {
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let payload = SyslogConfigPayload {
+            host: "syslog.example.com".to_string(),
+            port: 6514,
+            enabled: true,
+            protocol: "tls".to_string(),
+            facility_code: 20,
+            format: "json".to_string(),
+            batching_enabled: true,
+            severity_alert: 3,
+            severity_block: 4,
+            severity_audit: 6,
+            queue_policy: "invalid_policy".to_string(),
+            queue_max_size: 100000,
+            tls_min_version: "1.2".to_string(),
+        };
+
+        let put = Request::builder()
+            .method("PUT")
+            .uri("/admin/syslog-config")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_string(&payload).expect("serialize"),
+            ))
+            .expect("build PUT");
+        let resp = app.oneshot(put).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_put_syslog_config_rejects_invalid_tls_version() {
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let payload = SyslogConfigPayload {
+            host: "syslog.example.com".to_string(),
+            port: 6514,
+            enabled: true,
+            protocol: "tls".to_string(),
+            facility_code: 20,
+            format: "json".to_string(),
+            batching_enabled: true,
+            severity_alert: 3,
+            severity_block: 4,
+            severity_audit: 6,
+            queue_policy: "fifo_tail_drop".to_string(),
+            queue_max_size: 100000,
+            tls_min_version: "1.1".to_string(),
+        };
+
+        let put = Request::builder()
+            .method("PUT")
+            .uri("/admin/syslog-config")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_string(&payload).expect("serialize"),
+            ))
+            .expect("build PUT");
+        let resp = app.oneshot(put).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_post_syslog_config_test_rate_limited() {
+        use axum::body::to_bytes;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // First request should succeed (syslog disabled, so forward short-circuits).
+        let req1 = Request::builder()
+            .method("POST")
+            .uri("/admin/syslog-config/test")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(axum::body::Body::empty())
+            .expect("build req1");
+        let resp1 = app.clone().oneshot(req1).await.expect("oneshot 1");
+        assert_eq!(resp1.status(), StatusCode::OK);
+
+        // Second request within 10s should be rate-limited.
+        let req2 = Request::builder()
+            .method("POST")
+            .uri("/admin/syslog-config/test")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(axum::body::Body::empty())
+            .expect("build req2");
+        let resp2 = app.oneshot(req2).await.expect("oneshot 2");
+        assert_eq!(resp2.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp2.into_body(), 64 * 1024).await.expect("body");
+        let err: serde_json::Value = serde_json::from_slice(&body).expect("parse");
+        assert!(err["error"].as_str().unwrap().contains("Rate limit"));
+    }
+
+    #[tokio::test]
+    async fn test_syslog_config_routes_require_auth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/syslog-config")
             .body(Body::empty())
             .expect("build request");
         let resp = app.oneshot(req).await.expect("oneshot");
