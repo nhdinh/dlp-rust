@@ -17,6 +17,7 @@ pub mod label_service;
 pub mod policy_engine_error;
 pub mod policy_store;
 pub mod policy_sync;
+pub mod observability;
 pub mod rate_limiter;
 pub mod secrets_migration;
 pub mod siem_connector;
