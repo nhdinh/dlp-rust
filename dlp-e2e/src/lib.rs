@@ -84,6 +84,10 @@ pub mod server {
             )
             .expect("approval token service"),
         );
+        let syslog = dlp_server::syslog_connector::SyslogConnector::new(
+            Arc::clone(&pool),
+            Arc::clone(&crypto),
+        );
         let state = Arc::new(AppState {
             pool: Arc::clone(&pool),
             crypto: Arc::clone(&crypto),
@@ -93,6 +97,7 @@ pub mod server {
             ad: None,
             label_service,
             approval_token_service,
+            syslog,
         });
         (admin_router(state), pool)
     }

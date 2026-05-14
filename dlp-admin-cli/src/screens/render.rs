@@ -26,6 +26,7 @@ use crate::screens::dispatch::operators_for;
 use crate::screens::print_config::{
     is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_KEYS, PRINT_CONFIG_LABELS,
 };
+use crate::screens::syslog_config::draw_syslog_config;
 use crate::screens::usb_enforcement::{
     USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_LABELS,
     USB_ENFORCEMENT_SAVE_ROW,
@@ -193,6 +194,14 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             buffer,
         } => {
             draw_print_config(frame, area, config, *selected, *editing, buffer);
+        }
+        Screen::SyslogConfig {
+            config,
+            selected,
+            editing,
+            buffer,
+        } => {
+            draw_syslog_config(frame, area, config, *selected, *editing, buffer);
         }
         Screen::ConditionsBuilder {
             step,
