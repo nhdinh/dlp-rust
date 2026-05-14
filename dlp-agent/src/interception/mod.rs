@@ -263,10 +263,7 @@ fn handle_cloud_block(
     if cloud_result.notify {
         crate::ipc::pipe2::BROADCASTER.broadcast(&Pipe2AgentMsg::Toast {
             title: "Cloud Sync Blocked".to_string(),
-            body: format!(
-                "{} — upload to {} is blocked",
-                path, cloud_result.provider
-            ),
+            body: format!("{} — upload to {} is blocked", path, cloud_result.provider),
         });
     }
 }

@@ -6,6 +6,7 @@
 
 pub mod abac;
 pub mod ad_client;
+pub mod approval;
 pub mod audit;
 pub mod classification;
 pub mod classifier;
@@ -13,16 +14,15 @@ pub mod crypto;
 pub mod disk;
 pub mod endpoint;
 pub mod hook_ipc;
-pub mod approval;
 pub mod label;
 pub mod usb;
 
 pub use abac::*;
-pub use approval::*;
 pub use ad_client::{
     get_device_trust, get_network_location, AdClient, AdClientError, LdapBindCredentials,
     LdapConfig,
 };
+pub use approval::*;
 pub use audit::*;
 pub use classification::*;
 pub use classifier::classify_text;

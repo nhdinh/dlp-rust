@@ -255,11 +255,15 @@ mod tests {
         }
 
         // First call hits DB and populates cache
-        let tier1 = svc.resolve_tier(r"C:\Data\file.txt").expect("resolve first");
+        let tier1 = svc
+            .resolve_tier(r"C:\Data\file.txt")
+            .expect("resolve first");
         assert_eq!(tier1, Tier::T2);
 
         // Second call should hit cache
-        let tier2 = svc.resolve_tier(r"C:\Data\file.txt").expect("resolve second");
+        let tier2 = svc
+            .resolve_tier(r"C:\Data\file.txt")
+            .expect("resolve second");
         assert_eq!(tier2, Tier::T2);
     }
 
@@ -300,7 +304,9 @@ mod tests {
         svc.invalidate_cache();
 
         // Cache is empty; next resolve still works (re-queries DB)
-        let tier = svc.resolve_tier(r"C:\Data\file.txt").expect("resolve after invalidate");
+        let tier = svc
+            .resolve_tier(r"C:\Data\file.txt")
+            .expect("resolve after invalidate");
         assert_eq!(tier, Tier::T1);
     }
 
@@ -340,14 +346,18 @@ mod tests {
         }
 
         // First call
-        let tier1 = svc.resolve_tier(r"C:\Data\file.txt").expect("resolve first");
+        let tier1 = svc
+            .resolve_tier(r"C:\Data\file.txt")
+            .expect("resolve first");
         assert_eq!(tier1, Tier::T3);
 
         // Wait a tiny bit for the zero-TTL entry to expire
         std::thread::sleep(Duration::from_millis(10));
 
         // Second call should miss cache (expired) and re-query DB
-        let tier2 = svc.resolve_tier(r"C:\Data\file.txt").expect("resolve second");
+        let tier2 = svc
+            .resolve_tier(r"C:\Data\file.txt")
+            .expect("resolve second");
         assert_eq!(tier2, Tier::T3);
     }
 }

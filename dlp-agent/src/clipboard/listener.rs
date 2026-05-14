@@ -434,7 +434,9 @@ impl ClipboardListener {
                         emit_audit(ctx, &mut alert_event);
                     }
                 } else {
-                    warn!("share-link alert: CLIPBOARD_EMIT_CONTEXT not set, cannot emit audit event");
+                    warn!(
+                        "share-link alert: CLIPBOARD_EMIT_CONTEXT not set, cannot emit audit event"
+                    );
                 }
             } else {
                 tracing::trace!(

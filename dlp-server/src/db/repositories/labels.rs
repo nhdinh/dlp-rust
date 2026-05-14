@@ -146,11 +146,20 @@ impl LabelRepository {
         let mut stmt = conn.prepare(&sql)?;
         // Build a Vec of references with stable lifetimes to satisfy ToSql.
         let mut params: Vec<&str> = Vec::new();
-        if let Some(s) = state { params.push(s); }
-        if let Some(t) = tier { params.push(t); }
-        if let Some(o) = owner_sid { params.push(o); }
-        if let Some(d) = department { params.push(d); }
-        let to_sql_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        if let Some(s) = state {
+            params.push(s);
+        }
+        if let Some(t) = tier {
+            params.push(t);
+        }
+        if let Some(o) = owner_sid {
+            params.push(o);
+        }
+        if let Some(d) = department {
+            params.push(d);
+        }
+        let to_sql_refs: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(rusqlite::params_from_iter(to_sql_refs), |row| {
             Ok(LabelRow {
                 id: row.get(0)?,
@@ -299,7 +308,8 @@ impl LabelRepository {
 
     /// Deletes the label row with the given `id`.
     pub fn delete(uow: &UnitOfWork<'_>, id: &str) -> rusqlite::Result<usize> {
-        uow.tx.execute("DELETE FROM labels WHERE id = ?1", params![id])
+        uow.tx
+            .execute("DELETE FROM labels WHERE id = ?1", params![id])
     }
 
     /// Returns the parent folder label for a given child path.
@@ -548,33 +558,27 @@ mod tests {
 
         // Filter by department = HR
         let hr_labels =
-            LabelRepository::list_by_filters(&pool, None, None, None, Some("HR"))
-                .expect("list HR");
+            LabelRepository::list_by_filters(&pool, None, None, None, Some("HR")).expect("list HR");
         assert_eq!(hr_labels.len(), 1);
         assert_eq!(hr_labels[0].id, "label-hr");
         assert_eq!(hr_labels[0].scanner_confidence, Some(0.85));
 
         // Filter by department = IT
         let it_labels =
-            LabelRepository::list_by_filters(&pool, None, None, None, Some("IT"))
-                .expect("list IT");
+            LabelRepository::list_by_filters(&pool, None, None, None, Some("IT")).expect("list IT");
         assert_eq!(it_labels.len(), 1);
         assert_eq!(it_labels[0].id, "label-it");
 
         // Filter by state = temporary AND department = HR
-        let hr_temp = LabelRepository::list_by_filters(
-            &pool,
-            Some("temporary"),
-            None,
-            None,
-            Some("HR"),
-        )
-        .expect("list HR temporary");
+        let hr_temp =
+            LabelRepository::list_by_filters(&pool, Some("temporary"), None, None, Some("HR"))
+                .expect("list HR temporary");
         assert_eq!(hr_temp.len(), 1);
         assert_eq!(hr_temp[0].id, "label-hr");
 
         // No filter returns all 3
-        let all = LabelRepository::list_by_filters(&pool, None, None, None, None).expect("list all");
+        let all =
+            LabelRepository::list_by_filters(&pool, None, None, None, None).expect("list all");
         assert_eq!(all.len(), 3);
     }
 
@@ -590,9 +594,10 @@ mod tests {
             [],
         );
         assert!(result.is_err(), "invalid tier must fail CHECK constraint");
-        assert!(
-            result.unwrap_err().to_string().contains("CHECK constraint failed")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("CHECK constraint failed"));
 
         // Invalid object_type
         let result = conn.execute(
@@ -600,7 +605,10 @@ mod tests {
              VALUES ('id2', 'path', 'disk', 'T1', 'temporary', '2026-01-01', '2026-01-01')",
             [],
         );
-        assert!(result.is_err(), "invalid object_type must fail CHECK constraint");
+        assert!(
+            result.is_err(),
+            "invalid object_type must fail CHECK constraint"
+        );
 
         // Invalid label_state
         let result = conn.execute(
@@ -608,6 +616,9 @@ mod tests {
              VALUES ('id3', 'path', 'file', 'T1', 'draft', '2026-01-01', '2026-01-01')",
             [],
         );
-        assert!(result.is_err(), "invalid label_state must fail CHECK constraint");
+        assert!(
+            result.is_err(),
+            "invalid label_state must fail CHECK constraint"
+        );
     }
 }

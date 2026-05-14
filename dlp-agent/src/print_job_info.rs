@@ -22,11 +22,11 @@ use anyhow::{Context, Result};
 use tracing::debug;
 
 use windows::core::PCWSTR;
+use windows::Win32::Foundation::GetLastError;
 use windows::Win32::Graphics::Printing::{
     ClosePrinter, GetJobW, OpenPrinterW, SetJobW, JOB_CONTROL_DELETE, JOB_INFO_2W,
     JOB_STATUS_PRINTING, PRINTER_ACCESS_ADMINISTER, PRINTER_DEFAULTSW, PRINTER_HANDLE,
 };
-use windows::Win32::Foundation::GetLastError;
 
 /// Owned handle to a printer — calls `ClosePrinter` on drop.
 pub struct PrinterHandle {
@@ -112,34 +112,22 @@ pub fn get_job_info(handle: &PrinterHandle, job_id: u32) -> Result<JobInfo> {
 
     // First call: probe for required buffer size.
     // SAFETY: valid printer handle; pcbNeeded points to a local variable.
-    let ok = unsafe {
-        GetJobW(
-            handle.raw(),
-            job_id,
-            2,
-            None,
-            &mut needed,
-        )
-    };
+    let ok = unsafe { GetJobW(handle.raw(), job_id, 2, None, &mut needed) };
 
     if !ok.as_bool() && needed == 0 {
         let err = unsafe { GetLastError() };
-        anyhow::bail!("GetJobW size probe failed for job {} (last error: {:?})", job_id, err);
+        anyhow::bail!(
+            "GetJobW size probe failed for job {} (last error: {:?})",
+            job_id,
+            err
+        );
     }
 
     let mut buf: Vec<u8> = vec![0; needed as usize];
 
     // Second call: fetch actual data.
     // SAFETY: buf is sized to `needed` bytes; pcbNeeded points to a local variable.
-    let ok = unsafe {
-        GetJobW(
-            handle.raw(),
-            job_id,
-            2,
-            Some(&mut buf),
-            &mut needed,
-        )
-    };
+    let ok = unsafe { GetJobW(handle.raw(), job_id, 2, Some(&mut buf), &mut needed) };
 
     if !ok.as_bool() {
         let err = unsafe { GetLastError() };
@@ -172,9 +160,7 @@ pub fn get_job_info(handle: &PrinterHandle, job_id: u32) -> Result<JobInfo> {
 /// Returns an error if `SetJobW` fails (e.g., job already completed).
 pub fn cancel_job(handle: &PrinterHandle, job_id: u32) -> Result<()> {
     // SAFETY: valid printer handle; level 0 and pJob None mean we only send a command.
-    let ok = unsafe {
-        SetJobW(handle.raw(), job_id, 0, None, JOB_CONTROL_DELETE)
-    };
+    let ok = unsafe { SetJobW(handle.raw(), job_id, 0, None, JOB_CONTROL_DELETE) };
 
     if !ok.as_bool() {
         let err = unsafe { GetLastError() };
@@ -207,9 +193,7 @@ fn pwstr_to_string(ptr: windows::core::PWSTR) -> String {
     // SAFETY: we assume the pointer is valid and null-terminated (Win32 guarantees
     // this for the string fields inside a successfully-fetched JOB_INFO_2W).
     unsafe {
-        let len = (0..)
-            .take_while(|&i| *ptr.0.offset(i) != 0)
-            .count();
+        let len = (0..).take_while(|&i| *ptr.0.offset(i) != 0).count();
         String::from_utf16_lossy(std::slice::from_raw_parts(ptr.0, len))
     }
 }

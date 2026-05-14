@@ -639,7 +639,10 @@ impl ServerClient {
             .json::<Vec<ServerApprovalEntry>>()
             .await
             .map_err(ServerClientError::Http)?;
-        debug!(count = entries.len(), "fetched active approvals from server");
+        debug!(
+            count = entries.len(),
+            "fetched active approvals from server"
+        );
         Ok(entries)
     }
 

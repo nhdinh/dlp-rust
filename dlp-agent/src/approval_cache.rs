@@ -86,9 +86,7 @@ impl ApprovalCache {
     pub fn set_public_key(&self, pubkey_hex: &str) -> Result<(), ApprovalCacheError> {
         let bytes = hex::decode(pubkey_hex)?;
         let key_bytes: [u8; 32] = bytes.try_into().map_err(|_| {
-            ApprovalCacheError::InvalidPublicKey(
-                "public key must be exactly 32 bytes".to_string(),
-            )
+            ApprovalCacheError::InvalidPublicKey("public key must be exactly 32 bytes".to_string())
         })?;
         let key = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes).map_err(|e| {
             ApprovalCacheError::InvalidPublicKey(format!("Ed25519 key invalid: {e}"))
@@ -422,14 +420,18 @@ mod tests {
         let pubkey_hex = hex::encode(verifying_key.to_bytes());
         cache.set_public_key(&pubkey_hex).expect("set pubkey");
 
-        let key = ApprovalCacheKey::new(&claims.sub, &claims.obj, &claims.act, claims.dst.as_deref());
+        let key =
+            ApprovalCacheKey::new(&claims.sub, &claims.obj, &claims.act, claims.dst.as_deref());
         cache.insert(key.clone(), token, claims);
 
         let result = cache.check(&key, Some("C:\\Data"));
         assert!(result.is_some(), "valid token should pass verification");
         let resp = result.unwrap();
         assert_eq!(resp.decision, Decision::ALLOW);
-        assert_eq!(resp.matched_policy_id, Some("approval:approval-001".to_string()));
+        assert_eq!(
+            resp.matched_policy_id,
+            Some("approval:approval-001".to_string())
+        );
     }
 
     #[test]
@@ -462,7 +464,10 @@ mod tests {
         let key = ApprovalCacheKey::new(&claims.sub, &claims.obj, &claims.act, None);
         cache.insert(key.clone(), tampered, claims);
 
-        assert!(cache.check(&key, None).is_none(), "tampered token must be rejected");
+        assert!(
+            cache.check(&key, None).is_none(),
+            "tampered token must be rejected"
+        );
     }
 
     #[test]
@@ -487,7 +492,8 @@ mod tests {
         let pubkey_hex = hex::encode(verifying_key.to_bytes());
         cache.set_public_key(&pubkey_hex).expect("set pubkey");
 
-        let key = ApprovalCacheKey::new(&claims.sub, &claims.obj, &claims.act, claims.dst.as_deref());
+        let key =
+            ApprovalCacheKey::new(&claims.sub, &claims.obj, &claims.act, claims.dst.as_deref());
         cache.insert(key.clone(), token, claims);
 
         // Requesting USB:DRIVE_F should fail scope check.
@@ -519,7 +525,8 @@ mod tests {
         let pubkey_hex = hex::encode(verifying_key.to_bytes());
         cache.set_public_key(&pubkey_hex).expect("set pubkey");
 
-        let key = ApprovalCacheKey::new(&claims.sub, &claims.obj, &claims.act, claims.dst.as_deref());
+        let key =
+            ApprovalCacheKey::new(&claims.sub, &claims.obj, &claims.act, claims.dst.as_deref());
         cache.insert(key.clone(), token, claims);
 
         assert!(

@@ -317,7 +317,8 @@ impl ApprovalRepository {
 
     /// Deletes the approval row with the given `id`.
     pub fn delete(uow: &UnitOfWork, id: &str) -> rusqlite::Result<usize> {
-        uow.tx.execute("DELETE FROM approvals WHERE id = ?1", params![id])
+        uow.tx
+            .execute("DELETE FROM approvals WHERE id = ?1", params![id])
     }
 
     /// Deletes pending approvals older than the given timestamp.
@@ -350,7 +351,11 @@ mod tests {
     use crate::db::new_pool;
     use crate::db::unit_of_work::UnitOfWork;
 
-    fn make_pending_row<'a>(id: &'a str, requester_sid: &'a str, data_object_id: &'a str) -> ApprovalUpsertRow<'a> {
+    fn make_pending_row<'a>(
+        id: &'a str,
+        requester_sid: &'a str,
+        data_object_id: &'a str,
+    ) -> ApprovalUpsertRow<'a> {
         ApprovalUpsertRow {
             id,
             requester_sid,
@@ -459,8 +464,8 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        let pending = ApprovalRepository::list_by_status(&pool, "pending", None, None)
-            .expect("list pending");
+        let pending =
+            ApprovalRepository::list_by_status(&pool, "pending", None, None).expect("list pending");
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, "app-001");
 
@@ -646,9 +651,8 @@ mod tests {
         {
             let mut conn = pool.get().expect("acquire connection");
             let uow = UnitOfWork::new(&mut conn).expect("create uow");
-            let affected =
-                ApprovalRepository::cleanup_orphaned(&uow, "2026-05-07T00:00:00Z")
-                    .expect("cleanup");
+            let affected = ApprovalRepository::cleanup_orphaned(&uow, "2026-05-07T00:00:00Z")
+                .expect("cleanup");
             assert_eq!(affected, 1, "only old pending approval should be deleted");
             uow.commit().expect("commit");
         }

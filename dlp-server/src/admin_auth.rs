@@ -512,7 +512,7 @@ mod tests {
             sub: "admin".to_string(),
             exp: (Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
             iss: "dlp-server".to_string(),
-        sid: None,
+            sid: None,
         };
 
         let token = encode(
@@ -535,7 +535,7 @@ mod tests {
             // Expired 1 hour ago.
             exp: (Utc::now() - chrono::Duration::hours(1)).timestamp() as usize,
             iss: "dlp-server".to_string(),
-        sid: None,
+            sid: None,
         };
 
         let token = encode(
@@ -685,11 +685,15 @@ mod tests {
 
 // Temporary extension trait for SID extraction
 pub trait AdminSidExt {
-    fn extract_sid_from_headers(headers: &axum::http::HeaderMap) -> Result<Option<String>, AppError>;
+    fn extract_sid_from_headers(
+        headers: &axum::http::HeaderMap,
+    ) -> Result<Option<String>, AppError>;
 }
 
 impl AdminSidExt for AdminUsername {
-    fn extract_sid_from_headers(headers: &axum::http::HeaderMap) -> Result<Option<String>, AppError> {
+    fn extract_sid_from_headers(
+        headers: &axum::http::HeaderMap,
+    ) -> Result<Option<String>, AppError> {
         let auth_header = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())

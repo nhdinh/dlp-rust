@@ -218,7 +218,11 @@ fn row_to_approval(row: ApprovalRow) -> Approval {
         valid_from: row.valid_from,
         valid_until: row.valid_until,
         signature: row.signature,
-        status: row.status.as_str().try_into().unwrap_or(ApprovalStatus::Pending),
+        status: row
+            .status
+            .as_str()
+            .try_into()
+            .unwrap_or(ApprovalStatus::Pending),
         justification: row.justification,
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -309,7 +313,9 @@ pub async fn list_approvals(
     let approvals: Vec<ApprovalResponse> = rows
         .into_iter()
         .map(|row| {
-            let tier = resolve_tier(&state.pool, &row.data_object_id).ok().flatten();
+            let tier = resolve_tier(&state.pool, &row.data_object_id)
+                .ok()
+                .flatten();
             ApprovalResponse {
                 approval: row_to_approval(row),
                 tier,
@@ -394,7 +400,9 @@ pub async fn create_approval(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    let tier = resolve_tier(&state.pool, &body.data_object_id).ok().flatten();
+    let tier = resolve_tier(&state.pool, &body.data_object_id)
+        .ok()
+        .flatten();
     Ok(Json(ApprovalResponse { approval, tier }))
 }
 
@@ -410,7 +418,9 @@ pub async fn get_approval(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    let tier = resolve_tier(&state.pool, &row.data_object_id).ok().flatten();
+    let tier = resolve_tier(&state.pool, &row.data_object_id)
+        .ok()
+        .flatten();
     let t4_canonical_message = if tier.as_deref() == Some("T4") {
         Some(crate::approval_token::t4_canonical_message(
             &row.id,
@@ -463,7 +473,9 @@ pub async fn grant_approval(
     }
 
     // Resolve tier for T4 check.
-    let tier = resolve_tier(&state.pool, &row.data_object_id).ok().flatten();
+    let tier = resolve_tier(&state.pool, &row.data_object_id)
+        .ok()
+        .flatten();
 
     // T4 signature verification.
     if tier.as_deref() == Some("T4") {
@@ -481,9 +493,8 @@ pub async fn grant_approval(
             .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??
         };
 
-        let pubkey_hex = board_pubkey.ok_or_else(|| {
-            AppError::BadRequest("Board public key not configured".to_string())
-        })?;
+        let pubkey_hex = board_pubkey
+            .ok_or_else(|| AppError::BadRequest("Board public key not configured".to_string()))?;
 
         let canonical = crate::approval_token::t4_canonical_message(
             &id,
@@ -600,8 +611,11 @@ pub async fn grant_approval(
     let alert = state.alert.clone();
     let approval_for_alert = approval.clone();
     tokio::spawn(async move {
-        let alert_event =
-            build_approval_audit_event(dlp_common::EventType::ApprovalGrant, &approval_for_alert, "admin");
+        let alert_event = build_approval_audit_event(
+            dlp_common::EventType::ApprovalGrant,
+            &approval_for_alert,
+            "admin",
+        );
         if let Err(e) = alert.send_alert(&alert_event).await {
             tracing::warn!(error = %e, "alert delivery failed (best-effort)");
         }
@@ -685,7 +699,9 @@ pub async fn reject_approval(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    let tier = resolve_tier(&state.pool, &approval.data_object_id).ok().flatten();
+    let tier = resolve_tier(&state.pool, &approval.data_object_id)
+        .ok()
+        .flatten();
     Ok(Json(ApprovalResponse { approval, tier }))
 }
 
@@ -760,7 +776,9 @@ pub async fn revoke_approval(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    let tier = resolve_tier(&state.pool, &approval.data_object_id).ok().flatten();
+    let tier = resolve_tier(&state.pool, &approval.data_object_id)
+        .ok()
+        .flatten();
     Ok(Json(ApprovalResponse { approval, tier }))
 }
 
@@ -921,9 +939,8 @@ pub async fn update_board_public_key(
     Json(body): Json<BoardPublicKeyRequest>,
 ) -> Result<StatusCode, AppError> {
     // Validate pubkey_hex is valid hex-encoded Ed25519 public key (64 chars hex = 32 bytes).
-    let decoded = hex::decode(&body.pubkey_hex).map_err(|e| {
-        AppError::BadRequest(format!("invalid hex in board public key: {e}"))
-    })?;
+    let decoded = hex::decode(&body.pubkey_hex)
+        .map_err(|e| AppError::BadRequest(format!("invalid hex in board public key: {e}")))?;
     if decoded.len() != 32 {
         return Err(AppError::BadRequest(
             "board public key must be 32 bytes (64 hex chars)".to_string(),
@@ -945,7 +962,10 @@ pub async fn update_board_public_key(
         dlp_common::EventType::ApprovalBoardKeyUpdate,
         String::new(),
         "admin".to_string(),
-        format!("board_public_key:{}", &body.pubkey_hex[..16.min(body.pubkey_hex.len())]),
+        format!(
+            "board_public_key:{}",
+            &body.pubkey_hex[..16.min(body.pubkey_hex.len())]
+        ),
         dlp_common::Classification::T4,
         dlp_common::Action::PolicyCreate,
         dlp_common::Decision::ALLOW,

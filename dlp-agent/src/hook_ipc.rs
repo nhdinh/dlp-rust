@@ -18,8 +18,8 @@ use tracing::{debug, info, warn};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE,
-    OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+    CreateFileW, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE, OPEN_EXISTING,
+    PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, NAMED_PIPE_MODE,
@@ -127,7 +127,10 @@ fn accept_loop(
         if let Err(e) = unsafe { ConnectNamedPipe(pipe, None) } {
             let win32_code = (e.code().0 as u32) & 0xFFFF;
             if win32_code != 535 {
-                warn!(win32_code, "Hook IPC: ConnectNamedPipe failed — recycling pipe");
+                warn!(
+                    win32_code,
+                    "Hook IPC: ConnectNamedPipe failed — recycling pipe"
+                );
                 let _ = unsafe { CloseHandle(pipe) };
                 pipe = create_pipe(&pipe_name)?;
                 continue;
@@ -280,16 +283,13 @@ pub fn start_mock_server(
 mod tests {
     use std::time::{Duration, Instant};
 
-    use dlp_common::Decision;
     use super::*;
+    use dlp_common::Decision;
 
     /// Starts a [`HookIpcServer`] on a dedicated thread using the given
     /// handler, waits until the pipe is created, and returns the thread
     /// handle so the caller can join it later.
-    fn start_server(
-        pipe_name: &str,
-        handler: HookHandler,
-    ) -> std::thread::JoinHandle<Result<()>> {
+    fn start_server(pipe_name: &str, handler: HookHandler) -> std::thread::JoinHandle<Result<()>> {
         start_mock_server(pipe_name, handler)
     }
 
@@ -327,7 +327,6 @@ mod tests {
             assert_eq!(resp.decision, Decision::DENY);
             assert_eq!(resp.reason, format!("blocked: {}", req.path));
             latencies.push(elapsed);
-
         }
 
         close_pipe(client);
@@ -521,7 +520,10 @@ mod tests {
     fn hook_ipc_server_not_running_connect_fails() {
         let pipe_name = r"\\.\pipe\DlpHookPipeTestNoServer";
         let result = connect_client(pipe_name);
-        assert!(result.is_err(), "expected connection to fail when server is not running");
+        assert!(
+            result.is_err(),
+            "expected connection to fail when server is not running"
+        );
     }
 
     #[test]

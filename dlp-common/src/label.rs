@@ -276,7 +276,10 @@ mod tests {
         assert_eq!(Tier::T2.to_string(), "T2");
         assert_eq!(Tier::T3.to_string(), "T3");
         assert_eq!(Tier::T4.to_string(), "T4");
-        assert_eq!(Tier::UnclassifiedBlocked.to_string(), "Unclassified-Blocked");
+        assert_eq!(
+            Tier::UnclassifiedBlocked.to_string(),
+            "Unclassified-Blocked"
+        );
     }
 
     #[test]

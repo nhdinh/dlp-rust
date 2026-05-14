@@ -18,9 +18,7 @@ use crate::screens::print_config::{
     is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_BACK_ROW, PRINT_CONFIG_KEYS,
     PRINT_CONFIG_ROW_COUNT, PRINT_CONFIG_SAVE_ROW, PRINT_UNCLASSIFIABLE_OPTIONS,
 };
-use crate::screens::syslog_config::{
-    handle_syslog_config, action_load_syslog_config,
-};
+use crate::screens::syslog_config::{action_load_syslog_config, handle_syslog_config};
 use crate::screens::usb_enforcement::{
     USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_OPTIONS,
     USB_ENFORCEMENT_ROW_COUNT, USB_ENFORCEMENT_SAVE_ROW,

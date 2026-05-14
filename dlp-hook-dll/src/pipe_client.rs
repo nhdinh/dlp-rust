@@ -6,12 +6,10 @@
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-    FILE_SHARE_NONE, OPEN_EXISTING, ReadFile, WriteFile,
+    CreateFileW, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ,
+    FILE_GENERIC_WRITE, FILE_SHARE_NONE, OPEN_EXISTING,
 };
-use windows::Win32::System::Pipes::{
-    SetNamedPipeHandleState, PIPE_READMODE_MESSAGE,
-};
+use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_READMODE_MESSAGE};
 
 use dlp_common::{HookRequest, HookResponse};
 
@@ -50,18 +48,17 @@ impl std::error::Error for PipeError {}
 ///
 /// Any error (connection refused, timeout, malformed response) is returned
 /// as [`PipeError`] so the caller can treat it as a denial.
-pub fn send_request(pipe_name: &str, request: &HookRequest, timeout_ms: u32) -> Result<HookResponse, PipeError> {
+pub fn send_request(
+    pipe_name: &str,
+    request: &HookRequest,
+    timeout_ms: u32,
+) -> Result<HookResponse, PipeError> {
     let pipe = connect_pipe(pipe_name, timeout_ms)?;
 
     // Set pipe to message-read mode so frame boundaries are respected.
     unsafe {
         let mode = PIPE_READMODE_MESSAGE;
-        let _ = SetNamedPipeHandleState(
-            pipe,
-            Some(&mode),
-            None,
-            None,
-        );
+        let _ = SetNamedPipeHandleState(pipe, Some(&mode), None, None);
     }
 
     // Serialize and send.

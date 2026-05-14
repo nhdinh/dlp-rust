@@ -457,7 +457,11 @@ mod tests {
         assert!(json.contains("req-001"), "json was: {json}");
         let rt: Pipe1AgentMsg = serde_json::from_str(&json).unwrap();
         match rt {
-            Pipe1AgentMsg::ApprovalGranted { request_id, token, valid_until } => {
+            Pipe1AgentMsg::ApprovalGranted {
+                request_id,
+                token,
+                valid_until,
+            } => {
                 assert_eq!(request_id, "req-001");
                 assert_eq!(token, "eyJhbGciOiJFZERTQSJ9.test");
                 assert_eq!(valid_until, "2026-05-15T00:00:00Z");

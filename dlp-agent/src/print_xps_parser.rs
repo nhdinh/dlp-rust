@@ -39,8 +39,7 @@ pub fn extract_text(xps_bytes: &[u8], max_pages: usize) -> Result<String> {
     }
 
     let cursor = Cursor::new(xps_bytes);
-    let mut archive = zip::read::ZipArchive::new(cursor)
-        .context("invalid XPS/ZIP archive")?;
+    let mut archive = zip::read::ZipArchive::new(cursor).context("invalid XPS/ZIP archive")?;
 
     let mut page_count: usize = 0;
     let mut all_text: Vec<String> = Vec::new();
@@ -114,7 +113,11 @@ fn parse_page_text(xml: &[u8]) -> Result<String> {
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                anyhow::bail!("XML parse error at position {}: {:?}", reader.buffer_position(), e);
+                anyhow::bail!(
+                    "XML parse error at position {}: {:?}",
+                    reader.buffer_position(),
+                    e
+                );
             }
             _ => {}
         }
@@ -154,7 +157,8 @@ mod tests {
 <FixedDocumentSequence xmlns="http://schemas.microsoft.com/xps/2005/06">
   <DocumentReference Source="Documents/1/FixedDocument.fdoc"/>
 </FixedDocumentSequence>"#;
-            zip.start_file("FixedDocumentSequence.fdseq", options).unwrap();
+            zip.start_file("FixedDocumentSequence.fdseq", options)
+                .unwrap();
             zip.write_all(fdseq.as_bytes()).unwrap();
 
             let fdoc = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -162,7 +166,8 @@ mod tests {
   <PageContent Source="Pages/1.fpage"/>
   <PageContent Source="Pages/2.fpage"/>
 </FixedDocument>"#;
-            zip.start_file("Documents/1/FixedDocument.fdoc", options).unwrap();
+            zip.start_file("Documents/1/FixedDocument.fdoc", options)
+                .unwrap();
             zip.write_all(fdoc.as_bytes()).unwrap();
 
             let page1 = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -170,14 +175,16 @@ mod tests {
   <Glyphs UnicodeString="Hello XPS World" FontRenderingEmSize="12"/>
   <Glyphs UnicodeString="Second sentence" FontRenderingEmSize="12"/>
 </FixedPage>"#;
-            zip.start_file("Documents/1/Pages/1.fpage", options).unwrap();
+            zip.start_file("Documents/1/Pages/1.fpage", options)
+                .unwrap();
             zip.write_all(page1.as_bytes()).unwrap();
 
             let page2 = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <FixedPage xmlns="http://schemas.microsoft.com/xps/2005/06" Width="816" Height="1056">
   <Glyphs UnicodeString="Page two text" FontRenderingEmSize="12"/>
 </FixedPage>"#;
-            zip.start_file("Documents/1/Pages/2.fpage", options).unwrap();
+            zip.start_file("Documents/1/Pages/2.fpage", options)
+                .unwrap();
             zip.write_all(page2.as_bytes()).unwrap();
 
             zip.finish().unwrap();
@@ -243,7 +250,8 @@ mod tests {
 <FixedPage xmlns="http://schemas.microsoft.com/xps/2005/06">
   <Glyphs UnicodeString="Valid text" FontRenderingEmSize="12"/>
 </FixedPage>"#;
-            zip.start_file("Documents/1/Pages/1.fpage", options).unwrap();
+            zip.start_file("Documents/1/Pages/1.fpage", options)
+                .unwrap();
             zip.write_all(page1.as_bytes()).unwrap();
 
             // Page 2: corrupted XML (unclosed tag).
@@ -251,7 +259,8 @@ mod tests {
 <FixedPage xmlns="http://schemas.microsoft.com/xps/2005/06">
   <Glyphs UnicodeString="Broken" FontRenderingEmSize="12">
 </FixedPage>"#;
-            zip.start_file("Documents/1/Pages/2.fpage", options).unwrap();
+            zip.start_file("Documents/1/Pages/2.fpage", options)
+                .unwrap();
             zip.write_all(page2.as_bytes()).unwrap();
 
             zip.finish().unwrap();
@@ -281,7 +290,8 @@ mod tests {
   <Glyphs UnicodeString="Case insensitive" FontRenderingEmSize="12"/>
 </FixedPage>"#;
             // Uppercase path — still matches case-insensitive search.
-            zip.start_file("DOCUMENTS/1/PAGES/1.FPAGE", options).unwrap();
+            zip.start_file("DOCUMENTS/1/PAGES/1.FPAGE", options)
+                .unwrap();
             zip.write_all(page.as_bytes()).unwrap();
 
             zip.finish().unwrap();

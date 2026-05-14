@@ -19,8 +19,8 @@
 use rusqlite::params;
 use secrecy::ExposeSecret;
 
-use crate::crypto::{aad_for, Envelope, SecretCrypto, ENVELOPE_VERSION_V1};
 use crate::crypto::envelope::NONCE_LEN;
+use crate::crypto::{aad_for, Envelope, SecretCrypto, ENVELOPE_VERSION_V1};
 use crate::db::{Pool, UnitOfWork};
 use crate::AppError;
 
@@ -135,13 +135,11 @@ impl SyslogQueueRepository {
                 let mut nonce = [0u8; NONCE_LEN];
                 nonce.copy_from_slice(&nonce_bytes);
                 let envelope = Envelope::new(ENVELOPE_VERSION_V1, nonce, ciphertext)
-                    .map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!("envelope: {e}"))
-                    })?;
+                    .map_err(|e| rusqlite::Error::InvalidParameterName(format!("envelope: {e}")))?;
                 let aad = aad_for("syslog_queue", "event_json");
-                let plaintext = crypto.decrypt(&envelope, &aad).map_err(|e| {
-                    rusqlite::Error::InvalidParameterName(format!("decrypt: {e}"))
-                })?;
+                let plaintext = crypto
+                    .decrypt(&envelope, &aad)
+                    .map_err(|e| rusqlite::Error::InvalidParameterName(format!("decrypt: {e}")))?;
                 let event_json = plaintext.expose_secret().to_string();
                 Ok(QueuedEvent {
                     id,
@@ -252,9 +250,9 @@ mod tests {
     use crate::db::UnitOfWork;
 
     const TEST_KEK: [u8; 32] = [
-        0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
-        0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
-        0x42, 0x42, 0x42, 0x42,
+        0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+        0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+        0x42, 0x42,
     ];
 
     fn fixture_crypto() -> SecretCrypto {
@@ -270,13 +268,11 @@ mod tests {
         {
             let mut conn = pool.get().expect("acquire connection");
             let uow = UnitOfWork::new(&mut conn).expect("begin uow");
-            SyslogQueueRepository::enqueue(&uow, event_json, &crypto, 100000)
-                .expect("enqueue");
+            SyslogQueueRepository::enqueue(&uow, event_json, &crypto, 100000).expect("enqueue");
             uow.commit().expect("commit");
         }
 
-        let events = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10)
-            .expect("peek");
+        let events = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10).expect("peek");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_json, event_json);
         assert_eq!(events[0].retry_count, 0);
@@ -297,14 +293,12 @@ mod tests {
             let mut conn = pool.get().expect("acquire connection");
             let uow = UnitOfWork::new(&mut conn).expect("begin uow");
             for e in &events {
-                SyslogQueueRepository::enqueue(&uow, e, &crypto, 100000)
-                    .expect("enqueue");
+                SyslogQueueRepository::enqueue(&uow, e, &crypto, 100000).expect("enqueue");
             }
             uow.commit().expect("commit");
         }
 
-        let peeked = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10)
-            .expect("peek");
+        let peeked = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10).expect("peek");
         assert_eq!(peeked.len(), 3);
         assert_eq!(peeked[0].event_json, events[0]);
         assert_eq!(peeked[1].event_json, events[1]);
@@ -331,8 +325,7 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        let peeked = SyslogQueueRepository::peek_oldest(&pool, &crypto, 2)
-            .expect("peek");
+        let peeked = SyslogQueueRepository::peek_oldest(&pool, &crypto, 2).expect("peek");
         assert_eq!(peeked.len(), 2);
     }
 
@@ -344,14 +337,11 @@ mod tests {
         {
             let mut conn = pool.get().expect("acquire connection");
             let uow = UnitOfWork::new(&mut conn).expect("begin uow");
-            SyslogQueueRepository::enqueue(&uow, "test", &crypto, 100000
-            )
-            .expect("enqueue");
+            SyslogQueueRepository::enqueue(&uow, "test", &crypto, 100000).expect("enqueue");
             uow.commit().expect("commit");
         }
 
-        let _ = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10)
-            .expect("peek");
+        let _ = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10).expect("peek");
         let count = SyslogQueueRepository::count(&pool).expect("count");
         assert_eq!(count, 1, "peek must not delete rows");
     }
@@ -376,8 +366,7 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        let peeked = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10)
-            .expect("peek");
+        let peeked = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10).expect("peek");
         assert_eq!(peeked.len(), 3);
 
         // Delete only the middle row.
@@ -391,8 +380,7 @@ mod tests {
         let count = SyslogQueueRepository::count(&pool).expect("count");
         assert_eq!(count, 2);
 
-        let remaining = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10)
-            .expect("peek");
+        let remaining = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10).expect("peek");
         assert_eq!(remaining.len(), 2);
         assert_eq!(remaining[0].event_json, peeked[0].event_json);
         assert_eq!(remaining[1].event_json, peeked[2].event_json);
@@ -422,13 +410,8 @@ mod tests {
         {
             let mut conn = pool.get().expect("acquire connection");
             let uow = UnitOfWork::new(&mut conn).expect("begin uow");
-            let err = SyslogQueueRepository::enqueue(
-                &uow,
-                "overflow",
-                &crypto,
-                3,
-            )
-            .expect_err("must reject when full");
+            let err = SyslogQueueRepository::enqueue(&uow, "overflow", &crypto, 3)
+                .expect_err("must reject when full");
             assert!(err.to_string().contains("at capacity"));
         }
 
@@ -444,15 +427,11 @@ mod tests {
         {
             let mut conn = pool.get().expect("acquire connection");
             let uow = UnitOfWork::new(&mut conn).expect("begin uow");
-            SyslogQueueRepository::enqueue(
-                &uow, "test", &crypto, 100000
-            )
-            .expect("enqueue");
+            SyslogQueueRepository::enqueue(&uow, "test", &crypto, 100000).expect("enqueue");
             uow.commit().expect("commit");
         }
 
-        let peeked = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10)
-            .expect("peek");
+        let peeked = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10).expect("peek");
         let id = peeked[0].id;
 
         {
@@ -468,8 +447,7 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        let after = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10)
-            .expect("peek");
+        let after = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10).expect("peek");
         // After mark_failed, next_attempt_at is in the future so peek_oldest
         // (which filters next_attempt_at <= now) should return nothing.
         assert_eq!(after.len(), 0);
@@ -488,20 +466,13 @@ mod tests {
         {
             let mut conn = pool.get().expect("acquire connection");
             let uow = UnitOfWork::new(&mut conn).expect("begin uow");
-            SyslogQueueRepository::enqueue(
-                &uow, "ready", &crypto, 100000
-            )
-            .expect("enqueue");
-            SyslogQueueRepository::enqueue(
-                &uow, "future", &crypto, 100000
-            )
-            .expect("enqueue");
+            SyslogQueueRepository::enqueue(&uow, "ready", &crypto, 100000).expect("enqueue");
+            SyslogQueueRepository::enqueue(&uow, "future", &crypto, 100000).expect("enqueue");
             uow.commit().expect("commit");
         }
 
         // Mark the second event as scheduled for the future.
-        let peeked = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10)
-            .expect("peek");
+        let peeked = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10).expect("peek");
         assert_eq!(peeked.len(), 2);
         {
             let mut conn = pool.get().expect("acquire connection");
@@ -528,10 +499,7 @@ mod tests {
         {
             let mut conn = pool.get().expect("acquire connection");
             let uow = UnitOfWork::new(&mut conn).expect("begin uow");
-            SyslogQueueRepository::enqueue(
-                &uow, "secret", &crypto, 100000
-            )
-            .expect("enqueue");
+            SyslogQueueRepository::enqueue(&uow, "secret", &crypto, 100000).expect("enqueue");
             uow.commit().expect("commit");
         }
 
@@ -543,8 +511,7 @@ mod tests {
         ];
         let wrong_crypto = SecretCrypto::from_kek(wrong_kek, ENVELOPE_VERSION_V1);
 
-        let result = SyslogQueueRepository::peek_oldest(&pool, &wrong_crypto, 10
-        );
+        let result = SyslogQueueRepository::peek_oldest(&pool, &wrong_crypto, 10);
         assert!(result.is_err(), "decrypt with wrong key must fail");
         let err_msg = result.unwrap_err().to_string();
         assert!(

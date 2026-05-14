@@ -983,8 +983,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
                                     Ok(()) => {
                                         info!(
                                             pid,
-                                            exe,
-                                            "sync-client watcher: hook injected successfully"
+                                            exe, "sync-client watcher: hook injected successfully"
                                         );
                                     }
                                     Err(e) => {
@@ -1027,27 +1026,29 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
     };
 
     // ── WfpManager (M017/S01) ─────────────────────────────────────────────
-    let wfp_manager_opt: Option<crate::wfp_manager::WfpManager> =
-        if agent_config.wfp_filter_enabled.unwrap_or(false) {
-            match crate::wfp_manager::WfpManager::new() {
-                Ok(manager) => {
-                    if let Err(e) = manager.register() {
-                        warn!(error = %e, "WFP manager registration failed — continuing without WFP");
-                        None
-                    } else {
-                        info!("WFP manager registered");
-                        Some(manager)
-                    }
-                }
-                Err(e) => {
-                    warn!(error = %e, "WFP manager init failed — continuing without WFP");
+    let wfp_manager_opt: Option<crate::wfp_manager::WfpManager> = if agent_config
+        .wfp_filter_enabled
+        .unwrap_or(false)
+    {
+        match crate::wfp_manager::WfpManager::new() {
+            Ok(manager) => {
+                if let Err(e) = manager.register() {
+                    warn!(error = %e, "WFP manager registration failed — continuing without WFP");
                     None
+                } else {
+                    info!("WFP manager registered");
+                    Some(manager)
                 }
             }
-        } else {
-            info!("WFP filter disabled — skipping WfpManager");
-            None
-        };
+            Err(e) => {
+                warn!(error = %e, "WFP manager init failed — continuing without WFP");
+                None
+            }
+        }
+    } else {
+        info!("WFP filter disabled — skipping WfpManager");
+        None
+    };
 
     // ── PrintEnforcer (M017/S04) ──────────────────────────────────────────
     let print_enforcer_opt: Option<crate::print_enforcer::PrintEnforcer> = {
@@ -1387,7 +1388,8 @@ async fn approval_poll_loop(
                         &entry.token,
                         &jsonwebtoken::DecodingKey::from_secret(&[]),
                         &{
-                            let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::EdDSA);
+                            let mut v =
+                                jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::EdDSA);
                             v.insecure_disable_signature_validation();
                             v.set_issuer(&["dlp-server"]);
                             v

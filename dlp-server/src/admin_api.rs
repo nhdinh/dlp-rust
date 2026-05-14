@@ -10,12 +10,12 @@
 use std::sync::Arc;
 
 use axum::extract::{FromRequest, Path, State};
-use once_cell::sync::Lazy;
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 use crate::admin_auth::{self, AdminUsername};
@@ -24,14 +24,13 @@ use crate::approval_api;
 use crate::audit_store;
 use crate::db;
 use crate::db::repositories;
+use crate::db::repositories::labels::{LabelRepository, LabelRow, LabelUpsertRow};
 use crate::db::repositories::{
-    validate_facility_code, validate_severity, AgentConfigRepository,
-    AlertRouterConfigRepository, CredentialsRepository, DiskRegistryRepository,
-    DiskRegistryRow, LdapConfigRepository, ManagedOriginRow,
-    ManagedOriginsRepository, PolicyRepository, SiemConfigRepository,
+    validate_facility_code, validate_severity, AgentConfigRepository, AlertRouterConfigRepository,
+    CredentialsRepository, DiskRegistryRepository, DiskRegistryRow, LdapConfigRepository,
+    ManagedOriginRow, ManagedOriginsRepository, PolicyRepository, SiemConfigRepository,
     SyslogConfigRepository, SyslogConfigRow,
 };
-use crate::db::repositories::labels::{LabelRepository, LabelRow, LabelUpsertRow};
 use crate::exception_store;
 use crate::policy_store::mode_str;
 use crate::rate_limiter::{self, default_config, policy_config};
@@ -869,9 +868,18 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/admin/device-registry", get(list_device_registry_handler))
         .route("/admin/managed-origins", get(list_managed_origins_handler))
         // Phase 61: Agent-facing approval endpoints (no JWT — agent-authenticated)
-        .route("/agent/approval-request", post(approval_api::submit_approval_request))
-        .route("/agent/approvals/active", get(approval_api::list_active_approvals))
-        .route("/agent/approvals/public-key", get(approval_api::get_public_key));
+        .route(
+            "/agent/approval-request",
+            post(approval_api::submit_approval_request),
+        )
+        .route(
+            "/agent/approvals/active",
+            get(approval_api::list_active_approvals),
+        )
+        .route(
+            "/agent/approvals/public-key",
+            get(approval_api::get_public_key),
+        );
 
     // Routes that require a valid JWT.
     // Policy routes get a tighter limit (60/min) via `.route_layer()`.
@@ -970,16 +978,34 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/admin/labels/{id}/reject", post(reject_label))
         .route("/admin/labels/departments", get(list_label_departments))
         // Phase 61: Approval Workflow Engine admin API (WORKFLOW-02..06)
-        .route("/admin/approvals", get(approval_api::list_approvals).post(approval_api::create_approval))
+        .route(
+            "/admin/approvals",
+            get(approval_api::list_approvals).post(approval_api::create_approval),
+        )
         .route("/admin/approvals/{id}", get(approval_api::get_approval))
-        .route("/admin/approvals/{id}/grant", post(approval_api::grant_approval))
-        .route("/admin/approvals/{id}/reject", post(approval_api::reject_approval))
-        .route("/admin/approvals/{id}/revoke", post(approval_api::revoke_approval))
-        .route("/admin/board-public-key", put(approval_api::update_board_public_key))
+        .route(
+            "/admin/approvals/{id}/grant",
+            post(approval_api::grant_approval),
+        )
+        .route(
+            "/admin/approvals/{id}/reject",
+            post(approval_api::reject_approval),
+        )
+        .route(
+            "/admin/approvals/{id}/revoke",
+            post(approval_api::revoke_approval),
+        )
+        .route(
+            "/admin/board-public-key",
+            put(approval_api::update_board_public_key),
+        )
         // Phase 62: Syslog Forwarder admin API (SYSLOG-01..02)
         .route("/admin/syslog-config", get(get_syslog_config_handler))
         .route("/admin/syslog-config", put(update_syslog_config_handler))
-        .route("/admin/syslog-config/test", post(test_syslog_config_handler))
+        .route(
+            "/admin/syslog-config/test",
+            post(test_syslog_config_handler),
+        )
         .route_layer(default_config())
         .layer(middleware::from_fn(admin_auth::require_auth));
 
@@ -1096,8 +1122,9 @@ async fn create_policy(
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
             .strip_prefix("Bearer ")
-            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
-    )?.sid;
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?,
+    )?
+    .sid;
     let payload: Json<PolicyPayload> = Json::from_request(req, &state)
         .await
         .map_err(AppError::from)?;
@@ -1188,8 +1215,9 @@ async fn update_policy(
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
             .strip_prefix("Bearer ")
-            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
-    )?.sid;
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?,
+    )?
+    .sid;
 
     // Extract path param from URI. Supports both /policies/:id and /admin/policies/:id.
     let path = req.uri().path();
@@ -1307,8 +1335,9 @@ async fn delete_policy(
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
             .strip_prefix("Bearer ")
-            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
-    )?.sid;
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?,
+    )?
+    .sid;
     let policy_id = Path::<String>::from_request(req, &state)
         .await
         .map_err(AppError::from)?
@@ -2500,8 +2529,9 @@ async fn insert_disk_registry_handler(
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
             .strip_prefix("Bearer ")
-            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
-    )?.sid;
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?,
+    )?
+    .sid;
 
     // (2) Deserialize the body. Must follow username extraction so the headers
     //     are available before the body is consumed.
@@ -2658,8 +2688,9 @@ async fn delete_disk_registry_handler(
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
             .strip_prefix("Bearer ")
-            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
-    )?.sid;
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?,
+    )?
+    .sid;
     // (2) Extract path param.
     let id = Path::<String>::from_request(req, &state)
         .await
@@ -3114,10 +3145,7 @@ fn canonical_label_state(s: &str) -> String {
 /// # Errors
 ///
 /// Returns `AppError::UnprocessableEntity` on any validation failure.
-fn validate_label_request(
-    req: &LabelRequest,
-    pool: &db::Pool,
-) -> Result<(), AppError> {
+fn validate_label_request(req: &LabelRequest, pool: &db::Pool) -> Result<(), AppError> {
     // Path must be absolute: UNC (\\server\share) or drive letter (C:\)
     let path = req.path.trim();
     let is_unc = path.starts_with(r"\\");
@@ -3263,17 +3291,20 @@ async fn create_label(
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
             .strip_prefix("Bearer ")
-            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
-    )?.sid;
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?,
+    )?
+    .sid;
     let Json(body) = Json::<LabelRequest>::from_request(req, &state)
         .await
         .map_err(AppError::from)?;
 
     let pool_for_validate = Arc::clone(&state.pool);
     let body_for_validate = body.clone();
-    tokio::task::spawn_blocking(move || validate_label_request(&body_for_validate, &pool_for_validate))
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    tokio::task::spawn_blocking(move || {
+        validate_label_request(&body_for_validate, &pool_for_validate)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -3369,8 +3400,9 @@ async fn update_label(
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
             .strip_prefix("Bearer ")
-            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
-    )?.sid;
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?,
+    )?
+    .sid;
 
     let path = req.uri().path();
     let label_id = if let Some(rest) = path.strip_prefix("/admin/labels/") {
@@ -3390,9 +3422,11 @@ async fn update_label(
 
     let pool_for_validate = Arc::clone(&state.pool);
     let body_for_validate = body.clone();
-    tokio::task::spawn_blocking(move || validate_label_request(&body_for_validate, &pool_for_validate))
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    tokio::task::spawn_blocking(move || {
+        validate_label_request(&body_for_validate, &pool_for_validate)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     let now = chrono::Utc::now().to_rfc3339();
     let path_norm = normalize_path(&body.path);
@@ -3499,14 +3533,18 @@ async fn confirm_label(
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
             .strip_prefix("Bearer ")
-            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
-    )?.sid;
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?,
+    )?
+    .sid;
 
     let path = req.uri().path();
     let label_id = path
         .strip_prefix("/admin/labels/")
         .and_then(|rest| rest.strip_suffix("/confirm"))
-        .or_else(|| path.strip_prefix("/labels/").and_then(|rest| rest.strip_suffix("/confirm")))
+        .or_else(|| {
+            path.strip_prefix("/labels/")
+                .and_then(|rest| rest.strip_suffix("/confirm"))
+        })
         .unwrap_or("")
         .to_string();
     if label_id.is_empty() {
@@ -3531,7 +3569,9 @@ async fn confirm_label(
 
         if let Some(ref sid) = caller_sid {
             if username2 != "dlp-admin" && original.owner_sid.as_ref() != Some(sid) {
-                return Err(AppError::Forbidden("not the data owner of this label".to_string()));
+                return Err(AppError::Forbidden(
+                    "not the data owner of this label".to_string(),
+                ));
             }
         }
 
@@ -3541,8 +3581,8 @@ async fn confirm_label(
             ));
         }
 
-        let affected =
-            LabelRepository::update_state(&uow, &id, "confirmed", &now).map_err(AppError::Database)?;
+        let affected = LabelRepository::update_state(&uow, &id, "confirmed", &now)
+            .map_err(AppError::Database)?;
         if affected == 0 {
             return Err(AppError::NotFound(format!("label {id} not found")));
         }
@@ -3615,14 +3655,18 @@ async fn reject_label(
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
             .strip_prefix("Bearer ")
-            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
-    )?.sid;
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?,
+    )?
+    .sid;
 
     let path = req.uri().path();
     let label_id = path
         .strip_prefix("/admin/labels/")
         .and_then(|rest| rest.strip_suffix("/reject"))
-        .or_else(|| path.strip_prefix("/labels/").and_then(|rest| rest.strip_suffix("/reject")))
+        .or_else(|| {
+            path.strip_prefix("/labels/")
+                .and_then(|rest| rest.strip_suffix("/reject"))
+        })
         .unwrap_or("")
         .to_string();
     if label_id.is_empty() {
@@ -3646,7 +3690,9 @@ async fn reject_label(
         })?;
         if let Some(ref sid) = caller_sid {
             if username2 != "dlp-admin" && original.owner_sid.as_ref() != Some(sid) {
-                return Err(AppError::Forbidden("not the data owner of this label".to_string()));
+                return Err(AppError::Forbidden(
+                    "not the data owner of this label".to_string(),
+                ));
             }
         }
 
@@ -3656,8 +3702,8 @@ async fn reject_label(
             ));
         }
 
-        let affected =
-            LabelRepository::update_state(&uow, &id, "rejected", &now).map_err(AppError::Database)?;
+        let affected = LabelRepository::update_state(&uow, &id, "rejected", &now)
+            .map_err(AppError::Database)?;
         if affected == 0 {
             return Err(AppError::NotFound(format!("label {id} not found")));
         }
@@ -3728,8 +3774,9 @@ async fn delete_label(
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
             .strip_prefix("Bearer ")
-            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?
-    )?.sid;
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?,
+    )?
+    .sid;
 
     let id = Path::<String>::from_request(req, &state)
         .await
@@ -3738,32 +3785,31 @@ async fn delete_label(
 
     let pool = Arc::clone(&state.pool);
     let label_id = id.clone();
-    let result =
-        tokio::task::spawn_blocking(move || -> Result<Option<String>, AppError> {
-            let mut conn = pool.get().map_err(AppError::from)?;
-            let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-            // Get path for audit before deleting
-            let path_result: rusqlite::Result<String> = uow.tx.query_row(
-                "SELECT path FROM labels WHERE id = ?1",
-                rusqlite::params![label_id],
-                |r| r.get(0),
-            );
-            let path = match path_result {
-                Ok(p) => p,
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    return Ok(None);
-                }
-                Err(e) => return Err(AppError::Database(e)),
-            };
-            let affected = LabelRepository::delete(&uow, &label_id).map_err(AppError::Database)?;
-            if affected == 0 {
+    let result = tokio::task::spawn_blocking(move || -> Result<Option<String>, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        // Get path for audit before deleting
+        let path_result: rusqlite::Result<String> = uow.tx.query_row(
+            "SELECT path FROM labels WHERE id = ?1",
+            rusqlite::params![label_id],
+            |r| r.get(0),
+        );
+        let path = match path_result {
+            Ok(p) => p,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
                 return Ok(None);
             }
-            uow.commit().map_err(AppError::Database)?;
-            Ok(Some(path))
-        })
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+            Err(e) => return Err(AppError::Database(e)),
+        };
+        let affected = LabelRepository::delete(&uow, &label_id).map_err(AppError::Database)?;
+        if affected == 0 {
+            return Ok(None);
+        }
+        uow.commit().map_err(AppError::Database)?;
+        Ok(Some(path))
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     let path = match result {
         Some(p) => p,
@@ -4057,8 +4103,7 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-        let approval_token_crypto =
-            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
         let approval_token_conn = pool.get().expect("pool");
         let approval_token_service = Arc::new(
             crate::approval_token::ApprovalTokenService::new(
@@ -4134,8 +4179,7 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-        let approval_token_crypto =
-            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
         let approval_token_conn = pool.get().expect("pool");
         let approval_token_service = Arc::new(
             crate::approval_token::ApprovalTokenService::new(
@@ -4201,8 +4245,7 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-        let approval_token_crypto =
-            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
         let approval_token_conn = pool.get().expect("pool");
         let approval_token_service = Arc::new(
             crate::approval_token::ApprovalTokenService::new(
@@ -4322,8 +4365,7 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-        let approval_token_crypto =
-            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
         let approval_token_conn = pool.get().expect("pool");
         let approval_token_service = Arc::new(
             crate::approval_token::ApprovalTokenService::new(
@@ -4486,8 +4528,7 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-        let approval_token_crypto =
-            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
         let approval_token_conn = pool.get().expect("pool");
         let approval_token_service = Arc::new(
             crate::approval_token::ApprovalTokenService::new(
@@ -4732,8 +4773,7 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-        let approval_token_crypto =
-            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
         let approval_token_conn = pool.get().expect("pool");
         let approval_token_service = Arc::new(
             crate::approval_token::ApprovalTokenService::new(
@@ -5649,8 +5689,7 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-        let approval_token_crypto =
-            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
         let approval_token_conn = pool.get().expect("pool");
         let approval_token_service = Arc::new(
             crate::approval_token::ApprovalTokenService::new(
@@ -5800,8 +5839,7 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-        let approval_token_crypto =
-            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
         let approval_token_conn = pool.get().expect("pool");
         let approval_token_service = Arc::new(
             crate::approval_token::ApprovalTokenService::new(
@@ -5897,8 +5935,7 @@ mod tests {
             crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-        let approval_token_crypto =
-            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
         let approval_token_conn = pool.get().expect("pool");
         let approval_token_service = Arc::new(
             crate::approval_token::ApprovalTokenService::new(
@@ -6335,8 +6372,7 @@ mod tests {
             std::sync::Arc::clone(&crypto),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-        let approval_token_crypto =
-            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
         let approval_token_conn = pool.get().expect("pool");
         let approval_token_service = Arc::new(
             crate::approval_token::ApprovalTokenService::new(
@@ -6425,8 +6461,7 @@ mod tests {
             std::sync::Arc::clone(&crypto),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-        let approval_token_crypto =
-            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
         let approval_token_conn = pool.get().expect("pool");
         let approval_token_service = Arc::new(
             crate::approval_token::ApprovalTokenService::new(
@@ -6515,8 +6550,7 @@ mod tests {
             std::sync::Arc::clone(&crypto),
         );
         let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-        let approval_token_crypto =
-            crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
         let approval_token_conn = pool.get().expect("pool");
         let approval_token_service = Arc::new(
             crate::approval_token::ApprovalTokenService::new(
@@ -7622,8 +7656,7 @@ mod tests {
             );
             let label_service =
                 Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-            let approval_token_crypto =
-                crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+            let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
             let approval_token_conn = pool.get().expect("pool");
             let approval_token_service = Arc::new(
                 crate::approval_token::ApprovalTokenService::new(
@@ -7641,10 +7674,10 @@ mod tests {
                 ad: None,
                 label_service,
                 approval_token_service,
-            syslog: crate::syslog_connector::SyslogConnector::new(
-                std::sync::Arc::clone(&pool),
-                std::sync::Arc::clone(&crypto),
-            ),
+                syslog: crate::syslog_connector::SyslogConnector::new(
+                    std::sync::Arc::clone(&pool),
+                    std::sync::Arc::clone(&crypto),
+                ),
             });
             // Minimal router with just the disk-registry delete route for isolation.
             axum::Router::new()
@@ -7696,8 +7729,7 @@ mod tests {
             );
             let label_service =
                 Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-            let approval_token_crypto =
-                crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+            let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
             let approval_token_conn = pool.get().expect("pool");
             let approval_token_service = Arc::new(
                 crate::approval_token::ApprovalTokenService::new(
@@ -7715,10 +7747,10 @@ mod tests {
                 ad: None,
                 label_service,
                 approval_token_service,
-            syslog: crate::syslog_connector::SyslogConnector::new(
-                std::sync::Arc::clone(&pool),
-                std::sync::Arc::clone(&crypto),
-            ),
+                syslog: crate::syslog_connector::SyslogConnector::new(
+                    std::sync::Arc::clone(&pool),
+                    std::sync::Arc::clone(&crypto),
+                ),
             });
             axum::Router::new()
                 .route(
@@ -8040,8 +8072,7 @@ mod tests {
             );
             let label_service =
                 Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
-            let approval_token_crypto =
-                crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+            let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
             let approval_token_conn = pool.get().expect("pool");
             let approval_token_service = Arc::new(
                 crate::approval_token::ApprovalTokenService::new(
@@ -8059,10 +8090,10 @@ mod tests {
                 ad: None,
                 label_service,
                 approval_token_service,
-            syslog: crate::syslog_connector::SyslogConnector::new(
-                std::sync::Arc::clone(&pool),
-                std::sync::Arc::clone(&crypto),
-            ),
+                syslog: crate::syslog_connector::SyslogConnector::new(
+                    std::sync::Arc::clone(&pool),
+                    std::sync::Arc::clone(&crypto),
+                ),
             });
             axum::Router::new()
                 .route(
@@ -8523,7 +8554,9 @@ mod tests {
             .body(Body::from(json))
             .expect("build request");
         let resp = app.clone().oneshot(req).await.expect("oneshot");
-        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .expect("body");
         let created: LabelResponse = serde_json::from_slice(&body).expect("parse");
         let id = created.id;
 
@@ -8735,7 +8768,9 @@ mod tests {
         let get_resp = app.clone().oneshot(get).await.expect("GET oneshot");
         assert_eq!(get_resp.status(), StatusCode::OK);
 
-        let body = to_bytes(get_resp.into_body(), 64 * 1024).await.expect("body");
+        let body = to_bytes(get_resp.into_body(), 64 * 1024)
+            .await
+            .expect("body");
         let rt: SyslogConfigPayload = serde_json::from_slice(&body).expect("parse");
         assert_eq!(rt.host, payload.host);
         assert_eq!(rt.port, payload.port);

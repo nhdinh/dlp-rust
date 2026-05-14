@@ -14,12 +14,12 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    SetLastError, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS, ERROR_ACCESS_DENIED,
+    SetLastError, ERROR_ACCESS_DENIED, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS,
 };
+use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{
     FILE_CREATION_DISPOSITION, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE,
 };
-use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::System::Diagnostics::Debug::OutputDebugStringW;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
@@ -256,12 +256,7 @@ unsafe fn patch_iat(iat: *mut usize, new_fn: *mut std::ffi::c_void) -> bool {
     *iat = new_fn as usize;
 
     let mut _tmp = windows::Win32::System::Memory::PAGE_PROTECTION_FLAGS(0);
-    let _ = VirtualProtect(
-        iat as *mut std::ffi::c_void,
-        size,
-        old_protect,
-        &mut _tmp,
-    );
+    let _ = VirtualProtect(iat as *mut std::ffi::c_void, size, old_protect, &mut _tmp);
 
     true
 }
@@ -459,15 +454,17 @@ pub extern "system" fn UnhookAll() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Sends a classification request to the agent via named pipe.
-fn classify_path(path: &str, action: &str, pipe_name: &str) -> Result<Decision, pipe_client::PipeError> {
+fn classify_path(
+    path: &str,
+    action: &str,
+    pipe_name: &str,
+) -> Result<Decision, pipe_client::PipeError> {
     let req = HookRequest {
         path: path.to_string(),
         action: action.to_string(),
     };
     let resp = pipe_client::send_request(
-        pipe_name,
-        &req,
-        50, // 50 ms timeout per task spec
+        pipe_name, &req, 50, // 50 ms timeout per task spec
     )?;
     Ok(resp.decision)
 }
@@ -522,10 +519,10 @@ pub use pipe_client::DEFAULT_PIPE_NAME;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::time::Duration;
     use dlp_agent::hook_ipc::HookIpcServer;
     use dlp_common::{Decision, HookRequest, HookResponse};
+    use std::sync::Arc;
+    use std::time::Duration;
 
     /// Starts a [`HookIpcServer`] on a dedicated thread using the given
     /// handler, waits until the pipe is ready, and returns the thread handle.
@@ -537,9 +534,11 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let handle = std::thread::spawn(move || {
             let server = HookIpcServer::new(name, handler);
-            server.run_with_ready(|| {
-                let _ = tx.send(());
-            }).unwrap();
+            server
+                .run_with_ready(|| {
+                    let _ = tx.send(());
+                })
+                .unwrap();
         });
 
         rx.recv_timeout(Duration::from_secs(5))
@@ -558,7 +557,10 @@ mod tests {
 
     #[test]
     fn pcwstr_roundtrip() {
-        let wide: Vec<u16> = "Hello World".encode_utf16().chain(std::iter::once(0)).collect();
+        let wide: Vec<u16> = "Hello World"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let s = unsafe { pcwstr_to_string(PCWSTR::from_raw(wide.as_ptr())) };
         assert_eq!(s, "Hello World");
     }
@@ -575,11 +577,7 @@ mod tests {
             path: r"C:\test.txt".to_string(),
             action: "CREATE".to_string(),
         };
-        let result = pipe_client::send_request(
-            r"\\.\pipe\DlpHookPipeTestNoServer",
-            &req,
-            100,
-        );
+        let result = pipe_client::send_request(r"\\.\pipe\DlpHookPipeTestNoServer", &req, 100);
         assert!(
             matches!(result, Err(pipe_client::PipeError::ConnectionRefused)),
             "expected ConnectionRefused, got {:?}",
@@ -601,8 +599,8 @@ mod tests {
             path: r"C:\secret.txt".to_string(),
             action: "CREATE".to_string(),
         };
-        let resp = pipe_client::send_request(pipe_name, &req, 1000)
-            .expect("send_request should succeed");
+        let resp =
+            pipe_client::send_request(pipe_name, &req, 1000).expect("send_request should succeed");
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.reason, "blocked: C:\\secret.txt");
     }
@@ -621,8 +619,8 @@ mod tests {
             path: r"C:\public.txt".to_string(),
             action: "CREATE".to_string(),
         };
-        let resp = pipe_client::send_request(pipe_name, &req, 1000)
-            .expect("send_request should succeed");
+        let resp =
+            pipe_client::send_request(pipe_name, &req, 1000).expect("send_request should succeed");
         assert_eq!(resp.decision, Decision::ALLOW);
         assert_eq!(resp.reason, "allowed");
     }
@@ -665,11 +663,7 @@ mod tests {
     #[test]
     fn find_iat_entry_returns_none_for_invalid_module() {
         unsafe {
-            let result = find_iat_entry(
-                std::ptr::null_mut(),
-                "kernel32.dll",
-                std::ptr::null(),
-            );
+            let result = find_iat_entry(std::ptr::null_mut(), "kernel32.dll", std::ptr::null());
             assert!(result.is_none());
         }
     }
