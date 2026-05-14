@@ -20,6 +20,8 @@ pub mod managed_origins;
 pub mod policies;
 pub mod secret_kek;
 pub mod siem_config;
+pub mod syslog_config;
+pub mod syslog_queue;
 pub mod system_kv;
 
 pub use admin_users::AdminUserRepository;
@@ -36,3 +38,5 @@ pub use ldap_config::{LdapConfigRepository, LdapConfigRow};
 pub use managed_origins::{ManagedOriginRow, ManagedOriginsRepository};
 pub use policies::{PolicyRepository, PolicyRow, PolicyUpdateRow};
 pub use siem_config::{SiemConfigRepository, SiemConfigRow};
+pub use syslog_config::{validate_facility_code, validate_severity, SyslogConfigRepository, SyslogConfigRow};
+pub use syslog_queue::{QueuedEvent, SyslogQueueRepository};
