@@ -24,6 +24,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -91,6 +92,49 @@ const DISK_ENUM_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 /// bridges the gap so the handler can report state transitions (e.g. `StopPending`)
 /// directly to the SCM instead of only updating the internal `SERVICE_STATE` mutex.
 static SCM_HANDLE: std::sync::OnceLock<ServiceStatusHandle> = std::sync::OnceLock::new();
+
+/// Global SQLite connection for the agent's offline audit queue.
+///
+/// Set once during service startup via [`init_agent_db`].  All callers that
+/// need to enqueue or drain offline audit events read this static.
+///
+/// The connection is opened on the agent's local DB file
+/// (`C:\ProgramData\DLP\agent.db`) and the `offline_audit_queue` table is
+/// initialised before any other module can access it.
+///
+/// Wrapped in `std::sync::Mutex` because `rusqlite::Connection` is not `Sync`.
+static AGENT_DB: OnceLock<std::sync::Mutex<rusqlite::Connection>> = OnceLock::new();
+
+/// Returns a reference to the global agent SQLite connection.
+///
+/// Returns `None` if the connection has not been initialised yet
+/// (e.g., called before `run_loop_init` completes).
+pub fn agent_db() -> Option<&'static std::sync::Mutex<rusqlite::Connection>> {
+    AGENT_DB.get()
+}
+
+/// Initialises the agent's local SQLite database and the offline audit queue table.
+///
+/// Called once during service startup.  The database lives in the agent's
+/// data directory (`C:\ProgramData\DLP\agent.db`).  If the directory or file
+/// does not exist, it is created automatically.
+///
+/// # Errors
+///
+/// Returns `Err` if the database file cannot be opened or the table cannot be created.
+fn init_agent_db() -> Result<(), anyhow::Error> {
+    let data_dir = std::path::PathBuf::from(r"C:\ProgramData\DLP");
+    std::fs::create_dir_all(&data_dir)
+        .with_context(|| format!("creating agent data dir: {}", data_dir.display()))?;
+    let db_path = data_dir.join("agent.db");
+    let conn = rusqlite::Connection::open(&db_path)
+        .with_context(|| format!("opening agent db: {}", db_path.display()))?;
+    crate::offline_audit_queue::init_table(&conn)
+        .with_context(|| "initialising offline_audit_queue table")?;
+    info!(db_path = %db_path.display(), "agent SQLite DB initialised");
+    let _ = AGENT_DB.set(std::sync::Mutex::new(conn));
+    Ok(())
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Service main (invoked from the generated FFI entry in main.rs)
@@ -773,6 +817,11 @@ async fn run_loop(
 /// Extracted from [`run_loop`] to reduce cognitive complexity.  Each subsystem
 /// block is kept in source order so comments remain valid.
 async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
+    // ── Initialise the agent's local SQLite DB (offline audit queue) ───────
+    if let Err(e) = init_agent_db() {
+        warn!(error = %e, "agent DB init failed — offline audit queue unavailable");
+    }
+
     // ── Initialise the Policy Engine client and offline cache ──────────────
     let engine_client = crate::engine_client::EngineClient::default_client()
         .inspect_err(|e| warn!(error = %e, "Policy Engine client init failed — will run offline"))
