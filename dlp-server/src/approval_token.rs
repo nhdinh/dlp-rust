@@ -37,12 +37,10 @@
 //! ```
 
 use ed25519_dalek::pkcs8::EncodePrivateKey;
-use ed25519_dalek::{SigningKey, Verifier, VerifyingKey};
 #[cfg(test)]
 use ed25519_dalek::Signer;
-use jsonwebtoken::{
-    decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
-};
+use ed25519_dalek::{SigningKey, Verifier, VerifyingKey};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use rusqlite::OptionalExtension;
 
 use dlp_common::ApprovalClaims;
@@ -101,18 +99,19 @@ impl ApprovalTokenService {
                 |r| r.get::<_, String>(0),
             )
             .optional()
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("db error reading signing key: {e}")))?;
+            .map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("db error reading signing key: {e}"))
+            })?;
 
         if let Some(key_hex) = existing_key {
             // Decrypt the stored envelope.
-            let envelope = crate::crypto::Envelope::deserialize(
-                &hex::decode(&key_hex).map_err(|e| {
+            let envelope =
+                crate::crypto::Envelope::deserialize(&hex::decode(&key_hex).map_err(|e| {
                     AppError::Internal(anyhow::anyhow!("invalid hex in stored signing key: {e}"))
-                })?,
-            )
-            .map_err(|e| {
-                AppError::Internal(anyhow::anyhow!("invalid envelope for signing key: {e}"))
-            })?;
+                })?)
+                .map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("invalid envelope for signing key: {e}"))
+                })?;
 
             let decrypted = crypto
                 .decrypt_bytes(
@@ -123,13 +122,9 @@ impl ApprovalTokenService {
                     AppError::Internal(anyhow::anyhow!("failed to decrypt signing key: {e}"))
                 })?;
 
-            let key_bytes: [u8; 32] = decrypted.try_into().map_err(
-                |_| {
-                    AppError::Internal(anyhow::anyhow!(
-                        "decrypted signing key is not 32 bytes"
-                    ))
-                },
-            )?;
+            let key_bytes: [u8; 32] = decrypted.try_into().map_err(|_| {
+                AppError::Internal(anyhow::anyhow!("decrypted signing key is not 32 bytes"))
+            })?;
 
             let signing_key = SigningKey::from_bytes(&key_bytes);
             let verifying_key = signing_key.verifying_key();
@@ -159,9 +154,7 @@ impl ApprovalTokenService {
             "INSERT OR REPLACE INTO system_kv (key, value) VALUES (?1, ?2)",
             rusqlite::params![KEY_APPROVAL_SIGNING_KEY, key_hex],
         )
-        .map_err(|e| {
-            AppError::Internal(anyhow::anyhow!("db error storing signing key: {e}"))
-        })?;
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("db error storing signing key: {e}")))?;
 
         // Store the verifying key (public) for convenience.
         let verifying_hex = hex::encode(verifying_key.to_bytes());
@@ -169,9 +162,7 @@ impl ApprovalTokenService {
             "INSERT OR REPLACE INTO system_kv (key, value) VALUES (?1, ?2)",
             rusqlite::params![KEY_APPROVAL_VERIFYING_KEY, verifying_hex],
         )
-        .map_err(|e| {
-            AppError::Internal(anyhow::anyhow!("db error storing verifying key: {e}"))
-        })?;
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("db error storing verifying key: {e}")))?;
 
         Ok(Self {
             signing_key,
@@ -191,12 +182,8 @@ impl ApprovalTokenService {
             .map_err(|e| AppError::Internal(anyhow::anyhow!("pkcs8 encoding failed: {e}")))?;
         let enc_key = EncodingKey::from_ed_der(pkcs8_der.as_bytes());
 
-        encode(
-            &Header::new(Algorithm::EdDSA),
-            claims,
-            &enc_key,
-        )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("jwt encode failed: {e}")))
+        encode(&Header::new(Algorithm::EdDSA), claims, &enc_key)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("jwt encode failed: {e}")))
     }
 
     /// Verifies a JWT signature and validates the `iss` claim.
@@ -247,9 +234,7 @@ impl ApprovalTokenService {
     /// # Errors
     ///
     /// Returns `AppError::Internal` on database failure.
-    pub fn get_board_public_key(
-        conn: &rusqlite::Connection,
-    ) -> Result<Option<String>, AppError> {
+    pub fn get_board_public_key(conn: &rusqlite::Connection) -> Result<Option<String>, AppError> {
         let result: Option<String> = conn
             .query_row(
                 "SELECT value FROM system_kv WHERE key = ?1",
@@ -280,22 +265,18 @@ impl ApprovalTokenService {
         message: &[u8],
         signature_hex: &str,
     ) -> Result<bool, AppError> {
-        let pubkey_bytes = hex::decode(pubkey_hex).map_err(|e| {
-            AppError::BadRequest(format!("invalid board pubkey hex: {e}"))
-        })?;
+        let pubkey_bytes = hex::decode(pubkey_hex)
+            .map_err(|e| AppError::BadRequest(format!("invalid board pubkey hex: {e}")))?;
         let pubkey_bytes: [u8; 32] = pubkey_bytes.try_into().map_err(|_| {
             AppError::BadRequest("board pubkey must be exactly 32 bytes".to_string())
         })?;
-        let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes).map_err(|e| {
-            AppError::BadRequest(format!("invalid board pubkey: {e}"))
-        })?;
+        let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
+            .map_err(|e| AppError::BadRequest(format!("invalid board pubkey: {e}")))?;
 
-        let sig_bytes = hex::decode(signature_hex).map_err(|e| {
-            AppError::BadRequest(format!("invalid signature hex: {e}"))
-        })?;
-        let signature = ed25519_dalek::Signature::from_slice(&sig_bytes).map_err(|e| {
-            AppError::BadRequest(format!("invalid signature: {e}"))
-        })?;
+        let sig_bytes = hex::decode(signature_hex)
+            .map_err(|e| AppError::BadRequest(format!("invalid signature hex: {e}")))?;
+        let signature = ed25519_dalek::Signature::from_slice(&sig_bytes)
+            .map_err(|e| AppError::BadRequest(format!("invalid signature: {e}")))?;
 
         Ok(verifying_key.verify(message, &signature).is_ok())
     }
@@ -317,7 +298,13 @@ impl ApprovalTokenService {
 /// * `act` — allowed action
 /// * `valid_until` — expiry timestamp (ISO-8601)
 #[must_use]
-pub fn t4_canonical_message(jti: &str, sub: &str, obj: &str, act: &str, valid_until: &str) -> String {
+pub fn t4_canonical_message(
+    jti: &str,
+    sub: &str,
+    obj: &str,
+    act: &str,
+    valid_until: &str,
+) -> String {
     format!("DLP-T4-SIGNATURE:{jti}:{sub}:{obj}:{act}:{valid_until}")
 }
 
@@ -445,7 +432,11 @@ mod tests {
 
         let service = ApprovalTokenService::new(&crypto, &conn).expect("create service");
         let vk_hex = service.verifying_key_hex();
-        assert_eq!(vk_hex.len(), 64, "verifying key hex must be 64 chars (32 bytes)");
+        assert_eq!(
+            vk_hex.len(),
+            64,
+            "verifying key hex must be 64 chars (32 bytes)"
+        );
 
         // Verify key was stored in system_kv.
         let stored: String = conn
@@ -472,7 +463,10 @@ mod tests {
         let service2 = ApprovalTokenService::new(&crypto, &conn).expect("create service 2");
         let vk_hex2 = service2.verifying_key_hex();
 
-        assert_eq!(vk_hex1, vk_hex2, "reloading must produce same verifying key");
+        assert_eq!(
+            vk_hex1, vk_hex2,
+            "reloading must produce same verifying key"
+        );
     }
 
     #[test]
@@ -500,21 +494,15 @@ mod tests {
         let signature = board_signing.sign(message);
         let signature_hex = hex::encode(signature.to_bytes());
 
-        let valid = ApprovalTokenService::verify_board_signature(
-            &pubkey_hex,
-            message,
-            &signature_hex,
-        )
-        .expect("verify");
+        let valid =
+            ApprovalTokenService::verify_board_signature(&pubkey_hex, message, &signature_hex)
+                .expect("verify");
         assert!(valid, "valid signature must verify");
 
         // Tampered message.
-        let invalid = ApprovalTokenService::verify_board_signature(
-            &pubkey_hex,
-            b"tampered",
-            &signature_hex,
-        )
-        .expect("verify tampered");
+        let invalid =
+            ApprovalTokenService::verify_board_signature(&pubkey_hex, b"tampered", &signature_hex)
+                .expect("verify tampered");
         assert!(!invalid, "tampered message must fail verification");
     }
 

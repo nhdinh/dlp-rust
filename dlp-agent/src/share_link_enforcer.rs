@@ -31,7 +31,6 @@ pub enum CloudProvider {
     Box,
 }
 
-
 /// A share URL found in clipboard text, attributed to its cloud provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedShareLink {
@@ -85,11 +84,7 @@ const PROVIDER_PATTERNS: &[ProviderPatterns] = &[
     },
     ProviderPatterns {
         provider: CloudProvider::Dropbox,
-        patterns: &[
-            "dropbox.com/s/",
-            "dropbox.com/sh/",
-            "dropbox.com/scl/",
-        ],
+        patterns: &["dropbox.com/s/", "dropbox.com/sh/", "dropbox.com/scl/"],
     },
     ProviderPatterns {
         // Use "//app.box.com/s/" and "//box.com/s/" to avoid matching "dropbox.com/s/".
@@ -122,9 +117,7 @@ pub fn detect_share_links(text: &str) -> Vec<DetectedShareLink> {
             if let Some(match_start) = lower.find(pattern) {
                 // Walk backward from match_start to find the URL boundary
                 // (start of "http://" or "https://", or fallback to match_start).
-                let url_start = lower[..match_start]
-                    .rfind("http")
-                    .unwrap_or(match_start);
+                let url_start = lower[..match_start].rfind("http").unwrap_or(match_start);
 
                 // Walk forward to the next whitespace or end-of-string.
                 let url_slice = &text[url_start..];
@@ -308,7 +301,8 @@ mod tests {
 
     #[test]
     fn test_detect_multi_provider_paste() {
-        let text = "OneDrive: https://1drv.ms/u/s!AaBb  Google: https://drive.google.com/file/d/1xyz \
+        let text =
+            "OneDrive: https://1drv.ms/u/s!AaBb  Google: https://drive.google.com/file/d/1xyz \
                     Dropbox: https://www.dropbox.com/s/foo/bar Box: https://app.box.com/s/qqq";
         let links = detect_share_links(text);
         assert_eq!(links.len(), 4, "expected one result per provider");
@@ -322,15 +316,20 @@ mod tests {
     #[test]
     fn test_detect_duplicate_provider_emits_only_first() {
         // Two OneDrive URLs: only one entry should appear.
-        let text =
-            "https://1drv.ms/u/s!First https://1drv.ms/u/s!Second";
+        let text = "https://1drv.ms/u/s!First https://1drv.ms/u/s!Second";
         let links = detect_share_links(text);
         let onedrive_count = links
             .iter()
             .filter(|l| l.provider == CloudProvider::OneDrive)
             .count();
-        assert_eq!(onedrive_count, 1, "must emit at most one entry per provider");
-        assert!(links[0].url.contains("First"), "should capture the FIRST match");
+        assert_eq!(
+            onedrive_count, 1,
+            "must emit at most one entry per provider"
+        );
+        assert!(
+            links[0].url.contains("First"),
+            "should capture the FIRST match"
+        );
     }
 
     /// Bare domain without a recognised share path must NOT trigger a match.
@@ -370,14 +369,20 @@ mod tests {
 
     #[test]
     fn test_t1_no_alert() {
-        let links = vec![make_link(CloudProvider::OneDrive, "https://1drv.ms/u/s!test")];
+        let links = vec![make_link(
+            CloudProvider::OneDrive,
+            "https://1drv.ms/u/s!test",
+        )];
         let result = ShareLinkEnforcer::check(&links, Classification::T1);
         assert!(result.is_none(), "T1 must not trigger an alert");
     }
 
     #[test]
     fn test_t2_no_alert() {
-        let links = vec![make_link(CloudProvider::Dropbox, "https://www.dropbox.com/s/foo")];
+        let links = vec![make_link(
+            CloudProvider::Dropbox,
+            "https://www.dropbox.com/s/foo",
+        )];
         let result = ShareLinkEnforcer::check(&links, Classification::T2);
         assert!(result.is_none(), "T2 must not trigger an alert");
     }

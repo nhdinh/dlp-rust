@@ -84,8 +84,7 @@ pub fn dpapi_protect_machine(plaintext: &[u8]) -> Result<Vec<u8>, DpapiError> {
             hresult: e.code().0 as u32,
         })?;
 
-        let ciphertext =
-            std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        let ciphertext = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         let _ = LocalFree(Some(HLOCAL(output.pbData as *mut _)));
         Ok(ciphertext)
     }
@@ -128,8 +127,7 @@ pub fn dpapi_unprotect_machine(protected: &[u8]) -> Result<Vec<u8>, DpapiError> 
             }
         })?;
 
-        let plaintext =
-            std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        let plaintext = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         let _ = LocalFree(Some(HLOCAL(output.pbData as *mut _)));
         Ok(plaintext)
     }

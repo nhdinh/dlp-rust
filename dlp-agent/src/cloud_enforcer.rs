@@ -518,15 +518,12 @@ fn active_user_sid_windows() -> String {
 
     // Convert the wide-char username (buf_len is in bytes, including null terminator).
     let char_count = (buf_len as usize / 2).saturating_sub(1);
-    let username_wide: &[u16] =
-        unsafe { std::slice::from_raw_parts(buf_ptr.as_ptr(), char_count) };
+    let username_wide: &[u16] = unsafe { std::slice::from_raw_parts(buf_ptr.as_ptr(), char_count) };
     let username = String::from_utf16_lossy(username_wide).to_string();
     unsafe { WTSFreeMemory(buf_ptr.as_ptr().cast()) };
 
     if username.is_empty() {
-        tracing::warn!(
-            "cloud enforcer: empty username from WTS — using HKEY_USERS scan fallback"
-        );
+        tracing::warn!("cloud enforcer: empty username from WTS — using HKEY_USERS scan fallback");
         return scan_hkey_users_for_sid();
     }
 
@@ -832,7 +829,9 @@ fn enumerate_sync_client_pids_windows() -> Vec<(u32, &'static str)> {
     // is initialised with the correct dwSize per the Win32 contract.
     if unsafe { Process32FirstW(snapshot, &mut entry) }.is_err() {
         // No processes at all — close handle and return.
-        unsafe { let _ = windows::Win32::Foundation::CloseHandle(snapshot); }
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+        }
         return results;
     }
 
@@ -860,7 +859,9 @@ fn enumerate_sync_client_pids_windows() -> Vec<(u32, &'static str)> {
         }
     }
 
-    unsafe { let _ = windows::Win32::Foundation::CloseHandle(snapshot); }
+    unsafe {
+        let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+    }
     results
 }
 
@@ -1093,7 +1094,10 @@ mod tests {
         let paths = resolve_sync_paths("");
         let has = |p: &CloudProvider| paths.iter().any(|sp| &sp.provider == p);
         assert!(has(&CloudProvider::OneDrive), "missing OneDrive fallback");
-        assert!(has(&CloudProvider::GoogleDrive), "missing GoogleDrive fallback");
+        assert!(
+            has(&CloudProvider::GoogleDrive),
+            "missing GoogleDrive fallback"
+        );
         assert!(has(&CloudProvider::Dropbox), "missing Dropbox fallback");
         assert!(has(&CloudProvider::Box), "missing Box fallback");
         assert!(
@@ -1141,11 +1145,9 @@ mod tests {
         assert!(gdrive_match.is_some());
         assert_eq!(gdrive_match.unwrap().provider, CloudProvider::GoogleDrive);
 
-        assert!(
-            enforcer
-                .detect_sync_provider(r"C:\Windows\system32\file.dll")
-                .is_none()
-        );
+        assert!(enforcer
+            .detect_sync_provider(r"C:\Windows\system32\file.dll")
+            .is_none());
     }
 
     /// with_paths(Vec<String>) backward compat: existing tests must still pass
@@ -1156,21 +1158,15 @@ mod tests {
             r"C:\Users\Alice\OneDrive".to_string(),
             r"C:\Users\Alice\Dropbox".to_string(),
         ]);
-        assert!(
-            enforcer
-                .detect_sync_provider(r"C:\Users\Alice\OneDrive\file.txt")
-                .is_some()
-        );
-        assert!(
-            enforcer
-                .detect_sync_provider(r"C:\Users\Alice\Dropbox\file.txt")
-                .is_some()
-        );
-        assert!(
-            enforcer
-                .detect_sync_provider(r"D:\archive\file.txt")
-                .is_none()
-        );
+        assert!(enforcer
+            .detect_sync_provider(r"C:\Users\Alice\OneDrive\file.txt")
+            .is_some());
+        assert!(enforcer
+            .detect_sync_provider(r"C:\Users\Alice\Dropbox\file.txt")
+            .is_some());
+        assert!(enforcer
+            .detect_sync_provider(r"D:\archive\file.txt")
+            .is_none());
     }
 
     /// Blocked file in a Dropbox folder must report "Dropbox" as provider name.

@@ -20,15 +20,15 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use dlp_common::{
-    Action, AuditEvent, Classification, Decision, Environment, EvaluateRequest,
-    EvaluateResponse, EventType, NetworkLocation, Resource, Subject,
+    Action, AuditEvent, Classification, Decision, Environment, EvaluateRequest, EvaluateResponse,
+    EventType, NetworkLocation, Resource, Subject,
 };
 use tracing::{debug, error, info, warn};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Printing::{
-    FindFirstPrinterChangeNotification, FindNextPrinterChangeNotification,
-    PRINTER_CHANGE_ADD_JOB, PRINTER_CHANGE_SET_JOB, PRINTER_CHANGE_WRITE_JOB,
+    FindFirstPrinterChangeNotification, FindNextPrinterChangeNotification, PRINTER_CHANGE_ADD_JOB,
+    PRINTER_CHANGE_SET_JOB, PRINTER_CHANGE_WRITE_JOB,
 };
 use windows::Win32::System::Threading::WaitForSingleObject;
 
@@ -244,30 +244,28 @@ fn watcher_thread(
                             JobDecision::Allow => {
                                 debug!(job_id, "job_allowed");
                             }
-                            JobDecision::Cancel => {
-                                match cancel_job(&printer, job_id) {
-                                    Ok(()) => {
-                                        info!(job_id, "job_cancelled");
-                                        emit_print_audit(
-                                            &audit_ctx,
-                                            &job,
-                                            EventType::Block,
-                                            Decision::DENY,
-                                            "Print job blocked by DLP policy",
-                                        );
-                                    }
-                                    Err(e) => {
-                                        warn!(job_id, error = %e, "SetJob cancel failed");
-                                        emit_print_audit(
-                                            &audit_ctx,
-                                            &job,
-                                            EventType::Alert,
-                                            Decision::DENY,
-                                            &format!("Cancel failed: {e}"),
-                                        );
-                                    }
+                            JobDecision::Cancel => match cancel_job(&printer, job_id) {
+                                Ok(()) => {
+                                    info!(job_id, "job_cancelled");
+                                    emit_print_audit(
+                                        &audit_ctx,
+                                        &job,
+                                        EventType::Block,
+                                        Decision::DENY,
+                                        "Print job blocked by DLP policy",
+                                    );
                                 }
-                            }
+                                Err(e) => {
+                                    warn!(job_id, error = %e, "SetJob cancel failed");
+                                    emit_print_audit(
+                                        &audit_ctx,
+                                        &job,
+                                        EventType::Alert,
+                                        Decision::DENY,
+                                        &format!("Cancel failed: {e}"),
+                                    );
+                                }
+                            },
                             JobDecision::Alert(reason) => {
                                 warn!(job_id, reason, "job_alert");
                                 emit_print_audit(
@@ -314,19 +312,17 @@ fn evaluate_job(
     let classification = if job.datatype == "XPS_PASS" {
         let spl_path = build_spl_path(job.job_id);
         match std::fs::read(&spl_path) {
-            Ok(bytes) => {
-                match extract_text(&bytes, config.max_pages) {
-                    Ok(text) => {
-                        let cls = ContentClassifier::classify(&text);
-                        debug!(job_id = job.job_id, ?cls, "XPS classification result");
-                        cls
-                    }
-                    Err(e) => {
-                        warn!(job_id = job.job_id, error = %e, "XPS parse failed — falling back to metadata");
-                        classify_document_name(&job.document_name)
-                    }
+            Ok(bytes) => match extract_text(&bytes, config.max_pages) {
+                Ok(text) => {
+                    let cls = ContentClassifier::classify(&text);
+                    debug!(job_id = job.job_id, ?cls, "XPS classification result");
+                    cls
                 }
-            }
+                Err(e) => {
+                    warn!(job_id = job.job_id, error = %e, "XPS parse failed — falling back to metadata");
+                    classify_document_name(&job.document_name)
+                }
+            },
             Err(e) => {
                 warn!(job_id = job.job_id, error = %e, "SPL read failed — falling back to metadata");
                 classify_document_name(&job.document_name)
@@ -467,7 +463,10 @@ mod tests {
             matched_policy_id: None,
             reason: "test".to_string(),
         };
-        assert_eq!(decision_from_response(resp, &job, &config), JobDecision::Allow);
+        assert_eq!(
+            decision_from_response(resp, &job, &config),
+            JobDecision::Allow
+        );
     }
 
     #[test]
@@ -486,7 +485,10 @@ mod tests {
             matched_policy_id: None,
             reason: "test".to_string(),
         };
-        assert_eq!(decision_from_response(resp, &job, &config), JobDecision::Cancel);
+        assert_eq!(
+            decision_from_response(resp, &job, &config),
+            JobDecision::Cancel
+        );
     }
 
     #[test]
@@ -505,7 +507,10 @@ mod tests {
             matched_policy_id: None,
             reason: "test".to_string(),
         };
-        assert_eq!(decision_from_response(resp, &job, &config), JobDecision::Cancel);
+        assert_eq!(
+            decision_from_response(resp, &job, &config),
+            JobDecision::Cancel
+        );
     }
 
     #[test]
@@ -576,7 +581,10 @@ mod tests {
 
     #[test]
     fn classify_document_name_defaults_to_public() {
-        assert_eq!(classify_document_name("Hello World.docx"), Classification::T1);
+        assert_eq!(
+            classify_document_name("Hello World.docx"),
+            Classification::T1
+        );
     }
 
     #[test]
@@ -650,7 +658,10 @@ mod tests {
         // classifies as T1, which is not sensitive, so offline default is ALLOW.
         // This test verifies the config field exists and parses correctly.
         assert!(!config.should_deny_unclassifiable());
-        assert_eq!(classify_document_name(&job.document_name), Classification::T1);
+        assert_eq!(
+            classify_document_name(&job.document_name),
+            Classification::T1
+        );
     }
 
     #[test]
@@ -668,6 +679,9 @@ mod tests {
             pages: 1,
         };
         assert!(config.should_deny_unclassifiable());
-        assert_eq!(classify_document_name(&job.document_name), Classification::T1);
+        assert_eq!(
+            classify_document_name(&job.document_name),
+            Classification::T1
+        );
     }
 }

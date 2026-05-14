@@ -55,7 +55,13 @@ const QUEUE_POLICY_OPTIONS: [&str; 3] = ["fifo_tail_drop", "fifo_head_drop", "ri
 const TLS_VERSION_OPTIONS: [&str; 2] = ["1.2", "1.3"];
 
 /// Fields that use picker cycling instead of text edit mode.
-const PICKER_FIELDS: [&str; 5] = ["protocol", "facility_code", "format", "queue_policy", "tls_min_version"];
+const PICKER_FIELDS: [&str; 5] = [
+    "protocol",
+    "facility_code",
+    "format",
+    "queue_policy",
+    "tls_min_version",
+];
 
 /// Fields that are boolean toggles.
 #[allow(dead_code)]
@@ -63,7 +69,14 @@ const BOOL_FIELDS: [&str; 2] = ["enabled", "batching_enabled"];
 
 /// Fields that are numeric.
 #[allow(dead_code)]
-const NUMERIC_FIELDS: [&str; 6] = ["port", "facility_code", "severity_alert", "severity_block", "severity_audit", "queue_max_size"];
+const NUMERIC_FIELDS: [&str; 6] = [
+    "port",
+    "facility_code",
+    "severity_alert",
+    "severity_block",
+    "severity_audit",
+    "queue_max_size",
+];
 
 // ---------------------------------------------------------------------------
 // Labels
@@ -95,7 +108,9 @@ const SYSLOG_FIELD_LABELS: [&str; 16] = [
 /// Routes key events to the syslog config screen handler.
 pub fn handle_syslog_config(app: &mut App, key: KeyEvent) {
     let (selected, editing) = match &app.screen {
-        Screen::SyslogConfig { selected, editing, .. } => (*selected, *editing),
+        Screen::SyslogConfig {
+            selected, editing, ..
+        } => (*selected, *editing),
         _ => return,
     };
 
@@ -218,7 +233,10 @@ fn handle_syslog_config_editing(app: &mut App, key: KeyEvent, selected: usize) {
             }
         }
         KeyCode::Esc => {
-            if let Screen::SyslogConfig { buffer, editing, .. } = &mut app.screen {
+            if let Screen::SyslogConfig {
+                buffer, editing, ..
+            } = &mut app.screen
+            {
                 buffer.clear();
                 *editing = false;
             }
@@ -274,7 +292,10 @@ pub fn action_load_syslog_config(app: &mut App) {
                 buffer: String::new(),
             };
         }
-        Err(e) => app.set_status(format!("Failed to load syslog config: {e}"), StatusKind::Error),
+        Err(e) => app.set_status(
+            format!("Failed to load syslog config: {e}"),
+            StatusKind::Error,
+        ),
     }
 }
 
@@ -303,8 +324,14 @@ pub fn action_test_syslog_config(app: &mut App) {
             .post::<serde_json::Value, _>("admin/syslog-config/test", &serde_json::json!({})),
     ) {
         Ok(response) => {
-            let status = response.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let message = response.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            let status = response
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let message = response
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if status == "ok" {
                 app.set_status(format!("Test OK: {message}"), StatusKind::Success);
             } else {
@@ -333,7 +360,8 @@ pub fn draw_syslog_config(
     for (i, label) in SYSLOG_FIELD_LABELS.iter().enumerate() {
         let line = if i < SYSLOG_KEYS.len() {
             let key = SYSLOG_KEYS[i];
-            let value_display = format_syslog_field_value(config, key, i, selected, editing, buffer);
+            let value_display =
+                format_syslog_field_value(config, key, i, selected, editing, buffer);
             format!("{label}: {value_display}")
         } else {
             (*label).to_string()
@@ -373,10 +401,15 @@ fn format_syslog_field_value(
     }
     if is_syslog_bool(index) {
         let b = config[key].as_bool().unwrap_or(false);
-        return if b { "[x]".to_string() } else { "[ ]".to_string() };
+        return if b {
+            "[x]".to_string()
+        } else {
+            "[ ]".to_string()
+        };
     }
     if key == "facility_code" {
-        return config.get(key)
+        return config
+            .get(key)
             .and_then(|v| v.as_i64())
             .map(|code| {
                 let idx = (code - 16).clamp(0, 7) as usize;
@@ -389,7 +422,11 @@ fn format_syslog_field_value(
         return n.to_string();
     }
     let v = config[key].as_str().unwrap_or("");
-    if v.is_empty() { "(empty)".to_string() } else { v.to_string() }
+    if v.is_empty() {
+        "(empty)".to_string()
+    } else {
+        v.to_string()
+    }
 }
 
 fn is_syslog_bool(index: usize) -> bool {
@@ -416,17 +453,17 @@ mod tests {
 
     #[test]
     fn test_is_syslog_bool_matches_enabled_and_batching() {
-        assert!(is_syslog_bool(2));  // enabled
-        assert!(is_syslog_bool(6));  // batching_enabled
+        assert!(is_syslog_bool(2)); // enabled
+        assert!(is_syslog_bool(6)); // batching_enabled
         assert!(!is_syslog_bool(0)); // host
         assert!(!is_syslog_bool(1)); // port
     }
 
     #[test]
     fn test_is_syslog_numeric_matches_expected_indices() {
-        assert!(is_syslog_numeric(1));  // port
-        assert!(is_syslog_numeric(4));  // facility_code
-        assert!(is_syslog_numeric(7));  // severity_alert
+        assert!(is_syslog_numeric(1)); // port
+        assert!(is_syslog_numeric(4)); // facility_code
+        assert!(is_syslog_numeric(7)); // severity_alert
         assert!(is_syslog_numeric(11)); // queue_max_size
         assert!(!is_syslog_numeric(0)); // host
         assert!(!is_syslog_numeric(2)); // enabled

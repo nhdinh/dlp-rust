@@ -1525,10 +1525,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM syslog_config", [], |r| r.get(0))
             .expect("count syslog_config rows");
-        assert_eq!(
-            count, 1,
-            "syslog_config must have exactly one seed row"
-        );
+        assert_eq!(count, 1, "syslog_config must have exactly one seed row");
 
         let (
             host,
@@ -1544,7 +1541,21 @@ mod tests {
             queue_policy,
             queue_max_size,
             tls_min_version,
-        ): (String, i64, i64, String, i64, String, i64, i64, i64, i64, String, i64, String) = conn
+        ): (
+            String,
+            i64,
+            i64,
+            String,
+            i64,
+            String,
+            i64,
+            i64,
+            i64,
+            i64,
+            String,
+            i64,
+            String,
+        ) = conn
             .query_row(
                 "SELECT host, port, enabled, protocol, facility_code, format, \
                  batching_enabled, severity_alert, severity_block, severity_audit, \
@@ -1575,15 +1586,33 @@ mod tests {
         assert_eq!(port, 514, "default port must be 514");
         assert_eq!(enabled, 0, "default enabled must be 0 (disabled)");
         assert_eq!(protocol, "tls", "default protocol must be tls");
-        assert_eq!(facility_code, 20, "default facility_code must be 20 (LOCAL4)");
+        assert_eq!(
+            facility_code, 20,
+            "default facility_code must be 20 (LOCAL4)"
+        );
         assert_eq!(format, "json", "default format must be json");
         assert_eq!(batching_enabled, 1, "default batching_enabled must be 1");
-        assert_eq!(severity_alert, 3, "default severity_alert must be 3 (ERROR)");
-        assert_eq!(severity_block, 4, "default severity_block must be 4 (WARNING)");
+        assert_eq!(
+            severity_alert, 3,
+            "default severity_alert must be 3 (ERROR)"
+        );
+        assert_eq!(
+            severity_block, 4,
+            "default severity_block must be 4 (WARNING)"
+        );
         assert_eq!(severity_audit, 6, "default severity_audit must be 6 (INFO)");
-        assert_eq!(queue_policy, "fifo_tail_drop", "default queue_policy must be fifo_tail_drop");
-        assert_eq!(queue_max_size, 100000, "default queue_max_size must be 100000");
-        assert_eq!(tls_min_version, "1.2", "default tls_min_version must be 1.2");
+        assert_eq!(
+            queue_policy, "fifo_tail_drop",
+            "default queue_policy must be fifo_tail_drop"
+        );
+        assert_eq!(
+            queue_max_size, 100000,
+            "default queue_max_size must be 100000"
+        );
+        assert_eq!(
+            tls_min_version, "1.2",
+            "default tls_min_version must be 1.2"
+        );
     }
 
     #[test]
@@ -1648,11 +1677,7 @@ mod tests {
         conn.execute(
             "INSERT INTO syslog_queue (event_json_encrypted, event_json_nonce, created_at) \
              VALUES (?1, ?2, ?3)",
-            rusqlite::params![
-                vec![0u8; 32],
-                vec![0u8; 12],
-                "2026-05-14T00:00:00Z",
-            ],
+            rusqlite::params![vec![0u8; 32], vec![0u8; 12], "2026-05-14T00:00:00Z",],
         )
         .expect("insert into syslog_queue must succeed");
 

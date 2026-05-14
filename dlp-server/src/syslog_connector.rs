@@ -37,9 +37,7 @@ use dlp_common::audit::{AuditEvent, EventType};
 
 use crate::crypto::SecretCrypto;
 use crate::db;
-use crate::db::repositories::{
-    SyslogConfigRepository, SyslogConfigRow, SyslogQueueRepository,
-};
+use crate::db::repositories::{SyslogConfigRepository, SyslogConfigRow, SyslogQueueRepository};
 use crate::AppError;
 
 /// Syslog forwarder that formats audit events as RFC 5424 messages and
@@ -101,21 +99,15 @@ impl SyslogError {
             AppError::BadRequest(msg) => {
                 SyslogError::Internal(anyhow::anyhow!("bad request: {msg}"))
             }
-            AppError::NotFound(msg) => {
-                SyslogError::Internal(anyhow::anyhow!("not found: {msg}"))
-            }
+            AppError::NotFound(msg) => SyslogError::Internal(anyhow::anyhow!("not found: {msg}")),
             AppError::Unauthorized(msg) => {
                 SyslogError::Internal(anyhow::anyhow!("unauthorized: {msg}"))
             }
             AppError::UnprocessableEntity(msg) => {
                 SyslogError::Internal(anyhow::anyhow!("unprocessable: {msg}"))
             }
-            AppError::Conflict(msg) => {
-                SyslogError::Internal(anyhow::anyhow!("conflict: {msg}"))
-            }
-            AppError::Forbidden(msg) => {
-                SyslogError::Internal(anyhow::anyhow!("forbidden: {msg}"))
-            }
+            AppError::Conflict(msg) => SyslogError::Internal(anyhow::anyhow!("conflict: {msg}")),
+            AppError::Forbidden(msg) => SyslogError::Internal(anyhow::anyhow!("forbidden: {msg}")),
         }
     }
 }
@@ -337,9 +329,9 @@ fn build_tls_config(tls_min_version: &str) -> Result<rustls::ClientConfig, Syslo
     let mut root_store = rustls::RootCertStore::empty();
     let cert_result = rustls_native_certs::load_native_certs();
     for cert in cert_result.certs {
-        root_store.add(cert).map_err(|e| {
-            SyslogError::Tls(format!("cert add failed: {e}"))
-        })?;
+        root_store
+            .add(cert)
+            .map_err(|e| SyslogError::Tls(format!("cert add failed: {e}")))?;
     }
     if root_store.is_empty() {
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -380,9 +372,9 @@ mod tests {
     use dlp_common::{Action, Classification, Decision};
 
     const TEST_KEK: [u8; 32] = [
-        0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
-        0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
-        0x42, 0x42, 0x42, 0x42,
+        0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+        0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+        0x42, 0x42,
     ];
 
     fn fixture_crypto() -> SecretCrypto {
@@ -467,7 +459,10 @@ mod tests {
         let msg = format_rfc5424(&event, &config, "server01", "1234").expect("format");
 
         // PRI = facility * 8 + severity = 20 * 8 + 4 = 164.
-        assert!(msg.starts_with("<164>"), "PRI for facility=20, severity=4 must be 164");
+        assert!(
+            msg.starts_with("<164>"),
+            "PRI for facility=20, severity=4 must be 164"
+        );
     }
 
     #[test]
@@ -477,8 +472,14 @@ mod tests {
         let msg = format_rfc5424(&event, &config, "server01", "1234").expect("format");
 
         // The MSG field must contain the JSON-serialized event.
-        assert!(msg.contains("\"event_type\":"), "must contain event_type in JSON");
-        assert!(msg.contains("\"user_name\":\"jsmith\""), "must contain user_name in JSON");
+        assert!(
+            msg.contains("\"event_type\":"),
+            "must contain event_type in JSON"
+        );
+        assert!(
+            msg.contains("\"user_name\":\"jsmith\""),
+            "must contain user_name in JSON"
+        );
         assert!(
             msg.contains("\"resource_path\":\"C:\\\\Data\\\\File.txt\""),
             "must contain escaped resource_path in JSON"
@@ -570,7 +571,10 @@ mod tests {
         let connector = SyslogConnector::new(pool, crypto);
 
         // Empty slice must short-circuit before touching DB/network.
-        connector.forward(&[]).await.expect("empty forward should succeed");
+        connector
+            .forward(&[])
+            .await
+            .expect("empty forward should succeed");
     }
 
     #[tokio::test]
@@ -581,7 +585,10 @@ mod tests {
 
         // Config defaults to enabled=0, so forward should short-circuit.
         let event = fixture_event(EventType::Block);
-        connector.forward(&[event]).await.expect("disabled forward should succeed");
+        connector
+            .forward(&[event])
+            .await
+            .expect("disabled forward should succeed");
     }
 
     #[test]

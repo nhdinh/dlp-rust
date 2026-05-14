@@ -15,9 +15,9 @@ use windows::Win32::System::Memory::{
 };
 use windows::Win32::System::ProcessStatus::{EnumProcessModules, GetModuleBaseNameW};
 use windows::Win32::System::Threading::{
-    CreateRemoteThread, GetExitCodeThread, IsWow64Process, OpenProcess,
-    WaitForSingleObject, PROCESS_ACCESS_RIGHTS, PROCESS_ALL_ACCESS,
-    PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+    CreateRemoteThread, GetExitCodeThread, IsWow64Process, OpenProcess, WaitForSingleObject,
+    PROCESS_ACCESS_RIGHTS, PROCESS_ALL_ACCESS, PROCESS_QUERY_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
 };
 
 /// Errors returned by the hook injector.
@@ -26,7 +26,9 @@ pub enum HookError {
     #[error("target PID {pid} not found or access denied")]
     AccessDenied { pid: u32 },
 
-    #[error("architecture mismatch: target PID {pid} is {target_arch}, injector is {injector_arch}")]
+    #[error(
+        "architecture mismatch: target PID {pid} is {target_arch}, injector is {injector_arch}"
+    )]
     ArchitectureMismatch {
         pid: u32,
         target_arch: String,
@@ -98,11 +100,9 @@ impl HookInjector {
 
         // Select the correct DLL path.
         let dll_path = self.select_dll(target_arch, injector_arch, pid)?;
-        let dll_path_str = dll_path
-            .to_str()
-            .ok_or_else(|| HookError::DllNotFound {
-                path: dll_path.display().to_string(),
-            })?;
+        let dll_path_str = dll_path.to_str().ok_or_else(|| HookError::DllNotFound {
+            path: dll_path.display().to_string(),
+        })?;
 
         if dll_path_str.len() > 260 {
             return Err(HookError::PathTooLong {
@@ -193,11 +193,12 @@ impl HookInjector {
     ) -> Result<PathBuf, HookError> {
         match (target_arch, injector_arch) {
             ("x64", "x64") => Ok(self.dll_path_x64.clone()),
-            ("x86", "x86") => {
-                self.dll_path_x86.clone().ok_or_else(|| HookError::DllNotFound {
+            ("x86", "x86") => self
+                .dll_path_x86
+                .clone()
+                .ok_or_else(|| HookError::DllNotFound {
                     path: "x86 DLL not configured".to_string(),
-                })
-            }
+                }),
             (target, injector) => Err(HookError::ArchitectureMismatch {
                 pid,
                 target_arch: target.to_string(),
@@ -223,15 +224,8 @@ impl HookInjector {
         };
 
         // Allocate remote memory for the DLL path.
-        let remote_mem = unsafe {
-            VirtualAllocEx(
-                process,
-                None,
-                dll_bytes.len(),
-                MEM_COMMIT,
-                PAGE_READWRITE,
-            )
-        };
+        let remote_mem =
+            unsafe { VirtualAllocEx(process, None, dll_bytes.len(), MEM_COMMIT, PAGE_READWRITE) };
 
         if remote_mem.is_null() {
             return Err(HookError::RemoteAllocFailed {
@@ -264,11 +258,12 @@ impl HookInjector {
         // Resolve LoadLibraryW address via GetProcAddress so we obtain a
         // raw function pointer suitable for CreateRemoteThread.
         let load_library_w_addr = unsafe {
-            let kernel32 = windows::Win32::System::LibraryLoader::GetModuleHandleW(w!("kernel32.dll"))
-                .map_err(|e| HookError::RemoteThreadFailed {
-                    pid,
-                    detail: format!("GetModuleHandleW failed: {}", e),
-                })?;
+            let kernel32 =
+                windows::Win32::System::LibraryLoader::GetModuleHandleW(w!("kernel32.dll"))
+                    .map_err(|e| HookError::RemoteThreadFailed {
+                        pid,
+                        detail: format!("GetModuleHandleW failed: {}", e),
+                    })?;
             let proc = windows::Win32::System::LibraryLoader::GetProcAddress(
                 kernel32,
                 windows::core::s!("LoadLibraryW"),
@@ -314,9 +309,11 @@ impl HookInjector {
         // Retrieve the thread exit code (module handle on success, 0 on failure).
         let mut exit_code: u32 = 0;
         unsafe {
-            GetExitCodeThread(thread, &mut exit_code).map_err(|e| HookError::RemoteThreadFailed {
-                pid,
-                detail: e.to_string(),
+            GetExitCodeThread(thread, &mut exit_code).map_err(|e| {
+                HookError::RemoteThreadFailed {
+                    pid,
+                    detail: e.to_string(),
+                }
             })?;
         }
 
@@ -362,7 +359,9 @@ impl HookInjector {
             unsafe {
                 let _ = CloseHandle(process);
             }
-            return Err(HookError::EnumFailed("EnumProcessModules failed".to_string()));
+            return Err(HookError::EnumFailed(
+                "EnumProcessModules failed".to_string(),
+            ));
         }
 
         let count = (needed as usize) / std::mem::size_of::<HMODULE>();
@@ -399,8 +398,8 @@ impl HookInjector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use std::process::{Command, Stdio};
+    use std::time::Duration;
 
     /// Builds the DLL path for the current target profile.
     fn hook_dll_path() -> PathBuf {
@@ -496,7 +495,9 @@ mod tests {
             | Err(HookError::RemoteThreadFailed { .. }) => {
                 // Injection often requires elevated privileges (SeDebugPrivilege).
                 // Skip the test rather than fail when running unelevated.
-                eprintln!("Skipping injection test: insufficient privileges or security restriction");
+                eprintln!(
+                    "Skipping injection test: insufficient privileges or security restriction"
+                );
             }
             Err(other) => panic!("injection should succeed: {:?}", other),
         }

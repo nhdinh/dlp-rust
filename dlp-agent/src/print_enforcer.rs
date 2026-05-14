@@ -109,7 +109,9 @@ impl PrintEnforcer {
         } else {
             // Enabling at runtime without offline/audit_ctx requires a restart path.
             // Log a warning; operator should restart the service to fully enable.
-            warn!("print_enabled changed to true at runtime — restart required to activate watcher");
+            warn!(
+                "print_enabled changed to true at runtime — restart required to activate watcher"
+            );
             self.enabled = true;
         }
     }

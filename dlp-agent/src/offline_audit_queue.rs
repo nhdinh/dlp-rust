@@ -73,11 +73,9 @@ pub fn enqueue(
 ) -> Result<(), OfflineQueueError> {
     // Pre-insert tail-drop: check capacity
     let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM offline_audit_queue",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM offline_audit_queue", [], |row| {
+            row.get(0)
+        })
         .map_err(OfflineQueueError::Database)?;
     if count >= max_size {
         return Err(OfflineQueueError::AtCapacity { max_size });
@@ -142,9 +140,8 @@ pub fn drain(
             #[cfg(not(windows))]
             let plaintext = blob;
 
-            let json = String::from_utf8(plaintext).map_err(|e| {
-                rusqlite::Error::InvalidParameterName(format!("utf8: {e}"))
-            })?;
+            let json = String::from_utf8(plaintext)
+                .map_err(|e| rusqlite::Error::InvalidParameterName(format!("utf8: {e}")))?;
             Ok((id, Some(json)))
         })
         .map_err(OfflineQueueError::Database)?;
@@ -161,8 +158,7 @@ pub fn drain(
 
     // Delete corrupt rows
     if !corrupt_ids.is_empty() {
-        let placeholders: Vec<String> =
-            corrupt_ids.iter().map(|_| "?".to_string()).collect();
+        let placeholders: Vec<String> = corrupt_ids.iter().map(|_| "?".to_string()).collect();
         let sql = format!(
             "DELETE FROM offline_audit_queue WHERE id IN ({})",
             placeholders.join(",")
@@ -203,11 +199,9 @@ pub fn delete(conn: &Connection, ids: &[i64]) -> Result<(), rusqlite::Error> {
 
 /// Return current queue depth.
 pub fn count(conn: &Connection) -> Result<i64, rusqlite::Error> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM offline_audit_queue",
-        [],
-        |row| row.get(0),
-    )
+    conn.query_row("SELECT COUNT(*) FROM offline_audit_queue", [], |row| {
+        row.get(0)
+    })
 }
 
 /// Try to acquire the drain lock. Returns true if acquired, false if another drain is in progress.
@@ -340,11 +334,7 @@ mod tests {
         }
 
         // Fourth event should be rejected (pre-insert tail-drop)
-        let err = enqueue(&conn,
-            "overflow",
-            3,
-        )
-        .expect_err("must reject when full");
+        let err = enqueue(&conn, "overflow", 3).expect_err("must reject when full");
         assert!(err.to_string().contains("at capacity"));
 
         let count_val = count(&conn).expect("count should succeed");

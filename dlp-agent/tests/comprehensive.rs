@@ -2535,7 +2535,10 @@ mod cloud_tc {
             &written_action(r"C:\Users\Alice\OneDrive\public_notes.txt"),
             Classification::T2,
         );
-        assert_eq!(result, None, "T2 public file in sync folder should not be blocked");
+        assert_eq!(
+            result, None,
+            "T2 public file in sync folder should not be blocked"
+        );
     }
 
     /// TC-31: Confidential cloud upload → DENY (T3 is sensitive).
@@ -2547,7 +2550,10 @@ mod cloud_tc {
             &written_action(r"C:\Users\Alice\OneDrive\report.docx"),
             Classification::T3,
         );
-        assert!(result.is_some(), "T3 confidential file in sync folder should be blocked");
+        assert!(
+            result.is_some(),
+            "T3 confidential file in sync folder should be blocked"
+        );
         let r = result.unwrap();
         assert_eq!(r.decision, Decision::DENY);
         assert_eq!(r.provider, "OneDrive");
@@ -2563,7 +2569,10 @@ mod cloud_tc {
             &written_action(r"C:\Users\Alice\OneDrive\Payroll\payroll.xlsx"),
             Classification::T4,
         );
-        assert!(result.is_some(), "T4 restricted file in sync folder should be blocked");
+        assert!(
+            result.is_some(),
+            "T4 restricted file in sync folder should be blocked"
+        );
         let r = result.unwrap();
         assert_eq!(r.decision, Decision::DENY);
         assert_eq!(r.provider, "OneDrive");
@@ -2579,7 +2588,10 @@ mod cloud_tc {
             &written_action(r"C:\Windows\payroll.xlsx"),
             Classification::T4,
         );
-        assert_eq!(result, None, "file outside sync folder should not trigger cloud block");
+        assert_eq!(
+            result, None,
+            "file outside sync folder should not trigger cloud block"
+        );
     }
 }
 
@@ -2601,7 +2613,10 @@ mod share_link_tc {
         let links = detect_share_links(text);
         assert_eq!(links.len(), 1, "should detect one OneDrive link");
         let result = ShareLinkEnforcer::check(&links, Classification::T1);
-        assert!(result.is_none(), "T1 classification should not trigger an alert");
+        assert!(
+            result.is_none(),
+            "T1 classification should not trigger an alert"
+        );
     }
 
     /// TC-35: T3 classification + OneDrive share link (1drv.ms/) → check() returns Some, Decision::DENY.
@@ -2653,10 +2668,18 @@ mod share_link_tc {
             "and Dropbox: https://www.dropbox.com/s/xyz789/sensitive.pdf?dl=0"
         );
         let links = detect_share_links(text);
-        assert_eq!(links.len(), 2, "should detect links from both OneDrive and Dropbox");
+        assert_eq!(
+            links.len(),
+            2,
+            "should detect links from both OneDrive and Dropbox"
+        );
         let results = ShareLinkEnforcer::check(&links, Classification::T3)
             .expect("T3 + two links should produce Some results");
-        assert_eq!(results.len(), 2, "should have one alert result per provider");
+        assert_eq!(
+            results.len(),
+            2,
+            "should have one alert result per provider"
+        );
         assert!(
             results.iter().all(|r| r.decision == Decision::DENY),
             "all decisions must be DENY"
@@ -2721,8 +2744,8 @@ mod print_tc {
     use dlp_agent::clipboard::ContentClassifier;
     use dlp_agent::print_job_info::JobInfo;
     use dlp_common::audit::{AuditEvent, EventType};
-    use dlp_common::{Action, Classification, Decision, EvaluateRequest, EvaluateResponse};
     use dlp_common::{AccessContext, DeviceTrust, Environment, NetworkLocation, Resource, Subject};
+    use dlp_common::{Action, Classification, Decision, EvaluateRequest, EvaluateResponse};
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -2890,8 +2913,7 @@ mod print_tc {
     #[test]
     fn test_tc_52_print_restricted_blocked() {
         // Arrange: restricted document with T4 text (credit card number → T4).
-        let restricted_text =
-            "RESTRICTED — Payroll data. Card: 4111-1111-1111-1111. Do not print.";
+        let restricted_text = "RESTRICTED — Payroll data. Card: 4111-1111-1111-1111. Do not print.";
         let classification = ContentClassifier::classify(restricted_text);
         assert_eq!(
             classification,

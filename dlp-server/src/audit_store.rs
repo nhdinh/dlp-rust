@@ -240,7 +240,9 @@ pub async fn ingest_events(
                     continue;
                 }
             };
-            if let Err(e) = SyslogQueueRepository::enqueue(&uow, &json, &syslog_crypto, config.queue_max_size) {
+            if let Err(e) =
+                SyslogQueueRepository::enqueue(&uow, &json, &syslog_crypto, config.queue_max_size)
+            {
                 tracing::warn!(error = %e, "syslog queue enqueue failed");
             }
         }

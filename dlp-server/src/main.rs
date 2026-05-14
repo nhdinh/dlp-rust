@@ -35,12 +35,12 @@ use dlp_server::alert_router::AlertRouter;
 use dlp_server::crypto::SecretCrypto;
 use dlp_server::db;
 use dlp_server::db::repositories::LdapConfigRepository;
-use dlp_server::policy_store::PolicyStore;
-use dlp_server::secrets_migration;
-use dlp_server::siem_connector::SiemConnector;
 use dlp_server::db::repositories::SyslogQueueRepository;
 use dlp_server::label_service::LabelService;
 use dlp_server::observability;
+use dlp_server::policy_store::PolicyStore;
+use dlp_server::secrets_migration;
+use dlp_server::siem_connector::SiemConnector;
 use dlp_server::AppState;
 use secrecy::ExposeSecret;
 
@@ -217,10 +217,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialise the syslog forwarder (Phase 62).
     // Reads config from `syslog_config` on each forward call (hot-reload).
-    let syslog = dlp_server::syslog_connector::SyslogConnector::new(
-        Arc::clone(&pool),
-        Arc::clone(&crypto),
-    );
+    let syslog =
+        dlp_server::syslog_connector::SyslogConnector::new(Arc::clone(&pool), Arc::clone(&crypto));
 
     // Attempt to construct the AD client from DB config.
     // Fail-open: server starts even if AD is unreachable.
@@ -260,8 +258,7 @@ async fn main() -> anyhow::Result<()> {
             anyhow::anyhow!("failed to acquire connection for approval token service: {e}")
         })?;
         Arc::new(dlp_server::approval_token::ApprovalTokenService::new(
-            &crypto,
-            &conn,
+            &crypto, &conn,
         )?)
     };
     info!("approval token service initialized");
@@ -310,12 +307,8 @@ async fn main() -> anyhow::Result<()> {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(30u64);
-        let mut interval = tokio::time::interval(
-            std::time::Duration::from_secs(interval_secs),
-        );
-        interval.set_missed_tick_behavior(
-            tokio::time::MissedTickBehavior::Skip,
-        );
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         let mut consecutive_failures: u32 = 0;
 
@@ -332,7 +325,9 @@ async fn main() -> anyhow::Result<()> {
             let depth = match tokio::task::spawn_blocking({
                 let pool = Arc::clone(&drain_pool);
                 move || SyslogQueueRepository::count(&pool)
-            }).await {
+            })
+            .await
+            {
                 Ok(Ok(c)) => c as u64,
                 _ => 0,
             };
@@ -347,7 +342,9 @@ async fn main() -> anyhow::Result<()> {
             let ready_count = match tokio::task::spawn_blocking({
                 let pool = Arc::clone(&drain_pool);
                 move || SyslogQueueRepository::count_ready(&pool)
-            }).await {
+            })
+            .await
+            {
                 Ok(Ok(c)) => c,
                 _ => 0,
             };
@@ -362,7 +359,9 @@ async fn main() -> anyhow::Result<()> {
                 let pool = Arc::clone(&drain_pool);
                 let crypto = Arc::clone(&drain_crypto);
                 move || SyslogQueueRepository::peek_oldest(&pool, &crypto, 100)
-            }).await {
+            })
+            .await
+            {
                 Ok(Ok(b)) => b,
                 Ok(Err(e)) => {
                     tracing::warn!(error = %e, "syslog drain: failed to peek batch");
@@ -382,9 +381,11 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // Deserialize and forward.
-            let events: Vec<dlp_common::AuditEvent> = match batch.iter()
+            let events: Vec<dlp_common::AuditEvent> = match batch
+                .iter()
                 .map(|qe| serde_json::from_str::<dlp_common::AuditEvent>(&qe.event_json))
-                .collect::<Result<Vec<_>, _>>() {
+                .collect::<Result<Vec<_>, _>>()
+            {
                 Ok(e) => e,
                 Err(e) => {
                     tracing::error!(error = %e, "syslog drain: failed to deserialize queued events");
@@ -397,12 +398,16 @@ async fn main() -> anyhow::Result<()> {
                                 let mut conn = pool.get()?;
                                 let uow = db::UnitOfWork::new(&mut conn)?;
                                 SyslogQueueRepository::mark_failed(
-                                    &uow, id, "deserialization error", "2099-01-01T00:00:00Z",
+                                    &uow,
+                                    id,
+                                    "deserialization error",
+                                    "2099-01-01T00:00:00Z",
                                 )?;
                                 uow.commit()?;
                                 Ok(())
                             }
-                        }).await;
+                        })
+                        .await;
                     }
                     continue;
                 }
@@ -422,7 +427,9 @@ async fn main() -> anyhow::Result<()> {
                             uow.commit()?;
                             Ok::<_, dlp_server::AppError>(())
                         }
-                    }).await {
+                    })
+                    .await
+                    {
                         tracing::warn!(error = %e, "syslog drain: failed to delete forwarded events");
                         // Events were forwarded but not deleted -- they'll be re-forwarded
                         // on next drain (at-least-once semantics). This is acceptable.
@@ -458,7 +465,8 @@ async fn main() -> anyhow::Result<()> {
                                 uow.commit()?;
                                 Ok(())
                             }
-                        }).await;
+                        })
+                        .await;
                         observability::record_syslog_retry(1);
                     }
                     consecutive_failures += 1;
@@ -475,9 +483,13 @@ async fn main() -> anyhow::Result<()> {
                 let jitter = (std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_nanos() % (delay as u128 * 500_000_000 + 1)) as u64;
+                    .as_nanos()
+                    % (delay as u128 * 500_000_000 + 1)) as u64;
                 let backoff = std::time::Duration::from_secs(delay + jitter);
-                tracing::info!(backoff_secs = backoff.as_secs(), "syslog drain: backing off");
+                tracing::info!(
+                    backoff_secs = backoff.as_secs(),
+                    "syslog drain: backing off"
+                );
                 tokio::time::sleep(backoff).await;
             }
         }
@@ -519,10 +531,10 @@ fn compute_next_attempt(consecutive_failures: u32) -> String {
     let jitter = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_nanos() % (delay as u128 * 500_000_000 + 1)) as u64;
+        .as_nanos()
+        % (delay as u128 * 500_000_000 + 1)) as u64;
     let backoff = std::time::Duration::from_secs(delay + jitter);
-    (chrono::Utc::now() + chrono::Duration::from_std(backoff).unwrap_or_default())
-        .to_rfc3339()
+    (chrono::Utc::now() + chrono::Duration::from_std(backoff).unwrap_or_default()).to_rfc3339()
 }
 
 /// Ensures at least one admin user exists in the database.

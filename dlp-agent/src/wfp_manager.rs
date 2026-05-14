@@ -15,8 +15,7 @@ use uuid::Uuid;
 use windows::core::{GUID, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 use crate::wfp_ffi::*;
@@ -33,15 +32,8 @@ impl WfpManager {
     pub fn new() -> Result<Self, WfpError> {
         let mut handle = HANDLE(null_mut());
         let session = unsafe { std::mem::zeroed::<FWPM_SESSION0>() };
-        let result = unsafe {
-            FwpmEngineOpen0(
-                PCWSTR::null(),
-                0,
-                None,
-                Some(&session),
-                &mut handle,
-            )
-        };
+        let result =
+            unsafe { FwpmEngineOpen0(PCWSTR::null(), 0, None, Some(&session), &mut handle) };
         if result != 0 {
             return Err(WfpError::EngineUnavailable(result));
         }
@@ -89,7 +81,10 @@ impl WfpManager {
         for (pid, filter_id) in filters {
             let result = unsafe { FwpmFilterDeleteById0(engine_handle, filter_id) };
             if result != 0 {
-                warn!(pid, filter_id, result, "failed to delete filter during unregister");
+                warn!(
+                    pid,
+                    filter_id, result, "failed to delete filter during unregister"
+                );
             }
         }
 
@@ -205,10 +200,12 @@ impl WfpManager {
     /// Remove the WFP filter for `pid`.
     pub fn remove_process_block(&self, pid: u32) -> Result<(), WfpError> {
         let mut filters = self.filters.lock();
-        let filter_id = filters.remove(&pid).ok_or_else(|| WfpError::PidResolveFailed {
-            pid,
-            detail: "PID not blocked".into(),
-        })?;
+        let filter_id = filters
+            .remove(&pid)
+            .ok_or_else(|| WfpError::PidResolveFailed {
+                pid,
+                detail: "PID not blocked".into(),
+            })?;
 
         let engine = *self.engine.lock();
         let engine = engine.ok_or(WfpError::EngineNotOpen)?;
@@ -227,11 +224,12 @@ impl WfpManager {
 
     fn pid_to_image_path(pid: u32) -> Result<String, WfpError> {
         unsafe {
-            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
-                .map_err(|e| WfpError::PidResolveFailed {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).map_err(|e| {
+                WfpError::PidResolveFailed {
                     pid,
                     detail: format!("OpenProcess: {e}"),
-                })?;
+                }
+            })?;
             let mut buf = [0u16; 1024];
             let mut size = buf.len() as u32;
             let ok = QueryFullProcessImageNameW(
@@ -257,7 +255,8 @@ impl WfpManager {
             .chain(Some(0))
             .collect();
         let mut blob: *mut FWP_BYTE_BLOB = null_mut();
-        let result = unsafe { FwpmGetAppIdFromFileName0(PCWSTR::from_raw(wide.as_ptr()), &mut blob) };
+        let result =
+            unsafe { FwpmGetAppIdFromFileName0(PCWSTR::from_raw(wide.as_ptr()), &mut blob) };
         if result != 0 {
             return Err(WfpError::PidResolveFailed {
                 pid: 0,
@@ -269,7 +268,10 @@ impl WfpManager {
 }
 
 fn wide_string(s: &str) -> Vec<u16> {
-    std::ffi::OsString::from(s).encode_wide().chain(Some(0)).collect()
+    std::ffi::OsString::from(s)
+        .encode_wide()
+        .chain(Some(0))
+        .collect()
 }
 
 /// RAII wrapper for an app-id blob allocated by `FwpmGetAppIdFromFileName0`.
