@@ -91,6 +91,12 @@ dashmap = "6"
 # Async utilities
 async-trait = "0.1"
 
+# Phase 62 — Syslog Forwarder: RFC 5424 over TLS
+tokio-rustls = "0.26"
+rustls-native-certs = "0.8"
+rustls-pki-types = "1.14"
+webpki-roots = "1.0"
+
 # Rate limiting
 governor = "0.10"
 tower_governor = "0.8"

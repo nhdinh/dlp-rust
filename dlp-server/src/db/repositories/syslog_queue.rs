@@ -114,7 +114,7 @@ impl SyslogQueueRepository {
         crypto: &SecretCrypto,
         batch_size: usize,
     ) -> Result<Vec<QueuedEvent>, AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
+        let conn = pool.get().map_err(AppError::from)?;
         let now = chrono::Utc::now().to_rfc3339();
         let mut stmt = conn
             .prepare(
@@ -124,7 +124,7 @@ impl SyslogQueueRepository {
                  ORDER BY created_at LIMIT ?2",
             )
             .map_err(AppError::Database)?;
-        let mut rows = stmt
+        let rows = stmt
             .query_map(params![&now, batch_size as i64], |row| {
                 let id: i64 = row.get(0)?;
                 let ciphertext: Vec<u8> = row.get(1)?;
@@ -152,7 +152,7 @@ impl SyslogQueueRepository {
             })
             .map_err(AppError::Database)?;
         let mut results = Vec::new();
-        while let Some(row) = rows.next() {
+        for row in rows {
             results.push(row.map_err(AppError::Database)?);
         }
         Ok(results)
@@ -222,7 +222,7 @@ impl SyslogQueueRepository {
     ///
     /// Returns [`AppError::Database`] when the COUNT query fails.
     pub fn count(pool: &Pool) -> Result<i64, AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
+        let conn = pool.get().map_err(AppError::from)?;
         conn.query_row("SELECT COUNT(*) FROM syslog_queue", [], |row| row.get(0))
             .map_err(AppError::Database)
     }
@@ -233,7 +233,7 @@ impl SyslogQueueRepository {
     ///
     /// Returns [`AppError::Database`] when the COUNT query fails.
     pub fn count_ready(pool: &Pool) -> Result<i64, AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
+        let conn = pool.get().map_err(AppError::from)?;
         let now = chrono::Utc::now().to_rfc3339();
         conn.query_row(
             "SELECT COUNT(*) FROM syslog_queue WHERE next_attempt_at = '' OR next_attempt_at <= ?1",
