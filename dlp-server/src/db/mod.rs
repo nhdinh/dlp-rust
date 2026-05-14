@@ -377,6 +377,48 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
             CREATE INDEX IF NOT EXISTS idx_approvals_object ON approvals(data_object_id);
             CREATE INDEX IF NOT EXISTS idx_approvals_valid_until ON approvals(valid_until);
             CREATE INDEX IF NOT EXISTS idx_approvals_created_at ON approvals(created_at);
+
+            -- Phase 62: Syslog Forwarder configuration (RFC 5424 + encrypted offline queue).
+            -- Single-row config table enforced via CHECK (id = 1), seeded below.
+            -- facility_code 20 = LOCAL4 (default per D-04). Range 16-23 (LOCAL0-LOCAL7).
+            -- protocol is 'tls' only in Phase 62 (TCP without TLS and UDP deferred).
+            -- queue_policy values: 'fifo_tail_drop', 'fifo_head_drop', 'ring_buffer' (per D-08).
+            -- severity_alert = 3 (ERROR), severity_block = 4 (WARNING), severity_audit = 6 (INFO) per D-03.
+            CREATE TABLE IF NOT EXISTS syslog_config (
+                id                     INTEGER PRIMARY KEY CHECK (id = 1),
+                host                   TEXT NOT NULL DEFAULT '',
+                port                   INTEGER NOT NULL DEFAULT 514,
+                enabled                INTEGER NOT NULL DEFAULT 0,
+                protocol               TEXT NOT NULL DEFAULT 'tls',
+                facility_code          INTEGER NOT NULL DEFAULT 20,
+                format                 TEXT NOT NULL DEFAULT 'json',
+                batching_enabled       INTEGER NOT NULL DEFAULT 1,
+                severity_alert         INTEGER NOT NULL DEFAULT 3,
+                severity_block         INTEGER NOT NULL DEFAULT 4,
+                severity_audit         INTEGER NOT NULL DEFAULT 6,
+                queue_policy           TEXT NOT NULL DEFAULT 'fifo_tail_drop',
+                queue_max_size         INTEGER NOT NULL DEFAULT 100000,
+                tls_min_version        TEXT NOT NULL DEFAULT '1.2',
+                updated_at             TEXT NOT NULL DEFAULT ''
+            );
+            INSERT OR IGNORE INTO syslog_config (id) VALUES (1);
+
+            -- Phase 62: Syslog offline queue for failed forward retry.
+            -- event_json_encrypted + event_json_nonce store the KEK-encrypted envelope (per D-07, R-62-01).
+            -- retry_count, last_error, next_attempt_at support time-based retry scheduling (per R-62-07).
+            -- Index on created_at for efficient FIFO drain (Pitfall 5 in RESEARCH.md).
+            -- Index on next_attempt_at for time-based scheduling (per R-62-08).
+            CREATE TABLE IF NOT EXISTS syslog_queue (
+                id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_json_encrypted   BLOB NOT NULL,
+                event_json_nonce       BLOB NOT NULL,
+                created_at             TEXT NOT NULL,
+                retry_count            INTEGER NOT NULL DEFAULT 0,
+                last_error             TEXT NOT NULL DEFAULT '',
+                next_attempt_at        TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_syslog_queue_created_at ON syslog_queue(created_at);
+            CREATE INDEX IF NOT EXISTS idx_syslog_queue_next_attempt_at ON syslog_queue(next_attempt_at);
 ",
     )
     .context("failed to initialize database tables")?;
@@ -1441,5 +1483,193 @@ mod tests {
             )
             .expect("re-read smtp_password");
         assert_eq!(still_smtp, "legacy-smtp-pwd");
+    }
+
+    // Phase 62 Task 1: syslog_config and syslog_queue table tests.
+
+    #[test]
+    fn test_syslog_config_table_exists() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='syslog_config'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query sqlite_master");
+        assert_eq!(count, 1, "syslog_config table must exist after init");
+    }
+
+    #[test]
+    fn test_syslog_queue_table_exists() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='syslog_queue'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query sqlite_master");
+        assert_eq!(count, 1, "syslog_queue table must exist after init");
+    }
+
+    #[test]
+    fn test_syslog_config_seed_row() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM syslog_config", [], |r| r.get(0))
+            .expect("count syslog_config rows");
+        assert_eq!(
+            count, 1,
+            "syslog_config must have exactly one seed row"
+        );
+
+        let (
+            host,
+            port,
+            enabled,
+            protocol,
+            facility_code,
+            format,
+            batching_enabled,
+            severity_alert,
+            severity_block,
+            severity_audit,
+            queue_policy,
+            queue_max_size,
+            tls_min_version,
+        ): (String, i64, i64, String, i64, String, i64, i64, i64, i64, String, i64, String) = conn
+            .query_row(
+                "SELECT host, port, enabled, protocol, facility_code, format, \
+                 batching_enabled, severity_alert, severity_block, severity_audit, \
+                 queue_policy, queue_max_size, tls_min_version \
+                 FROM syslog_config WHERE id = 1",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                        r.get(9)?,
+                        r.get(10)?,
+                        r.get(11)?,
+                        r.get(12)?,
+                    ))
+                },
+            )
+            .expect("read seed row");
+
+        assert_eq!(host, "", "default host must be empty");
+        assert_eq!(port, 514, "default port must be 514");
+        assert_eq!(enabled, 0, "default enabled must be 0 (disabled)");
+        assert_eq!(protocol, "tls", "default protocol must be tls");
+        assert_eq!(facility_code, 20, "default facility_code must be 20 (LOCAL4)");
+        assert_eq!(format, "json", "default format must be json");
+        assert_eq!(batching_enabled, 1, "default batching_enabled must be 1");
+        assert_eq!(severity_alert, 3, "default severity_alert must be 3 (ERROR)");
+        assert_eq!(severity_block, 4, "default severity_block must be 4 (WARNING)");
+        assert_eq!(severity_audit, 6, "default severity_audit must be 6 (INFO)");
+        assert_eq!(queue_policy, "fifo_tail_drop", "default queue_policy must be fifo_tail_drop");
+        assert_eq!(queue_max_size, 100000, "default queue_max_size must be 100000");
+        assert_eq!(tls_min_version, "1.2", "default tls_min_version must be 1.2");
+    }
+
+    #[test]
+    fn test_syslog_queue_columns() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(syslog_queue)")
+            .expect("prepare pragma")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query pragma")
+            .filter_map(Result::ok)
+            .collect();
+
+        for col in &[
+            "id",
+            "event_json_encrypted",
+            "event_json_nonce",
+            "created_at",
+            "retry_count",
+            "last_error",
+            "next_attempt_at",
+        ] {
+            assert!(
+                columns.contains(&col.to_string()),
+                "syslog_queue must have column '{col}'; found {columns:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_syslog_queue_indexes_exist() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let indexes: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='syslog_queue'",
+            )
+            .expect("prepare")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query")
+            .filter_map(Result::ok)
+            .collect();
+
+        assert!(
+            indexes.contains(&"idx_syslog_queue_created_at".to_string()),
+            "idx_syslog_queue_created_at must exist; found {indexes:?}"
+        );
+        assert!(
+            indexes.contains(&"idx_syslog_queue_next_attempt_at".to_string()),
+            "idx_syslog_queue_next_attempt_at must exist; found {indexes:?}"
+        );
+    }
+
+    #[test]
+    fn test_syslog_queue_accepts_insert() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        conn.execute(
+            "INSERT INTO syslog_queue (event_json_encrypted, event_json_nonce, created_at) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                vec![0u8; 32],
+                vec![0u8; 12],
+                "2026-05-14T00:00:00Z",
+            ],
+        )
+        .expect("insert into syslog_queue must succeed");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM syslog_queue", [], |r| r.get(0))
+            .expect("count rows");
+        assert_eq!(count, 1, "syslog_queue must have one row after insert");
+
+        let (retry_count, last_error, next_attempt_at): (i64, String, String) = conn
+            .query_row(
+                "SELECT retry_count, last_error, next_attempt_at FROM syslog_queue WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("read defaults");
+        assert_eq!(retry_count, 0, "default retry_count must be 0");
+        assert_eq!(last_error, "", "default last_error must be empty");
+        assert_eq!(next_attempt_at, "", "default next_attempt_at must be empty");
     }
 }
