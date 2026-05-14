@@ -9,6 +9,7 @@ pub mod ad_client;
 pub mod audit;
 pub mod classification;
 pub mod classifier;
+pub mod crypto;
 pub mod disk;
 pub mod endpoint;
 pub mod hook_ipc;

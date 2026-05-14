@@ -18,6 +18,9 @@ use crate::screens::print_config::{
     is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_BACK_ROW, PRINT_CONFIG_KEYS,
     PRINT_CONFIG_ROW_COUNT, PRINT_CONFIG_SAVE_ROW, PRINT_UNCLASSIFIABLE_OPTIONS,
 };
+use crate::screens::syslog_config::{
+    handle_syslog_config, action_load_syslog_config,
+};
 use crate::screens::usb_enforcement::{
     USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_OPTIONS,
     USB_ENFORCEMENT_ROW_COUNT, USB_ENFORCEMENT_SAVE_ROW,
@@ -56,6 +59,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::UsbEnforcementConfig { .. } => handle_usb_enforcement_config(app, key),
         Screen::CloudConfig { .. } => handle_cloud_config(app, key),
         Screen::PrintConfig { .. } => handle_print_config(app, key),
+        Screen::SyslogConfig { .. } => handle_syslog_config(app, key),
         Screen::ConditionsBuilder { .. } => handle_conditions_builder(app, key),
         Screen::PolicyCreate { .. } => handle_policy_create(app, key),
         Screen::PolicyEdit { .. } => handle_policy_edit(app, key),
@@ -234,8 +238,8 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
         // Phase 43.05: expanded from 6 to 7 items — added "USB Enforcement" at index 5.
         // Phase 38.2: expanded from 7 to 9 items — added "Cloud Config" at index 6, "Print Config" at index 7.
         // Phase 59: expanded from 9 to 10 items — added "Label Review Queue" at index 8.
-        // Phase 61: expanded from 10 to 11 items — added "Approval Management" at index 9.
-        KeyCode::Up | KeyCode::Down => nav(selected, 11, key.code),
+        // Phase 62: expanded from 11 to 12 items — added "Syslog Config" at index 10.
+        KeyCode::Up | KeyCode::Down => nav(selected, 12, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
@@ -247,7 +251,8 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
             7 => action_load_print_config(app),
             8 => action_load_label_review_queue(app),
             9 => action_load_approval_list(app, ApprovalFilter::All, 1),
-            10 => app.screen = Screen::MainMenu { selected: 2 },
+            10 => action_load_syslog_config(app),
+            11 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
