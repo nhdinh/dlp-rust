@@ -14,13 +14,13 @@ Phase 62 delivers a native RFC 5424 syslog forwarder from `dlp-server` to config
 
 | Capability | Primary Tier | Secondary Tier | Rationale |
 |------------|-------------|----------------|-----------|
-| RFC 5424 message formatting | API / Backend (dlp-server) | — | Server formats messages; agent only queues raw events |
-| TLS transport to SIEM | API / Backend (dlp-server) | — | Outbound TCP/TLS connection initiated by server |
-| Agent-side offline queue | Endpoint (dlp-agent) | — | Local SQLite + DPAPI when server unreachable |
-| Server-side offline queue | API / Backend (dlp-server) | — | SQLite + KEK when syslog collector unreachable |
-| Queue drain / retry logic | API / Backend + Endpoint | — | Each tier drains its own queue |
-| Admin TUI config screen | Frontend (dlp-admin-cli) | — | HTTP client to admin API |
-| Syslog config CRUD API | API / Backend (dlp-server) | — | Standard admin API pattern |
+| RFC 5424 message formatting | API / Backend (dlp-server) | -- | Server formats messages; agent only queues raw events |
+| TLS transport to SIEM | API / Backend (dlp-server) | -- | Outbound TCP/TLS connection initiated by server |
+| Agent-side offline queue | Endpoint (dlp-agent) | -- | Local SQLite + DPAPI when server unreachable |
+| Server-side offline queue | API / Backend (dlp-server) | -- | SQLite + KEK when syslog collector unreachable |
+| Queue drain / retry logic | API / Backend + Endpoint | -- | Each tier drains its own queue |
+| Admin TUI config screen | Frontend (dlp-admin-cli) | -- | HTTP client to admin API |
+| Syslog config CRUD API | API / Backend (dlp-server) | -- | Standard admin API pattern |
 
 ## Standard Stack
 
@@ -50,7 +50,7 @@ Phase 62 delivers a native RFC 5424 syslog forwarder from `dlp-server` to config
 | Instead of | Could Use | Tradeoff |
 |------------|-----------|----------|
 | `tokio-rustls` | `native-tls` + `tokio-native-tls` | native-tls uses OpenSSL/Schannel; rustls is pure Rust, audited, already in project dep tree via reqwest |
-| `rustls-native-certs` | `webpki-roots` only | native-certs uses Windows CA store (D-10 requirement); webpki-roots is static Mozilla bundle — use both with native-certs preferred |
+| `rustls-native-certs` | `webpki-roots` only | native-certs uses Windows CA store (D-10 requirement); webpki-roots is static Mozilla bundle -- use both with native-certs preferred |
 | Custom syslog crate | Hand-roll RFC 5424 | No mature syslog crate in Rust ecosystem; formatting is simple string construction |
 
 **Installation:**
@@ -164,7 +164,7 @@ impl SyslogConnector {
 **When to use:** Every syslog message sent to the collector.
 **Example:**
 ```rust
-// Source: RFC 5424 §6 + 62-CONTEXT.md specifics
+// Source: RFC 5424 section 6 + 62-CONTEXT.md specifics
 
 fn format_rfc5424(
     event: &AuditEvent,
@@ -222,7 +222,7 @@ pub fn enqueue_dpapi(conn: &Connection, event_json: &str) -> Result<(), AppError
 ```
 
 ### Anti-Patterns to Avoid
-- **Caching syslog config:** The `SiemConnector` hot-reloads on every call — `SyslogConnector` must do the same. No caching.
+- **Caching syslog config:** The `SiemConnector` hot-reloads on every call -- `SyslogConnector` must do the same. No caching.
 - **Blocking the async reactor:** All DB operations must be wrapped in `tokio::task::spawn_blocking` (existing pattern in `audit_store.rs`).
 - **UDP syslog:** Deferred per CONTEXT.md; only TLS/TCP in Phase 62.
 - **Custom CA/mTLS:** Deferred per CONTEXT.md; system CA store only.
@@ -232,11 +232,11 @@ pub fn enqueue_dpapi(conn: &Connection, event_json: &str) -> Result<(), AppError
 
 | Problem | Don't Build | Use Instead | Why |
 |---------|-------------|-------------|-----|
-| TLS handshake | Custom TLS over TCP | `tokio-rustls` | Certificate verification, ALPN, cipher negotiation, session resumption — all handled |
+| TLS handshake | Custom TLS over TCP | `tokio-rustls` | Certificate verification, ALPN, cipher negotiation, session resumption -- all handled |
 | CA certificate loading | Manual cert parsing | `rustls-native-certs` + `webpki-roots` | Platform-native CA store on Windows; fallback to Mozilla bundle |
 | RFC 5424 timestamp | `strftime` formatting | `chrono::DateTime::to_rfc3339()` | ISO 8601 compliance, timezone handling, precision |
 | JSON serialization | Manual string building | `serde_json::to_string()` | Escape handling, UTF-8 safety, performance |
-| Exponential backoff | Manual sleep loop | `tokio::time::sleep` with backoff formula | Jitter, max backoff, reset on success — pattern is well-understood |
+| Exponential backoff | Manual sleep loop | `tokio::time::sleep` with backoff formula | Jitter, max backoff, reset on success -- pattern is well-understood |
 | SQLite encryption | Custom cipher | `SecretCrypto::encrypt` / `dpapi_protect` | Already built, audited, tested in Phase 47 |
 
 **Key insight:** The only "hand-rolled" part should be the RFC 5424 header string formatting (which is trivial concatenation). Everything else (TLS, JSON, timestamps, encryption) uses battle-tested libraries.
@@ -247,20 +247,20 @@ pub fn enqueue_dpapi(conn: &Connection, event_json: &str) -> Result<(), AppError
 
 | Category | Items Found | Action Required |
 |----------|-------------|------------------|
-| Stored data | None — new `syslog_config`, `syslog_queue`, `agent_syslog_queue` tables are created by `init_tables()` | Code edit (add CREATE TABLE to `init_tables()`) |
-| Live service config | None — syslog config is new | Code edit |
+| Stored data | None -- new `syslog_config`, `syslog_queue`, `agent_syslog_queue` tables are created by `init_tables()` | Code edit (add CREATE TABLE to `init_tables()`) |
+| Live service config | None -- syslog config is new | Code edit |
 | OS-registered state | None | None |
-| Secrets/env vars | None — no new env vars | None |
+| Secrets/env vars | None -- no new env vars | None |
 | Build artifacts | None | None |
 
-**Nothing found in category:** Stored data, live service config, OS-registered state, secrets, build artifacts — all are new additions, no rename/migration needed.
+**Nothing found in category:** Stored data, live service config, OS-registered state, secrets, build artifacts -- all are new additions, no rename/migration needed.
 
 ## Common Pitfalls
 
 ### Pitfall 1: TLS CryptoProvider Not Installed (rustls 0.23+)
 **What goes wrong:** `rustls 0.23+` requires an explicit crypto provider. Without `ring` or `aws-lc-rs` installed, `ClientConfig::builder()` panics at runtime.
 **Why it happens:** rustls 0.23 changed from implicit to explicit crypto provider selection.
-**How to avoid:** Either (a) enable `ring` feature on `tokio-rustls` / `rustls`, or (b) call `rustls::crypto::ring::default_provider().install_default().ok()` early in `main()`. The `reqwest` crate with `rustls-tls` feature already pulls in `ring`, so this may be automatic — verify at compile time.
+**How to avoid:** Either (a) enable `ring` feature on `tokio-rustls` / `rustls`, or (b) call `rustls::crypto::ring::default_provider().install_default().ok()` early in `main()`. The `reqwest` crate with `rustls-tls` feature already pulls in `ring`, so this may be automatic -- verify at compile time.
 **Warning signs:** Panic at `ClientConfig::builder()` with message about missing crypto provider.
 
 ### Pitfall 2: ServerName DNS Name Validation Failure
@@ -365,33 +365,27 @@ fn backoff_delay(retry_count: u32) -> std::time::Duration {
 | A3 | `hostname::get()` returns a valid UTF-8 hostname on Windows | Architecture Patterns | If false, fall back to `std::env::var("COMPUTERNAME")` |
 | A4 | `rustls-native-certs` loads Windows system CA store correctly on Windows 10/11 | Standard Stack | If false, fallback to `webpki-roots` is implemented |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does the project need to add `tokio-rustls` as an explicit dependency, or can it use rustls types re-exported from `reqwest`?**
-   - What we know: `reqwest` with `rustls-tls` pulls in `rustls` and `tokio-rustls` transitively.
-   - What's unclear: Whether the re-exported types are sufficient for direct TCP+TLS use (not HTTP).
-   - Recommendation: Add `tokio-rustls` explicitly to `dlp-server/Cargo.toml` to ensure version pinning and direct API access.
+   - **RESOLVED:** Add `tokio-rustls` explicitly to `dlp-server/Cargo.toml` to ensure version pinning and direct API access. Implemented in Plan 01 Task 3.
 
 2. **Should the agent-side queue drain be triggered by heartbeat success or by a dedicated background task?**
-   - What we know: Agent already has a heartbeat cadence (`heartbeat_interval_secs`, default 30s).
-   - What's unclear: Whether piggybacking on heartbeat is sufficient or if a separate drain task is needed for faster recovery.
-   - Recommendation: Start with heartbeat-triggered drain (simpler), add background task if latency requirements demand it.
+   - **RESOLVED:** Start with heartbeat-triggered drain (simpler). Implemented in Plan 03 Task 1 -- agent drains on heartbeat success.
 
 3. **How should the server-side queue drain be scheduled?**
-   - What we know: Server has background tasks (policy refresh every 5 min, offline sweeper).
-   - What's unclear: Whether to add a dedicated syslog drain task or integrate with existing background loops.
-   - Recommendation: Dedicated `tokio::spawn` drain loop with configurable interval (default 30s) and backoff on failure.
+   - **RESOLVED:** Dedicated `tokio::spawn` drain loop with configurable interval (default 30s) and backoff on failure. Implemented in Plan 02 Task 3.
 
 ## Environment Availability
 
 | Dependency | Required By | Available | Version | Fallback |
 |------------|------------|-----------|---------|----------|
-| tokio | Async runtime | ✓ | 1.x (workspace) | — |
-| rustls | TLS | ✓ | 0.23 (via reqwest) | — |
-| tokio-rustls | TLS streams | ✓ | 0.26 (add to Cargo.toml) | — |
+| tokio | Async runtime | ✓ | 1.x (workspace) | -- |
+| rustls | TLS | ✓ | 0.23 (via reqwest) | -- |
+| tokio-rustls | TLS streams | ✓ | 0.26 (add to Cargo.toml) | -- |
 | rustls-native-certs | System CA store | ✓ | 0.8 (add to Cargo.toml) | webpki-roots |
-| rusqlite | SQLite queue | ✓ | 0.39 | — |
-| DPAPI (Windows) | Agent queue encryption | ✓ | OS built-in | — |
+| rusqlite | SQLite queue | ✓ | 0.39 | -- |
+| DPAPI (Windows) | Agent queue encryption | ✓ | OS built-in | -- |
 | hostname crate | Hostname resolution | ✓ | 0.4.2 (dlp-agent) | std::env::var("COMPUTERNAME") |
 
 **Missing dependencies with no fallback:** None.
@@ -404,7 +398,7 @@ fn backoff_delay(retry_count: u32) -> std::time::Duration {
 | Property | Value |
 |----------|-------|
 | Framework | Built-in `#[test]` + `tokio::test` |
-| Config file | None — see Wave 0 |
+| Config file | None -- see Wave 0 |
 | Quick run command | `cargo test -p dlp-server syslog` |
 | Full suite command | `cargo test --all` |
 
@@ -422,12 +416,12 @@ fn backoff_delay(retry_count: u32) -> std::time::Duration {
 - **Phase gate:** Full suite green before `/gsd-verify-work`
 
 ### Wave 0 Gaps
-- [ ] `dlp-server/src/syslog_connector.rs` — covers SYSLOG-01
-- [ ] `dlp-server/src/db/repositories/syslog_config.rs` — config CRUD
-- [ ] `dlp-server/src/db/repositories/syslog_queue.rs` — queue CRUD + drain
-- [ ] `dlp-agent/src/syslog_queue.rs` — agent-side queue
-- [ ] `dlp-admin-cli/src/screens/syslog_config.rs` — TUI screen
-- [ ] `dlp-server/src/admin_api.rs` — add `/admin/syslog-config` routes
+- [ ] `dlp-server/src/syslog_connector.rs` -- covers SYSLOG-01
+- [ ] `dlp-server/src/db/repositories/syslog_config.rs` -- config CRUD
+- [ ] `dlp-server/src/db/repositories/syslog_queue.rs` -- queue CRUD + drain
+- [ ] `dlp-agent/src/syslog_queue.rs` -- agent-side queue
+- [ ] `dlp-admin-cli/src/screens/syslog_config.rs` -- TUI screen
+- [ ] `dlp-server/src/admin_api.rs` -- add `/admin/syslog-config` routes
 
 ## Security Domain
 
@@ -456,30 +450,30 @@ fn backoff_delay(retry_count: u32) -> std::time::Duration {
 ## Sources
 
 ### Primary (HIGH confidence)
-- [RFC 5424](https://datatracker.ietf.org/doc/html/rfc5424.html) — syslog protocol specification, message format, priority calculation
-- [tokio-rustls 0.26.4 docs](https://docs.rs/tokio-rustls/0.26.4/) — TLS stream API
-- [rustls 0.23 docs](https://docs.rs/rustls/0.23.40/rustls/) — ClientConfig builder, crypto provider
-- [rustls-native-certs 0.8 docs](https://docs.rs/rustls-native-certs/0.8.3/) — System CA store loading
-- `dlp-server/src/siem_connector.rs` — existing SiemConnector pattern (hot-reload, batched relay)
-- `dlp-server/src/db/repositories/siem_config.rs` — encrypted config repository pattern
-- `dlp-server/src/crypto/mod.rs` — SecretCrypto encrypt/decrypt APIs
-- `dlp-server/src/db/mod.rs` — init_tables() schema initialization pattern
-- `dlp-admin-cli/src/screens/dispatch.rs` — TUI screen dispatch pattern (SiemConfig)
-- `dlp-server/src/audit_store.rs` — integration point (fire-and-forget after persist)
+- [RFC 5424](https://datatracker.ietf.org/doc/html/rfc5424.html) -- syslog protocol specification, message format, priority calculation
+- [tokio-rustls 0.26.4 docs](https://docs.rs/tokio-rustls/0.26.4/) -- TLS stream API
+- [rustls 0.23 docs](https://docs.rs/rustls/0.23.40/rustls/) -- ClientConfig builder, crypto provider
+- [rustls-native-certs 0.8 docs](https://docs.rs/rustls-native-certs/0.8.3/) -- System CA store loading
+- `dlp-server/src/siem_connector.rs` -- existing SiemConnector pattern (hot-reload, batched relay)
+- `dlp-server/src/db/repositories/siem_config.rs` -- encrypted config repository pattern
+- `dlp-server/src/crypto/mod.rs` -- SecretCrypto encrypt/decrypt APIs
+- `dlp-server/src/db/mod.rs` -- init_tables() schema initialization pattern
+- `dlp-admin-cli/src/screens/dispatch.rs` -- TUI screen dispatch pattern (SiemConfig)
+- `dlp-server/src/audit_store.rs` -- integration point (fire-and-forget after persist)
 
 ### Secondary (MEDIUM confidence)
-- [WebSearch: rustls 0.23 tokio-rustls TLS client example](https://users.rust-lang.org/t/secure-websocket-implementation-with-tokio-tungstenite-tokio-rustls-rustls-platform-verifier/110211) — community patterns for rustls 0.23
-- [GitHub: tokio-rustls examples](https://github.com/rustls/tokio-rustls/tree/main/examples) — official client.rs example
+- [WebSearch: rustls 0.23 tokio-rustls TLS client example](https://users.rust-lang.org/t/secure-websocket-implementation-with-tokio-tungstenite-tokio-rustls-rustls-platform-verifier/110211) -- community patterns for rustls 0.23
+- [GitHub: tokio-rustls examples](https://github.com/rustls/tokio-rustls/tree/main/examples) -- official client.rs example
 
 ### Tertiary (LOW confidence)
-- None — all claims verified against code or official docs.
+- None -- all claims verified against code or official docs.
 
 ## Metadata
 
 **Confidence breakdown:**
-- Standard stack: HIGH — versions verified against crates.io, APIs verified against docs.rs, patterns verified against existing codebase
-- Architecture: HIGH — directly mirrors existing proven patterns (SiemConnector, SiemConfigRepository)
-- Pitfalls: HIGH — rustls 0.23 crypto provider issue is well-documented; RFC 5424 format is spec-defined
+- Standard stack: HIGH -- versions verified against crates.io, APIs verified against docs.rs, patterns verified against existing codebase
+- Architecture: HIGH -- directly mirrors existing proven patterns (SiemConnector, SiemConfigRepository)
+- Pitfalls: HIGH -- rustls 0.23 crypto provider issue is well-documented; RFC 5424 format is spec-defined
 
 **Research date:** 2026-05-14
 **Valid until:** 2026-06-14 (rustls ecosystem is stable; 30-day validity appropriate)
