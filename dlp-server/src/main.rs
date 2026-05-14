@@ -213,6 +213,13 @@ async fn main() -> anyhow::Result<()> {
     // `smtp_password` / `webhook_secret` envelopes on each load.
     let alert = AlertRouter::new(Arc::clone(&pool), Arc::clone(&crypto));
 
+    // Initialise the syslog forwarder (Phase 62).
+    // Reads config from `syslog_config` on each forward call (hot-reload).
+    let syslog = dlp_server::syslog_connector::SyslogConnector::new(
+        Arc::clone(&pool),
+        Arc::clone(&crypto),
+    );
+
     // Attempt to construct the AD client from DB config.
     // Fail-open: server starts even if AD is unreachable.
     let ad_client = match load_ldap_config(&pool) {
@@ -267,6 +274,7 @@ async fn main() -> anyhow::Result<()> {
         ad: ad_client,
         label_service,
         approval_token_service,
+        syslog,
     });
 
     // Start the background heartbeat sweeper (marks agents offline
