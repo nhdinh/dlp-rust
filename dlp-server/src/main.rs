@@ -38,7 +38,9 @@ use dlp_server::db::repositories::LdapConfigRepository;
 use dlp_server::policy_store::PolicyStore;
 use dlp_server::secrets_migration;
 use dlp_server::siem_connector::SiemConnector;
+use dlp_server::db::repositories::SyslogQueueRepository;
 use dlp_server::label_service::LabelService;
+use dlp_server::observability;
 use dlp_server::AppState;
 use secrecy::ExposeSecret;
 
@@ -266,15 +268,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Build shared application state.
     let state = Arc::new(AppState {
-        pool,
-        crypto,
+        pool: Arc::clone(&pool),
+        crypto: Arc::clone(&crypto),
         policy_store,
         siem,
         alert,
         ad: ad_client,
         label_service,
         approval_token_service,
-        syslog,
+        syslog: syslog.clone(),
     });
 
     // Start the background heartbeat sweeper (marks agents offline
@@ -295,6 +297,192 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Spawn background syslog queue drain loop (Phase 62, SYSLOG-02).
+    // Periodically reads from the encrypted queue and forwards via
+    // SyslogConnector with peek-confirm-delete semantics.
+    let drain_syslog = syslog.clone();
+    let drain_pool = Arc::clone(&pool);
+    let drain_crypto = Arc::clone(&crypto);
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+
+    let drain_handle = tokio::spawn(async move {
+        let interval_secs = std::env::var("SYSLOG_DRAIN_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30u64);
+        let mut interval = tokio::time::interval(
+            std::time::Duration::from_secs(interval_secs),
+        );
+        interval.set_missed_tick_behavior(
+            tokio::time::MissedTickBehavior::Skip,
+        );
+
+        let mut consecutive_failures: u32 = 0;
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {},
+                _ = shutdown_rx.recv() => {
+                    tracing::info!("syslog drain loop shutting down gracefully");
+                    break;
+                }
+            }
+
+            // Check queue depth for observability.
+            let depth = match tokio::task::spawn_blocking({
+                let pool = Arc::clone(&drain_pool);
+                move || SyslogQueueRepository::count(&pool)
+            }).await {
+                Ok(Ok(c)) => c as u64,
+                _ => 0,
+            };
+            observability::record_syslog_queue_depth(depth);
+
+            if depth == 0 {
+                consecutive_failures = 0;
+                continue;
+            }
+
+            // Check how many events are ready for retry.
+            let ready_count = match tokio::task::spawn_blocking({
+                let pool = Arc::clone(&drain_pool);
+                move || SyslogQueueRepository::count_ready(&pool)
+            }).await {
+                Ok(Ok(c)) => c,
+                _ => 0,
+            };
+
+            if ready_count == 0 {
+                // Events exist but none are ready yet (backoff in effect).
+                continue;
+            }
+
+            // Peek a batch (does NOT remove rows).
+            let batch = match tokio::task::spawn_blocking({
+                let pool = Arc::clone(&drain_pool);
+                let crypto = Arc::clone(&drain_crypto);
+                move || SyslogQueueRepository::peek_oldest(&pool, &crypto, 100)
+            }).await {
+                Ok(Ok(b)) => b,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "syslog drain: failed to peek batch");
+                    consecutive_failures += 1;
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "syslog drain: join error peeking batch");
+                    consecutive_failures += 1;
+                    continue;
+                }
+            };
+
+            if batch.is_empty() {
+                consecutive_failures = 0;
+                continue;
+            }
+
+            // Deserialize and forward.
+            let events: Vec<dlp_common::AuditEvent> = match batch.iter()
+                .map(|qe| serde_json::from_str::<dlp_common::AuditEvent>(&qe.event_json))
+                .collect::<Result<Vec<_>, _>>() {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::error!(error = %e, "syslog drain: failed to deserialize queued events");
+                    // Corrupt events: mark as failed with a far-future retry.
+                    for qe in &batch {
+                        let _ = tokio::task::spawn_blocking({
+                            let pool = Arc::clone(&drain_pool);
+                            let id = qe.id;
+                            move || -> Result<(), dlp_server::AppError> {
+                                let mut conn = pool.get()?;
+                                let uow = db::UnitOfWork::new(&mut conn)?;
+                                SyslogQueueRepository::mark_failed(
+                                    &uow, id, "deserialization error", "2099-01-01T00:00:00Z",
+                                )?;
+                                uow.commit()?;
+                                Ok(())
+                            }
+                        }).await;
+                    }
+                    continue;
+                }
+            };
+
+            let start = std::time::Instant::now();
+            match drain_syslog.forward(&events).await {
+                Ok(()) => {
+                    // Confirm-delete: remove successfully forwarded events.
+                    let ids: Vec<i64> = batch.iter().map(|qe| qe.id).collect();
+                    if let Err(e) = tokio::task::spawn_blocking({
+                        let pool = Arc::clone(&drain_pool);
+                        move || {
+                            let mut conn = pool.get()?;
+                            let uow = db::UnitOfWork::new(&mut conn)?;
+                            SyslogQueueRepository::delete(&uow, &ids)?;
+                            uow.commit()?;
+                            Ok::<_, dlp_server::AppError>(())
+                        }
+                    }).await {
+                        tracing::warn!(error = %e, "syslog drain: failed to delete forwarded events");
+                        // Events were forwarded but not deleted -- they'll be re-forwarded
+                        // on next drain (at-least-once semantics). This is acceptable.
+                    }
+                    let latency_ms = start.elapsed().as_millis() as u64;
+                    observability::record_syslog_send_latency(latency_ms);
+                    tracing::info!(
+                        count = events.len(),
+                        latency_ms,
+                        "syslog drain: forwarded queued events"
+                    );
+                    consecutive_failures = 0;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        count = events.len(),
+                        "syslog drain: forward failed"
+                    );
+                    observability::record_syslog_tls_error();
+                    // Mark each event as failed with exponential backoff scheduling.
+                    let next_attempt = compute_next_attempt(consecutive_failures);
+                    for qe in &batch {
+                        let _ = tokio::task::spawn_blocking({
+                            let pool = Arc::clone(&drain_pool);
+                            let id = qe.id;
+                            let error = e.to_string();
+                            let next = next_attempt.clone();
+                            move || -> Result<(), dlp_server::AppError> {
+                                let mut conn = pool.get()?;
+                                let uow = db::UnitOfWork::new(&mut conn)?;
+                                SyslogQueueRepository::mark_failed(&uow, id, &error, &next)?;
+                                uow.commit()?;
+                                Ok(())
+                            }
+                        }).await;
+                        observability::record_syslog_retry(1);
+                    }
+                    consecutive_failures += 1;
+                }
+            }
+
+            // Exponential backoff on failure.
+            if consecutive_failures > 0 {
+                let base = 1u64;
+                let max = 60u64;
+                let exp = std::cmp::min(consecutive_failures, 6);
+                let delay = std::cmp::min(base * 2u64.pow(exp), max);
+                // Deterministic jitter based on time (no rand dependency needed).
+                let jitter = (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() % (delay as u128 * 500_000_000 + 1)) as u64;
+                let backoff = std::time::Duration::from_secs(delay + jitter);
+                tracing::info!(backoff_secs = backoff.as_secs(), "syslog drain: backing off");
+                tokio::time::sleep(backoff).await;
+            }
+        }
+    });
+
     // Build the HTTP router.
     let app = admin_api::admin_router(Arc::clone(&state));
 
@@ -312,8 +500,29 @@ async fn main() -> anyhow::Result<()> {
     .with_graceful_shutdown(shutdown_signal())
     .await?;
 
+    // On shutdown signal, notify drain loop and wait for it to finish.
+    let _ = shutdown_tx.send(());
+    drain_handle.await.ok();
+
     info!("dlp-server shut down");
     Ok(())
+}
+
+/// Compute the next retry attempt timestamp based on consecutive failures.
+///
+/// Uses exponential backoff capped at 60 seconds with deterministic jitter.
+fn compute_next_attempt(consecutive_failures: u32) -> String {
+    let base = 1u64;
+    let max = 60u64;
+    let exp = std::cmp::min(consecutive_failures, 6);
+    let delay = std::cmp::min(base * 2u64.pow(exp), max);
+    let jitter = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() % (delay as u128 * 500_000_000 + 1)) as u64;
+    let backoff = std::time::Duration::from_secs(delay + jitter);
+    (chrono::Utc::now() + chrono::Duration::from_std(backoff).unwrap_or_default())
+        .to_rfc3339()
 }
 
 /// Ensures at least one admin user exists in the database.
