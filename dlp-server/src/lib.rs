@@ -20,6 +20,7 @@ pub mod policy_sync;
 pub mod rate_limiter;
 pub mod secrets_migration;
 pub mod siem_connector;
+pub mod syslog_connector;
 
 use std::sync::Arc;
 
