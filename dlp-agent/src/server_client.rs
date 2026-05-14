@@ -578,6 +578,53 @@ impl ServerClient {
         Ok(())
     }
 
+    /// Sends a batch of pre-serialised JSON audit events to the dlp-server.
+    ///
+    /// Used by the offline audit queue drain loop to forward events that were
+    /// already serialised to JSON when originally enqueued.
+    ///
+    /// # Arguments
+    ///
+    /// * `json_events` -- slice of JSON strings to send as the request body.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerClientError::Http` on network failures.
+    /// Returns `ServerClientError::ServerError` on non-2xx responses.
+    pub async fn send_audit_events_json(
+        &self,
+        json_events: &[String],
+    ) -> Result<(), ServerClientError> {
+        if json_events.is_empty() {
+            return Ok(());
+        }
+
+        let url = format!("{}/audit/events", self.base_url);
+
+        // Build a JSON array from the pre-serialised strings.
+        let body = format!("[{}]", json_events.join(","));
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
+            return Err(ServerClientError::ServerError { status, body });
+        }
+
+        debug!(count = json_events.len(), "audit events (JSON) relayed to server");
+        Ok(())
+    }
+
     // ---------------------------------------------------------------------------
     // Phase 61 — Approval Workflow Engine: agent-side public key + approval sync
     // ---------------------------------------------------------------------------
@@ -812,14 +859,35 @@ impl AuditBuffer {
 
         let count = events.len();
         if let Err(e) = self.client.send_audit_events(&events).await {
-            // Log the error but do not re-enqueue -- the local JSONL
-            // file is the authoritative audit trail. Server relay is
-            // best-effort.
+            // Server unreachable — enqueue events to the offline audit queue
+            // so they can be retried when connectivity returns.
             warn!(
                 count,
                 error = %e,
-                "failed to relay audit events to server -- events dropped"
+                "failed to relay audit events to server — enqueueing to offline queue"
             );
+            if let Some(mutex) = crate::service::agent_db() {
+                if let Ok(conn) = mutex.lock() {
+                    for event in &events {
+                        let json = match serde_json::to_string(event) {
+                            Ok(j) => j,
+                            Err(e) => {
+                                warn!(error = %e, "failed to serialise event for offline queue");
+                                continue;
+                            }
+                        };
+                        if let Err(e) = crate::offline_audit_queue::enqueue(
+                            &conn,
+                            &json,
+                            crate::offline_audit_queue::DEFAULT_MAX_QUEUE_SIZE,
+                        ) {
+                            warn!(error = %e, "failed to enqueue event to offline queue");
+                        }
+                    }
+                }
+            } else {
+                warn!("agent DB not initialised — events dropped");
+            }
         } else {
             debug!(count, "audit buffer flushed to server");
         }

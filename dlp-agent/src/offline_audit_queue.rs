@@ -204,6 +204,32 @@ pub fn count(conn: &Connection) -> Result<i64, rusqlite::Error> {
     })
 }
 
+/// Higher-level enqueue that serializes an [`AuditEvent`] to JSON before storing.
+///
+/// On [`OfflineQueueError::AtCapacity`], the caller should emit a synthetic
+/// `queue_overflow` audit event (R-62-16).
+///
+/// # Arguments
+///
+/// * `conn` -- SQLite connection.
+/// * `event` -- the audit event to enqueue.
+/// * `max_size` -- maximum queue depth; returns `AtCapacity` when exceeded.
+///
+/// # Errors
+///
+/// Returns `OfflineQueueError::AtCapacity` when queue is full.
+/// Returns `OfflineQueueError::Encrypt` on DPAPI failure (Windows).
+/// Returns `OfflineQueueError::Database` on SQLite errors.
+pub fn enqueue_with_overflow_event(
+    conn: &Connection,
+    event: &dlp_common::AuditEvent,
+    max_size: i64,
+) -> Result<(), OfflineQueueError> {
+    let json = serde_json::to_string(event)
+        .map_err(|e| OfflineQueueError::Encrypt(format!("JSON serialize: {e}")))?;
+    enqueue(conn, &json, max_size)
+}
+
 /// Try to acquire the drain lock. Returns true if acquired, false if another drain is in progress.
 pub fn try_acquire_drain_lock() -> bool {
     DRAIN_IN_PROGRESS

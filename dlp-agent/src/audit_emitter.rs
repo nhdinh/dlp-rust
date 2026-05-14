@@ -344,11 +344,47 @@ pub fn emit_audit(ctx: &EmitContext, event: &mut AuditEvent) {
 
     // Best-effort relay to dlp-server via the audit buffer.
     // The buffer is flushed periodically by a background task.
-    // If the buffer is not set (server client not configured), this
-    // is a no-op.
+    // If the buffer is not set (server client not configured), fall
+    // back to the offline audit queue so the event is not lost.
     #[cfg(windows)]
     if let Some(buffer) = AUDIT_BUFFER.get() {
         buffer.enqueue(event.clone());
+    } else if let Some(mutex) = crate::service::agent_db() {
+        // Server client not configured — enqueue to offline queue for later relay.
+        if let Ok(conn) = mutex.lock() {
+            match crate::offline_audit_queue::enqueue_with_overflow_event(
+                &conn,
+                event,
+                crate::offline_audit_queue::DEFAULT_MAX_QUEUE_SIZE,
+            ) {
+                Ok(()) => {}
+                Err(crate::offline_audit_queue::OfflineQueueError::AtCapacity { max_size }) => {
+                    // R-62-16: Emit a synthetic queue_overflow audit event.
+                    warn!(
+                        max_size,
+                        "offline audit queue at capacity — emitting synthetic queue_overflow event"
+                    );
+                    let overflow = dlp_common::AuditEvent::new(
+                        dlp_common::EventType::AdminAction,
+                        "SYSTEM".to_string(),
+                        "SYSTEM".to_string(),
+                        "queue_overflow".to_string(),
+                        dlp_common::Classification::T1,
+                        dlp_common::Action::WRITE,
+                        dlp_common::Decision::ALLOW,
+                        event.agent_id.clone(),
+                        event.session_id,
+                    );
+                    // Write the synthetic event to JSONL only (do not re-queue).
+                    if let Err(e) = EMITTER.emit(&overflow) {
+                        warn!(error = %e, "failed to emit synthetic queue_overflow event to JSONL");
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to enqueue audit event to offline queue");
+                }
+            }
+        }
     }
 }
 
