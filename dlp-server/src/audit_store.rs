@@ -13,7 +13,7 @@ use dlp_common::AuditEvent;
 use serde::{Deserialize, Serialize};
 
 use crate::db::repositories::audit_events::{AuditEventFilter, AuditEventRepository};
-use crate::db::repositories::AuditEventRow;
+use crate::db::repositories::{AuditEventRow, SyslogConfigRepository, SyslogQueueRepository};
 use crate::db::UnitOfWork;
 use crate::AppError;
 use crate::AppState;
@@ -203,6 +203,51 @@ pub async fn ingest_events(
         .filter(|e| matches!(e.decision, dlp_common::Decision::DenyWithAlert))
         .cloned()
         .collect();
+
+    // Durable-first syslog forwarding: queue events BEFORE attempting external delivery.
+    // This ensures no audit events are lost even if the syslog collector is unreachable.
+    // The background drain loop (spawned in main.rs) reads from the queue and forwards.
+    let syslog_events = Arc::new(events);
+    let syslog_pool = Arc::clone(&state.pool);
+    let syslog_crypto = Arc::clone(&state.crypto);
+    tokio::task::spawn_blocking(move || {
+        let mut conn = match syslog_pool.get().map_err(AppError::from) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "syslog queue: failed to acquire connection");
+                return;
+            }
+        };
+        let uow = match UnitOfWork::new(&mut conn).map_err(AppError::from) {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::warn!(error = %e, "syslog queue: failed to begin uow");
+                return;
+            }
+        };
+        let config = match SyslogConfigRepository::get(&syslog_pool, &syslog_crypto) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "syslog queue: failed to read config");
+                return;
+            }
+        };
+        for event in syslog_events.iter() {
+            let json = match serde_json::to_string(event) {
+                Ok(j) => j,
+                Err(e) => {
+                    tracing::warn!(error = %e, "syslog queue: failed to serialize event");
+                    continue;
+                }
+            };
+            if let Err(e) = SyslogQueueRepository::enqueue(&uow, &json, &syslog_crypto, config.queue_max_size) {
+                tracing::warn!(error = %e, "syslog queue enqueue failed");
+            }
+        }
+        if let Err(e) = uow.commit().map_err(AppError::from) {
+            tracing::warn!(error = %e, "syslog queue: commit failed");
+        }
+    });
 
     // Best-effort SIEM relay — fire-and-forget in a background task
     // so the HTTP response is not delayed by external SIEM latency.
