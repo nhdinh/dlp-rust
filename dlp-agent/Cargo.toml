@@ -115,6 +115,9 @@ jsonwebtoken = "9"
 hex = "0.4"
 rand = "0.8"
 
+# Phase 62 — Offline audit queue (DPAPI-encrypted SQLite)
+rusqlite = { workspace = true }
+
 # Print spooler XPS parsing (M017/S04)
 zip = "2"
 quick-xml = "0.36"
