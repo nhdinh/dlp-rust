@@ -81,6 +81,8 @@ pub mod offline;
 
 pub mod audit_emitter;
 
+pub mod offline_audit_queue;
+
 #[cfg(windows)]
 pub mod clipboard;
 

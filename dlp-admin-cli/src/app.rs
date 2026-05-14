@@ -1016,6 +1016,36 @@ pub enum Screen {
         /// Selected field index: 0 = expiry, 1 = signature (T4 only).
         selected_field: usize,
     },
+    /// Syslog forwarder configuration form.
+    ///
+    /// Navigable list of 16 rows (13 editable fields + Test + Save + Back).
+    /// Row layout (index -> field):
+    ///   0: host              (text)
+    ///   1: port              (numeric)
+    ///   2: enabled           (bool toggle)
+    ///   3: protocol          (picker: tls only in Phase 62)
+    ///   4: facility_code     (picker: LOCAL0-LOCAL7)
+    ///   5: format            (picker: json only in Phase 62)
+    ///   6: batching_enabled  (bool toggle)
+    ///   7: severity_alert    (numeric 0-7)
+    ///   8: severity_block    (numeric 0-7)
+    ///   9: severity_audit    (numeric 0-7)
+    ///  10: queue_policy      (picker: fifo_tail_drop, fifo_head_drop, ring_buffer)
+    ///  11: queue_max_size    (numeric)
+    ///  12: tls_min_version   (picker: 1.2, 1.3)
+    ///  13: [Test Connection] (action)
+    ///  14: [Save]            (action)
+    ///  15: [Back]            (action)
+    SyslogConfig {
+        /// Currently loaded config as a JSON object.
+        config: serde_json::Value,
+        /// Index of the selected row (0..=15).
+        selected: usize,
+        /// Whether the selected text field is in edit mode.
+        editing: bool,
+        /// Buffered input while editing.
+        buffer: String,
+    },
 }
 
 // ---------------------------------------------------------------------------

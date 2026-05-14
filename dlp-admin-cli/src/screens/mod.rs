@@ -6,6 +6,7 @@ mod dispatch;
 mod labels;
 mod print_config;
 mod render;
+mod syslog_config;
 mod usb_enforcement;
 
 pub use dispatch::handle_event;

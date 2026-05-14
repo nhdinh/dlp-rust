@@ -24,3 +24,4 @@ notify = "8"
 ldap3 = "0.11"
 ipnetwork = "0.20"
 secrecy = "0.8"
+rusqlite = { version = "0.39", features = ["bundled", "chrono"] }
