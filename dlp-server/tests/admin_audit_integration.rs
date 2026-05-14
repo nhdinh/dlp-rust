@@ -54,9 +54,10 @@ fn test_app() -> (axum::Router, Arc<db::Pool>) {
     );
     let policy_store =
         Arc::new(policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"));
-    let label_service = Arc::new(dlp_server::label_service::LabelService::new(Arc::clone(&pool)));
-    let approval_token_crypto =
-        dlp_server::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+    let label_service = Arc::new(dlp_server::label_service::LabelService::new(Arc::clone(
+        &pool,
+    )));
+    let approval_token_crypto = dlp_server::crypto::SecretCrypto::from_kek([0x77; 32], 1);
     let approval_token_conn = pool.get().expect("pool");
     let approval_token_service = Arc::new(
         dlp_server::approval_token::ApprovalTokenService::new(
@@ -65,6 +66,8 @@ fn test_app() -> (axum::Router, Arc<db::Pool>) {
         )
         .expect("approval token service"),
     );
+    let syslog =
+        dlp_server::syslog_connector::SyslogConnector::new(Arc::clone(&pool), Arc::clone(&crypto));
     let state = Arc::new(AppState {
         pool: Arc::clone(&pool),
         crypto: std::sync::Arc::clone(&crypto),
@@ -74,6 +77,7 @@ fn test_app() -> (axum::Router, Arc<db::Pool>) {
         ad: None,
         label_service,
         approval_token_service,
+        syslog,
     });
     (admin_router(state), pool)
 }

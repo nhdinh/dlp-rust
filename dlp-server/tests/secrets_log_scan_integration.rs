@@ -118,7 +118,9 @@ fn build_state(pool: &Arc<db::Pool>, crypto: &Arc<SecretCrypto>) -> Arc<AppState
     let alert = alert_router::AlertRouter::new(Arc::clone(pool), Arc::clone(crypto));
     let policy_store =
         Arc::new(policy_store::PolicyStore::new(Arc::clone(pool)).expect("policy store"));
-    let label_service = Arc::new(dlp_server::label_service::LabelService::new(Arc::clone(pool)));
+    let label_service = Arc::new(dlp_server::label_service::LabelService::new(Arc::clone(
+        pool,
+    )));
     let approval_token_crypto = SecretCrypto::from_kek([0x77; 32], 1);
     let approval_token_conn = pool.get().expect("pool");
     let approval_token_service = Arc::new(
@@ -128,6 +130,8 @@ fn build_state(pool: &Arc<db::Pool>, crypto: &Arc<SecretCrypto>) -> Arc<AppState
         )
         .expect("approval token service"),
     );
+    let syslog =
+        dlp_server::syslog_connector::SyslogConnector::new(Arc::clone(pool), Arc::clone(crypto));
     Arc::new(AppState {
         pool: Arc::clone(pool),
         crypto: Arc::clone(crypto),
@@ -137,6 +141,7 @@ fn build_state(pool: &Arc<db::Pool>, crypto: &Arc<SecretCrypto>) -> Arc<AppState
         ad: None,
         label_service,
         approval_token_service,
+        syslog,
     })
 }
 
