@@ -60,6 +60,8 @@ pub struct AppState {
     pub label_service: Arc<label_service::LabelService>,
     /// Approval token signing and verification service.
     pub approval_token_service: Arc<approval_token::ApprovalTokenService>,
+    /// Syslog forwarder for RFC 5424 over TLS (Phase 62).
+    pub syslog: syslog_connector::SyslogConnector,
 }
 
 impl std::fmt::Debug for AppState {
@@ -80,6 +82,7 @@ impl std::fmt::Debug for AppState {
             )
             .field("label_service", &"LabelService(...)")
             .field("approval_token_service", &"ApprovalTokenService(...)")
+            .field("syslog", &"SyslogConnector(...)")
             .finish()
     }
 }
