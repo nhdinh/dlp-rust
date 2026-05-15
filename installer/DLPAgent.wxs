@@ -131,6 +131,22 @@
                           KeyPath="yes" />
                 </Component>
 
+                <!-- DLP Hook DLL (x64) -->
+                <Component Id="DLP_HOOK_DLL" Guid="*">
+                    <File Id="DLP_HOOK_DLL_FILE"
+                          Name="dlp_hook_dll.dll"
+                          Source="$(SourceDir)\target\x86_64-pc-windows-msvc\release\dlp_hook_dll.dll"
+                          KeyPath="yes" />
+                </Component>
+
+                <!-- DLP Hook DLL (x86) -->
+                <Component Id="DLP_HOOK_DLL_X86" Guid="*">
+                    <File Id="DLP_HOOK_DLL_X86_FILE"
+                          Name="dlp_hook_dll_x86.dll"
+                          Source="$(SourceDir)\target\i686-pc-windows-msvc\release\dlp_hook_dll.dll"
+                          KeyPath="yes" />
+                </Component>
+
             </Directory>
         </StandardDirectory>
 
@@ -147,6 +163,8 @@
             <ComponentRef Id="DLPAGENTEXE" />
             <ComponentRef Id="DLPUSERUIEXE" />
             <ComponentRef Id="DLPADMINCLIEXE" />
+            <ComponentRef Id="DLP_HOOK_DLL" />
+            <ComponentRef Id="DLP_HOOK_DLL_X86" />
             <ComponentRef Id="DLP_CONFIG_DIR" />
             <ComponentRef Id="DLP_LOGS_DIR" />
         </Feature>
