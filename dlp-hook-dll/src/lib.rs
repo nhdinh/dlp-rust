@@ -1,38 +1,98 @@
-//! DLP API Hook DLL — cloud sync client interception (T04).
+//! DLP API Hook DLL — unified file-I/O interception.
 //!
-//! This DLL is injected into sync client processes (OneDrive, Dropbox, etc.)
-//! to intercept file creation at `CreateFileW` and `NtCreateFile`.
+//! This DLL is injected into user-mode processes to intercept file creation,
+//! write, move, copy, delete, and rename operations via IAT patching.
+//!
+//! ## Architecture
+//!
+//! A single [`HOOKS`] table drives `init()` (patch all), `UnhookAll()` (restore all),
+//! and debug logging. Each trampoline is hand-written for precision (path extraction
+//! and return-value mapping differ per function).
 //!
 //! ## Exports
 //!
 //! | Symbol | Purpose |
 //! |--------|---------|
+//! | `DllMain` | DLL entry point — patches on attach, restores on detach |
+//! | `UnhookAll` | Restores original function pointers |
 //! | `HookCreateFileW` | Trampoline for `CreateFileW` |
 //! | `HookNtCreateFile` | Trampoline for `NtCreateFile` |
-//! | `UnhookAll` | Restores original function pointers |
+//! | `HookWriteFile` | Trampoline for `WriteFile` |
+//! | `HookWriteFileEx` | Trampoline for `WriteFileEx` |
+//! | `HookMoveFileExW` | Trampoline for `MoveFileExW` |
+//! | `HookCopyFileExW` | Trampoline for `CopyFileExW` |
+//! | `HookDeleteFileW` | Trampoline for `DeleteFileW` |
+//! | `HookReplaceFileW` | Trampoline for `ReplaceFileW` |
+//! | `HookSetFileInformationByHandle` | Trampoline for `SetFileInformationByHandle` |
+//! | `HookNtOpenFile` | Trampoline for `NtOpenFile` |
+//! | `HookNtWriteFile` | Trampoline for `NtWriteFile` |
+//! | `HookNtSetInformationFile` | Trampoline for `NtSetInformationFile` |
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{
-    SetLastError, ERROR_ACCESS_DENIED, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS,
-};
+use windows::Win32::Foundation::{HANDLE, NTSTATUS};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{
     FILE_CREATION_DISPOSITION, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE,
 };
 use windows::Win32::System::Diagnostics::Debug::OutputDebugStringW;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+// pe_utils.rs uses VirtualProtect and PAGE_EXECUTE_READWRITE; keep import
+// if any code in this file needs them, otherwise they are unused.
+#[allow(unused_imports)]
 use windows::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
 
 use dlp_common::{Decision, HookRequest};
+use dlp_common::hook_ipc::HandleHookRequest;
 
-pub mod crash_guard;
-pub mod fail_closed;
+mod crash_guard;
+mod fail_closed;
 mod pe_utils;
 mod pipe_client;
+pub mod trampolines;
+
+pub use fail_closed::DenyReturn;
+pub use pe_utils::{find_iat_entry, patch_iat, restore_iat};
+
+// Re-export crash_guard items so trampolines can use them.
+pub use crash_guard::{guard_trampoline, seh_guard, with_reentrancy_guard};
+
+/// Default pipe name used by the hook DLL.
+pub(crate) const DEFAULT_PIPE_NAME: &str = r"\\.\pipe\DlpHookPipe";
+
+/// Maximum wide-character length for path extraction.
+const MAX_WIDE_CHARS: usize = 32_768;
+
+// ---------------------------------------------------------------------------
+// Architecture-specific NT path offsets (per review P0)
+// ---------------------------------------------------------------------------
+
+/// Offset from `OBJECT_ATTRIBUTES` start to `ObjectName` field on x64.
+#[cfg(target_arch = "x86_64")]
+const OBJECT_ATTRIBUTES_OBJECT_NAME_OFFSET: isize = 0x10;
+
+/// Offset from `UNICODE_STRING` start to `Buffer` field on x64.
+#[cfg(target_arch = "x86_64")]
+const UNICODE_STRING_BUFFER_OFFSET: isize = 0x08;
+
+/// Offset from `OBJECT_ATTRIBUTES` start to `ObjectName` field on x86.
+#[cfg(target_arch = "x86")]
+const OBJECT_ATTRIBUTES_OBJECT_NAME_OFFSET: isize = 0x08;
+
+/// Offset from `UNICODE_STRING` start to `Buffer` field on x86.
+#[cfg(target_arch = "x86")]
+const UNICODE_STRING_BUFFER_OFFSET: isize = 0x04;
+
+// ---------------------------------------------------------------------------
+// Guard to ensure one-time initialisation
+// ---------------------------------------------------------------------------
 
 /// Guard to ensure one-time initialisation.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
+
+// ---------------------------------------------------------------------------
+// Static mut originals and IAT entries for all 12 functions
+// ---------------------------------------------------------------------------
 
 /// Original `CreateFileW` pointer saved before patching.
 ///
@@ -71,7 +131,6 @@ static mut ORIGINAL_NT_CREATE_FILE: Option<
 /// Original `WriteFile` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
-#[allow(dead_code)]
 static mut ORIGINAL_WRITE_FILE: Option<
     unsafe extern "system" fn(
         HANDLE,
@@ -85,7 +144,6 @@ static mut ORIGINAL_WRITE_FILE: Option<
 /// Original `WriteFileEx` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
-#[allow(dead_code)]
 static mut ORIGINAL_WRITE_FILE_EX: Option<
     unsafe extern "system" fn(
         HANDLE,
@@ -99,7 +157,6 @@ static mut ORIGINAL_WRITE_FILE_EX: Option<
 /// Original `MoveFileExW` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
-#[allow(dead_code)]
 static mut ORIGINAL_MOVE_FILE_EX_W: Option<
     unsafe extern "system" fn(PCWSTR, PCWSTR, u32) -> windows::core::BOOL,
 > = None;
@@ -107,7 +164,6 @@ static mut ORIGINAL_MOVE_FILE_EX_W: Option<
 /// Original `CopyFileExW` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
-#[allow(dead_code)]
 static mut ORIGINAL_COPY_FILE_EX_W: Option<
     unsafe extern "system" fn(
         PCWSTR,
@@ -122,7 +178,6 @@ static mut ORIGINAL_COPY_FILE_EX_W: Option<
 /// Original `DeleteFileW` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
-#[allow(dead_code)]
 static mut ORIGINAL_DELETE_FILE_W: Option<
     unsafe extern "system" fn(PCWSTR) -> windows::core::BOOL,
 > = None;
@@ -130,7 +185,6 @@ static mut ORIGINAL_DELETE_FILE_W: Option<
 /// Original `ReplaceFileW` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
-#[allow(dead_code)]
 static mut ORIGINAL_REPLACE_FILE_W: Option<
     unsafe extern "system" fn(
         PCWSTR,
@@ -145,7 +199,6 @@ static mut ORIGINAL_REPLACE_FILE_W: Option<
 /// Original `SetFileInformationByHandle` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
-#[allow(dead_code)]
 static mut ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE: Option<
     unsafe extern "system" fn(HANDLE, i32, *mut std::ffi::c_void, u32) -> windows::core::BOOL,
 > = None;
@@ -153,7 +206,6 @@ static mut ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE: Option<
 /// Original `NtOpenFile` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
-#[allow(dead_code)]
 static mut ORIGINAL_NT_OPEN_FILE: Option<
     unsafe extern "system" fn(
         *mut HANDLE,
@@ -168,7 +220,6 @@ static mut ORIGINAL_NT_OPEN_FILE: Option<
 /// Original `NtWriteFile` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
-#[allow(dead_code)]
 static mut ORIGINAL_NT_WRITE_FILE: Option<
     unsafe extern "system" fn(
         HANDLE,
@@ -186,7 +237,6 @@ static mut ORIGINAL_NT_WRITE_FILE: Option<
 /// Original `NtSetInformationFile` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
-#[allow(dead_code)]
 static mut ORIGINAL_NT_SET_INFORMATION_FILE: Option<
     unsafe extern "system" fn(
         HANDLE,
@@ -197,44 +247,171 @@ static mut ORIGINAL_NT_SET_INFORMATION_FILE: Option<
     ) -> NTSTATUS,
 > = None;
 
-/// Saved IAT entry addresses so `UnhookAll` can restore them.
+// ---------------------------------------------------------------------------
+// Saved IAT entry addresses so `UnhookAll` can restore them
+// ---------------------------------------------------------------------------
+
 static mut IAT_CREATE_FILE_W: Option<*mut usize> = None;
 static mut IAT_NT_CREATE_FILE: Option<*mut usize> = None;
-#[allow(dead_code)]
 static mut IAT_WRITE_FILE: Option<*mut usize> = None;
-#[allow(dead_code)]
 static mut IAT_WRITE_FILE_EX: Option<*mut usize> = None;
-#[allow(dead_code)]
 static mut IAT_MOVE_FILE_EX_W: Option<*mut usize> = None;
-#[allow(dead_code)]
 static mut IAT_COPY_FILE_EX_W: Option<*mut usize> = None;
-#[allow(dead_code)]
 static mut IAT_DELETE_FILE_W: Option<*mut usize> = None;
-#[allow(dead_code)]
 static mut IAT_REPLACE_FILE_W: Option<*mut usize> = None;
-#[allow(dead_code)]
 static mut IAT_SET_FILE_INFORMATION_BY_HANDLE: Option<*mut usize> = None;
-#[allow(dead_code)]
 static mut IAT_NT_OPEN_FILE: Option<*mut usize> = None;
-#[allow(dead_code)]
 static mut IAT_NT_WRITE_FILE: Option<*mut usize> = None;
-#[allow(dead_code)]
 static mut IAT_NT_SET_INFORMATION_FILE: Option<*mut usize> = None;
 
-/// Logs a wide-string message via `OutputDebugStringW`.
-fn debug_log(msg: &str) {
-    let wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe { OutputDebugStringW(PCWSTR::from_raw(wide.as_ptr())) };
+// ---------------------------------------------------------------------------
+// HookDescriptor metadata table
+// ---------------------------------------------------------------------------
+
+/// Metadata describing a single hooked function.
+///
+/// The `HOOKS` table drives `init()` (patch all), `UnhookAll()` (restore all),
+/// and debug logging.
+#[derive(Clone, Copy)]
+struct HookDescriptor {
+    /// Human-readable function name (e.g., "WriteFile").
+    fn_name: &'static str,
+    /// DLL that exports the original function ("kernel32.dll" or "ntdll.dll").
+    dll_name: &'static str,
+    /// Static mut holding the original function pointer.
+    original_ptr: *mut usize,
+    /// Static mut holding the IAT entry address.
+    iat_ptr: *mut usize,
+    /// Trampoline function pointer (type-erased).
+    ///
+    /// Each trampoline has a different signature, so we store it as a raw
+    /// pointer and cast at the call site.
+    trampoline_ptr: *const (),
+    /// Return value to inject on denial.
+    #[allow(dead_code)]
+    deny_return: DenyReturn,
 }
 
-/// Hash a path for logging without exposing the full value.
-fn hash_path(path: &str) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut s = DefaultHasher::new();
-    path.hash(&mut s);
-    s.finish()
+/// The canonical hook table — 12 entries covering the full file-I/O surface.
+const HOOKS: &[HookDescriptor] = &[
+    HookDescriptor {
+        fn_name: "CreateFileW",
+        dll_name: "kernel32.dll",
+        original_ptr: &raw mut ORIGINAL_CREATE_FILE_W as *mut usize,
+        iat_ptr: &raw mut IAT_CREATE_FILE_W as *mut usize,
+        trampoline_ptr: trampolines::HookCreateFileW as *const (),
+        deny_return: DenyReturn::InvalidHandleValue,
+    },
+    HookDescriptor {
+        fn_name: "NtCreateFile",
+        dll_name: "ntdll.dll",
+        original_ptr: &raw mut ORIGINAL_NT_CREATE_FILE as *mut usize,
+        iat_ptr: &raw mut IAT_NT_CREATE_FILE as *mut usize,
+        trampoline_ptr: trampolines::HookNtCreateFile as *const (),
+        deny_return: DenyReturn::StatusAccessDenied,
+    },
+    HookDescriptor {
+        fn_name: "WriteFile",
+        dll_name: "kernel32.dll",
+        original_ptr: &raw mut ORIGINAL_WRITE_FILE as *mut usize,
+        iat_ptr: &raw mut IAT_WRITE_FILE as *mut usize,
+        trampoline_ptr: trampolines::HookWriteFile as *const (),
+        deny_return: DenyReturn::BoolFalse,
+    },
+    HookDescriptor {
+        fn_name: "WriteFileEx",
+        dll_name: "kernel32.dll",
+        original_ptr: &raw mut ORIGINAL_WRITE_FILE_EX as *mut usize,
+        iat_ptr: &raw mut IAT_WRITE_FILE_EX as *mut usize,
+        trampoline_ptr: trampolines::HookWriteFileEx as *const (),
+        deny_return: DenyReturn::BoolFalse,
+    },
+    HookDescriptor {
+        fn_name: "MoveFileExW",
+        dll_name: "kernel32.dll",
+        original_ptr: &raw mut ORIGINAL_MOVE_FILE_EX_W as *mut usize,
+        iat_ptr: &raw mut IAT_MOVE_FILE_EX_W as *mut usize,
+        trampoline_ptr: trampolines::HookMoveFileExW as *const (),
+        deny_return: DenyReturn::BoolFalse,
+    },
+    HookDescriptor {
+        fn_name: "CopyFileExW",
+        dll_name: "kernel32.dll",
+        original_ptr: &raw mut ORIGINAL_COPY_FILE_EX_W as *mut usize,
+        iat_ptr: &raw mut IAT_COPY_FILE_EX_W as *mut usize,
+        trampoline_ptr: trampolines::HookCopyFileExW as *const (),
+        deny_return: DenyReturn::BoolFalse,
+    },
+    HookDescriptor {
+        fn_name: "DeleteFileW",
+        dll_name: "kernel32.dll",
+        original_ptr: &raw mut ORIGINAL_DELETE_FILE_W as *mut usize,
+        iat_ptr: &raw mut IAT_DELETE_FILE_W as *mut usize,
+        trampoline_ptr: trampolines::HookDeleteFileW as *const (),
+        deny_return: DenyReturn::BoolFalse,
+    },
+    HookDescriptor {
+        fn_name: "ReplaceFileW",
+        dll_name: "kernel32.dll",
+        original_ptr: &raw mut ORIGINAL_REPLACE_FILE_W as *mut usize,
+        iat_ptr: &raw mut IAT_REPLACE_FILE_W as *mut usize,
+        trampoline_ptr: trampolines::HookReplaceFileW as *const (),
+        deny_return: DenyReturn::BoolFalse,
+    },
+    HookDescriptor {
+        fn_name: "SetFileInformationByHandle",
+        dll_name: "kernel32.dll",
+        original_ptr: &raw mut ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE as *mut usize,
+        iat_ptr: &raw mut IAT_SET_FILE_INFORMATION_BY_HANDLE as *mut usize,
+        trampoline_ptr: trampolines::HookSetFileInformationByHandle as *const (),
+        deny_return: DenyReturn::BoolFalse,
+    },
+    HookDescriptor {
+        fn_name: "NtOpenFile",
+        dll_name: "ntdll.dll",
+        original_ptr: &raw mut ORIGINAL_NT_OPEN_FILE as *mut usize,
+        iat_ptr: &raw mut IAT_NT_OPEN_FILE as *mut usize,
+        trampoline_ptr: trampolines::HookNtOpenFile as *const (),
+        deny_return: DenyReturn::StatusAccessDenied,
+    },
+    HookDescriptor {
+        fn_name: "NtWriteFile",
+        dll_name: "ntdll.dll",
+        original_ptr: &raw mut ORIGINAL_NT_WRITE_FILE as *mut usize,
+        iat_ptr: &raw mut IAT_NT_WRITE_FILE as *mut usize,
+        trampoline_ptr: trampolines::HookNtWriteFile as *const (),
+        deny_return: DenyReturn::StatusAccessDenied,
+    },
+    HookDescriptor {
+        fn_name: "NtSetInformationFile",
+        dll_name: "ntdll.dll",
+        original_ptr: &raw mut ORIGINAL_NT_SET_INFORMATION_FILE as *mut usize,
+        iat_ptr: &raw mut IAT_NT_SET_INFORMATION_FILE as *mut usize,
+        trampoline_ptr: trampolines::HookNtSetInformationFile as *const (),
+        deny_return: DenyReturn::StatusAccessDenied,
+    },
+];
+
+// ---------------------------------------------------------------------------
+// DLL entry point
+// ---------------------------------------------------------------------------
+
+/// DLL entry point.
+#[unsafe(no_mangle)]
+extern "system" fn DllMain(_inst: isize, reason: u32, _reserved: usize) -> i32 {
+    const DLL_PROCESS_ATTACH: u32 = 1;
+    const DLL_PROCESS_DETACH: u32 = 0;
+    if reason == DLL_PROCESS_ATTACH {
+        init();
+    } else if reason == DLL_PROCESS_DETACH {
+        UnhookAll();
+    }
+    1
 }
+
+// ---------------------------------------------------------------------------
+// init — patches all IAT entries driven by HOOKS table
+// ---------------------------------------------------------------------------
 
 /// Initialises the hook DLL.
 ///
@@ -245,37 +422,32 @@ fn init() {
     }
 
     unsafe {
-        ORIGINAL_CREATE_FILE_W =
-            std::mem::transmute(resolve_kernel32_proc(windows::core::s!("CreateFileW")));
-        ORIGINAL_NT_CREATE_FILE = resolve_nt_create_file();
-
         let host = GetModuleHandleW(None).unwrap_or_default();
-        if !host.is_invalid() {
-            let host_ptr = host.0 as *mut u8;
+        if host.is_invalid() {
+            debug_log("[dlp-hook] init: GetModuleHandleW failed\0");
+            return;
+        }
+        let host_ptr = host.0 as *mut u8;
 
-            if let Some(iat) = find_iat_entry(
-                host_ptr,
-                "kernel32.dll",
-                resolve_kernel32_proc(windows::core::s!("CreateFileW"))
-                    .map(|f| f as *const std::ffi::c_void)
-                    .unwrap_or(std::ptr::null()),
-            ) {
-                if patch_iat(iat, HookCreateFileW as *mut std::ffi::c_void) {
-                    IAT_CREATE_FILE_W = Some(iat);
-                    debug_log("[dlp-hook] IAT patched: CreateFileW\0");
-                }
+        for hook in HOOKS {
+            let original_proc = resolve_proc(hook.dll_name, hook.fn_name);
+            if original_proc.is_null() {
+                let msg = format!("[dlp-hook] init: could not resolve {}\0", hook.fn_name);
+                debug_log(&msg);
+                continue;
             }
 
-            if let Some(iat) = find_iat_entry(
-                host_ptr,
-                "ntdll.dll",
-                resolve_ntdll_proc(windows::core::s!("NtCreateFile"))
-                    .map(|f| f as *const std::ffi::c_void)
-                    .unwrap_or(std::ptr::null()),
-            ) {
-                if patch_iat(iat, HookNtCreateFile as *mut std::ffi::c_void) {
-                    IAT_NT_CREATE_FILE = Some(iat);
-                    debug_log("[dlp-hook] IAT patched: NtCreateFile\0");
+            // Save original pointer.
+            let original_opt_ptr = hook.original_ptr as *mut Option<usize>;
+            *original_opt_ptr = Some(original_proc as usize);
+
+            // Find and patch IAT.
+            if let Some(iat) = find_iat_entry(host_ptr, hook.dll_name, original_proc) {
+                if patch_iat(iat, hook.trampoline_ptr as *mut std::ffi::c_void) {
+                    let iat_opt_ptr = hook.iat_ptr as *mut Option<*mut usize>;
+                    *iat_opt_ptr = Some(iat);
+                    let msg = format!("[dlp-hook] IAT patched: {}\0", hook.fn_name);
+                    debug_log(&msg);
                 }
             }
         }
@@ -284,22 +456,47 @@ fn init() {
     debug_log("[dlp-hook] initialised — IAT hooks active\0");
 }
 
+// ---------------------------------------------------------------------------
+// resolve_proc — resolves a function from a DLL by name
+// ---------------------------------------------------------------------------
+
+/// Resolves a function from `dll_name` by `fn_name`.
+///
+/// Returns a valid function pointer, or null if resolution fails.
+unsafe fn resolve_proc(dll_name: &str, fn_name: &str) -> *const std::ffi::c_void {
+    let dll_wide: Vec<u16> = dll_name.encode_utf16().chain(std::iter::once(0)).collect();
+    let dll = GetModuleHandleW(windows::core::PCWSTR::from_raw(dll_wide.as_ptr()));
+    let dll = match dll {
+        Ok(h) => h,
+        Err(_) => return std::ptr::null(),
+    };
+    let name = windows::core::PCSTR::from_raw(fn_name.as_ptr());
+    match GetProcAddress(dll, name) {
+        Some(p) => p as *const std::ffi::c_void,
+        None => std::ptr::null(),
+    }
+}
+
 /// Resolves a function from `kernel32.dll` by name.
-unsafe fn resolve_kernel32_proc(name: windows::core::PCSTR) -> Option<unsafe extern "system" fn()> {
+pub(crate) unsafe fn resolve_kernel32_proc(
+    name: windows::core::PCSTR,
+) -> Option<unsafe extern "system" fn()> {
     let kernel32 = GetModuleHandleW(w!("kernel32.dll")).ok()?;
     let proc = GetProcAddress(kernel32, name)?;
     Some(std::mem::transmute(proc))
 }
 
 /// Resolves a function from `ntdll.dll` by name.
-unsafe fn resolve_ntdll_proc(name: windows::core::PCSTR) -> Option<unsafe extern "system" fn()> {
+pub(crate) unsafe fn resolve_ntdll_proc(
+    name: windows::core::PCSTR,
+) -> Option<unsafe extern "system" fn()> {
     let ntdll = GetModuleHandleW(w!("ntdll.dll")).ok()?;
     let proc = GetProcAddress(ntdll, name)?;
     Some(std::mem::transmute(proc))
 }
 
 /// Resolves `NtCreateFile` from `ntdll.dll`.
-unsafe fn resolve_nt_create_file() -> Option<
+pub(crate) unsafe fn resolve_nt_create_file() -> Option<
     unsafe extern "system" fn(
         *mut HANDLE,
         u32,
@@ -319,294 +516,34 @@ unsafe fn resolve_nt_create_file() -> Option<
     Some(std::mem::transmute(proc))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PE IAT helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Finds the IAT entry in the host module that currently points to
-/// `target_proc` inside `dll_name`.
-unsafe fn find_iat_entry(
-    module_base: *mut u8,
-    dll_name: &str,
-    target_proc: *const std::ffi::c_void,
-) -> Option<*mut usize> {
-    if module_base.is_null() || target_proc.is_null() {
-        return None;
-    }
-
-    let e_lfanew = *(module_base.offset(0x3C) as *const i32) as isize;
-    let nt_headers = module_base.offset(e_lfanew);
-    let optional_header = nt_headers.offset(24); // after Signature + FileHeader
-    let magic = *(optional_header as *const u16);
-
-    if magic != 0x20B {
-        // Not PE32+ (x64).
-        return None;
-    }
-
-    // DataDirectory starts at offset 112 in IMAGE_OPTIONAL_HEADER64.
-    let data_directory = optional_header.offset(112);
-    // Import directory is index 1.
-    let import_dir = data_directory.offset(8);
-    let import_rva = *(import_dir as *const u32) as isize;
-
-    if import_rva == 0 {
-        return None;
-    }
-
-    let mut desc = module_base.offset(import_rva);
-    loop {
-        let name_rva = *(desc.offset(12) as *const u32) as isize;
-        if name_rva == 0 {
-            break; // null terminator
-        }
-
-        let name_ptr = module_base.offset(name_rva);
-        let name_len = (0..)
-            .take_while(|i| *(name_ptr.offset(*i) as *const u8) != 0)
-            .count();
-        let name_bytes = std::slice::from_raw_parts(name_ptr as *const u8, name_len);
-        if let Ok(name_str) = std::str::from_utf8(name_bytes) {
-            if name_str.eq_ignore_ascii_case(dll_name) {
-                let first_thunk = *(desc.offset(16) as *const u32) as isize;
-                let mut iat = module_base.offset(first_thunk) as *mut usize;
-                loop {
-                    let entry = *iat;
-                    if entry == 0 {
-                        break;
-                    }
-                    if entry == target_proc as usize {
-                        return Some(iat);
-                    }
-                    iat = iat.offset(1);
-                }
-            }
-        }
-
-        desc = desc.offset(20); // sizeof(IMAGE_IMPORT_DESCRIPTOR)
-    }
-
-    None
-}
-
-/// Temporarily makes `iat` writable and overwrites it with `new_fn`.
-unsafe fn patch_iat(iat: *mut usize, new_fn: *mut std::ffi::c_void) -> bool {
-    let mut old_protect = windows::Win32::System::Memory::PAGE_PROTECTION_FLAGS(0);
-    let size = std::mem::size_of::<usize>();
-    let ok = VirtualProtect(
-        iat as *mut std::ffi::c_void,
-        size,
-        PAGE_EXECUTE_READWRITE,
-        &mut old_protect,
-    )
-    .is_ok();
-
-    if !ok {
-        return false;
-    }
-
-    *iat = new_fn as usize;
-
-    let mut _tmp = windows::Win32::System::Memory::PAGE_PROTECTION_FLAGS(0);
-    let _ = VirtualProtect(iat as *mut std::ffi::c_void, size, old_protect, &mut _tmp);
-
-    true
-}
-
-/// Restores an IAT entry to its original value.
-unsafe fn restore_iat(iat: *mut usize, original: usize) -> bool {
-    patch_iat(iat, original as *mut std::ffi::c_void)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// DLL entry point
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// DLL entry point.
-#[unsafe(no_mangle)]
-extern "system" fn DllMain(_inst: isize, reason: u32, _reserved: usize) -> i32 {
-    const DLL_PROCESS_ATTACH: u32 = 1;
-    if reason == DLL_PROCESS_ATTACH {
-        init();
-    }
-    1
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Exported trampolines
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Classification hook for `CreateFileW`.
-///
-/// Sends the file path to the agent via named pipe.  If the agent denies
-/// the operation, returns `INVALID_HANDLE_VALUE` with `ERROR_ACCESS_DENIED`.
-/// Otherwise delegates to the original `CreateFileW`.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn HookCreateFileW(
-    lpfilename: PCWSTR,
-    dwdesiredaccess: u32,
-    dwsharemode: FILE_SHARE_MODE,
-    lpsecurityattributes: *const SECURITY_ATTRIBUTES,
-    dwcreationdisposition: FILE_CREATION_DISPOSITION,
-    dwflagsandattributes: FILE_FLAGS_AND_ATTRIBUTES,
-    htemplatefile: HANDLE,
-) -> HANDLE {
-    let path = pcwstr_to_string(lpfilename);
-    let path_hash = hash_path(&path);
-    let start = std::time::Instant::now();
-
-    let decision = classify_path(&path, "CREATE", DEFAULT_PIPE_NAME);
-    let latency = start.elapsed();
-
-    match decision {
-        Ok(Decision::ALLOW) | Ok(Decision::AllowWithLog) => {
-            let msg = format!(
-                "[dlp-hook] ALLOW CreateFileW hash={:016x} latency={}us\0",
-                path_hash,
-                latency.as_micros()
-            );
-            debug_log(&msg);
-        }
-        Ok(d) if d.is_denied() => {
-            let msg = format!(
-                "[dlp-hook] DENY CreateFileW hash={:016x} latency={}us\0",
-                path_hash,
-                latency.as_micros()
-            );
-            debug_log(&msg);
-            SetLastError(ERROR_ACCESS_DENIED);
-            return INVALID_HANDLE_VALUE;
-        }
-        _ => {
-            let msg = format!(
-                "[dlp-hook] DENY(fail-closed) CreateFileW hash={:016x} latency={}us\0",
-                path_hash,
-                latency.as_micros()
-            );
-            debug_log(&msg);
-            SetLastError(ERROR_ACCESS_DENIED);
-            return INVALID_HANDLE_VALUE;
-        }
-    }
-
-    let original = ORIGINAL_CREATE_FILE_W.unwrap_or_else(|| {
-        std::mem::transmute(
-            resolve_kernel32_proc(windows::core::s!("CreateFileW"))
-                .map(|f| f as *const std::ffi::c_void)
-                .unwrap_or(std::ptr::null()),
-        )
-    });
-
-    original(
-        lpfilename,
-        dwdesiredaccess,
-        dwsharemode,
-        lpsecurityattributes,
-        dwcreationdisposition,
-        dwflagsandattributes,
-        htemplatefile,
-    )
-}
-
-/// Classification hook for `NtCreateFile`.
-///
-/// Sends the file path (extracted from `OBJECT_ATTRIBUTES`) to the agent.
-/// Fail-closed on any error or denial.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn HookNtCreateFile(
-    filehandle: *mut HANDLE,
-    desiredaccess: u32,
-    objectattributes: *mut std::ffi::c_void,
-    iostatusblock: *mut std::ffi::c_void,
-    allocationsize: *const i64,
-    fileattributes: u32,
-    shareaccess: u32,
-    createdisposition: u32,
-    createoptions: u32,
-    eabuffer: *mut std::ffi::c_void,
-    ealength: u32,
-) -> NTSTATUS {
-    let path = extract_nt_path(objectattributes);
-    let path_hash = hash_path(&path);
-    let start = std::time::Instant::now();
-
-    let decision = classify_path(&path, "CREATE", DEFAULT_PIPE_NAME);
-    let latency = start.elapsed();
-
-    match decision {
-        Ok(Decision::ALLOW) | Ok(Decision::AllowWithLog) => {
-            let msg = format!(
-                "[dlp-hook] ALLOW NtCreateFile hash={:016x} latency={}us\0",
-                path_hash,
-                latency.as_micros()
-            );
-            debug_log(&msg);
-        }
-        Ok(d) if d.is_denied() => {
-            let msg = format!(
-                "[dlp-hook] DENY NtCreateFile hash={:016x} latency={}us\0",
-                path_hash,
-                latency.as_micros()
-            );
-            debug_log(&msg);
-            return NTSTATUS(0xC0000022u32 as i32); // STATUS_ACCESS_DENIED
-        }
-        _ => {
-            let msg = format!(
-                "[dlp-hook] DENY(fail-closed) NtCreateFile hash={:016x} latency={}us\0",
-                path_hash,
-                latency.as_micros()
-            );
-            debug_log(&msg);
-            return NTSTATUS(0xC0000022u32 as i32); // STATUS_ACCESS_DENIED
-        }
-    }
-
-    let original = ORIGINAL_NT_CREATE_FILE.unwrap_or_else(|| {
-        resolve_nt_create_file().unwrap_or(std::mem::transmute(std::ptr::null::<()>()))
-    });
-
-    original(
-        filehandle,
-        desiredaccess,
-        objectattributes,
-        iostatusblock,
-        allocationsize,
-        fileattributes,
-        shareaccess,
-        createdisposition,
-        createoptions,
-        eabuffer,
-        ealength,
-    )
-}
+// ---------------------------------------------------------------------------
+// UnhookAll — restores all IAT entries driven by HOOKS table
+// ---------------------------------------------------------------------------
 
 /// Restores original function pointers.
 ///
-/// Called by the agent before unloading the DLL from a target process.
+/// Called by the agent before unloading the DLL from a target process,
+/// and automatically on `DLL_PROCESS_DETACH`.
 #[unsafe(no_mangle)]
 pub extern "system" fn UnhookAll() {
     debug_log("[dlp-hook] UnhookAll called — restoring IAT\0");
     unsafe {
-        if let Some(iat) = IAT_CREATE_FILE_W {
-            if let Some(orig) = ORIGINAL_CREATE_FILE_W {
-                let _ = restore_iat(iat, orig as usize);
-            }
-        }
-        if let Some(iat) = IAT_NT_CREATE_FILE {
-            if let Some(orig) = ORIGINAL_NT_CREATE_FILE {
-                let _ = restore_iat(iat, orig as usize);
+        for hook in HOOKS {
+            let iat_opt = *(hook.iat_ptr as *const Option<*mut usize>);
+            let orig_opt = *(hook.original_ptr as *const Option<usize>);
+            if let (Some(iat), Some(orig)) = (iat_opt, orig_opt) {
+                let _ = restore_iat(iat, orig);
             }
         }
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Classification helpers
+// ---------------------------------------------------------------------------
 
 /// Sends a classification request to the agent via named pipe.
-fn classify_path(
+pub(crate) fn classify_path(
     path: &str,
     action: &str,
     pipe_name: &str,
@@ -623,41 +560,64 @@ fn classify_path(
 
 /// Sends a handle-based classification request to the agent via named pipe.
 ///
-/// The agent resolves the file path from its internal handle tracker using
-/// the provided `handle_value`.  This avoids extra syscalls in the hook DLL
-/// but requires the agent to track handle lifecycle (create/close/duplicate).
+/// The agent resolves the path from its internal handle tracker.
 ///
-/// # Arguments
-///
-/// * `handle_value` — The raw HANDLE value cast to `u64` for cross-architecture
-///   safety.
-/// * `action` — The operation being performed (e.g., `"WRITE"`, `"SET_INFO"`).
-/// * `pipe_name` — The named pipe path to connect to.
-///
-/// # Returns
-///
-/// The [`Decision`] from the agent, or a [`pipe_client::PipeError`] if the
-/// request fails.
-#[allow(dead_code)]
-fn classify_handle(
-    _handle_value: u64,
-    _action: &str,
-    _pipe_name: &str,
+/// NOTE: Until Phase 49/50 builds the agent-side handle tracker, the agent
+/// will return ALLOW for unknown handles. This means handle-based hooks
+/// (WriteFile, SetFileInformationByHandle, etc.) are functionally no-ops from
+/// a DLP enforcement perspective in Phase 48. The IPC protocol is in place and
+/// the agent can be extended without DLL changes.
+pub(crate) fn classify_handle(
+    handle_value: u64,
+    action: &str,
+    pipe_name: &str,
 ) -> Result<Decision, pipe_client::PipeError> {
-    // Stub: handle-based classification requires agent-side handle tracker
-    // (Phase 49/50).  Until then, return ALLOW so existing behavior is not
-    // broken.  This function is called by handle-based trampolines
-    // (WriteFile, SetFileInformationByHandle, etc.).
-    Ok(Decision::ALLOW)
+    let req = HandleHookRequest {
+        handle_value,
+        action: action.to_string(),
+        pid: std::process::id(),
+    };
+    let payload = match bincode::serialize(&req) {
+        Ok(p) => p,
+        Err(_) => return Err(pipe_client::PipeError::Malformed),
+    };
+    let response_bytes = pipe_client::send_raw_request(pipe_name, &payload, 50)?;
+    let resp: dlp_common::HookResponse = match bincode::deserialize(&response_bytes) {
+        Ok(r) => r,
+        Err(_) => return Err(pipe_client::PipeError::Malformed),
+    };
+    Ok(resp.decision)
+}
+
+// ---------------------------------------------------------------------------
+// String / path helpers
+// ---------------------------------------------------------------------------
+
+/// Logs a wide-string message via `OutputDebugStringW`.
+pub(crate) fn debug_log(msg: &str) {
+    let wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe { OutputDebugStringW(PCWSTR::from_raw(wide.as_ptr())) };
+}
+
+/// Hash a path for logging without exposing the full value.
+pub(crate) fn hash_path(path: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut s = DefaultHasher::new();
+    path.hash(&mut s);
+    s.finish()
 }
 
 /// Converts a `PCWSTR` to a Rust `String`.
-unsafe fn pcwstr_to_string(ptr: PCWSTR) -> String {
+///
+/// Returns a truncated string if the input exceeds 32,768 characters.
+/// This prevents unbounded scanning on malformed pointers.
+pub(crate) unsafe fn pcwstr_to_string(ptr: PCWSTR) -> String {
     if ptr.is_null() {
         return String::new();
     }
     let mut len = 0usize;
-    while *(ptr.0.offset(len as isize)) != 0 {
+    while len < MAX_WIDE_CHARS && *(ptr.0.offset(len as isize)) != 0 {
         len += 1;
     }
     let slice = std::slice::from_raw_parts(ptr.0, len);
@@ -665,38 +625,33 @@ unsafe fn pcwstr_to_string(ptr: PCWSTR) -> String {
 }
 
 /// Extracts the path from `OBJECT_ATTRIBUTES.ObjectName`.
-unsafe fn extract_nt_path(objectattributes: *mut std::ffi::c_void) -> String {
+///
+/// Uses architecture-correct offsets via `cfg(target_arch)`.
+pub(crate) unsafe fn extract_nt_path(objectattributes: *mut std::ffi::c_void) -> String {
     if objectattributes.is_null() {
         return String::new();
     }
 
-    // OBJECT_ATTRIBUTES layout (x64):
-    //   0x00 Length: u32
-    //   0x08 RootDirectory: HANDLE
-    //   0x10 ObjectName: *mut UNICODE_STRING
-    //   ...
-    let object_name_ptr = *(objectattributes.offset(0x10) as *mut *mut u8);
+    let object_name_ptr =
+        *(objectattributes.offset(OBJECT_ATTRIBUTES_OBJECT_NAME_OFFSET) as *mut *mut u8);
     if object_name_ptr.is_null() {
         return String::new();
     }
 
-    // UNICODE_STRING layout:
-    //   0x00 Length: u16
-    //   0x02 MaximumLength: u16
-    //   0x08 Buffer: *mut u16
-    let buffer = *(object_name_ptr.offset(0x08) as *mut *mut u16);
+    let buffer = *(object_name_ptr.offset(UNICODE_STRING_BUFFER_OFFSET) as *mut *mut u16);
     let length = *(object_name_ptr as *const u16) as usize;
     if buffer.is_null() || length == 0 {
         return String::new();
     }
 
-    let chars = length / 2;
+    let chars = (length / 2).min(MAX_WIDE_CHARS);
     let slice = std::slice::from_raw_parts(buffer, chars);
     String::from_utf16_lossy(slice)
 }
 
-// Re-export pipe constants so tests can use them.
-pub use pipe_client::DEFAULT_PIPE_NAME;
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -751,6 +706,26 @@ mod tests {
     fn pcwstr_null_returns_empty() {
         let s = unsafe { pcwstr_to_string(PCWSTR::from_raw(std::ptr::null())) };
         assert_eq!(s, "");
+    }
+
+    #[test]
+    fn pcwstr_32k_cap_truncates() {
+        let wide: Vec<u16> = (0..33_000)
+            .map(|i| (i % 26 + 65) as u16)
+            .chain(std::iter::once(0))
+            .collect();
+        let s = unsafe { pcwstr_to_string(PCWSTR::from_raw(wide.as_ptr())) };
+        assert_eq!(s.len(), 32_768);
+    }
+
+    #[test]
+    fn pcwstr_32k_exact_boundary() {
+        let wide: Vec<u16> = (0..32_768)
+            .map(|i| (i % 26 + 65) as u16)
+            .chain(std::iter::once(0))
+            .collect();
+        let s = unsafe { pcwstr_to_string(PCWSTR::from_raw(wide.as_ptr())) };
+        assert_eq!(s.len(), 32_768);
     }
 
     #[test]
@@ -855,6 +830,77 @@ mod tests {
         unsafe {
             let s = extract_nt_path(std::ptr::null_mut());
             assert_eq!(s, "");
+        }
+    }
+
+    #[test]
+    fn hook_descriptor_table_has_12_entries() {
+        assert_eq!(HOOKS.len(), 12);
+    }
+
+    #[test]
+    fn hook_descriptors_are_valid() {
+        for hook in HOOKS {
+            assert!(!hook.fn_name.is_empty());
+            assert!(!hook.dll_name.is_empty());
+            assert!(hook.trampoline_ptr as usize != 0);
+        }
+    }
+
+    #[test]
+    fn classify_handle_roundtrip() {
+        let req = dlp_common::hook_ipc::HandleHookRequest {
+            handle_value: 0x1234,
+            action: "WRITE".to_string(),
+            pid: 42,
+        };
+        let bytes = bincode::serialize(&req).expect("serialize");
+        let round: dlp_common::hook_ipc::HandleHookRequest =
+            bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(round.handle_value, 0x1234);
+        assert_eq!(round.action, "WRITE");
+        assert_eq!(round.pid, 42);
+    }
+
+    /// Calls `init()` and `UnhookAll()` on the current process and verifies
+    /// the mechanism runs without crashing. Patched count may be zero if the
+    /// test binary does not import the hooked functions — the pe_utils tests
+    /// verify patch/restore on a controlled memory page.
+    #[test]
+    fn iat_patch_and_restore_roundtrip() {
+        // Reset INITIALISED so init() will run.
+        INITIALISED.store(false, Ordering::SeqCst);
+
+        unsafe {
+            init();
+            // Count how many IAT entries were patched (may be zero in test binary).
+            let patched_count = HOOKS
+                .iter()
+                .filter(|hook| (*(hook.iat_ptr as *const Option<*mut usize>)).is_some())
+                .count();
+            // Log for diagnostics — not a hard assertion because the test binary
+            // may not import all (or any) of the hooked functions.
+            let msg = format!(
+                "[dlp-hook-test] iat_patch_and_restore_roundtrip: {} entries patched\0",
+                patched_count
+            );
+            debug_log(&msg);
+
+            UnhookAll();
+            // After UnhookAll, all IAT entries should be restored
+            for hook in HOOKS {
+                let iat_opt = *(hook.iat_ptr as *const Option<*mut usize>);
+                assert!(
+                    iat_opt.is_none()
+                        || {
+                            // If still Some, verify it points to original
+                            let orig_opt = *(hook.original_ptr as *const Option<usize>);
+                            iat_opt.map(|iat| *iat) == orig_opt
+                        },
+                    "IAT for {} should be restored after UnhookAll",
+                    hook.fn_name
+                );
+            }
         }
     }
 }
