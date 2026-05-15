@@ -10,6 +10,12 @@
 //! in most processes. It is covered indirectly via the underlying
 //! `NtCreateFile` and `NtWriteFile` hooks.
 
+// Trampolines are inherently unsafe FFI boundaries; safety docs and transmute
+// are pre-existing patterns from Plan 48-02.
+#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::missing_transmute_annotations)]
+#![allow(clippy::transmutes_expressible_as_ptr_casts)]
+
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HANDLE, NTSTATUS};
 
@@ -234,8 +240,9 @@ pub unsafe extern "system" fn HookNtCreateFile(
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original = crate::ORIGINAL_NT_CREATE_FILE.unwrap_or_else(|| {
-                        crate::resolve_nt_create_file()
-                            .unwrap_or(std::mem::transmute(std::ptr::null::<()>()))
+                        crate::resolve_nt_create_file().unwrap_or_else(|| {
+                            panic!("NtCreateFile original unavailable and resolution failed")
+                        })
                     });
                     original(
                         filehandle,
@@ -253,8 +260,9 @@ pub unsafe extern "system" fn HookNtCreateFile(
                 },
                 || {
                     let original = crate::ORIGINAL_NT_CREATE_FILE.unwrap_or_else(|| {
-                        crate::resolve_nt_create_file()
-                            .unwrap_or(std::mem::transmute(std::ptr::null::<()>()))
+                        crate::resolve_nt_create_file().unwrap_or_else(|| {
+                            panic!("NtCreateFile original unavailable and resolution failed")
+                        })
                     });
                     original(
                         filehandle,
@@ -274,8 +282,9 @@ pub unsafe extern "system" fn HookNtCreateFile(
         },
         || {
             let original = crate::ORIGINAL_NT_CREATE_FILE.unwrap_or_else(|| {
-                crate::resolve_nt_create_file()
-                    .unwrap_or(std::mem::transmute(std::ptr::null::<()>()))
+                crate::resolve_nt_create_file().unwrap_or_else(|| {
+                    panic!("NtCreateFile original unavailable and resolution failed")
+                })
             });
             original(
                 filehandle,

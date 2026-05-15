@@ -73,12 +73,12 @@ pub fn guard_trampoline<T>(
 thread_local! {
     /// Thread-local flag: `true` when `seh_guard` has installed its vectored
     /// exception handler on this thread.  Prevents double-installation.
-    static SEH_INSTALLED: Cell<bool> = Cell::new(false);
+    static SEH_INSTALLED: Cell<bool> = const { Cell::new(false) };
 
     /// Thread-local storage for the exception handler return value.
     /// When an access violation is caught, `seh_guard` stores `Err(())`
     /// here so the outer Rust code can return it.
-    static SEH_RESULT: Cell<Option<Result<(), ()>>> = Cell::new(None);
+    static SEH_RESULT: Cell<Option<Result<(), ()>>> = const { Cell::new(None) };
 }
 
 /// Vectored exception handler installed by `seh_guard`.
@@ -157,6 +157,7 @@ unsafe extern "system" fn seh_handler(
 /// };
 /// assert!(result.is_err());
 /// ```
+#[allow(clippy::result_unit_err)]
 pub unsafe fn seh_guard<T>(f: impl FnOnce() -> T) -> Result<T, ()> {
     // Install the vectored exception handler (first-only on this thread).
     let handler = AddVectoredExceptionHandler(1, Some(seh_handler));
@@ -190,7 +191,7 @@ pub unsafe fn seh_guard<T>(f: impl FnOnce() -> T) -> Result<T, ()> {
 
 thread_local! {
     /// `true` when a hook trampoline is currently active on this thread.
-    static REENTRANT: Cell<bool> = Cell::new(false);
+    static REENTRANT: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Prevents recursive hook entry on the same thread.
