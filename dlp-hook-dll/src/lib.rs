@@ -71,6 +71,7 @@ static mut ORIGINAL_NT_CREATE_FILE: Option<
 /// Original `WriteFile` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
+#[allow(dead_code)]
 static mut ORIGINAL_WRITE_FILE: Option<
     unsafe extern "system" fn(
         HANDLE,
@@ -84,6 +85,7 @@ static mut ORIGINAL_WRITE_FILE: Option<
 /// Original `WriteFileEx` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
+#[allow(dead_code)]
 static mut ORIGINAL_WRITE_FILE_EX: Option<
     unsafe extern "system" fn(
         HANDLE,
@@ -97,6 +99,7 @@ static mut ORIGINAL_WRITE_FILE_EX: Option<
 /// Original `MoveFileExW` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
+#[allow(dead_code)]
 static mut ORIGINAL_MOVE_FILE_EX_W: Option<
     unsafe extern "system" fn(PCWSTR, PCWSTR, u32) -> windows::core::BOOL,
 > = None;
@@ -104,6 +107,7 @@ static mut ORIGINAL_MOVE_FILE_EX_W: Option<
 /// Original `CopyFileExW` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
+#[allow(dead_code)]
 static mut ORIGINAL_COPY_FILE_EX_W: Option<
     unsafe extern "system" fn(
         PCWSTR,
@@ -118,6 +122,7 @@ static mut ORIGINAL_COPY_FILE_EX_W: Option<
 /// Original `DeleteFileW` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
+#[allow(dead_code)]
 static mut ORIGINAL_DELETE_FILE_W: Option<
     unsafe extern "system" fn(PCWSTR) -> windows::core::BOOL,
 > = None;
@@ -125,6 +130,7 @@ static mut ORIGINAL_DELETE_FILE_W: Option<
 /// Original `ReplaceFileW` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
+#[allow(dead_code)]
 static mut ORIGINAL_REPLACE_FILE_W: Option<
     unsafe extern "system" fn(
         PCWSTR,
@@ -139,6 +145,7 @@ static mut ORIGINAL_REPLACE_FILE_W: Option<
 /// Original `SetFileInformationByHandle` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
+#[allow(dead_code)]
 static mut ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE: Option<
     unsafe extern "system" fn(HANDLE, i32, *mut std::ffi::c_void, u32) -> windows::core::BOOL,
 > = None;
@@ -146,6 +153,7 @@ static mut ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE: Option<
 /// Original `NtOpenFile` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
+#[allow(dead_code)]
 static mut ORIGINAL_NT_OPEN_FILE: Option<
     unsafe extern "system" fn(
         *mut HANDLE,
@@ -160,6 +168,7 @@ static mut ORIGINAL_NT_OPEN_FILE: Option<
 /// Original `NtWriteFile` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
+#[allow(dead_code)]
 static mut ORIGINAL_NT_WRITE_FILE: Option<
     unsafe extern "system" fn(
         HANDLE,
@@ -177,6 +186,7 @@ static mut ORIGINAL_NT_WRITE_FILE: Option<
 /// Original `NtSetInformationFile` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
+#[allow(dead_code)]
 static mut ORIGINAL_NT_SET_INFORMATION_FILE: Option<
     unsafe extern "system" fn(
         HANDLE,
@@ -190,15 +200,25 @@ static mut ORIGINAL_NT_SET_INFORMATION_FILE: Option<
 /// Saved IAT entry addresses so `UnhookAll` can restore them.
 static mut IAT_CREATE_FILE_W: Option<*mut usize> = None;
 static mut IAT_NT_CREATE_FILE: Option<*mut usize> = None;
+#[allow(dead_code)]
 static mut IAT_WRITE_FILE: Option<*mut usize> = None;
+#[allow(dead_code)]
 static mut IAT_WRITE_FILE_EX: Option<*mut usize> = None;
+#[allow(dead_code)]
 static mut IAT_MOVE_FILE_EX_W: Option<*mut usize> = None;
+#[allow(dead_code)]
 static mut IAT_COPY_FILE_EX_W: Option<*mut usize> = None;
+#[allow(dead_code)]
 static mut IAT_DELETE_FILE_W: Option<*mut usize> = None;
+#[allow(dead_code)]
 static mut IAT_REPLACE_FILE_W: Option<*mut usize> = None;
+#[allow(dead_code)]
 static mut IAT_SET_FILE_INFORMATION_BY_HANDLE: Option<*mut usize> = None;
+#[allow(dead_code)]
 static mut IAT_NT_OPEN_FILE: Option<*mut usize> = None;
+#[allow(dead_code)]
 static mut IAT_NT_WRITE_FILE: Option<*mut usize> = None;
+#[allow(dead_code)]
 static mut IAT_NT_SET_INFORMATION_FILE: Option<*mut usize> = None;
 
 /// Logs a wide-string message via `OutputDebugStringW`.
@@ -618,6 +638,7 @@ fn classify_path(
 ///
 /// The [`Decision`] from the agent, or a [`pipe_client::PipeError`] if the
 /// request fails.
+#[allow(dead_code)]
 fn classify_handle(
     _handle_value: u64,
     _action: &str,
