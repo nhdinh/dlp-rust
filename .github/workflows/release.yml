@@ -1,0 +1,143 @@
+# Release workflow -- Authenticode signing
+#
+# Prerequisites:
+#   - AUTHENTICODE_PFX: Base64-encoded PFX file (repository secret)
+#   - AUTHENTICODE_PASSWORD: PFX password (repository secret)
+#
+# Trigger: push of a tag matching 'v*' (e.g., v0.10.0)
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-sign:
+    name: Build and Sign
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build workspace (release)
+        run: cargo build --workspace --release
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      - name: Build x64 hook DLL (release)
+        run: cargo build --release -p dlp-hook-dll --target x86_64-pc-windows-msvc
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      - name: Build x86 hook DLL (release)
+        run: cargo build --release -p dlp-hook-dll --target i686-pc-windows-msvc
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      - name: Decode signing certificate
+        run: |
+          $pfxBytes = [Convert]::FromBase64String('${{ secrets.AUTHENTICODE_PFX }}')
+          [IO.File]::WriteAllBytes('${{ runner.temp }}\cert.pfx', $pfxBytes)
+        shell: pwsh
+
+      - name: Sign binaries (DigiCert primary)
+        id: sign_primary
+        continue-on-error: true
+        run: |
+          $binaries = @(
+            'target\release\dlp-agent.exe',
+            'target\release\dlp-user-ui.exe',
+            'target\release\dlp-admin-cli.exe',
+            'target\release\dlp-server.exe',
+            'target\release\dlp-e2e.exe',
+            'target\x86_64-pc-windows-msvc\release\dlp_hook_dll.dll',
+            'target\i686-pc-windows-msvc\release\dlp_hook_dll.dll'
+          )
+          $failed = @()
+          foreach ($bin in $binaries) {
+            if (Test-Path $bin) {
+              signtool sign /f '${{ runner.temp }}\cert.pfx' /p '${{ secrets.AUTHENTICODE_PASSWORD }}' `
+                /tr http://timestamp.digicert.com /td sha256 /fd sha256 `
+                "$bin"
+              if ($LASTEXITCODE -ne 0) { $failed += $bin }
+            } else {
+              Write-Host "Warning: $bin not found"
+            }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Host "Primary signing failed for: $($failed -join ', ')"
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Sign binaries (Sectigo fallback)
+        if: steps.sign_primary.outcome == 'failure'
+        run: |
+          $binaries = @(
+            'target\release\dlp-agent.exe',
+            'target\release\dlp-user-ui.exe',
+            'target\release\dlp-admin-cli.exe',
+            'target\release\dlp-server.exe',
+            'target\release\dlp-e2e.exe',
+            'target\x86_64-pc-windows-msvc\release\dlp_hook_dll.dll',
+            'target\i686-pc-windows-msvc\release\dlp_hook_dll.dll'
+          )
+          foreach ($bin in $binaries) {
+            if (Test-Path $bin) {
+              # Only re-sign if primary failed (binary may already be signed)
+              # signtool verify /pa will catch any unsigned binaries in the next step
+              signtool sign /f '${{ runner.temp }}\cert.pfx' /p '${{ secrets.AUTHENTICODE_PASSWORD }}' `
+                /tr http://timestamp.sectigo.com /td sha256 /fd sha256 `
+                "$bin"
+              if ($LASTEXITCODE -ne 0) { exit 1 }
+            }
+          }
+        shell: pwsh
+
+      - name: Verify signatures
+        run: |
+          $binaries = @(
+            'target\release\dlp-agent.exe',
+            'target\release\dlp-user-ui.exe',
+            'target\release\dlp-admin-cli.exe',
+            'target\release\dlp-server.exe',
+            'target\release\dlp-e2e.exe',
+            'target\x86_64-pc-windows-msvc\release\dlp_hook_dll.dll',
+            'target\i686-pc-windows-msvc\release\dlp_hook_dll.dll'
+          )
+          foreach ($bin in $binaries) {
+            if (Test-Path $bin) {
+              signtool verify /pa "$bin"
+              if ($LASTEXITCODE -ne 0) { exit 1 }
+            }
+          }
+        shell: pwsh
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-binaries-${{ github.ref_name }}
+          path: |
+            target/release/dlp-agent.exe
+            target/release/dlp-user-ui.exe
+            target/release/dlp-admin-cli.exe
+            target/release/dlp-server.exe
+            target/release/dlp-e2e.exe
+            target/x86_64-pc-windows-msvc/release/dlp_hook_dll.dll
+            target/i686-pc-windows-msvc/release/dlp_hook_dll.dll
