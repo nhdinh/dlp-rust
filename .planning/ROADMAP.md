@@ -1,7 +1,7 @@
 ---
 milestone: v0.11.0
 milestone_name: Label Service + Workflow + Audit
-last_updated: 2026-05-13
+last_updated: 2026-05-15
 total_phases: 6
 v1_requirements: 26
 coverage: 26/26
@@ -66,7 +66,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [ ] **Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode** — safe-rollout mode every industry DLP requires before production deployment.
 - [ ] **Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)** — fold SEED-004 in: device enumeration, two new ABAC attributes, admin TUI extension.
 - [ ] **Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT** — the milestone ship gate; per-vendor allowlist procedures, hash publishing, and real-Windows UAT (folds in former HARD-05).
-- [ ] **Phase 58: Differentiators Bundle (Override + Diagnostic + Hash Evidence + Self-Health)** — cuttable to v0.10.1 if scope pressure hits; otherwise materially improves deployability.
+- [ ] **Phase 58: Differentiators Bundle (cuttable to v0.10.1 if scope pressure hits)** — cuttable as a unit to v0.10.1 if scope pressure hits; otherwise materially improves deployability.
 
 ---
 
@@ -82,7 +82,13 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   3. All v0.9.0 cloud-sync regression tests in `dlp-e2e/` pass green-bar against the unified DLL — there is no second `dlp-cloud-hook.dll` shipped or loaded.
   4. The CI matrix produces both `dlp_hook_dll.dll` (x64) and `dlp_hook_dll_x86.dll` (i686-pc-windows-msvc) on every release tag; the injector dispatches to the matching DLL based on `IsWow64Process`.
   5. Every shipped binary (`dlp-agent.exe`, `dlp-user-ui.exe`, `dlp-admin-cli.exe`, `dlp-server.exe`, both hook DLLs) is Authenticode-signed with RFC-3161 timestamping; `signtool verify /pa` returns clean.
-**Plans:** 1 plan (60-01)
+**Plans:** 5 plans (48-01 through 48-05)
+
+- [ ] `48-01-PLAN.md` — Crash Hardening: catch_unwind, SEH wrappers, fail-closed macro, thread-local buffers
+- [ ] `48-02-PLAN.md` — Expanded Hook Surface: 12 trampolines, PE utils with cfg(target_arch), HandleHookRequest
+- [ ] `48-03-PLAN.md` — Unified DLL Integration: HookDescriptor table, 32K cap, classify_handle, lib.rs refactor
+- [ ] `48-04-PLAN.md` — x86 Sibling + CI Matrix: service.rs x86 path, i686 target build, x86 offset verification
+- [ ] `48-05-PLAN.md` — Authenticode Signing Pipeline: release.yml with signtool, WiX installer update
 
 ### Phase 49: Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback
 **Goal**: Every non-allowlisted user-mode process — both already-running and newly-spawned — receives the unified hook DLL within 500 ms of process start, with documented coverage gaps for PPL and Secure Boot.
@@ -189,7 +195,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   1. `docs/operations/deployment-guide.md` exists and documents per-vendor AV/EDR allowlist procedures (with screenshots + console steps + IOC/hash exclusion examples) for Microsoft Defender for Endpoint, CrowdStrike Falcon, SentinelOne, Carbon Black, Sophos, and Trend Micro Apex One; an operator following the guide can deploy v0.10.0 alongside each EDR without quarantine.
   2. Every shipped binary has SHA-256 + SHA-512 hashes published in `RELEASE_NOTES.md`; the Microsoft binary submission flow (`wdsi/filesubmission`) is documented; a `signtool verify` command for Authenticode timestamp verification is included; reproducible by an operator from the documented commands alone.
   3. The deployment guide explicitly addresses Secure Boot reality (AppInit_DLLs is inert; `siem.appinit_dlls_disabled` will fire), the PPL coverage gap (lsass/MsMpEng/EDR-self) and the DACL-tripwire backstop, `SeSystemProfilePrivilege` preservation across upgrades, and the post-install reboot requirement for hook activation.
-  4. UAT executes on a real Windows 11 host with real OneDrive/Google Drive/Dropbox/Box clients, real printers, and real USB/SD/optical/virtual drives; every v0.9.0 cloud-sync regression test plus every v0.10.0 active-blocking scenario passes; the CRIT-04 benchmark gate (<= 25 % wall-clock overhead on `cargo build` + Office app launch) holds; results are captured in `.planning/milestones/v0.10.0-UAT.md`.
+  4. UAT executes on a real Windows 11 host with real OneDrive/Google Drive/Dropbox/Box clients, real printers, and real USB/SD/optical/virtual drives; every v0.9.0 cloud-sync regression test plus every v0.10.0 active-blocking scenario passes; the CRIT-04 benchmark gate (<= 25% wall-clock overhead on representative `cargo build` + `Office app launch` workloads) holds; results are captured in `.planning/milestones/v0.10.0-UAT.md`.
 **Plans:** 1 plan (60-01)
 
 ### Phase 58: Differentiators Bundle (Override + Diagnostic + Hash Evidence + Self-Health)
@@ -266,7 +272,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 | 27. USB Toast Notification | 2/2 | Reopened for review | - |
 | 28. Admin TUI Screens | 5/5 | Reopened for review | - |
 | 47. Secrets Encryption at Rest (prerequisite) | 1/1 | Reopened for review | - |
-| 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 0/0 | Not started | - |
+| 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Planned | - |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 0/0 | Not started | - |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 0/0 | Not started | - |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 0/0 | Not started | - |
@@ -322,4 +328,4 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 
 ---
 
-*Last updated: 2026-05-13 — All phases with plans (13–28, 47, 59–61) reopened for re-review. v0.10.0 phases 48–58 remain not started (no plans yet).*
+*Last updated: 2026-05-15 — Phase 48 planned (5 plans: 48-01 through 48-05).*
