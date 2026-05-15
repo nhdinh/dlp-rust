@@ -1,7 +1,7 @@
 ---
 phase: 48
-reviewers: [codex, claude]
-reviewed_at: 2026-05-15T00:00:00Z
+reviewers: [codex]
+reviewed_at: 2026-05-16T00:00:00Z
 plans_reviewed:
   - 48-01-PLAN.md
   - 48-02-PLAN.md
@@ -10,11 +10,13 @@ plans_reviewed:
   - 48-05-PLAN.md
 ---
 
-# Cross-AI Plan Review — Phase 48
+# Cross-AI Plan Review — Phase 48 (Cycle 2)
 
-> Reviewed by: Codex CLI (gpt-5.5), Claude CLI (claude-4-sonnet)
-> Review date: 2026-05-15
+> Reviewed by: Codex CLI (gpt-5.5)
+> Review date: 2026-05-16
 > Prompt: Plan-only review (no code execution)
+> Note: OpenCode unavailable (quota exceeded). Claude skipped (self).
+> Prior review: 2026-05-15 (Codex gpt-5.5 + Claude claude-4-sonnet) — see retrospective below.
 
 ---
 
@@ -22,68 +24,108 @@ plans_reviewed:
 
 ### Summary
 
-Phase 48 is directionally solid: it expands the hook DLL from a narrow path-based surface into a broader Windows file-operation interception layer while adding crash containment, reusable IPC buffers, x86 support, and release signing. The biggest architectural risks are not the individual hooks, but the ordering and interaction between them: eager DllMain patching, IPC during hooked file APIs, fail-open crash behavior, handle-based classification before the agent owns a reliable handle map, and architecture-specific parsing/struct assumptions. I would treat this as a high-risk phase unless the implementation is staged behind strong harness tests and runtime kill switches.
+Phase 48 is directionally strong: it targets the right blockers before universal injection, especially crash containment, dual-arch build readiness, and signing. The plans are mostly well sequenced: Wave 1 establishes guardrails and hook primitives, Wave 2 integrates and expands architecture support, Wave 3 packages release trust. The highest risks are semantic mismatches around "fail-closed" versus the locked decision to fail-open on crash, incomplete treatment of asynchronous APIs and handle-based operations, and relying on manual PE/NT structure parsing without a very explicit validation harness.
 
 ### Strengths
 
-- Clear wave structure: crash hardening and hook expansion come before unified refactor, x86, and signing.
-- Good recognition that hook code must not panic across FFI boundaries.
-- `guard_trampoline` plus fail-closed return helpers should reduce undefined behavior from Rust panics in trampolines.
-- Thread-local IPC buffer reuse is a good low-allocation optimization for hot hook paths.
-- Hook table refactor should reduce drift between install and uninstall logic.
-- Explicitly documenting `CopyFile2` as a limitation is better than pretending the surface is complete.
-- Including both Win32 and NT-layer APIs improves coverage against bypasses.
-- Authenticode verification as a release gate is the right packaging posture for Windows security tooling.
+- The phase scope is appropriately bounded. Universal injection, shared-memory cache, syscall trampolines, and ETW bypass detection are deferred.
+- The `HookDescriptor` table is a good unifying abstraction for init, unhook, logging, and future surface expansion.
+- Dual-arch support from the same crate is the right approach, especially with architecture-agnostic tests.
+- Crash hardening is treated as a first-class requirement, not bolted on after hook expansion.
+- Signing only on release tags is a sensible operational boundary.
+- Including `signtool verify /pa` as a blocking gate is important and correctly called out.
+- The 32K UTF-16 cap is a concrete protection against malformed or hostile wide strings.
+- Thread-local buffers help avoid per-call allocation in hot hook paths.
 
 ### Concerns
 
-- **HIGH: "Fail-open" crash protection conflicts with DLP enforcement goals.** The plan says layered crash protection is fail-open, while `fail_closed!` exists for deny returns. If a policy decision path panics or SEH faults, allowing the original operation can become a direct bypass. You need an explicit rule: crashes in classification, IPC serialization, or policy-deny paths should probably fail closed for write/delete/move operations, while crashes in non-sensitive telemetry paths may fail open.
+- **HIGH: Fail-closed terminology conflicts with fail-open crash behavior.**
+  The roadmap says "documented fail-closed returns," but D-05 and D-06 say exceptions route to the original function, meaning fail-open on crash. This needs precise taxonomy: policy deny should fail-closed; hook internal crash should fail-open.
 
-- **HIGH: Eager patching in `DllMain` is dangerous.** Loader lock makes many operations unsafe: loading libraries, resolving imports that may trigger loader work, heap activity in some contexts, synchronization, IPC, and anything that may call hooked APIs recursively. If `init()` patches from `DllMain`, the implementation must be extremely constrained or defer real initialization to a worker thread created safely after process attach.
+- **HIGH: `catch_unwind` does not protect against SEH by itself.**
+  Rust panics and Windows structured exceptions are different failure modes. The plan names both, but implementation details matter a lot, especially across FFI boundaries and patched stubs.
 
-- **HIGH: Hook recursion and reentrancy are not addressed.** `pipe_client.rs` IPC, bincode serialization, allocation, logging, and Windows named-pipe calls may themselves touch file APIs or NT APIs. Without a thread-local reentrancy guard, hooks can recursively classify their own IPC/logging activity and deadlock, overflow, or deny the agent channel.
+- **HIGH: Hooking async APIs is under-specified.**
+  `WriteFileEx`, `CopyFileExW`, and `CopyFile2` have callback/progress semantics and may involve overlapped I/O. A simple pre-call allow/deny model may not preserve expected behavior or may miss actual write completion semantics.
 
-- **HIGH: Handle-based classification depends on a future handle map.** Phase 48 includes `classify_handle`, but the agent-maintained handle-to-path map is deferred to Phase 49/50. That creates an integration gap: `WriteFile`, `NtWriteFile`, `SetFileInformationByHandle`, and similar hooks may have weak or unavailable policy context in this phase. The plan should define interim behavior precisely: allow unknown handles, deny unknown handles, query path locally, or send best-effort metadata.
+- **HIGH: Handle-based hooks returning ALLOW for unknown handles weakens Phase 48 coverage.**
+  This is probably acceptable as a phased limitation, but it means `WriteFile`, `NtWriteFile`, `SetFileInformationByHandle`, and `NtSetInformationFile` are not meaningfully enforceable unless the handle was previously mapped.
 
-- **HIGH: SEH in Rust is non-trivial.** A stub `seh_guard` may give false confidence. Rust `catch_unwind` does not catch access violations, illegal instructions, stack overflows, or most native faults. If SEH is required, define whether it uses `__try/__except` in C/C++ shim, vectored exception handling, or Windows-specific compiler support.
+- **MEDIUM: Manual PE parsing is risky without strong malformed-binary tests.**
+  Bounds like `MAX_IMPORT_DESCRIPTORS=512` help, but PE parsing must also validate RVA-to-section translation, integer overflow, descriptor termination, thunk bounds, ordinal imports, forwarded imports, and missing IAT cases.
 
-- **HIGH: Manual PE parsing is brittle.** Hardcoded `PE_MAGIC` and `DATA_DIRECTORY_OFFSET` values are easy to get subtly wrong across PE32/PE32+, malformed modules, bound imports, forwarded exports, ASLR, section alignment, and protected processes. Since this is security-sensitive hook installation code, malformed or unusual PE files should fail safely without corrupting process memory.
+- **MEDIUM: DllMain work may violate loader-lock constraints.**
+  Eager patching during `DLL_PROCESS_ATTACH` can be dangerous if it calls APIs that may load DLLs, allocate, lock, initialize tracing, or touch IPC. The plan should specify exactly what is safe inside DllMain.
 
-- **MEDIUM: `CopyFileExW` and `MoveFileExW` semantics need careful source/destination policy.** Copy and move operations can both read from one path and write/create/delete another. The plan should specify whether policy is evaluated on source, destination, or both, and how overwrite/replace semantics are handled.
+- **MEDIUM: Unhooking on `DLL_PROCESS_DETACH` can also be fragile.**
+  During process teardown, dependencies may already be unloaded or partially torn down. Unhook should be best-effort and avoid complex work.
 
-- **MEDIUM: `ReplaceFileW` has multi-path semantics.** It involves replaced file, replacement file, and optional backup file. Blocking based only on one path would leave bypasses.
+- **MEDIUM: Reentrancy behavior needs explicit deny/allow semantics.**
+  If a hook re-enters during IPC, logging, memory allocation, or path conversion, the guard must define whether it bypasses to original, denies, or suppresses classification.
 
-- **MEDIUM: `SetFileInformationByHandle` class filtering may be incomplete.** Classes `4, 6, 10` likely cover rename/disposition-style operations depending on enum mapping, but newer info classes such as `FileRenameInfoEx`, `FileDispositionInfoEx`, and related variants may matter on modern Windows. Numeric-only checks are fragile; use named constants and include versioned variants.
+- **MEDIUM: IPC latency in hot file APIs may be significant.**
+  Hooking `WriteFile` and `NtWriteFile` can put IPC on very hot paths. Even with thread-local buffers, synchronous pipe round trips can become a major performance bottleneck.
 
-- **MEDIUM: NT path extraction has edge cases.** `OBJECT_ATTRIBUTES` may be null, `ObjectName` may be relative to `RootDirectory`, strings may not be null-terminated, and NT paths can use device namespaces, volume GUIDs, short names, reparse points, symlinks, and case variation. A 32K cap is reasonable, but normalization assumptions should be explicit.
+- **MEDIUM: x86 NT structure offsets are brittle.**
+  Hardcoded offsets for `OBJECT_ATTRIBUTES` and `UNICODE_STRING` should be validated by compile-time layout tests or runtime sanity checks where possible.
 
-- **MEDIUM: x86 support increases ABI risk.** `OBJECT_ATTRIBUTES` and `UNICODE_STRING` layout offsets must be validated with compile-time size/layout assertions. Windows calling conventions and trampoline prolog lengths differ between x86 and x64; the hook engine must be proven on both.
+- **LOW: The plan lists 12 hooks inconsistently.**
+  The roadmap expansion list includes `CopyFile2`, but Plan 48-02's trampoline list omits `CopyFile2`. It says 12 trampolines but names 12 only if `CreateFileW` and `NtCreateFile` are included and `CopyFile2` is excluded. This needs reconciliation.
 
-- **MEDIUM: IPC schema with `action: String` is under-specified.** A stringly typed action field risks drift and parsing bugs. Use an enum with stable serialized discriminants. Include request versioning before this becomes a cross-process contract.
-
-- **MEDIUM: `handle_value: usize` across IPC is architecture-sensitive.** If a 32-bit hook DLL talks to a 64-bit service, `usize` serialization can become ambiguous unless the protocol fixes width, e.g. `u64`, and includes source process bitness.
-
-- **MEDIUM: Authenticode plan assumes secrets and tooling availability.** CI signing needs protected cert material, timestamp servers, fallback behavior, and a clear failure mode. "Fallback to Sectigo" should not silently sign with the wrong identity or weaken validation.
-
-- **LOW: `bincode::serialize_into` reuse is good, but buffer lifecycle needs bounds.** If a large request ever grows the thread-local buffer, it may retain that capacity forever in every hooked thread. Consider truncating or shrinking above a threshold.
-
-- **LOW: `CopyFile2` limitation should be enforced in tests/docs.** If it is a known bypass for this phase, it should appear in the risk register and test matrix as expected-not-covered.
+- **LOW: Signing test harness binaries is good, but local/dev unsigned behavior needs clarity.**
+  Developers should still be able to run unsigned debug builds, while release packaging must enforce signatures.
 
 ### Suggestions
 
-- Add a reentrancy guard before any IPC, logging, allocation-heavy path, or original-function fallback.
-- Define a per-hook failure policy matrix: classify crash, IPC timeout, serialization failure, unknown handle, malformed path, original function pointer missing.
-- Avoid doing heavy work under `DllMain`; use minimal attach logic and defer patching where possible.
-- Make hook decisions typed: replace `action: String` with an enum and add protocol versioning.
-- Use fixed-width IPC fields: `pid: u32`, `handle_value: u64`, `source_bitness: enum`.
-- Add exhaustive tests for multi-path APIs: `CopyFileExW`, `MoveFileExW`, `ReplaceFileW`, rename, delete-on-close, overwrite, and backup path cases.
-- Add architecture layout tests for x86/x64 structs and PE parsing constants.
-- Add fuzz or property tests for PE parsing and NT path extraction with malformed inputs.
-- Add recursion tests where IPC/logging causes file APIs to be invoked while inside a hook.
-- Add timeout behavior tests for agent unavailable, pipe broken, malformed response, and slow response.
-- Add a runtime kill switch or policy mode switch so a bad hook build can be disabled without uninstalling the agent.
-- Treat `SetFileInformationByHandle` by named `FILE_INFO_BY_HANDLE_CLASS` values, including modern `Ex` variants where available.
-- Make known limitations explicit in release notes: `CopyFile2`, memory-mapped writes if not covered, direct syscalls if applicable, raw disk/device writes, and untracked inherited/duplicated handles.
+- Define three explicit failure classes:
+  - Policy decision deny: fail-closed.
+  - IPC unavailable or classifier unavailable: choose and document fail-open/fail-closed per requirement.
+  - Hook crash or SEH/panic: fail-open to original function per D-05.
+
+- Add a hook behavior matrix for every API:
+  - Path source: direct path, NT path, handle map, source/destination pair.
+  - Enforced action: create, write, move, copy, delete, replace, metadata mutation.
+  - Unknown handle behavior.
+  - Deny return value and `GetLastError` / `NTSTATUS`.
+  - Async/overlapped behavior.
+  - Whether Phase 48 truly enforces or only observes.
+
+- Treat `CopyFile2` explicitly. If it has no reliable traditional IAT hook surface, either remove it from Phase 48 success criteria or document a supported interception strategy.
+
+- Keep DllMain minimal. Prefer DllMain to disable thread notifications and start a safe initialization path only if the required operations are loader-lock safe. If eager patching remains mandatory, document the forbidden operations inside that path.
+
+- Add focused tests for crash hardening:
+  - Panic inside classification.
+  - Simulated SEH/access violation inside guarded logic.
+  - Reentrant hook call.
+  - Malformed UTF-16 path.
+  - 32K+ path input.
+  - IPC unavailable.
+  - Agent timeout.
+  - Unknown handle.
+
+- Add PE parser tests using fixture DLLs:
+  - x86 and x64.
+  - No imports.
+  - Missing target import.
+  - Ordinal imports.
+  - Large import table.
+  - Malformed descriptors.
+  - Bound or delayed imports if applicable.
+
+- Require release verification to confirm both architecture DLLs are signed and packaged:
+  - `dlp_hook_dll.dll`
+  - `dlp_hook_dll_x86.dll`
+  - `dlp-e2e.exe`
+  - service/CLI/UI/server binaries as applicable.
+
+- Add performance acceptance criteria before universal injection:
+  - Maximum hook overhead for allow path.
+  - IPC timeout budget.
+  - Behavior under high-frequency `WriteFile`.
+  - Contention behavior across many threads.
+
+- Add explicit ABI and FFI safety review gates for trampoline signatures, calling conventions, stack cleanup on x86, and preservation of `LastError`.
 
 ### Risk Assessment: HIGH
 
@@ -91,150 +133,107 @@ The plan touches injected code, trampoline patching, Windows loader behavior, NT
 
 ---
 
-## Claude Review
+## Plan-by-Plan Assessment
 
-### Summary
+### Plan 48-01: Crash Hardening — Risk: MEDIUM-HIGH
+Foundational and easy to get subtly wrong. If implemented correctly, it substantially lowers Phase 49 risk; if not, it can destabilize every injected process.
 
-Phase 48 is an ambitious five-plan phase that expands the hook DLL from 2 to 12 IAT-patched functions, adds layered crash hardening (SEH + `catch_unwind`), refactors `lib.rs` around a `HookDescriptor` metadata table, produces an x86 sibling DLL via cross-compilation, and integrates an Authenticode signing pipeline. The plans are well-scoped per wave and follow a logical dependency chain (01/02 Wave 1 -> 03/04 Wave 2 -> 05 Wave 3). The research document is thorough, with clear locked decisions and documented limitations (CopyFile2, deferred handle tracker). However, several integration risks, unsafe-code gaps, and test coverage holes exist that could cause regressions or security issues if not addressed before execution.
+### Plan 48-02: Expanded Hook Surface — Risk: HIGH
+The surface area is large, and correctness depends on API-specific semantics. This is the riskiest plan in the phase.
 
-### Strengths
+### Plan 48-03: Unified DLL Integration — Risk: MEDIUM-HIGH
+The architecture is sound, but DllMain and NT path extraction are high-risk implementation zones.
 
-- **Clear wave separation and dependencies**: The wave structure (01/02 independent in Wave 1, 03/04 building on them in Wave 2, 05 last in Wave 3) is sound and minimizes merge conflicts.
-- **HookDescriptor metadata table**: Centralizing hook metadata in a `const` array eliminates per-function duplication in `init()` and `UnhookAll()`, making future expansion straightforward.
-- **Fail-open crash hardening philosophy**: Routing all exceptions to the original function is the correct choice for a DLL injected into arbitrary processes. No self-repair avoids infinite crash loops.
-- **Handle-based operations deferred correctly**: Sending `HandleHookRequest` with a raw handle value and delegating path resolution to the agent (Phase 49/50) keeps DLL complexity low — the right tradeoff for crash-sensitive code.
-- **Thread-local buffer for IPC**: Eliminating per-call allocations in the pipe client hot path is a meaningful performance win.
-- **Authenticode signing with fallback timestamp server**: DigiCert primary + Sectigo fallback mitigates the common CI failure mode of timestamp server downtime.
-- **CopyFile2 documented as known limitation**: Acknowledging the COM/IAT gap upfront prevents wasted effort and sets correct expectations.
-- **32K cap on wide-string scanning**: Prevents unbounded reads on malformed `PCWSTR` pointers, a real attack vector.
+### Plan 48-04: x86 Sibling + CI Matrix — Risk: MEDIUM
+The build work is straightforward; runtime correctness of x86 hooks is the main risk.
 
-### Concerns
-
-**HIGH: SEH guard is a documented stub (Plan 48-01)**
-The `seh_guard` function is explicitly called out as potentially returning `Ok(f())` with a doc-comment stub if `windows` crate SEH bindings are insufficient. SEH is the *outer* layer that catches access violations — the most common crash mode in unsafe pointer code. If SEH is a no-op, only Rust panics are caught; AVs in `pcwstr_to_string` or `extract_nt_path` will still abort the host process. This undermines the core CRIT-02 mitigation. **Recommendation**: Verify SEH bindings before Wave 1 execution, or add a small C-compiled shim as a hard dependency.
-
-**HIGH: `extract_nt_path` hardcodes x64 offsets in Plan 48-03; x86 fix is in Plan 48-04**
-Plan 48-03 writes `extract_nt_path` with `offset(0x10)` for `OBJECT_ATTRIBUTES` and `offset(0x08)` for `UNICODE_STRING` — these are x64-only values. Plan 48-04 adds `cfg(target_arch)` constants but only in the *verification* section (Task 3), not as a required code change in the plan body. If 48-03 is committed as-written, the x86 DLL will read wrong memory offsets, causing crashes in `HookNtCreateFile`, `HookNtOpenFile`, and `HookNtSetInformationFile`. **Recommendation**: Either make 48-03 add the `cfg` blocks directly, or make 48-04's offset fix a formal task with file modification.
-
-**HIGH: `find_iat_entry` has no bounds checking (Plan 48-02)**
-The PE parsing loop scans import descriptors with `desc = desc.offset(20)` and reads `name_rva` without verifying the descriptor pointer stays within the import section bounds. A malformed or adversarial PE could cause an out-of-bounds read. While the target is the host process's own module (generally trustworthy), this is still a robustness gap. **Recommendation**: Add a maximum iteration count or section-size check before the loop.
-
-**HIGH: No test coverage for actual DLL injection + hook firing (all plans)**
-The verification sections rely on `cargo test -p dlp-hook-dll` and `cargo test --workspace`, but the hook DLL's core behavior (patching IAT, trampolines intercepting calls, pipe round-trips) can only be validated by injecting into a real process. No e2e injection test exists. **Recommendation**: Add at minimum a test that calls `init()` + `UnhookAll()` on the current process and verifies IAT entries are patched/restored.
-
-**MEDIUM: `PIPE_BUFFER` reallocation defeats zero-allocation goal (Plan 48-01)**
-The thread-local buffer is initialized with `Vec::with_capacity(4096)`, but `bincode::serialize_into` on a `Vec` will reallocate if the serialized data exceeds capacity. For `HookRequest` with a long path (> ~4K), the buffer will grow on the first call and retain capacity, but the first call still allocates. More critically, `send_raw_request` (added in 48-03) returns `Vec<u8>` for the response, which is always a fresh allocation. **Recommendation**: Document that the buffer eliminates *steady-state* allocation, not *worst-case* first-call allocation. Consider capping path length earlier in the pipeline.
-
-**MEDIUM: `guard_trampoline` generic bounds may fail on trampolines returning `HANDLE`/`NTSTATUS` (Plan 48-01)**
-`guard_trampoline<T>` requires `T` to be passed through `catch_unwind`. Windows API types like `HANDLE` and `NTSTATUS` may not implement `UnwindSafe`. The plan uses `AssertUnwindSafe(f)`, but `T` itself must still be `'static` for `catch_unwind`. `BOOL`, `HANDLE`, and `NTSTATUS` are all `Copy` types so this should work, but the plan doesn't explicitly verify this. **Recommendation**: Add a compile-time test that `guard_trampoline` works with each return type.
-
-**MEDIUM: Handle-based hooks will silently allow everything until Phase 49/50 (Plan 48-03)**
-`classify_handle` sends `HandleHookRequest` to the agent, but the agent has no handle tracker. The plan states the agent will "return a default ALLOW decision for unknown handles." This means `WriteFile`, `WriteFileEx`, `SetFileInformationByHandle`, `NtWriteFile`, and `NtSetInformationFile` — 5 of the 12 hooks — will be no-ops from a DLP enforcement perspective until the handle tracker is built. This is a significant functional gap that should be flagged in the phase success criteria, not just as a "note."
-
-**MEDIUM: Authenticode signing workflow re-signs already-signed binaries on fallback (Plan 48-05)**
-The primary sign step has `continue-on-error: true`. If it fails on the *first* binary but succeeds on the rest, the fallback step (which runs if `steps.sign_primary.outcome == 'failure'`) will re-sign *all* binaries, including the ones already signed by the primary step. Double-signing is generally harmless but may confuse signature verification or timestamp chains. **Recommendation**: Split signing into per-binary steps, or track which binaries failed and only re-sign those.
-
-**MEDIUM: No `UnhookAll` cleanup on `DLL_PROCESS_DETACH` (Plan 48-03)**
-The `DllMain` calls `init()` on attach but there's no mention of calling `UnhookAll()` on `DLL_PROCESS_DETACH`. If the agent unloads the DLL (or the process exits cleanly), IAT entries remain patched. This can cause crashes if the DLL is unloaded but the IAT still points to its trampolines. **Recommendation**: Add `DLL_PROCESS_DETACH` handling to call `UnhookAll()`.
-
-**LOW: `dlp-e2e.exe` signing scope creep (Plan 48-05)**
-The plan signs `dlp-e2e.exe` "for QA team use" but this is a test harness, not a shipped binary. Including it in the signing pipeline increases CI time and certificate usage without customer-facing benefit. **Recommendation**: Either exclude it or document why QA needs signed test binaries (some EDRs block unsigned test runners).
-
-**LOW: `copy_from_slice` in `fail_closed!` uses `NTSTATUS(0xC0000022u32 as i32)` (Plan 48-01)**
-The cast `0xC0000022u32 as i32` produces `-1073741790` (i.e., `0xC0000022` sign-extended), which is correct for `NTSTATUS`. However, the `windows` crate's `NTSTATUS` type may have a different constructor. **Recommendation**: Verify the exact `NTSTATUS` constructor in the `windows` crate version used (0.62.2).
-
-**LOW: Plan 48-05 success criteria says "signs 6 binaries" but lists 7**
-The `must_haves` truths and the YAML both list 7 binaries (5 EXEs + 2 DLLs), but the success criteria says "signs 6 binaries." This is a documentation inconsistency.
-
-### Suggestions
-
-1. **Merge the x86 offset fix into Plan 48-03**: Don't leave x86 offsets broken between waves. Add `cfg(target_arch)` constants for `OBJECT_ATTRIBUTES_OBJECT_NAME_OFFSET` and `UNICODE_STRING_BUFFER_OFFSET` directly in 48-03's `extract_nt_path` task, then have 48-04 verify they work.
-
-2. **Add a bounds limit to `find_iat_entry`**: Cap the import descriptor scan at a reasonable maximum (e.g., 512 descriptors) or validate against the section size to prevent unbounded reads on malformed PEs.
-
-3. **Add `DLL_PROCESS_DETACH` cleanup**: In `lib.rs`, handle `DLL_PROCESS_DETACH` by calling `UnhookAll()` before returning, preventing dangling trampoline pointers.
-
-4. **Add an IAT patch/restore integration test**: In the `dlp-hook-dll` test module, call `init()` and `UnhookAll()` on the current process and verify that at least one known IAT entry (e.g., `CreateFileW`) is patched and then restored. This validates the core mechanism without requiring cross-process injection.
-
-5. **Clarify the functional gap in success criteria**: Add explicit text to Plan 48-03's success criteria stating that handle-based hooks (WriteFile, SetFileInformationByHandle, etc.) will return ALLOW until the agent-side handle tracker is implemented in a future phase.
-
-6. **Fix the signing fallback logic**: Track per-binary signing success/failure, or sign each binary in its own step, to avoid double-signing on timestamp fallback.
-
-7. **Add a compile-time guard for `guard_trampoline` return types**: A test that calls `guard_trampoline` with closures returning `BOOL`, `HANDLE`, and `NTSTATUS` to ensure `catch_unwind` accepts them.
-
-8. **Consider capping the serialized payload size**: Add a `debug_assert!` or runtime check that `bincode::serialize_into` into `PIPE_BUFFER` doesn't silently reallocate, or pre-allocate a larger buffer (e.g., 16K) to cover long-path scenarios.
-
-9. **Verify `windows` crate `NTSTATUS` constructor**: Replace `NTSTATUS(0xC0000022u32 as i32)` with whatever the `windows` 0.62.2 crate expects, possibly `NTSTATUS(-1073741790i32)` or a named constant.
-
-### Risk Assessment: MEDIUM-HIGH
-
-**Justification:** The phase touches highly unsafe code (raw pointers, `static mut`, FFI, IAT patching) running inside arbitrary target processes. While the architecture is sound, three HIGH-severity concerns elevate the risk:
-
-1. **SEH stub risk**: If SEH remains a no-op, access violations in path extraction will abort host processes — the exact failure mode (CRIT-02) this phase is meant to fix.
-2. **x86 offset timing**: Hardcoding x64 offsets in 48-03 and fixing them in 48-04 creates a window where x86 builds are fundamentally broken. Given that x86 correctness is a phase requirement (BLOCK-04), this is a structural issue in the plan ordering.
-3. **No real injection testing**: The verification is entirely unit-test based. IAT patching bugs (wrong offsets, bad PE parsing) only manifest at runtime in a real process.
-
-The MEDIUM concerns (buffer reallocation, silent ALLOW on handle ops, double-signing) are manageable but add operational friction. The LOW concerns are documentation/scope issues.
-
-**Overall recommendation**: Do not execute Wave 1 until the SEH approach is validated (or a C shim is committed as a fallback), and fold the x86 offset `cfg` blocks into Plan 48-03 rather than deferring them to 48-04. With those two changes, the risk drops to **MEDIUM**.
+### Plan 48-05: Authenticode Signing Pipeline — Risk: MEDIUM
+The plan is operationally sound but needs careful release artifact verification to avoid shipping unsigned or mismatched binaries.
 
 ---
 
 ## Consensus Summary
 
-### Agreed Strengths
+### Agreed Strengths (from this cycle)
 
-Both reviewers independently identified these strengths:
-
-- **Clear wave structure and logical dependencies** — Wave 1 (crash hardening + hook expansion) -> Wave 2 (unified refactor + x86) -> Wave 3 (signing) is sound.
-- **HookDescriptor metadata table** — Centralizing hook metadata in a const array is a good architectural choice that eliminates drift.
-- **Fail-open crash hardening** — Routing exceptions to the original function is correct for injected DLLs; no self-repair avoids infinite loops.
-- **Thread-local IPC buffer** — Zero-allocation hot path is a meaningful performance win.
-- **CopyFile2 documented as limitation** — Honest scoping prevents wasted effort.
-- **Authenticode with fallback timestamp** — DigiCert + Sectigo is the right CI resilience pattern.
+- Phase scope is appropriately bounded; deferred items (universal injection, cache, ETW) are correctly left out.
+- `HookDescriptor` table is a good unifying abstraction.
+- Dual-arch support from same crate is the right approach.
+- Crash hardening treated as first-class requirement.
+- Release-tag-only signing is sensible operational boundary.
+- `signtool verify /pa` blocking gate is correctly called out.
+- 32K UTF-16 cap is concrete protection.
+- Thread-local buffers avoid per-call allocation in hot paths.
 
 ### Agreed Concerns (Highest Priority)
 
-Both reviewers raised these HIGH-severity concerns:
-
-1. **SEH guard may be a no-op stub** — Codex: "SEH in Rust is non-trivial; stub gives false confidence." Claude: "SEH is the outer layer that catches AVs; if it's a no-op, only panics are caught." Both recommend verifying SEH bindings or adding a C shim before Wave 1 execution.
-
-2. **x86 offsets hardcoded in Plan 48-03, fixed in 48-04** — Codex: "x86 support increases ABI risk." Claude: "If 48-03 is committed as-written, the x86 DLL will read wrong memory offsets." Both recommend folding `cfg(target_arch)` blocks into 48-03.
-
-3. **Handle-based hooks are non-functional until Phase 49/50** — Codex: "Handle-based classification depends on a future handle map." Claude: "5 of the 12 hooks will be no-ops from a DLP enforcement perspective." Both recommend documenting this gap explicitly in success criteria.
-
-4. **Eager DllMain patching is dangerous** — Codex specifically flagged this as HIGH: "Loader lock makes many operations unsafe." This was not raised by Claude but is a valid concern.
-
-5. **Hook recursion/reentrancy not addressed** — Codex HIGH concern: "Without a thread-local reentrancy guard, hooks can recursively classify their own IPC/logging activity." This was not raised by Claude but is a valid concern.
-
-6. **Manual PE parsing is brittle** — Codex HIGH concern about hardcoded constants and malformed PEs. Claude raised a related MEDIUM concern about bounds checking in `find_iat_entry`.
+1. **HIGH: Fail-closed terminology conflicts with fail-open crash behavior.** Policy deny = fail-closed; hook crash = fail-open. Need explicit taxonomy.
+2. **HIGH: `catch_unwind` does not protect against SEH by itself.** Rust panics and Windows SEH are different failure modes; implementation details matter across FFI.
+3. **HIGH: Hooking async APIs is under-specified.** `WriteFileEx`, `CopyFileExW` have callback/progress semantics; simple pre-call allow/deny may miss completion semantics.
+4. **HIGH: Handle-based hooks returning ALLOW for unknown handles weakens coverage.** 5 of 12 hooks are non-functional until Phase 49/50 handle tracker.
+5. **MEDIUM: Manual PE parsing is risky without strong malformed-binary tests.** MAX_IMPORT_DESCRIPTORS=512 helps but RVA validation, ordinal imports, forwarded imports need coverage.
+6. **MEDIUM: DllMain eager patching may violate loader-lock constraints.** Need explicit list of safe operations inside DllMain.
+7. **MEDIUM: Unhooking on DLL_PROCESS_DETACH can be fragile.** Dependencies may be partially torn down during teardown.
+8. **MEDIUM: Reentrancy behavior needs explicit deny/allow semantics.** Guard must define whether reentrant call bypasses to original, denies, or suppresses.
+9. **MEDIUM: IPC latency in hot file APIs may be significant.** Synchronous pipe round trips on WriteFile/NtWriteFile hot paths are a performance concern.
+10. **MEDIUM: x86 NT structure offsets are brittle.** Need compile-time layout tests or runtime sanity checks.
 
 ### Divergent Views
 
-- **Fail-open vs fail-closed on crash**: Codex raised this as HIGH — "fail-open crash protection conflicts with DLP enforcement goals" — suggesting crashes in write/delete paths should fail closed. Claude did not raise this, treating fail-open as the correct choice for injected DLLs. This is a fundamental policy decision worth investigating: the user's CONTEXT.md explicitly chose fail-open (D-06), so Codex's concern may warrant revisiting that decision rather than changing the plan.
+- **Fail-open vs fail-closed on crash**: Codex (this cycle) and prior review both flagged this as HIGH. The user's CONTEXT.md explicitly chose fail-open (D-06). This is a fundamental policy decision that may warrant revisiting rather than changing the plan.
+- **Risk level**: Codex rated HIGH (this cycle); prior Claude review rated MEDIUM-HIGH. The difference is that Codex sees additional structural risks (async APIs, DllMain loader lock, PE parsing) that keep it HIGH even with fixes.
+- **CopyFile2 scope**: The roadmap says 11 functions plus CopyFile2 (indirect), but the plan says 12 trampolines excluding CopyFile2. This inconsistency needs reconciliation.
 
-- **Risk level**: Codex rated HIGH; Claude rated MEDIUM-HIGH. The difference is that Claude believes fixing the SEH and x86 offset issues would drop risk to MEDIUM, while Codex sees additional structural risks (recursion, DllMain, PE parsing) that keep it HIGH even with fixes.
+---
 
-- **Signing scope**: Claude flagged `dlp-e2e.exe` signing as LOW scope creep; Codex did not mention it.
+## Prior Review Retrospective (Cycle 1, 2026-05-15)
+
+The first cross-AI review (Codex gpt-5.5 + Claude claude-4-sonnet) identified 6 HIGH-severity concerns. The plans have since been updated to address most of them:
+
+| Prior Concern | Status in Current Plans | Resolution |
+|---------------|------------------------|------------|
+| SEH guard may be no-op stub | **Addressed** — Plan 48-01 now has a BLOCKING GATE: build fails if no working SEH is available (no stub fallback) | FULLY RESOLVED |
+| x86 offsets hardcoded in 48-03, fixed in 48-04 | **Addressed** — Plan 48-03 now includes cfg(target_arch) for extract_nt_path offsets directly | FULLY RESOLVED |
+| Hook recursion/reentrancy not addressed | **Addressed** — Plan 48-01 adds with_reentrancy_guard (thread-local Cell<bool>) | FULLY RESOLVED |
+| find_iat_entry has no bounds checking | **Addressed** — Plan 48-02 adds MAX_IMPORT_DESCRIPTORS=512 | FULLY RESOLVED |
+| No UnhookAll on DLL_PROCESS_DETACH | **Addressed** — Plan 48-03 explicitly calls UnhookAll() on detach | FULLY RESOLVED |
+| No test coverage for actual DLL injection | **Partially addressed** — Plan 48-03 adds IAT patch/restore integration test in current process | PARTIALLY RESOLVED |
+| Handle-based hooks non-functional until Phase 49/50 | **Documented** — Plan 48-03 explicitly notes the gap and explains why it's acceptable | PARTIALLY RESOLVED |
+| Double-signing on timestamp fallback | **Addressed** — Plan 48-05 adds per-binary failure tracking | FULLY RESOLVED |
+| action: String in IPC schema | **Not addressed** — Still String, not enum | UNRESOLVED |
+| dlp-e2e.exe signing scope creep | **Not addressed** — Still in signing list | UNRESOLVED |
+
+### Cycle 1 Action Items — Status
+
+| Priority | Item | Source | Status |
+|----------|------|--------|--------|
+| P0 | Verify SEH bindings or commit C shim fallback before Wave 1 | Both (HIGH) | **RESOLVED** — Blocking gate added |
+| P0 | Add cfg(target_arch) for x86 offsets directly in Plan 48-03 | Both (HIGH) | **RESOLVED** — Added to 48-03 |
+| P1 | Add reentrancy guard to prevent hook recursion | Codex (HIGH) | **RESOLVED** — with_reentrancy_guard added |
+| P1 | Add bounds checking to find_iat_entry PE parsing loop | Both (HIGH/MEDIUM) | **RESOLVED** — MAX_IMPORT_DESCRIPTORS=512 |
+| P1 | Document handle-based hook functional gap in success criteria | Both (HIGH/MEDIUM) | **RESOLVED** — Documented in 48-03 |
+| P1 | Add DLL_PROCESS_DETACH cleanup calling UnhookAll() | Claude (MEDIUM) | **RESOLVED** — Added to 48-03 |
+| P2 | Add IAT patch/restore integration test in current process | Claude (HIGH) | **PARTIALLY RESOLVED** — Test added in 48-03 |
+| P2 | Replace action: String with typed enum in IPC schema | Codex (MEDIUM) | **UNRESOLVED** — Still String |
+| P2 | Fix signing fallback to avoid double-signing | Claude (MEDIUM) | **RESOLVED** — Per-binary tracking added |
+| P2 | Use u64 for handle_value in IPC to avoid architecture ambiguity | Codex (MEDIUM) | **RESOLVED** — handle_value: u64 in HandleHookRequest |
 
 ---
 
 ## Action Items for Planner
 
-| Priority | Item | Source |
-|----------|------|--------|
-| P0 | Verify SEH bindings or commit C shim fallback before Wave 1 | Both (HIGH) |
-| P0 | Add `cfg(target_arch)` for x86 offsets directly in Plan 48-03 | Both (HIGH) |
-| P1 | Add reentrancy guard to prevent hook recursion | Codex (HIGH) |
-| P1 | Add bounds checking to `find_iat_entry` PE parsing loop | Both (HIGH/MEDIUM) |
-| P1 | Document handle-based hook functional gap in success criteria | Both (HIGH/MEDIUM) |
-| P1 | Add `DLL_PROCESS_DETACH` cleanup calling `UnhookAll()` | Claude (MEDIUM) |
-| P2 | Add IAT patch/restore integration test in current process | Claude (HIGH) |
-| P2 | Replace `action: String` with typed enum in IPC schema | Codex (MEDIUM) |
-| P2 | Fix signing fallback to avoid double-signing | Claude (MEDIUM) |
-| P2 | Use `u64` for `handle_value` in IPC to avoid architecture ambiguity | Codex (MEDIUM) |
-| P3 | Fix success criteria count (7 binaries, not 6) | Claude (LOW) |
-| P3 | Verify `NTSTATUS` constructor in windows 0.62.2 | Claude (LOW) |
+| Priority | Item | Source | Cycle 1 Status |
+|----------|------|--------|----------------|
+| P0 | Define explicit failure taxonomy: policy deny = fail-closed, hook crash = fail-open, IPC unavailable = document choice | Codex (Cycle 2, HIGH) | New |
+| P0 | Reconcile CopyFile2 scope: remove from success criteria or document interception strategy | Codex (Cycle 2, HIGH) | New |
+| P1 | Document safe DllMain operations list and loader-lock constraints | Codex (Cycle 2, MEDIUM) | New |
+| P1 | Add explicit reentrancy fallback semantics (call original, not deny) | Codex (Cycle 2, MEDIUM) | New |
+| P1 | Add PE parser malformed-binary tests (ordinal imports, forwarded imports, missing IAT) | Codex (Cycle 2, MEDIUM) | New |
+| P1 | Add performance acceptance criteria for hot-path IPC latency | Codex (Cycle 2, MEDIUM) | New |
+| P2 | Replace action: String with typed enum in IPC schema | Codex (Cycle 1, MEDIUM) | **UNRESOLVED** |
+| P2 | Add compile-time layout tests for x86/x64 OBJECT_ATTRIBUTES/UNICODE_STRING offsets | Codex (Cycle 2, MEDIUM) | New |
+| P2 | Add async API behavior matrix (WriteFileEx, CopyFileExW overlapped semantics) | Codex (Cycle 2, HIGH) | New |
+| P3 | Clarify local/dev unsigned build behavior vs release signing | Codex (Cycle 2, LOW) | New |
 
 ---
 
