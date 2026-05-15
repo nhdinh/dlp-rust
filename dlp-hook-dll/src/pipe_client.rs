@@ -24,9 +24,6 @@ thread_local! {
     pub static PIPE_BUFFER: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(4096));
 }
 
-/// Default pipe name used by the hook DLL.
-pub const DEFAULT_PIPE_NAME: &str = r"\\.\pipe\DlpHookPipe";
-
 /// Errors that can occur during pipe communication.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PipeError {
@@ -103,6 +100,35 @@ pub fn send_request(
             Err(_) => Err(PipeError::Malformed),
         }
     })
+}
+
+/// Sends raw bytes over the pipe and returns the raw response bytes.
+///
+/// This is used for handle-based classification where the request type
+/// is [`HandleHookRequest`] rather than [`HookRequest`].
+pub fn send_raw_request(
+    pipe_name: &str,
+    payload: &[u8],
+    timeout_ms: u32,
+) -> Result<Vec<u8>, PipeError> {
+    let pipe = connect_pipe(pipe_name, timeout_ms)?;
+    unsafe {
+        let mode = PIPE_READMODE_MESSAGE;
+        let _ = SetNamedPipeHandleState(pipe, Some(&mode), None, None);
+    }
+    if let Err(e) = write_frame(pipe, payload) {
+        let _ = unsafe { CloseHandle(pipe) };
+        return Err(e);
+    }
+    let frame = match read_frame(pipe, timeout_ms) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = unsafe { CloseHandle(pipe) };
+            return Err(e);
+        }
+    };
+    let _ = unsafe { CloseHandle(pipe) };
+    Ok(frame)
 }
 
 /// Connects to a named pipe, retrying up to `timeout_ms`.

@@ -1305,22 +1305,21 @@ mod tests {
         // This test is a compile-time check: if any trampoline is missing
         // #[unsafe(no_mangle)], the symbol won't be exported and this test
         // would fail to link (but we verify by function pointer assignment).
-        let _trampolines: [
-            unsafe extern "system" fn();
-            12,
-        ] = [
-            std::mem::transmute(HookCreateFileW as *const ()),
-            std::mem::transmute(HookNtCreateFile as *const ()),
-            std::mem::transmute(HookWriteFile as *const ()),
-            std::mem::transmute(HookWriteFileEx as *const ()),
-            std::mem::transmute(HookMoveFileExW as *const ()),
-            std::mem::transmute(HookCopyFileExW as *const ()),
-            std::mem::transmute(HookDeleteFileW as *const ()),
-            std::mem::transmute(HookReplaceFileW as *const ()),
-            std::mem::transmute(HookSetFileInformationByHandle as *const ()),
-            std::mem::transmute(HookNtOpenFile as *const ()),
-            std::mem::transmute(HookNtWriteFile as *const ()),
-            std::mem::transmute(HookNtSetInformationFile as *const ()),
-        ];
+        let _trampolines: [unsafe extern "system" fn(); 12] = unsafe {
+            [
+                std::mem::transmute(HookCreateFileW as *const ()),
+                std::mem::transmute(HookNtCreateFile as *const ()),
+                std::mem::transmute(HookWriteFile as *const ()),
+                std::mem::transmute(HookWriteFileEx as *const ()),
+                std::mem::transmute(HookMoveFileExW as *const ()),
+                std::mem::transmute(HookCopyFileExW as *const ()),
+                std::mem::transmute(HookDeleteFileW as *const ()),
+                std::mem::transmute(HookReplaceFileW as *const ()),
+                std::mem::transmute(HookSetFileInformationByHandle as *const ()),
+                std::mem::transmute(HookNtOpenFile as *const ()),
+                std::mem::transmute(HookNtWriteFile as *const ()),
+                std::mem::transmute(HookNtSetInformationFile as *const ()),
+            ]
+        };
     }
 }
