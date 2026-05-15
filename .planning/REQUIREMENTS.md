@@ -6,16 +6,16 @@ Goal: convert general file I/O from passive audit-trail-after-the-fact to active
 
 ### Universal hook DLL + expanded surface (BLOCK)
 
-- [ ] **BLOCK-01** — Hook DLL crash-hardened: `std::panic::catch_unwind` + SEH `__try/__except` wrappers in every patched stub; 32K-char cap on wide-string conversion; pipe buffers pre-allocated in `init()`. Mitigates CRIT-02 (host-process abort).
-- [ ] **BLOCK-02** — Expanded IAT hook surface: `WriteFile`, `WriteFileEx`, `MoveFileExW`, `CopyFileExW`, `CopyFile2`, `DeleteFileW`, `ReplaceFileW`, `SetFileInformationByHandle`, `NtOpenFile`, `NtWriteFile`, `NtSetInformationFile`. In addition to v0.9.0's `CreateFileW`/`CreateFileA`/`CreateFile2`/`NtCreateFile`. Each with documented fail-closed return value (BOOL(0)/INVALID_HANDLE_VALUE/NTSTATUS).
-- [ ] **BLOCK-03** — Unified single hook DLL replaces v0.9.0 cloud-sync DLL (no parallel DLLs sharing target processes). All v0.9.0 cloud-sync regression tests in `dlp-e2e/` pass green-bar.
-- [ ] **BLOCK-04** — x86 sibling hook DLL built from same source via `i686-pc-windows-msvc` target; CI matrix builds both architectures; injector dispatches to the matching DLL based on `IsWow64Process`.
+- [x] **BLOCK-01** — Hook DLL crash-hardened: `std::panic::catch_unwind` + SEH `__try/__except` wrappers in every patched stub; 32K-char cap on wide-string conversion; pipe buffers pre-allocated in `init()`. Mitigates CRIT-02 (host-process abort). *(Completed in Phase 48)*
+- [x] **BLOCK-02** — Expanded IAT hook surface: `WriteFile`, `WriteFileEx`, `MoveFileExW`, `CopyFileExW`, `CopyFile2` *(indirect via `NtCreateFile`/`NtWriteFile` — COM-based, no IAT entry)*, `DeleteFileW`, `ReplaceFileW`, `SetFileInformationByHandle`, `NtOpenFile`, `NtWriteFile`, `NtSetInformationFile`. In addition to v0.9.0's `CreateFileW`/`CreateFileA`/`CreateFile2`/`NtCreateFile`. Each with documented fail-closed return value (BOOL(0)/INVALID_HANDLE_VALUE/NTSTATUS). *(Completed in Phase 48)*
+- [x] **BLOCK-03** — Unified single hook DLL replaces v0.9.0 cloud-sync DLL (no parallel DLLs sharing target processes). All v0.9.0 cloud-sync regression tests in `dlp-e2e/` pass green-bar. *(Completed in Phase 48)*
+- [x] **BLOCK-04** — x86 sibling hook DLL built from same source via `i686-pc-windows-msvc` target; CI matrix builds both architectures; injector dispatches to the matching DLL based on `IsWow64Process`. *(Completed in Phase 48)*
 - [ ] **BLOCK-05** — Universal injection: `process_watcher.rs` subscribes to ETW `Microsoft-Windows-Kernel-Process` Event ID 1 (primary, sub-millisecond latency); WMI `Win32_ProcessStartTrace` as backstop; `universal_injector.rs` calls `CreateRemoteThread + LoadLibraryW` into every non-allowlisted PID; startup `EnumProcesses` sweep for already-running processes.
 - [ ] **BLOCK-06** — Per-process allowlist with categories: self (DLP binaries), AV/EDR (signer-cert-subject match for top 10 vendors, operator-extendable), system-critical (PIDs 0/4, csrss/smss/wininit/services/lsass/fontdrvhost/dwm), Protected Process Light (detected via `GetProcessMitigationPolicy`), WoW64-dispatched (routed to x86 DLL).
 - [ ] **BLOCK-07** — AppInit_DLLs tertiary fallback registered at install time (`HKLM\...\AppInit_DLLs` + `LoadAppInit_DLLs=1` + `RequireSignedAppInit_DLLs=1`); agent emits `siem.appinit_dlls_disabled` audit event at boot when Secure Boot is detected (CRIT-01); deployment guide flags AppInit as inert under Secure Boot.
 - [ ] **BLOCK-08** — ntdll syscall-stub Detours-style 5-byte JMP trampolines on `NtCreateFile`/`NtOpenFile`/`NtWriteFile`/`NtSetInformationFile`; suspend-all-other-threads protocol with RIP boundary check; atomic 8-byte aligned write; `FlushInstructionCache` after patch; gated behind `enable_ntdll_patching` policy flag (default off, per-customer rollout).
 - [ ] **BLOCK-09** — EDR-coexistence detection: detect-before-patch (`stub[0] == 0xE9` → walk JMP target, if it lands in known-EDR module range → skip and chain through EDR); 30-second re-verification thread raises `BypassAlert(reason=HookOverwritten)` on tampering; never restore "clean" ntdll bytes from disk (DoppelGate evasion-malware classifier risk).
-- [ ] **BLOCK-10** — Authenticode signing pipeline: every shipped binary (`dlp-agent.exe`, `dlp-user-ui.exe`, `dlp-admin-cli.exe`, `dlp-server.exe`, `dlp_hook_dll.dll`, `dlp_hook_dll_x86.dll`) signed with regular Authenticode cert (NOT EV); RFC-3161 timestamping; signing integrated into CI release builds.
+- [x] **BLOCK-10** — Authenticode signing pipeline: every shipped binary (`dlp-agent.exe`, `dlp-user-ui.exe`, `dlp-admin-cli.exe`, `dlp-server.exe`, `dlp_hook_dll.dll`, `dlp_hook_dll_x86.dll`) signed with regular Authenticode cert (NOT EV); RFC-3161 timestamping; signing integrated into CI release builds. *(Completed in Phase 48)*
 
 ### Classification cache + fail semantics (CACHE / FAIL)
 
@@ -264,16 +264,16 @@ The v1.0.0 milestone was abandoned in favor of v0.10.0 Real-Time File Access Pre
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | HARD-01 | 47 | Validated (shipped 2026-05-11) |
-| BLOCK-01 | 48 | Active |
-| BLOCK-02 | 48 | Active |
-| BLOCK-03 | 48 | Active |
-| BLOCK-04 | 48 | Active |
+| BLOCK-01 | 48 | Validated (2026-05-16) |
+| BLOCK-02 | 48 | Validated (2026-05-16) |
+| BLOCK-03 | 48 | Validated (2026-05-16) |
+| BLOCK-04 | 48 | Validated (2026-05-16) |
 | BLOCK-05 | 49 | Active |
 | BLOCK-06 | 49 | Active |
 | BLOCK-07 | 49 | Active |
 | BLOCK-08 | 51 | Active |
 | BLOCK-09 | 51 | Active |
-| BLOCK-10 | 48 | Active |
+| BLOCK-10 | 48 | Validated (2026-05-16) |
 | CACHE-01 | 50 | Active |
 | CACHE-02 | 50 | Active |
 | CACHE-03 | 50 | Active |

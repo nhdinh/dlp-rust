@@ -56,7 +56,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 
 ## Phases (v0.10.0 active phases)
 
-- [ ] **Phase 48: Hook DLL Surface Expansion + Crash Hardening + Build Harness** — extend and harden the v0.9.0 hook into a single unified DLL with the full file-I/O surface, x86 sibling, and Authenticode signing pipeline.
+- [x] **Phase 48: Hook DLL Surface Expansion + Crash Hardening + Build Harness** — extend and harden the v0.9.0 hook into a single unified DLL with the full file-I/O surface, x86 sibling, and Authenticode signing pipeline. (completed 2026-05-15)
 - [ ] **Phase 49: Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback** — drive the wider hook surface into every non-allowlisted user process via ETW Kernel-Process and `CreateRemoteThread`.
 - [ ] **Phase 50: Shared-Memory Classification Cache + Fail-Mode State Machine** — give the hook DLL a survivable sub-50µs hot path and a tier-gated asymmetric fail policy.
 - [ ] **Phase 51: ntdll Syscall-Stub Trampolines + EDR Coexistence** — close the direct-syscall bypass behind a default-off feature flag with detect-before-patch EDR safety.
@@ -82,7 +82,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   3. All v0.9.0 cloud-sync regression tests in `dlp-e2e/` pass green-bar against the unified DLL — there is no second `dlp-cloud-hook.dll` shipped or loaded.
   4. The CI matrix produces both `dlp_hook_dll.dll` (x64) and `dlp_hook_dll_x86.dll` (i686-pc-windows-msvc) on every release tag; the injector dispatches to the matching DLL based on `IsWow64Process`.
   5. Every shipped binary (`dlp-agent.exe`, `dlp-user-ui.exe`, `dlp-admin-cli.exe`, `dlp-server.exe`, both hook DLLs) is Authenticode-signed with RFC-3161 timestamping; `signtool verify /pa` returns clean.
-**Plans:** 5 plans (48-01 through 48-05)
+**Plans:** 5/5 plans complete
 
 - [ ] `48-01-PLAN.md` — Crash Hardening: catch_unwind, SEH wrappers, fail-closed macro, thread-local buffers
 - [ ] `48-02-PLAN.md` — Expanded Hook Surface: 12 trampolines, PE utils with cfg(target_arch), HandleHookRequest
@@ -272,7 +272,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 | 27. USB Toast Notification | 2/2 | Reopened for review | - |
 | 28. Admin TUI Screens | 5/5 | Reopened for review | - |
 | 47. Secrets Encryption at Rest (prerequisite) | 1/1 | Reopened for review | - |
-| 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Planned | - |
+| 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-15 |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 0/0 | Not started | - |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 0/0 | Not started | - |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 0/0 | Not started | - |
