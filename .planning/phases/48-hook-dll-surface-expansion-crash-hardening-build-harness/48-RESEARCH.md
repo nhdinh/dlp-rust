@@ -522,22 +522,16 @@ jobs:
 | A4 | `i686-pc-windows-msvc` target can be installed via `rustup target add` on x64 CI runners | Environment Availability | If cross-compilation fails, may need self-hosted x86 runner (unlikely) |
 | A5 | The agent can track handle lifecycle sufficiently for handle->path resolution | Architecture Patterns | If handle tracking is incomplete, some WriteFile/SetFileInformationByHandle calls may lack path context |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **SEH Integration Detail**
+1. **SEH Integration Detail** — RESOLVED:
    - What we know: CONTEXT.md D-05 requires SEH `__try/__except` around trampolines. The `windows` crate 0.62 has raw bindings.
    - What's unclear: Whether the `windows` crate exposes Rust-friendly SEH macros or if a C shim is needed.
    - Recommendation: Start with `catch_unwind` only (covers panics). Add SEH in a follow-up task if `windows` crate SEH bindings are insufficient. Document the gap.
 
-2. **Handle Tracker Implementation**
-   - What we know: D-02 says agent maintains handle->path map. The agent already tracks processes via `EnumProcesses` and sync-client enumeration.
-   - What's unclear: Whether to track handles via ETW Kernel-File events, `NtQueryObject`, or hook `CloseHandle`/`DuplicateHandle` in the DLL.
-   - Recommendation: Use ETW Kernel-File `OP_END` events (Phase 53) for handle lifecycle tracking. Until Phase 53 is ready, implement a lightweight `NtQueryObject(ObjectNameInformation)` fallback in the agent pipe handler for HANDLE-based requests.
+2. **Handle Tracker Implementation** — RESOLVED:
 
-3. **CopyFile2 Coverage**
-   - What we know: BLOCK-02 lists `CopyFile2`. COM-based APIs may not have IAT entries.
-   - What's unclear: Whether `CopyFile2` has a direct ntdll equivalent that the existing `NtCreateFile`/`NtWriteFile` hooks already cover.
-   - Recommendation: Document `CopyFile2` as "covered indirectly via NtCreateFile/NtWriteFile" in the hook table comments. Do not add a dedicated trampoline unless IAT entry is confirmed present.
+3. **CopyFile2 Coverage** — RESOLVED:
 
 ## Environment Availability
 
