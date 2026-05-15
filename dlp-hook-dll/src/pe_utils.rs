@@ -4,6 +4,8 @@
 //! All parsing functions include bounds limits to prevent unbounded reads on
 //! malformed PE files.
 
+#![allow(dead_code)]
+
 use windows::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
 
 // Architecture-specific constants ------------------------------------------------
