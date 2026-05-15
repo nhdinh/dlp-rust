@@ -187,80 +187,83 @@ impl OfflineManager {
             // All SQLite operations run inside spawn_blocking because
             // rusqlite::Connection is not Send.
             if server_connected && crate::offline_audit_queue::try_acquire_drain_lock() {
-                    let drain_result = tokio::task::spawn_blocking(|| {
-                        let Some(mutex) = crate::service::agent_db() else {
-                            return Ok(Vec::new());
-                        };
-                        let Ok(conn) = mutex.lock() else {
-                            return Err("failed to lock agent DB".to_string());
-                        };
-                        match crate::offline_audit_queue::count(&conn) {
-                            Ok(0) => Ok(Vec::new()),
-                            Ok(n) if n > 0 => {
-                                match crate::offline_audit_queue::drain(
-                                    &conn,
-                                    crate::offline_audit_queue::DEFAULT_BATCH_SIZE,
-                                ) {
-                                    Ok(events) => Ok(events),
-                                    Err(e) => Err(format!("drain failed: {e}")),
-                                }
+                let drain_result = tokio::task::spawn_blocking(|| {
+                    let Some(mutex) = crate::service::agent_db() else {
+                        return Ok(Vec::new());
+                    };
+                    let Ok(conn) = mutex.lock() else {
+                        return Err("failed to lock agent DB".to_string());
+                    };
+                    match crate::offline_audit_queue::count(&conn) {
+                        Ok(0) => Ok(Vec::new()),
+                        Ok(n) if n > 0 => {
+                            match crate::offline_audit_queue::drain(
+                                &conn,
+                                crate::offline_audit_queue::DEFAULT_BATCH_SIZE,
+                            ) {
+                                Ok(events) => Ok(events),
+                                Err(e) => Err(format!("drain failed: {e}")),
                             }
-                            _ => Ok(Vec::new()),
                         }
-                    })
-                    .await;
+                        _ => Ok(Vec::new()),
+                    }
+                })
+                .await;
 
-                    match drain_result {
-                        Ok(Ok(events)) if !events.is_empty() => {
-                            let ids: Vec<i64> = events.iter().map(|(id, _)| *id).collect();
-                            let json_events: Vec<String> =
-                                events.into_iter().map(|(_, json)| json).collect();
-                            // Forward to server via the existing HTTP client.
-                            if let Some(ref sc) = self.server_client {
-                                match sc.send_audit_events_json(&json_events).await {
-                                    Ok(()) => {
-                                        // Delete successfully forwarded events.
-                                        let ids_clone = ids.clone();
-                                        let delete_result = tokio::task::spawn_blocking(move || {
-                                            let Some(mutex) = crate::service::agent_db() else {
-                                                return Err("agent DB not available".to_string());
-                                            };
-                                            let Ok(conn) = mutex.lock() else {
-                                                return Err("failed to lock agent DB".to_string());
-                                            };
-                                            crate::offline_audit_queue::delete(&conn, &ids_clone)
-                                                .map_err(|e| format!("delete failed: {e}"))
-                                        })
-                                        .await;
-                                        match delete_result {
-                                            Ok(Ok(())) => {
-                                                info!(count = ids.len(), "drained queued audit events to server");
-                                            }
-                                            Ok(Err(e)) => {
-                                                warn!(error = %e, "failed to delete forwarded events from queue");
-                                            }
-                                            Err(e) => {
-                                                warn!(error = %e, "delete task panicked");
-                                            }
+                match drain_result {
+                    Ok(Ok(events)) if !events.is_empty() => {
+                        let ids: Vec<i64> = events.iter().map(|(id, _)| *id).collect();
+                        let json_events: Vec<String> =
+                            events.into_iter().map(|(_, json)| json).collect();
+                        // Forward to server via the existing HTTP client.
+                        if let Some(ref sc) = self.server_client {
+                            match sc.send_audit_events_json(&json_events).await {
+                                Ok(()) => {
+                                    // Delete successfully forwarded events.
+                                    let ids_clone = ids.clone();
+                                    let delete_result = tokio::task::spawn_blocking(move || {
+                                        let Some(mutex) = crate::service::agent_db() else {
+                                            return Err("agent DB not available".to_string());
+                                        };
+                                        let Ok(conn) = mutex.lock() else {
+                                            return Err("failed to lock agent DB".to_string());
+                                        };
+                                        crate::offline_audit_queue::delete(&conn, &ids_clone)
+                                            .map_err(|e| format!("delete failed: {e}"))
+                                    })
+                                    .await;
+                                    match delete_result {
+                                        Ok(Ok(())) => {
+                                            info!(
+                                                count = ids.len(),
+                                                "drained queued audit events to server"
+                                            );
+                                        }
+                                        Ok(Err(e)) => {
+                                            warn!(error = %e, "failed to delete forwarded events from queue");
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, "delete task panicked");
                                         }
                                     }
-                                    Err(e) => {
-                                        warn!(error = %e, "failed to forward drained events — will retry on next heartbeat");
-                                    }
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "failed to forward drained events — will retry on next heartbeat");
                                 }
                             }
                         }
-                        Ok(Ok(_)) => {
-                            // Queue empty — nothing to do.
-                        }
-                        Ok(Err(e)) => {
-                            warn!(error = %e, "offline audit queue drain failed");
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "drain spawn_blocking task panicked");
-                        }
                     }
-                    crate::offline_audit_queue::release_drain_lock();
+                    Ok(Ok(_)) => {
+                        // Queue empty — nothing to do.
+                    }
+                    Ok(Err(e)) => {
+                        warn!(error = %e, "offline audit queue drain failed");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "drain spawn_blocking task panicked");
+                    }
+                }
+                crate::offline_audit_queue::release_drain_lock();
             }
 
             // Broadcast the current Agent->Server connection state to all UI clients.
