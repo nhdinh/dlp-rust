@@ -42,8 +42,8 @@ use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 #[allow(unused_imports)]
 use windows::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
 
-use dlp_common::{Decision, HookRequest};
 use dlp_common::hook_ipc::HandleHookRequest;
+use dlp_common::{Decision, HookRequest};
 
 mod crash_guard;
 mod fail_closed;
@@ -490,7 +490,10 @@ pub(crate) unsafe fn resolve_kernel32_proc(
 ) -> Option<unsafe extern "system" fn()> {
     let kernel32 = GetModuleHandleW(w!("kernel32.dll")).ok()?;
     let proc = GetProcAddress(kernel32, name)?;
-    Some(std::mem::transmute::<unsafe extern "system" fn() -> isize, unsafe extern "system" fn()>(proc))
+    Some(std::mem::transmute::<
+        unsafe extern "system" fn() -> isize,
+        unsafe extern "system" fn(),
+    >(proc))
 }
 
 /// Resolves a function from `ntdll.dll` by name.
@@ -499,14 +502,20 @@ pub(crate) unsafe fn resolve_ntdll_proc(
 ) -> Option<unsafe extern "system" fn()> {
     let ntdll = GetModuleHandleW(w!("ntdll.dll")).ok()?;
     let proc = GetProcAddress(ntdll, name)?;
-    Some(std::mem::transmute::<unsafe extern "system" fn() -> isize, unsafe extern "system" fn()>(proc))
+    Some(std::mem::transmute::<
+        unsafe extern "system" fn() -> isize,
+        unsafe extern "system" fn(),
+    >(proc))
 }
 
 /// Resolves `NtCreateFile` from `ntdll.dll`.
 pub(crate) unsafe fn resolve_nt_create_file() -> Option<NtCreateFileFn> {
     let ntdll = GetModuleHandleW(w!("ntdll.dll")).ok()?;
     let proc = GetProcAddress(ntdll, windows::core::s!("NtCreateFile"))?;
-    Some(std::mem::transmute::<unsafe extern "system" fn() -> isize, NtCreateFileFn>(proc))
+    Some(std::mem::transmute::<
+        unsafe extern "system" fn() -> isize,
+        NtCreateFileFn,
+    >(proc))
 }
 
 // ---------------------------------------------------------------------------
@@ -884,12 +893,11 @@ mod tests {
             for hook in HOOKS {
                 let iat_opt = *(hook.iat_ptr as *const Option<*mut usize>);
                 assert!(
-                    iat_opt.is_none()
-                        || {
-                            // If still Some, verify it points to original
-                            let orig_opt = *(hook.original_ptr as *const Option<usize>);
-                            iat_opt.map(|iat| *iat) == orig_opt
-                        },
+                    iat_opt.is_none() || {
+                        // If still Some, verify it points to original
+                        let orig_opt = *(hook.original_ptr as *const Option<usize>);
+                        iat_opt.map(|iat| *iat) == orig_opt
+                    },
                     "IAT for {} should be restored after UnhookAll",
                     hook.fn_name
                 );

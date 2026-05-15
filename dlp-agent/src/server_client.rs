@@ -621,7 +621,10 @@ impl ServerClient {
             return Err(ServerClientError::ServerError { status, body });
         }
 
-        debug!(count = json_events.len(), "audit events (JSON) relayed to server");
+        debug!(
+            count = json_events.len(),
+            "audit events (JSON) relayed to server"
+        );
         Ok(())
     }
 

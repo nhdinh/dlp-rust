@@ -388,9 +388,7 @@ fn get_device_interface_path_and_devinfo(
     // Extract the device path from the detail structure.
     // SAFETY: SP_DEVICE_INTERFACE_DETAIL_DATA_W is a packed struct on x86.
     // Use raw pointer arithmetic to avoid unaligned reference UB.
-    let device_path_ptr = unsafe {
-        detail.add(1).cast::<u16>()
-    };
+    let device_path_ptr = unsafe { detail.add(1).cast::<u16>() };
     let path_wide: Vec<u16> = unsafe {
         std::slice::from_raw_parts(
             device_path_ptr,

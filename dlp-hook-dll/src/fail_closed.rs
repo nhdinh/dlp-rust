@@ -55,11 +55,19 @@ pub enum DenyReturn {
 #[macro_export]
 macro_rules! fail_closed {
     (BoolFalse) => {{
-        unsafe { windows::Win32::Foundation::SetLastError(windows::Win32::Foundation::ERROR_ACCESS_DENIED) };
+        unsafe {
+            windows::Win32::Foundation::SetLastError(
+                windows::Win32::Foundation::ERROR_ACCESS_DENIED,
+            )
+        };
         windows::core::BOOL(0)
     }};
     (InvalidHandleValue) => {{
-        unsafe { windows::Win32::Foundation::SetLastError(windows::Win32::Foundation::ERROR_ACCESS_DENIED) };
+        unsafe {
+            windows::Win32::Foundation::SetLastError(
+                windows::Win32::Foundation::ERROR_ACCESS_DENIED,
+            )
+        };
         windows::Win32::Foundation::INVALID_HANDLE_VALUE
     }};
     (StatusAccessDenied) => {

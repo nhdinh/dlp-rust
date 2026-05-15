@@ -982,7 +982,8 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
                 .ok()
                 .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll_x86.dll")))
                 .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll_x86.dll"));
-            let injector = crate::hook_injector::HookInjector::new(&dll_path, Some(dll_path_x86.clone()));
+            let injector =
+                crate::hook_injector::HookInjector::new(&dll_path, Some(dll_path_x86.clone()));
             info!(
                 dll_path = %dll_path.display(),
                 dll_path_x86 = %dll_path_x86.display(),

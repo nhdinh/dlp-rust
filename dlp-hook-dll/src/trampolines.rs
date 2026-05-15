@@ -325,8 +325,7 @@ pub unsafe extern "system" fn HookWriteFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let handle_value = hfile.0 as u64;
-                    if let Some(_deny) =
-                        classify_and_log_handle(handle_value, "WRITE", "WriteFile")
+                    if let Some(_deny) = classify_and_log_handle(handle_value, "WRITE", "WriteFile")
                     {
                         return crate::fail_closed!(BoolFalse);
                     }
@@ -484,12 +483,10 @@ pub unsafe extern "system" fn HookMoveFileExW(
                     let src_path = crate::pcwstr_to_string(lpexistingfilename);
                     let dst_path = crate::pcwstr_to_string(lpnewfilename);
 
-                    if let Some(_deny) = classify_and_log_path(&src_path, "MOVE", "MoveFileExW")
-                    {
+                    if let Some(_deny) = classify_and_log_path(&src_path, "MOVE", "MoveFileExW") {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) = classify_and_log_path(&dst_path, "MOVE", "MoveFileExW")
-                    {
+                    if let Some(_deny) = classify_and_log_path(&dst_path, "MOVE", "MoveFileExW") {
                         return crate::fail_closed!(BoolFalse);
                     }
 
@@ -553,18 +550,10 @@ pub unsafe extern "system" fn HookCopyFileExW(
                     let src_path = crate::pcwstr_to_string(lpexistingfilename);
                     let dst_path = crate::pcwstr_to_string(lpnewfilename);
 
-                    if let Some(_deny) = classify_and_log_path(
-                        &src_path,
-                        "COPY",
-                        "CopyFileExW",
-                    ) {
+                    if let Some(_deny) = classify_and_log_path(&src_path, "COPY", "CopyFileExW") {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) = classify_and_log_path(
-                        &dst_path,
-                        "COPY",
-                        "CopyFileExW",
-                    ) {
+                    if let Some(_deny) = classify_and_log_path(&dst_path, "COPY", "CopyFileExW") {
                         return crate::fail_closed!(BoolFalse);
                     }
 
@@ -632,18 +621,14 @@ pub unsafe extern "system" fn HookCopyFileExW(
 /// Path-based: evaluates the file path. Deny returns `BOOL(0)` with
 /// `LastError` set to `ERROR_ACCESS_DENIED`.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn HookDeleteFileW(
-    lpfilename: PCWSTR,
-) -> windows::core::BOOL {
+pub unsafe extern "system" fn HookDeleteFileW(lpfilename: PCWSTR) -> windows::core::BOOL {
     crate::crash_guard::guard_trampoline(
         "DeleteFileW",
         || {
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::pcwstr_to_string(lpfilename);
-                    if let Some(_deny) =
-                        classify_and_log_path(&path, "DELETE", "DeleteFileW")
-                    {
+                    if let Some(_deny) = classify_and_log_path(&path, "DELETE", "DeleteFileW") {
                         return crate::fail_closed!(BoolFalse);
                     }
                     let original = crate::ORIGINAL_DELETE_FILE_W.unwrap_or_else(|| {
@@ -707,25 +692,19 @@ pub unsafe extern "system" fn HookReplaceFileW(
                     let replacement_path = crate::pcwstr_to_string(lpreplacementfilename);
                     let backup_path = crate::pcwstr_to_string(lpbackupfilename);
 
-                    if let Some(_deny) = classify_and_log_path(
-                        &replaced_path,
-                        "REPLACE",
-                        "ReplaceFileW",
-                    ) {
+                    if let Some(_deny) =
+                        classify_and_log_path(&replaced_path, "REPLACE", "ReplaceFileW")
+                    {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) = classify_and_log_path(
-                        &replacement_path,
-                        "REPLACE",
-                        "ReplaceFileW",
-                    ) {
+                    if let Some(_deny) =
+                        classify_and_log_path(&replacement_path, "REPLACE", "ReplaceFileW")
+                    {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) = classify_and_log_path(
-                        &backup_path,
-                        "REPLACE",
-                        "ReplaceFileW",
-                    ) {
+                    if let Some(_deny) =
+                        classify_and_log_path(&backup_path, "REPLACE", "ReplaceFileW")
+                    {
                         return crate::fail_closed!(BoolFalse);
                     }
 
@@ -844,8 +823,8 @@ pub unsafe extern "system" fn HookSetFileInformationByHandle(
                         return crate::fail_closed!(BoolFalse);
                     }
 
-                    let original = crate::ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE
-                        .unwrap_or_else(|| {
+                    let original =
+                        crate::ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE.unwrap_or_else(|| {
                             std::mem::transmute(
                                 crate::resolve_kernel32_proc(windows::core::s!(
                                     "SetFileInformationByHandle"
@@ -854,16 +833,11 @@ pub unsafe extern "system" fn HookSetFileInformationByHandle(
                                 .unwrap_or(std::ptr::null()),
                             )
                         });
-                    original(
-                        hfile,
-                        fileinformationclass,
-                        lpfileinformation,
-                        dwbuffersize,
-                    )
+                    original(hfile, fileinformationclass, lpfileinformation, dwbuffersize)
                 },
                 || {
-                    let original = crate::ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE
-                        .unwrap_or_else(|| {
+                    let original =
+                        crate::ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE.unwrap_or_else(|| {
                             std::mem::transmute(
                                 crate::resolve_kernel32_proc(windows::core::s!(
                                     "SetFileInformationByHandle"
@@ -872,31 +846,19 @@ pub unsafe extern "system" fn HookSetFileInformationByHandle(
                                 .unwrap_or(std::ptr::null()),
                             )
                         });
-                    original(
-                        hfile,
-                        fileinformationclass,
-                        lpfileinformation,
-                        dwbuffersize,
-                    )
+                    original(hfile, fileinformationclass, lpfileinformation, dwbuffersize)
                 },
             )
         },
         || {
             let original = crate::ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE.unwrap_or_else(|| {
                 std::mem::transmute(
-                    crate::resolve_kernel32_proc(windows::core::s!(
-                        "SetFileInformationByHandle"
-                    ))
-                    .map(|f| f as *const std::ffi::c_void)
-                    .unwrap_or(std::ptr::null()),
+                    crate::resolve_kernel32_proc(windows::core::s!("SetFileInformationByHandle"))
+                        .map(|f| f as *const std::ffi::c_void)
+                        .unwrap_or(std::ptr::null()),
                 )
             });
-            original(
-                hfile,
-                fileinformationclass,
-                lpfileinformation,
-                dwbuffersize,
-            )
+            original(hfile, fileinformationclass, lpfileinformation, dwbuffersize)
         },
     )
 }
@@ -924,8 +886,7 @@ pub unsafe extern "system" fn HookNtOpenFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::extract_nt_path(objectattributes);
-                    if let Some(_deny) = classify_and_log_path(&path, "OPEN", "NtOpenFile")
-                    {
+                    if let Some(_deny) = classify_and_log_path(&path, "OPEN", "NtOpenFile") {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original = crate::ORIGINAL_NT_OPEN_FILE.unwrap_or_else(|| {
@@ -1009,11 +970,9 @@ pub unsafe extern "system" fn HookNtWriteFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let handle_value = filehandle.0 as u64;
-                    if let Some(_deny) = classify_and_log_handle(
-                        handle_value,
-                        "NT_WRITE",
-                        "NtWriteFile",
-                    ) {
+                    if let Some(_deny) =
+                        classify_and_log_handle(handle_value, "NT_WRITE", "NtWriteFile")
+                    {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original = crate::ORIGINAL_NT_WRITE_FILE.unwrap_or_else(|| {
@@ -1102,20 +1061,16 @@ pub unsafe extern "system" fn HookNtSetInformationFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let handle_value = filehandle.0 as u64;
-                    if let Some(_deny) = classify_and_log_handle(
-                        handle_value,
-                        "NT_SET_INFO",
-                        "NtSetInformationFile",
-                    ) {
+                    if let Some(_deny) =
+                        classify_and_log_handle(handle_value, "NT_SET_INFO", "NtSetInformationFile")
+                    {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original = crate::ORIGINAL_NT_SET_INFORMATION_FILE.unwrap_or_else(|| {
                         std::mem::transmute(
-                            crate::resolve_ntdll_proc(windows::core::s!(
-                                "NtSetInformationFile"
-                            ))
-                            .map(|f| f as *const std::ffi::c_void)
-                            .unwrap_or(std::ptr::null()),
+                            crate::resolve_ntdll_proc(windows::core::s!("NtSetInformationFile"))
+                                .map(|f| f as *const std::ffi::c_void)
+                                .unwrap_or(std::ptr::null()),
                         )
                     });
                     original(
@@ -1129,11 +1084,9 @@ pub unsafe extern "system" fn HookNtSetInformationFile(
                 || {
                     let original = crate::ORIGINAL_NT_SET_INFORMATION_FILE.unwrap_or_else(|| {
                         std::mem::transmute(
-                            crate::resolve_ntdll_proc(windows::core::s!(
-                                "NtSetInformationFile"
-                            ))
-                            .map(|f| f as *const std::ffi::c_void)
-                            .unwrap_or(std::ptr::null()),
+                            crate::resolve_ntdll_proc(windows::core::s!("NtSetInformationFile"))
+                                .map(|f| f as *const std::ffi::c_void)
+                                .unwrap_or(std::ptr::null()),
                         )
                     });
                     original(
