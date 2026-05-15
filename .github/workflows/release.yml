@@ -65,7 +65,6 @@ jobs:
             'target\release\dlp-user-ui.exe',
             'target\release\dlp-admin-cli.exe',
             'target\release\dlp-server.exe',
-            'target\release\dlp-e2e.exe',
             'target\x86_64-pc-windows-msvc\release\dlp_hook_dll.dll',
             'target\i686-pc-windows-msvc\release\dlp_hook_dll.dll'
           )
@@ -94,7 +93,6 @@ jobs:
             'target\release\dlp-user-ui.exe',
             'target\release\dlp-admin-cli.exe',
             'target\release\dlp-server.exe',
-            'target\release\dlp-e2e.exe',
             'target\x86_64-pc-windows-msvc\release\dlp_hook_dll.dll',
             'target\i686-pc-windows-msvc\release\dlp_hook_dll.dll'
           )
@@ -117,7 +115,6 @@ jobs:
             'target\release\dlp-user-ui.exe',
             'target\release\dlp-admin-cli.exe',
             'target\release\dlp-server.exe',
-            'target\release\dlp-e2e.exe',
             'target\x86_64-pc-windows-msvc\release\dlp_hook_dll.dll',
             'target\i686-pc-windows-msvc\release\dlp_hook_dll.dll'
           )
@@ -138,6 +135,5 @@ jobs:
             target/release/dlp-user-ui.exe
             target/release/dlp-admin-cli.exe
             target/release/dlp-server.exe
-            target/release/dlp-e2e.exe
             target/x86_64-pc-windows-msvc/release/dlp_hook_dll.dll
             target/i686-pc-windows-msvc/release/dlp_hook_dll.dll
