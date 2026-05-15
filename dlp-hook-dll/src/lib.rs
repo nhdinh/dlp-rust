@@ -26,9 +26,10 @@ use windows::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
 
 use dlp_common::{Decision, HookRequest};
 
-mod pipe_client;
 pub mod crash_guard;
 pub mod fail_closed;
+mod pe_utils;
+mod pipe_client;
 
 /// Guard to ensure one-time initialisation.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
@@ -67,9 +68,138 @@ static mut ORIGINAL_NT_CREATE_FILE: Option<
     ) -> NTSTATUS,
 > = None;
 
+/// Original `WriteFile` pointer saved before patching.
+///
+/// SAFETY: written once during `DllMain` / init, then read-only.
+static mut ORIGINAL_WRITE_FILE: Option<
+    unsafe extern "system" fn(
+        HANDLE,
+        *const u8,
+        u32,
+        *mut u32,
+        *mut std::ffi::c_void,
+    ) -> windows::core::BOOL,
+> = None;
+
+/// Original `WriteFileEx` pointer saved before patching.
+///
+/// SAFETY: written once during `DllMain` / init, then read-only.
+static mut ORIGINAL_WRITE_FILE_EX: Option<
+    unsafe extern "system" fn(
+        HANDLE,
+        *const u8,
+        u32,
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+    ) -> windows::core::BOOL,
+> = None;
+
+/// Original `MoveFileExW` pointer saved before patching.
+///
+/// SAFETY: written once during `DllMain` / init, then read-only.
+static mut ORIGINAL_MOVE_FILE_EX_W: Option<
+    unsafe extern "system" fn(PCWSTR, PCWSTR, u32) -> windows::core::BOOL,
+> = None;
+
+/// Original `CopyFileExW` pointer saved before patching.
+///
+/// SAFETY: written once during `DllMain` / init, then read-only.
+static mut ORIGINAL_COPY_FILE_EX_W: Option<
+    unsafe extern "system" fn(
+        PCWSTR,
+        PCWSTR,
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+        *mut i32,
+        u32,
+    ) -> windows::core::BOOL,
+> = None;
+
+/// Original `DeleteFileW` pointer saved before patching.
+///
+/// SAFETY: written once during `DllMain` / init, then read-only.
+static mut ORIGINAL_DELETE_FILE_W: Option<
+    unsafe extern "system" fn(PCWSTR) -> windows::core::BOOL,
+> = None;
+
+/// Original `ReplaceFileW` pointer saved before patching.
+///
+/// SAFETY: written once during `DllMain` / init, then read-only.
+static mut ORIGINAL_REPLACE_FILE_W: Option<
+    unsafe extern "system" fn(
+        PCWSTR,
+        PCWSTR,
+        PCWSTR,
+        u32,
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+    ) -> windows::core::BOOL,
+> = None;
+
+/// Original `SetFileInformationByHandle` pointer saved before patching.
+///
+/// SAFETY: written once during `DllMain` / init, then read-only.
+static mut ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE: Option<
+    unsafe extern "system" fn(HANDLE, i32, *mut std::ffi::c_void, u32) -> windows::core::BOOL,
+> = None;
+
+/// Original `NtOpenFile` pointer saved before patching.
+///
+/// SAFETY: written once during `DllMain` / init, then read-only.
+static mut ORIGINAL_NT_OPEN_FILE: Option<
+    unsafe extern "system" fn(
+        *mut HANDLE,
+        u32,
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+        u32,
+        u32,
+    ) -> NTSTATUS,
+> = None;
+
+/// Original `NtWriteFile` pointer saved before patching.
+///
+/// SAFETY: written once during `DllMain` / init, then read-only.
+static mut ORIGINAL_NT_WRITE_FILE: Option<
+    unsafe extern "system" fn(
+        HANDLE,
+        HANDLE,
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+        *const u8,
+        u32,
+        *const i64,
+        *mut u32,
+    ) -> NTSTATUS,
+> = None;
+
+/// Original `NtSetInformationFile` pointer saved before patching.
+///
+/// SAFETY: written once during `DllMain` / init, then read-only.
+static mut ORIGINAL_NT_SET_INFORMATION_FILE: Option<
+    unsafe extern "system" fn(
+        HANDLE,
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+        u32,
+        u32,
+    ) -> NTSTATUS,
+> = None;
+
 /// Saved IAT entry addresses so `UnhookAll` can restore them.
 static mut IAT_CREATE_FILE_W: Option<*mut usize> = None;
 static mut IAT_NT_CREATE_FILE: Option<*mut usize> = None;
+static mut IAT_WRITE_FILE: Option<*mut usize> = None;
+static mut IAT_WRITE_FILE_EX: Option<*mut usize> = None;
+static mut IAT_MOVE_FILE_EX_W: Option<*mut usize> = None;
+static mut IAT_COPY_FILE_EX_W: Option<*mut usize> = None;
+static mut IAT_DELETE_FILE_W: Option<*mut usize> = None;
+static mut IAT_REPLACE_FILE_W: Option<*mut usize> = None;
+static mut IAT_SET_FILE_INFORMATION_BY_HANDLE: Option<*mut usize> = None;
+static mut IAT_NT_OPEN_FILE: Option<*mut usize> = None;
+static mut IAT_NT_WRITE_FILE: Option<*mut usize> = None;
+static mut IAT_NT_SET_INFORMATION_FILE: Option<*mut usize> = None;
 
 /// Logs a wide-string message via `OutputDebugStringW`.
 fn debug_log(msg: &str) {
@@ -469,6 +599,35 @@ fn classify_path(
         pipe_name, &req, 50, // 50 ms timeout per task spec
     )?;
     Ok(resp.decision)
+}
+
+/// Sends a handle-based classification request to the agent via named pipe.
+///
+/// The agent resolves the file path from its internal handle tracker using
+/// the provided `handle_value`.  This avoids extra syscalls in the hook DLL
+/// but requires the agent to track handle lifecycle (create/close/duplicate).
+///
+/// # Arguments
+///
+/// * `handle_value` — The raw HANDLE value cast to `u64` for cross-architecture
+///   safety.
+/// * `action` — The operation being performed (e.g., `"WRITE"`, `"SET_INFO"`).
+/// * `pipe_name` — The named pipe path to connect to.
+///
+/// # Returns
+///
+/// The [`Decision`] from the agent, or a [`pipe_client::PipeError`] if the
+/// request fails.
+fn classify_handle(
+    _handle_value: u64,
+    _action: &str,
+    _pipe_name: &str,
+) -> Result<Decision, pipe_client::PipeError> {
+    // Stub: handle-based classification requires agent-side handle tracker
+    // (Phase 49/50).  Until then, return ALLOW so existing behavior is not
+    // broken.  This function is called by handle-based trampolines
+    // (WriteFile, SetFileInformationByHandle, etc.).
+    Ok(Decision::ALLOW)
 }
 
 /// Converts a `PCWSTR` to a Rust `String`.

@@ -5,10 +5,10 @@
 //! failure.  All guards route to the original API function (fail-open).
 
 use std::cell::Cell;
+use windows::core::PCWSTR;
 use windows::Win32::System::Diagnostics::Debug::{
     AddVectoredExceptionHandler, OutputDebugStringW, RemoveVectoredExceptionHandler,
 };
-use windows::core::PCWSTR;
 
 // ---------------------------------------------------------------------------
 // guard_trampoline — catch_unwind wrapper
@@ -91,7 +91,9 @@ thread_local! {
 ///
 /// This is an `extern "system"` callback invoked by the Windows kernel.
 /// It must not panic, allocate, or call any function that might fault.
-unsafe extern "system" fn seh_handler(exception_info: *mut windows::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS) -> i32 {
+unsafe extern "system" fn seh_handler(
+    exception_info: *mut windows::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS,
+) -> i32 {
     // `exception_info` is guaranteed non-null by the OS.
     let record = unsafe { (*exception_info).ExceptionRecord };
     if record.is_null() {
@@ -237,8 +239,8 @@ pub fn with_reentrancy_guard<T>(f: impl FnOnce() -> T, fallback: impl FnOnce() -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::Win32::Foundation::{HANDLE, NTSTATUS};
     use windows::core::BOOL;
+    use windows::Win32::Foundation::{HANDLE, NTSTATUS};
 
     // -- guard_trampoline --
 
@@ -306,7 +308,10 @@ mod tests {
                 ptr.read_volatile()
             })
         };
-        assert!(result.is_err(), "seh_guard should catch AV and return Err(())");
+        assert!(
+            result.is_err(),
+            "seh_guard should catch AV and return Err(())"
+        );
     }
 
     #[test]
@@ -340,9 +345,10 @@ mod tests {
 
     #[test]
     fn reentrancy_guard_prevents_nesting() {
-        let result = with_reentrancy_guard(|| {
-            with_reentrancy_guard(|| "inner", || "fallback")
-        }, || "outer-fallback");
+        let result = with_reentrancy_guard(
+            || with_reentrancy_guard(|| "inner", || "fallback"),
+            || "outer-fallback",
+        );
         assert_eq!(result, "fallback");
     }
 

@@ -4,6 +4,7 @@
 //! length-prefixed bincode framing, and returns the [`HookResponse`].
 //! All errors are mapped to [`PipeError`] so the caller can fail-closed.
 
+use std::cell::RefCell;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ,
@@ -12,6 +13,16 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_READMODE_MESSAGE};
 
 use dlp_common::{HookRequest, HookResponse};
+
+thread_local! {
+    /// Pre-allocated 4 KiB buffer reused per thread for pipe serialization.
+    ///
+    /// Eliminates allocator pressure in the hot path.  The buffer is
+    /// initialized with `with_capacity(4096)` and never shrinks — on each
+    /// `send_request` the buffer is cleared and reused via
+    /// `bincode::serialize_into`.
+    pub static PIPE_BUFFER: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(4096));
+}
 
 /// Default pipe name used by the hook DLL.
 pub const DEFAULT_PIPE_NAME: &str = r"\\.\pipe\DlpHookPipe";
@@ -61,35 +72,37 @@ pub fn send_request(
         let _ = SetNamedPipeHandleState(pipe, Some(&mode), None, None);
     }
 
-    // Serialize and send.
-    let payload = match bincode::serialize(request) {
-        Ok(p) => p,
-        Err(_) => {
+    // Serialize into thread-local buffer.
+    PIPE_BUFFER.with(|buf| {
+        let mut buffer = buf.borrow_mut();
+        buffer.clear();
+
+        if bincode::serialize_into(&mut *buffer, request).is_err() {
             let _ = unsafe { CloseHandle(pipe) };
             return Err(PipeError::Malformed);
         }
-    };
 
-    if let Err(e) = write_frame(pipe, &payload) {
-        let _ = unsafe { CloseHandle(pipe) };
-        return Err(e);
-    }
-
-    // Read response.
-    let frame = match read_frame(pipe, timeout_ms) {
-        Ok(f) => f,
-        Err(e) => {
+        if let Err(e) = write_frame(pipe, &buffer) {
             let _ = unsafe { CloseHandle(pipe) };
             return Err(e);
         }
-    };
 
-    let _ = unsafe { CloseHandle(pipe) };
+        // Read response into a fresh Vec (response size is unknown).
+        let frame = match read_frame(pipe, timeout_ms) {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = unsafe { CloseHandle(pipe) };
+                return Err(e);
+            }
+        };
 
-    match bincode::deserialize(&frame) {
-        Ok(resp) => Ok(resp),
-        Err(_) => Err(PipeError::Malformed),
-    }
+        let _ = unsafe { CloseHandle(pipe) };
+
+        match bincode::deserialize(&frame) {
+            Ok(resp) => Ok(resp),
+            Err(_) => Err(PipeError::Malformed),
+        }
+    })
 }
 
 /// Connects to a named pipe, retrying up to `timeout_ms`.
@@ -221,5 +234,47 @@ mod tests {
         // Verify PipeError implements Error + Display.
         let err: Box<dyn std::error::Error> = Box::new(PipeError::Timeout);
         assert!(err.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn thread_local_buffer_reused() {
+        PIPE_BUFFER.with(|buf| {
+            let mut buffer = buf.borrow_mut();
+            buffer.clear();
+            buffer.extend_from_slice(b"test");
+            assert_eq!(buffer.len(), 4);
+            assert!(buffer.capacity() >= 4096);
+        });
+        PIPE_BUFFER.with(|buf| {
+            let buffer = buf.borrow();
+            assert!(buffer.capacity() >= 4096);
+        });
+    }
+
+    #[test]
+    fn thread_local_buffer_is_thread_local() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cap1 = Arc::new(std::sync::Mutex::new(0usize));
+        let cap2 = cap1.clone();
+
+        thread::spawn(move || {
+            PIPE_BUFFER.with(|buf| {
+                let mut b = buf.borrow_mut();
+                b.extend_from_slice(b"thread2");
+                *cap2.lock().unwrap() = b.capacity();
+            });
+        })
+        .join()
+        .unwrap();
+
+        PIPE_BUFFER.with(|buf| {
+            let b = buf.borrow();
+            assert_eq!(b.len(), 0);
+            assert!(b.capacity() >= 4096);
+        });
+
+        assert!(*cap1.lock().unwrap() >= 4096);
     }
 }
