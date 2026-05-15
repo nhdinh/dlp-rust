@@ -27,6 +27,7 @@ use windows::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
 use dlp_common::{Decision, HookRequest};
 
 mod pipe_client;
+pub mod crash_guard;
 
 /// Guard to ensure one-time initialisation.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
