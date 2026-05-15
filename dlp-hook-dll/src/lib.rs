@@ -91,6 +91,29 @@ const UNICODE_STRING_BUFFER_OFFSET: isize = 0x04;
 static INITIALISED: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
+// Type aliases for original function pointers (clippy: complex types)
+// ---------------------------------------------------------------------------
+
+/// Type alias for `NtCreateFile` original function pointer.
+type NtCreateFileFn = unsafe extern "system" fn(
+    *mut HANDLE,
+    u32,
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+    *const i64,
+    u32,
+    u32,
+    u32,
+    u32,
+    *mut std::ffi::c_void,
+    u32,
+) -> NTSTATUS;
+
+/// Type alias for `SetFileInformationByHandle` original function pointer.
+type SetFileInformationByHandleFn =
+    unsafe extern "system" fn(HANDLE, i32, *mut std::ffi::c_void, u32) -> windows::core::BOOL;
+
+// ---------------------------------------------------------------------------
 // Static mut originals and IAT entries for all 12 functions
 // ---------------------------------------------------------------------------
 
@@ -112,21 +135,7 @@ static mut ORIGINAL_CREATE_FILE_W: Option<
 /// Original `NtCreateFile` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
-static mut ORIGINAL_NT_CREATE_FILE: Option<
-    unsafe extern "system" fn(
-        *mut HANDLE,
-        u32,
-        *mut std::ffi::c_void, // OBJECT_ATTRIBUTES*
-        *mut std::ffi::c_void, // IO_STATUS_BLOCK*
-        *const i64,            // LARGE_INTEGER*
-        u32,
-        u32,
-        u32,
-        u32,
-        *mut std::ffi::c_void, // EaBuffer*
-        u32,
-    ) -> NTSTATUS,
-> = None;
+static mut ORIGINAL_NT_CREATE_FILE: Option<NtCreateFileFn> = None;
 
 /// Original `WriteFile` pointer saved before patching.
 ///
@@ -199,9 +208,7 @@ static mut ORIGINAL_REPLACE_FILE_W: Option<
 /// Original `SetFileInformationByHandle` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
-static mut ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE: Option<
-    unsafe extern "system" fn(HANDLE, i32, *mut std::ffi::c_void, u32) -> windows::core::BOOL,
-> = None;
+static mut ORIGINAL_SET_FILE_INFORMATION_BY_HANDLE: Option<SetFileInformationByHandleFn> = None;
 
 /// Original `NtOpenFile` pointer saved before patching.
 ///
@@ -483,7 +490,7 @@ pub(crate) unsafe fn resolve_kernel32_proc(
 ) -> Option<unsafe extern "system" fn()> {
     let kernel32 = GetModuleHandleW(w!("kernel32.dll")).ok()?;
     let proc = GetProcAddress(kernel32, name)?;
-    Some(std::mem::transmute(proc))
+    Some(std::mem::transmute::<unsafe extern "system" fn() -> isize, unsafe extern "system" fn()>(proc))
 }
 
 /// Resolves a function from `ntdll.dll` by name.
@@ -492,28 +499,14 @@ pub(crate) unsafe fn resolve_ntdll_proc(
 ) -> Option<unsafe extern "system" fn()> {
     let ntdll = GetModuleHandleW(w!("ntdll.dll")).ok()?;
     let proc = GetProcAddress(ntdll, name)?;
-    Some(std::mem::transmute(proc))
+    Some(std::mem::transmute::<unsafe extern "system" fn() -> isize, unsafe extern "system" fn()>(proc))
 }
 
 /// Resolves `NtCreateFile` from `ntdll.dll`.
-pub(crate) unsafe fn resolve_nt_create_file() -> Option<
-    unsafe extern "system" fn(
-        *mut HANDLE,
-        u32,
-        *mut std::ffi::c_void,
-        *mut std::ffi::c_void,
-        *const i64,
-        u32,
-        u32,
-        u32,
-        u32,
-        *mut std::ffi::c_void,
-        u32,
-    ) -> NTSTATUS,
-> {
+pub(crate) unsafe fn resolve_nt_create_file() -> Option<NtCreateFileFn> {
     let ntdll = GetModuleHandleW(w!("ntdll.dll")).ok()?;
     let proc = GetProcAddress(ntdll, windows::core::s!("NtCreateFile"))?;
-    Some(std::mem::transmute(proc))
+    Some(std::mem::transmute::<unsafe extern "system" fn() -> isize, NtCreateFileFn>(proc))
 }
 
 // ---------------------------------------------------------------------------
@@ -617,7 +610,7 @@ pub(crate) unsafe fn pcwstr_to_string(ptr: PCWSTR) -> String {
         return String::new();
     }
     let mut len = 0usize;
-    while len < MAX_WIDE_CHARS && *(ptr.0.offset(len as isize)) != 0 {
+    while len < MAX_WIDE_CHARS && *(ptr.0.add(len)) != 0 {
         len += 1;
     }
     let slice = std::slice::from_raw_parts(ptr.0, len);

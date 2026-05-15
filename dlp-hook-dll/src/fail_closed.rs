@@ -76,6 +76,7 @@ macro_rules! fail_closed {
 /// This is used when the [`DenyReturn`] variant is chosen at runtime (e.g.
 /// from a [`HookDescriptor`] table) rather than known at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum DenyReturnValue {
     /// Boolean false return.
     Bool(BOOL),
@@ -99,6 +100,7 @@ pub enum DenyReturnValue {
 /// # Returns
 ///
 /// A [`DenyReturnValue`] containing the concrete Windows API return value.
+#[allow(dead_code)]
 pub fn apply_deny_return(deny: DenyReturn) -> DenyReturnValue {
     match deny {
         DenyReturn::BoolFalse => DenyReturnValue::Bool(BOOL(0)),

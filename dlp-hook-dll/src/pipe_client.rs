@@ -26,6 +26,7 @@ thread_local! {
 
 /// Errors that can occur during pipe communication.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum PipeError {
     /// The pipe server is not running or the pipe does not exist.
     ConnectionRefused,
@@ -141,7 +142,7 @@ fn connect_pipe(pipe_name: &str, timeout_ms: u32) -> Result<HANDLE, PipeError> {
         let handle = unsafe {
             CreateFileW(
                 windows::core::PCWSTR::from_raw(name_wide.as_ptr()),
-                (FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0) as u32,
+                FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
                 FILE_SHARE_NONE,
                 None,
                 OPEN_EXISTING,
