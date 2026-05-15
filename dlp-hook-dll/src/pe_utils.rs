@@ -157,12 +157,7 @@ pub unsafe fn patch_iat(iat: *mut usize, new_fn: *mut std::ffi::c_void) -> bool 
     *iat = new_fn as usize;
 
     let mut _tmp = windows::Win32::System::Memory::PAGE_PROTECTION_FLAGS(0);
-    let _ = VirtualProtect(
-        iat as *mut std::ffi::c_void,
-        size,
-        old_protect,
-        &mut _tmp,
-    );
+    let _ = VirtualProtect(iat as *mut std::ffi::c_void, size, old_protect, &mut _tmp);
 
     true
 }
@@ -292,11 +287,7 @@ mod tests {
 
             // e_lfanew at offset 0x3C
             let e_lfanew: u32 = 0x40;
-            std::ptr::copy_nonoverlapping(
-                e_lfanew.to_le_bytes().as_ptr(),
-                pe_ptr.add(0x3C),
-                4,
-            );
+            std::ptr::copy_nonoverlapping(e_lfanew.to_le_bytes().as_ptr(), pe_ptr.add(0x3C), 4);
 
             // PE signature at 0x40
             std::ptr::copy_nonoverlapping(b"PE\0\0".as_ptr(), pe_ptr.add(0x40), 4);
@@ -400,12 +391,7 @@ mod tests {
         };
 
         unsafe {
-            let page = VirtualAlloc(
-                None,
-                4096,
-                MEM_COMMIT | MEM_RESERVE,
-                PAGE_EXECUTE_READWRITE,
-            );
+            let page = VirtualAlloc(None, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
             assert!(!page.is_null(), "VirtualAlloc failed");
 
             let iat = page as *mut usize;
@@ -415,11 +401,17 @@ mod tests {
             let new_fn: unsafe extern "system" fn() = dummy_proc;
             let patched = patch_iat(iat, new_fn as *mut std::ffi::c_void);
             assert!(patched, "patch_iat should succeed");
-            assert_eq!(*iat, new_fn as usize, "IAT should contain new function pointer");
+            assert_eq!(
+                *iat, new_fn as usize,
+                "IAT should contain new function pointer"
+            );
 
             let restored = restore_iat(iat, original_value);
             assert!(restored, "restore_iat should succeed");
-            assert_eq!(*iat, original_value, "IAT should be restored to original value");
+            assert_eq!(
+                *iat, original_value,
+                "IAT should be restored to original value"
+            );
 
             // Cleanup
             let _ = windows::Win32::System::Memory::VirtualFree(

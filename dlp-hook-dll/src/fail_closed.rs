@@ -5,10 +5,12 @@
 //! This module provides the [`DenyReturn`] enum and the [`fail_closed!`]
 //! macro that generate the correct return value for each Windows API family.
 
+#[allow(unused_imports)]
+use windows::core::BOOL;
+#[allow(unused_imports)]
 use windows::Win32::Foundation::{
     SetLastError, ERROR_ACCESS_DENIED, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS,
 };
-use windows::core::BOOL;
 
 // ---------------------------------------------------------------------------
 // DenyReturn enum
@@ -101,9 +103,7 @@ pub fn apply_deny_return(deny: DenyReturn) -> DenyReturnValue {
     match deny {
         DenyReturn::BoolFalse => DenyReturnValue::Bool(BOOL(0)),
         DenyReturn::InvalidHandleValue => DenyReturnValue::Handle(INVALID_HANDLE_VALUE),
-        DenyReturn::StatusAccessDenied => {
-            DenyReturnValue::NtStatus(NTSTATUS(0xC0000022u32 as i32))
-        }
+        DenyReturn::StatusAccessDenied => DenyReturnValue::NtStatus(NTSTATUS(0xC0000022u32 as i32)),
     }
 }
 
@@ -199,8 +199,6 @@ mod tests {
     #[test]
     fn apply_deny_return_status_access_denied() {
         let v = apply_deny_return(DenyReturn::StatusAccessDenied);
-        assert!(
-            matches!(v, DenyReturnValue::NtStatus(n) if n.0 == 0xC0000022u32 as i32)
-        );
+        assert!(matches!(v, DenyReturnValue::NtStatus(n) if n.0 == 0xC0000022u32 as i32));
     }
 }
