@@ -28,6 +28,7 @@ use dlp_common::{Decision, HookRequest};
 
 mod pipe_client;
 pub mod crash_guard;
+pub mod fail_closed;
 
 /// Guard to ensure one-time initialisation.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
