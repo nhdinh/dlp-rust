@@ -978,8 +978,16 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
                 .ok()
                 .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll.dll")))
                 .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll.dll"));
-            let injector = crate::hook_injector::HookInjector::new(&dll_path, None);
-            info!(dll_path = %dll_path.display(), "hook injector constructed");
+            let dll_path_x86 = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll_x86.dll")))
+                .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll_x86.dll"));
+            let injector = crate::hook_injector::HookInjector::new(&dll_path, Some(dll_path_x86.clone()));
+            info!(
+                dll_path = %dll_path.display(),
+                dll_path_x86 = %dll_path_x86.display(),
+                "hook injector constructed"
+            );
             Some(injector)
         } else {
             info!("cloud hook disabled — skipping HookInjector");
@@ -1000,6 +1008,10 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll.dll")))
             .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll.dll"));
+        let dll_path_x86_for_watcher = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll_x86.dll")))
+            .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll_x86.dll"));
         // Suppress the unused variable warning on the injector reference used
         // only to gate the if-let branch.
         let _ = injector;
@@ -1010,8 +1022,10 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         let handle = std::thread::Builder::new()
             .name("sync-client-watcher".into())
             .spawn(move || {
-                let watcher_injector =
-                    crate::hook_injector::HookInjector::new(&dll_path_for_watcher, None);
+                let watcher_injector = crate::hook_injector::HookInjector::new(
+                    &dll_path_for_watcher,
+                    Some(dll_path_x86_for_watcher),
+                );
                 info!("sync-client watcher thread started");
 
                 loop {
