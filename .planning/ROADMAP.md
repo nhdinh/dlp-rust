@@ -272,7 +272,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 | 27. USB Toast Notification | 2/2 | Reopened for review | - |
 | 28. Admin TUI Screens | 5/5 | Reopened for review | - |
 | 47. Secrets Encryption at Rest (prerequisite) | 1/1 | Reopened for review | - |
-| 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-15 |
+| 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-16 |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 0/0 | Not started | - |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 0/0 | Not started | - |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 0/0 | Not started | - |
