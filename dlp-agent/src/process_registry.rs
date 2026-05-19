@@ -224,6 +224,35 @@ impl ProcessRegistry {
         }
         counts
     }
+
+    /// Returns a telemetry snapshot with coverage metrics.
+    ///
+    /// Coverage percent = injected / (injected + skipped_non_ppl + failed) * 100.0.
+    /// PPL skips are expected and not counted as coverage gaps.
+    #[must_use]
+    pub fn telemetry_snapshot(&self) -> InjectionTelemetry {
+        let counts = self.counts();
+        let injected = counts.injected_hello + counts.injected_no_hello;
+        let skipped_non_ppl = counts.skipped_self
+            + counts.skipped_avedr
+            + counts.skipped_system
+            + counts.skipped_wow64
+            + counts.skipped_operator;
+        let failed = counts.skipped_failed;
+        let denominator = injected + skipped_non_ppl + failed;
+        let coverage_percent = if denominator == 0 {
+            0.0
+        } else {
+            (injected as f64 / denominator as f64) * 100.0
+        };
+        let total_tracked = self.states.len();
+        InjectionTelemetry {
+            injected_count: injected as usize,
+            skipped_by_reason: counts.skipped_by_reason(),
+            total_tracked,
+            coverage_percent,
+        }
+    }
 }
 
 impl Default for ProcessRegistry {
@@ -246,6 +275,47 @@ pub struct ProcessCounts {
     pub injected_hello: u64,
     pub injected_no_hello: u64,
     pub exited: u64,
+}
+
+impl ProcessCounts {
+    /// Returns a HashMap of skip reasons to their counts.
+    #[must_use]
+    pub fn skipped_by_reason(&self) -> std::collections::HashMap<SkipReasonCategory, usize> {
+        let mut map = std::collections::HashMap::new();
+        map.insert(SkipReasonCategory::SelfProcess, self.skipped_self as usize);
+        map.insert(SkipReasonCategory::Avedr, self.skipped_avedr as usize);
+        map.insert(SkipReasonCategory::SystemCritical, self.skipped_system as usize);
+        map.insert(SkipReasonCategory::Ppl, self.skipped_ppl as usize);
+        map.insert(SkipReasonCategory::WoW64, self.skipped_wow64 as usize);
+        map.insert(SkipReasonCategory::OperatorDefined, self.skipped_operator as usize);
+        map.insert(SkipReasonCategory::Failed, self.skipped_failed as usize);
+        map
+    }
+}
+
+/// Categorised skip reason for telemetry aggregation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SkipReasonCategory {
+    SelfProcess,
+    Avedr,
+    SystemCritical,
+    Ppl,
+    WoW64,
+    OperatorDefined,
+    Failed,
+}
+
+/// Telemetry snapshot with coverage metrics.
+#[derive(Debug, Clone)]
+pub struct InjectionTelemetry {
+    /// Number of successfully injected processes.
+    pub injected_count: usize,
+    /// Skip counts by reason category.
+    pub skipped_by_reason: std::collections::HashMap<SkipReasonCategory, usize>,
+    /// Total number of tracked processes.
+    pub total_tracked: usize,
+    /// Coverage percentage (injected / (injected + non-PPL skipped + failed) * 100).
+    pub coverage_percent: f64,
 }
 
 #[cfg(test)]
@@ -275,7 +345,10 @@ mod tests {
 
         let second = registry.try_claim(key);
         assert!(
-            matches!(second, ClaimResult::AlreadyClaimed(ProcessState::Discovered)),
+            matches!(
+                second,
+                ClaimResult::AlreadyClaimed(ProcessState::Discovered)
+            ),
             "expected AlreadyClaimed(Discovered), got {:?}",
             second
         );
@@ -330,16 +403,10 @@ mod tests {
             (SkipReason::SelfProcess, "self"),
             (SkipReason::Avedr, "avedr"),
             (SkipReason::SystemCritical, "system"),
-            (
-                SkipReason::Ppl(PplOutcome::Protected),
-                "ppl",
-            ),
+            (SkipReason::Ppl(PplOutcome::Protected), "ppl"),
             (SkipReason::WoW64, "wow64"),
             (SkipReason::OperatorDefined, "operator"),
-            (
-                SkipReason::Failed(InjectionFailure::AccessDenied),
-                "failed",
-            ),
+            (SkipReason::Failed(InjectionFailure::AccessDenied), "failed"),
         ];
 
         for (i, (reason, _label)) in variants.into_iter().enumerate() {

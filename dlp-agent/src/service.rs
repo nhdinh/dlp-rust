@@ -1542,7 +1542,14 @@ async fn init_universal_injection(
         let (backstop_tx, _) = tokio::sync::watch::channel(false);
         let (retry_tx, _) = tokio::sync::watch::channel(false);
         return (
-            None, None, registry, matcher, backstop_tx, None, retry_tx, None,
+            None,
+            None,
+            registry,
+            matcher,
+            backstop_tx,
+            None,
+            retry_tx,
+            None,
         );
     }
 
@@ -1564,8 +1571,7 @@ async fn init_universal_injection(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
     let self_pid = std::process::id();
-    let allowlist_entries = with_config(|cfg| cfg.allowlist_entries.clone())
-        .unwrap_or_default();
+    let allowlist_entries = with_config(|cfg| cfg.allowlist_entries.clone()).unwrap_or_default();
     let matcher = Arc::new(crate::allowlist::AllowlistMatcher::new(
         allowlist_entries,
         self_image_path,
@@ -1580,7 +1586,8 @@ async fn init_universal_injection(
     let _injector_for_ui = Arc::clone(&injector);
 
     // 4. Create sweep trigger channel (crossbeam for ETW thread -> tokio bridge).
-    let (sweep_tx, sweep_rx) = crossbeam_channel::bounded::<crate::process_watcher::SweepTrigger>(16);
+    let (sweep_tx, sweep_rx) =
+        crossbeam_channel::bounded::<crate::process_watcher::SweepTrigger>(16);
 
     // 5. Create retry queue channel.
     let (retry_tx, mut retry_rx) = tokio::sync::mpsc::unbounded_channel::<(
@@ -1589,12 +1596,14 @@ async fn init_universal_injection(
     )>();
 
     // 6. Construct UniversalInjector.
-    let universal_injector = Arc::new(crate::universal_injector::UniversalInjector::with_retry_queue(
-        Arc::clone(&registry),
-        Arc::clone(&matcher),
-        Arc::clone(&injector),
-        retry_tx,
-    ));
+    let universal_injector = Arc::new(
+        crate::universal_injector::UniversalInjector::with_retry_queue(
+            Arc::clone(&registry),
+            Arc::clone(&matcher),
+            Arc::clone(&injector),
+            retry_tx,
+        ),
+    );
 
     // 7. Start ProcessWatcher on dedicated ETW thread.
     let mut process_watcher = crate::process_watcher::ProcessWatcher::new();
@@ -1618,7 +1627,8 @@ async fn init_universal_injection(
     let injector_for_events = Arc::clone(&universal_injector);
     let event_rx = process_watcher.receiver().clone();
     // Create a tokio mpsc sweep sender for the async handler.
-    let (tokio_sweep_tx, _tokio_sweep_rx) = mpsc::channel::<crate::process_watcher::SweepTrigger>(16);
+    let (tokio_sweep_tx, _tokio_sweep_rx) =
+        mpsc::channel::<crate::process_watcher::SweepTrigger>(16);
     tokio::spawn(async move {
         while let Ok(event) = event_rx.recv() {
             let injector = Arc::clone(&injector_for_events);
@@ -1700,7 +1710,37 @@ async fn init_universal_injection(
         }
     });
 
-    // 12. Run startup EnumProcesses sweep (bounded concurrency, 5s timeout per process).
+    // 12. Spawn periodic cleanup sweep (60s): prune exited PIDs from registry.
+    let registry_for_cleanup = Arc::clone(&registry);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let removed = registry_for_cleanup.prune_exited();
+            if removed > 0 {
+                tracing::debug!(removed, "periodic cleanup sweep removed exited PIDs");
+            }
+        }
+    });
+
+    // 13. Spawn periodic telemetry aggregation (60s): emit injection_telemetry event.
+    let registry_for_telemetry = Arc::clone(&registry);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let snapshot = registry_for_telemetry.telemetry_snapshot();
+            tracing::info!(
+                event_type = "injection_telemetry",
+                injected = snapshot.injected_count,
+                skipped = snapshot.total_tracked.saturating_sub(snapshot.injected_count),
+                coverage_percent = format!("{:.1}", snapshot.coverage_percent),
+                "injection telemetry"
+            );
+        }
+    });
+
+    // 14. Run startup EnumProcesses sweep (bounded concurrency, 5s timeout per process).
     let registry_for_sweep = Arc::clone(&registry);
     let matcher_for_sweep = Arc::clone(&matcher);
     let injector_for_startup = Arc::clone(&injector);
@@ -1800,8 +1840,7 @@ async fn startup_sweep(
                         }
                         Err(e) => {
                             tracing::warn!(pid, error = %e, "startup sweep: injection failed");
-                            let failure =
-                                crate::universal_injector::categorize_error(&e);
+                            let failure = crate::universal_injector::categorize_error(&e);
                             registry.record_skipped(
                                 key,
                                 crate::process_registry::SkipReason::Failed(failure),
@@ -1947,12 +1986,7 @@ async fn backstop_sweep(
             }
         }
 
-        tracing::info!(
-            checked,
-            injected,
-            skipped,
-            "backstop sweep complete"
-        );
+        tracing::info!(checked, injected, skipped, "backstop sweep complete");
     }
     #[cfg(not(windows))]
     {
@@ -1992,9 +2026,7 @@ fn get_process_image_path(pid: u32) -> Option<String> {
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
-    let handle = unsafe {
-        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?
-    };
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()? };
 
     let mut buf = vec![0u16; 260];
     let mut size: u32 = buf.len() as u32;
@@ -2793,6 +2825,8 @@ mod tests {
             print_xps_timeout_ms: 5000,
             print_unclassifiable_action: "Block".to_string(),
             print_max_pages: 100,
+            allowlist_entries: vec![],
+            allowlist_version: 0,
         }
     }
 
