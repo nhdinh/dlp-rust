@@ -100,7 +100,14 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   3. On a Secure Boot endpoint, the agent emits exactly one `siem.appinit_dlls_disabled` audit event at boot, and the deployment guide is wired to surface AppInit_DLLs as inert under Secure Boot.
   4. WoW64 32-bit processes are injected with `dlp_hook_dll_x86.dll` (verified via `Process Hacker` module list); pure-x64 processes are injected with the x64 DLL.
   5. On agent restart, the startup `EnumProcesses` sweep injects into all already-running non-allowlisted processes within 5 s; no process requires a logout/reboot to gain coverage.
-**Plans:** 1 plan (60-01)
+**Plans:** 5 plans (49-01 through 49-05)
+
+Plans:
+- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
+- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
+- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
+- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
+- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
 
 ### Phase 50: Shared-Memory Classification Cache + Fail-Mode State Machine
 **Goal**: The hook DLL completes a per-file decision in <= 50 us p95 on cache hit and gracefully degrades through HEALTHY → DEGRADED → ISOLATED → RESYNC when the agent pipe is unreachable, with tier-gated fail-closed/fail-open behaviour.
@@ -112,7 +119,14 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   3. With the agent service stopped, the hook denies (`ERROR_ACCESS_DENIED` / `STATUS_ACCESS_DENIED`) every write attempt against a T3 or T4 path and allows every write against a T1 or T2 path; the fail-state telemetry shows the DLL transitioning HEALTHY → DEGRADED → ISOLATED.
   4. Build-tool processes (devenv.exe, cargo.exe, msbuild.exe, rustc.exe, link.exe, gcc.exe) and trusted system paths (System32, WinSxS, WindowsApps, Program Files\Common Files) bypass the pipe entirely on the operator-extendable allowlist; the per-tier staleness budgets (T4=30s, T3=60s, T2=5min, T1=30min) are observable in audit events.
   5. After agent restart with a higher `cache_version`, every connected hook DLL transitions ISOLATED → RESYNC → HEALTHY within 1 s without losing any in-flight decision.
-**Plans:** 1 plan (60-01)
+**Plans:** 5 plans (49-01 through 49-05)
+
+Plans:
+- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
+- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
+- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
+- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
+- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
 
 ### Phase 51: ntdll Syscall-Stub Trampolines + EDR Coexistence
 **Goal**: Direct-syscall bypass of the IAT hook layer is closed for `NtCreateFile`/`NtOpenFile`/`NtWriteFile`/`NtSetInformationFile`, behind a feature flag that is safe to enable per-customer because EDR coexistence is detected before patching and never falsely "cleaned."
@@ -124,7 +138,14 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   3. The 30-second re-verification thread emits `BypassAlert(reason=HookOverwritten)` within one verification cycle when an EDR re-patches over our trampoline; the alert reaches the admin TUI Bypass Alerts feed (Phase 53/54).
   4. The patcher's suspend-all-other-threads protocol blocks if any thread RIP lands in `[stub, stub+5]`; under the chaos-test fixture (1000 threads spinning on `NtCreateFile`), no torn-instruction crash is observed across 100 patch cycles.
   5. The `enable_ntdll_patching` policy flag defaults off; per-customer rollout is auditable via SIEM (`siem.ntdll_patching_enabled` event at boot).
-**Plans:** 1 plan (60-01)
+**Plans:** 5 plans (49-01 through 49-05)
+
+Plans:
+- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
+- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
+- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
+- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
+- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
 
 ### Phase 52: DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc
 **Goal**: T3/T4 root paths carry an explicit, canonically-ordered NTFS Deny ACE that survives operator and adversary tampering, with a repair watcher that distinguishes operator-staged removals from out-of-band tampering. The DPAPI master-key recovery runbook (carried forward from v1.0.0) ships alongside.
@@ -136,7 +157,14 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   3. Operator-initiated removal via the Phase 54 admin TUI flows through the two-phase staged update (server `protected_paths_pending_change` → agent stages diff → ACE event arrives) and produces NO spurious tamper alert.
   4. The admin API exposes `GET`/`POST`/`PUT`/`DELETE /admin/protected-paths/:id`; the agent pulls protected-path config via `policy_sync` cadence and stores it in the new `protected_paths` + `protected_path_aces` SQLite tables (with foreign keys); 60 KB ACL size guard rejects oversize ACL writes with a clear operator error.
   5. `docs/operations/dpapi-recovery.md` exists and documents both the `re-init-from-env-vars` and `restore-from-backup` flows when DPAPI unprotect fails on agent restart, with a UAT verification that an operator can recover a corrupted DPAPI master key without manual SQL.
-**Plans:** 1 plan (60-01)
+**Plans:** 5 plans (49-01 through 49-05)
+
+Plans:
+- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
+- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
+- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
+- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
+- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
 **UI hint**: yes
 
 ### Phase 53: ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring
@@ -149,7 +177,14 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   3. Each hook DLL writes a ring entry `(seq, file_object, op, path_hash, ts_qpc)` to its per-process `Global\DlpHookJournal_<pid>` BEFORE returning a decision, so denials are also journaled and not falsely flagged as bypasses.
   4. Allowlisted PIDs (AV/EDR, self, system-critical, PPL) are dropped pre-correlation; the bypass-alerts feed contains zero entries from Defender/CrowdStrike/SentinelOne in the soak-test fixture.
   5. `POST /audit/bypass` ingests agent-emitted bypass alerts; alerts route through `siem_connector::relay` and (when `severity >= ALERT`) `alert_router::send` with no new outbound transport added; `GET /admin/bypass-alerts?since=&severity=` and `POST /admin/bypass-alerts/:id/ack` round-trip cleanly.
-**Plans:** 1 plan (60-01)
+**Plans:** 5 plans (49-01 through 49-05)
+
+Plans:
+- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
+- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
+- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
+- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
+- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
 
 ### Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens
 **Goal**: An operator can fully manage Protected Paths and triage Bypass Alerts from the admin TUI without touching SQLite, the registry, or any raw config file.
@@ -160,7 +195,14 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   2. The Bypass Alerts screen shows a paginated event feed with per-event detail (image path + SHA-256, file path, operation, QPC timestamp, correlation reason); the operator can ack/dismiss with a single keypress and filter by severity.
   3. Both screens follow the existing `screens/usb_enforcement.rs` and `screens/print_config.rs` pattern (mod/dispatch/render/client/app.rs extensions); navigation, focus, and Esc-back semantics match every other admin TUI screen.
   4. Eight new client methods (`list_protected_paths`, `create_protected_path`, `update_protected_path`, `delete_protected_path`, `list_bypass_alerts`, `ack_bypass_alert`, plus the two screens' navigation entry points) exist, are unit-tested, and surface server errors as user-readable toasts.
-**Plans:** 1 plan (60-01)
+**Plans:** 5 plans (49-01 through 49-05)
+
+Plans:
+- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
+- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
+- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
+- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
+- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
 **UI hint**: yes
 
 ### Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode
@@ -172,7 +214,14 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   2. A policy in `Audit` mode produces a full audit event (`policy_mode = Audit`, `would_have_denied = true`) on a violation but the hook returns ALLOW; the file operation succeeds and the SIEM relay forwards the would-have-blocked event.
   3. A policy in `AuditAndBlock` mode produces both an audit event and a DENY return; the audit event records `policy_mode = AuditAndBlock` so post-deployment review can distinguish it from pure-`Block`.
   4. The Conditions Builder dropdown is exercised by an integration test that round-trips Audit → Block → AuditAndBlock through `PUT /admin/policies/:id` and verifies the agent sees each mode within one `policy_sync` cycle.
-**Plans:** 1 plan (60-01)
+**Plans:** 5 plans (49-01 through 49-05)
+
+Plans:
+- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
+- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
+- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
+- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
+- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
 **UI hint**: yes
 
 ### Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)
@@ -184,7 +233,14 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   2. The ABAC attribute set grows from 5 to 7 with `source_volume_class` and `destination_volume_class`; an integration test proves a policy "DENY copy from LocalNTFS T4 to Optical" blocks an actual `CopyFileExW` to a registered optical drive on the test endpoint.
   3. The admin TUI Conditions Builder exposes `source_volume_class` and `destination_volume_class` as dropdowns with the six enum values; the existing USB/disk allowlist screens render SD/Optical/Virtual rows alongside USB without UI breakage.
   4. `WM_DEVICECHANGE` handlers cover virtual mounts (Daemon Tools, ISO mounting via Windows Explorer, VHD/VHDX mount) by registering `GUID_DEVINTERFACE_VOLUME` notification handlers for non-USB volume classes; the 500 ms deferred-processing pattern from v0.7.0 is preserved.
-**Plans:** 1 plan (60-01)
+**Plans:** 5 plans (49-01 through 49-05)
+
+Plans:
+- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
+- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
+- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
+- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
+- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
 **UI hint**: yes
 
 ### Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT
@@ -196,7 +252,14 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   2. Every shipped binary has SHA-256 + SHA-512 hashes published in `RELEASE_NOTES.md`; the Microsoft binary submission flow (`wdsi/filesubmission`) is documented; a `signtool verify` command for Authenticode timestamp verification is included; reproducible by an operator from the documented commands alone.
   3. The deployment guide explicitly addresses Secure Boot reality (AppInit_DLLs is inert; `siem.appinit_dlls_disabled` will fire), the PPL coverage gap (lsass/MsMpEng/EDR-self) and the DACL-tripwire backstop, `SeSystemProfilePrivilege` preservation across upgrades, and the post-install reboot requirement for hook activation.
   4. UAT executes on a real Windows 11 host with real OneDrive/Google Drive/Dropbox/Box clients, real printers, and real USB/SD/optical/virtual drives; every v0.9.0 cloud-sync regression test plus every v0.10.0 active-blocking scenario passes; the CRIT-04 benchmark gate (<= 25% wall-clock overhead on representative `cargo build` + `Office app launch` workloads) holds; results are captured in `.planning/milestones/v0.10.0-UAT.md`.
-**Plans:** 1 plan (60-01)
+**Plans:** 5 plans (49-01 through 49-05)
+
+Plans:
+- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
+- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
+- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
+- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
+- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
 
 ### Phase 58: Differentiators Bundle (Override + Diagnostic + Hash Evidence + Self-Health)
 **Goal**: The four highest-value differentiators ship as a bundle that materially improves operator deployability and forensic posture; cuttable as a unit to v0.10.1 if scope pressure hits.
@@ -207,7 +270,14 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   2. The diagnostic-mode admin TUI screen displays the full decision tree per blocked event — which hook fired, classification source + age, ABAC subject/resource/action/environment values, matched policy ID + mode, decision latency in microseconds — sufficient to triage a real false-positive without leaving the TUI.
   3. Block events on `WriteFile`/`WriteFileEx` carry a `content_sha256` hash of the would-be-written content (computed via the OS file handle, NOT a second open); audit-event consumers and SIEM relay forward the hash unchanged for forensic chain-of-custody.
   4. The hook DLL emits per-host self-health counters (injected_pids, patched_modules, pipe_round_trips, cache_hit_rate, fail_state) that the admin TUI surfaces on a coexistence dashboard, letting an operator see at a glance which endpoints have healthy hooks and which are degraded by AV/EDR interaction.
-**Plans:** 1 plan (60-01)
+**Plans:** 5 plans (49-01 through 49-05)
+
+Plans:
+- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
+- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
+- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
+- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
+- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
 **UI hint**: yes
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
@@ -232,7 +302,14 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   3. Scanner confidence is displayed in the review queue.
   4. Department filter scopes the review queue.
   5. Confirm invalidates the ABAC label resolution cache.
-**Plans:** 1 plan (60-01)
+**Plans:** 5 plans (49-01 through 49-05)
+
+Plans:
+- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
+- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
+- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
+- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
+- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
 **UI hint**: yes
 
 ### Phase 61: Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature
