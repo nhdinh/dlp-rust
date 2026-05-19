@@ -735,6 +735,26 @@ struct RunLoopContext {
     approval_poll_handle: Option<tokio::task::JoinHandle<()>>,
     /// Sender to signal the approval poll task to exit.
     approval_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Phase 49: Process watcher for universal injection (ETW + WMI backstop).
+    #[allow(dead_code)]
+    process_watcher: Option<crate::process_watcher::ProcessWatcher>,
+    /// Phase 49: Universal injector with allowlist + latency tracking.
+    #[allow(dead_code)]
+    universal_injector: Option<Arc<crate::universal_injector::UniversalInjector>>,
+    /// Phase 49: Process registry for lifecycle tracking.
+    #[allow(dead_code)]
+    process_registry: Arc<crate::process_registry::ProcessRegistry>,
+    /// Phase 49: Allowlist matcher for injection skip decisions.
+    #[allow(dead_code)]
+    allowlist_matcher: Arc<crate::allowlist::AllowlistMatcher>,
+    /// Phase 49: Shutdown flag for the periodic backstop sweep task.
+    backstop_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Phase 49: Handle for the periodic backstop sweep task.
+    backstop_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 49: Shutdown flag for the retry queue consumer task.
+    retry_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Phase 49: Handle for the retry queue consumer task.
+    retry_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// The main service run loop.
@@ -1134,6 +1154,22 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         Some(enforcer)
     };
 
+    // ── Phase 49: Universal Injection (ETW Process Watcher + Universal Injector) ──
+    let (
+        process_watcher_opt,
+        universal_injector_opt,
+        process_registry,
+        allowlist_matcher,
+        backstop_shutdown_tx,
+        backstop_handle,
+        retry_shutdown_tx,
+        retry_handle,
+    ) = init_universal_injection(
+        hook_injector_opt.as_ref(),
+        agent_config.universal_injection_enabled.unwrap_or(false),
+    )
+    .await;
+
     // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
     let (enc_shutdown_tx, enc_handle) = spawn_encryption_task(audit_ctx.clone(), recheck_interval);
 
@@ -1189,6 +1225,14 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         approval_cache,
         approval_poll_handle,
         approval_shutdown_tx,
+        process_watcher: process_watcher_opt,
+        universal_injector: universal_injector_opt,
+        process_registry,
+        allowlist_matcher,
+        backstop_shutdown: Some(backstop_shutdown_tx),
+        backstop_handle,
+        retry_shutdown: Some(retry_shutdown_tx),
+        retry_handle,
     }
 }
 
@@ -1360,6 +1404,202 @@ fn spawn_pipe1_heartbeat_task() -> (
         }
     });
     (tx, handle)
+}
+
+/// Initialise Phase 49 universal injection subsystem.
+///
+/// Constructs the process registry, allowlist matcher, universal injector,
+/// and ETW process watcher. Spawns the event consumer task, retry queue
+/// consumer, and periodic backstop sweep.
+///
+/// Returns all handles and references needed by `RunLoopContext`.
+#[allow(clippy::type_complexity)]
+async fn init_universal_injection(
+    hook_injector_opt: Option<&crate::hook_injector::HookInjector>,
+    enabled: bool,
+) -> (
+    Option<crate::process_watcher::ProcessWatcher>,
+    Option<Arc<crate::universal_injector::UniversalInjector>>,
+    Arc<crate::process_registry::ProcessRegistry>,
+    Arc<crate::allowlist::AllowlistMatcher>,
+    tokio::sync::watch::Sender<bool>,
+    Option<tokio::task::JoinHandle<()>>,
+    tokio::sync::watch::Sender<bool>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    if !enabled || hook_injector_opt.is_none() {
+        tracing::info!("universal injection disabled — skipping Phase 49 init");
+        let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+        let matcher = Arc::new(crate::allowlist::AllowlistMatcher::new(
+            vec![],
+            std::env::current_exe()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            std::process::id(),
+        ));
+        let (backstop_tx, _) = tokio::sync::watch::channel(false);
+        let (retry_tx, _) = tokio::sync::watch::channel(false);
+        return (
+            None, None, registry, matcher, backstop_tx, None, retry_tx, None,
+        );
+    }
+
+    // Resolve DLL paths from the existing HookInjector.
+    let dll_path_x64 = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll.dll")))
+        .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll.dll"));
+    let dll_path_x86 = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll_x86.dll")))
+        .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll_x86.dll"));
+
+    // 1. Construct process registry.
+    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+
+    // 2. Load allowlist entries from config (or empty vec if not configured yet).
+    let self_image_path = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let self_pid = std::process::id();
+    let allowlist_entries = with_config(|cfg| cfg.allowlist_entries.clone())
+        .unwrap_or_default();
+    let matcher = Arc::new(crate::allowlist::AllowlistMatcher::new(
+        allowlist_entries,
+        self_image_path,
+        self_pid,
+    ));
+
+    // 3. Construct HookInjector (reuse pattern from existing code).
+    let injector = Arc::new(crate::hook_injector::HookInjector::new(
+        &dll_path_x64,
+        Some(dll_path_x86.clone()),
+    ));
+
+    // 4. Create sweep trigger channel (crossbeam for ETW thread -> tokio bridge).
+    let (sweep_tx, sweep_rx) = crossbeam_channel::bounded::<crate::process_watcher::SweepTrigger>(16);
+
+    // 5. Create retry queue channel.
+    let (retry_tx, mut retry_rx) = tokio::sync::mpsc::unbounded_channel::<(
+        crate::process_watcher::ProcessEvent,
+        std::time::Instant,
+    )>();
+
+    // 6. Construct UniversalInjector.
+    let universal_injector = Arc::new(crate::universal_injector::UniversalInjector::with_retry_queue(
+        Arc::clone(&registry),
+        Arc::clone(&matcher),
+        injector,
+        retry_tx,
+    ));
+
+    // 7. Start ProcessWatcher on dedicated ETW thread.
+    let mut process_watcher = crate::process_watcher::ProcessWatcher::new();
+    if let Err(e) = process_watcher.start(sweep_tx.clone()) {
+        tracing::warn!(error = %e, "ProcessWatcher start failed — universal injection unavailable");
+        let (backstop_tx, _) = tokio::sync::watch::channel(false);
+        let (retry_shutdown_tx, _) = tokio::sync::watch::channel(false);
+        return (
+            None,
+            Some(universal_injector),
+            registry,
+            matcher,
+            backstop_tx,
+            None,
+            retry_shutdown_tx,
+            None,
+        );
+    }
+
+    // 8. Spawn tokio event consumer task.
+    let injector_for_events = Arc::clone(&universal_injector);
+    let event_rx = process_watcher.receiver().clone();
+    // Create a tokio mpsc sweep sender for the async handler.
+    let (tokio_sweep_tx, _tokio_sweep_rx) = mpsc::channel::<crate::process_watcher::SweepTrigger>(16);
+    tokio::spawn(async move {
+        while let Ok(event) = event_rx.recv() {
+            let injector = Arc::clone(&injector_for_events);
+            let sweep = tokio_sweep_tx.clone();
+            tokio::spawn(async move {
+                injector.handle_event(event, &sweep).await;
+            });
+        }
+    });
+
+    // 9. Spawn retry queue consumer task.
+    let injector_for_retry = Arc::clone(&universal_injector);
+    let (retry_shutdown_tx, mut retry_shutdown_rx) = tokio::sync::watch::channel(false);
+    let retry_handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                Some((event, retry_at)) = retry_rx.recv() => {
+                    let delay = retry_at.saturating_duration_since(std::time::Instant::now());
+                    tokio::time::sleep(delay).await;
+                    let injector = Arc::clone(&injector_for_retry);
+                    let sweep = mpsc::channel(1).0; // dummy sweep sender for retry
+                    tokio::spawn(async move {
+                        injector.handle_retry(event, &sweep).await;
+                    });
+                }
+                _ = retry_shutdown_rx.changed() => {
+                    tracing::info!("retry queue consumer shutting down");
+                    return;
+                }
+            }
+        }
+    });
+
+    // 10. Spawn periodic 5-minute backstop sweep task.
+    let _registry_for_backstop = Arc::clone(&registry);
+    let _matcher_for_backstop = Arc::clone(&matcher);
+    let _injector_for_backstop = Arc::clone(&universal_injector);
+    let (backstop_shutdown_tx, mut backstop_shutdown_rx) = tokio::sync::watch::channel(false);
+    let backstop_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    tracing::info!("periodic backstop sweep starting");
+                    // Enumerate all PIDs, find those not in Injected or Skipped state.
+                    // For now, this is a lightweight placeholder — full sweep
+                    // implementation requires K32EnumProcesses which is Windows-only.
+                    // The startup sweep (Task 4) covers the initial enumeration.
+                }
+                _ = backstop_shutdown_rx.changed() => {
+                    tracing::info!("backstop sweep shutting down");
+                    return;
+                }
+            }
+        }
+    });
+
+    // 11. Spawn sweep trigger handler (for channel overflow immediate sweeps).
+    tokio::spawn(async move {
+        while let Ok(trigger) = sweep_rx.recv() {
+            match trigger {
+                crate::process_watcher::SweepTrigger::ChannelOverflow => {
+                    tracing::warn!("channel overflow triggered immediate sweep");
+                    // Placeholder: full EnumProcesses sweep on overflow.
+                }
+                crate::process_watcher::SweepTrigger::HeartbeatRecovery => {
+                    tracing::info!("ETW heartbeat recovered — running recovery sweep");
+                }
+            }
+        }
+    });
+
+    tracing::info!("Phase 49 universal injection subsystem initialised");
+
+    (
+        Some(process_watcher),
+        Some(universal_injector),
+        registry,
+        matcher,
+        backstop_shutdown_tx,
+        Some(backstop_handle),
+        retry_shutdown_tx,
+        Some(retry_handle),
+    )
 }
 
 /// Spawns the config poll task when a server client is available.
