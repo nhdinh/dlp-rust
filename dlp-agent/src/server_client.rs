@@ -468,8 +468,50 @@ impl ServerClient {
     /// Returns `ServerClientError::ServerError` on non-success status codes.
     /// Callers should log the error and retain the current in-memory config.
     pub async fn fetch_agent_config(&self) -> Result<AgentConfigPayload, ServerClientError> {
+        match self.fetch_agent_config_with_version(0).await {
+            Ok(Some(payload)) => Ok(payload),
+            Ok(None) => {
+                // Should not happen with version=0 (no 304 possible on first request),
+                // but handle gracefully.
+                Err(ServerClientError::Config(
+                    "server returned 304 on initial config fetch".to_string(),
+                ))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Fetches the resolved agent config with If-None-Match version header.
+    ///
+    /// Sends `If-None-Match: <version>` header for 304-style optimization.
+    /// Returns `Ok(None)` if the server responds 304 (Not Modified).
+    /// Returns `Ok(Some(payload))` if the server returns new config.
+    ///
+    /// # Arguments
+    ///
+    /// * `version` — The last known allowlist version to send as If-None-Match.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerClientError::Http` on network failures.
+    /// Returns `ServerClientError::ServerError` on non-2xx, non-304 status codes.
+    pub async fn fetch_agent_config_with_version(
+        &self,
+        version: i64,
+    ) -> Result<Option<AgentConfigPayload>, ServerClientError> {
         let url = format!("{}/agent-config/{}", self.base_url, self.agent_id);
-        let resp = self.client.get(&url).send().await?;
+        let resp = self
+            .client
+            .get(&url)
+            .header("If-None-Match", version.to_string())
+            .send()
+            .await?;
+
+        if resp.status().as_u16() == 304 {
+            debug!(agent_id = %self.agent_id, version, "agent config unchanged (304)");
+            return Ok(None);
+        }
+
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp
@@ -478,9 +520,10 @@ impl ServerClient {
                 .unwrap_or_else(|_| "<no body>".to_string());
             return Err(ServerClientError::ServerError { status, body });
         }
+
         let payload: AgentConfigPayload = resp.json().await.map_err(ServerClientError::Http)?;
-        debug!(agent_id = %self.agent_id, "agent config fetched from server");
-        Ok(payload)
+        debug!(agent_id = %self.agent_id, version = payload.allowlist_version, "agent config fetched from server");
+        Ok(Some(payload))
     }
 
     /// Fetches the full device registry from `GET /admin/device-registry`.
