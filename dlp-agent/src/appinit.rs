@@ -13,21 +13,11 @@ const APPINIT_DLLS_VALUE: &str = "AppInit_DLLs";
 const LOAD_APPINIT_VALUE: &str = "LoadAppInit_DLLs";
 const REQUIRE_SIGNED_VALUE: &str = "RequireSignedAppInit_DLLs";
 /// AppInit_DLLs registry state read at boot.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AppInitState {
     pub appinit_dlls: Option<String>,
     pub load_appinit: Option<u32>,
     pub require_signed: Option<u32>,
-}
-
-impl Default for AppInitState {
-    fn default() -> Self {
-        Self {
-            appinit_dlls: None,
-            load_appinit: None,
-            require_signed: None,
-        }
-    }
 }
 
 /// Read AppInit_DLLs registry state from HKLM.
@@ -56,16 +46,11 @@ pub fn read_appinit_state() -> anyhow::Result<AppInitState> {
         return Err(anyhow::anyhow!("RegOpenKeyExW failed: {:?}", result));
     }
 
-    let mut state = AppInitState::default();
-
-    // Read AppInit_DLLs (REG_SZ).
-    state.appinit_dlls = read_reg_string(hkey, APPINIT_DLLS_VALUE);
-
-    // Read LoadAppInit_DLLs (REG_DWORD).
-    state.load_appinit = read_reg_dword(hkey, LOAD_APPINIT_VALUE);
-
-    // Read RequireSignedAppInit_DLLs (REG_DWORD).
-    state.require_signed = read_reg_dword(hkey, REQUIRE_SIGNED_VALUE);
+    let state = AppInitState {
+        appinit_dlls: read_reg_string(hkey, APPINIT_DLLS_VALUE),
+        load_appinit: read_reg_dword(hkey, LOAD_APPINIT_VALUE),
+        require_signed: read_reg_dword(hkey, REQUIRE_SIGNED_VALUE),
+    };
 
     unsafe {
         let _ = RegCloseKey(hkey);
