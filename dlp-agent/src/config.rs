@@ -262,6 +262,10 @@ pub struct AgentConfig {
     /// Phase 49: Allowlist entries for universal injection.
     #[serde(default)]
     pub allowlist_entries: Vec<crate::allowlist::AllowlistEntry>,
+
+    /// Phase 49: Version of the allowlist config (for change detection).
+    #[serde(default)]
+    pub allowlist_version: i64,
 }
 
 impl AgentConfig {
@@ -638,6 +642,7 @@ mod tests {
             print_max_pages: None,
             universal_injection_enabled: None,
             allowlist_entries: Vec::new(),
+            allowlist_version: 0,
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
         };
@@ -683,6 +688,7 @@ mod tests {
             machine_name: None,
             universal_injection_enabled: None,
             allowlist_entries: Vec::new(),
+            allowlist_version: 0,
         };
 
         let tmp_path = std::env::temp_dir().join("test_agent_config_save_server_url.toml");
