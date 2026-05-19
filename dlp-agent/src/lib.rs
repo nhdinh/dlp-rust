@@ -125,6 +125,9 @@ pub mod share_link_enforcer;
 
 pub mod approval_cache;
 
+#[cfg(windows)]
+pub mod process_registry;
+
 /// Shared test helpers for modules that mutate the global DiskEnumerator OnceLock.
 ///
 /// The global `DISK_ENUMERATOR` is a process-wide OnceLock. Tests in
