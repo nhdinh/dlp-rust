@@ -284,10 +284,16 @@ impl ProcessCounts {
         let mut map = std::collections::HashMap::new();
         map.insert(SkipReasonCategory::SelfProcess, self.skipped_self as usize);
         map.insert(SkipReasonCategory::Avedr, self.skipped_avedr as usize);
-        map.insert(SkipReasonCategory::SystemCritical, self.skipped_system as usize);
+        map.insert(
+            SkipReasonCategory::SystemCritical,
+            self.skipped_system as usize,
+        );
         map.insert(SkipReasonCategory::Ppl, self.skipped_ppl as usize);
         map.insert(SkipReasonCategory::WoW64, self.skipped_wow64 as usize);
-        map.insert(SkipReasonCategory::OperatorDefined, self.skipped_operator as usize);
+        map.insert(
+            SkipReasonCategory::OperatorDefined,
+            self.skipped_operator as usize,
+        );
         map.insert(SkipReasonCategory::Failed, self.skipped_failed as usize);
         map
     }
