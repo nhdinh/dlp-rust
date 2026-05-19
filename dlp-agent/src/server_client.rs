@@ -1196,6 +1196,8 @@ mod tests {
             print_xps_timeout_ms: 5000,
             print_unclassifiable_action: "Block".to_string(),
             print_max_pages: 100,
+            allowlist_entries: vec![],
+            allowlist_version: 0,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -1228,6 +1230,8 @@ mod tests {
             print_xps_timeout_ms: 5000,
             print_unclassifiable_action: "Block".to_string(),
             print_max_pages: 100,
+            allowlist_entries: vec![],
+            allowlist_version: 0,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -1307,6 +1311,8 @@ mod tests {
             print_xps_timeout_ms: 5000,
             print_unclassifiable_action: "Block".to_string(),
             print_max_pages: 100,
+            allowlist_entries: vec![],
+            allowlist_version: 0,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -1536,6 +1542,8 @@ mod tests {
             print_xps_timeout_ms: 5000,
             print_unclassifiable_action: "Block".to_string(),
             print_max_pages: 100,
+            allowlist_entries: vec![],
+            allowlist_version: 0,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
