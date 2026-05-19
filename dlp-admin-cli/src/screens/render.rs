@@ -203,6 +203,9 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         } => {
             draw_syslog_config(frame, area, config, *selected, *editing, buffer);
         }
+        Screen::Allowlist { screen } => {
+            crate::screens::allowlist::draw_allowlist_screen(frame, screen, area);
+        }
         Screen::ConditionsBuilder {
             step,
             selected_attribute,

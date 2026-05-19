@@ -58,6 +58,7 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::CloudConfig { .. } => handle_cloud_config(app, key),
         Screen::PrintConfig { .. } => handle_print_config(app, key),
         Screen::SyslogConfig { .. } => handle_syslog_config(app, key),
+        Screen::Allowlist { .. } => handle_allowlist(app, key),
         Screen::ConditionsBuilder { .. } => handle_conditions_builder(app, key),
         Screen::PolicyCreate { .. } => handle_policy_create(app, key),
         Screen::PolicyEdit { .. } => handle_policy_edit(app, key),
@@ -7515,6 +7516,24 @@ mod usb_enforcement_tests {
                 assert_eq!(*selected, 5);
             }
             other => panic!("expected SystemMenu, got {other:?}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Allowlist screen
+// ---------------------------------------------------------------------------
+
+fn handle_allowlist(app: &mut App, key: KeyEvent) {
+    let screen = match &mut app.screen {
+        Screen::Allowlist { screen } => screen,
+        _ => return,
+    };
+    if let Some(action) = screen.handle_key(key, &mut app.client) {
+        match action {
+            crate::screens::allowlist::AllowlistAction::GoBack => {
+                app.screen = Screen::SystemMenu { selected: 2 };
+            }
         }
     }
 }
