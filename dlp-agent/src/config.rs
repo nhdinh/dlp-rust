@@ -636,6 +636,8 @@ mod tests {
             print_xps_timeout_ms: None,
             print_unclassifiable_action: None,
             print_max_pages: None,
+            universal_injection_enabled: None,
+            allowlist_entries: Vec::new(),
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
         };
@@ -679,6 +681,8 @@ mod tests {
             print_unclassifiable_action: None,
             print_max_pages: None,
             machine_name: None,
+            universal_injection_enabled: None,
+            allowlist_entries: Vec::new(),
         };
 
         let tmp_path = std::env::temp_dir().join("test_agent_config_save_server_url.toml");

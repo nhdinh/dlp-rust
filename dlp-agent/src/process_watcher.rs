@@ -34,7 +34,7 @@ pub enum EventSource {
 }
 
 /// Trigger for immediate EnumProcesses sweep.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SweepTrigger {
     ChannelOverflow,
     HeartbeatRecovery,

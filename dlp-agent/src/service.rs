@@ -748,12 +748,16 @@ struct RunLoopContext {
     #[allow(dead_code)]
     allowlist_matcher: Arc<crate::allowlist::AllowlistMatcher>,
     /// Phase 49: Shutdown flag for the periodic backstop sweep task.
+    #[allow(dead_code)]
     backstop_shutdown: Option<tokio::sync::watch::Sender<bool>>,
     /// Phase 49: Handle for the periodic backstop sweep task.
+    #[allow(dead_code)]
     backstop_handle: Option<tokio::task::JoinHandle<()>>,
     /// Phase 49: Shutdown flag for the retry queue consumer task.
+    #[allow(dead_code)]
     retry_shutdown: Option<tokio::sync::watch::Sender<bool>>,
     /// Phase 49: Handle for the retry queue consumer task.
+    #[allow(dead_code)]
     retry_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -1632,7 +1636,6 @@ async fn startup_sweep(
     {
         use tokio::sync::Semaphore;
         use tokio::time::timeout;
-        use windows::Win32::System::ProcessStatus::K32EnumProcesses;
 
         let pids = enum_all_processes();
         tracing::info!(count = pids.len(), "startup sweep beginning");
@@ -1836,16 +1839,13 @@ async fn backstop_sweep(
         }
 
         for h in handles {
-            match h.await {
-                Ok((was_injected, was_skipped)) => {
-                    if was_injected {
-                        injected += 1;
-                    }
-                    if was_skipped {
-                        skipped += 1;
-                    }
+            if let Ok((was_injected, was_skipped)) = h.await {
+                if was_injected {
+                    injected += 1;
                 }
-                Err(_) => {}
+                if was_skipped {
+                    skipped += 1;
+                }
             }
         }
 
