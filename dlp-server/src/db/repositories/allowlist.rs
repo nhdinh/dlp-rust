@@ -290,6 +290,31 @@ impl AllowlistRepository {
             params![id, enabled, updated_at],
         )
     }
+
+    /// Returns the current maximum version across all allowlist entries.
+    ///
+    /// Returns 0 if the table is empty (safe default for agent change detection).
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - Connection pool to acquire a read connection from.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
+    pub fn current_version(pool: &Pool) -> rusqlite::Result<i64> {
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let version: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM allowlist_entries",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(version)
+    }
 }
 
 /// Stateless repository for the `allowlist_audit_log` table.
