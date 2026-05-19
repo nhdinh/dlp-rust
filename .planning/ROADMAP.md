@@ -57,7 +57,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 ## Phases (v0.10.0 active phases)
 
 - [x] **Phase 48: Hook DLL Surface Expansion + Crash Hardening + Build Harness** — extend and harden the v0.9.0 hook into a single unified DLL with the full file-I/O surface, x86 sibling, and Authenticode signing pipeline. (completed 2026-05-15)
-- [ ] **Phase 49: Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback** — drive the wider hook surface into every non-allowlisted user process via ETW Kernel-Process and `CreateRemoteThread`.
+- [x] **Phase 49: Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback** — drive the wider hook surface into every non-allowlisted user process via ETW Kernel-Process and `CreateRemoteThread`. (completed 2026-05-19)
 - [ ] **Phase 50: Shared-Memory Classification Cache + Fail-Mode State Machine** — give the hook DLL a survivable sub-50µs hot path and a tier-gated asymmetric fail policy.
 - [ ] **Phase 51: ntdll Syscall-Stub Trampolines + EDR Coexistence** — close the direct-syscall bypass behind a default-off feature flag with detect-before-patch EDR safety.
 - [ ] **Phase 52: DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc** — kernel-enforced NTFS backstop for T3/T4 roots, plus the carried-forward DPAPI recovery runbook.
@@ -100,7 +100,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
   3. On a Secure Boot endpoint, the agent emits exactly one `siem.appinit_dlls_disabled` audit event at boot, and the deployment guide is wired to surface AppInit_DLLs as inert under Secure Boot.
   4. WoW64 32-bit processes are injected with `dlp_hook_dll_x86.dll` (verified via `Process Hacker` module list); pure-x64 processes are injected with the x64 DLL.
   5. On agent restart, the startup `EnumProcesses` sweep injects into all already-running non-allowlisted processes within 5 s; no process requires a logout/reboot to gain coverage.
-**Plans:** 3/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 - [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
@@ -350,7 +350,7 @@ Plans:
 | 28. Admin TUI Screens | 5/5 | Reopened for review | - |
 | 47. Secrets Encryption at Rest (prerequisite) | 1/1 | Reopened for review | - |
 | 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-16 |
-| 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 3/5 | In Progress|  |
+| 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 5/5 | Complete   | 2026-05-19 |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 0/0 | Not started | - |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 0/0 | Not started | - |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 0/0 | Not started | - |
