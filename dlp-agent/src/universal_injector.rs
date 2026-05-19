@@ -3,7 +3,9 @@
 
 use crate::allowlist::{AllowlistCategory, AllowlistMatcher};
 use crate::hook_injector::HookInjector;
-use crate::process_registry::{ClaimResult, InjectionFailure, PplOutcome, ProcessKey, ProcessRegistry, SkipReason};
+use crate::process_registry::{
+    ClaimResult, InjectionFailure, PplOutcome, ProcessKey, ProcessRegistry, SkipReason,
+};
 use crate::process_watcher::{ProcessEvent, SweepTrigger};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,7 +22,10 @@ impl LatencyHistogram {
     /// Creates a new empty latency histogram.
     #[must_use]
     pub fn new() -> Self {
-        Self { buckets: [0; 6], total: 0 }
+        Self {
+            buckets: [0; 6],
+            total: 0,
+        }
     }
 
     /// Records a latency measurement in milliseconds.
@@ -164,7 +169,10 @@ impl UniversalInjector {
         let image_path = crate::allowlist::canonicalize_path(&event.image_path);
 
         // Allowlist check.
-        if let Some(category) = self.matcher.check(event.pid, &image_path, event.creation_time) {
+        if let Some(category) = self
+            .matcher
+            .check(event.pid, &image_path, event.creation_time)
+        {
             tracing::info!(pid = event.pid, ?category, "allowlist skip");
             self.registry
                 .record_skipped(key, SkipReason::from_category(category));
@@ -205,7 +213,11 @@ impl UniversalInjector {
                     let mut hist = self.latency.lock().expect("latency mutex poisoned");
                     hist.record(latency);
                 }
-                tracing::info!(pid = event.pid, latency_ms = latency, "injected successfully");
+                tracing::info!(
+                    pid = event.pid,
+                    latency_ms = latency,
+                    "injected successfully"
+                );
             }
             Err(e) => {
                 let latency = inject_start
@@ -378,11 +390,11 @@ mod tests {
     #[test]
     fn test_latency_histogram_record_and_percentiles() {
         let mut hist = LatencyHistogram::new();
-        hist.record(25);   // bucket 0
-        hist.record(75);   // bucket 1
-        hist.record(150);  // bucket 2
-        hist.record(400);  // bucket 3
-        hist.record(600);  // bucket 4
+        hist.record(25); // bucket 0
+        hist.record(75); // bucket 1
+        hist.record(150); // bucket 2
+        hist.record(400); // bucket 3
+        hist.record(600); // bucket 4
         hist.record(2000); // bucket 5
 
         assert_eq!(hist.total, 6);
@@ -471,11 +483,18 @@ mod tests {
         let (sweep_tx, _sweep_rx) = mpsc::channel(1);
         ui.handle_event(event, &sweep_tx).await;
 
-        let key = ProcessKey { pid: 42, creation_time: 1 };
+        let key = ProcessKey {
+            pid: 42,
+            creation_time: 1,
+        };
         let state = registry.get(&key).expect("key should exist");
         assert!(
-            matches!(&*state, crate::process_registry::ProcessState::Skipped(SkipReason::SelfProcess)),
-            "expected Skipped(SelfProcess), got {:?}", *state
+            matches!(
+                &*state,
+                crate::process_registry::ProcessState::Skipped(SkipReason::SelfProcess)
+            ),
+            "expected Skipped(SelfProcess), got {:?}",
+            *state
         );
     }
 
@@ -497,7 +516,10 @@ mod tests {
         // Second event for same PID+creation_time should be skipped.
         ui.handle_event(event2, &sweep_tx).await;
 
-        let key = ProcessKey { pid: 1000, creation_time: 1 };
+        let key = ProcessKey {
+            pid: 1000,
+            creation_time: 1,
+        };
         // Should still be in some state (either Injected or Skipped depending on injection result).
         assert!(registry.get(&key).is_some());
     }

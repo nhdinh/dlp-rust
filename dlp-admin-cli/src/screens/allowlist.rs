@@ -2,14 +2,13 @@
 //!
 //! Navigable list of allowlist entries with add/edit/disable actions.
 
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
+    style::{Color, Style},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
-use crossterm::event::{KeyCode, KeyEvent};
 
 /// Action returned from key handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +18,7 @@ pub enum AllowlistAction {
 
 /// Screen state for allowlist management.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct AllowlistScreen {
     /// Entries loaded from the server.
     pub entries: Vec<AllowlistEntryUi>,
@@ -38,6 +38,7 @@ pub struct AllowlistScreen {
 
 /// UI representation of a single allowlist entry.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct AllowlistEntryUi {
     /// Server-generated UUID.
     pub id: String,
@@ -68,6 +69,12 @@ pub enum AllowlistMode {
     ConfirmDisable,
     /// Confirm delete action.
     ConfirmDelete,
+}
+
+impl Default for AllowlistScreen {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AllowlistScreen {
@@ -183,11 +190,7 @@ impl AllowlistScreen {
 }
 
 /// Renders the allowlist screen.
-pub fn draw_allowlist_screen(
-    frame: &mut Frame,
-    screen: &AllowlistScreen,
-    area: Rect,
-) {
+pub fn draw_allowlist_screen(frame: &mut Frame, screen: &AllowlistScreen, area: Rect) {
     let block = Block::default()
         .title("Allowlist Configuration (F5=Refresh, a=Add, e=Edit, d=Disable, x=Delete, Esc=Back)")
         .borders(Borders::ALL);

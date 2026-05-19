@@ -139,45 +139,47 @@ fn run_etw_loop(
     use ferrisetw::EventRecord;
 
     let process_provider = Provider::kernel(&kernel_providers::PROCESS_PROVIDER)
-        .add_callback(move |record: &EventRecord, schema_locator: &SchemaLocator| {
-            if record.event_id() != 1 {
-                return;
-            }
-            let ts = Instant::now();
-            match schema_locator.event_schema(record) {
-                Ok(schema) => {
-                    let parser = ferrisetw::parser::Parser::create(record, &schema);
-                    let pid: u32 = parser.try_parse("ProcessID").unwrap_or(0);
-                    let image_name: String = parser.try_parse("ImageName").unwrap_or_default();
-                    let parent_id: u32 = parser.try_parse("ParentProcessID").unwrap_or(0);
-                    let creation_time: u64 = parser.try_parse("CreateTime").unwrap_or(0);
+        .add_callback(
+            move |record: &EventRecord, schema_locator: &SchemaLocator| {
+                if record.event_id() != 1 {
+                    return;
+                }
+                let ts = Instant::now();
+                match schema_locator.event_schema(record) {
+                    Ok(schema) => {
+                        let parser = ferrisetw::parser::Parser::create(record, &schema);
+                        let pid: u32 = parser.try_parse("ProcessID").unwrap_or(0);
+                        let image_name: String = parser.try_parse("ImageName").unwrap_or_default();
+                        let parent_id: u32 = parser.try_parse("ParentProcessID").unwrap_or(0);
+                        let creation_time: u64 = parser.try_parse("CreateTime").unwrap_or(0);
 
-                    let event = ProcessEvent {
-                        pid,
-                        image_path: image_name,
-                        parent_pid: parent_id,
-                        creation_time,
-                        source: EventSource::Etw,
-                        event_timestamp: ts,
-                    };
+                        let event = ProcessEvent {
+                            pid,
+                            image_path: image_name,
+                            parent_pid: parent_id,
+                            creation_time,
+                            source: EventSource::Etw,
+                            event_timestamp: ts,
+                        };
 
-                    // Review fix: overflow triggers sweep, not silent drop-oldest.
-                    match tx.try_send(event) {
-                        Ok(()) => {}
-                        Err(TrySendError::Full(_)) => {
-                            tracing::warn!(
-                                "ETW event channel full — triggering immediate sweep"
-                            );
-                            let _ = sweep_trigger.try_send(SweepTrigger::ChannelOverflow);
+                        // Review fix: overflow triggers sweep, not silent drop-oldest.
+                        match tx.try_send(event) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(_)) => {
+                                tracing::warn!(
+                                    "ETW event channel full — triggering immediate sweep"
+                                );
+                                let _ = sweep_trigger.try_send(SweepTrigger::ChannelOverflow);
+                            }
+                            Err(TrySendError::Disconnected(_)) => {}
                         }
-                        Err(TrySendError::Disconnected(_)) => {}
+                    }
+                    Err(e) => {
+                        tracing::warn!("ETW schema error: {:?}", e);
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("ETW schema error: {:?}", e);
-                }
-            }
-        })
+            },
+        )
         .build();
 
     let props = TraceProperties {
@@ -265,10 +267,7 @@ mod tests {
 
     #[test]
     fn test_sweep_trigger_variants() {
-        assert_eq!(
-            SweepTrigger::ChannelOverflow,
-            SweepTrigger::ChannelOverflow
-        );
+        assert_eq!(SweepTrigger::ChannelOverflow, SweepTrigger::ChannelOverflow);
         assert_eq!(
             SweepTrigger::HeartbeatRecovery,
             SweepTrigger::HeartbeatRecovery

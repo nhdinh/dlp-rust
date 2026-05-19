@@ -108,7 +108,10 @@ impl AllowlistRepository {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
-    pub fn list_by_category(pool: &Pool, category: &str) -> rusqlite::Result<Vec<AllowlistEntryRow>> {
+    pub fn list_by_category(
+        pool: &Pool,
+        category: &str,
+    ) -> rusqlite::Result<Vec<AllowlistEntryRow>> {
         let conn = pool
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -361,7 +364,10 @@ impl AllowlistAuditRepository {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
-    pub fn list_by_entry_id(pool: &Pool, entry_id: &str) -> rusqlite::Result<Vec<AllowlistAuditRow>> {
+    pub fn list_by_entry_id(
+        pool: &Pool,
+        entry_id: &str,
+    ) -> rusqlite::Result<Vec<AllowlistAuditRow>> {
         let conn = pool
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -437,7 +443,13 @@ mod tests {
         {
             let mut conn = pool.get().expect("get connection");
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
-            let row = make_row("uuid-1", "exact_path", "C:\\Windows\\System32\\foo.dll", "self", 10);
+            let row = make_row(
+                "uuid-1",
+                "exact_path",
+                "C:\\Windows\\System32\\foo.dll",
+                "self",
+                10,
+            );
             AllowlistRepository::insert(&uow, &row).expect("insert new row");
             uow.commit().expect("commit");
         }
@@ -461,7 +473,13 @@ mod tests {
         {
             let mut conn = pool.get().expect("get connection");
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
-            let row = make_row("uuid-1", "exact_path", "C:\\Windows\\System32\\foo.dll", "self", 10);
+            let row = make_row(
+                "uuid-1",
+                "exact_path",
+                "C:\\Windows\\System32\\foo.dll",
+                "self",
+                10,
+            );
             AllowlistRepository::insert(&uow, &row).expect("insert");
             uow.commit().expect("commit");
         }
@@ -485,7 +503,13 @@ mod tests {
         {
             let mut conn = pool.get().expect("get connection");
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
-            let row = make_row("uuid-1", "exact_path", "C:\\Windows\\System32\\foo.dll", "self", 10);
+            let row = make_row(
+                "uuid-1",
+                "exact_path",
+                "C:\\Windows\\System32\\foo.dll",
+                "self",
+                10,
+            );
             AllowlistRepository::insert(&uow, &row).expect("insert");
             uow.commit().expect("commit");
         }
@@ -496,7 +520,13 @@ mod tests {
             let updated = AllowlistEntryRow {
                 value: "C:\\Windows\\System32\\bar.dll".to_string(),
                 updated_at: "2026-06-01T00:00:00Z".to_string(),
-                ..make_row("uuid-1", "exact_path", "C:\\Windows\\System32\\foo.dll", "self", 10)
+                ..make_row(
+                    "uuid-1",
+                    "exact_path",
+                    "C:\\Windows\\System32\\foo.dll",
+                    "self",
+                    10,
+                )
             };
             let affected = AllowlistRepository::update(&uow, &updated).expect("update");
             assert_eq!(affected, 1, "expected 1 row updated");
@@ -516,7 +546,13 @@ mod tests {
         {
             let mut conn = pool.get().expect("get connection");
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
-            let row = make_row("uuid-1", "exact_path", "C:\\Windows\\System32\\foo.dll", "self", 10);
+            let row = make_row(
+                "uuid-1",
+                "exact_path",
+                "C:\\Windows\\System32\\foo.dll",
+                "self",
+                10,
+            );
             AllowlistRepository::insert(&uow, &row).expect("insert");
             uow.commit().expect("commit");
         }
@@ -561,11 +597,13 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        let self_rows = AllowlistRepository::list_by_category(&pool, "self").expect("list_by_category");
+        let self_rows =
+            AllowlistRepository::list_by_category(&pool, "self").expect("list_by_category");
         assert_eq!(self_rows.len(), 1);
         assert_eq!(self_rows[0].id, "uuid-1");
 
-        let av_rows = AllowlistRepository::list_by_category(&pool, "avedr").expect("list_by_category avedr");
+        let av_rows =
+            AllowlistRepository::list_by_category(&pool, "avedr").expect("list_by_category avedr");
         assert_eq!(av_rows.len(), 1);
         assert_eq!(av_rows[0].id, "uuid-2");
     }
@@ -585,8 +623,9 @@ mod tests {
         {
             let mut conn = pool.get().expect("get connection");
             let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
-            let affected = AllowlistRepository::set_enabled(&uow, "uuid-1", 0, "2026-06-01T00:00:00Z")
-                .expect("set_enabled");
+            let affected =
+                AllowlistRepository::set_enabled(&uow, "uuid-1", 0, "2026-06-01T00:00:00Z")
+                    .expect("set_enabled");
             assert_eq!(affected, 1);
             uow.commit().expect("commit");
         }
@@ -655,8 +694,8 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        let audits = AllowlistAuditRepository::list_by_entry_id(&pool, "uuid-1")
-            .expect("list_by_entry_id");
+        let audits =
+            AllowlistAuditRepository::list_by_entry_id(&pool, "uuid-1").expect("list_by_entry_id");
         assert_eq!(audits.len(), 1);
         assert_eq!(audits[0].action, "create");
         assert_eq!(audits[0].actor, "admin");

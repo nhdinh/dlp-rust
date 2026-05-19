@@ -102,10 +102,7 @@ fn read_reg_string(
 }
 
 /// Read a REG_DWORD value from an open registry key.
-fn read_reg_dword(
-    hkey: windows::Win32::System::Registry::HKEY,
-    value_name: &str,
-) -> Option<u32> {
+fn read_reg_dword(hkey: windows::Win32::System::Registry::HKEY, value_name: &str) -> Option<u32> {
     let name_wide: Vec<u16> = value_name
         .encode_utf16()
         .chain(std::iter::once(0))
