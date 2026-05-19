@@ -1039,6 +1039,14 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
                 .put(update_allowlist_handler)
                 .delete(delete_allowlist_handler),
         )
+        .route(
+            "/admin/allowlist/{id}/disable",
+            post(disable_allowlist_handler),
+        )
+        .route(
+            "/admin/allowlist/{id}/audit",
+            get(list_allowlist_audit_handler),
+        )
         // Phase 47 Task 47-08: KEK rotation + maintenance-mode toggle.
         .route("/admin/secrets/rotate", post(rotate_secrets_handler))
         .route("/admin/maintenance/enter", post(maintenance_enter_handler))
@@ -3491,6 +3499,150 @@ async fn delete_allowlist_handler(
 
     tracing::info!(entry_id = %id, "allowlist entry deleted");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /admin/allowlist/{id}/disable` — soft-disable an allowlist entry.
+///
+/// Sets `enabled = 0` and bumps the version. Returns 200 OK with the updated entry.
+/// Returns 404 if the UUID does not exist. Emits an `AdminAction(AllowlistUpdate)`
+/// audit event AFTER the DB commit (best-effort).
+///
+/// # Errors
+///
+/// Returns `AppError::Unauthorized` if the JWT is missing or invalid.
+/// Returns `AppError::NotFound` if the UUID does not exist.
+/// Returns `AppError::Internal` on pool or query failure.
+async fn disable_allowlist_handler(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Json<AllowlistEntryResponse>, AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+
+    let id = req
+        .uri()
+        .path()
+        .rsplit('/')
+        .nth(1)
+        .unwrap_or("")
+        .to_string();
+
+    let pool = Arc::clone(&state.pool);
+    let entry_id = id.clone();
+    let now = chrono::Utc::now().to_rfc3339();
+    let affected = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let n = AllowlistRepository::set_enabled(&uow, &entry_id, 0, &now)
+            .map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(n)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    if affected == 0 {
+        return Err(AppError::NotFound(format!("allowlist entry {id} not found")));
+    }
+
+    // Emit audit event AFTER commit (best-effort).
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username.clone(),
+        format!("allowlist:{}", id),
+        dlp_common::Classification::T3,
+        dlp_common::Action::AllowlistUpdate,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let pool = Arc::clone(&state.pool);
+    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
+    .and_then(|r| r)
+    {
+        tracing::warn!(error = %e, "audit emission failed for AllowlistDisable (best-effort)");
+    }
+
+    // Re-read the updated row.
+    let pool = Arc::clone(&state.pool);
+    let entry_id = id.clone();
+    let updated_row = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        AllowlistRepository::get_by_id(&pool, &entry_id).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("allowlist entry {entry_id} not found"))
+            }
+            _ => AppError::Database(e),
+        })
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(entry_id = %id, "allowlist entry disabled");
+    Ok(Json(updated_row.into()))
+}
+
+/// `GET /admin/allowlist/{id}/audit` — list audit log for an allowlist entry.
+///
+/// Returns audit records ordered by timestamp descending.
+///
+/// # Errors
+///
+/// Returns `AppError::Unauthorized` if the JWT is missing or invalid.
+/// Returns `AppError::Internal` on pool or query failure.
+async fn list_allowlist_audit_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<AllowlistAuditResponse>>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let entry_id = id.clone();
+    let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        AllowlistAuditRepository::list_by_entry_id(&pool, &entry_id).map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
+}
+
+/// Audit log record returned by the API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllowlistAuditResponse {
+    /// Server-generated UUID.
+    pub id: String,
+    /// Foreign key referencing the allowlist entry.
+    pub entry_id: String,
+    /// Action performed.
+    pub action: String,
+    /// Username or SID of the actor.
+    pub actor: String,
+    /// JSON snapshot of the entry state before the action.
+    pub old_value: Option<String>,
+    /// JSON snapshot of the entry state after the action.
+    pub new_value: Option<String>,
+    /// ISO-8601 timestamp.
+    pub timestamp: String,
+}
+
+impl From<AllowlistAuditRow> for AllowlistAuditResponse {
+    fn from(row: AllowlistAuditRow) -> Self {
+        Self {
+            id: row.id,
+            entry_id: row.entry_id,
+            action: row.action,
+            actor: row.actor,
+            old_value: row.old_value,
+            new_value: row.new_value,
+            timestamp: row.timestamp,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -9975,5 +10127,178 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].category, "self");
         assert_eq!(list[0].value, "foo");
+    }
+
+    #[tokio::test]
+    async fn test_disable_allowlist_handler_success() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create an entry
+        let payload = serde_json::json!({
+            "match_type": "exact_path",
+            "value": "C:\\foo.dll",
+            "description": "To disable",
+            "category": "self",
+            "priority": 10,
+            "enabled": true,
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/allowlist")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let created: AllowlistEntryResponse = serde_json::from_slice(&body).expect("parse");
+        let id = created.id;
+        assert!(created.enabled);
+
+        // Disable it
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/admin/allowlist/{id}/disable"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build DISABLE");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let disabled: AllowlistEntryResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(disabled.id, id);
+        assert!(!disabled.enabled);
+        assert_eq!(disabled.version, 2, "version must be bumped on disable");
+    }
+
+    #[tokio::test]
+    async fn test_disable_allowlist_handler_not_found_returns_404() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/allowlist/nonexistent-uuid/disable")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build DISABLE");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_list_allowlist_audit_handler_returns_audit_log() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let _app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create an entry directly via repository and insert an audit record
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("build pool"));
+        let state = make_state_from_pool(Arc::clone(&pool));
+        {
+            let mut conn = pool.get().expect("conn");
+            let uow = crate::db::UnitOfWork::new(&mut conn).expect("uow");
+            let row = crate::db::repositories::AllowlistEntryRow {
+                id: "audit-test-entry".to_string(),
+                match_type: "exact_path".to_string(),
+                value: "foo".to_string(),
+                description: "test".to_string(),
+                category: "self".to_string(),
+                priority: 10,
+                enabled: 1,
+                version: 1,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            };
+            crate::db::repositories::AllowlistRepository::insert(&uow, &row).expect("insert");
+            let audit = crate::db::repositories::AllowlistAuditRow {
+                id: "audit-1".to_string(),
+                entry_id: "audit-test-entry".to_string(),
+                action: "create".to_string(),
+                actor: "admin".to_string(),
+                old_value: None,
+                new_value: Some(r#"{"value":"foo"}"#.to_string()),
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+            };
+            crate::db::repositories::AllowlistAuditRepository::insert(&uow, &audit).expect("insert audit");
+            uow.commit().expect("commit");
+        }
+
+        let app = admin_router(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/allowlist/audit-test-entry/audit")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build AUDIT");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let audits: Vec<AllowlistAuditResponse> = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0].action, "create");
+        assert_eq!(audits[0].actor, "admin");
+        assert_eq!(audits[0].new_value, Some(r#"{"value":"foo"}"#.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_allowlist_audit_handler_empty_for_new_entry() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create an entry directly via repository to bypass audit emission
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("build pool"));
+        let state = make_state_from_pool(Arc::clone(&pool));
+        {
+            let mut conn = pool.get().expect("conn");
+            let uow = crate::db::UnitOfWork::new(&mut conn).expect("uow");
+            let row = crate::db::repositories::AllowlistEntryRow {
+                id: "test-audit-empty".to_string(),
+                match_type: "exact_path".to_string(),
+                value: "foo".to_string(),
+                description: "test".to_string(),
+                category: "self".to_string(),
+                priority: 10,
+                enabled: 1,
+                version: 1,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            };
+            crate::db::repositories::AllowlistRepository::insert(&uow, &row).expect("insert");
+            uow.commit().expect("commit");
+        }
+
+        let app = admin_router(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/allowlist/test-audit-empty/audit")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build AUDIT");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let audits: Vec<AllowlistAuditResponse> = serde_json::from_slice(&body).expect("parse");
+        assert!(audits.is_empty(), "audit log should be empty for entry with no audit records");
     }
 }
