@@ -118,6 +118,12 @@ rand = "0.8"
 # Phase 62 — Offline audit queue (DPAPI-encrypted SQLite)
 rusqlite = { workspace = true }
 
+# Phase 49 — Universal Injection: ETW process watcher, allowlist, AppInit
+ferrisetw = "1.2.0"
+crossbeam-channel = "0.5"
+glob = "0.3"
+rayon = "1.11"
+
 # Print spooler XPS parsing (M017/S04)
 zip = "2"
 quick-xml = "0.36"
