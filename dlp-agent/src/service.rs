@@ -1576,12 +1576,20 @@ async fn init_universal_injection(
     });
 
     // 11. Spawn sweep trigger handler (for channel overflow immediate sweeps).
+    let registry_for_overflow = Arc::clone(&registry);
+    let matcher_for_overflow = Arc::clone(&matcher);
+    let injector_for_overflow = Arc::clone(&injector);
     tokio::spawn(async move {
         while let Ok(trigger) = sweep_rx.recv() {
             match trigger {
                 crate::process_watcher::SweepTrigger::ChannelOverflow => {
                     tracing::warn!("channel overflow triggered immediate sweep");
-                    // Placeholder: full EnumProcesses sweep on overflow.
+                    backstop_sweep(
+                        Arc::clone(&registry_for_overflow),
+                        Arc::clone(&matcher_for_overflow),
+                        Arc::clone(&injector_for_overflow),
+                    )
+                    .await;
                 }
                 crate::process_watcher::SweepTrigger::HeartbeatRecovery => {
                     tracing::info!("ETW heartbeat recovered — running recovery sweep");
