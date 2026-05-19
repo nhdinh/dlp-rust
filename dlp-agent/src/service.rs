@@ -493,6 +493,75 @@ fn apply_payload_to_config(
         disk_merge_data = Some((old_instance_ids, payload.disk_allowlist.clone()));
     }
 
+    // Phase 49: apply server-pushed allowlist entries and version.
+    //
+    // Atomic replacement: the entire allowlist is replaced on version change.
+    // Invalid entries are logged as warnings but do not block valid entries.
+    if cfg.allowlist_version != payload.allowlist_version {
+        changed_fields.push("allowlist_entries");
+        cfg.allowlist_version = payload.allowlist_version;
+
+        // Validate and filter entries before applying.
+        let valid_entries: Vec<crate::allowlist::AllowlistEntry> = payload
+            .allowlist_entries
+            .iter()
+            .filter_map(|entry| {
+                let match_type = match entry.match_type.as_str() {
+                    "exact_path" => crate::allowlist::MatchType::ExactPath,
+                    "path_glob" => crate::allowlist::MatchType::PathGlob,
+                    "path_prefix" => crate::allowlist::MatchType::PathPrefix,
+                    "cert_subject" => crate::allowlist::MatchType::CertSubject,
+                    "cert_thumbprint" => crate::allowlist::MatchType::CertThumbprint,
+                    other => {
+                        warn!(
+                            match_type = other,
+                            value = %entry.value,
+                            "invalid allowlist match_type from server — skipping entry"
+                        );
+                        return None;
+                    }
+                };
+                if entry.value.is_empty() {
+                    warn!(
+                        match_type = %entry.match_type,
+                        "allowlist entry with empty value from server — skipping entry"
+                    );
+                    return None;
+                }
+                let category = match entry.category.as_str() {
+                    "self" => crate::allowlist::AllowlistCategory::SelfProcess,
+                    "avedr" => crate::allowlist::AllowlistCategory::Avedr,
+                    "system_critical" => crate::allowlist::AllowlistCategory::SystemCritical,
+                    "operator_defined" => crate::allowlist::AllowlistCategory::OperatorDefined,
+                    other => {
+                        warn!(
+                            category = other,
+                            value = %entry.value,
+                            "invalid allowlist category from server — defaulting to operator_defined"
+                        );
+                        crate::allowlist::AllowlistCategory::OperatorDefined
+                    }
+                };
+                Some(crate::allowlist::AllowlistEntry {
+                    match_type,
+                    value: entry.value.clone(),
+                    description: entry.description.clone(),
+                    category,
+                })
+            })
+            .collect();
+
+        if valid_entries.len() != payload.allowlist_entries.len() {
+            warn!(
+                valid = valid_entries.len(),
+                total = payload.allowlist_entries.len(),
+                "allowlist entries filtered due to invalid match_type or empty value"
+            );
+        }
+
+        cfg.allowlist_entries = valid_entries;
+    }
+
     (changed_fields, disk_merge_data)
 }
 
@@ -544,11 +613,21 @@ fn merge_disk_allowlist_into_map(
     }
 }
 
+/// Commands that can be sent to the config poll loop.
+///
+/// Used for manual refresh triggers (e.g., operator-initiated via TUI F5 key).
+pub enum ConfigCommand {
+    /// Trigger an immediate config poll, bypassing the interval timer.
+    RefreshNow,
+}
+
 /// Periodically polls the server for updated agent config.
 ///
 /// Runs on a separate timer independent of heartbeat. On each tick:
-/// 1. Fetch resolved config from `GET /agent-config/{agent_id}`.
-/// 2. Diff all pushed fields (including `disk_allowlist`) against in-memory state.
+/// 1. Fetch resolved config from `GET /agent-config/{agent_id}` with
+///    `If-None-Match` header for 304-style optimization.
+/// 2. If 304: skip update. If new config: diff all pushed fields against
+///    in-memory state.
 /// 3. If changed: update in-memory, merge into `DiskEnumerator.instance_id_map`,
 ///    write to TOML, log field names only.
 /// 4. Re-arm timer using the *previously applied* interval (not the new one)
@@ -562,6 +641,7 @@ async fn config_poll_loop(
     server_client: crate::server_client::ServerClient,
     config: Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    mut cmd_rx: tokio::sync::mpsc::Receiver<ConfigCommand>,
 ) {
     // Perform an immediate first fetch so the agent reflects server-pushed
     // config as soon as possible after startup. This also ensures that tests
@@ -574,14 +654,14 @@ async fn config_poll_loop(
     // `config` and `server_client` by reference across .await points.
     macro_rules! do_poll {
         () => {{
-            // Capture interval BEFORE applying any update (T-06-08 DoS mitigation).
-            let current_interval = {
+            // Capture interval and version BEFORE applying any update.
+            let (current_interval, last_version) = {
                 let cfg = config.lock();
-                cfg.heartbeat_interval_secs.unwrap_or(30)
+                (cfg.heartbeat_interval_secs.unwrap_or(30), cfg.allowlist_version)
             };
 
-            match server_client.fetch_agent_config().await {
-                Ok(payload) => {
+            match server_client.fetch_agent_config_with_version(last_version).await {
+                Ok(Some(payload)) => {
                     // Phase 37 (T-37-13): apply_payload_to_config runs INSIDE the
                     // config lock scope and returns any disk_merge_data needed for
                     // the deferred instance_id_map merge. The map merge must happen
@@ -621,6 +701,12 @@ async fn config_poll_loop(
                         }
                     }
                 }
+                Ok(None) => {
+                    debug!(
+                        version = last_version,
+                        "config poll: server returned 304 — no changes"
+                    );
+                }
                 Err(e) => {
                     // Best-effort: log and retain current config on server error.
                     debug!(error = %e, "config poll failed — retaining current config");
@@ -643,6 +729,14 @@ async fn config_poll_loop(
     loop {
         tokio::select! {
             _ = interval.tick() => {},
+            Some(cmd) = cmd_rx.recv() => {
+                match cmd {
+                    ConfigCommand::RefreshNow => {
+                        info!("config poll: manual refresh triggered");
+                        // Fall through to do_poll!() below.
+                    }
+                }
+            }
             _ = shutdown_rx.changed() => {
                 info!("config poll loop shutting down");
                 return;
@@ -687,6 +781,9 @@ struct RunLoopContext {
     config_poll_handle: Option<tokio::task::JoinHandle<()>>,
     /// Sender to signal the config poll task to exit.
     config_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Sender to trigger manual config refresh (e.g., `ConfigCommand::RefreshNow`).
+    #[allow(dead_code)]
+    config_cmd_tx: tokio::sync::mpsc::Sender<ConfigCommand>,
     /// Handle to the device registry poll task.
     registry_poll_handle: Option<tokio::task::JoinHandle<()>>,
     /// Sender to signal the registry poll task to exit.
@@ -953,7 +1050,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
     let (pipe1_shutdown_tx, pipe1_hb_handle) = spawn_pipe1_heartbeat_task();
 
     // ── Start the config poll loop ─────────────────────────────────────────
-    let (config_shutdown_tx, config_poll_handle) =
+    let (config_shutdown_tx, _config_cmd_tx, config_poll_handle) =
         spawn_config_poll_task(server_client.clone(), Arc::clone(&config_arc));
 
     // ── Start the file system monitor pipeline ─────────────────────────
@@ -1209,6 +1306,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         pipe1_shutdown_tx,
         config_poll_handle,
         config_shutdown_tx,
+        config_cmd_tx: _config_cmd_tx,
         registry_poll_handle,
         registry_shutdown_tx,
         origins_poll_handle,
@@ -1923,22 +2021,25 @@ fn get_process_image_path(pid: u32) -> Option<String> {
 
 /// Spawns the config poll task when a server client is available.
 ///
-/// Returns `(shutdown_tx, poll_handle)` where `poll_handle` is `None` when no
-/// server client is available.
+/// Returns `(shutdown_tx, cmd_tx, poll_handle)` where `poll_handle` is `None` when no
+/// server client is available. `cmd_tx` can be used to send `ConfigCommand::RefreshNow`
+/// for manual refresh triggers.
 fn spawn_config_poll_task(
     server_client: Option<crate::server_client::ServerClient>,
     config: Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
 ) -> (
     tokio::sync::watch::Sender<bool>,
+    tokio::sync::mpsc::Sender<ConfigCommand>,
     Option<tokio::task::JoinHandle<()>>,
 ) {
-    let (tx, rx) = tokio::sync::watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<ConfigCommand>(4);
     let handle = server_client.map(|sc| {
         tokio::spawn(async move {
-            config_poll_loop(sc, config, rx).await;
+            config_poll_loop(sc, config, shutdown_rx, cmd_rx).await;
         })
     });
-    (tx, handle)
+    (shutdown_tx, cmd_tx, handle)
 }
 
 /// Spawns the approval cache poll task when a server client is available.
