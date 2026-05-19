@@ -85,6 +85,8 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Printing",
     # Sync-client process watcher (M017 S02 T03)
     "Win32_System_Diagnostics_ToolHelp",
+    # Phase 49: GetFirmwareEnvironmentVariableW for Secure Boot detection
+    "Win32_System_WindowsProgramming",
 ] }
 
 # WMI for BitLocker queries (Phase 34 - Win32_EncryptableVolume in
