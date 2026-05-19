@@ -110,6 +110,30 @@ impl From<AdLdapConfig> for LdapConfigPayload {
 }
 
 // ---------------------------------------------------------------------------
+// AllowlistConfigEntry
+// ---------------------------------------------------------------------------
+
+/// Single allowlist entry in the agent config payload.
+///
+/// Mirrors the server-side allowlist entry shape. The `match_type` field
+/// uses string values ("exact_path", "path_glob", "path_prefix",
+/// "cert_subject", "cert_thumbprint") that the agent maps to its internal
+/// [`crate::allowlist::MatchType`] enum.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AllowlistConfigEntry {
+    /// Match type string (e.g., "exact_path", "cert_subject").
+    pub match_type: String,
+    /// The match value (path pattern, cert subject, or thumbprint hex).
+    pub value: String,
+    /// Human-readable description.
+    pub description: String,
+    /// Category string (e.g., "self", "avedr", "system_critical", "operator_defined").
+    pub category: String,
+    /// Priority for deterministic ordering (lower = higher priority).
+    pub priority: i64,
+}
+
+// ---------------------------------------------------------------------------
 // AgentConfigPayload
 // ---------------------------------------------------------------------------
 
@@ -189,6 +213,14 @@ pub struct AgentConfigPayload {
     /// Default: 100.
     #[serde(default = "default_print_max_pages")]
     pub print_max_pages: usize,
+
+    /// Phase 49: Allowlist entries for universal injection.
+    #[serde(default)]
+    pub allowlist_entries: Vec<AllowlistConfigEntry>,
+
+    /// Phase 49: Version of the allowlist config (for change detection).
+    #[serde(default)]
+    pub allowlist_version: i64,
 }
 
 fn default_usb_blocked_failure_mode() -> String {
