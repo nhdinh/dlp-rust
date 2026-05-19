@@ -1551,9 +1551,9 @@ async fn init_universal_injection(
     });
 
     // 10. Spawn periodic 5-minute backstop sweep task.
-    let _registry_for_backstop = Arc::clone(&registry);
-    let _matcher_for_backstop = Arc::clone(&matcher);
-    let _injector_for_backstop = Arc::clone(&universal_injector);
+    let registry_for_backstop = Arc::clone(&registry);
+    let matcher_for_backstop = Arc::clone(&matcher);
+    let injector_for_backstop = Arc::clone(&injector);
     let (backstop_shutdown_tx, mut backstop_shutdown_rx) = tokio::sync::watch::channel(false);
     let backstop_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
@@ -1561,10 +1561,11 @@ async fn init_universal_injection(
             tokio::select! {
                 _ = interval.tick() => {
                     tracing::info!("periodic backstop sweep starting");
-                    // Enumerate all PIDs, find those not in Injected or Skipped state.
-                    // For now, this is a lightweight placeholder — full sweep
-                    // implementation requires K32EnumProcesses which is Windows-only.
-                    // The startup sweep (Task 4) covers the initial enumeration.
+                    backstop_sweep(
+                        Arc::clone(&registry_for_backstop),
+                        Arc::clone(&matcher_for_backstop),
+                        Arc::clone(&injector_for_backstop),
+                    ).await;
                 }
                 _ = backstop_shutdown_rx.changed() => {
                     tracing::info!("backstop sweep shutting down");
@@ -1713,6 +1714,143 @@ async fn startup_sweep(
     #[cfg(not(windows))]
     {
         tracing::debug!("startup sweep skipped on non-Windows platform");
+    }
+}
+
+/// Periodic backstop sweep: re-check running PIDs not yet in Injected or Skipped state.
+///
+/// Lighter-weight than startup sweep: only processes not yet tracked are considered.
+/// Uses the same bounded concurrency (max 32) and 5-second timeout.
+async fn backstop_sweep(
+    registry: Arc<crate::process_registry::ProcessRegistry>,
+    matcher: Arc<crate::allowlist::AllowlistMatcher>,
+    injector: Arc<crate::hook_injector::HookInjector>,
+) {
+    #[cfg(windows)]
+    {
+        use tokio::sync::Semaphore;
+        use tokio::time::timeout;
+
+        let pids = enum_all_processes();
+        tracing::info!(count = pids.len(), "backstop sweep beginning");
+
+        let semaphore = Arc::new(Semaphore::new(32));
+        let mut handles = Vec::new();
+        let mut checked = 0u64;
+        let mut injected = 0u64;
+        let mut skipped = 0u64;
+
+        for pid in pids {
+            let key = crate::process_registry::ProcessKey {
+                pid,
+                creation_time: 0,
+            };
+
+            // Skip if already processed.
+            if registry.get(&key).is_some() {
+                continue;
+            }
+            checked += 1;
+
+            let registry = Arc::clone(&registry);
+            let matcher = Arc::clone(&matcher);
+            let injector = Arc::clone(&injector);
+            let permit = match semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+
+            let handle = tokio::spawn(async move {
+                let _permit = permit;
+
+                if let crate::process_registry::ClaimResult::AlreadyClaimed(_) =
+                    registry.try_claim(key)
+                {
+                    return (false, false);
+                }
+
+                let image_path = get_process_image_path(pid).unwrap_or_default();
+                let canonical = crate::allowlist::canonicalize_path(&image_path);
+
+                if let Some(category) = matcher.check(pid, &canonical, 0) {
+                    registry.record_skipped(
+                        key,
+                        crate::process_registry::SkipReason::from_category(category),
+                    );
+                    return (false, true);
+                }
+
+                let ppl_outcome = crate::universal_injector::detect_ppl(pid);
+                match ppl_outcome {
+                    crate::process_registry::PplOutcome::Protected
+                    | crate::process_registry::PplOutcome::LikelyProtectedAccessDenied => {
+                        registry.record_skipped(
+                            key,
+                            crate::process_registry::SkipReason::Ppl(ppl_outcome),
+                        );
+                        return (false, true);
+                    }
+                    _ => {}
+                }
+
+                let result = timeout(Duration::from_secs(5), async {
+                    match injector.inject(pid) {
+                        Ok(()) => {
+                            registry.record_injected(key, "x64".into());
+                            (true, false)
+                        }
+                        Err(e) => {
+                            let failure = crate::universal_injector::categorize_error(&e);
+                            registry.record_skipped(
+                                key,
+                                crate::process_registry::SkipReason::Failed(failure),
+                            );
+                            (false, false)
+                        }
+                    }
+                })
+                .await;
+
+                match result {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        registry.record_skipped(
+                            key,
+                            crate::process_registry::SkipReason::Failed(
+                                crate::process_registry::InjectionFailure::Timeout,
+                            ),
+                        );
+                        (false, false)
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+
+        for h in handles {
+            match h.await {
+                Ok((was_injected, was_skipped)) => {
+                    if was_injected {
+                        injected += 1;
+                    }
+                    if was_skipped {
+                        skipped += 1;
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+
+        tracing::info!(
+            checked,
+            injected,
+            skipped,
+            "backstop sweep complete"
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        tracing::debug!("backstop sweep skipped on non-Windows platform");
     }
 }
 
