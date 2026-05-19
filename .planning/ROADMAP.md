@@ -350,7 +350,7 @@ Plans:
 | 28. Admin TUI Screens | 5/5 | Reopened for review | - |
 | 47. Secrets Encryption at Rest (prerequisite) | 1/1 | Reopened for review | - |
 | 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-16 |
-| 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 5/5 | Complete   | 2026-05-19 |
+| 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 5/5 | Complete    | 2026-05-19 |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 0/0 | Not started | - |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 0/0 | Not started | - |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 0/0 | Not started | - |
