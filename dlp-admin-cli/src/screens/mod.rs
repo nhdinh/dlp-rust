@@ -1,5 +1,6 @@
 //! TUI screen rendering and event handling.
 
+pub mod allowlist;
 mod approvals;
 mod cloud_config;
 mod dispatch;

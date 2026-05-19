@@ -1046,6 +1046,11 @@ pub enum Screen {
         /// Buffered input while editing.
         buffer: String,
     },
+    /// Allowlist configuration screen.
+    Allowlist {
+        /// Screen state.
+        screen: crate::screens::allowlist::AllowlistScreen,
+    },
 }
 
 // ---------------------------------------------------------------------------
