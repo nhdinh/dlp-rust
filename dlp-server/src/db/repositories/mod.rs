@@ -23,6 +23,7 @@ pub mod siem_config;
 pub mod syslog_config;
 pub mod syslog_queue;
 pub mod system_kv;
+pub mod allowlist;
 
 pub use admin_users::AdminUserRepository;
 pub use agent_config::{AgentConfigOverrideRow, AgentConfigRepository, GlobalAgentConfigRow};
@@ -42,3 +43,6 @@ pub use syslog_config::{
     validate_facility_code, validate_severity, SyslogConfigRepository, SyslogConfigRow,
 };
 pub use syslog_queue::{QueuedEvent, SyslogQueueRepository};
+pub use allowlist::{
+    AllowlistAuditRepository, AllowlistAuditRow, AllowlistEntryRow, AllowlistRepository,
+};
