@@ -419,6 +419,44 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
             );
             CREATE INDEX IF NOT EXISTS idx_syslog_queue_created_at ON syslog_queue(created_at);
             CREATE INDEX IF NOT EXISTS idx_syslog_queue_next_attempt_at ON syslog_queue(next_attempt_at);
+
+            -- Phase 49: Server-side allowlist entries for universal injection protection.
+            -- match_type CHECK constraint enforces only canonical match types.
+            -- category CHECK constraint enforces only canonical category values.
+            -- priority is an integer for deterministic ordering (lower = higher priority).
+            -- enabled is a boolean stored as INTEGER (0/1).
+            -- version is bumped on every update for optimistic concurrency.
+            CREATE TABLE IF NOT EXISTS allowlist_entries (
+                id          TEXT PRIMARY KEY,
+                match_type  TEXT NOT NULL CHECK(match_type IN ('exact_path', 'path_glob', 'path_prefix', 'cert_subject', 'cert_thumbprint')),
+                value       TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                category    TEXT NOT NULL CHECK(category IN ('self', 'avedr', 'system_critical', 'operator_defined')),
+                priority    INTEGER NOT NULL DEFAULT 100,
+                enabled     INTEGER NOT NULL DEFAULT 1,
+                version     INTEGER NOT NULL DEFAULT 1,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_allowlist_category ON allowlist_entries(category);
+            CREATE INDEX IF NOT EXISTS idx_allowlist_enabled ON allowlist_entries(enabled);
+            CREATE INDEX IF NOT EXISTS idx_allowlist_version ON allowlist_entries(version);
+
+            -- Phase 49: Audit log for allowlist entry mutations.
+            -- Tracks create, update, delete, enable, disable actions.
+            -- old_value and new_value store JSON snapshots of the entry state.
+            -- entry_id FK references allowlist_entries(id) with CASCADE delete.
+            CREATE TABLE IF NOT EXISTS allowlist_audit_log (
+                id          TEXT PRIMARY KEY,
+                entry_id    TEXT NOT NULL,
+                action      TEXT NOT NULL CHECK(action IN ('create', 'update', 'delete', 'enable', 'disable')),
+                actor       TEXT NOT NULL,
+                old_value   TEXT,
+                new_value   TEXT,
+                timestamp   TEXT NOT NULL,
+                FOREIGN KEY (entry_id) REFERENCES allowlist_entries(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_allowlist_audit_entry ON allowlist_audit_log(entry_id);
 ",
     )
     .context("failed to initialize database tables")?;
