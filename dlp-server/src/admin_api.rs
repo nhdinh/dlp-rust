@@ -12,6 +12,7 @@ use std::sync::Arc;
 use axum::extract::{FromRequest, Path, State};
 use axum::http::StatusCode;
 use axum::middleware;
+use axum::response::IntoResponse;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
@@ -309,6 +310,24 @@ pub struct LdapConfigPayload {
     pub vpn_subnets: String,
 }
 
+/// Single allowlist entry in the agent config payload.
+///
+/// Mirrors the `allowlist_entries` table row shape. Sent to agents via
+/// the config poll endpoint for local allowlist matching.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AllowlistConfigEntry {
+    /// Match type: "exact_path", "path_glob", "path_prefix", "cert_subject", "cert_thumbprint".
+    pub match_type: String,
+    /// The match value (path pattern, cert subject, or thumbprint hex).
+    pub value: String,
+    /// Human-readable description.
+    pub description: String,
+    /// Category: "self", "avedr", "system_critical", "operator_defined".
+    pub category: String,
+    /// Priority for deterministic ordering (lower = higher priority).
+    pub priority: i64,
+}
+
 /// Read/write payload for agent configuration distribution.
 ///
 /// Used by `GET/PUT /admin/agent-config` (global default) and
@@ -355,6 +374,12 @@ pub struct AgentConfigPayload {
     /// Maximum pages to parse from an XPS spool file (M017/S04). Default: 100.
     #[serde(default = "default_print_max_pages")]
     pub print_max_pages: usize,
+    /// Phase 49: Allowlist entries for universal injection.
+    #[serde(default)]
+    pub allowlist_entries: Vec<AllowlistConfigEntry>,
+    /// Phase 49: Version of the allowlist config (for change detection).
+    #[serde(default)]
+    pub allowlist_version: i64,
 }
 
 fn default_usb_blocked_failure_mode() -> String {
@@ -392,6 +417,8 @@ impl Default for AgentConfigPayload {
             print_xps_timeout_ms: 5000,
             print_unclassifiable_action: default_print_unclassifiable_action(),
             print_max_pages: 100,
+            allowlist_entries: Vec::new(),
+            allowlist_version: 0,
         }
     }
 }
@@ -2060,20 +2087,51 @@ fn disk_row_to_identity(row: DiskRegistryRow) -> dlp_common::DiskIdentity {
 /// Tries per-agent override first; falls back to global default if no override
 /// exists. This endpoint is intentionally unauthenticated — agents call it
 /// using their `agent_id` as identity, not admin JWT.
+///
+/// Phase 49: Supports `If-None-Match` header for 304-style optimization.
+/// If the header matches the current allowlist version, returns 304 Not Modified.
 async fn get_agent_config_for_agent(
     State(state): State<Arc<AppState>>,
     Path(agent_id): Path<String>,
-) -> Result<Json<AgentConfigPayload>, AppError> {
+    headers: axum::http::HeaderMap,
+) -> Result<axum::response::Response, AppError> {
     let id = agent_id.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
+
+    // Parse If-None-Match header before spawning blocking task.
+    let if_none_match: Option<i64> = headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok());
+
     let payload = tokio::task::spawn_blocking(move || -> Result<AgentConfigPayload, AppError> {
+        // Phase 49: Query allowlist entries and version.
+        let allowlist_version = AllowlistRepository::current_version(&pool).unwrap_or(0);
+
+        // If client has the current version, return early marker (handled outside).
+        // We still need to compute the full payload for the normal path.
+
         // Phase 37 (D-02/D-03): query the disk allowlist for this agent once.
-        // unwrap_or_default so a query failure returns an empty list rather than a 500.
         let disk_allowlist: Vec<dlp_common::DiskIdentity> =
             DiskRegistryRepository::list_by_agent(&pool, &id)
                 .unwrap_or_default()
                 .into_iter()
                 .map(disk_row_to_identity)
+                .collect();
+
+        // Phase 49: Query enabled allowlist entries sorted by priority.
+        let allowlist_entries: Vec<AllowlistConfigEntry> =
+            AllowlistRepository::list_all(&pool)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| r.enabled != 0)
+                .map(|r| AllowlistConfigEntry {
+                    match_type: r.match_type,
+                    value: r.value,
+                    description: r.description,
+                    category: r.category,
+                    priority: r.priority,
+                })
                 .collect();
 
         // Try per-agent override first via repository.
@@ -2092,6 +2150,8 @@ async fn get_agent_config_for_agent(
                 print_xps_timeout_ms: u64::try_from(row.print_xps_timeout_ms).unwrap_or(5000),
                 print_unclassifiable_action: row.print_unclassifiable_action,
                 print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
+                allowlist_entries,
+                allowlist_version,
             },
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // Fall back to global default.
@@ -2111,6 +2171,8 @@ async fn get_agent_config_for_agent(
                     print_xps_timeout_ms: u64::try_from(row.print_xps_timeout_ms).unwrap_or(5000),
                     print_unclassifiable_action: row.print_unclassifiable_action.clone(),
                     print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
+                    allowlist_entries,
+                    allowlist_version,
                 }
             }
             Err(e) => return Err(AppError::Database(e)),
@@ -2122,7 +2184,14 @@ async fn get_agent_config_for_agent(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    Ok(Json(payload))
+    // Phase 49: 304 optimization — if If-None-Match matches current version, skip body.
+    if let Some(client_version) = if_none_match {
+        if client_version == payload.allowlist_version {
+            return Ok(axum::http::StatusCode::NOT_MODIFIED.into_response());
+        }
+    }
+
+    Ok(Json(payload).into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -2235,6 +2304,9 @@ async fn get_global_agent_config_handler(
         print_xps_timeout_ms: u64::try_from(row.print_xps_timeout_ms).unwrap_or(5000),
         print_unclassifiable_action: row.print_unclassifiable_action,
         print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
+        // allowlist is agent-only; admin GET does not include it.
+        allowlist_entries: Vec::new(),
+        allowlist_version: 0,
     }))
 }
 
@@ -2362,6 +2434,9 @@ async fn get_agent_config_override_handler(
         print_xps_timeout_ms: u64::try_from(row.print_xps_timeout_ms).unwrap_or(5000),
         print_unclassifiable_action: row.print_unclassifiable_action,
         print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
+        // allowlist is agent-only; admin GET does not include it.
+        allowlist_entries: Vec::new(),
+        allowlist_version: 0,
     }))
 }
 
