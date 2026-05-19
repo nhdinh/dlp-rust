@@ -27,6 +27,7 @@ use crate::db::repositories;
 use crate::db::repositories::labels::{LabelRepository, LabelRow, LabelUpsertRow};
 use crate::db::repositories::{
     validate_facility_code, validate_severity, AgentConfigRepository, AlertRouterConfigRepository,
+    AllowlistAuditRepository, AllowlistAuditRow, AllowlistEntryRow, AllowlistRepository,
     CredentialsRepository, DiskRegistryRepository, DiskRegistryRow, LdapConfigRepository,
     ManagedOriginRow, ManagedOriginsRepository, PolicyRepository, SiemConfigRepository,
     SyslogConfigRepository, SyslogConfigRow,
@@ -685,6 +686,69 @@ pub struct ManagedOriginResponse {
     pub origin: String,
 }
 
+// ---------------------------------------------------------------------------
+// Allowlist request / response types (Phase 49)
+// ---------------------------------------------------------------------------
+
+/// Payload for creating or updating an allowlist entry.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AllowlistEntryRequest {
+    /// Match type: `exact_path`, `path_glob`, `path_prefix`, `cert_subject`, or `cert_thumbprint`.
+    pub match_type: String,
+    /// The match value (path pattern, cert subject, or thumbprint hex string).
+    pub value: String,
+    /// Human-readable description of the entry.
+    pub description: String,
+    /// Category: `self`, `avedr`, `system_critical`, or `operator_defined`.
+    pub category: String,
+    /// Priority for deterministic ordering (lower = higher priority).
+    pub priority: i64,
+    /// Whether the entry is enabled.
+    pub enabled: bool,
+}
+
+/// Allowlist entry record returned by the API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllowlistEntryResponse {
+    /// Server-generated UUID.
+    pub id: String,
+    /// Match type.
+    pub match_type: String,
+    /// The match value.
+    pub value: String,
+    /// Human-readable description.
+    pub description: String,
+    /// Category.
+    pub category: String,
+    /// Priority for ordering.
+    pub priority: i64,
+    /// Whether the entry is enabled.
+    pub enabled: bool,
+    /// Version counter for optimistic concurrency.
+    pub version: i64,
+    /// ISO 8601 timestamp of creation.
+    pub created_at: String,
+    /// ISO 8601 timestamp of last update.
+    pub updated_at: String,
+}
+
+impl From<AllowlistEntryRow> for AllowlistEntryResponse {
+    fn from(row: AllowlistEntryRow) -> Self {
+        Self {
+            id: row.id,
+            match_type: row.match_type,
+            value: row.value,
+            description: row.description,
+            category: row.category,
+            priority: row.priority,
+            enabled: row.enabled != 0,
+            version: row.version,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
 /// Health/readiness probe response.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -963,6 +1027,17 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route(
             "/admin/managed-origins/{id}",
             delete(delete_managed_origin_handler),
+        )
+        // Phase 49: Allowlist admin API
+        .route(
+            "/admin/allowlist",
+            get(list_allowlist_handler).post(create_allowlist_handler),
+        )
+        .route(
+            "/admin/allowlist/{id}",
+            get(get_allowlist_handler)
+                .put(update_allowlist_handler)
+                .delete(delete_allowlist_handler),
         )
         // Phase 47 Task 47-08: KEK rotation + maintenance-mode toggle.
         .route("/admin/secrets/rotate", post(rotate_secrets_handler))
@@ -2994,6 +3069,427 @@ async fn delete_managed_origin_handler(
     }
 
     tracing::info!(origin_id = %id, "managed origin deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 49: Allowlist admin API
+// ---------------------------------------------------------------------------
+
+/// `GET /admin/allowlist` — list all allowlist entries.
+///
+/// Optionally filter by `?category=self` query parameter.
+/// Returns entries ordered by priority ascending, then created_at ascending.
+///
+/// # Errors
+///
+/// Returns `AppError::Unauthorized` if the JWT is missing or invalid.
+/// Returns `AppError::Internal` on pool or query failure.
+async fn list_allowlist_handler(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Json<Vec<AllowlistEntryResponse>>, AppError> {
+    let _username = AdminUsername::extract_from_headers(req.headers())?;
+
+    let filter = axum::extract::Query::<std::collections::HashMap<String, String>>::from_request(
+        req, &state,
+    )
+    .await
+    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    let pool = Arc::clone(&state.pool);
+    let category_filter = filter.get("category").cloned();
+    let rows = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let db_rows = if let Some(cat) = category_filter {
+            AllowlistRepository::list_by_category(&pool, &cat).map_err(AppError::Database)?
+        } else {
+            AllowlistRepository::list_all(&pool).map_err(AppError::Database)?
+        };
+        Ok(db_rows)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
+}
+
+/// `GET /admin/allowlist/{id}` — get a single allowlist entry by UUID.
+///
+/// # Errors
+///
+/// Returns `AppError::NotFound` if the UUID does not exist.
+/// Returns `AppError::Unauthorized` if the JWT is missing or invalid.
+/// Returns `AppError::Internal` on pool or query failure.
+async fn get_allowlist_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<AllowlistEntryResponse>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let entry_id = id.clone();
+    let row = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        AllowlistRepository::get_by_id(&pool, &entry_id).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("allowlist entry {entry_id} not found"))
+            }
+            _ => AppError::Database(e),
+        })
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(row.into()))
+}
+
+/// `POST /admin/allowlist` — create a new allowlist entry.
+///
+/// Returns 201 Created on success. Returns 422 if `match_type` or `category`
+/// are not valid values. Emits an `AdminAction(AllowlistCreate)` audit event
+/// AFTER the DB commit (best-effort).
+///
+/// # Errors
+///
+/// Returns `AppError::Unauthorized` if the JWT is missing or invalid.
+/// Returns `AppError::UnprocessableEntity` on validation failure.
+/// Returns `AppError::Internal` on pool or query failure.
+async fn create_allowlist_handler(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<(StatusCode, Json<AllowlistEntryResponse>), AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+
+    let Json(body) = Json::<AllowlistEntryRequest>::from_request(req, &state)
+        .await
+        .map_err(AppError::from)?;
+
+    // Validate match_type before DB access.
+    const VALID_MATCH_TYPES: &[&str] = &[
+        "exact_path",
+        "path_glob",
+        "path_prefix",
+        "cert_subject",
+        "cert_thumbprint",
+    ];
+    if body.match_type.len() > 32 {
+        return Err(AppError::UnprocessableEntity(
+            "match_type exceeds maximum length".to_string(),
+        ));
+    }
+    if !VALID_MATCH_TYPES.contains(&body.match_type.as_str()) {
+        return Err(AppError::UnprocessableEntity(format!(
+            "invalid match_type '{}'; must be one of: {}",
+            body.match_type,
+            VALID_MATCH_TYPES.join(", ")
+        )));
+    }
+
+    // Validate category before DB access.
+    const VALID_CATEGORIES: &[&str] = &["self", "avedr", "system_critical", "operator_defined"];
+    if body.category.len() > 32 {
+        return Err(AppError::UnprocessableEntity(
+            "category exceeds maximum length".to_string(),
+        ));
+    }
+    if !VALID_CATEGORIES.contains(&body.category.as_str()) {
+        return Err(AppError::UnprocessableEntity(format!(
+            "invalid category '{}'; must be one of: {}",
+            body.category,
+            VALID_CATEGORIES.join(", ")
+        )));
+    }
+
+    // Length guards for value and description.
+    if body.value.len() > 2048 {
+        return Err(AppError::UnprocessableEntity(
+            "value exceeds maximum length".to_string(),
+        ));
+    }
+    if body.description.len() > 512 {
+        return Err(AppError::UnprocessableEntity(
+            "description exceeds maximum length".to_string(),
+        ));
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let row = AllowlistEntryRow {
+        id: id.clone(),
+        match_type: body.match_type.clone(),
+        value: body.value.clone(),
+        description: body.description.clone(),
+        category: body.category.clone(),
+        priority: body.priority,
+        enabled: if body.enabled { 1 } else { 0 },
+        version: 1,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    let pool = Arc::clone(&state.pool);
+    let row_for_insert = row.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        AllowlistRepository::insert(&uow, &row_for_insert).map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    // Emit audit event AFTER commit (best-effort).
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username.clone(),
+        format!("allowlist:{}", id),
+        dlp_common::Classification::T3,
+        dlp_common::Action::AllowlistCreate,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let pool = Arc::clone(&state.pool);
+    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
+    .and_then(|r| r)
+    {
+        tracing::warn!(error = %e, "audit emission failed for AllowlistCreate (best-effort)");
+    }
+
+    tracing::info!(
+        entry_id = %id,
+        match_type = %body.match_type,
+        category = %body.category,
+        "allowlist entry created"
+    );
+    Ok((StatusCode::CREATED, Json(AllowlistEntryResponse::from(row))))
+}
+
+/// `PUT /admin/allowlist/{id}` — update an existing allowlist entry.
+///
+/// Returns 200 OK with the updated entry. Returns 404 if the UUID does not exist.
+/// Returns 422 if `match_type` or `category` are not valid values.
+/// Emits an `AdminAction(AllowlistUpdate)` audit event AFTER the DB commit.
+///
+/// # Errors
+///
+/// Returns `AppError::Unauthorized` if the JWT is missing or invalid.
+/// Returns `AppError::NotFound` if the UUID does not exist.
+/// Returns `AppError::UnprocessableEntity` on validation failure.
+/// Returns `AppError::Internal` on pool or query failure.
+async fn update_allowlist_handler(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Json<AllowlistEntryResponse>, AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+
+    // Extract the path parameter from the URI before consuming the body.
+    let id = req
+        .uri()
+        .path()
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
+
+    let Json(body) = Json::<AllowlistEntryRequest>::from_request(req, &state)
+        .await
+        .map_err(AppError::from)?;
+
+    // Validate match_type before DB access.
+    const VALID_MATCH_TYPES: &[&str] = &[
+        "exact_path",
+        "path_glob",
+        "path_prefix",
+        "cert_subject",
+        "cert_thumbprint",
+    ];
+    if body.match_type.len() > 32 {
+        return Err(AppError::UnprocessableEntity(
+            "match_type exceeds maximum length".to_string(),
+        ));
+    }
+    if !VALID_MATCH_TYPES.contains(&body.match_type.as_str()) {
+        return Err(AppError::UnprocessableEntity(format!(
+            "invalid match_type '{}'; must be one of: {}",
+            body.match_type,
+            VALID_MATCH_TYPES.join(", ")
+        )));
+    }
+
+    // Validate category before DB access.
+    const VALID_CATEGORIES: &[&str] = &["self", "avedr", "system_critical", "operator_defined"];
+    if body.category.len() > 32 {
+        return Err(AppError::UnprocessableEntity(
+            "category exceeds maximum length".to_string(),
+        ));
+    }
+    if !VALID_CATEGORIES.contains(&body.category.as_str()) {
+        return Err(AppError::UnprocessableEntity(format!(
+            "invalid category '{}'; must be one of: {}",
+            body.category,
+            VALID_CATEGORIES.join(", ")
+        )));
+    }
+
+    if body.value.len() > 2048 {
+        return Err(AppError::UnprocessableEntity(
+            "value exceeds maximum length".to_string(),
+        ));
+    }
+    if body.description.len() > 512 {
+        return Err(AppError::UnprocessableEntity(
+            "description exceeds maximum length".to_string(),
+        ));
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let row = AllowlistEntryRow {
+        id: id.clone(),
+        match_type: body.match_type.clone(),
+        value: body.value.clone(),
+        description: body.description.clone(),
+        category: body.category.clone(),
+        priority: body.priority,
+        enabled: if body.enabled { 1 } else { 0 },
+        version: 0, // version is auto-incremented by the repository
+        created_at: String::new(), // not updated
+        updated_at: now,
+    };
+
+    let pool = Arc::clone(&state.pool);
+    let row_for_update = row.clone();
+    let affected = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let n = AllowlistRepository::update(&uow, &row_for_update).map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(n)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    if affected == 0 {
+        return Err(AppError::NotFound(format!("allowlist entry {id} not found")));
+    }
+
+    // Emit audit event AFTER commit (best-effort).
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username.clone(),
+        format!("allowlist:{}", id),
+        dlp_common::Classification::T3,
+        dlp_common::Action::AllowlistUpdate,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let pool = Arc::clone(&state.pool);
+    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
+    .and_then(|r| r)
+    {
+        tracing::warn!(error = %e, "audit emission failed for AllowlistUpdate (best-effort)");
+    }
+
+    // Re-read the row to get the updated version and timestamps.
+    let pool = Arc::clone(&state.pool);
+    let entry_id = id.clone();
+    let updated_row = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        AllowlistRepository::get_by_id(&pool, &entry_id).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("allowlist entry {entry_id} not found"))
+            }
+            _ => AppError::Database(e),
+        })
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(entry_id = %id, "allowlist entry updated");
+    Ok(Json(updated_row.into()))
+}
+
+/// `DELETE /admin/allowlist/{id}` — delete an allowlist entry.
+///
+/// Returns 204 No Content on success. Returns 404 if the UUID does not exist.
+/// Emits an `AdminAction(AllowlistDelete)` audit event AFTER the DB commit.
+///
+/// # Errors
+///
+/// Returns `AppError::Unauthorized` if the JWT is missing or invalid.
+/// Returns `AppError::NotFound` if the UUID does not exist.
+/// Returns `AppError::Internal` on pool or query failure.
+async fn delete_allowlist_handler(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<StatusCode, AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+
+    let id = Path::<String>::from_request(req, &state)
+        .await
+        .map_err(AppError::from)?
+        .0;
+
+    let pool = Arc::clone(&state.pool);
+    let entry_id = id.clone();
+    let affected = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let n = AllowlistRepository::delete_by_id(&uow, &entry_id).map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(n)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    if affected == 0 {
+        return Err(AppError::NotFound(format!("allowlist entry {id} not found")));
+    }
+
+    // Emit audit event AFTER commit (best-effort).
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username.clone(),
+        format!("allowlist:{}", id),
+        dlp_common::Classification::T3,
+        dlp_common::Action::AllowlistDelete,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let pool = Arc::clone(&state.pool);
+    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
+    .and_then(|r| r)
+    {
+        tracing::warn!(error = %e, "audit emission failed for AllowlistDelete (best-effort)");
+    }
+
+    tracing::info!(entry_id = %id, "allowlist entry deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -9018,5 +9514,466 @@ mod tests {
             .expect("build request");
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 49: Allowlist admin API tests
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_allowlist_routes_registered_and_require_auth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+
+        // GET /admin/allowlist without auth -> 401
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/allowlist")
+            .body(Body::empty())
+            .expect("build GET");
+        let resp = app.clone().oneshot(req).await.expect("oneshot GET");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "GET must require auth");
+
+        // POST /admin/allowlist without auth -> 401
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/allowlist")
+            .header("Content-Type", "application/json")
+            .body(Body::from("{}"))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot POST");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "POST must require auth");
+
+        // GET /admin/allowlist/{id} without auth -> 401
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/allowlist/some-uuid")
+            .body(Body::empty())
+            .expect("build GET by id");
+        let resp = app.clone().oneshot(req).await.expect("oneshot GET by id");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "GET by id must require auth");
+
+        // PUT /admin/allowlist/{id} without auth -> 401
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/admin/allowlist/some-uuid")
+            .header("Content-Type", "application/json")
+            .body(Body::from("{}"))
+            .expect("build PUT");
+        let resp = app.clone().oneshot(req).await.expect("oneshot PUT");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "PUT must require auth");
+
+        // DELETE /admin/allowlist/{id} without auth -> 401
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/admin/allowlist/some-uuid")
+            .body(Body::empty())
+            .expect("build DELETE");
+        let resp = app.oneshot(req).await.expect("oneshot DELETE");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "DELETE must require auth");
+    }
+
+    #[tokio::test]
+    async fn test_create_allowlist_handler_success() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let payload = serde_json::json!({
+            "match_type": "exact_path",
+            "value": "C:\\Windows\\System32\\foo.dll",
+            "description": "Test entry",
+            "category": "self",
+            "priority": 10,
+            "enabled": true,
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/allowlist")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("build POST");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn test_create_allowlist_handler_invalid_match_type_returns_422() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let payload = serde_json::json!({
+            "match_type": "invalid_type",
+            "value": "foo",
+            "description": "Test",
+            "category": "self",
+            "priority": 10,
+            "enabled": true,
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/allowlist")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("build POST");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn test_create_allowlist_handler_invalid_category_returns_422() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let payload = serde_json::json!({
+            "match_type": "exact_path",
+            "value": "foo",
+            "description": "Test",
+            "category": "invalid_cat",
+            "priority": 10,
+            "enabled": true,
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/allowlist")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("build POST");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn test_list_allowlist_handler_returns_created_entries() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create an entry
+        let payload = serde_json::json!({
+            "match_type": "exact_path",
+            "value": "C:\\Windows\\System32\\foo.dll",
+            "description": "Test entry",
+            "category": "self",
+            "priority": 10,
+            "enabled": true,
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/allowlist")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // List entries
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/allowlist")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let list: Vec<AllowlistEntryResponse> = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].match_type, "exact_path");
+        assert_eq!(list[0].value, "C:\\Windows\\System32\\foo.dll");
+        assert_eq!(list[0].category, "self");
+        assert!(list[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn test_get_allowlist_handler_returns_entry() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create an entry
+        let payload = serde_json::json!({
+            "match_type": "cert_thumbprint",
+            "value": "ABCD1234",
+            "description": "Cert entry",
+            "category": "avedr",
+            "priority": 5,
+            "enabled": false,
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/allowlist")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let created: AllowlistEntryResponse = serde_json::from_slice(&body).expect("parse");
+        let id = created.id;
+
+        // Get by id
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/admin/allowlist/{id}"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let got: AllowlistEntryResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(got.id, id);
+        assert_eq!(got.match_type, "cert_thumbprint");
+        assert_eq!(got.value, "ABCD1234");
+        assert_eq!(got.category, "avedr");
+        assert!(!got.enabled);
+    }
+
+    #[tokio::test]
+    async fn test_get_allowlist_handler_not_found_returns_404() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/allowlist/nonexistent-uuid")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_update_allowlist_handler_success() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create an entry
+        let payload = serde_json::json!({
+            "match_type": "exact_path",
+            "value": "C:\\foo.dll",
+            "description": "Original",
+            "category": "self",
+            "priority": 10,
+            "enabled": true,
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/allowlist")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let created: AllowlistEntryResponse = serde_json::from_slice(&body).expect("parse");
+        let id = created.id;
+
+        // Update it
+        let update = serde_json::json!({
+            "match_type": "path_glob",
+            "value": "C:\\bar.dll",
+            "description": "Updated",
+            "category": "system_critical",
+            "priority": 20,
+            "enabled": false,
+        });
+        let req = Request::builder()
+            .method("PUT")
+            .uri(format!("/admin/allowlist/{id}"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(update.to_string()))
+            .expect("build PUT");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let updated: AllowlistEntryResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(updated.id, id);
+        assert_eq!(updated.match_type, "path_glob");
+        assert_eq!(updated.value, "C:\\bar.dll");
+        assert_eq!(updated.description, "Updated");
+        assert_eq!(updated.category, "system_critical");
+        assert_eq!(updated.priority, 20);
+        assert!(!updated.enabled);
+        assert_eq!(updated.version, 2, "version must be bumped");
+    }
+
+    #[tokio::test]
+    async fn test_update_allowlist_handler_not_found_returns_404() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let update = serde_json::json!({
+            "match_type": "exact_path",
+            "value": "foo",
+            "description": "Test",
+            "category": "self",
+            "priority": 10,
+            "enabled": true,
+        });
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/admin/allowlist/nonexistent-uuid")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(update.to_string()))
+            .expect("build PUT");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_delete_allowlist_handler_success() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create an entry
+        let payload = serde_json::json!({
+            "match_type": "exact_path",
+            "value": "C:\\foo.dll",
+            "description": "To delete",
+            "category": "self",
+            "priority": 10,
+            "enabled": true,
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/allowlist")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let created: AllowlistEntryResponse = serde_json::from_slice(&body).expect("parse");
+        let id = created.id;
+
+        // Delete it
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/admin/allowlist/{id}"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build DELETE");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn test_delete_allowlist_handler_not_found_returns_404() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/admin/allowlist/nonexistent-uuid")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build DELETE");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_list_allowlist_filters_by_category() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create two entries with different categories
+        for (cat, val) in [("self", "foo"), ("avedr", "bar")] {
+            let payload = serde_json::json!({
+                "match_type": "exact_path",
+                "value": val,
+                "description": "Test",
+                "category": cat,
+                "priority": 10,
+                "enabled": true,
+            });
+            let req = Request::builder()
+                .method("POST")
+                .uri("/admin/allowlist")
+                .header("Authorization", format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .expect("build POST");
+            let resp = app.clone().oneshot(req).await.expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::CREATED);
+        }
+
+        // List with category filter
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/allowlist?category=self")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let list: Vec<AllowlistEntryResponse> = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].category, "self");
+        assert_eq!(list[0].value, "foo");
     }
 }
