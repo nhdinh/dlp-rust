@@ -151,6 +151,49 @@
         </StandardDirectory>
 
         <!-- ================================================================
+             APPINIT_DLLS REGISTRY (BLOCK-07, Phase 49)
+             Tertiary fallback — inert under Secure Boot.
+             ================================================================ -->
+        <Component Id="AppInitDlls" Guid="*" Directory="DLPINSTALLFOLDER">
+            <RegistryValue Root="HKLM"
+                           Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"
+                           Name="AppInit_DLLs"
+                           Type="string"
+                           Value="[DLPINSTALLFOLDER]dlp_hook_dll.dll"
+                           KeyPath="yes" />
+            <RegistryValue Root="HKLM"
+                           Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"
+                           Name="LoadAppInit_DLLs"
+                           Type="integer"
+                           Value="1" />
+            <RegistryValue Root="HKLM"
+                           Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"
+                           Name="RequireSignedAppInit_DLLs"
+                           Type="integer"
+                           Value="1" />
+        </Component>
+
+        <!-- Backup registry key for uninstall restore -->
+        <Component Id="AppInitBackup" Guid="*" Directory="DLPINSTALLFOLDER">
+            <RegistryValue Root="HKLM"
+                           Key="SOFTWARE\DLP\Backup\AppInit_DLLs"
+                           Name="AppInit_DLLs"
+                           Type="string"
+                           Value=""
+                           KeyPath="yes" />
+            <RegistryValue Root="HKLM"
+                           Key="SOFTWARE\DLP\Backup\AppInit_DLLs"
+                           Name="LoadAppInit_DLLs"
+                           Type="integer"
+                           Value="0" />
+            <RegistryValue Root="HKLM"
+                           Key="SOFTWARE\DLP\Backup\AppInit_DLLs"
+                           Name="RequireSignedAppInit_DLLs"
+                           Type="integer"
+                           Value="0" />
+        </Component>
+
+        <!-- ================================================================
              FEATURE TREE
              ================================================================ -->
         <Feature Id="ProductFeature"
@@ -167,6 +210,8 @@
             <ComponentRef Id="DLP_HOOK_DLL_X86" />
             <ComponentRef Id="DLP_CONFIG_DIR" />
             <ComponentRef Id="DLP_LOGS_DIR" />
+            <ComponentRef Id="AppInitDlls" />
+            <ComponentRef Id="AppInitBackup" />
         </Feature>
 
         <!-- ================================================================
