@@ -253,6 +253,15 @@ pub struct AgentConfig {
     /// Not persisted to the config file.
     #[serde(skip)]
     pub machine_name: Option<String>,
+
+    /// Phase 49: Enable universal injection (ETW process watcher + universal injector).
+    /// When `None`, defaults to `false`.
+    #[serde(default)]
+    pub universal_injection_enabled: Option<bool>,
+
+    /// Phase 49: Allowlist entries for universal injection.
+    #[serde(default)]
+    pub allowlist_entries: Vec<crate::allowlist::AllowlistEntry>,
 }
 
 impl AgentConfig {
