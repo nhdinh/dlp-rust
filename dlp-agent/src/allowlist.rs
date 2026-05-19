@@ -199,7 +199,10 @@ impl AllowlistMatcher {
     fn get_cached_signer(&self, image_path: &str) -> String {
         let cache_key = image_path.to_lowercase();
         {
-            let cache = self.signer_cache.read().expect("signer cache read poisoned");
+            let cache = self
+                .signer_cache
+                .read()
+                .expect("signer cache read poisoned");
             if let Some(cached) = cache.get(&cache_key) {
                 if cached.cached_at.elapsed() < SIGNER_CACHE_TTL {
                     return cached.subject.clone();
@@ -229,7 +232,10 @@ impl AllowlistMatcher {
     fn get_cached_thumbprint(&self, image_path: &str) -> String {
         let cache_key = image_path.to_lowercase();
         {
-            let cache = self.signer_cache.read().expect("signer cache read poisoned");
+            let cache = self
+                .signer_cache
+                .read()
+                .expect("signer cache read poisoned");
             if let Some(cached) = cache.get(&cache_key) {
                 if cached.cached_at.elapsed() < SIGNER_CACHE_TTL {
                     return cached.thumbprint.clone();
@@ -239,7 +245,10 @@ impl AllowlistMatcher {
         // get_cached_signer populates both fields.
         self.get_cached_signer(image_path);
         {
-            let cache = self.signer_cache.read().expect("signer cache read poisoned");
+            let cache = self
+                .signer_cache
+                .read()
+                .expect("signer cache read poisoned");
             cache
                 .get(&cache_key)
                 .map(|c| c.thumbprint.clone())
@@ -462,10 +471,9 @@ fn extract_cert_thumbprint_full(image_path: &str) -> Option<String> {
     use windows::Win32::Security::Cryptography::{
         CertCloseStore, CertFindCertificateInStore, CertFreeCertificateContext,
         CertGetCertificateContextProperty, CryptMsgClose, CryptMsgGetParam, CryptQueryObject,
-        CERT_FIND_SUBJECT_NAME, CERT_HASH_PROP_ID,
-        CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED, CERT_QUERY_ENCODING_TYPE,
-        CERT_QUERY_FORMAT_FLAG_BINARY, CERT_QUERY_OBJECT_FILE, CMSG_SIGNER_INFO_PARAM, HCERTSTORE,
-        PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
+        CERT_FIND_SUBJECT_NAME, CERT_HASH_PROP_ID, CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+        CERT_QUERY_ENCODING_TYPE, CERT_QUERY_FORMAT_FLAG_BINARY, CERT_QUERY_OBJECT_FILE,
+        CMSG_SIGNER_INFO_PARAM, HCERTSTORE, PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
     };
 
     let path_wide: Vec<u16> = image_path
@@ -551,12 +559,7 @@ fn extract_cert_thumbprint_full(image_path: &str) -> Option<String> {
     // Get thumbprint (hash) property.
     let mut hash_size: u32 = 0;
     let result = unsafe {
-        CertGetCertificateContextProperty(
-            cert_ctx,
-            CERT_HASH_PROP_ID,
-            None,
-            &mut hash_size,
-        )
+        CertGetCertificateContextProperty(cert_ctx, CERT_HASH_PROP_ID, None, &mut hash_size)
     };
 
     let thumbprint = if result.is_ok() && hash_size > 0 {
@@ -615,8 +618,11 @@ mod tests {
 
     #[test]
     fn test_self_exclusion_by_path() {
-        let matcher =
-            AllowlistMatcher::new(vec![], r"C:\ProgramData\DLP\dlp-agent.exe".to_string(), 9999);
+        let matcher = AllowlistMatcher::new(
+            vec![],
+            r"C:\ProgramData\DLP\dlp-agent.exe".to_string(),
+            9999,
+        );
         let result = matcher.check(5678, r"C:\ProgramData\DLP\dlp-agent.exe", 0);
         assert_eq!(result, Some(AllowlistCategory::SelfProcess));
     }
@@ -632,7 +638,10 @@ mod tests {
     fn test_system_critical_not_in_trusted_dir() {
         let matcher = test_matcher();
         let result = matcher.check(100, r"C:\Temp\csrss.exe", 0);
-        assert!(result.is_none(), "spoofed csrss.exe outside trusted dir must not match");
+        assert!(
+            result.is_none(),
+            "spoofed csrss.exe outside trusted dir must not match"
+        );
     }
 
     #[test]

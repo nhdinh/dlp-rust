@@ -555,6 +555,7 @@ impl From<PolicyResponse> for PolicyPayload {
 /// Every possible screen in the TUI.  Navigation is a simple state
 /// machine: each screen knows which screen to return to on Esc.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Screen {
     /// Top-level menu.
     MainMenu { selected: usize },

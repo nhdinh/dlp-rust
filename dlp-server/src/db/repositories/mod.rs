@@ -7,6 +7,7 @@ pub mod admin_users;
 pub mod agent_config;
 pub mod agents;
 pub mod alert_router_config;
+pub mod allowlist;
 pub mod approvals;
 pub mod audit_events;
 pub mod credentials;
@@ -23,12 +24,14 @@ pub mod siem_config;
 pub mod syslog_config;
 pub mod syslog_queue;
 pub mod system_kv;
-pub mod allowlist;
 
 pub use admin_users::AdminUserRepository;
 pub use agent_config::{AgentConfigOverrideRow, AgentConfigRepository, GlobalAgentConfigRow};
 pub use agents::AgentRepository;
 pub use alert_router_config::{AlertRouterConfigRepository, AlertRouterConfigRow};
+pub use allowlist::{
+    AllowlistAuditRepository, AllowlistAuditRow, AllowlistEntryRow, AllowlistRepository,
+};
 pub use approvals::{ApprovalRepository, ApprovalRow, ApprovalUpsertRow};
 pub use audit_events::{AuditEventRepository, AuditEventRow};
 pub use credentials::CredentialsRepository;
@@ -43,6 +46,3 @@ pub use syslog_config::{
     validate_facility_code, validate_severity, SyslogConfigRepository, SyslogConfigRow,
 };
 pub use syslog_queue::{QueuedEvent, SyslogQueueRepository};
-pub use allowlist::{
-    AllowlistAuditRepository, AllowlistAuditRow, AllowlistEntryRow, AllowlistRepository,
-};

@@ -2120,19 +2120,18 @@ async fn get_agent_config_for_agent(
                 .collect();
 
         // Phase 49: Query enabled allowlist entries sorted by priority.
-        let allowlist_entries: Vec<AllowlistConfigEntry> =
-            AllowlistRepository::list_all(&pool)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|r| r.enabled != 0)
-                .map(|r| AllowlistConfigEntry {
-                    match_type: r.match_type,
-                    value: r.value,
-                    description: r.description,
-                    category: r.category,
-                    priority: r.priority,
-                })
-                .collect();
+        let allowlist_entries: Vec<AllowlistConfigEntry> = AllowlistRepository::list_all(&pool)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.enabled != 0)
+            .map(|r| AllowlistConfigEntry {
+                match_type: r.match_type,
+                value: r.value,
+                description: r.description,
+                category: r.category,
+                priority: r.priority,
+            })
+            .collect();
 
         // Try per-agent override first via repository.
         let mut payload = match AgentConfigRepository::get_override(&pool, &id) {
@@ -3442,7 +3441,7 @@ async fn update_allowlist_handler(
         category: body.category.clone(),
         priority: body.priority,
         enabled: if body.enabled { 1 } else { 0 },
-        version: 0, // version is auto-incremented by the repository
+        version: 0,                // version is auto-incremented by the repository
         created_at: String::new(), // not updated
         updated_at: now,
     };
@@ -3460,7 +3459,9 @@ async fn update_allowlist_handler(
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     if affected == 0 {
-        return Err(AppError::NotFound(format!("allowlist entry {id} not found")));
+        return Err(AppError::NotFound(format!(
+            "allowlist entry {id} not found"
+        )));
     }
 
     // Emit audit event AFTER commit (best-effort).
@@ -3542,7 +3543,9 @@ async fn delete_allowlist_handler(
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     if affected == 0 {
-        return Err(AppError::NotFound(format!("allowlist entry {id} not found")));
+        return Err(AppError::NotFound(format!(
+            "allowlist entry {id} not found"
+        )));
     }
 
     // Emit audit event AFTER commit (best-effort).
@@ -3616,7 +3619,9 @@ async fn disable_allowlist_handler(
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     if affected == 0 {
-        return Err(AppError::NotFound(format!("allowlist entry {id} not found")));
+        return Err(AppError::NotFound(format!(
+            "allowlist entry {id} not found"
+        )));
     }
 
     // Emit audit event AFTER commit (best-effort).
@@ -9762,7 +9767,11 @@ mod tests {
             .body(Body::empty())
             .expect("build GET");
         let resp = app.clone().oneshot(req).await.expect("oneshot GET");
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "GET must require auth");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "GET must require auth"
+        );
 
         // POST /admin/allowlist without auth -> 401
         let req = Request::builder()
@@ -9772,7 +9781,11 @@ mod tests {
             .body(Body::from("{}"))
             .expect("build POST");
         let resp = app.clone().oneshot(req).await.expect("oneshot POST");
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "POST must require auth");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "POST must require auth"
+        );
 
         // GET /admin/allowlist/{id} without auth -> 401
         let req = Request::builder()
@@ -9781,7 +9794,11 @@ mod tests {
             .body(Body::empty())
             .expect("build GET by id");
         let resp = app.clone().oneshot(req).await.expect("oneshot GET by id");
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "GET by id must require auth");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "GET by id must require auth"
+        );
 
         // PUT /admin/allowlist/{id} without auth -> 401
         let req = Request::builder()
@@ -9791,7 +9808,11 @@ mod tests {
             .body(Body::from("{}"))
             .expect("build PUT");
         let resp = app.clone().oneshot(req).await.expect("oneshot PUT");
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "PUT must require auth");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "PUT must require auth"
+        );
 
         // DELETE /admin/allowlist/{id} without auth -> 401
         let req = Request::builder()
@@ -9800,7 +9821,11 @@ mod tests {
             .body(Body::empty())
             .expect("build DELETE");
         let resp = app.oneshot(req).await.expect("oneshot DELETE");
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "DELETE must require auth");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "DELETE must require auth"
+        );
     }
 
     #[tokio::test]
@@ -10309,7 +10334,8 @@ mod tests {
                 new_value: Some(r#"{"value":"foo"}"#.to_string()),
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
             };
-            crate::db::repositories::AllowlistAuditRepository::insert(&uow, &audit).expect("insert audit");
+            crate::db::repositories::AllowlistAuditRepository::insert(&uow, &audit)
+                .expect("insert audit");
             uow.commit().expect("commit");
         }
 
@@ -10374,6 +10400,9 @@ mod tests {
 
         let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
         let audits: Vec<AllowlistAuditResponse> = serde_json::from_slice(&body).expect("parse");
-        assert!(audits.is_empty(), "audit log should be empty for entry with no audit records");
+        assert!(
+            audits.is_empty(),
+            "audit log should be empty for entry with no audit records"
+        );
     }
 }
