@@ -1475,6 +1475,7 @@ async fn init_universal_injection(
         &dll_path_x64,
         Some(dll_path_x86.clone()),
     ));
+    let _injector_for_ui = Arc::clone(&injector);
 
     // 4. Create sweep trigger channel (crossbeam for ETW thread -> tokio bridge).
     let (sweep_tx, sweep_rx) = crossbeam_channel::bounded::<crate::process_watcher::SweepTrigger>(16);
@@ -1489,7 +1490,7 @@ async fn init_universal_injection(
     let universal_injector = Arc::new(crate::universal_injector::UniversalInjector::with_retry_queue(
         Arc::clone(&registry),
         Arc::clone(&matcher),
-        injector,
+        Arc::clone(&injector),
         retry_tx,
     ));
 
@@ -1588,6 +1589,14 @@ async fn init_universal_injection(
         }
     });
 
+    // 12. Run startup EnumProcesses sweep (bounded concurrency, 5s timeout per process).
+    let registry_for_sweep = Arc::clone(&registry);
+    let matcher_for_sweep = Arc::clone(&matcher);
+    let injector_for_startup = Arc::clone(&injector);
+    tokio::spawn(async move {
+        startup_sweep(registry_for_sweep, matcher_for_sweep, injector_for_startup).await;
+    });
+
     tracing::info!("Phase 49 universal injection subsystem initialised");
 
     (
@@ -1600,6 +1609,170 @@ async fn init_universal_injection(
         retry_shutdown_tx,
         Some(retry_handle),
     )
+}
+
+/// Startup sweep: enumerate all running PIDs, attempt injection into non-allowlisted.
+///
+/// Review fix: bounded concurrency (max 32 parallel), per-process 5-second timeout.
+async fn startup_sweep(
+    registry: Arc<crate::process_registry::ProcessRegistry>,
+    matcher: Arc<crate::allowlist::AllowlistMatcher>,
+    injector: Arc<crate::hook_injector::HookInjector>,
+) {
+    #[cfg(windows)]
+    {
+        use tokio::sync::Semaphore;
+        use tokio::time::timeout;
+        use windows::Win32::System::ProcessStatus::K32EnumProcesses;
+
+        let pids = enum_all_processes();
+        tracing::info!(count = pids.len(), "startup sweep beginning");
+
+        let semaphore = Arc::new(Semaphore::new(32)); // max 32 concurrent injections
+        let mut handles = Vec::new();
+
+        for pid in pids {
+            let registry = Arc::clone(&registry);
+            let matcher = Arc::clone(&matcher);
+            let injector = Arc::clone(&injector);
+            let permit = match semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+
+            let handle = tokio::spawn(async move {
+                let _permit = permit; // hold until task completes
+                let key = crate::process_registry::ProcessKey {
+                    pid,
+                    creation_time: 0, // startup sweep: creation_time unknown, use PID only
+                };
+
+                if let crate::process_registry::ClaimResult::AlreadyClaimed(_) =
+                    registry.try_claim(key)
+                {
+                    return;
+                }
+
+                // Get image path via OpenProcess + QueryFullProcessImageNameW.
+                let image_path = get_process_image_path(pid).unwrap_or_default();
+                let canonical = crate::allowlist::canonicalize_path(&image_path);
+
+                // Allowlist check.
+                if let Some(category) = matcher.check(pid, &canonical, 0) {
+                    tracing::trace!(pid, ?category, "startup sweep: allowlist skip");
+                    registry.record_skipped(
+                        key,
+                        crate::process_registry::SkipReason::from_category(category),
+                    );
+                    return;
+                }
+
+                // PPL detection.
+                let ppl_outcome = crate::universal_injector::detect_ppl(pid);
+                match ppl_outcome {
+                    crate::process_registry::PplOutcome::Protected
+                    | crate::process_registry::PplOutcome::LikelyProtectedAccessDenied => {
+                        registry.record_skipped(
+                            key,
+                            crate::process_registry::SkipReason::Ppl(ppl_outcome),
+                        );
+                        return;
+                    }
+                    _ => {}
+                }
+
+                // Attempt injection with 5-second timeout.
+                let _ = timeout(Duration::from_secs(5), async {
+                    match injector.inject(pid) {
+                        Ok(()) => {
+                            registry.record_injected(key, "x64".into());
+                            tracing::info!(pid, "startup sweep: injected successfully");
+                        }
+                        Err(e) => {
+                            tracing::warn!(pid, error = %e, "startup sweep: injection failed");
+                            let failure =
+                                crate::universal_injector::categorize_error(&e);
+                            registry.record_skipped(
+                                key,
+                                crate::process_registry::SkipReason::Failed(failure),
+                            );
+                        }
+                    }
+                })
+                .await;
+            });
+            handles.push(handle);
+        }
+
+        for h in handles {
+            let _ = h.await;
+        }
+
+        tracing::info!("startup sweep complete");
+    }
+    #[cfg(not(windows))]
+    {
+        tracing::debug!("startup sweep skipped on non-Windows platform");
+    }
+}
+
+/// Enumerate all running process IDs via K32EnumProcesses.
+#[cfg(windows)]
+fn enum_all_processes() -> Vec<u32> {
+    use windows::Win32::System::ProcessStatus::K32EnumProcesses;
+
+    let mut pids = vec![0u32; 4096];
+    let mut needed: u32 = 0;
+    let result = unsafe {
+        K32EnumProcesses(
+            pids.as_mut_ptr(),
+            (pids.len() * std::mem::size_of::<u32>()) as u32,
+            &mut needed,
+        )
+    };
+
+    if result == windows::core::BOOL(0) {
+        tracing::warn!("K32EnumProcesses failed — startup sweep cannot enumerate PIDs");
+        return Vec::new();
+    }
+
+    let count = (needed as usize) / std::mem::size_of::<u32>();
+    pids.truncate(count);
+    pids
+}
+
+/// Get the image path for a process via QueryFullProcessImageNameW.
+#[cfg(windows)]
+fn get_process_image_path(pid: u32) -> Option<String> {
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let handle = unsafe {
+        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?
+    };
+
+    let mut buf = vec![0u16; 260];
+    let mut size: u32 = buf.len() as u32;
+    let result = unsafe {
+        QueryFullProcessImageNameW(
+            handle,
+            windows::Win32::System::Threading::PROCESS_NAME_WIN32,
+            windows::core::PWSTR::from_raw(buf.as_mut_ptr()),
+            &mut size,
+        )
+    };
+
+    unsafe {
+        let _ = windows::Win32::Foundation::CloseHandle(handle);
+    }
+
+    if result.is_err() {
+        return None;
+    }
+
+    let len = size as usize;
+    Some(String::from_utf16_lossy(&buf[..len.min(buf.len())]))
 }
 
 /// Spawns the config poll task when a server client is available.

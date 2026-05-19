@@ -274,7 +274,7 @@ impl UniversalInjector {
 
 /// Detect PPL status at injection time.
 #[must_use]
-fn detect_ppl(pid: u32) -> PplOutcome {
+pub fn detect_ppl(pid: u32) -> PplOutcome {
     use windows::Win32::System::Threading::{
         GetProcessMitigationPolicy, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
@@ -316,7 +316,7 @@ fn detect_ppl(pid: u32) -> PplOutcome {
 
 /// Categorize a HookError into an InjectionFailure.
 #[must_use]
-fn categorize_error(e: &crate::hook_injector::HookError) -> InjectionFailure {
+pub fn categorize_error(e: &crate::hook_injector::HookError) -> InjectionFailure {
     use crate::hook_injector::HookError;
     match e {
         HookError::AccessDenied { .. } => InjectionFailure::AccessDenied,
@@ -330,7 +330,7 @@ fn categorize_error(e: &crate::hook_injector::HookError) -> InjectionFailure {
 impl SkipReason {
     /// Convert an AllowlistCategory to the corresponding SkipReason.
     #[must_use]
-    fn from_category(cat: AllowlistCategory) -> Self {
+    pub fn from_category(cat: AllowlistCategory) -> Self {
         match cat {
             AllowlistCategory::SelfProcess => SkipReason::SelfProcess,
             AllowlistCategory::Avedr => SkipReason::Avedr,
