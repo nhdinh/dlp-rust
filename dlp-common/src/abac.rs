@@ -53,6 +53,12 @@ pub enum Action {
     LabelReject,
     /// Admin deleted a label via the admin API (Phase 59, LABEL-07).
     LabelDelete,
+    /// Admin created a new allowlist entry via the admin API (Phase 49, AUDIT-03).
+    AllowlistCreate,
+    /// Admin updated an existing allowlist entry via the admin API (Phase 49, AUDIT-03).
+    AllowlistUpdate,
+    /// Admin deleted an allowlist entry via the admin API (Phase 49, AUDIT-03).
+    AllowlistDelete,
 }
 
 /// The access context describes how the file operation originated.
