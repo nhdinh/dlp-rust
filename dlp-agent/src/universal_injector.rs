@@ -343,9 +343,10 @@ impl SkipReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::allowlist::{AllowlistEntry, AllowlistMatcher, MatchType};
+    use crate::allowlist::AllowlistMatcher;
     use crate::hook_injector::HookInjector;
     use crate::process_registry::ProcessRegistry;
+    use crate::process_watcher::EventSource;
 
     fn test_injector() -> Arc<HookInjector> {
         Arc::new(HookInjector::new("C:\\dummy.dll", None))
