@@ -272,6 +272,41 @@ if (-not $SkipValidation) {
     Write-Host "[SKIP] Validation step skipped" -ForegroundColor Yellow
 }
 
+# -- 5. AppInit_DLLs tertiary fallback setup (BLOCK-07, Phase 49) --------
+Write-Host ""
+Write-Host "----------------------------------------------------" -ForegroundColor Magenta
+Write-Host "  Step 5: Configure AppInit_DLLs fallback" -ForegroundColor Magenta
+
+$appInitKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"
+$backupKey = "HKLM:\SOFTWARE\DLP\Backup\AppInit_DLLs"
+
+# Create backup key if not exists.
+if (-not (Test-Path $backupKey)) {
+    New-Item -Path $backupKey -Force | Out-Null
+    Write-Host "[OK] Created backup registry key: $backupKey"
+}
+
+# Read current values and store backup.
+$currentDlls = (Get-ItemProperty -Path $appInitKey -Name "AppInit_DLLs" -ErrorAction SilentlyContinue).AppInit_DLLs
+$currentLoad = (Get-ItemProperty -Path $appInitKey -Name "LoadAppInit_DLLs" -ErrorAction SilentlyContinue).LoadAppInit_DLLs
+$currentSigned = (Get-ItemProperty -Path $appInitKey -Name "RequireSignedAppInit_DLLs" -ErrorAction SilentlyContinue).RequireSignedAppInit_DLLs
+
+Set-ItemProperty -Path $backupKey -Name "AppInit_DLLs" -Value ($currentDlls ?? "")
+Set-ItemProperty -Path $backupKey -Name "LoadAppInit_DLLs" -Value ($currentLoad ?? 0)
+Set-ItemProperty -Path $backupKey -Name "RequireSignedAppInit_DLLs" -Value ($currentSigned ?? 0)
+Write-Host "[OK] Backed up original AppInit_DLLs values to $backupKey"
+
+# Set new values — append DLP hook DLL to existing entries.
+$dllPath = Join-Path $RepoRoot "target\$Configuration\dlp_hook_dll.dll"
+$newDlls = if ($currentDlls) { "$currentDlls $dllPath" } else { $dllPath }
+Set-ItemProperty -Path $appInitKey -Name "AppInit_DLLs" -Value $newDlls
+Set-ItemProperty -Path $appInitKey -Name "LoadAppInit_DLLs" -Value 1
+Set-ItemProperty -Path $appInitKey -Name "RequireSignedAppInit_DLLs" -Value 1
+
+Write-Host "[OK] AppInit_DLLs configured for DLP hook DLL fallback" -ForegroundColor Green
+Write-Host "  DLL path: $dllPath" -ForegroundColor Cyan
+Write-Host "  Note: AppInit_DLLs is inert under Secure Boot (tertiary fallback only)" -ForegroundColor Yellow
+
 # -- Summary ---------------------------------------------------------------
 Write-Host ""
 Write-Host "======================================================" -ForegroundColor Magenta
