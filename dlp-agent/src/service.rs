@@ -1733,7 +1733,9 @@ async fn init_universal_injection(
             tracing::info!(
                 event_type = "injection_telemetry",
                 injected = snapshot.injected_count,
-                skipped = snapshot.total_tracked.saturating_sub(snapshot.injected_count),
+                skipped = snapshot
+                    .total_tracked
+                    .saturating_sub(snapshot.injected_count),
                 coverage_percent = format!("{:.1}", snapshot.coverage_percent),
                 "injection telemetry"
             );
