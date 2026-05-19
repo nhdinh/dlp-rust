@@ -682,22 +682,19 @@ struct Win32_ProcessStartTrace {
 | A4 | `WinVerifyTrust` + `CryptQueryObject` pattern in `detection/app_identity.rs` extracts sufficient cert subject for AV/EDR allowlist matching | Allowlist Matching | If AV/EDR certs use non-standard subject fields, matching may miss. Mitigation: allowlist supports both cert_subject and path patterns as fallback. |
 | A5 | `wmi` 0.18.4 supports `Win32_ProcessStartTrace` intrinsic event subscription | WMI Backstop | If `wmi` crate does not support intrinsic events, backstop fails. Mitigation: verify with small test program before implementation. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **WMI Intrinsic Event Subscription**
+1. **WMI Intrinsic Event Subscription** — RESOLVED
    - What we know: `wmi` 0.18.4 supports WQL queries and event classes. `Win32_ProcessStartTrace` is an intrinsic event class.
-   - What's unclear: Whether the `wmi` crate's `WMIConnection::query` works for intrinsic events (which return indefinitely) or if a separate async notification API is needed.
-   - Recommendation: Implement WMI backstop as a spike task in Wave 0. If `wmi` crate cannot subscribe to intrinsic events, fall back to polling `Win32_Process` every 5 seconds as a degraded backstop.
+   - Resolution: Plan 49-03 Task 1 implements WMI backstop with intrinsic event subscription; fallback to polling `Win32_Process` every 5 seconds if intrinsic events are unsupported.
 
-2. **ETW Event ID Verification**
+2. **ETW Event ID Verification** — RESOLVED
    - What we know: Context7 docs show `record.event_id()` and `ProcessID`/`ImageName` parsing.
-   - What's unclear: Whether `Microsoft-Windows-Kernel-Process` uses Event ID 1 for ProcessStart on all Windows 10/11 versions, or if Event IDs vary by Windows version.
-   - Recommendation: Add a Wave 0 integration test that starts an ETW trace, spawns a child process, and verifies the callback receives Event ID 1 with the correct PID.
+   - Resolution: Plan 49-03 Task 1 implements `Microsoft-Windows-Kernel-Process` Event ID 1 parsing for ProcessStart. Wave 0 integration test verifies the callback receives Event ID 1 with correct PID (Plan 49-05 Task 3).
 
-3. **Signer Cert Subject Field Selection**
+3. **Signer Cert Subject Field Selection** — RESOLVED
    - What we know: `detection/app_identity.rs` extracts `CERT_NAME_SIMPLE_DISPLAY_TYPE` (typically CN).
-   - What's unclear: Whether AV/EDR vendors put their organization name in CN or in other subject fields (O, OU).
-   - Recommendation: Extract full cert subject string (not just CN) for allowlist matching. Use substring match rather than exact match.
+   - Resolution: Plan 49-01 Task 2 extracts full cert subject string (not just CN) via `CERT_NAME_STR_CRLF_SEPARATED_FLAG` for allowlist matching. Uses substring match for flexibility.
 
 ## Environment Availability
 
@@ -851,10 +848,10 @@ struct Win32_ProcessStartTrace {
 | ETW Event IDs | MEDIUM | Assumed from docs; Wave 0 integration test recommended |
 | WMI Intrinsic Events | MEDIUM | Assumed from crate docs; Wave 0 spike recommended |
 
-### Open Questions
-1. WMI `Win32_ProcessStartTrace` intrinsic event subscription — verify `wmi` 0.18.4 capability in Wave 0 spike.
-2. ETW Event ID verification — confirm Event ID 1 = ProcessStart on target Windows version via integration test.
-3. Signer cert subject field selection — determine whether AV/EDR vendors use CN or O field for organization name.
+### Open Questions (RESOLVED)
+1. WMI `Win32_ProcessStartTrace` — Plan 49-03 implements with polling fallback.
+2. ETW Event ID 1 — Plan 49-03 implements; Wave 0 integration test verifies.
+3. Signer cert subject — Plan 49-01 extracts full subject with substring match.
 
 ### Ready for Planning
 Research complete. Planner can now create PLAN.md files.

@@ -32,7 +32,7 @@ Phase 49 drives the unified hook DLL (built in Phase 48) into every non-allowlis
 ### Allowlist Hot-Reload
 - **D-01:** Allowlist delivery extends the existing agent-config TOML poll (30 s cadence). Add `[universal_injection.allowlist]` section to the agent config. Agent reloads on hash-change without restart — reuses v0.2.0+ infrastructure.
 - **D-02:** Allowlist matching uses **both** path prefix and signer certificate subject. System-critical processes (PIDs 0/4, csrss, smss, wininit, services, lsass, fontdrvhost, dwm) match by process name / path prefix. AV/EDR processes match by Authenticode signer cert subject (e.g., "O=CrowdStrike, Inc."). This satisfies BLOCK-06's signer-cert requirement and handles the system-critical category that lacks meaningful certs.
-- **D-03:** Operator extension flows: Admin TUI writes to server DB → server includes in agent-config TOML response → agent polls and reloads. No dedicated API endpoint or SQLite table needed.
+- **D-03:** Operator extension flows: Admin TUI writes to server DB (via `/admin/allowlist` CRUD endpoints) → server includes entries in agent-config TOML response → agent polls and reloads. The `allowlist_entries` SQLite table persists entries server-side.
 
 ### ETW Consumer Architecture
 - **D-04:** ETW consumer runs on a **dedicated OS thread** (`std::thread`) that calls `ProcessTrace` in a blocking loop. ETW callbacks push `(pid, image_path, parent_pid)` structs through a bounded `crossbeam::channel` to a tokio task that performs injection. This keeps the blocking ETW API off the tokio runtime entirely.
