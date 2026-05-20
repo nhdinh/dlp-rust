@@ -30,8 +30,14 @@ fn old_request_deserializes_with_defaults() {
 
     assert_eq!(deserialized.path, r"C:\old.txt");
     assert_eq!(deserialized.action, "READ");
-    assert_eq!(deserialized.cache_version, 0, "cache_version should default to 0");
-    assert_eq!(deserialized.protocol_version, 1, "protocol_version should default to 1");
+    assert_eq!(
+        deserialized.cache_version, 0,
+        "cache_version should default to 0"
+    );
+    assert_eq!(
+        deserialized.protocol_version, 1,
+        "protocol_version should default to 1"
+    );
     assert_eq!(deserialized.op, HookOp::Read, "op should default to Read");
 }
 

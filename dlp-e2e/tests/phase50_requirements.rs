@@ -130,7 +130,10 @@ fn cache_rebuild_on_policy_change() {
     version_word.store(odd_version, Ordering::Relaxed);
 
     let loaded = version_word.load(Ordering::Relaxed);
-    assert!(loaded & 1 != 0, "version_word should be odd during write (buffer=1)");
+    assert!(
+        loaded & 1 != 0,
+        "version_word should be odd during write (buffer=1)"
+    );
 
     // Step 2: Writer publishes even version.
     // Next flip: version=3, inactive_buffer=0, word = (3<<1)|0 = 6 (even)
@@ -140,7 +143,10 @@ fn cache_rebuild_on_policy_change() {
     version_word.store(even_version, Ordering::Release);
 
     let published = version_word.load(Ordering::Acquire);
-    assert!(published & 1 == 0, "version_word should be even after publish (buffer=0)");
+    assert!(
+        published & 1 == 0,
+        "version_word should be even after publish (buffer=0)"
+    );
     assert_eq!(published >> 1, next_version, "version should be 3");
 }
 
@@ -185,7 +191,12 @@ fn build_tool_allowlist() {
     ];
 
     let known_build_tools = [
-        "cargo.exe", "rustc.exe", "msbuild.exe", "devenv.exe", "link.exe", "gcc.exe",
+        "cargo.exe",
+        "rustc.exe",
+        "msbuild.exe",
+        "devenv.exe",
+        "link.exe",
+        "gcc.exe",
     ];
 
     for (name, expected) in &build_tools {
@@ -236,18 +247,50 @@ fn fail_mode_transitions() {
 #[test]
 fn asymmetric_fail() {
     // T3/T4 + Write = deny
-    assert!(matches_tier_op(Classification::T3, HookOp::Write, Decision::DENY));
-    assert!(matches_tier_op(Classification::T4, HookOp::Write, Decision::DENY));
+    assert!(matches_tier_op(
+        Classification::T3,
+        HookOp::Write,
+        Decision::DENY
+    ));
+    assert!(matches_tier_op(
+        Classification::T4,
+        HookOp::Write,
+        Decision::DENY
+    ));
 
     // T3/T4 + Read = allow
-    assert!(matches_tier_op(Classification::T3, HookOp::Read, Decision::ALLOW));
-    assert!(matches_tier_op(Classification::T4, HookOp::Read, Decision::ALLOW));
+    assert!(matches_tier_op(
+        Classification::T3,
+        HookOp::Read,
+        Decision::ALLOW
+    ));
+    assert!(matches_tier_op(
+        Classification::T4,
+        HookOp::Read,
+        Decision::ALLOW
+    ));
 
     // T1/T2 + any = allow
-    assert!(matches_tier_op(Classification::T1, HookOp::Write, Decision::ALLOW));
-    assert!(matches_tier_op(Classification::T1, HookOp::Read, Decision::ALLOW));
-    assert!(matches_tier_op(Classification::T2, HookOp::Write, Decision::ALLOW));
-    assert!(matches_tier_op(Classification::T2, HookOp::Read, Decision::ALLOW));
+    assert!(matches_tier_op(
+        Classification::T1,
+        HookOp::Write,
+        Decision::ALLOW
+    ));
+    assert!(matches_tier_op(
+        Classification::T1,
+        HookOp::Read,
+        Decision::ALLOW
+    ));
+    assert!(matches_tier_op(
+        Classification::T2,
+        HookOp::Write,
+        Decision::ALLOW
+    ));
+    assert!(matches_tier_op(
+        Classification::T2,
+        HookOp::Read,
+        Decision::ALLOW
+    ));
 }
 
 /// Helper: check if (tier, op) maps to expected decision in isolated mode.
@@ -320,7 +363,12 @@ fn rapid_version_flips() {
         version_word.store(word, Ordering::Release);
 
         let loaded = version_word.load(Ordering::Acquire);
-        assert_eq!(loaded >> 1, new_version, "version mismatch at iteration {}", i);
+        assert_eq!(
+            loaded >> 1,
+            new_version,
+            "version mismatch at iteration {}",
+            i
+        );
         assert_eq!(
             (loaded & 1) as u8,
             buffer,
@@ -370,8 +418,8 @@ fn malformed_header_rejected() {
 #[test]
 fn path_bypass_eight_three() {
     let short_name = r"C:\PROGRA~1\App\file.txt";
-    let has_tilde_digit = short_name.contains('~')
-        && short_name.chars().any(|c| c.is_ascii_digit());
+    let has_tilde_digit =
+        short_name.contains('~') && short_name.chars().any(|c| c.is_ascii_digit());
     assert!(has_tilde_digit, "8.3 short name should be detected");
 }
 

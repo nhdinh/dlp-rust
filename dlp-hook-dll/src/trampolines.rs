@@ -160,19 +160,13 @@ fn classify_and_log_path(
                 match crate::classify_path(path, action, crate::DEFAULT_PIPE_NAME) {
                     Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
                         fail_state.record_pipe_success(cache_version);
-                        let msg = format!(
-                            "[dlp-hook] ALLOW {} hash={:016x}\0",
-                            fn_name, path_hash
-                        );
+                        let msg = format!("[dlp-hook] ALLOW {} hash={:016x}\0", fn_name, path_hash);
                         crate::debug_log(&msg);
                         None
                     }
                     Ok(crate::Decision::DENY) | Ok(crate::Decision::DenyWithAlert) => {
                         fail_state.record_pipe_success(cache_version);
-                        let msg = format!(
-                            "[dlp-hook] DENY {} hash={:016x}\0",
-                            fn_name, path_hash
-                        );
+                        let msg = format!("[dlp-hook] DENY {} hash={:016x}\0", fn_name, path_hash);
                         crate::debug_log(&msg);
                         Some(crate::fail_closed::DenyReturn::BoolFalse)
                     }

@@ -258,17 +258,18 @@ impl ClassificationCache {
         use windows::Win32::Foundation::GetLastError;
         use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
         use windows::Win32::Security::PSECURITY_DESCRIPTOR;
+        use windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS;
         use windows::Win32::System::Memory::{
             CreateFileMappingW, MapViewOfFile, FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
         };
-        use windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS;
 
         // Convert SDDL string to a security descriptor.
         let sddl_wide: Vec<u16> = CACHE_SDDL
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        let mut psecurity_descriptor: PSECURITY_DESCRIPTOR = PSECURITY_DESCRIPTOR(std::ptr::null_mut());
+        let mut psecurity_descriptor: PSECURITY_DESCRIPTOR =
+            PSECURITY_DESCRIPTOR(std::ptr::null_mut());
         let sd_result = unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 windows::core::PCWSTR::from_raw(sddl_wide.as_ptr()),
@@ -316,7 +317,8 @@ impl ClassificationCache {
             }
         };
 
-        let view = unsafe { MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, CACHE_TOTAL_SIZE as usize) };
+        let view =
+            unsafe { MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, CACHE_TOTAL_SIZE as usize) };
 
         let mapping = match view {
             MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr } if !ptr.is_null() => ptr as *mut u8,
@@ -338,7 +340,11 @@ impl ClassificationCache {
         // Initialise the header in buffer 0 with version = 1, buffer = 0 (even = stable).
         cache.init_header(0);
 
-        info!(cache_name = CACHE_NAME, total_size = CACHE_TOTAL_SIZE, "ClassificationCache created");
+        info!(
+            cache_name = CACHE_NAME,
+            total_size = CACHE_TOTAL_SIZE,
+            "ClassificationCache created"
+        );
 
         Ok(cache)
     }
@@ -480,11 +486,7 @@ impl ClassificationCache {
     }
 
     /// Build prefix and hash tables in the specified buffer.
-    fn build_in_buffer(
-        &self,
-        buffer_index: u8,
-        entries: &[CacheKey],
-    ) -> Result<(), CacheError> {
+    fn build_in_buffer(&self, buffer_index: u8, entries: &[CacheKey]) -> Result<(), CacheError> {
         // Determine hash table offset for this buffer.
         let hash_offset = if buffer_index == 0 {
             unsafe { self.header().hash_table_offset_0 }
@@ -544,8 +546,7 @@ impl ClassificationCache {
 
         // Write prefix entries.
         for (i, (path, tier, ttl)) in prefix_entries.iter().take(prefix_count).enumerate() {
-            let offset = prefix_table_offset as usize
-                + i * std::mem::size_of::<PrefixEntry>();
+            let offset = prefix_table_offset as usize + i * std::mem::size_of::<PrefixEntry>();
             if offset + std::mem::size_of::<PrefixEntry>() > CACHE_TOTAL_SIZE as usize {
                 return Err(CacheError::BoundsCheckFailed {
                     offset: offset as u64,
@@ -554,9 +555,7 @@ impl ClassificationCache {
                 });
             }
             // SAFETY: bounds checked above.
-            let entry = unsafe {
-                &mut *(self.mapping.add(offset) as *mut PrefixEntry)
-            };
+            let entry = unsafe { &mut *(self.mapping.add(offset) as *mut PrefixEntry) };
             let path_bytes = path.as_bytes();
             let len = path_bytes.len().min(260);
             entry.prefix_len = len as u16;
@@ -588,9 +587,7 @@ impl ClassificationCache {
                     });
                 }
                 // SAFETY: bounds checked above.
-                let slot = unsafe {
-                    &mut *(self.mapping.add(slot_offset) as *mut HashEntry)
-                };
+                let slot = unsafe { &mut *(self.mapping.add(slot_offset) as *mut HashEntry) };
                 if slot.hash == 0 {
                     slot.hash = hash;
                     slot.tier = tier_to_u8(*tier);
@@ -751,8 +748,7 @@ impl ClassificationCache {
         // XOR reserved bytes in 8-byte chunks.
         for chunk in header._reserved.chunks_exact(8) {
             let val = u64::from_le_bytes([
-                chunk[0], chunk[1], chunk[2], chunk[3],
-                chunk[4], chunk[5], chunk[6], chunk[7],
+                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
             ]);
             checksum ^= val;
         }
@@ -1052,7 +1048,10 @@ mod tests {
         // Recovery: next rebuild starts from version=5, writes version=6.
         let recovered_version = (6u64 << 1) | 0; // version=6, buffer=0, even
         assert!(recovered_version & 1 == 0, "recovered version must be even");
-        assert!(recovered_version >> 1 > odd_version >> 1, "version must increase");
+        assert!(
+            recovered_version >> 1 > odd_version >> 1,
+            "version must increase"
+        );
     }
 
     // ── Helper: compute checksum from raw bytes ─────────────────────────────

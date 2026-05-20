@@ -32,8 +32,8 @@ use windows::Win32::System::Pipes::{
     PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 
-use dlp_common::{Classification, HookRequest, HookResponse};
 use dlp_common::hook_ipc::CacheHint;
+use dlp_common::{Classification, HookRequest, HookResponse};
 
 use crate::ipc::frame::{read_frame, write_frame};
 use crate::ipc::pipe_security::PipeSecurity;
@@ -68,7 +68,8 @@ impl CacheAccessor for crate::classification_cache::ClassificationCache {
         // We access it through the public rebuild method's internal logic pattern.
         // The version is stored as an atomic u64; we load it with Acquire ordering.
         use std::sync::atomic::Ordering;
-        let header = unsafe { &*(self as *const _ as *const crate::classification_cache::CacheHeader) };
+        let header =
+            unsafe { &*(self as *const _ as *const crate::classification_cache::CacheHeader) };
         let word = header.version_word.load(Ordering::Acquire);
         word >> 1
     }
@@ -109,9 +110,8 @@ impl HookIpcServer {
         inner_handler: HookHandler,
         cache: Arc<dyn CacheAccessor>,
     ) -> Self {
-        let handler: HookHandler = Arc::new(move |req: HookRequest| {
-            handle_hook_request(req, &inner_handler, &cache)
-        });
+        let handler: HookHandler =
+            Arc::new(move |req: HookRequest| handle_hook_request(req, &inner_handler, &cache));
         Self {
             pipe_name: pipe_name.into(),
             handler,
