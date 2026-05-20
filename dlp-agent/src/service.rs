@@ -856,6 +856,12 @@ struct RunLoopContext {
     /// Phase 49: Handle for the retry queue consumer task.
     #[allow(dead_code)]
     retry_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 50: Shared-memory classification cache (hook DLL fast path).
+    #[allow(dead_code)]
+    classification_cache: Arc<crate::classification_cache::ClassificationCache>,
+    /// Phase 50: Cache pusher background thread handle.
+    #[allow(dead_code)]
+    cache_pusher_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 /// The main service run loop.
@@ -943,6 +949,38 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         warn!(error = %e, "agent DB init failed — offline audit queue unavailable");
     }
 
+    // ── Load agent config (needed for cache prepopulation and monitor setup) ───
+    let agent_config = crate::config::AgentConfig::load_default();
+
+    // ── Initialise the shared-memory classification cache (Phase 50) ────────
+    // Must be created BEFORE any IPC pipe servers start so hooked processes
+    // can map it immediately on connection.
+    let classification_cache = Arc::new(
+        crate::classification_cache::ClassificationCache::new()
+            .inspect_err(|e| warn!(error = %e, "ClassificationCache init failed — hook DLL cache unavailable"))
+            .unwrap_or_else(|_| {
+                // On Windows this should succeed; on non-Windows it returns an error.
+                // We panic on Windows because the cache is required for hook DLL operation.
+                #[cfg(windows)]
+                panic!("ClassificationCache is required on Windows");
+                #[cfg(not(windows))]
+                unreachable!()
+            }),
+    );
+    // Pre-populate T3/T4 protected path roots from config.
+    // monitored_paths serves as the protected path source until a dedicated
+    // protected_paths field is added to AgentConfig.
+    let protected_roots: Vec<std::path::PathBuf> = agent_config
+        .monitored_paths
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+    classification_cache.prepopulate_t3_t4_roots(protected_roots);
+
+    // Start the cache pusher (policy change subscriber with 500ms debounce).
+    let cache_pusher = crate::cache_pusher::CachePusher::new(Arc::clone(&classification_cache));
+    let _cache_pusher_handle = cache_pusher.start();
+
     // ── Initialise the Policy Engine client and offline cache ──────────────
     let engine_client = crate::engine_client::EngineClient::default_client()
         .inspect_err(|e| warn!(error = %e, "Policy Engine client init failed — will run offline"))
@@ -956,9 +994,6 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         });
 
     let cache = Arc::new(crate::cache::Cache::new());
-
-    // ── Load agent config (needed for server_url before monitor setup) ───
-    let agent_config = crate::config::AgentConfig::load_default();
 
     // ── AD client (best-effort — AD features disabled if config absent or init fails) ───
     let ad_client = init_ad_client(&agent_config).await;
@@ -1335,6 +1370,8 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         backstop_handle,
         retry_shutdown: Some(retry_shutdown_tx),
         retry_handle,
+        classification_cache,
+        cache_pusher_handle: Some(_cache_pusher_handle),
     }
 }
 

@@ -39,11 +39,10 @@
 //! is reachable, the pipe response always takes precedence.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 use parking_lot::RwLock;
 use thiserror::Error;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use dlp_common::Classification;
 
@@ -107,17 +106,13 @@ pub struct CacheHeader {
     pub hash_table_offset_1: u64,
     /// Number of hash slots per buffer.
     pub hash_slots: u64,
-    /// Offset to the allowlist array.
-    pub allowlist_offset: u64,
-    /// Number of allowlist entries.
-    pub allowlist_count: u64,
     /// Wall-clock seconds (Unix epoch) when this buffer was built.
     pub created_at_epoch_secs: u64,
     /// Simple XOR checksum of all header fields (excluding version_word and
     /// checksum itself).
     pub checksum: u64,
     /// Reserved for forward compatibility — zeroed on init, never read by DLL.
-    pub _reserved: [u8; 32],
+    pub _reserved: [u8; 40],
 }
 
 /// Root-prefix entry for directory-level classification.
@@ -135,7 +130,7 @@ pub struct PrefixEntry {
     /// TTL in seconds.
     pub ttl_secs: u16,
     /// Padding to align to 272 bytes.
-    pub _pad: [u8; 5],
+    pub _pad: [u8; 6],
 }
 
 /// Per-file hash entry using FNV-1a 64-bit.
@@ -145,10 +140,12 @@ pub struct HashEntry {
     pub hash: u64,
     /// Classification tier (1–4).
     pub tier: u8,
+    /// Padding to align ttl_secs to 2 bytes.
+    pub _pad1: u8,
     /// TTL in seconds.
     pub ttl_secs: u16,
-    /// Padding to align to 16 bytes.
-    pub _pad: [u8; 5],
+    /// Padding to align to 16 bytes total.
+    pub _pad2: [u8; 4],
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +285,7 @@ impl ClassificationCache {
         }
 
         // SECURITY_ATTRIBUTES with the converted security descriptor.
-        let mut sa = windows::Win32::Security::SECURITY_ATTRIBUTES {
+        let sa = windows::Win32::Security::SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<windows::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: psecurity_descriptor.0,
             bInheritHandle: false.into(),
@@ -302,22 +299,13 @@ impl ClassificationCache {
         let handle = unsafe {
             CreateFileMappingW(
                 windows::Win32::Foundation::INVALID_HANDLE_VALUE,
-                Some(&mut sa),
+                Some(&sa),
                 PAGE_READWRITE,
                 0,
                 CACHE_TOTAL_SIZE as u32,
                 windows::core::PCWSTR::from_raw(name_wide.as_ptr()),
             )
         };
-
-        // Clean up the security descriptor memory (Windows allocated it).
-        if !psecurity_descriptor.0.is_null() {
-            unsafe {
-                windows::Win32::System::Memory::LocalFree(
-                    windows::Win32::Foundation::HLOCAL(psecurity_descriptor.0 as isize),
-                );
-            }
-        }
 
         let handle = match handle {
             Ok(h) => h,
@@ -328,7 +316,7 @@ impl ClassificationCache {
             }
         };
 
-        let view = unsafe { MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, CACHE_TOTAL_SIZE) };
+        let view = unsafe { MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, CACHE_TOTAL_SIZE as usize) };
 
         let mapping = match view {
             MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr } if !ptr.is_null() => ptr as *mut u8,
@@ -366,7 +354,7 @@ impl ClassificationCache {
     /// Initialise the header in the given buffer.
     fn init_header(&self, buffer_index: u8) {
         // SAFETY: mapping is valid and we own the exclusive write lock.
-        let header = self.header_mut();
+        let header = unsafe { &mut *self.header_mut() };
 
         // version = 1, buffer = buffer_index, even = stable.
         let version_word = (1u64 << 1) | u64::from(buffer_index);
@@ -383,11 +371,9 @@ impl ClassificationCache {
         header.hash_table_offset_1 = hash_offset + 900 * 1024;
         header.hash_slots = 900 * 1024 / std::mem::size_of::<HashEntry>() as u64;
         // Allowlist after both hash tables.
-        header.allowlist_offset = hash_offset + 2 * 900 * 1024;
-        header.allowlist_count = 0;
         header.created_at_epoch_secs = 0;
         header.checksum = 0;
-        header._reserved = [0u8; 32];
+        header._reserved = [0u8; 40];
     }
 
     /// Returns a mutable reference to the cache header.
@@ -395,8 +381,8 @@ impl ClassificationCache {
     /// # Safety
     ///
     /// The caller must ensure exclusive access (e.g., holding `rebuild_lock`).
-    unsafe fn header_mut(&self) -> &mut CacheHeader {
-        &mut *(self.mapping as *mut CacheHeader)
+    unsafe fn header_mut(&self) -> *mut CacheHeader {
+        self.mapping as *mut CacheHeader
     }
 
     /// Returns an immutable reference to the cache header.
@@ -439,7 +425,7 @@ impl ClassificationCache {
         // Signal "writing in progress" with odd version.
         let odd_version_word = ((new_version) << 1) | u64::from(inactive_buffer) | 1;
         unsafe {
-            self.header_mut()
+            (*self.header_mut())
                 .version_word
                 .store(odd_version_word, Ordering::Relaxed);
         }
@@ -450,7 +436,7 @@ impl ClassificationCache {
         if let Err(e) = &built {
             // On error, restore the previous even version so readers aren't stuck.
             unsafe {
-                self.header_mut()
+                (*self.header_mut())
                     .version_word
                     .store(current_version_word, Ordering::Release);
             }
@@ -463,20 +449,20 @@ impl ClassificationCache {
             .unwrap_or_default()
             .as_secs();
         unsafe {
-            self.header_mut().created_at_epoch_secs = now_secs;
+            (*self.header_mut()).created_at_epoch_secs = now_secs;
         }
 
         // Compute checksum.
         let checksum = self.compute_checksum();
         unsafe {
-            self.header_mut().checksum = checksum;
+            (*self.header_mut()).checksum = checksum;
         }
 
         // Publish: Release fence then atomic store of even version word.
         std::sync::atomic::fence(Ordering::Release);
         let even_version_word = (new_version << 1) | u64::from(inactive_buffer);
         unsafe {
-            self.header_mut()
+            (*self.header_mut())
                 .version_word
                 .store(even_version_word, Ordering::Release);
         }
@@ -578,12 +564,12 @@ impl ClassificationCache {
             entry.prefix[..len].copy_from_slice(&path_bytes[..len]);
             entry.tier = tier_to_u8(*tier);
             entry.ttl_secs = (*ttl).min(u16::MAX as u32) as u16;
-            entry._pad = [0u8; 5];
+            entry._pad = [0u8; 6];
         }
 
         // Update prefix count in header.
         unsafe {
-            self.header_mut().prefix_count = prefix_count as u64;
+            (*self.header_mut()).prefix_count = prefix_count as u64;
         }
 
         // Write hash entries with open addressing.
@@ -609,7 +595,8 @@ impl ClassificationCache {
                     slot.hash = hash;
                     slot.tier = tier_to_u8(*tier);
                     slot.ttl_secs = (*ttl).min(u16::MAX as u32) as u16;
-                    slot._pad = [0u8; 5];
+                    slot._pad1 = 0;
+                    slot._pad2 = [0u8; 4];
                     inserted = true;
                     hash_count += 1;
                     break;
@@ -726,7 +713,7 @@ impl ClassificationCache {
             // Emit SIEM telemetry event.
             tracing::info!(
                 event = "siem.cache_overflow",
-                dropped,
+                dropped = total_dropped,
                 dropped_hash,
                 dropped_prefix,
                 kept_hash = hash_entries.len(),
@@ -760,8 +747,6 @@ impl ClassificationCache {
         checksum ^= header.hash_table_offset_0;
         checksum ^= header.hash_table_offset_1;
         checksum ^= header.hash_slots;
-        checksum ^= header.allowlist_offset;
-        checksum ^= header.allowlist_count;
         checksum ^= header.created_at_epoch_secs;
         // XOR reserved bytes in 8-byte chunks.
         for chunk in header._reserved.chunks_exact(8) {
@@ -814,7 +799,6 @@ impl ClassificationCache {
             ("prefix_table_offset", header.prefix_table_offset),
             ("hash_table_offset_0", header.hash_table_offset_0),
             ("hash_table_offset_1", header.hash_table_offset_1),
-            ("allowlist_offset", header.allowlist_offset),
         ];
         for (name, offset) in offsets {
             if offset >= CACHE_TOTAL_SIZE {
@@ -1108,21 +1092,14 @@ mod tests {
         checksum ^= u64::from_le_bytes([
             buf[64], buf[65], buf[66], buf[67], buf[68], buf[69], buf[70], buf[71],
         ]);
-        // allowlist_offset at offset 72
+        // created_at_epoch_secs at offset 72
         checksum ^= u64::from_le_bytes([
             buf[72], buf[73], buf[74], buf[75], buf[76], buf[77], buf[78], buf[79],
         ]);
-        // allowlist_count at offset 80
-        checksum ^= u64::from_le_bytes([
-            buf[80], buf[81], buf[82], buf[83], buf[84], buf[85], buf[86], buf[87],
-        ]);
-        // created_at_epoch_secs at offset 88
-        checksum ^= u64::from_le_bytes([
-            buf[88], buf[89], buf[90], buf[91], buf[92], buf[93], buf[94], buf[95],
-        ]);
-        // reserved at offset 104 (32 bytes = 4 u64s)
-        for i in 0..4 {
-            let off = 104 + i * 8;
+        // checksum at offset 80 (excluded from checksum computation)
+        // reserved at offset 88 (40 bytes = 5 u64s)
+        for i in 0..5 {
+            let off = 88 + i * 8;
             checksum ^= u64::from_le_bytes([
                 buf[off],
                 buf[off + 1],
