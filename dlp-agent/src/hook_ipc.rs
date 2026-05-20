@@ -10,6 +10,12 @@
 //! calling thread, each connection is handled in a
 //! `tokio::task::spawn_blocking` task so the accept loop never blocks on
 //! classification work.
+//!
+//! # Cache Non-Authoritative Invariant
+//!
+//! The cache stores classification **HINT only**. ABAC authority is never
+//! bypassed. A cache hit enables tier-gated fast-path decisions; a cache miss
+//! always falls through to the full ABAC evaluation via pipe round-trip.
 
 use std::sync::Arc;
 
@@ -26,7 +32,8 @@ use windows::Win32::System::Pipes::{
     PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 
-use dlp_common::{HookRequest, HookResponse};
+use dlp_common::{Classification, HookRequest, HookResponse};
+use dlp_common::hook_ipc::CacheHint;
 
 use crate::ipc::frame::{read_frame, write_frame};
 use crate::ipc::pipe_security::PipeSecurity;
@@ -46,6 +53,27 @@ const PIPE_TIMEOUT_MS: u32 = 5_000;
 /// Handler type for processing hook requests.
 pub type HookHandler = Arc<dyn Fn(HookRequest) -> HookResponse + Send + Sync + 'static>;
 
+/// Classification cache accessor for the hook IPC handler.
+///
+/// This trait abstracts over [`ClassificationCache`] so that tests can inject
+/// a mock implementation without creating real shared-memory mappings.
+pub trait CacheAccessor: Send + Sync + 'static {
+    /// Returns the current cache version (high 63 bits of version_word).
+    fn current_version(&self) -> u64;
+}
+
+impl CacheAccessor for crate::classification_cache::ClassificationCache {
+    fn current_version(&self) -> u64 {
+        // SAFETY: The ClassificationCache stores a version_word in its header.
+        // We access it through the public rebuild method's internal logic pattern.
+        // The version is stored as an atomic u64; we load it with Acquire ordering.
+        use std::sync::atomic::Ordering;
+        let header = unsafe { &*(self as *const _ as *const crate::classification_cache::CacheHeader) };
+        let word = header.version_word.load(Ordering::Acquire);
+        word >> 1
+    }
+}
+
 /// Named-pipe server that listens for hook DLL classification requests.
 pub struct HookIpcServer {
     pipe_name: String,
@@ -58,6 +86,32 @@ impl HookIpcServer {
     /// `pipe_name` is the full Win32 pipe path (e.g. `r"\\.\pipe\DlpHookPipe"`).
     /// `handler` is called once per request to produce a [`HookResponse`].
     pub fn new(pipe_name: impl Into<String>, handler: HookHandler) -> Self {
+        Self {
+            pipe_name: pipe_name.into(),
+            handler,
+        }
+    }
+
+    /// Creates a new hook IPC server with a cache-aware handler.
+    ///
+    /// The returned handler:
+    /// 1. Reads `cache_version` from the request and detects stale DLLs.
+    /// 2. Delegates to `inner_handler` for the actual ABAC evaluation.
+    /// 3. Builds a [`CacheHint`] from the response for DLL LRU warming.
+    /// 4. Returns the current cache version in the response.
+    ///
+    /// # Cache Non-Authoritative Invariant
+    ///
+    /// The cache stores classification **HINT only**. ABAC authority is never
+    /// bypassed. The `inner_handler` always performs full ABAC evaluation.
+    pub fn with_cache(
+        pipe_name: impl Into<String>,
+        inner_handler: HookHandler,
+        cache: Arc<dyn CacheAccessor>,
+    ) -> Self {
+        let handler: HookHandler = Arc::new(move |req: HookRequest| {
+            handle_hook_request(req, &inner_handler, &cache)
+        });
         Self {
             pipe_name: pipe_name.into(),
             handler,
@@ -195,6 +249,100 @@ fn handle_connection(pipe: HANDLE, handler: &HookHandler) -> Result<()> {
     }
 
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cache-aware request handler
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Handles a hook request with cache_version awareness and cache_hint warming.
+///
+/// # Arguments
+///
+/// * `req` — The incoming [`HookRequest`] from the hook DLL.
+/// * `inner_handler` — The actual ABAC evaluator (performs full policy evaluation).
+/// * `cache` — The shared-memory classification cache accessor.
+///
+/// # Behavior
+///
+/// 1. Reads `cache_version` from the request. If it is older than the current
+///    cache version, logs a stale-DLL telemetry event.
+/// 2. Delegates to `inner_handler` for full ABAC evaluation — the cache is
+///    never used to bypass ABAC authority.
+/// 3. Builds a [`CacheHint`] from the response (if the path has a classification).
+/// 4. Returns the current cache version in the response so the DLL can detect
+///    version mismatches on its next lookup.
+///
+/// # Cache Non-Authoritative Invariant
+///
+/// The cache stores classification **HINT only**. ABAC authority is never
+/// bypassed. The `inner_handler` always performs full ABAC evaluation.
+fn handle_hook_request(
+    req: HookRequest,
+    inner_handler: &HookHandler,
+    cache: &Arc<dyn CacheAccessor>,
+) -> HookResponse {
+    let current_version = cache.current_version();
+
+    // Detect stale DLLs (for telemetry/audit only).
+    if req.cache_version > 0 && req.cache_version < current_version {
+        info!(
+            req_version = req.cache_version,
+            current_version,
+            path = %req.path,
+            "stale DLL detected — cache version mismatch"
+        );
+    }
+
+    // Perform full ABAC evaluation (no bypass).
+    let mut response = inner_handler(req.clone());
+
+    // Build cache_hint for DLL LRU warming.
+    // TTL based on tier: T4=30s, T3=60s, T2=300s, T1=1800s.
+    let cache_hint = build_cache_hint(&req.path);
+
+    // Attach cache metadata to response.
+    response.cache_hint = cache_hint;
+    response.cache_version = current_version;
+
+    response
+}
+
+/// Build a [`CacheHint`] for a given path.
+///
+/// In a full implementation this would look up the path classification from
+/// the policy store. For now, we use a simplified heuristic based on path
+/// patterns to demonstrate the integration.
+///
+/// # TTL Budgets
+///
+/// | Tier | TTL (seconds) |
+/// |------|---------------|
+/// | T4   | 30            |
+/// | T3   | 60            |
+/// | T2   | 300           |
+/// | T1   | 1800          |
+fn build_cache_hint(path: &str) -> Option<CacheHint> {
+    // Simplified heuristic: classify based on path patterns.
+    // In production this would query the policy store.
+    let (tier, ttl_secs) = if path.to_ascii_uppercase().contains("SECRET")
+        || path.to_ascii_uppercase().contains("RESTRICTED")
+    {
+        (Classification::T4, 30)
+    } else if path.to_ascii_uppercase().contains("CONFIDENTIAL") {
+        (Classification::T3, 60)
+    } else if path.to_ascii_uppercase().contains("INTERNAL") {
+        (Classification::T2, 300)
+    } else {
+        // Unclassified — no hint.
+        return None;
+    };
+
+    Some(CacheHint {
+        path: std::path::PathBuf::from(path),
+        tier,
+        ttl_secs,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -573,5 +721,128 @@ mod tests {
 
         close_pipe(client);
         // Server thread blocks in ConnectNamedPipe — do not join.
+    }
+
+    // --- Task 1: Cache version awareness ---
+
+    /// Mock cache accessor for testing.
+    #[derive(Debug, Clone)]
+    struct MockCache {
+        version: u64,
+    }
+
+    impl CacheAccessor for MockCache {
+        fn current_version(&self) -> u64 {
+            self.version
+        }
+    }
+
+    #[test]
+    fn cache_version_handling_stale_detected() {
+        let inner: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+        });
+
+        let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 42 });
+
+        let req = HookRequest {
+            path: r"C:\secret.txt".to_string(),
+            action: "WRITE".to_string(),
+            cache_version: 5, // stale
+            protocol_version: 1,
+            op: dlp_common::hook_ipc::HookOp::Write,
+        };
+
+        let resp = handle_hook_request(req, &inner, &cache);
+
+        // Stale detection should not change the decision.
+        assert_eq!(resp.decision, Decision::ALLOW);
+        // Cache version should be updated to current.
+        assert_eq!(resp.cache_version, 42);
+        // Cache hint should be present for T4 path.
+        assert!(resp.cache_hint.is_some());
+        assert_eq!(resp.cache_hint.as_ref().unwrap().tier, Classification::T4);
+        assert_eq!(resp.cache_hint.as_ref().unwrap().ttl_secs, 30);
+    }
+
+    #[test]
+    fn cache_version_handling_fresh_version() {
+        let inner: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+        });
+
+        let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 42 });
+
+        let req = HookRequest {
+            path: r"C:\test.txt".to_string(),
+            action: "READ".to_string(),
+            cache_version: 42, // fresh
+            protocol_version: 1,
+            op: dlp_common::hook_ipc::HookOp::Read,
+        };
+
+        let resp = handle_hook_request(req, &inner, &cache);
+
+        assert_eq!(resp.decision, Decision::ALLOW);
+        assert_eq!(resp.cache_version, 42);
+        // Unclassified path — no cache hint.
+        assert!(resp.cache_hint.is_none());
+    }
+
+    #[test]
+    fn cache_version_handling_zero_version() {
+        let inner: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::DENY,
+            reason: "blocked".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+        });
+
+        let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 7 });
+
+        let req = HookRequest {
+            path: r"C:\confidential.doc".to_string(),
+            action: "WRITE".to_string(),
+            cache_version: 0, // never seen cache
+            protocol_version: 1,
+            op: dlp_common::hook_ipc::HookOp::Write,
+        };
+
+        let resp = handle_hook_request(req, &inner, &cache);
+
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.cache_version, 7);
+        // T3 path — cache hint with 60s TTL.
+        assert!(resp.cache_hint.is_some());
+        assert_eq!(resp.cache_hint.as_ref().unwrap().tier, Classification::T3);
+        assert_eq!(resp.cache_hint.as_ref().unwrap().ttl_secs, 60);
+    }
+
+    #[test]
+    fn cache_hint_ttl_budgets() {
+        // T4 = 30s
+        let hint = build_cache_hint(r"C:\SECRET\file.txt");
+        assert!(hint.is_some());
+        assert_eq!(hint.unwrap().ttl_secs, 30);
+
+        // T3 = 60s
+        let hint = build_cache_hint(r"C:\confidential\file.txt");
+        assert!(hint.is_some());
+        assert_eq!(hint.unwrap().ttl_secs, 60);
+
+        // T2 = 300s
+        let hint = build_cache_hint(r"C:\internal\file.txt");
+        assert!(hint.is_some());
+        assert_eq!(hint.unwrap().ttl_secs, 300);
+
+        // Unclassified = None
+        let hint = build_cache_hint(r"C:\public\file.txt");
+        assert!(hint.is_none());
     }
 }
