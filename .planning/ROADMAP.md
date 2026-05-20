@@ -119,7 +119,7 @@ Plans:
   3. With the agent service stopped, the hook denies (`ERROR_ACCESS_DENIED` / `STATUS_ACCESS_DENIED`) every write attempt against a T3 or T4 path and allows every write against a T1 or T2 path; the fail-state telemetry shows the DLL transitioning HEALTHY → DEGRADED → ISOLATED.
   4. Build-tool processes (devenv.exe, cargo.exe, msbuild.exe, rustc.exe, link.exe, gcc.exe) and trusted system paths (System32, WinSxS, WindowsApps, Program Files\Common Files) bypass the pipe entirely on the operator-extendable allowlist; the per-tier staleness budgets (T4=30s, T3=60s, T2=5min, T1=30min) are observable in audit events.
   5. After agent restart with a higher `cache_version`, every connected hook DLL transitions ISOLATED → RESYNC → HEALTHY within 1 s without losing any in-flight decision.
-**Plans:** 6 plans (50-01 through 50-06)
+**Plans:** 5/6 plans executed
 
 Plans:
 - [ ] `50-01-PLAN.md` — IPC Protocol Extension: HookRequest/HookResponse with cache_version, cache_hint, HookOp
@@ -352,7 +352,7 @@ Plans:
 | 47. Secrets Encryption at Rest (prerequisite) | 1/1 | Reopened for review | - |
 | 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-16 |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 5/5 | Complete    | 2026-05-19 |
-| 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 6/6 | Planned     | 2026-05-20 |
+| 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 5/6 | In Progress|  |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 0/0 | Not started | - |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 0/0 | Not started | - |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 0/0 | Not started | - |

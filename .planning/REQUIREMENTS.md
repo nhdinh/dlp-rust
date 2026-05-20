@@ -23,9 +23,9 @@ Goal: convert general file I/O from passive audit-trail-after-the-fact to active
 - [ ] **CACHE-02** — Hook DLL maps cache read-only via `OpenFileMappingW` at DllMain (after self-allowlist gate); thread-local LRU of last 128 path lookups.
 - [ ] **CACHE-03** — Extended `HookRequest`/`HookResponse` protocol: requests carry `pid`, `tid`, `file_object`, `journal_seq`, `op: HookOp`; responses carry `cache_hint: Option<(PathBuf, Tier, ttl_secs)>` and `cache_version` so every round-trip warms the DLL.
 - [ ] **CACHE-04** — Server pushes `HookMessage::CacheDelta { added, removed, version }` to agent on every classification policy change; agent rebuilds shared mapping and atomically flips global version word.
-- [ ] **CACHE-05** — In-DLL trusted-path allowlist (System32, WinSxS, WindowsApps, Program Files\Common Files) bypasses both cache lookup and pipe; mitigates CRIT-04 build-workload death-spiral.
-- [ ] **CACHE-06** — Per-process host allowlist (devenv.exe, cargo.exe, msbuild.exe, rustc.exe, link.exe, gcc.exe, etc.) bypasses pipe entirely for build-workload processes (operator-extendable).
-- [ ] **FAIL-01** — Hook DLL fail-mode state machine: HEALTHY → DEGRADED (3 consecutive pipe failures) → ISOLATED (10 consecutive failures OR cache stale) → RESYNC (pipe recovered + new CacheDelta with greater version).
+- [x] **CACHE-05** — In-DLL trusted-path allowlist (System32, WinSxS, WindowsApps, Program Files\Common Files) bypasses both cache lookup and pipe; mitigates CRIT-04 build-workload death-spiral.
+- [x] **CACHE-06** — Per-process host allowlist (devenv.exe, cargo.exe, msbuild.exe, rustc.exe, link.exe, gcc.exe, etc.) bypasses pipe entirely for build-workload processes (operator-extendable).
+- [x] **FAIL-01** — Hook DLL fail-mode state machine: HEALTHY → DEGRADED (3 consecutive pipe failures) → ISOLATED (10 consecutive failures OR cache stale) → RESYNC (pipe recovered + new CacheDelta with greater version).
 - [ ] **FAIL-02** — Asymmetric tier-gated fail semantics: T3/T4 fail-closed (`ERROR_ACCESS_DENIED`/`STATUS_ACCESS_DENIED`) when ISOLATED; T1/T2 fail-open. Cached classification authoritative for fail decisions; root-prefix table consulted on cache miss.
 - [ ] **FAIL-03** — Per-tier staleness budgets: T4=30s, T3=60s, T2=5min, T1=30min; per-entry `ttl_bits` field in shared mapping; DLL stamps `cache_version_seen_at` on each successful round-trip.
 
