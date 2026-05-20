@@ -31,12 +31,83 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
-use dlp_common::Classification;
 use dlp_common::hook_ipc::HookOp;
+use dlp_common::Classification;
 
-// Re-export the agent-side ABI structs so the DLL uses the exact same layout.
-// These must match `dlp-agent/src/classification_cache.rs` byte-for-byte.
-pub use dlp_agent::classification_cache::{CacheHeader, HashEntry, PrefixEntry};
+// ---------------------------------------------------------------------------
+// Shared-memory ABI structs
+// ---------------------------------------------------------------------------
+// These MUST match `dlp-agent/src/classification_cache.rs` byte-for-byte.
+// All fields use fixed-size types (u64, not usize) for 32/64-bit compatibility.
+
+/// Shared-memory cache header — 128 bytes, 8-byte aligned.
+///
+/// All offset and size fields use `u64` (not `usize`) for 32/64-bit
+/// compatibility. The layout is little-endian only (x86/x64 Windows).
+#[repr(C, align(8))]
+pub struct CacheHeader {
+    /// Atomic version word: [63:1] = version, [0] = active buffer.
+    /// Odd while writing; even when stable.
+    pub version_word: AtomicU64,
+    /// Magic number — must equal `CACHE_MAGIC`.
+    pub magic: u64,
+    /// Layout version — must equal `CACHE_LAYOUT_VERSION`.
+    pub layout_version: u32,
+    /// Size of this header in bytes (128).
+    pub header_size: u32,
+    /// Total size of the shared-memory mapping.
+    pub total_size: u64,
+    /// Offset to the root-prefix table from start of mapping.
+    pub prefix_table_offset: u64,
+    /// Number of prefix entries in the prefix table.
+    pub prefix_count: u64,
+    /// Offset to hash table (buffer 0).
+    pub hash_table_offset_0: u64,
+    /// Offset to hash table (buffer 1).
+    pub hash_table_offset_1: u64,
+    /// Number of hash slots per buffer.
+    pub hash_slots: u64,
+    /// Wall-clock seconds (Unix epoch) when this buffer was built.
+    pub created_at_epoch_secs: u64,
+    /// Simple XOR checksum of all header fields (excluding version_word and
+    /// checksum itself).
+    pub checksum: u64,
+    /// Reserved for forward compatibility — zeroed on init, never read by DLL.
+    pub _reserved: [u8; 40],
+}
+
+/// Root-prefix entry for directory-level classification.
+///
+/// Prefixes are sorted by `prefix_len` descending (longest first) so that
+/// longest-prefix matching works with a simple linear scan.
+#[repr(C)]
+pub struct PrefixEntry {
+    /// Length of the prefix in bytes.
+    pub prefix_len: u16,
+    /// UTF-8 path prefix (MAX_PATH = 260 bytes).
+    pub prefix: [u8; 260],
+    /// Classification tier (1–4, matching `Classification`).
+    pub tier: u8,
+    /// TTL in seconds.
+    pub ttl_secs: u16,
+    /// Padding to align to 272 bytes.
+    pub _pad: [u8; 6],
+}
+
+/// Per-file hash entry using FNV-1a 64-bit.
+#[repr(C)]
+pub struct HashEntry {
+    /// FNV-1a 64-bit hash of the path.
+    pub hash: u64,
+    /// Classification tier (1–4).
+    pub tier: u8,
+    /// Padding to align ttl_secs to 2 bytes.
+    pub _pad1: u8,
+    /// TTL in seconds.
+    pub ttl_secs: u16,
+    /// Padding to align to 16 bytes total.
+    pub _pad2: [u8; 4],
+}
 
 /// Magic number: "DLP" + version 1 (0x4454_5001).
 const CACHE_MAGIC: u64 = 0x4454_5001;
@@ -103,9 +174,7 @@ impl CacheLookup {
     /// Must be called from a context where Windows loader lock is NOT held
     /// (i.e., NOT from `DllMain`).
     unsafe fn try_init() -> Option<CacheLookup> {
-        use windows::Win32::System::Memory::{
-            MapViewOfFile, OpenFileMappingW, FILE_MAP_READ,
-        };
+        use windows::Win32::System::Memory::{MapViewOfFile, OpenFileMappingW, FILE_MAP_READ};
 
         let name_wide: Vec<u16> = CACHE_NAME
             .encode_utf16()
@@ -154,7 +223,9 @@ impl CacheLookup {
         // Record the validated version.
         let version_word = unsafe { (*lookup.header).version_word.load(Ordering::Acquire) };
         let version = version_word >> 1;
-        lookup.last_validated_version.store(version, Ordering::Relaxed);
+        lookup
+            .last_validated_version
+            .store(version, Ordering::Relaxed);
 
         Some(lookup)
     }
@@ -200,7 +271,8 @@ impl CacheLookup {
             if self.full_validation().is_err() {
                 return None;
             }
-            self.last_validated_version.store(version, Ordering::Relaxed);
+            self.last_validated_version
+                .store(version, Ordering::Relaxed);
         } else {
             // Cheap check: just verify magic is still valid.
             let magic = unsafe { (*self.header).magic };
@@ -316,8 +388,7 @@ impl CacheLookup {
         // XOR reserved bytes in 8-byte chunks.
         for chunk in header._reserved.chunks_exact(8) {
             let val = u64::from_le_bytes([
-                chunk[0], chunk[1], chunk[2], chunk[3],
-                chunk[4], chunk[5], chunk[6], chunk[7],
+                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
             ]);
             checksum ^= val;
         }
@@ -332,12 +403,7 @@ impl CacheLookup {
     ///
     /// Prefixes are sorted by `prefix_len` descending (longest first) by the
     /// agent build. First match wins.
-    fn prefix_lookup(
-        &self,
-        _buffer: u8,
-        path: &str,
-        now_secs: u64,
-    ) -> Option<Classification> {
+    fn prefix_lookup(&self, _buffer: u8, path: &str, now_secs: u64) -> Option<Classification> {
         // SAFETY: header validated; pointer arithmetic is bounds-checked.
         let header = unsafe { &*self.header };
         let prefix_count = header.prefix_count as usize;
@@ -356,7 +422,8 @@ impl CacheLookup {
 
         for i in 0..prefix_count {
             let entry_ptr = unsafe {
-                self.header.cast::<u8>()
+                self.header
+                    .cast::<u8>()
                     .add(prefix_table_offset)
                     .add(i * std::mem::size_of::<PrefixEntry>())
                     as *const PrefixEntry
@@ -420,10 +487,10 @@ impl CacheLookup {
 
         for _ in 0..hash_slots {
             let entry_ptr = unsafe {
-                self.header.cast::<u8>()
+                self.header
+                    .cast::<u8>()
                     .add(hash_offset)
-                    .add(idx * std::mem::size_of::<HashEntry>())
-                    as *const HashEntry
+                    .add(idx * std::mem::size_of::<HashEntry>()) as *const HashEntry
             };
             let entry = unsafe { &*entry_ptr };
 
@@ -761,7 +828,9 @@ mod tests {
 
     #[test]
     fn path_normalization_volume_guid_rejected() {
-        assert!(normalize_path(r"\\?\Volume{12345678-1234-1234-1234-123456789abc}\file.txt").is_none());
+        assert!(
+            normalize_path(r"\\?\Volume{12345678-1234-1234-1234-123456789abc}\file.txt").is_none()
+        );
     }
 
     #[test]
@@ -915,7 +984,10 @@ mod tests {
     }
 
     /// Standalone decision logic for testing without a CacheLookup instance.
-    fn decide_logic(classification: Classification, op: HookOp) -> Option<crate::fail_closed::DenyReturn> {
+    fn decide_logic(
+        classification: Classification,
+        op: HookOp,
+    ) -> Option<crate::fail_closed::DenyReturn> {
         match (classification, op) {
             (Classification::T3 | Classification::T4, HookOp::Write) => {
                 Some(crate::fail_closed::DenyReturn::BoolFalse)
@@ -946,7 +1018,9 @@ mod tests {
 
     #[test]
     fn adversarial_volume_guid_rejected() {
-        assert!(normalize_path(r"\\?\Volume{12345678-1234-1234-1234-123456789abc}\file.txt").is_none());
+        assert!(
+            normalize_path(r"\\?\Volume{12345678-1234-1234-1234-123456789abc}\file.txt").is_none()
+        );
     }
 
     #[test]
