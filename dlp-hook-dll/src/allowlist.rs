@@ -46,6 +46,7 @@ const BUILD_TOOL_NAMES: &[&str] = &[
 /// Cached uppercase version of the current process image path.
 ///
 /// Computed once on first access to avoid repeated `GetModuleFileNameW` calls.
+#[allow(dead_code)]
 static PROCESS_IMAGE_PATH: OnceLock<String> = OnceLock::new();
 
 /// Returns `true` if the given path is on the trusted-path allowlist.
@@ -70,12 +71,10 @@ pub fn is_path_allowed(path: &str) -> bool {
 /// the pipe round-trip.
 ///
 /// This is checked per-process at DLL load time, not per-path.
+#[allow(dead_code)]
 pub fn is_build_tool_process() -> bool {
     let image_path = get_process_image_path();
-    let basename = image_path
-        .rsplit('\\')
-        .next()
-        .unwrap_or("");
+    let basename = image_path.rsplit('\\').next().unwrap_or("");
     let upper = basename.to_ascii_uppercase();
     BUILD_TOOL_NAMES.contains(&upper.as_str())
 }
@@ -84,6 +83,7 @@ pub fn is_build_tool_process() -> bool {
 ///
 /// Uses `GetModuleFileNameW(NULL)` to get the full path of the executable
 /// that loaded this DLL.
+#[allow(dead_code)]
 fn get_process_image_path() -> &'static str {
     PROCESS_IMAGE_PATH.get_or_init(|| {
         #[cfg(windows)]
@@ -129,7 +129,9 @@ mod tests {
 
     #[test]
     fn program_files_common_is_allowed() {
-        assert!(is_path_allowed(r"C:\Program Files\Common Files\System\foo.dll"));
+        assert!(is_path_allowed(
+            r"C:\Program Files\Common Files\System\foo.dll"
+        ));
     }
 
     #[test]

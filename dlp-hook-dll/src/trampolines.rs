@@ -73,9 +73,7 @@ fn classify_and_log_path(
         let version_word = cache.current_version_word();
         let version = version_word >> 1;
 
-        if let Some(classification) =
-            crate::classification_cache::lru::get(path, version)
-        {
+        if let Some(classification) = crate::classification_cache::lru::get(path, version) {
             // LRU hit — apply decision.
             let latency = start.elapsed();
             let msg = format!(
@@ -156,7 +154,15 @@ fn classify_and_log_path(
 fn is_write_action(action: &str) -> bool {
     matches!(
         action.to_ascii_uppercase().as_str(),
-        "CREATE" | "WRITE" | "MOVE" | "COPY" | "DELETE" | "REPLACE" | "SET_INFO" | "NT_WRITE" | "NT_SET_INFO"
+        "CREATE"
+            | "WRITE"
+            | "MOVE"
+            | "COPY"
+            | "DELETE"
+            | "REPLACE"
+            | "SET_INFO"
+            | "NT_WRITE"
+            | "NT_SET_INFO"
     )
 }
 
