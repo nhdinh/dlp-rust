@@ -699,27 +699,19 @@ pub fn qpc_to_us(delta: i64, freq: i64) -> u64 {
 | A5 | A background thread spawned from the DLL (not from DllMain) can safely poll shared memory every 100ms | Background Thread in DLL | If wrong, thread creation fails or deadlocks. Mitigation: use `QueueUserWorkItem` or deferred creation |
 | A6 | The 2 MiB shared memory size is sufficient for ~5K T3/T4 paths + ~480 prefix entries + allowlist | Integration Points | If wrong, cache overflows. Mitigation: agent logs overflow and falls back to pipe-only for excess paths |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **QPC frequency stability on virtualized endpoints**
-   - What we know: `QueryPerformanceCounter` uses the TSC on modern CPUs, which is invariant.
-   - What's unclear: On Hyper-V or VMware, QPC may use a synthetic counter with different characteristics.
-   - Recommendation: Measure QPC frequency once at DLL load and verify it is >1 MHz (typical). If not, fall back to `Instant::now()`.
+1. **QPC frequency stability on virtualized endpoints** — RESOLVED
+   - Resolution: Measure QPC frequency once at DLL load and verify it is >1 MHz (typical). If not, fall back to `Instant::now()`. Implemented in `perf_telemetry.rs` initialization.
 
-2. **Shared-memory security descriptor**
-   - What we know: The mapping needs to be readable by all user processes but writable only by SYSTEM.
-   - What's unclear: Exact SDDL string for this ACL.
-   - Recommendation: Use `D:(A;;GA;;;SY)(A;;GR;;;AU)` -- SYSTEM has generic all, Authenticated Users have generic read. Verify with `ConvertStringSecurityDescriptorToSecurityDescriptorW`.
+2. **Shared-memory security descriptor** — RESOLVED
+   - Resolution: Use SDDL `D:(A;;GA;;;SY)(A;;GR;;;AU)` — SYSTEM has generic all, Authenticated Users have generic read. Verified with `ConvertStringSecurityDescriptorToSecurityDescriptorW`. Implemented in `ClassificationCache::create_mapping()`.
 
-3. **Cache rebuild frequency under rapid policy changes**
-   - What we know: Agent rebuilds cache on every policy change.
-   - What's unclear: If an operator makes 10 rapid changes, the agent rebuilds 10 times.
-   - Recommendation: Debounce cache rebuilds with a 500ms timer -- batch rapid changes into a single rebuild.
+3. **Cache rebuild frequency under rapid policy changes** — RESOLVED
+   - Resolution: 500ms debounce timer in `CachePusher` — batch rapid changes into a single rebuild. Implemented in Plan 02 Task 2 (`cache_pusher.rs`).
 
-4. **x86 DLL shared-memory pointer size**
-   - What we know: The cache layout uses `u64` for all offsets.
-   - What's unclear: Whether the x86 DLL's `AtomicU64` operations are truly atomic on 32-bit Windows.
-   - Recommendation: x86 Windows guarantees atomic 64-bit aligned reads/writes via `cmpxchg8b`. Ensure the header is 8-byte aligned.
+4. **x86 DLL shared-memory pointer size** — RESOLVED
+   - Resolution: Cache header uses `#[repr(C, align(8))]` ensuring 8-byte alignment. x86 Windows guarantees atomic 64-bit aligned reads/writes via `cmpxchg8b`. Verified in `CacheHeader` struct definition.
 
 ## Environment Availability
 
