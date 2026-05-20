@@ -72,8 +72,12 @@ pub struct CacheHeader {
     /// Simple XOR checksum of all header fields (excluding version_word and
     /// checksum itself).
     pub checksum: u64,
+    /// Offset to operator-extended allowlist entries from start of mapping.
+    pub allowlist_offset: u64,
+    /// Number of allowlist entries.
+    pub allowlist_count: u64,
     /// Reserved for forward compatibility — zeroed on init, never read by DLL.
-    pub _reserved: [u8; 40],
+    pub _reserved: [u8; 24],
 }
 
 /// Root-prefix entry for directory-level classification.
@@ -385,6 +389,8 @@ impl CacheLookup {
         checksum ^= header.hash_table_offset_1;
         checksum ^= header.hash_slots;
         checksum ^= header.created_at_epoch_secs;
+        checksum ^= header.allowlist_offset;
+        checksum ^= header.allowlist_count;
         // XOR reserved bytes in 8-byte chunks.
         for chunk in header._reserved.chunks_exact(8) {
             let val = u64::from_le_bytes([
