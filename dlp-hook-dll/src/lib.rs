@@ -46,9 +46,11 @@ use dlp_common::hook_ipc::HandleHookRequest;
 use dlp_common::{Decision, HookRequest};
 
 mod allowlist;
+mod background_thread;
 mod classification_cache;
 mod crash_guard;
 mod fail_closed;
+mod fail_mode;
 mod pe_utils;
 mod pipe_client;
 pub mod trampolines;

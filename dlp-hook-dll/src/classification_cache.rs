@@ -758,6 +758,22 @@ pub mod lru {
     pub fn insert(path: &str, classification: Classification, version: u64) {
         LRU.with(|lru| lru.borrow_mut().insert(path, classification, version));
     }
+
+    /// Clear all entries from the thread-local LRU.
+    ///
+    /// Called during RESYNC to flush old-version entries.
+    pub fn clear_all() {
+        LRU.with(|lru| {
+            let mut cache = lru.borrow_mut();
+            cache.count = 0;
+            cache.cursor = 0;
+            for entry in cache.entries.iter_mut() {
+                entry.0.clear();
+                entry.1 = Classification::T1;
+                entry.2 = 0;
+            }
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
