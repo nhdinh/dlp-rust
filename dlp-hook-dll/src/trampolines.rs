@@ -17,23 +17,51 @@
 #![allow(clippy::transmutes_expressible_as_ptr_casts)]
 
 use dlp_common::hook_ipc::HookOp;
+use std::sync::{Arc, OnceLock};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HANDLE, NTSTATUS};
+
+use crate::fail_mode::{FailModeState, FailState};
+use dlp_common::Classification;
 
 // ---------------------------------------------------------------------------
 // Helper: shared classification + logging + deny/allow logic
 // ---------------------------------------------------------------------------
 
+/// Global fail-mode state machine.
+///
+/// Initialized lazily on the first hook call (NOT from `DllMain`).
+static FAIL_STATE: OnceLock<Arc<FailModeState>> = OnceLock::new();
+
+/// Returns the global fail-mode state machine, initializing if needed.
+fn get_fail_state() -> &'static Arc<FailModeState> {
+    FAIL_STATE.get_or_init(|| {
+        // Start background thread for RESYNC detection.
+        let state = Arc::new(FailModeState::new());
+        if let Some(cache) = crate::classification_cache::CacheLookup::get() {
+            let header = cache as *const _ as *const crate::classification_cache::CacheHeader;
+            crate::background_thread::start_background_thread(header, Arc::clone(&state));
+        }
+        state
+    })
+}
+
 /// Performs the common classification, logging, and decision routing for
 /// path-based trampolines.
 ///
-/// New flow (Plan 50-03):
+/// New flow (Plan 50-04):
 /// 1. Check allowlist first (fastest path).
 /// 2. Check thread-local LRU for path.
 /// 3. If LRU miss, check shared-memory cache.
 /// 4. If cache hit, apply tier-gated fast-path decision.
-/// 5. If cache miss/expired, fall through to pipe round-trip.
-/// 6. On pipe success, warm LRU with cache_version from response.
+/// 5. Get current fail_state.
+/// 6. If HEALTHY or (DEGRADED and should_retry_pipe()):
+///    a. Attempt pipe round-trip
+///    b. On success: record_pipe_success(cache_version), warm LRU, return decision
+///    c. On failure: record_pipe_failure(), goto step 7
+/// 7. If DEGRADED and not retry call: use cache decision or ISOLATED decision
+/// 8. If ISOLATED: use decide_isolated(classification, op), no pipe attempt
+/// 9. If RESYNC: flush LRU, reset counters, transition to HEALTHY, retry
 ///
 /// Returns `Some(deny_return_value)` if the operation should be denied,
 /// `None` if it should proceed to the original function.
@@ -68,82 +96,190 @@ fn classify_and_log_path(
         .unwrap_or_default()
         .as_secs();
 
-    if let Some(cache) = crate::classification_cache::CacheLookup::get() {
+    let cache_lookup = crate::classification_cache::CacheLookup::get();
+    let mut cache_classification: Option<Classification> = None;
+    let mut cache_version: u64 = 0;
+
+    if let Some(cache) = cache_lookup {
         // Check thread-local LRU first.
         let version_word = cache.current_version_word();
-        let version = version_word >> 1;
+        cache_version = version_word >> 1;
 
-        if let Some(classification) = crate::classification_cache::lru::get(path, version) {
-            // LRU hit — apply decision.
-            let latency = start.elapsed();
-            let msg = format!(
-                "[dlp-hook] ALLOW(LRU) {} hash={:016x} latency={}us tier={}\0",
-                fn_name,
-                path_hash,
-                latency.as_micros(),
-                classification
-            );
-            crate::debug_log(&msg);
-            if let Some(deny) = cache.decide(classification, op) {
-                return Some(deny);
+        if let Some(classification) = crate::classification_cache::lru::get(path, cache_version) {
+            // LRU hit — use this classification for fail-mode decisions.
+            cache_classification = Some(classification);
+        } else {
+            // LRU miss — check shared-memory cache.
+            if let Some(classification) = cache.lookup(path, op, now_secs) {
+                // Cache hit — warm LRU.
+                crate::classification_cache::lru::insert(path, classification, cache_version);
+                cache_classification = Some(classification);
             }
-            return None;
-        }
-
-        // LRU miss — check shared-memory cache.
-        if let Some(classification) = cache.lookup(path, op, now_secs) {
-            // Cache hit — warm LRU and apply decision.
-            crate::classification_cache::lru::insert(path, classification, version);
-            let latency = start.elapsed();
-            let msg = format!(
-                "[dlp-hook] ALLOW(cache) {} hash={:016x} latency={}us tier={}\0",
-                fn_name,
-                path_hash,
-                latency.as_micros(),
-                classification
-            );
-            crate::debug_log(&msg);
-            if let Some(deny) = cache.decide(classification, op) {
-                return Some(deny);
-            }
-            return None;
         }
     }
 
-    // 3. Cache miss — fall through to pipe round-trip.
-    let decision = crate::classify_path(path, action, crate::DEFAULT_PIPE_NAME);
-    let latency = start.elapsed();
+    // 3. Get fail-mode state.
+    let fail_state = get_fail_state();
+    let current_state = fail_state.current_state();
 
-    match decision {
-        Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
-            let msg = format!(
-                "[dlp-hook] ALLOW {} hash={:016x} latency={}us\0",
-                fn_name,
-                path_hash,
-                latency.as_micros()
-            );
-            crate::debug_log(&msg);
-            None
+    // 4. Apply state-specific logic.
+    match current_state {
+        FailState::Healthy => {
+            // HEALTHY: attempt pipe on cache miss, or use cache decision on hit.
+            if let Some(classification) = cache_classification {
+                let latency = start.elapsed();
+                let msg = format!(
+                    "[dlp-hook] ALLOW(cache) {} hash={:016x} latency={}us tier={}\0",
+                    fn_name,
+                    path_hash,
+                    latency.as_micros(),
+                    classification
+                );
+                crate::debug_log(&msg);
+                if let Some(deny) = cache_lookup.and_then(|c| c.decide(classification, op)) {
+                    return Some(deny);
+                }
+                return None;
+            }
+
+            // Cache miss — attempt pipe round-trip.
+            match crate::classify_path(path, action, crate::DEFAULT_PIPE_NAME) {
+                Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
+                    fail_state.record_pipe_success(cache_version);
+                    let latency = start.elapsed();
+                    let msg = format!(
+                        "[dlp-hook] ALLOW {} hash={:016x} latency={}us\0",
+                        fn_name,
+                        path_hash,
+                        latency.as_micros()
+                    );
+                    crate::debug_log(&msg);
+                    None
+                }
+                Ok(crate::Decision::DENY) | Ok(crate::Decision::DenyWithAlert) => {
+                    fail_state.record_pipe_success(cache_version);
+                    let latency = start.elapsed();
+                    let msg = format!(
+                        "[dlp-hook] DENY {} hash={:016x} latency={}us\0",
+                        fn_name,
+                        path_hash,
+                        latency.as_micros()
+                    );
+                    crate::debug_log(&msg);
+                    Some(crate::fail_closed::DenyReturn::BoolFalse)
+                }
+                Err(_) => {
+                    fail_state.record_pipe_failure();
+                    let latency = start.elapsed();
+                    let msg = format!(
+                        "[dlp-hook] DENY(fail-closed) {} hash={:016x} latency={}us\0",
+                        fn_name,
+                        path_hash,
+                        latency.as_micros()
+                    );
+                    crate::debug_log(&msg);
+                    Some(crate::fail_closed::DenyReturn::BoolFalse)
+                }
+            }
         }
-        Ok(d) if d.is_denied() => {
-            let msg = format!(
-                "[dlp-hook] DENY {} hash={:016x} latency={}us\0",
-                fn_name,
-                path_hash,
-                latency.as_micros()
-            );
-            crate::debug_log(&msg);
-            Some(crate::fail_closed::DenyReturn::BoolFalse)
+        FailState::Degraded => {
+            // DEGRADED: use cache decision if available; retry pipe every 10th call.
+            if let Some(classification) = cache_classification {
+                let latency = start.elapsed();
+                let msg = format!(
+                    "[dlp-hook] ALLOW(cache-degraded) {} hash={:016x} latency={}us tier={}\0",
+                    fn_name,
+                    path_hash,
+                    latency.as_micros(),
+                    classification
+                );
+                crate::debug_log(&msg);
+                if let Some(deny) = cache_lookup.and_then(|c| c.decide(classification, op)) {
+                    return Some(deny);
+                }
+                return None;
+            }
+
+            // Cache miss in Degraded: retry pipe every 10th call.
+            if fail_state.should_retry_pipe() {
+                match crate::classify_path(path, action, crate::DEFAULT_PIPE_NAME) {
+                    Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
+                        fail_state.record_pipe_success(cache_version);
+                        None
+                    }
+                    Ok(crate::Decision::DENY) | Ok(crate::Decision::DenyWithAlert) => {
+                        fail_state.record_pipe_success(cache_version);
+                        Some(crate::fail_closed::DenyReturn::BoolFalse)
+                    }
+                    Err(_) => {
+                        fail_state.record_pipe_failure();
+                        crate::fail_mode::decide_degraded(cache_classification, op)
+                    }
+                }
+            } else {
+                // No pipe retry: use degraded decision (same as isolated for cache miss).
+                crate::fail_mode::decide_degraded(cache_classification, op)
+            }
         }
-        _ => {
-            let msg = format!(
-                "[dlp-hook] DENY(fail-closed) {} hash={:016x} latency={}us\0",
-                fn_name,
-                path_hash,
-                latency.as_micros()
-            );
-            crate::debug_log(&msg);
-            Some(crate::fail_closed::DenyReturn::BoolFalse)
+        FailState::Isolated => {
+            // ISOLATED: cache-only, no pipe attempts.
+            let decision = crate::fail_mode::decide_isolated(cache_classification, op);
+            let latency = start.elapsed();
+            let tier_str = cache_classification
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            if decision.is_some() {
+                let msg = format!(
+                    "[dlp-hook] DENY(isolated) {} hash={:016x} latency={}us tier={}\0",
+                    fn_name,
+                    path_hash,
+                    latency.as_micros(),
+                    tier_str
+                );
+                crate::debug_log(&msg);
+            } else {
+                let msg = format!(
+                    "[dlp-hook] ALLOW(isolated) {} hash={:016x} latency={}us tier={}\0",
+                    fn_name,
+                    path_hash,
+                    latency.as_micros(),
+                    tier_str
+                );
+                crate::debug_log(&msg);
+            }
+            decision
+        }
+        FailState::Resync => {
+            // RESYNC: flush LRU, reset counters, transition to Healthy, retry.
+            // In-flight decisions use old cache; new decisions use new cache.
+            // We flush LRU and reset counters, then treat as Healthy.
+            crate::classification_cache::lru::clear_all();
+            fail_state.reset_counters();
+            fail_state.set_state(FailState::Healthy);
+
+            // Retry from Healthy path.
+            if let Some(classification) = cache_classification {
+                if let Some(deny) = cache_lookup.and_then(|c| c.decide(classification, op)) {
+                    return Some(deny);
+                }
+                return None;
+            }
+
+            // Attempt pipe after RESYNC recovery.
+            match crate::classify_path(path, action, crate::DEFAULT_PIPE_NAME) {
+                Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
+                    fail_state.record_pipe_success(cache_version);
+                    None
+                }
+                Ok(crate::Decision::DENY) | Ok(crate::Decision::DenyWithAlert) => {
+                    fail_state.record_pipe_success(cache_version);
+                    Some(crate::fail_closed::DenyReturn::BoolFalse)
+                }
+                Err(_) => {
+                    fail_state.record_pipe_failure();
+                    Some(crate::fail_closed::DenyReturn::BoolFalse)
+                }
+            }
         }
     }
 }
