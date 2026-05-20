@@ -3,133 +3,75 @@
 > **Audit trail only.** Do not use as input to planning, research, or execution agents.
 > Decisions are captured in CONTEXT.md — this log preserves the alternatives considered.
 
-**Date:** 2026-05-12
-**Phase:** 59-Label Service
-**Areas discussed:** dlp-Common Types, Admin API Design, Folder Inheritance Resolution, Label-Aware ABAC Integration, Admin TUI Screen, Metadata Layers, State Machine
-**Mode:** `--auto --analyze --text` (autonomous selection, trade-off tables logged, plain-text rendering)
+**Date:** 2026-05-20
+**Phase:** 59-label-service
+**Areas discussed:** Schema completeness, Inheritance strictness, Audit guarantees, Review-derived fixes, TUI compile blockers
+**Mode:** `--auto` (autonomous selection, review-feedback-driven update)
 
 ---
 
-## dlp-Common Types
+## Schema Completeness
 
-**Trade-off analysis:**
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Single `labels` table | Existing `labels` table with `find_parent_label()` covers all requirements; `label_paths`/`label_inheritance` tables are unnecessary normalization | ✓ |
+| Add `label_paths` + `label_inheritance` tables | Roadmap success criteria mentions these tables; would require schema migration | |
+| Defer table decision | Leave schema ambiguous for planning to resolve | |
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| Extend `Classification` enum with `UnclassifiedBlocked` | Single type everywhere, no conversions | Breaking change to v0.10.0-stable enum; `UnclassifiedBlocked` doesn't fit the four-tier sensitivity model |
-| Create separate `Tier` enum in `label.rs` | Keeps `Classification` stable; `UnclassifiedBlocked` is label-domain-specific | Requires conversion impls between `Classification` and `Tier` |
-| Use raw strings everywhere | No new types needed | Loses type safety; CHECK constraints only at DB layer |
-
-**Recommended:** Separate `Tier` enum in `label.rs` — `Classification` is v0.10.0-critical and must not change. Conversion methods bridge the gap.
-
-**[auto] Selected:** "Separate `Tier` enum in `label.rs`" (recommended default)
+**Auto-selected:** Single `labels` table is sufficient. The `find_parent_label()` query walks the filesystem directory tree; `parent_label_id` FK handles explicit label hierarchy. Additional tables add complexity without benefit for Phase 59.
+**Notes:** Updated D-20. Roadmap success criterion should be adjusted to reflect this. Reviewer concern (HIGH) addressed.
 
 ---
 
-## Admin API Design
+## Inheritance Strictness
 
-**Trade-off analysis:**
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Stricter tier wins | Effective tier = max(explicit tier, inherited parent tier) by strictness order | ✓ |
+| Exact match always wins | Explicit label overrides parent regardless of tier (could weaken security) | |
+| Parent always wins | Folder label always overrides child explicit label | |
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| Custom payload structs per endpoint | Fine-grained validation, clear Swagger docs | More boilerplate, diverges from existing disk_registry pattern |
-| Reuse dlp-common `Label` type directly | Less code, consistent with device_registry pattern | Slightly less validation at compile time (runtime checks needed) |
-| GraphQL-style single endpoint | Flexible queries | Overkill for 7 endpoints; no existing GraphQL infrastructure |
-
-**Recommended:** Reuse dlp-common `Label` type with runtime validation — follows the established `device_registry` / `disk_registry` pattern in `admin_api.rs`.
-
-**[auto] Selected:** "Reuse dlp-common `Label` type with runtime validation" (recommended default)
+**Auto-selected:** Stricter tier wins. Tier strictness order: UnclassifiedBlocked > T4 > T3 > T2 > T1. Prevents an explicit T2 child from weakening a T3 folder label.
+**Notes:** Updated D-07 and D-07b. Added tests for "explicit lower tier under stricter parent folder" and "explicit stricter child under lower parent folder" to Plan 59-01. Reviewer concern (HIGH) addressed.
 
 ---
 
-## Folder Inheritance Resolution
+## Audit Guarantees
 
-**Trade-off analysis:**
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Transactional audit | Audit emission is part of UnitOfWork; failure rolls back mutation | ✓ |
+| Best-effort audit | Emit audit after commit; mutation succeeds even if audit fails | |
+| Separate audit queue | Async queue for audit events; eventual consistency | |
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| Resolve at API time (store inherited tier in DB) | Fast reads, simple queries | Stale on folder rename/move; requires cascading updates |
-| Resolve at enforcement time (walk tree on each eval) | Always accurate; no cascade logic | Slower; requires caching to avoid repeated DB walks |
-| Hybrid: store + background refresh | Best of both worlds | Complex; over-engineered for pilot phase |
-
-**Recommended:** Resolve at enforcement time with a 30-second TTL cache — accuracy is more important than speed for pilot; `find_parent_label` already implements the walk.
-
-**[auto] Selected:** "Resolve at enforcement time with 30s TTL cache" (recommended default)
+**Auto-selected:** Transactional audit. If audit insertion fails, the transaction rolls back. This satisfies the requirement that "all mutations emit audit events."
+**Notes:** Updated D-14. Removed "best-effort" language. `with_mutation()` helper must include audit emission inside the transaction. Reviewer concern (HIGH) addressed.
 
 ---
 
-## Label-Aware ABAC Integration
+## Review-Derived Fixes (Auto-Resolved)
 
-**Trade-off analysis:**
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| Always-on label override | Simple, no config needed | Breaking change: unlabeled resources become blocked |
-| Gated by `system_kv` flag (default off) | Safe rollout; operators opt in | Requires explicit enablement step |
-| Per-policy toggle | Granular control | Complex UI; overkill for pilot |
-
-**Recommended:** Gated by `system_kv` flag (`label_aware_evaluation_enabled`, default off) — safe rollout is critical for pilot deployment.
-
-**[auto] Selected:** "Gated by `system_kv` flag (default off)" (recommended default)
-
----
-
-## Admin TUI Screen
-
-**Trade-off analysis:**
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| Config-form pattern (like `SiemConfig`) | Consistent with settings screens | Poor fit for tabular data; label list needs scrollable table |
-| PolicyList pattern (scrollable table) | Proven for list+CRUD; matches label management needs | Need two separate screens (list + review queue) |
-| Single unified screen with tabs | Less code | More complex navigation; no existing tab pattern in TUI |
-
-**Recommended:** Two screens: `LabelList` (PolicyList pattern) for management, `LabelReviewQueue` (simpler list with action keys) for Data Owner workflow.
-
-**[auto] Selected:** "Two screens: LabelList + LabelReviewQueue" (recommended default)
-
----
-
-## Metadata Layers (LABEL-06)
-
-**Trade-off analysis:**
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| Implement NTFS ADS + sidecar in Phase 59 | Full requirement coverage | Significant scope expansion; ADS requires Win32 APIs; sidecar needs file watcher |
-| Defer to Phase 60+ | Keeps Phase 59 focused; central DB is sufficient for pilot | LABEL-06 not fully satisfied in this phase |
-
-**Recommended:** Defer NTFS ADS and sidecar to Phase 60+ — central DB is the pilot SOT. Label-06 is partially satisfied (central DB layer implemented).
-
-**[auto] Selected:** "Defer NTFS ADS and sidecar to Phase 60+" (recommended default)
-
----
-
-## State Machine (LABEL-03)
-
-**Trade-off analysis:**
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| Full automatic expiry with cron/background task | Complete state machine | Requires scheduler infrastructure; overkill for pilot |
-| Manual/admin-driven expiry only | Simple; no background task | Operator must manually expire labels |
-| Hybrid: manual now, automatic later | Pragmatic; defers complexity | Slightly inconsistent UX |
-
-**Recommended:** Manual/admin-driven expiry in Phase 59; automatic TTL-based expiry deferred to Phase 61 (Approval Workflow Engine).
-
-**[auto] Selected:** "Manual/admin-driven expiry in Phase 59" (recommended default)
+| Fix | Severity | Decision |
+|-----|----------|----------|
+| ResolvedTier import location | HIGH | Import from `crate::label_service` (not `dlp_common::label`). Updated D-19. |
+| Recursive enum variant | HIGH | `LabelDetail` uses `Box<Screen>` for caller. Updated D-13b. |
+| LabelService None fallback | MEDIUM | Fail-closed (deny/T4) when `label_aware_enabled` is true but `LabelService` is None. Updated D-11b. |
+| Cache stores only Tier | MEDIUM | Cache stores `CacheEntry { tier, source, parent_path }` to preserve source semantics. Updated D-08. |
+| In-memory filter after pagination | MEDIUM | Move `tier` and `owner_sid` filters into repository SQL before pagination. Updated D-21. |
+| Form flow contradiction | MEDIUM | Use `Screen::LabelForm` consistently; remove InputPurpose from must-haves. Updated D-13. |
+| ABAC override audit | MEDIUM | Classification overrides emit persisted audit events (not just `tracing::info!`). Updated D-14. |
 
 ---
 
 ## Claude's Discretion
 
-- All areas were auto-resolved via `--auto` mode. No user input was provided.
-- Recommendations based on: existing codebase patterns, v0.10.0 stability requirements, pilot-first deployment constraints.
+None — all areas were auto-resolved from review feedback.
 
 ## Deferred Ideas
 
-- NTFS ADS metadata layer — Phase 60+
-- Sidecar metadata files — Phase 60+
-- Automatic label expiry based on TTL — Phase 61
-- Scanner-driven temporary labels — Phase 65
-- Data Owner digital signature for T4 — Phase 61
+No new deferred ideas. Existing deferred items (NTFS ADS, sidecar metadata, automatic expiry, scanner-driven labels, T4 digital signature) remain unchanged.
+
+---
+
+*Auto-mode discussion log generated: 2026-05-20*
+*Review feedback source: `.planning/phases/59-label-service/059-REVIEWS.md` (Cycle 3, 2026-05-13)*
