@@ -300,6 +300,8 @@ mod tests {
         let handler: HookHandler = Arc::new(|req: HookRequest| HookResponse {
             decision: Decision::DENY,
             reason: format!("blocked: {}", req.path),
+            cache_hint: None,
+            cache_version: 0,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -318,6 +320,9 @@ mod tests {
             let req = HookRequest {
                 path: format!(r"C:\Users\test\file{}.txt", i),
                 action: "CREATE".to_string(),
+                cache_version: 0,
+                protocol_version: 1,
+                op: dlp_common::hook_ipc::HookOp::Read,
             };
 
             let start = Instant::now();
@@ -368,6 +373,8 @@ mod tests {
             } else {
                 "non-empty".to_string()
             },
+            cache_hint: None,
+            cache_version: 0,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -376,6 +383,9 @@ mod tests {
         let req = HookRequest {
             path: "".to_string(),
             action: "READ".to_string(),
+            cache_version: 0,
+            protocol_version: 1,
+            op: dlp_common::hook_ipc::HookOp::Read,
         };
         let resp = send_request(client, &req).expect("send empty path request");
         assert_eq!(resp.decision, Decision::ALLOW);
@@ -392,6 +402,8 @@ mod tests {
         let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
             decision: Decision::DENY,
             reason: "never reached".to_string(),
+            cache_hint: None,
+            cache_version: 0,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -458,6 +470,8 @@ mod tests {
         let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
             decision: Decision::DENY,
             reason: "should not reach".to_string(),
+            cache_hint: None,
+            cache_version: 0,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -533,6 +547,8 @@ mod tests {
         let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
             decision: Decision::DENY,
             reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -543,6 +559,9 @@ mod tests {
         let req = HookRequest {
             path: huge_path,
             action: "WRITE".to_string(),
+            cache_version: 0,
+            protocol_version: 1,
+            op: dlp_common::hook_ipc::HookOp::Write,
         };
 
         // Serialisation itself should succeed.
