@@ -126,6 +126,12 @@ pub mod share_link_enforcer;
 pub mod approval_cache;
 
 #[cfg(windows)]
+pub mod classification_cache;
+
+#[cfg(windows)]
+pub mod cache_pusher;
+
+#[cfg(windows)]
 pub mod process_registry;
 
 #[cfg(windows)]
