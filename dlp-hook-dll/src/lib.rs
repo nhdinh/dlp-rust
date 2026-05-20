@@ -52,6 +52,7 @@ mod crash_guard;
 mod fail_closed;
 mod fail_mode;
 mod pe_utils;
+mod perf_telemetry;
 mod pipe_client;
 pub mod trampolines;
 
