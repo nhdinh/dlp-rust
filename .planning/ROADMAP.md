@@ -1,7 +1,7 @@
 ---
 milestone: v0.11.0
 milestone_name: Label Service + Workflow + Audit
-last_updated: 2026-05-15
+last_updated: 2026-05-20
 total_phases: 6
 v1_requirements: 26
 coverage: 26/26
@@ -119,14 +119,15 @@ Plans:
   3. With the agent service stopped, the hook denies (`ERROR_ACCESS_DENIED` / `STATUS_ACCESS_DENIED`) every write attempt against a T3 or T4 path and allows every write against a T1 or T2 path; the fail-state telemetry shows the DLL transitioning HEALTHY → DEGRADED → ISOLATED.
   4. Build-tool processes (devenv.exe, cargo.exe, msbuild.exe, rustc.exe, link.exe, gcc.exe) and trusted system paths (System32, WinSxS, WindowsApps, Program Files\Common Files) bypass the pipe entirely on the operator-extendable allowlist; the per-tier staleness budgets (T4=30s, T3=60s, T2=5min, T1=30min) are observable in audit events.
   5. After agent restart with a higher `cache_version`, every connected hook DLL transitions ISOLATED → RESYNC → HEALTHY within 1 s without losing any in-flight decision.
-**Plans:** 5 plans (49-01 through 49-05)
+**Plans:** 6 plans (50-01 through 50-06)
 
 Plans:
-- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
-- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
-- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
-- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
-- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
+- [ ] `50-01-PLAN.md` — IPC Protocol Extension: HookRequest/HookResponse with cache_version, cache_hint, HookOp
+- [ ] `50-02-PLAN.md` — Agent Classification Cache Manager: shared-memory creation, double-buffered atomic flip, CachePusher
+- [ ] `50-03-PLAN.md` — Hook DLL Cache Lookup Module: shared-memory reader, two-tier lookup, thread-local LRU, trampoline integration
+- [ ] `50-04-PLAN.md` — Hook DLL Fail-Mode State Machine: HEALTHY/DEGRADED/ISOLATED/RESYNC transitions, background thread
+- [ ] `50-05-PLAN.md` — Hook DLL Allowlist + Telemetry: trusted paths, build tools, operator extensions, QPC histogram
+- [ ] `50-06-PLAN.md` — IPC Integration + Benchmarks: agent handler cache_version awareness, cache hint warming, p95 benchmark
 
 ### Phase 51: ntdll Syscall-Stub Trampolines + EDR Coexistence
 **Goal**: Direct-syscall bypass of the IAT hook layer is closed for `NtCreateFile`/`NtOpenFile`/`NtWriteFile`/`NtSetInformationFile`, behind a feature flag that is safe to enable per-customer because EDR coexistence is detected before patching and never falsely "cleaned."
@@ -351,7 +352,7 @@ Plans:
 | 47. Secrets Encryption at Rest (prerequisite) | 1/1 | Reopened for review | - |
 | 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-16 |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 5/5 | Complete    | 2026-05-19 |
-| 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 0/0 | Not started | - |
+| 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 6/6 | Planned     | 2026-05-20 |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 0/0 | Not started | - |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 0/0 | Not started | - |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 0/0 | Not started | - |
@@ -405,4 +406,4 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 
 ---
 
-*Last updated: 2026-05-15 — Phase 48 planned (5 plans: 48-01 through 48-05).*
+*Last updated: 2026-05-20 — Phase 50 planned (6 plans: 50-01 through 50-06).*
