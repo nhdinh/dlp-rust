@@ -328,5 +328,4 @@ mod tests {
     fn negotiate_protocol_both_zero_fails() {
         assert!(negotiate_protocol(0, 0).is_err());
     }
-
 }

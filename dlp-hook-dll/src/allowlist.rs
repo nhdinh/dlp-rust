@@ -87,23 +87,14 @@ const BUILD_TOOL_PARENT_DIRS: &[&str] = &[
 /// Build tools must be signed by one of these publishers. Code-signer
 /// validation prevents binary substitution attacks.
 #[allow(dead_code)]
-const TRUSTED_SIGNERS: &[&str] = &[
-    "MICROSOFT CORPORATION",
-    "MICROSOFT WINDOWS",
-    "RUST PROJECT",
-];
+const TRUSTED_SIGNERS: &[&str] = &["MICROSOFT CORPORATION", "MICROSOFT WINDOWS", "RUST PROJECT"];
 
 /// User-writable directory prefixes that reject build-tool allowlist.
 ///
 /// Defense-in-depth: even if a build tool basename matches and the signer is
 /// valid, if the parent directory is user-writable, the allowlist is denied.
 /// This prevents planted-binary attacks.
-const USER_WRITABLE_PREFIXES: &[&str] = &[
-    r"C:\USERS",
-    r"C:\TEMP",
-    r"C:\WINDOWS\TEMP",
-    r"C:\TMP",
-];
+const USER_WRITABLE_PREFIXES: &[&str] = &[r"C:\USERS", r"C:\TEMP", r"C:\WINDOWS\TEMP", r"C:\TMP"];
 
 // ---------------------------------------------------------------------------
 // Shared-memory allowlist entry (operator-extended)
@@ -506,7 +497,9 @@ mod tests {
 
     #[test]
     fn winsxs_is_allowed() {
-        assert!(is_system_allowlisted(r"C:\Windows\WinSxS\manifests\foo.manifest"));
+        assert!(is_system_allowlisted(
+            r"C:\Windows\WinSxS\manifests\foo.manifest"
+        ));
     }
 
     #[test]
@@ -518,7 +511,9 @@ mod tests {
 
     #[test]
     fn non_system_path_not_allowed() {
-        assert!(!is_system_allowlisted(r"C:\Users\test\Documents\secret.txt"));
+        assert!(!is_system_allowlisted(
+            r"C:\Users\test\Documents\secret.txt"
+        ));
     }
 
     #[test]

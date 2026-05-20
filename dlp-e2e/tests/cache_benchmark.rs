@@ -197,7 +197,12 @@ fn cache_hit_rate_benchmark() {
     }
 
     let hit_rate = hits as f64 / total as f64;
-    println!("Cache hit rate: {}/{} = {:.2}%", hits, total, hit_rate * 100.0);
+    println!(
+        "Cache hit rate: {}/{} = {:.2}%",
+        hits,
+        total,
+        hit_rate * 100.0
+    );
 
     assert!(
         hit_rate >= HIT_RATE_GATE,
@@ -284,10 +289,7 @@ fn injected_process_benchmark_synthetic() {
         // classifications based on FNV-1a hash, so we only verify the allowlist
         // case and the general decision logic structure.
         if is_allowlisted {
-            assert!(
-                decision.is_none(),
-                "allowlisted path should always allow"
-            );
+            assert!(decision.is_none(), "allowlisted path should always allow");
         }
     }
 
@@ -295,7 +297,10 @@ fn injected_process_benchmark_synthetic() {
     let p95 = samples[(samples.len() * 95) / 100];
     let p95_us = p95 / 1_000;
 
-    println!("Injected-process synthetic benchmark ({} samples):", samples.len());
+    println!(
+        "Injected-process synthetic benchmark ({} samples):",
+        samples.len()
+    );
     println!("  p95 = {} ns ({} us)", p95, p95_us);
 
     assert!(
@@ -343,7 +348,9 @@ fn build_workload_overhead_benchmark() {
     println!();
     println!("Procedure:");
     println!("  1. Stop agent, run: cargo build --workspace (x3, take median)");
-    println!("  2. Start agent with hook injection, run: cargo build --workspace (x3, take median)");
+    println!(
+        "  2. Start agent with hook injection, run: cargo build --workspace (x3, take median)"
+    );
     println!("  3. Overhead = (with_hook - baseline) / baseline * 100%");
     println!();
     println!("Gate: overhead <= {}%", OVERHEAD_GATE_PERCENT);

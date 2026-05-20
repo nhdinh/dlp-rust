@@ -76,8 +76,7 @@ impl PerfTelemetry {
     #[must_use]
     pub fn new() -> Self {
         // SAFETY: AtomicU64::new(0) is valid and the array is fully initialized.
-        let buckets: [AtomicU64; BUCKET_COUNT] =
-            std::array::from_fn(|_| AtomicU64::new(0));
+        let buckets: [AtomicU64; BUCKET_COUNT] = std::array::from_fn(|_| AtomicU64::new(0));
         Self {
             buckets,
             call_count: AtomicU64::new(0),

@@ -56,10 +56,7 @@ unsafe impl Sync for BackgroundThread {}
 ///
 /// * `cache_header` - Pointer to the shared-memory cache header.
 /// * `fail_state` - Shared fail-mode state machine.
-pub fn start_background_thread(
-    cache_header: *const CacheHeader,
-    fail_state: Arc<FailModeState>,
-) {
+pub fn start_background_thread(cache_header: *const CacheHeader, fail_state: Arc<FailModeState>) {
     if THREAD_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -123,8 +120,8 @@ fn background_thread_loop(
 ) {
     // SAFETY: WaitForSingleObject on valid handles.
     unsafe {
-        use windows::Win32::System::Threading::WaitForSingleObject;
         use windows::Win32::Foundation::WAIT_OBJECT_0;
+        use windows::Win32::System::Threading::WaitForSingleObject;
 
         loop {
             // Wait 100ms for shutdown signal.

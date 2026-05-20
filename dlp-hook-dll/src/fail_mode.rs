@@ -170,7 +170,8 @@ impl FailModeState {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.last_pipe_attempt_epoch_secs.store(now_secs, Ordering::Relaxed);
+        self.last_pipe_attempt_epoch_secs
+            .store(now_secs, Ordering::Relaxed);
 
         // Check hysteresis thresholds for state transitions BEFORE updating
         // cache_version_seen_at, so that ISOLATED -> RESYNC can detect
@@ -233,7 +234,8 @@ impl FailModeState {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.last_pipe_attempt_epoch_secs.store(now_secs, Ordering::Relaxed);
+        self.last_pipe_attempt_epoch_secs
+            .store(now_secs, Ordering::Relaxed);
 
         // Check thresholds for state transitions.
         let new_state = match old_state {
@@ -346,10 +348,7 @@ impl Default for FailModeState {
 ///
 /// `Some(DenyReturn)` if the operation should be denied, `None` to allow.
 #[must_use]
-pub fn decide_isolated(
-    classification: Option<Classification>,
-    op: HookOp,
-) -> Option<DenyReturn> {
+pub fn decide_isolated(classification: Option<Classification>, op: HookOp) -> Option<DenyReturn> {
     match (classification, op) {
         // Known sensitive + Write -> deny
         (Some(Classification::T3 | Classification::T4), HookOp::Write) => {
@@ -381,10 +380,7 @@ pub fn decide_isolated(
 ///
 /// `Some(DenyReturn)` if the operation should be denied, `None` to allow.
 #[must_use]
-pub fn decide_degraded(
-    classification: Option<Classification>,
-    op: HookOp,
-) -> Option<DenyReturn> {
+pub fn decide_degraded(classification: Option<Classification>, op: HookOp) -> Option<DenyReturn> {
     // Cache hit: same as ISOLATED (fast path).
     if classification.is_some() {
         return decide_isolated(classification, op);
@@ -410,10 +406,7 @@ pub fn decide_degraded(
 ///
 /// `Some(DenyReturn)` if the operation should be denied, `None` to allow.
 #[must_use]
-pub fn decide_resync(
-    classification: Option<Classification>,
-    op: HookOp,
-) -> Option<DenyReturn> {
+pub fn decide_resync(classification: Option<Classification>, op: HookOp) -> Option<DenyReturn> {
     // Same logic as Healthy: use cache if available, otherwise pipe.
     // In practice, RESYNC means we have fresh cache data.
     decide_isolated(classification, op)
@@ -724,24 +717,42 @@ mod tests {
 
     #[test]
     fn asymmetric_decisions_t3_read_allows() {
-        assert_eq!(decide_isolated(Some(Classification::T3), HookOp::Read), None);
+        assert_eq!(
+            decide_isolated(Some(Classification::T3), HookOp::Read),
+            None
+        );
     }
 
     #[test]
     fn asymmetric_decisions_t4_read_allows() {
-        assert_eq!(decide_isolated(Some(Classification::T4), HookOp::Read), None);
+        assert_eq!(
+            decide_isolated(Some(Classification::T4), HookOp::Read),
+            None
+        );
     }
 
     #[test]
     fn asymmetric_decisions_t1_any_allows() {
-        assert_eq!(decide_isolated(Some(Classification::T1), HookOp::Write), None);
-        assert_eq!(decide_isolated(Some(Classification::T1), HookOp::Read), None);
+        assert_eq!(
+            decide_isolated(Some(Classification::T1), HookOp::Write),
+            None
+        );
+        assert_eq!(
+            decide_isolated(Some(Classification::T1), HookOp::Read),
+            None
+        );
     }
 
     #[test]
     fn asymmetric_decisions_t2_any_allows() {
-        assert_eq!(decide_isolated(Some(Classification::T2), HookOp::Write), None);
-        assert_eq!(decide_isolated(Some(Classification::T2), HookOp::Read), None);
+        assert_eq!(
+            decide_isolated(Some(Classification::T2), HookOp::Write),
+            None
+        );
+        assert_eq!(
+            decide_isolated(Some(Classification::T2), HookOp::Read),
+            None
+        );
     }
 
     #[test]
@@ -763,7 +774,10 @@ mod tests {
             decide_degraded(Some(Classification::T4), HookOp::Write),
             Some(DenyReturn::BoolFalse)
         );
-        assert_eq!(decide_degraded(Some(Classification::T1), HookOp::Write), None);
+        assert_eq!(
+            decide_degraded(Some(Classification::T1), HookOp::Write),
+            None
+        );
     }
 
     #[test]
@@ -780,9 +794,9 @@ mod tests {
     #[test]
     fn staleness_budgets_values() {
         assert_eq!(STALENESS_BUDGETS[0], 1800); // T1: 30 min
-        assert_eq!(STALENESS_BUDGETS[1], 300);  // T2: 5 min
-        assert_eq!(STALENESS_BUDGETS[2], 60);   // T3: 60 sec
-        assert_eq!(STALENESS_BUDGETS[3], 30);   // T4: 30 sec
+        assert_eq!(STALENESS_BUDGETS[1], 300); // T2: 5 min
+        assert_eq!(STALENESS_BUDGETS[2], 60); // T3: 60 sec
+        assert_eq!(STALENESS_BUDGETS[3], 30); // T4: 30 sec
     }
 
     #[test]
@@ -904,7 +918,11 @@ mod tests {
     #[test]
     fn emit_state_transition_emits_for_different() {
         // Should not panic.
-        emit_state_transition(FailState::Healthy, FailState::Degraded, "3_consecutive_pipe_failures");
+        emit_state_transition(
+            FailState::Healthy,
+            FailState::Degraded,
+            "3_consecutive_pipe_failures",
+        );
     }
 
     // --- Task 8: Hysteresis and flapping ---

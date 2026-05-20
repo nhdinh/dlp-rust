@@ -170,7 +170,9 @@ impl CachePusher {
     /// Collects T3/T4 protected paths and rebuilds the cache.  In a full
     /// implementation this would read from the policy store; here we use a
     /// placeholder that can be overridden by callers.
-    fn perform_rebuild(cache: &ClassificationCache) -> Result<(), crate::classification_cache::CacheError> {
+    fn perform_rebuild(
+        cache: &ClassificationCache,
+    ) -> Result<(), crate::classification_cache::CacheError> {
         // Placeholder: in production this reads from the policy store.
         // For now, we rebuild with an empty entry list (the cache remains
         // functional but empty until prepopulate_t3_t4_roots is called).
