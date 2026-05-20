@@ -45,6 +45,7 @@ use windows::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
 use dlp_common::hook_ipc::HandleHookRequest;
 use dlp_common::{Decision, HookRequest};
 
+mod allowlist;
 mod classification_cache;
 mod crash_guard;
 mod fail_closed;

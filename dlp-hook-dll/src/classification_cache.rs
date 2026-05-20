@@ -159,6 +159,13 @@ impl CacheLookup {
         Some(lookup)
     }
 
+    /// Read the current cache version from the header.
+    ///
+    /// Returns the version word (high 63 bits = version, low bit = buffer).
+    pub fn current_version_word(&self) -> u64 {
+        unsafe { (*self.header).version_word.load(Ordering::Acquire) }
+    }
+
     /// Look up a path in the cache.
     ///
     /// Returns `Some(Classification)` if the path is found and not expired.

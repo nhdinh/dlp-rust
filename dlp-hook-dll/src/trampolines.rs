@@ -16,6 +16,7 @@
 #![allow(clippy::missing_transmute_annotations)]
 #![allow(clippy::transmutes_expressible_as_ptr_casts)]
 
+use dlp_common::hook_ipc::HookOp;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HANDLE, NTSTATUS};
 
@@ -25,6 +26,14 @@ use windows::Win32::Foundation::{HANDLE, NTSTATUS};
 
 /// Performs the common classification, logging, and decision routing for
 /// path-based trampolines.
+///
+/// New flow (Plan 50-03):
+/// 1. Check allowlist first (fastest path).
+/// 2. Check thread-local LRU for path.
+/// 3. If LRU miss, check shared-memory cache.
+/// 4. If cache hit, apply tier-gated fast-path decision.
+/// 5. If cache miss/expired, fall through to pipe round-trip.
+/// 6. On pipe success, warm LRU with cache_version from response.
 ///
 /// Returns `Some(deny_return_value)` if the operation should be denied,
 /// `None` if it should proceed to the original function.
@@ -36,6 +45,74 @@ fn classify_and_log_path(
     let path_hash = crate::hash_path(path);
     let start = std::time::Instant::now();
 
+    // Determine operation type for tier-gated decisions.
+    let op = if is_write_action(action) {
+        HookOp::Write
+    } else {
+        HookOp::Read
+    };
+
+    // 1. Check allowlist first (fastest path).
+    if crate::allowlist::is_path_allowed(path) {
+        let msg = format!(
+            "[dlp-hook] ALLOW(allowlist) {} hash={:016x}\0",
+            fn_name, path_hash
+        );
+        crate::debug_log(&msg);
+        return None;
+    }
+
+    // 2. Check shared-memory cache (includes thread-local LRU).
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    if let Some(cache) = crate::classification_cache::CacheLookup::get() {
+        // Check thread-local LRU first.
+        let version_word = cache.current_version_word();
+        let version = version_word >> 1;
+
+        if let Some(classification) =
+            crate::classification_cache::lru::get(path, version)
+        {
+            // LRU hit — apply decision.
+            let latency = start.elapsed();
+            let msg = format!(
+                "[dlp-hook] ALLOW(LRU) {} hash={:016x} latency={}us tier={}\0",
+                fn_name,
+                path_hash,
+                latency.as_micros(),
+                classification
+            );
+            crate::debug_log(&msg);
+            if let Some(deny) = cache.decide(classification, op) {
+                return Some(deny);
+            }
+            return None;
+        }
+
+        // LRU miss — check shared-memory cache.
+        if let Some(classification) = cache.lookup(path, op, now_secs) {
+            // Cache hit — warm LRU and apply decision.
+            crate::classification_cache::lru::insert(path, classification, version);
+            let latency = start.elapsed();
+            let msg = format!(
+                "[dlp-hook] ALLOW(cache) {} hash={:016x} latency={}us tier={}\0",
+                fn_name,
+                path_hash,
+                latency.as_micros(),
+                classification
+            );
+            crate::debug_log(&msg);
+            if let Some(deny) = cache.decide(classification, op) {
+                return Some(deny);
+            }
+            return None;
+        }
+    }
+
+    // 3. Cache miss — fall through to pipe round-trip.
     let decision = crate::classify_path(path, action, crate::DEFAULT_PIPE_NAME);
     let latency = start.elapsed();
 
@@ -71,6 +148,16 @@ fn classify_and_log_path(
             Some(crate::fail_closed::DenyReturn::BoolFalse)
         }
     }
+}
+
+/// Returns `true` if the action is a write operation.
+///
+/// Write actions trigger fast-path deny for T3/T4 cache hits.
+fn is_write_action(action: &str) -> bool {
+    matches!(
+        action.to_ascii_uppercase().as_str(),
+        "CREATE" | "WRITE" | "MOVE" | "COPY" | "DELETE" | "REPLACE" | "SET_INFO" | "NT_WRITE" | "NT_SET_INFO"
+    )
 }
 
 /// Performs the common classification, logging, and decision routing for
