@@ -112,7 +112,7 @@ impl PerfTelemetry {
         self.buckets[bucket_idx].fetch_add(1, Ordering::Relaxed);
 
         // Emit telemetry every EMIT_INTERVAL calls.
-        if count % EMIT_INTERVAL == 0 {
+        if count.is_multiple_of(EMIT_INTERVAL) {
             self.emit_telemetry();
         }
     }
@@ -186,6 +186,7 @@ pub fn record_latency(elapsed_qpc: u64, is_cache_hit: bool) {
 }
 
 /// Emit aggregated telemetry from the thread-local telemetry.
+#[allow(dead_code)]
 pub fn emit_telemetry() {
     TELEMETRY.with(|t| t.borrow().emit_telemetry());
 }
