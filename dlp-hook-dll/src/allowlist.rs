@@ -86,6 +86,7 @@ const BUILD_TOOL_PARENT_DIRS: &[&str] = &[
 ///
 /// Build tools must be signed by one of these publishers. Code-signer
 /// validation prevents binary substitution attacks.
+#[allow(dead_code)]
 const TRUSTED_SIGNERS: &[&str] = &[
     "MICROSOFT CORPORATION",
     "MICROSOFT WINDOWS",
@@ -146,7 +147,7 @@ static PROCESS_IMAGE_PATH: OnceLock<String> = OnceLock::new();
 ///
 /// Uses `GetModuleFileNameW(NULL)` to get the full path of the executable
 /// that loaded this DLL.
-fn get_process_image_path() -> &'static str {
+pub fn get_process_image_path() -> &'static str {
     PROCESS_IMAGE_PATH.get_or_init(|| {
         #[cfg(windows)]
         unsafe {
@@ -390,6 +391,7 @@ pub fn is_allowlisted(path: &str, header: Option<&CacheHeader>) -> (bool, Option
 /// Legacy compatibility: returns `true` if path is on the system allowlist.
 ///
 /// Used by trampolines that only need the system-path fast path.
+#[allow(dead_code)]
 pub fn is_path_allowed(path: &str) -> bool {
     is_system_allowlisted(path)
 }
@@ -398,6 +400,7 @@ pub fn is_path_allowed(path: &str) -> bool {
 /// the pipe round-trip.
 ///
 /// This is checked per-process at DLL load time, not per-path.
+#[allow(dead_code)]
 pub fn is_build_tool_process() -> bool {
     let image_path = get_process_image_path();
     is_build_tool_allowlisted(image_path)
