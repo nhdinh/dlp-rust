@@ -553,6 +553,7 @@ pub(crate) fn classify_path(
     let req = HookRequest {
         path: path.to_string(),
         action: action.to_string(),
+        ..Default::default()
     };
     let resp = pipe_client::send_request(
         pipe_name, &req, 50, // 50 ms timeout per task spec
@@ -735,6 +736,7 @@ mod tests {
         let req = HookRequest {
             path: r"C:\test.txt".to_string(),
             action: "CREATE".to_string(),
+            ..Default::default()
         };
         let result = pipe_client::send_request(r"\\.\pipe\DlpHookPipeTestNoServer", &req, 100);
         assert!(
@@ -750,6 +752,8 @@ mod tests {
         let handler = Arc::new(|req: HookRequest| HookResponse {
             decision: Decision::DENY,
             reason: format!("blocked: {}", req.path),
+            cache_hint: None,
+            cache_version: 0,
         });
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
@@ -757,6 +761,7 @@ mod tests {
         let req = HookRequest {
             path: r"C:\secret.txt".to_string(),
             action: "CREATE".to_string(),
+            ..Default::default()
         };
         let resp =
             pipe_client::send_request(pipe_name, &req, 1000).expect("send_request should succeed");
@@ -770,6 +775,8 @@ mod tests {
         let handler = Arc::new(|_req: HookRequest| HookResponse {
             decision: Decision::ALLOW,
             reason: "allowed".to_string(),
+            cache_hint: None,
+            cache_version: 0,
         });
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
@@ -777,6 +784,7 @@ mod tests {
         let req = HookRequest {
             path: r"C:\public.txt".to_string(),
             action: "CREATE".to_string(),
+            ..Default::default()
         };
         let resp =
             pipe_client::send_request(pipe_name, &req, 1000).expect("send_request should succeed");
@@ -790,6 +798,8 @@ mod tests {
         let handler = Arc::new(|_req: HookRequest| HookResponse {
             decision: Decision::DENY,
             reason: "denied".to_string(),
+            cache_hint: None,
+            cache_version: 0,
         });
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
@@ -805,6 +815,8 @@ mod tests {
         let handler = Arc::new(|_req: HookRequest| HookResponse {
             decision: Decision::ALLOW,
             reason: "allowed".to_string(),
+            cache_hint: None,
+            cache_version: 0,
         });
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
