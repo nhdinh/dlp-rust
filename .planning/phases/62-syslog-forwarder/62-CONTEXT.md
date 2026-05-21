@@ -1,6 +1,6 @@
 # Phase 62: Syslog Forwarder - Context
 
-**Gathered:** 2026-05-14
+**Gathered:** 2026-05-21 (auto-updated from 2026-05-14)
 **Status:** Ready for planning
 
 <domain>
@@ -8,7 +8,7 @@
 
 Phase 62 delivers a **native RFC 5424 syslog forwarder** from `dlp-server` to configured SIEM/SOC collectors over TLS, with an encrypted offline queue on both agent and server sides. This is part of the v0.11.0 milestone (Label Service + Workflow + Audit).
 
-**Depends on:** Phase 61 (Approval Workflow Engine) — syslog forwarder consumes the same audit event pipeline
+**Depends on:** Phase 61 (Approval Workflow Engine) — syslog forwarder consumes the same audit event pipeline. Phase 61 completed 2026-05-13.
 **Requirements:** SYSLOG-01, SYSLOG-02, SYSLOG-03, SYSLOG-04 (see `.planning/REQUIREMENTS.md`)
 
 **What Phase 62 builds:**
@@ -25,6 +25,7 @@ Phase 62 delivers a **native RFC 5424 syslog forwarder** from `dlp-server` to co
 - UDP syslog transport (TLS/TCP only)
 - Syslog over TCP without TLS
 - Content redaction / field filtering beyond what AlertRouter already does
+- Multiple syslog destinations (single destination only)
 
 </domain>
 
@@ -36,7 +37,7 @@ Phase 62 delivers a **native RFC 5424 syslog forwarder** from `dlp-server` to co
 - **D-02:** JSON schema mirrors `AuditEvent` serde serialization with all fields: `event_id`, `timestamp` (UTC + local), `user_sid`, `user_upn`, `device_id`, `mac_addresses`, `fingerprint`, `hostname`, `source_path`, `destination`, `tier`, `data_owner`, `action`, `decision`, `rule_id`, `policy_version`, `approval_id`, `severity`.
 
 ### Severity Mapping
-- **D-03:** Configurable per event type via admin TUI. Stored in `syslog_config` table. Default mapping: `Alert` (DenyWithAlert) → syslog severity 3 (ERROR), `Block` (policy violation) → severity 4 (WARNING), `Audit` (informational) → severity 6 (INFO).
+- **D-03:** Configurable per event type via admin TUI. Stored in `syslog_config` table. Default mapping: `Alert` (DenyWithAlert) -> syslog severity 3 (ERROR), `Block` (policy violation) -> severity 4 (WARNING), `Audit` (informational) -> severity 6 (INFO).
 
 ### Facility Code
 - **D-04:** Configurable LOCAL0-LOCAL7 via admin TUI. Default LOCAL4 (dedicated to DLP). Stored in `syslog_config` table.
@@ -58,7 +59,7 @@ Phase 62 delivers a **native RFC 5424 syslog forwarder** from `dlp-server` to co
 - **D-10:** System CA store only. No custom CA upload or mTLS in Phase 62. Simplifies implementation and covers the majority of enterprise SIEM deployments.
 
 ### TLS Version
-- **D-11:** TLS 1.2 minimum, TLS 1.3 preferred. Configurable via Rustls/rustls-native-certs. Broad compatibility with enterprise SIEM/SOC collectors.
+- **D-11:** TLS 1.2 minimum, TLS 1.3 preferred. Configurable via Rustls/rustls-native-certs. Broad compatibility with enterprise SIEM/SOC collectors. Rustls is already in the dependency tree via `reqwest` and `lettre`.
 
 ### Claude's Discretion
 - Server-side queue should be a separate `syslog_queue` table (not reuse `audit_events`), with columns: `id`, `event_json`, `created_at`, `retry_count`, `last_error`. This keeps the queue distinct from the audit trail.
@@ -69,6 +70,7 @@ Phase 62 delivers a **native RFC 5424 syslog forwarder** from `dlp-server` to co
 - Hostname field: use `hostname::get()` or agent heartbeat hostname.
 - Admin TUI screen: mirror `screens/siem_config.rs` exactly — navigable row list with host, port, protocol toggle, format dropdown, facility dropdown, batching toggle, severity mapping, queue policy, test button.
 - Integration point: `SyslogConnector::forward(events)` should be called from `audit_store.rs` after events are persisted, similar to how `SiemConnector::relay_events` is called.
+- Approval workflow events (from Phase 61) MUST be forwarded through syslog: `approval_granted`, `approval_revoked`, `approval_expired`, `approval_used`.
 
 </decisions>
 
@@ -78,9 +80,10 @@ Phase 62 delivers a **native RFC 5424 syslog forwarder** from `dlp-server` to co
 **Downstream agents MUST read these before planning or implementing.**
 
 ### Requirements & Architecture
-- `.planning/REQUIREMENTS.md` §"v0.11.0 — Syslog Forwarder" — SYSLOG-01..04 requirements
-- `.planning/STATE.md` §"Pilot-First Path (post-v0.10.0)" — v0.11.0 phase breakdown
-- `.planning/ROADMAP.md` §"Phase 62: Syslog Forwarder" — phase goal and success criteria
+- `.planning/REQUIREMENTS.md` S"v0.11.0 — Syslog Forwarder" — SYSLOG-01..04 requirements
+- `.planning/STATE.md` S"Pilot-First Path (post-v0.10.0)" — v0.11.0 phase breakdown
+- `.planning/ROADMAP.md` S"v0.11.0 — Label Service + Workflow + Audit" — phase goal and success criteria
+- `.planning/PROJECT.md` S"Tech Stack" — dependency versions and patterns
 
 ### Existing Code Patterns
 - `dlp-server/src/siem_connector.rs` — `SiemConnector` pattern (hot-reload, batched relay, error handling). **MUST reuse** for `SyslogConnector`.
@@ -90,6 +93,9 @@ Phase 62 delivers a **native RFC 5424 syslog forwarder** from `dlp-server` to co
 - `dlp-admin-cli/src/screens/siem_config.rs` — Admin TUI config screen pattern. **Mirror for syslog screen.**
 - `dlp-common/src/audit.rs` — `AuditEvent` struct and serde. JSON payload format derived from this.
 - `dlp-agent/src/audit_emitter.rs` — Agent-side audit event emission. Queue drain logic plugs in here.
+- `.planning/codebase/STACK.md` — Rust dependency stack; note rustls already present via reqwest/lettre.
+- `.planning/codebase/ARCHITECTURE.md` — Audit/alert path data flow and crate boundaries.
+- `.planning/codebase/INTEGRATIONS.md` — SIEM and event forwarding patterns.
 
 ### Related Docs
 - No SPEC.md exists for Phase 62 — requirements are in REQUIREMENTS.md
@@ -107,6 +113,7 @@ Phase 62 delivers a **native RFC 5424 syslog forwarder** from `dlp-server` to co
 - **`AuditEvent`** (`dlp-common/src/audit.rs`): Common event format. JSON payload is `serde_json::to_string` of this struct.
 - **`AppState { pool, crypto, policy_store, siem, alert, ad }`**: Add `syslog: Arc<SyslogConnector>` alongside `siem`.
 - **Admin TUI `EngineClient`** (`dlp-admin-cli/src/client.rs`): HTTP client for admin API calls.
+- **`rustls`** (via `reqwest` and `lettre`): Already in dependency tree. Use `tokio-rustls` or `rustls` directly for TLS syslog transport.
 
 ### Established Patterns
 - **Repository pattern**: Stateless struct with `pool` parameter (like `SiemConfigRepository`).
@@ -115,6 +122,7 @@ Phase 62 delivers a **native RFC 5424 syslog forwarder** from `dlp-server` to co
 - **TUI config screen**: Navigable row list with editing mode and buffer (like `SiemConfig`).
 - **Error handling**: Handlers return `Result<Json<T>, AppError>`. `AppError` defined in `dlp-server/src/error.rs`.
 - **Fire-and-forget**: Alert and SIEM paths spawn async tasks that don't block the main request handler.
+- **SQLite-backed queues**: Pattern from `audit_store.rs` — durable, polled, drained.
 
 ### Integration Points
 - `dlp-server/src/db/mod.rs` — add `syslog_config` and `syslog_queue` tables to `init_tables()`.
@@ -130,17 +138,18 @@ Phase 62 delivers a **native RFC 5424 syslog forwarder** from `dlp-server` to co
 ## Specific Ideas
 
 - The JSON payload in the syslog MSG field should be a flat object (no nested structs) for maximum SIEM compatibility. Every field is a string or number.
-- The `event_id` field should be a UUID v4 generated at event creation time, carried through audit_store → syslog → SIEM.
+- The `event_id` field should be a UUID v4 generated at event creation time, carried through audit_store -> syslog -> SIEM.
 - The admin TUI syslog screen should have a "Test Connection" button that sends a synthetic `AuditEvent` with `event_type = TestAlert` through the syslog forwarder, similar to `AlertRouter::send_test_alert`.
 - Agent-side queue encryption: encrypt the `event_json` string with DPAPI (`CryptProtectData`) before writing to SQLite. Decrypt with `CryptUnprotectData` on drain.
 - Server-side queue encryption: reuse existing `SecretCrypto::encrypt()` with AAD `aad_for("syslog_queue", "event_json")`.
 - RFC 5424 header format: `<priority>version timestamp hostname app-name procid msgid [structured-data] msg`
   - Example: `<134>1 2026-05-14T10:00:00.000Z webserver01 DLP-AUDIT 1234 DLP-BLOCK - {"event_id":"..."}`
-  - Priority = facility * 8 + severity. Facility=LOCAL4=20, Severity=ERROR=3 → priority=163. But since facility is configurable, compute at send time.
+  - Priority = facility * 8 + severity. Facility=LOCAL4=20, Severity=ERROR=3 -> priority=163. But since facility is configurable, compute at send time.
   - `app-name` = `DLP-AUDIT` (fixed).
   - `procid` = agent_id or server process ID.
   - `msgid` = event type (DLP-BLOCK, DLP-ALERT, DLP-AUDIT).
   - `structured-data` = `-` (nil value) since we're using JSON-in-MSG.
+- No dedicated `syslog` crate in current dependency tree. Implement RFC 5424 formatting inline and use `tokio::net::TcpStream` + `tokio-rustls` for TLS transport.
 
 </specifics>
 
@@ -151,7 +160,7 @@ Phase 62 delivers a **native RFC 5424 syslog forwarder** from `dlp-server` to co
 - Mutual TLS (mTLS) client certificate authentication (post-v0.11.0 — requires cert lifecycle management)
 - UDP syslog transport (uncommon in enterprise, TLS is standard)
 - Content redaction / field filtering per syslog destination (post-v0.11.0)
-- Multiple syslog destinations ( Phase 62 supports single destination; multi-destination deferred)
+- Multiple syslog destinations (Phase 62 supports single destination; multi-destination deferred)
 - Syslog over TCP without TLS (security risk — deferred indefinitely)
 
 </deferred>
@@ -159,4 +168,4 @@ Phase 62 delivers a **native RFC 5424 syslog forwarder** from `dlp-server` to co
 ---
 
 *Phase: 62-Syslog Forwarder*
-*Context gathered: 2026-05-14*
+*Context gathered: 2026-05-21*
