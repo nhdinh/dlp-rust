@@ -156,6 +156,30 @@ impl Tier {
     pub fn is_sensitive(self) -> bool {
         matches!(self, Self::T3 | Self::T4 | Self::UnclassifiedBlocked)
     }
+
+    /// Returns a numeric rank where higher values indicate stricter tiers.
+    ///
+    /// The ordering is: T1 (1) < T2 (2) < T3 (3) < T4 (4) < UnclassifiedBlocked (5).
+    /// This rank is used for strictness comparison during folder inheritance
+    /// resolution (explicit child tier vs. inherited parent tier).
+    #[must_use]
+    pub fn strictness_rank(self) -> u8 {
+        match self {
+            Self::T1 => 1,
+            Self::T2 => 2,
+            Self::T3 => 3,
+            Self::T4 => 4,
+            Self::UnclassifiedBlocked => 5,
+        }
+    }
+
+    /// Returns `true` if this tier is strictly stricter than `other`.
+    ///
+    /// Uses [`strictness_rank`](Self::strictness_rank) for comparison.
+    #[must_use]
+    pub fn is_stricter_than(self, other: &Self) -> bool {
+        self.strictness_rank() > other.strictness_rank()
+    }
 }
 
 impl std::fmt::Display for Tier {
@@ -319,5 +343,24 @@ mod tests {
         assert_eq!(upper, Tier::T3);
         let lower: Tier = "unclassified-blocked".try_into().unwrap();
         assert_eq!(lower, Tier::UnclassifiedBlocked);
+    }
+
+    #[test]
+    fn test_tier_strictness_rank() {
+        assert_eq!(Tier::T1.strictness_rank(), 1);
+        assert_eq!(Tier::T2.strictness_rank(), 2);
+        assert_eq!(Tier::T3.strictness_rank(), 3);
+        assert_eq!(Tier::T4.strictness_rank(), 4);
+        assert_eq!(Tier::UnclassifiedBlocked.strictness_rank(), 5);
+    }
+
+    #[test]
+    fn test_tier_is_stricter_than() {
+        assert!(Tier::T4.is_stricter_than(&Tier::T2));
+        assert!(Tier::T3.is_stricter_than(&Tier::T1));
+        assert!(Tier::UnclassifiedBlocked.is_stricter_than(&Tier::T4));
+        assert!(!Tier::T1.is_stricter_than(&Tier::T2));
+        assert!(!Tier::T2.is_stricter_than(&Tier::T2));
+        assert!(!Tier::T4.is_stricter_than(&Tier::UnclassifiedBlocked));
     }
 }
