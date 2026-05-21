@@ -348,25 +348,21 @@ impl EngineClient {
         Ok(())
     }
 
-    /// Calls GET /admin/labels with optional state and department filters.
+    /// Calls GET /admin/labels with optional state and department filters and pagination.
     #[allow(dead_code)]
     pub async fn list_labels(
         &self,
         state_filter: Option<&str>,
         department_filter: Option<&str>,
-    ) -> Result<Vec<serde_json::Value>> {
-        let mut path = String::from("admin/labels");
-        let mut has_param = false;
+        limit: usize,
+        offset: usize,
+    ) -> Result<PaginatedLabelsResponse> {
+        let mut path = format!("admin/labels?limit={limit}&offset={offset}");
         if let Some(f) = state_filter {
-            path.push_str(&format!("?state={}", urlencoding::encode(f)));
-            has_param = true;
+            path.push_str(&format!("&state={}", urlencoding::encode(f)));
         }
         if let Some(d) = department_filter {
-            if has_param {
-                path.push_str(&format!("&department={}", urlencoding::encode(d)));
-            } else {
-                path.push_str(&format!("?department={}", urlencoding::encode(d)));
-            }
+            path.push_str(&format!("&department={}", urlencoding::encode(d)));
         }
         self.get(&path).await
     }
@@ -423,6 +419,16 @@ impl EngineClient {
     #[allow(dead_code)]
     pub async fn delete_label(&self, id: &str) -> Result<()> {
         self.delete(&format!("admin/labels/{}", id)).await
+    }
+
+    /// Calls POST /admin/labels/:id/expire.
+    #[allow(dead_code)]
+    pub async fn expire_label(&self, id: &str) -> Result<serde_json::Value> {
+        self.post(
+            &format!("admin/labels/{}/expire", id),
+            &serde_json::json!({}),
+        )
+        .await
     }
 
     // -----------------------------------------------------------------------
@@ -511,4 +517,22 @@ impl EngineClient {
         }
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Paginated response types
+// ---------------------------------------------------------------------------
+
+/// Paginated response from `GET /admin/labels`.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct PaginatedLabelsResponse {
+    /// Label records returned for the current page.
+    pub labels: Vec<serde_json::Value>,
+    /// Total number of labels matching the query (across all pages).
+    pub total: i64,
+    /// Maximum number of items per page.
+    pub limit: usize,
+    /// Number of items skipped from the start of the result set.
+    pub offset: usize,
 }
