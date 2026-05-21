@@ -100,10 +100,10 @@ async fn evaluate_handler(
     let ctx: AbacContext = request.into();
 
     // NOTE: evaluate() is synchronous — no .await here.
-    // Pass label_service for label-aware evaluation (Phase 59, D-10).
+    // Pass label_service and cached flag for label-aware evaluation (Phase 59, D-10).
     let response = state
         .policy_store
-        .evaluate(&ctx, Some(&state.label_service));
+        .evaluate(&ctx, Some(&state.label_service), state.is_label_aware_enabled());
     Ok(Json(response))
 }
 
