@@ -152,6 +152,13 @@ pub enum ConfirmPurpose {
     DeleteLabel {
         id: String,
     },
+    /// Confirm expiration of a label by ID.
+    #[allow(dead_code)]
+    ExpireLabel {
+        id: String,
+        path: String,
+        tier: String,
+    },
     /// Confirm revocation of an approval by ID.
     RevokeApproval {
         id: String,
@@ -936,6 +943,12 @@ pub enum Screen {
         labels: Vec<serde_json::Value>,
         selected: usize,
         filter: LabelFilter,
+        /// Current page number (0-based).
+        page: usize,
+        /// Items per page.
+        page_size: usize,
+        /// Total count from server (for pagination).
+        total: usize,
     },
     /// Data Owner review queue for temporary labels.
     /// Pattern: Simplified PolicyList with confirm/reject actions.
@@ -948,6 +961,12 @@ pub enum Screen {
         departments: Vec<String>,
         /// Current index into departments list.
         department_index: usize,
+        /// Current page number (0-based).
+        page: usize,
+        /// Items per page.
+        page_size: usize,
+        /// Total count from server (for pagination).
+        total: usize,
     },
     /// Single label detail (read-only popup).
     LabelDetail { label: serde_json::Value },

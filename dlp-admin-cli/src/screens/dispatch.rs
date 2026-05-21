@@ -658,6 +658,7 @@ fn on_confirm_yes(app: &mut App, purpose: &ConfirmPurpose) {
         ConfirmPurpose::DeleteManagedOrigin { id } => action_delete_managed_origin(app, id),
         ConfirmPurpose::DeleteDiskRegistry { id } => action_delete_disk_registry(app, id),
         ConfirmPurpose::DeleteLabel { id } => action_delete_label(app, id),
+        ConfirmPurpose::ExpireLabel { id, .. } => action_expire_label(app, id),
         ConfirmPurpose::RevokeApproval { id } => action_revoke_approval(app, id),
     }
 }
@@ -672,6 +673,7 @@ fn on_confirm_cancel(app: &mut App, purpose: &ConfirmPurpose) {
         ConfirmPurpose::DeleteManagedOrigin { .. } => action_load_managed_origin_list(app),
         ConfirmPurpose::DeleteDiskRegistry { .. } => action_load_disk_registry_list(app),
         ConfirmPurpose::DeleteLabel { .. } => action_load_label_list(app, LabelFilter::All),
+        ConfirmPurpose::ExpireLabel { .. } => action_load_label_list(app, LabelFilter::All),
         ConfirmPurpose::RevokeApproval { .. } => {
             // Return to approval list after cancel
             action_load_approval_list(app, ApprovalFilter::All, 1);
@@ -5100,25 +5102,44 @@ fn action_delete_disk_registry(app: &mut App, id: &str) {
 // ---------------------------------------------------------------------------
 
 /// Loads the label list from the server and navigates to LabelList.
+/// Default page size for label list pagination.
+const DEFAULT_LABEL_PAGE_SIZE: usize = 50;
+
+/// Loads labels with pagination support.
 fn action_load_label_list(app: &mut App, filter: LabelFilter) {
-    let path = if filter == LabelFilter::All {
-        "admin/labels".to_string()
+    action_load_label_list_paginated(app, filter, 0, DEFAULT_LABEL_PAGE_SIZE);
+}
+
+/// Loads labels with explicit pagination params.
+fn action_load_label_list_paginated(
+    app: &mut App,
+    filter: LabelFilter,
+    page: usize,
+    page_size: usize,
+) {
+    let state_filter = if filter == LabelFilter::All {
+        None
     } else {
-        format!("admin/labels?state={}", filter.label())
+        Some(filter.label())
     };
+    let offset = page * page_size;
     match app
         .rt
-        .block_on(app.client.get::<Vec<serde_json::Value>>(&path))
+        .block_on(app.client.list_labels(state_filter, None, page_size, offset))
     {
-        Ok(labels) => {
+        Ok(resp) => {
+            let total = resp.total as usize;
             app.set_status(
-                format!("Loaded {} labels", labels.len()),
+                format!("Loaded {} of {} labels", resp.labels.len(), total),
                 StatusKind::Success,
             );
             app.screen = Screen::LabelList {
-                labels,
+                labels: resp.labels,
                 selected: 0,
                 filter,
+                page,
+                page_size,
+                total,
             };
         }
         Err(e) => app.set_status(format!("Error loading labels: {e}"), StatusKind::Error),
@@ -5132,17 +5153,27 @@ fn action_load_label_review_queue(app: &mut App) {
 
 /// Loads temporary labels with optional department filter.
 fn action_load_label_review_queue_with_filter(app: &mut App, department_filter: Option<String>) {
-    let mut path = String::from("admin/labels?state=temporary");
-    if let Some(ref dept) = department_filter {
-        path.push_str(&format!("&department={}", urlencoding::encode(dept)));
-    }
-    match app
-        .rt
-        .block_on(app.client.get::<Vec<serde_json::Value>>(&path))
-    {
-        Ok(labels) => {
+    action_load_label_review_queue_paginated(app, department_filter, 0, DEFAULT_LABEL_PAGE_SIZE);
+}
+
+/// Loads temporary labels with explicit pagination params.
+fn action_load_label_review_queue_paginated(
+    app: &mut App,
+    department_filter: Option<String>,
+    page: usize,
+    page_size: usize,
+) {
+    let offset = page * page_size;
+    match app.rt.block_on(app.client.list_labels(
+        Some("temporary"),
+        department_filter.as_deref(),
+        page_size,
+        offset,
+    )) {
+        Ok(resp) => {
+            let total = resp.total as usize;
             app.set_status(
-                format!("{} temporary labels pending review", labels.len()),
+                format!("{} temporary labels pending review", resp.labels.len()),
                 StatusKind::Success,
             );
             // Preserve existing department list if already fetched
@@ -5155,11 +5186,14 @@ fn action_load_label_review_queue_with_filter(app: &mut App, department_filter: 
                 _ => (Vec::new(), 0),
             };
             app.screen = Screen::LabelReviewQueue {
-                labels,
+                labels: resp.labels,
                 selected: 0,
                 department_filter,
                 departments: existing_depts,
                 department_index: existing_idx,
+                page,
+                page_size,
+                total,
             };
         }
         Err(e) => app.set_status(
@@ -5179,6 +5213,20 @@ fn action_delete_label(app: &mut App, id: &str) {
         }
         Err(e) => {
             app.set_status(format!("Error deleting label: {e}"), StatusKind::Error);
+            app.screen = Screen::MainMenu { selected: 3 };
+        }
+    }
+}
+
+/// Expires a label by ID and reloads the label list.
+fn action_expire_label(app: &mut App, id: &str) {
+    match app.rt.block_on(app.client.expire_label(id)) {
+        Ok(_) => {
+            app.set_status("Label expired.", StatusKind::Success);
+            action_load_label_list(app, LabelFilter::All);
+        }
+        Err(e) => {
+            app.set_status(format!("Error expiring label: {e}"), StatusKind::Error);
             app.screen = Screen::MainMenu { selected: 3 };
         }
     }
@@ -5632,12 +5680,15 @@ fn action_revoke_approval(app: &mut App, id: &str) {
 
 /// Handles key events for the LabelList screen.
 fn handle_label_list(app: &mut App, key: KeyEvent) {
-    let (labels, selected, filter) = match &mut app.screen {
+    let (labels, selected, filter, page, page_size, total) = match &mut app.screen {
         Screen::LabelList {
             labels,
             selected,
             filter,
-        } => (labels.clone(), selected, *filter),
+            page,
+            page_size,
+            total,
+        } => (labels.clone(), selected, *filter, *page, *page_size, *total),
         _ => return,
     };
     match key.code {
@@ -5679,6 +5730,20 @@ fn handle_label_list(app: &mut App, key: KeyEvent) {
                 }
             }
         }
+        KeyCode::Char('x') => {
+            if let Some(label) = labels.get(*selected) {
+                let id = label["id"].as_str().unwrap_or_default().to_string();
+                let path = label["path"].as_str().unwrap_or("<unnamed>").to_string();
+                let tier = label["tier"].as_str().unwrap_or("-").to_string();
+                if !id.is_empty() {
+                    app.screen = Screen::Confirm {
+                        message: format!("Expire label '{path}' (tier: {tier})?"),
+                        yes_selected: false,
+                        purpose: ConfirmPurpose::ExpireLabel { id, path, tier },
+                    };
+                }
+            }
+        }
         KeyCode::Char('v') | KeyCode::Enter => {
             if let Some(label) = labels.get(*selected) {
                 app.screen = Screen::LabelDetail {
@@ -5688,7 +5753,17 @@ fn handle_label_list(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('f') => {
             let new_filter = filter.next();
-            action_load_label_list(app, new_filter);
+            action_load_label_list_paginated(app, new_filter, 0, page_size);
+        }
+        KeyCode::PageUp => {
+            if page > 0 {
+                action_load_label_list_paginated(app, filter, page - 1, page_size);
+            }
+        }
+        KeyCode::PageDown => {
+            if (page + 1) * page_size < total {
+                action_load_label_list_paginated(app, filter, page + 1, page_size);
+            }
         }
         KeyCode::Esc => {
             app.screen = Screen::MainMenu { selected: 3 };
@@ -5844,6 +5919,9 @@ fn handle_label_detail(app: &mut App, key: KeyEvent) {
                 labels: Vec::new(),
                 selected: 0,
                 filter: LabelFilter::All,
+                page: 0,
+                page_size: DEFAULT_LABEL_PAGE_SIZE,
+                total: 0,
             };
             action_load_label_list(app, LabelFilter::All);
         }
