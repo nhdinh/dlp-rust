@@ -628,9 +628,7 @@ mod tests {
         let conn = pool.get().expect("acquire connection");
 
         let indexes: Vec<String> = conn
-            .prepare(
-                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='labels'",
-            )
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='labels'")
             .expect("prepare")
             .query_map([], |row| row.get::<_, String>(0))
             .expect("query")

@@ -129,24 +129,14 @@ impl PolicyStore {
             if let Some(ref path) = ctx.resource_path {
                 match Self::is_label_aware_enabled(&self.pool) {
                     Ok(true) => {
-                        match service.resolve_tier(path) {
-                            Ok(tier) => {
-                                if let Some(classification) = tier.to_classification() {
-                                    resource.classification = classification;
-                                } else {
-                                    // UnclassifiedBlocked: set to T4 (most restrictive)
-                                    // so the policy engine will DENY everything since no
-                                    // policy typically allows T4 for general users.
-                                    resource.classification = Classification::T4;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    error = %e,
-                                    path,
-                                    "label resolution failed — using request classification"
-                                );
-                            }
+                        let resolved = service.resolve_tier(path);
+                        if let Some(classification) = resolved.tier().to_classification() {
+                            resource.classification = classification;
+                        } else {
+                            // UnclassifiedBlocked or LookupFailed: set to T4 (most restrictive)
+                            // so the policy engine will DENY everything since no
+                            // policy typically allows T4 for general users.
+                            resource.classification = Classification::T4;
                         }
                     }
                     Ok(false) => {} // label-aware disabled, use request classification
