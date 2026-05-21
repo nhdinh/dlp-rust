@@ -25,6 +25,7 @@ pub mod helpers {
 /// Helpers for spinning up in-process `dlp-server` routers and minting JWTs.
 pub mod server {
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     use axum::Router;
     use chrono::Utc;
@@ -99,6 +100,7 @@ pub mod server {
             label_service,
             approval_token_service,
             syslog,
+            label_aware_enabled: Arc::new(AtomicBool::new(false)),
         });
         (admin_router(state), pool)
     }
