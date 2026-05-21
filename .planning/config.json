@@ -10,6 +10,7 @@
     "verifier": true,
     "nyquist_validation": true,
     "auto_advance": true,
-    "plan_review_convergence": true
+    "plan_review_convergence": true,
+    "_auto_chain_active": false
   }
 }
