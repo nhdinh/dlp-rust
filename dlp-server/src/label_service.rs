@@ -182,49 +182,73 @@ impl LabelService {
         }
     }
 
-    /// Resolves the tier for `path`.
+    /// Resolves the tier for `path` with strictness-aware inheritance.
     ///
-    /// # Errors
+    /// Resolution logic (per D-07b):
+    /// 1. Check cache for a [`CacheEntry`]. If hit and not expired, convert to
+    ///    [`ResolvedTier`] and return.
+    /// 2. Query DB for exact path match AND parent folder label (both queries
+    ///    always run, not conditionally).
+    /// 3. If both exist: compare strictness using [`Tier::strictness_rank`].
+    ///    - If explicit tier is stricter or equal: [`ResolvedTier::Exact`]
+    ///    - If parent tier is stricter: [`ResolvedTier::Inherited`]
+    /// 4. If only exact exists: [`ResolvedTier::Exact`]
+    /// 5. If only parent exists: [`ResolvedTier::Inherited`]
+    /// 6. If neither: [`ResolvedTier::Fallback`]
+    /// 7. On DB error: [`ResolvedTier::LookupFailed`] (fail-closed, no panic)
     ///
-    /// Returns `rusqlite::Error` on database failure.
-    pub fn resolve_tier(&self, path: &str) -> rusqlite::Result<Tier> {
+    /// The result is cached as a [`CacheEntry`] with correct [`ResolutionSource`]
+    /// and `parent_path` metadata.
+    pub fn resolve_tier(&self, path: &str) -> ResolvedTier {
         // 1. Cache hit?
-        if let Some(tier) = self.cache.get_tier(path) {
-            return Ok(tier);
+        if let Some(entry) = self.cache.get(path) {
+            return cache_entry_to_resolved(entry);
         }
 
-        // 2. Exact match in DB.
-        if let Some(row) = LabelRepository::get_by_path(&self.pool, path)? {
-            let tier = parse_tier(&row.tier);
-            self.cache.insert(
-                path.to_string(),
-                CacheEntry {
-                    tier,
-                    source: ResolutionSource::Exact,
-                    parent_path: None,
-                    inserted: Instant::now(),
-                },
-            );
-            return Ok(tier);
-        }
+        // 2. Query DB for both exact and parent labels.
+        let exact = match LabelRepository::get_by_path(&self.pool, path) {
+            Ok(row) => row,
+            Err(_e) => {
+                // Fail-closed: DB error -> LookupFailed (UnclassifiedBlocked)
+                return ResolvedTier::LookupFailed;
+            }
+        };
+        let parent = match LabelRepository::find_parent_label(&self.pool, path) {
+            Ok(row) => row,
+            Err(_e) => {
+                return ResolvedTier::LookupFailed;
+            }
+        };
 
-        // 3. Parent folder walk.
-        if let Some(parent) = LabelRepository::find_parent_label(&self.pool, path)? {
-            let tier = parse_tier(&parent.tier);
-            self.cache.insert(
-                path.to_string(),
-                CacheEntry {
-                    tier,
-                    source: ResolutionSource::Inherited,
-                    parent_path: Some(parent.path),
-                    inserted: Instant::now(),
-                },
-            );
-            return Ok(tier);
-        }
+        // 3. Both exist -> strictness comparison (D-07b)
+        let result = match (&exact, &parent) {
+            (Some(ex), Some(par)) => {
+                let explicit_tier = parse_tier(&ex.tier);
+                let parent_tier = parse_tier(&par.tier);
+                if explicit_tier.is_stricter_than(&parent_tier)
+                    || explicit_tier.strictness_rank() == parent_tier.strictness_rank()
+                {
+                    ResolvedTier::Exact(explicit_tier)
+                } else {
+                    ResolvedTier::Inherited {
+                        tier: parent_tier,
+                        parent_path: par.path.clone(),
+                    }
+                }
+            }
+            (Some(ex), None) => ResolvedTier::Exact(parse_tier(&ex.tier)),
+            (None, Some(par)) => ResolvedTier::Inherited {
+                tier: parse_tier(&par.tier),
+                parent_path: par.path.clone(),
+            },
+            (None, None) => ResolvedTier::Fallback,
+        };
 
-        // 4. Fallback.
-        Ok(Tier::UnclassifiedBlocked)
+        // 4. Cache the result with full metadata.
+        let cache_entry = resolved_to_cache_entry(&result);
+        self.cache.insert(path.to_string(), cache_entry);
+
+        result
     }
 
     /// Invalidates the entire resolution cache.
@@ -241,6 +265,52 @@ impl LabelService {
 /// (defense-in-depth: never panic on bad DB data).
 fn parse_tier(s: &str) -> Tier {
     <Tier as std::convert::TryFrom<&str>>::try_from(s).unwrap_or(Tier::UnclassifiedBlocked)
+}
+
+/// Converts a [`CacheEntry`] back to a [`ResolvedTier`].
+///
+/// This is used on cache hits to reconstruct the full resolution result
+/// from the cached metadata.
+fn cache_entry_to_resolved(entry: CacheEntry) -> ResolvedTier {
+    match entry.source {
+        ResolutionSource::Exact => ResolvedTier::Exact(entry.tier),
+        ResolutionSource::Inherited => ResolvedTier::Inherited {
+            tier: entry.tier,
+            parent_path: entry.parent_path.unwrap_or_default(),
+        },
+        ResolutionSource::Fallback => ResolvedTier::Fallback,
+        ResolutionSource::LookupFailed => ResolvedTier::LookupFailed,
+    }
+}
+
+/// Converts a [`ResolvedTier`] into a [`CacheEntry`] for storage.
+fn resolved_to_cache_entry(resolved: &ResolvedTier) -> CacheEntry {
+    match resolved {
+        ResolvedTier::Exact(tier) => CacheEntry {
+            tier: *tier,
+            source: ResolutionSource::Exact,
+            parent_path: None,
+            inserted: Instant::now(),
+        },
+        ResolvedTier::Inherited { tier, parent_path } => CacheEntry {
+            tier: *tier,
+            source: ResolutionSource::Inherited,
+            parent_path: Some(parent_path.clone()),
+            inserted: Instant::now(),
+        },
+        ResolvedTier::Fallback => CacheEntry {
+            tier: Tier::UnclassifiedBlocked,
+            source: ResolutionSource::Fallback,
+            parent_path: None,
+            inserted: Instant::now(),
+        },
+        ResolvedTier::LookupFailed => CacheEntry {
+            tier: Tier::UnclassifiedBlocked,
+            source: ResolutionSource::LookupFailed,
+            parent_path: None,
+            inserted: Instant::now(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -363,8 +433,9 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        let tier = svc.resolve_tier(r"C:\Data\file.txt").expect("resolve");
-        assert_eq!(tier, Tier::T3);
+        let resolved = svc.resolve_tier(r"C:\Data\file.txt");
+        assert_eq!(resolved.tier(), Tier::T3);
+        assert_eq!(resolved.source(), "exact");
     }
 
     #[test]
@@ -399,10 +470,9 @@ mod tests {
         }
 
         // Child file has no exact label, should inherit from parent folder
-        let tier = svc
-            .resolve_tier(r"C:\Data\HR\salary.xlsx")
-            .expect("resolve");
-        assert_eq!(tier, Tier::T4);
+        let resolved = svc.resolve_tier(r"C:\Data\HR\salary.xlsx");
+        assert_eq!(resolved.tier(), Tier::T4);
+        assert_eq!(resolved.source(), "inherited");
     }
 
     #[test]
@@ -411,8 +481,9 @@ mod tests {
         let svc = LabelService::new(Arc::clone(&pool));
 
         // No labels at all
-        let tier = svc.resolve_tier(r"C:\Unknown\file.txt").expect("resolve");
-        assert_eq!(tier, Tier::UnclassifiedBlocked);
+        let resolved = svc.resolve_tier(r"C:\Unknown\file.txt");
+        assert_eq!(resolved.tier(), Tier::UnclassifiedBlocked);
+        assert_eq!(resolved.source(), "fallback");
     }
 
     #[test]
@@ -447,16 +518,14 @@ mod tests {
         }
 
         // First call hits DB and populates cache
-        let tier1 = svc
-            .resolve_tier(r"C:\Data\file.txt")
-            .expect("resolve first");
-        assert_eq!(tier1, Tier::T2);
+        let resolved1 = svc.resolve_tier(r"C:\Data\file.txt");
+        assert_eq!(resolved1.tier(), Tier::T2);
+        assert_eq!(resolved1.source(), "exact");
 
         // Second call should hit cache
-        let tier2 = svc
-            .resolve_tier(r"C:\Data\file.txt")
-            .expect("resolve second");
-        assert_eq!(tier2, Tier::T2);
+        let resolved2 = svc.resolve_tier(r"C:\Data\file.txt");
+        assert_eq!(resolved2.tier(), Tier::T2);
+        assert_eq!(resolved2.source(), "exact");
     }
 
     #[test]
@@ -490,16 +559,15 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        svc.resolve_tier(r"C:\Data\file.txt").expect("resolve");
+        svc.resolve_tier(r"C:\Data\file.txt");
 
         // Invalidate cache
         svc.invalidate_cache();
 
         // Cache is empty; next resolve still works (re-queries DB)
-        let tier = svc
-            .resolve_tier(r"C:\Data\file.txt")
-            .expect("resolve after invalidate");
-        assert_eq!(tier, Tier::T1);
+        let resolved = svc.resolve_tier(r"C:\Data\file.txt");
+        assert_eq!(resolved.tier(), Tier::T1);
+        assert_eq!(resolved.source(), "exact");
     }
 
     #[test]
@@ -538,18 +606,293 @@ mod tests {
         }
 
         // First call
-        let tier1 = svc
-            .resolve_tier(r"C:\Data\file.txt")
-            .expect("resolve first");
-        assert_eq!(tier1, Tier::T3);
+        let resolved1 = svc.resolve_tier(r"C:\Data\file.txt");
+        assert_eq!(resolved1.tier(), Tier::T3);
+        assert_eq!(resolved1.source(), "exact");
 
         // Wait a tiny bit for the zero-TTL entry to expire
         std::thread::sleep(Duration::from_millis(10));
 
         // Second call should miss cache (expired) and re-query DB
-        let tier2 = svc
-            .resolve_tier(r"C:\Data\file.txt")
-            .expect("resolve second");
-        assert_eq!(tier2, Tier::T3);
+        let resolved2 = svc.resolve_tier(r"C:\Data\file.txt");
+        assert_eq!(resolved2.tier(), Tier::T3);
+        assert_eq!(resolved2.source(), "exact");
+    }
+
+    // --- Strictness comparison tests (D-07b) ---
+
+    #[test]
+    fn test_resolve_tier_explicit_lower_under_stricter_parent() {
+        // T2 child under T4 parent -> Inherited T4 (stricter parent wins)
+        let pool = Arc::new(new_pool(":memory:").expect("create pool"));
+        let svc = LabelService::new(Arc::clone(&pool));
+
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            // Parent folder: T4
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "folder-001",
+                    path: r"C:\Data\HR",
+                    object_type: "folder",
+                    tier: "T4",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert parent");
+            // Child file: T2 (less strict than parent)
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "file-001",
+                    path: r"C:\Data\HR\salary.xlsx",
+                    object_type: "file",
+                    tier: "T2",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: Some("folder-001"),
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert child");
+            uow.commit().expect("commit");
+        }
+
+        let resolved = svc.resolve_tier(r"C:\Data\HR\salary.xlsx");
+        assert_eq!(
+            resolved.tier(),
+            Tier::T4,
+            "stricter parent T4 must win over explicit T2 child"
+        );
+        assert_eq!(
+            resolved.source(),
+            "inherited",
+            "must be inherited since parent is stricter"
+        );
+        assert!(resolved.is_inherited());
+    }
+
+    #[test]
+    fn test_resolve_tier_explicit_stricter_under_lower_parent() {
+        // T4 child under T2 parent -> Exact T4 (explicit stricter wins)
+        let pool = Arc::new(new_pool(":memory:").expect("create pool"));
+        let svc = LabelService::new(Arc::clone(&pool));
+
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            // Parent folder: T2
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "folder-001",
+                    path: r"C:\Data\Public",
+                    object_type: "folder",
+                    tier: "T2",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert parent");
+            // Child file: T4 (stricter than parent)
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "file-001",
+                    path: r"C:\Data\Public\secret.docx",
+                    object_type: "file",
+                    tier: "T4",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: Some("folder-001"),
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert child");
+            uow.commit().expect("commit");
+        }
+
+        let resolved = svc.resolve_tier(r"C:\Data\Public\secret.docx");
+        assert_eq!(
+            resolved.tier(),
+            Tier::T4,
+            "explicit T4 child must win over lower T2 parent"
+        );
+        assert_eq!(
+            resolved.source(),
+            "exact",
+            "must be exact since explicit is stricter"
+        );
+        assert!(!resolved.is_inherited());
+    }
+
+    #[test]
+    fn test_resolve_tier_equal_strictness() {
+        // T3 child under T3 parent -> Exact T3 (equal, explicit wins)
+        let pool = Arc::new(new_pool(":memory:").expect("create pool"));
+        let svc = LabelService::new(Arc::clone(&pool));
+
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            // Parent folder: T3
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "folder-001",
+                    path: r"C:\Data\HR",
+                    object_type: "folder",
+                    tier: "T3",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert parent");
+            // Child file: T3 (same strictness as parent)
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "file-001",
+                    path: r"C:\Data\HR\doc.txt",
+                    object_type: "file",
+                    tier: "T3",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: Some("folder-001"),
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert child");
+            uow.commit().expect("commit");
+        }
+
+        let resolved = svc.resolve_tier(r"C:\Data\HR\doc.txt");
+        assert_eq!(
+            resolved.tier(),
+            Tier::T3,
+            "equal strictness: explicit T3 wins"
+        );
+        assert_eq!(
+            resolved.source(),
+            "exact",
+            "must be exact when equal strictness"
+        );
+    }
+
+    #[test]
+    fn test_resolve_tier_no_explicit_inherited_only() {
+        // No explicit label, T3 parent folder -> Inherited T3
+        let pool = Arc::new(new_pool(":memory:").expect("create pool"));
+        let svc = LabelService::new(Arc::clone(&pool));
+
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "folder-001",
+                    path: r"C:\Data\HR",
+                    object_type: "folder",
+                    tier: "T3",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert");
+            uow.commit().expect("commit");
+        }
+
+        // Child path has no explicit label
+        let resolved = svc.resolve_tier(r"C:\Data\HR\unlabeled.txt");
+        assert_eq!(resolved.tier(), Tier::T3);
+        assert_eq!(resolved.source(), "inherited");
+        assert!(resolved.is_inherited());
+    }
+
+    #[test]
+    fn test_resolve_tier_cache_preserves_source_metadata() {
+        let pool = Arc::new(new_pool(":memory:").expect("create pool"));
+        let svc = LabelService::new(Arc::clone(&pool));
+
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "folder-001",
+                    path: r"C:\Data\HR",
+                    object_type: "folder",
+                    tier: "T4",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert");
+            uow.commit().expect("commit");
+        }
+
+        // First call: DB miss, parent walk hit
+        let resolved1 = svc.resolve_tier(r"C:\Data\HR\file.txt");
+        assert_eq!(resolved1.source(), "inherited");
+
+        // Second call: cache hit should preserve source
+        let resolved2 = svc.resolve_tier(r"C:\Data\HR\file.txt");
+        assert_eq!(resolved2.source(), "inherited");
+        assert_eq!(resolved2.tier(), Tier::T4);
     }
 }
