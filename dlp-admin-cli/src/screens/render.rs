@@ -339,8 +339,13 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             labels,
             selected,
             filter,
+            page,
+            page_size,
+            total,
         } => {
-            draw_label_list(frame, area, labels, *selected, *filter);
+            draw_label_list(
+                frame, area, labels, *selected, *filter, *page, *page_size, *total,
+            );
         }
         Screen::LabelReviewQueue {
             labels,
@@ -348,6 +353,9 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             department_filter,
             departments,
             department_index,
+            page,
+            page_size,
+            total,
         } => {
             draw_label_review_queue(
                 frame,
@@ -357,6 +365,9 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 department_filter.as_deref(),
                 departments,
                 *department_index,
+                *page,
+                *page_size,
+                *total,
             );
         }
         Screen::LabelDetail { label } => {
@@ -2660,6 +2671,9 @@ fn draw_label_list(
     labels: &[serde_json::Value],
     selected: usize,
     filter: LabelFilter,
+    page: usize,
+    page_size: usize,
+    total: usize,
 ) {
     if labels.is_empty() {
         let paragraph = Paragraph::new(LABEL_LIST_EMPTY)
@@ -2679,6 +2693,9 @@ fn draw_label_list(
     } else {
         String::new()
     };
+
+    let total_pages = if total == 0 { 1 } else { (total + page_size - 1) / page_size };
+    let page_info = format!("Page {} of {} | {} per page", page + 1, total_pages, page_size);
 
     let header = Row::new(vec!["Path", "Type", "Tier", "State", "Owner"])
         .style(Style::default().add_modifier(Modifier::BOLD))
@@ -2737,7 +2754,9 @@ fn draw_label_list(
     state.select(Some(selected));
     frame.render_stateful_widget(table, area, &mut state);
 
-    draw_hints(frame, area, LABEL_LIST_HINTS);
+    // Pagination info in the footer, right-aligned
+    let hint_text = format!("{LABEL_LIST_HINTS}  |  {page_info}");
+    draw_hints(frame, area, &hint_text);
 }
 
 /// Draws the Data Owner Review Queue screen.
@@ -2751,6 +2770,9 @@ fn draw_label_review_queue(
     department_filter: Option<&str>,
     _departments: &[String],
     _department_index: usize,
+    page: usize,
+    page_size: usize,
+    total: usize,
 ) {
     // Build title with department filter indicator
     let title = if let Some(dept) = department_filter {
@@ -2763,12 +2785,16 @@ fn draw_label_review_queue(
         format!(" Data Owner Review Queue ({}) ", labels.len())
     };
 
+    let total_pages = if total == 0 { 1 } else { (total + page_size - 1) / page_size };
+    let page_info = format!("Page {} of {} | {} per page", page + 1, total_pages, page_size);
+
     if labels.is_empty() {
         let paragraph = Paragraph::new(LABEL_REVIEW_EMPTY)
             .block(Block::default().title(title).borders(Borders::ALL))
             .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(paragraph, area);
-        draw_hints(frame, area, LABEL_REVIEW_HINTS);
+        let hint_text = format!("{LABEL_REVIEW_HINTS}  |  {page_info}");
+        draw_hints(frame, area, &hint_text);
         return;
     }
 
@@ -2820,7 +2846,8 @@ fn draw_label_review_queue(
     state.select(Some(selected));
     frame.render_stateful_widget(table, area, &mut state);
 
-    draw_hints(frame, area, LABEL_REVIEW_HINTS);
+    let hint_text = format!("{LABEL_REVIEW_HINTS}  |  {page_info}");
+    draw_hints(frame, area, &hint_text);
 }
 
 /// Draws the Label Detail read-only view.
