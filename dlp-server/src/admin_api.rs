@@ -4890,6 +4890,9 @@ mod tests {
             label_service,
             approval_token_service,
             syslog,
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
         });
         admin_router(state)
     }
@@ -4965,6 +4968,9 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
         });
         let app = admin_router(state);
 
@@ -5030,6 +5036,9 @@ mod tests {
             syslog: crate::syslog_connector::SyslogConnector::new(
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
+            ),
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
             ),
         });
         let app = admin_router(state);
@@ -5150,6 +5159,9 @@ mod tests {
             syslog: crate::syslog_connector::SyslogConnector::new(
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
+            ),
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
             ),
         });
         let app = admin_router(state);
@@ -5313,6 +5325,9 @@ mod tests {
             syslog: crate::syslog_connector::SyslogConnector::new(
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
+            ),
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
             ),
         });
         let app = admin_router(state);
@@ -5558,6 +5573,9 @@ mod tests {
             syslog: crate::syslog_connector::SyslogConnector::new(
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
+            ),
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
             ),
         });
         let app = admin_router(state);
@@ -6475,6 +6493,9 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
         });
         let app = admin_router(state);
 
@@ -6625,6 +6646,9 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -6720,6 +6744,9 @@ mod tests {
             syslog: crate::syslog_connector::SyslogConnector::new(
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
+            ),
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
             ),
         });
         let app = admin_router(state);
@@ -7158,6 +7185,9 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
         });
         let app = admin_router(state);
 
@@ -7247,6 +7277,9 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
         });
         let app = admin_router(state);
 
@@ -7335,6 +7368,9 @@ mod tests {
             syslog: crate::syslog_connector::SyslogConnector::new(
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
+            ),
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
             ),
         });
         let app = admin_router(state);
@@ -8029,6 +8065,9 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
+            label_aware_enabled: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
         })
     }
 
@@ -8442,6 +8481,9 @@ mod tests {
                     std::sync::Arc::clone(&pool),
                     std::sync::Arc::clone(&crypto),
                 ),
+                label_aware_enabled: std::sync::Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
+                ),
             });
             // Minimal router with just the disk-registry delete route for isolation.
             axum::Router::new()
@@ -8514,6 +8556,9 @@ mod tests {
                 syslog: crate::syslog_connector::SyslogConnector::new(
                     std::sync::Arc::clone(&pool),
                     std::sync::Arc::clone(&crypto),
+                ),
+                label_aware_enabled: std::sync::Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
                 ),
             });
             axum::Router::new()
@@ -8857,6 +8902,9 @@ mod tests {
                 syslog: crate::syslog_connector::SyslogConnector::new(
                     std::sync::Arc::clone(&pool),
                     std::sync::Arc::clone(&crypto),
+                ),
+                label_aware_enabled: std::sync::Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
                 ),
             });
             axum::Router::new()

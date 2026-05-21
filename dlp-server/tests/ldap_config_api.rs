@@ -62,6 +62,9 @@ fn test_app() -> axum::Router {
         label_service,
         approval_token_service,
         syslog,
+        label_aware_enabled: std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        ),
     });
     admin_router(state)
 }
