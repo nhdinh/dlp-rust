@@ -412,7 +412,7 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 id                     INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_json_encrypted   BLOB NOT NULL,
                 event_json_nonce       BLOB NOT NULL,
-                created_at             TEXT NOT NULL,
+                created_at             INTEGER NOT NULL,
                 retry_count            INTEGER NOT NULL DEFAULT 0,
                 last_error             TEXT NOT NULL DEFAULT '',
                 next_attempt_at        TEXT NOT NULL DEFAULT '',
@@ -1722,7 +1722,7 @@ mod tests {
         conn.execute(
             "INSERT INTO syslog_queue (event_json_encrypted, event_json_nonce, created_at) \
              VALUES (?1, ?2, ?3)",
-            rusqlite::params![vec![0u8; 32], vec![0u8; 12], "2026-05-14T00:00:00Z",],
+            rusqlite::params![vec![0u8; 32], vec![0u8; 12], 1716268800i64,],
         )
         .expect("insert into syslog_queue must succeed");
 

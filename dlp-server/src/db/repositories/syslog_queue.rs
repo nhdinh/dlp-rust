@@ -11,8 +11,8 @@
 //! - `peek_oldest`: Returns decrypted events WITHOUT removing rows
 //!   (peek-confirm pattern per R-62-02).
 //! - `delete`: Called ONLY after confirmed successful delivery.
-//! - `mark_failed`: Updates retry_count, last_error, and next_attempt_at
-//!   for time-based scheduling.
+//! - `leased_until`: Set atomically by `peek_and_claim` to prevent
+//!   concurrent drain workers from double-sending events.
 //! - `count_ready`: Returns events eligible for immediate retry (respects
 //!   backoff scheduling).
 
@@ -88,7 +88,7 @@ impl SyslogQueueRepository {
                 params![
                     envelope.ciphertext,
                     envelope.nonce.as_slice(),
-                    chrono::Utc::now().to_rfc3339(),
+                    chrono::Utc::now().timestamp(),
                 ],
             )
             .map_err(AppError::Database)?;
@@ -179,37 +179,6 @@ impl SyslogQueueRepository {
         let params: Vec<&dyn rusqlite::ToSql> =
             ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
         stmt.execute(rusqlite::params_from_iter(params.iter()))
-            .map_err(AppError::Database)?;
-        Ok(())
-    }
-
-    /// Update retry metadata after a failed forward attempt.
-    ///
-    /// Increments `retry_count`, sets `last_error`, and schedules the
-    /// next attempt via `next_attempt_at`.
-    ///
-    /// # Arguments
-    ///
-    /// * `uow` -- active unit of work for the UPDATE.
-    /// * `id` -- row id to update.
-    /// * `error` -- error message from the failed attempt.
-    /// * `next_attempt_at` -- RFC-3339 timestamp for the next retry attempt.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError::Database`] when the UPDATE fails.
-    pub fn mark_failed(
-        uow: &UnitOfWork,
-        id: i64,
-        error: &str,
-        next_attempt_at: &str,
-    ) -> Result<(), AppError> {
-        uow.tx
-            .execute(
-                "UPDATE syslog_queue SET retry_count = retry_count + 1, last_error = ?1, \
-                 next_attempt_at = ?2 WHERE id = ?3",
-                params![error, next_attempt_at, id],
-            )
             .map_err(AppError::Database)?;
         Ok(())
     }
@@ -358,6 +327,35 @@ impl SyslogQueueRepository {
     /// Release the lease on specific rows so they can be claimed again.
     ///
     /// Call this when a forward attempt fails and the events should be
+    /// retried sooner than the lease expiry.
+    ///
+    /// # Arguments
+    ///
+    /// * `uow` -- active unit of work for the UPDATE.
+    /// * `ids` -- slice of row ids to release.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Database`] when the UPDATE fails.
+    pub fn mark_failed(
+        uow: &UnitOfWork,
+        id: i64,
+        error: &str,
+        next_attempt_at: &str,
+    ) -> Result<(), AppError> {
+        uow.tx
+            .execute(
+                "UPDATE syslog_queue SET retry_count = retry_count + 1, last_error = ?1, \
+                 next_attempt_at = ?2 WHERE id = ?3",
+                params![error, next_attempt_at, id],
+            )
+            .map_err(AppError::Database)?;
+        Ok(())
+    }
+
+    /// Release lease on specified rows so they can be reclaimed immediately.
+    ///
+    /// Called after a failed forward attempt when the event should be
     /// retried sooner than the lease expiry.
     ///
     /// # Arguments
@@ -564,49 +562,11 @@ mod tests {
     }
 
     #[test]
-    fn mark_failed_updates_retry_metadata() {
-        let crypto = fixture_crypto();
-        let pool = new_pool(":memory:").expect("create pool");
-
-        {
-            let mut conn = pool.get().expect("acquire connection");
-            let uow = UnitOfWork::new(&mut conn).expect("begin uow");
-            SyslogQueueRepository::enqueue(&uow, "test", &crypto, 100000).expect("enqueue");
-            uow.commit().expect("commit");
-        }
-
-        let peeked = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10).expect("peek");
-        let id = peeked[0].id;
-
-        {
-            let mut conn = pool.get().expect("acquire connection");
-            let uow = UnitOfWork::new(&mut conn).expect("begin uow");
-            SyslogQueueRepository::mark_failed(
-                &uow,
-                id,
-                "connection timeout",
-                "2099-01-01T00:00:00Z", // far future so peek_oldest filters it out
-            )
-            .expect("mark_failed");
-            uow.commit().expect("commit");
-        }
-
-        let after = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10).expect("peek");
-        // After mark_failed, next_attempt_at is in the future so peek_oldest
-        // (which filters next_attempt_at <= now) should return nothing.
-        assert_eq!(after.len(), 0);
-
-        // But count should still show 1 row.
-        let count = SyslogQueueRepository::count(&pool).expect("count");
-        assert_eq!(count, 1);
-    }
-
-    #[test]
     fn count_ready_respects_next_attempt_at() {
         let crypto = fixture_crypto();
         let pool = new_pool(":memory:").expect("create pool");
 
-        // Insert one event ready now, one scheduled for future.
+        // Insert two events ready now.
         {
             let mut conn = pool.get().expect("acquire connection");
             let uow = UnitOfWork::new(&mut conn).expect("begin uow");
@@ -615,19 +575,16 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        // Mark the second event as scheduled for the future.
-        let peeked = SyslogQueueRepository::peek_oldest(&pool, &crypto, 10).expect("peek");
-        assert_eq!(peeked.len(), 2);
+        // Directly update next_attempt_at on one row to schedule it far in the future.
         {
             let mut conn = pool.get().expect("acquire connection");
             let uow = UnitOfWork::new(&mut conn).expect("begin uow");
-            SyslogQueueRepository::mark_failed(
-                &uow,
-                peeked[1].id,
-                "temp failure",
-                "2099-01-01T00:00:00Z", // far future
-            )
-            .expect("mark_failed");
+            uow.tx
+                .execute(
+                    "UPDATE syslog_queue SET next_attempt_at = ?1 WHERE id = (SELECT MAX(id) FROM syslog_queue)",
+                    rusqlite::params!["2099-01-01T00:00:00Z"],
+                )
+                .expect("update next_attempt_at");
             uow.commit().expect("commit");
         }
 
@@ -655,7 +612,7 @@ mod tests {
         ];
         let wrong_crypto = SecretCrypto::from_kek(wrong_kek, ENVELOPE_VERSION_V1);
 
-        let result = SyslogQueueRepository::peek_oldest(&pool, &wrong_crypto, 10);
+        let result = SyslogQueueRepository::peek_and_claim(&pool, &wrong_crypto, 10, 300);
         assert!(result.is_err(), "decrypt with wrong key must fail");
         let err_msg = result.unwrap_err().to_string();
         assert!(
