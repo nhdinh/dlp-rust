@@ -147,10 +147,10 @@ impl LabelRepository {
 
         sql.push_str(" ORDER BY path ASC");
 
-        if let Some(lim) = limit {
+        if let Some(_lim) = limit {
             param_count += 1;
             sql.push_str(&format!(" LIMIT ?{param_count}"));
-            if let Some(off) = offset {
+            if let Some(_off) = offset {
                 param_count += 1;
                 sql.push_str(&format!(" OFFSET ?{param_count}"));
             }
