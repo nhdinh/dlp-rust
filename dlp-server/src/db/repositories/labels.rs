@@ -621,4 +621,75 @@ mod tests {
             "invalid label_state must fail CHECK constraint"
         );
     }
+
+    #[test]
+    fn test_labels_indexes_exist() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let indexes: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='labels'",
+            )
+            .expect("prepare")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query")
+            .filter_map(Result::ok)
+            .collect();
+
+        let expected = [
+            "idx_labels_path",
+            "idx_labels_tier",
+            "idx_labels_state",
+            "idx_labels_owner",
+            "idx_labels_parent",
+            "idx_labels_department",
+        ];
+        for idx in &expected {
+            assert!(
+                indexes.contains(&idx.to_string()),
+                "index '{idx}' must exist on labels table; found {indexes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_labels_parent_fk_constraint() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        // Verify parent_label_id has the FK constraint by checking it
+        // accepts valid references and handles ON DELETE SET NULL.
+        // Insert a parent folder label.
+        conn.execute(
+            "INSERT INTO labels (id, path, object_type, tier, label_state, created_at, updated_at) \
+             VALUES ('parent-001', 'C:\\Data\\HR', 'folder', 'T3', 'confirmed', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .expect("insert parent must succeed");
+
+        // Insert a child with valid parent_label_id.
+        conn.execute(
+            "INSERT INTO labels (id, path, object_type, tier, label_state, parent_label_id, created_at, updated_at) \
+             VALUES ('child-001', 'C:\\Data\\HR\\file.txt', 'file', 'T4', 'temporary', 'parent-001', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .expect("insert child with valid FK must succeed");
+
+        // Delete the parent — child.parent_label_id should become NULL (ON DELETE SET NULL).
+        conn.execute("DELETE FROM labels WHERE id = 'parent-001'", [])
+            .expect("delete parent must succeed");
+
+        let parent_id: Option<String> = conn
+            .query_row(
+                "SELECT parent_label_id FROM labels WHERE id = 'child-001'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query child");
+        assert!(
+            parent_id.is_none(),
+            "parent_label_id must be NULL after parent deletion (ON DELETE SET NULL)"
+        );
+    }
 }
