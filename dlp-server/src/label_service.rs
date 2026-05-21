@@ -21,12 +21,101 @@ use dlp_common::Tier;
 use crate::db::repositories::labels::LabelRepository;
 use crate::db::Pool;
 
+/// Source of a label resolution result.
+///
+/// Tracks whether the tier came from an exact path match, inherited from
+/// a parent folder, fell back to the default, or failed to resolve.
+/// Used for audit logging and cache metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolutionSource {
+    /// The path itself has an explicit label in the database.
+    Exact,
+    /// The tier was inherited from a parent folder label.
+    Inherited,
+    /// No label found; defaulted to [`Tier::UnclassifiedBlocked`].
+    Fallback,
+    /// Database query failed; fail-closed to [`Tier::UnclassifiedBlocked`].
+    LookupFailed,
+}
+
+/// A resolved tier with source metadata.
+///
+/// Unlike a bare [`Tier`], `ResolvedTier` preserves the provenance of the
+/// resolution decision. This is critical for:
+/// - Audit trails (was this exact or inherited?)
+/// - Folder inheritance (stricter parent wins over explicit child)
+/// - Fail-closed semantics (distinguish fallback from lookup failure)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedTier {
+    /// Exact path match — the path itself has a label.
+    Exact(Tier),
+    /// Inherited from a parent folder.
+    Inherited {
+        /// The effective tier (the stricter of explicit or parent).
+        tier: Tier,
+        /// Path of the parent folder that provided the inherited label.
+        parent_path: String,
+    },
+    /// No label found; default-deny fallback.
+    Fallback,
+    /// Database error; fail-closed.
+    LookupFailed,
+}
+
+impl ResolvedTier {
+    /// Returns the effective [`Tier`] regardless of source.
+    ///
+    /// For [`Fallback`](Self::Fallback) and [`LookupFailed`](Self::LookupFailed),
+    /// returns [`Tier::UnclassifiedBlocked`].
+    #[must_use]
+    pub fn tier(&self) -> Tier {
+        match self {
+            Self::Exact(t) | Self::Inherited { tier: t, .. } => *t,
+            Self::Fallback | Self::LookupFailed => Tier::UnclassifiedBlocked,
+        }
+    }
+
+    /// Returns the source category as a static string for logging/audit.
+    #[must_use]
+    pub fn source(&self) -> &'static str {
+        match self {
+            Self::Exact(_) => "exact",
+            Self::Inherited { .. } => "inherited",
+            Self::Fallback => "fallback",
+            Self::LookupFailed => "lookup_failed",
+        }
+    }
+
+    /// Returns `true` if the resolution came from inheritance.
+    #[must_use]
+    pub fn is_inherited(&self) -> bool {
+        matches!(self, Self::Inherited { .. })
+    }
+}
+
+/// A single cache entry storing resolution metadata.
+///
+/// Stores the effective tier, how it was resolved, and optionally the
+/// parent path (for inherited results). The `inserted` timestamp drives
+/// TTL eviction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheEntry {
+    /// The effective data sensitivity tier.
+    pub tier: Tier,
+    /// How this tier was resolved.
+    pub source: ResolutionSource,
+    /// Parent folder path, if the tier was inherited.
+    pub parent_path: Option<String>,
+    /// When this entry was inserted (for TTL calculation).
+    pub inserted: Instant,
+}
+
 /// In-memory cache for label resolution results.
 ///
-/// Stores `(path -> (tier, inserted_at))` with a configurable TTL.
+/// Stores `(path -> CacheEntry)` with a configurable TTL.
 /// Uses `std::sync::RwLock` for concurrent read-heavy access.
 pub struct LabelCache {
-    inner: std::sync::RwLock<HashMap<String, (Tier, Instant)>>,
+    inner: std::sync::RwLock<HashMap<String, CacheEntry>>,
     ttl: Duration,
 }
 
@@ -40,21 +129,26 @@ impl LabelCache {
         }
     }
 
-    /// Returns the cached tier for `path` if present and not expired.
-    pub fn get(&self, path: &str) -> Option<Tier> {
+    /// Returns the cached [`CacheEntry`] for `path` if present and not expired.
+    pub fn get(&self, path: &str) -> Option<CacheEntry> {
         let read_guard = self.inner.read().ok()?;
-        let (tier, inserted) = read_guard.get(path)?;
-        if inserted.elapsed() < self.ttl {
-            Some(*tier)
+        let entry = read_guard.get(path)?;
+        if entry.inserted.elapsed() < self.ttl {
+            Some(entry.clone())
         } else {
             None
         }
     }
 
-    /// Stores `tier` for `path` with the current timestamp.
-    pub fn insert(&self, path: String, tier: Tier) {
+    /// Returns just the effective [`Tier`] for `path` if cached and not expired.
+    pub fn get_tier(&self, path: &str) -> Option<Tier> {
+        self.get(path).map(|e| e.tier)
+    }
+
+    /// Stores a [`CacheEntry`] for `path`.
+    pub fn insert(&self, path: String, entry: CacheEntry) {
         if let Ok(mut write_guard) = self.inner.write() {
-            write_guard.insert(path, (tier, Instant::now()));
+            write_guard.insert(path, entry);
         }
     }
 
@@ -95,21 +189,37 @@ impl LabelService {
     /// Returns `rusqlite::Error` on database failure.
     pub fn resolve_tier(&self, path: &str) -> rusqlite::Result<Tier> {
         // 1. Cache hit?
-        if let Some(tier) = self.cache.get(path) {
+        if let Some(tier) = self.cache.get_tier(path) {
             return Ok(tier);
         }
 
         // 2. Exact match in DB.
         if let Some(row) = LabelRepository::get_by_path(&self.pool, path)? {
             let tier = parse_tier(&row.tier);
-            self.cache.insert(path.to_string(), tier);
+            self.cache.insert(
+                path.to_string(),
+                CacheEntry {
+                    tier,
+                    source: ResolutionSource::Exact,
+                    parent_path: None,
+                    inserted: Instant::now(),
+                },
+            );
             return Ok(tier);
         }
 
         // 3. Parent folder walk.
         if let Some(parent) = LabelRepository::find_parent_label(&self.pool, path)? {
             let tier = parse_tier(&parent.tier);
-            self.cache.insert(path.to_string(), tier);
+            self.cache.insert(
+                path.to_string(),
+                CacheEntry {
+                    tier,
+                    source: ResolutionSource::Inherited,
+                    parent_path: Some(parent.path),
+                    inserted: Instant::now(),
+                },
+            );
             return Ok(tier);
         }
 
@@ -139,6 +249,88 @@ mod tests {
     use crate::db::new_pool;
     use crate::db::repositories::labels::{LabelRepository, LabelUpsertRow};
     use crate::db::UnitOfWork;
+
+    #[test]
+    fn test_resolved_tier_exact() {
+        let rt = ResolvedTier::Exact(Tier::T3);
+        assert_eq!(rt.tier(), Tier::T3);
+        assert_eq!(rt.source(), "exact");
+        assert!(!rt.is_inherited());
+    }
+
+    #[test]
+    fn test_resolved_tier_inherited() {
+        let rt = ResolvedTier::Inherited {
+            tier: Tier::T4,
+            parent_path: r"C:\Data".to_string(),
+        };
+        assert_eq!(rt.tier(), Tier::T4);
+        assert_eq!(rt.source(), "inherited");
+        assert!(rt.is_inherited());
+    }
+
+    #[test]
+    fn test_resolved_tier_fallback() {
+        let rt = ResolvedTier::Fallback;
+        assert_eq!(rt.tier(), Tier::UnclassifiedBlocked);
+        assert_eq!(rt.source(), "fallback");
+        assert!(!rt.is_inherited());
+    }
+
+    #[test]
+    fn test_resolved_tier_lookup_failed() {
+        let rt = ResolvedTier::LookupFailed;
+        assert_eq!(rt.tier(), Tier::UnclassifiedBlocked);
+        assert_eq!(rt.source(), "lookup_failed");
+        assert!(!rt.is_inherited());
+    }
+
+    #[test]
+    fn test_cache_entry_round_trip() {
+        let entry = CacheEntry {
+            tier: Tier::T3,
+            source: ResolutionSource::Exact,
+            parent_path: None,
+            inserted: Instant::now(),
+        };
+        assert_eq!(entry.tier, Tier::T3);
+        assert_eq!(entry.source, ResolutionSource::Exact);
+        assert!(entry.parent_path.is_none());
+    }
+
+    #[test]
+    fn test_label_cache_get_tier() {
+        let cache = LabelCache::new(Duration::from_secs(30));
+        let entry = CacheEntry {
+            tier: Tier::T2,
+            source: ResolutionSource::Inherited,
+            parent_path: Some(r"C:\Data".to_string()),
+            inserted: Instant::now(),
+        };
+        cache.insert(r"C:\Data\file.txt".to_string(), entry);
+
+        assert_eq!(cache.get_tier(r"C:\Data\file.txt"), Some(Tier::T2));
+
+        let full = cache.get(r"C:\Data\file.txt").expect("cache hit");
+        assert_eq!(full.source, ResolutionSource::Inherited);
+        assert_eq!(full.parent_path, Some(r"C:\Data".to_string()));
+    }
+
+    #[test]
+    fn test_label_cache_entry_expires() {
+        let cache = LabelCache::new(Duration::from_secs(0));
+        let entry = CacheEntry {
+            tier: Tier::T4,
+            source: ResolutionSource::Exact,
+            parent_path: None,
+            inserted: Instant::now(),
+        };
+        cache.insert(r"C:\Data\file.txt".to_string(), entry);
+
+        // Zero TTL means entry expires immediately
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(cache.get(r"C:\Data\file.txt").is_none());
+    }
 
     #[test]
     fn test_resolve_tier_exact_match() {
