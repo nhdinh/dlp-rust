@@ -107,12 +107,16 @@ impl LabelRepository {
     ///
     /// Builds a parameterized query with WHERE clauses for each provided filter.
     /// This avoids in-memory filtering and supports Data Owner scoping.
+    ///
+    /// Pagination is supported via `limit` and `offset` parameters.
     pub fn list_by_filters(
         pool: &Pool,
         state: Option<&str>,
         tier: Option<&str>,
         owner_sid: Option<&str>,
         department: Option<&str>,
+        limit: Option<usize>,
+        offset: Option<usize>,
     ) -> rusqlite::Result<Vec<LabelRow>> {
         let conn = pool
             .get()
@@ -143,24 +147,41 @@ impl LabelRepository {
 
         sql.push_str(" ORDER BY path ASC");
 
+        if let Some(lim) = limit {
+            param_count += 1;
+            sql.push_str(&format!(" LIMIT ?{param_count}"));
+            if let Some(off) = offset {
+                param_count += 1;
+                sql.push_str(&format!(" OFFSET ?{param_count}"));
+            }
+        }
+
         let mut stmt = conn.prepare(&sql)?;
-        // Build a Vec of references with stable lifetimes to satisfy ToSql.
-        let mut params: Vec<&str> = Vec::new();
+        // Build a Vec of &str refs first, then map to &dyn ToSql.
+        let mut str_params: Vec<&str> = Vec::new();
         if let Some(s) = state {
-            params.push(s);
+            str_params.push(s);
         }
         if let Some(t) = tier {
-            params.push(t);
+            str_params.push(t);
         }
         if let Some(o) = owner_sid {
-            params.push(o);
+            str_params.push(o);
         }
         if let Some(d) = department {
-            params.push(d);
+            str_params.push(d);
         }
-        let to_sql_refs: Vec<&dyn rusqlite::ToSql> =
-            params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(rusqlite::params_from_iter(to_sql_refs), |row| {
+        let limit_i64: Option<i64> = limit.map(|v| v as i64);
+        let offset_i64: Option<i64> = offset.map(|v| v as i64);
+        let mut params: Vec<&dyn rusqlite::ToSql> =
+            str_params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        if let Some(ref lim) = limit_i64 {
+            params.push(lim);
+            if let Some(ref off) = offset_i64 {
+                params.push(off);
+            }
+        }
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
             Ok(LabelRow {
                 id: row.get(0)?,
                 path: row.get(1)?,
@@ -178,6 +199,58 @@ impl LabelRepository {
             })
         })?;
         rows.collect()
+    }
+
+    /// Returns the count of labels matching the given filter criteria.
+    ///
+    /// Builds the same WHERE clause as `list_by_filters` but uses `SELECT COUNT(*)`.
+    pub fn count_by_filters(
+        pool: &Pool,
+        state: Option<&str>,
+        tier: Option<&str>,
+        owner_sid: Option<&str>,
+        department: Option<&str>,
+    ) -> rusqlite::Result<i64> {
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        let mut sql = String::from("SELECT COUNT(*) FROM labels WHERE 1=1");
+        let mut param_count = 0;
+        if state.is_some() {
+            param_count += 1;
+            sql.push_str(&format!(" AND label_state = ?{param_count}"));
+        }
+        if tier.is_some() {
+            param_count += 1;
+            sql.push_str(&format!(" AND tier = ?{param_count}"));
+        }
+        if owner_sid.is_some() {
+            param_count += 1;
+            sql.push_str(&format!(" AND owner_sid = ?{param_count}"));
+        }
+        if department.is_some() {
+            param_count += 1;
+            sql.push_str(&format!(" AND department = ?{param_count}"));
+        }
+
+        let mut str_params: Vec<&str> = Vec::new();
+        if let Some(s) = state {
+            str_params.push(s);
+        }
+        if let Some(t) = tier {
+            str_params.push(t);
+        }
+        if let Some(o) = owner_sid {
+            str_params.push(o);
+        }
+        if let Some(d) = department {
+            str_params.push(d);
+        }
+        let params: Vec<&dyn rusqlite::ToSql> =
+            str_params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+
+        conn.query_row(&sql, rusqlite::params_from_iter(params), |row| row.get(0))
     }
 
     /// Returns the single label row with the given `id`.
@@ -444,7 +517,7 @@ mod tests {
 
         // List by state using list_by_filters
         let temporary =
-            LabelRepository::list_by_filters(&pool, Some("temporary"), None, None, None)
+            LabelRepository::list_by_filters(&pool, Some("temporary"), None, None, None, None, None)
                 .expect("list temporary");
         assert_eq!(temporary.len(), 1);
         assert_eq!(temporary[0].id, file_id);
@@ -466,8 +539,10 @@ mod tests {
         }
 
         let confirmed =
-            LabelRepository::list_by_filters(&pool, Some("confirmed"), None, None, None)
-                .expect("list confirmed");
+            LabelRepository::list_by_filters(
+                &pool, Some("confirmed"), None, None, None, None, None,
+            )
+            .expect("list confirmed");
         assert_eq!(confirmed.len(), 2); // folder + confirmed file
 
         // Find parent label
@@ -558,27 +633,34 @@ mod tests {
 
         // Filter by department = HR
         let hr_labels =
-            LabelRepository::list_by_filters(&pool, None, None, None, Some("HR")).expect("list HR");
+            LabelRepository::list_by_filters(&pool, None, None, None, Some("HR"), None, None)
+                .expect("list HR");
         assert_eq!(hr_labels.len(), 1);
         assert_eq!(hr_labels[0].id, "label-hr");
         assert_eq!(hr_labels[0].scanner_confidence, Some(0.85));
 
         // Filter by department = IT
         let it_labels =
-            LabelRepository::list_by_filters(&pool, None, None, None, Some("IT")).expect("list IT");
+            LabelRepository::list_by_filters(
+                &pool, None, None, None, Some("IT"), None, None,
+            )
+            .expect("list IT");
         assert_eq!(it_labels.len(), 1);
         assert_eq!(it_labels[0].id, "label-it");
 
         // Filter by state = temporary AND department = HR
         let hr_temp =
-            LabelRepository::list_by_filters(&pool, Some("temporary"), None, None, Some("HR"))
-                .expect("list HR temporary");
+            LabelRepository::list_by_filters(
+                &pool, Some("temporary"), None, None, Some("HR"), None, None,
+            )
+            .expect("list HR temporary");
         assert_eq!(hr_temp.len(), 1);
         assert_eq!(hr_temp[0].id, "label-hr");
 
         // No filter returns all 3
         let all =
-            LabelRepository::list_by_filters(&pool, None, None, None, None).expect("list all");
+            LabelRepository::list_by_filters(&pool, None, None, None, None, None, None)
+                .expect("list all");
         assert_eq!(all.len(), 3);
     }
 
@@ -649,6 +731,165 @@ mod tests {
                 "index '{idx}' must exist on labels table; found {indexes:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_list_by_filters_pagination() {
+        let pool = new_pool(":memory:").expect("create pool");
+
+        // Insert 5 labels
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            for i in 1..=5 {
+                LabelRepository::insert(
+                    &uow,
+                    &LabelUpsertRow {
+                        id: &format!("label-{i}"),
+                        path: &format!(r"\\server\share\doc{i}.txt"),
+                        object_type: "file",
+                        tier: "T2",
+                        label_state: "temporary",
+                        owner_sid: None,
+                        parent_label_id: None,
+                        acl_snapshot_id: None,
+                        hash: None,
+                        scanner_confidence: None,
+                        department: None,
+                        created_at: "2026-05-12T00:00:00Z",
+                        updated_at: "2026-05-12T00:00:00Z",
+                    },
+                )
+                .expect("insert");
+            }
+            uow.commit().expect("commit");
+        }
+
+        // Page 1: limit 2, offset 0
+        let page1 = LabelRepository::list_by_filters(&pool, None, None, None, None, Some(2), Some(0))
+            .expect("page1");
+        assert_eq!(page1.len(), 2, "page1 should have 2 items");
+        assert_eq!(page1[0].id, "label-1");
+        assert_eq!(page1[1].id, "label-2");
+
+        // Page 2: limit 2, offset 2
+        let page2 = LabelRepository::list_by_filters(&pool, None, None, None, None, Some(2), Some(2))
+            .expect("page2");
+        assert_eq!(page2.len(), 2, "page2 should have 2 items");
+        assert_eq!(page2[0].id, "label-3");
+        assert_eq!(page2[1].id, "label-4");
+
+        // Page 3: limit 2, offset 4
+        let page3 = LabelRepository::list_by_filters(&pool, None, None, None, None, Some(2), Some(4))
+            .expect("page3");
+        assert_eq!(page3.len(), 1, "page3 should have 1 item");
+        assert_eq!(page3[0].id, "label-5");
+    }
+
+    #[test]
+    fn test_count_by_filters() {
+        let pool = new_pool(":memory:").expect("create pool");
+
+        // Insert labels with different states and tiers
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "label-1",
+                    path: r"\\server\share\doc1.txt",
+                    object_type: "file",
+                    tier: "T3",
+                    label_state: "temporary",
+                    owner_sid: Some("S-1-5-21-1"),
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: Some("HR"),
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "label-2",
+                    path: r"\\server\share\doc2.txt",
+                    object_type: "file",
+                    tier: "T2",
+                    label_state: "confirmed",
+                    owner_sid: Some("S-1-5-21-2"),
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: Some("IT"),
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "label-3",
+                    path: r"\\server\share\doc3.txt",
+                    object_type: "file",
+                    tier: "T3",
+                    label_state: "temporary",
+                    owner_sid: Some("S-1-5-21-1"),
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: Some("HR"),
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert");
+            uow.commit().expect("commit");
+        }
+
+        // Count all
+        let all_count = LabelRepository::count_by_filters(&pool, None, None, None, None)
+            .expect("count all");
+        assert_eq!(all_count, 3);
+
+        // Count by state
+        let temp_count = LabelRepository::count_by_filters(&pool, Some("temporary"), None, None, None)
+            .expect("count temporary");
+        assert_eq!(temp_count, 2);
+
+        // Count by tier
+        let t3_count = LabelRepository::count_by_filters(&pool, None, Some("T3"), None, None)
+            .expect("count T3");
+        assert_eq!(t3_count, 2);
+
+        // Count by owner
+        let owner_count =
+            LabelRepository::count_by_filters(&pool, None, None, Some("S-1-5-21-1"), None)
+                .expect("count owner");
+        assert_eq!(owner_count, 2);
+
+        // Count by department
+        let hr_count = LabelRepository::count_by_filters(&pool, None, None, None, Some("HR"))
+            .expect("count HR");
+        assert_eq!(hr_count, 2);
+
+        // Count combined filters
+        let combined = LabelRepository::count_by_filters(
+            &pool,
+            Some("temporary"),
+            Some("T3"),
+            Some("S-1-5-21-1"),
+            Some("HR"),
+        )
+        .expect("count combined");
+        assert_eq!(combined, 2);
     }
 
     #[test]

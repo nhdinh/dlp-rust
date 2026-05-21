@@ -3974,6 +3974,8 @@ async fn list_labels(
             tier_filter.as_deref(),
             owner_sid_filter.as_deref(),
             department_filter.as_deref(),
+            None,
+            None,
         )
         .map_err(AppError::Database)?;
         Ok(rows)
