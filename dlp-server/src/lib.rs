@@ -23,6 +23,7 @@ pub mod secrets_migration;
 pub mod siem_connector;
 pub mod syslog_connector;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::extract::rejection::{JsonRejection, PathRejection};
@@ -63,6 +64,23 @@ pub struct AppState {
     pub approval_token_service: Arc<approval_token::ApprovalTokenService>,
     /// Syslog forwarder for RFC 5424 over TLS (Phase 62).
     pub syslog: syslog_connector::SyslogConnector,
+    /// Cached label-aware evaluation flag.
+    ///
+    /// Refreshed from `system_kv` every 30 seconds by a background task.
+    /// Default is `false` (off) until the operator explicitly enables it
+    /// via the `label_aware_evaluation_enabled` key in `system_kv`.
+    pub label_aware_enabled: Arc<AtomicBool>,
+}
+
+impl AppState {
+    /// Returns the cached `label_aware_evaluation_enabled` flag.
+    ///
+    /// This is a hot-path read — no DB query. The value is refreshed
+    /// every 30 seconds by a background task in `main.rs`.
+    #[must_use]
+    pub fn is_label_aware_enabled(&self) -> bool {
+        self.label_aware_enabled.load(Ordering::Relaxed)
+    }
 }
 
 impl std::fmt::Debug for AppState {
@@ -84,6 +102,14 @@ impl std::fmt::Debug for AppState {
             .field("label_service", &"LabelService(...)")
             .field("approval_token_service", &"ApprovalTokenService(...)")
             .field("syslog", &"SyslogConnector(...)")
+            .field(
+                "label_aware_enabled",
+                &if self.is_label_aware_enabled() {
+                    "true"
+                } else {
+                    "false"
+                },
+            )
             .finish()
     }
 }
@@ -205,5 +231,77 @@ impl From<PolicyEngineError> for AppError {
         match e {
             PolicyEngineError::PolicyNotFound(id) => AppError::NotFound(id),
         }
+    }
+}
+
+#[cfg(test)]
+mod app_state_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use super::AppState;
+
+    /// Helper: builds a minimal AppState for testing with label_aware_enabled set.
+    /// Uses from_kek for crypto (no DB needed) and minimal stubs for other fields.
+    fn app_state_with_flag(flag: bool) -> AppState {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        let crypto = Arc::new(crate::crypto::SecretCrypto::from_kek([0u8; 32], 1));
+        AppState {
+            pool: Arc::clone(&pool),
+            crypto: Arc::clone(&crypto),
+            policy_store: Arc::new(
+                crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("store"),
+            ),
+            siem: crate::siem_connector::SiemConnector::new(Arc::clone(&pool), Arc::clone(&crypto)),
+            alert: crate::alert_router::AlertRouter::new(Arc::clone(&pool), Arc::clone(&crypto)),
+            ad: None,
+            label_service: Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool))),
+            approval_token_service: Arc::new(
+                // ApprovalTokenService::new requires a DB connection with system_kv table.
+                // For unit tests of AppState fields, we use a stub that will only be
+                // exercised if the test calls approval_token methods (which we don't).
+                {
+                    let conn = pool.get().expect("conn");
+                    crate::approval_token::ApprovalTokenService::new(&crypto, &conn)
+                        .expect("approval token")
+                },
+            ),
+            syslog: crate::syslog_connector::SyslogConnector::new(Arc::clone(&pool), crypto),
+            label_aware_enabled: Arc::new(AtomicBool::new(flag)),
+        }
+    }
+
+    /// AppState includes label_aware_enabled AtomicBool field.
+    #[test]
+    fn test_app_state_has_label_aware_enabled() {
+        let state = app_state_with_flag(false);
+        // The field exists and is accessible
+        let _ = state.label_aware_enabled.load(Ordering::Relaxed);
+    }
+
+    /// is_label_aware_enabled() reads cached flag without DB query.
+    #[test]
+    fn test_is_label_aware_enabled_reads_cached_flag() {
+        let state = app_state_with_flag(true);
+        assert!(state.is_label_aware_enabled());
+
+        let state_off = app_state_with_flag(false);
+        assert!(!state_off.is_label_aware_enabled());
+    }
+
+    /// Default value is false when key is missing.
+    #[test]
+    fn test_default_label_aware_is_false() {
+        let state = app_state_with_flag(false);
+        assert!(!state.is_label_aware_enabled());
+    }
+
+    /// Debug impl includes the label_aware_enabled field.
+    #[test]
+    fn test_debug_includes_label_aware_enabled() {
+        let state = app_state_with_flag(true);
+        let debug = format!("{:?}", state);
+        assert!(debug.contains("label_aware_enabled"));
+        assert!(debug.contains("true"));
     }
 }

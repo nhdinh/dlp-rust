@@ -86,6 +86,9 @@ fn test_app() -> (NamedTempFile, axum::Router, Arc<db::Pool>) {
         label_service,
         approval_token_service,
         syslog,
+        label_aware_enabled: std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        ),
     });
     (tmp, admin_router(state), pool)
 }

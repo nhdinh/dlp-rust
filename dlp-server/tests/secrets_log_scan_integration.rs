@@ -142,6 +142,9 @@ fn build_state(pool: &Arc<db::Pool>, crypto: &Arc<SecretCrypto>) -> Arc<AppState
         label_service,
         approval_token_service,
         syslog,
+        label_aware_enabled: std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        ),
     })
 }
 

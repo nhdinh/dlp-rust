@@ -251,6 +251,26 @@ async fn main() -> anyhow::Result<()> {
     let label_service = Arc::new(LabelService::new(Arc::clone(&pool)));
     info!("label service initialized");
 
+    // Read the initial label_aware_evaluation_enabled flag from system_kv.
+    // Default is false (off) per D-11: admins must explicitly enable.
+    let label_aware_enabled = Arc::new(std::sync::atomic::AtomicBool::new({
+        let conn = pool.get().map_err(|e| {
+            anyhow::anyhow!("failed to acquire connection for system_kv read: {e}")
+        })?;
+        dlp_server::db::repositories::system_kv::get(
+            &conn,
+            "label_aware_evaluation_enabled",
+        )
+        .ok()
+        .flatten()
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    }));
+    info!(
+        enabled = label_aware_enabled.load(std::sync::atomic::Ordering::Relaxed),
+        "label-aware evaluation flag loaded"
+    );
+
     // Initialise the approval token service (Phase 61).
     // This loads or generates the Ed25519 keypair using Phase 47 encrypted storage.
     let approval_token_service = {
@@ -274,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
         label_service,
         approval_token_service,
         syslog: syslog.clone(),
+        label_aware_enabled: Arc::clone(&label_aware_enabled),
     });
 
     // Start the background heartbeat sweeper (marks agents offline
@@ -291,6 +312,50 @@ async fn main() -> anyhow::Result<()> {
         loop {
             interval.tick().await;
             refresh_store.refresh();
+        }
+    });
+
+    // Background task: refresh the label_aware_evaluation_enabled flag every 30s.
+    // Wraps the SQLite query in spawn_blocking for blocking safety.
+    // Per review: per-evaluation DB reads are a severe performance regression;
+    // caching eliminates the DB query from the hot path.
+    let refresh_flag_pool = Arc::clone(&pool);
+    let refresh_flag = Arc::clone(&label_aware_enabled);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            let pool = Arc::clone(&refresh_flag_pool);
+            let flag = Arc::clone(&refresh_flag);
+            match tokio::task::spawn_blocking(move || {
+                let conn = pool.get().map_err(|e| e.to_string())?;
+                dlp_server::db::repositories::system_kv::get(
+                    &conn,
+                    "label_aware_evaluation_enabled",
+                )
+                .map(|v| v.map(|s| s == "1").unwrap_or(false))
+                .map_err(|e| e.to_string())
+            })
+            .await
+            {
+                Ok(Ok(new_value)) => {
+                    let old_value = flag.load(std::sync::atomic::Ordering::Relaxed);
+                    if old_value != new_value {
+                        flag.store(new_value, std::sync::atomic::Ordering::Relaxed);
+                        info!(
+                            old = old_value,
+                            new = new_value,
+                            "label_aware_evaluation_enabled changed"
+                        );
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::error!(error = %e, "failed to refresh label_aware_evaluation_enabled");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "spawn_blocking join error refreshing label flag");
+                }
+            }
         }
     });
 
