@@ -18,7 +18,7 @@ use dlp_common::Classification;
 use parking_lot::RwLock;
 use tracing::{error, info, warn};
 
-use crate::db::repositories::{system_kv, PolicyRepository};
+use crate::db::repositories::PolicyRepository;
 use crate::db::Pool;
 use crate::policy_engine_error::PolicyEngineError;
 

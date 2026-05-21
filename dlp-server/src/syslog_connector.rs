@@ -11,7 +11,7 @@
 //! - TLS 1.2+ with system CA store (no custom CA or mTLS per D-10/D-11).
 //! - Each `forward()` call opens a new TCP+TLS connection (no pooling
 //!   in Phase 62 -- noted as future optimization).
-//! - Failed sends enqueue events to `syslog_queue` for retry.
+//! - Transport-only: caller is responsible for queue state.
 //!
 //! # RFC 5424 Format
 //!
@@ -37,7 +37,7 @@ use dlp_common::audit::{AuditEvent, EventType};
 
 use crate::crypto::SecretCrypto;
 use crate::db;
-use crate::db::repositories::{SyslogConfigRepository, SyslogConfigRow, SyslogQueueRepository};
+use crate::db::repositories::{SyslogConfigRepository, SyslogConfigRow};
 use crate::AppError;
 
 /// Syslog forwarder that formats audit events as RFC 5424 messages and
@@ -126,8 +126,8 @@ impl SyslogConnector {
     /// Forwards a batch of audit events to the configured syslog collector.
     ///
     /// Re-reads syslog config from the database on each call (hot-reload).
-    /// On connection or send failure, events are queued to `syslog_queue`
-    /// for later retry.
+    /// Transport-only: on failure, returns `Err`. The CALLER is responsible
+    /// for queue state. This method NEVER enqueues events.
     ///
     /// # Arguments
     ///
@@ -135,8 +135,7 @@ impl SyslogConnector {
     ///
     /// # Errors
     ///
-    /// Returns the first error encountered. Events that fail to send are
-    /// enqueued for retry; the error is still returned so callers can log it.
+    /// Returns the first error encountered.
     pub async fn forward(&self, events: &[AuditEvent]) -> Result<(), SyslogError> {
         if events.is_empty() {
             return Ok(());
@@ -168,12 +167,10 @@ impl SyslogConnector {
             Ok(Ok(stream)) => stream,
             Ok(Err(e)) => {
                 tracing::error!("syslog TCP connect failed: {e}");
-                self.enqueue_events(events).await?;
                 return Err(SyslogError::Io(e));
             }
             Err(_) => {
                 tracing::error!("syslog TCP connect timed out after 10s");
-                self.enqueue_events(events).await?;
                 return Err(SyslogError::Io(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
                     "TCP connect timeout",
@@ -191,12 +188,10 @@ impl SyslogConnector {
             Ok(Ok(stream)) => stream,
             Ok(Err(e)) => {
                 tracing::error!("syslog TLS handshake failed: {e}");
-                self.enqueue_events(events).await?;
                 return Err(SyslogError::Tls(e.to_string()));
             }
             Err(_) => {
                 tracing::error!("syslog TLS handshake timed out after 10s");
-                self.enqueue_events(events).await?;
                 return Err(SyslogError::Tls("TLS handshake timeout".to_string()));
             }
         };
@@ -209,7 +204,6 @@ impl SyslogConnector {
             let msg = format_rfc5424(event, &config, &hostname, &procid)?;
             if let Err(e) = tls_stream.write_all(msg.as_bytes()).await {
                 tracing::error!("syslog TLS write failed: {e}");
-                self.enqueue_events(events).await?;
                 return Err(SyslogError::Io(e));
             }
         }
@@ -220,32 +214,6 @@ impl SyslogConnector {
         }
 
         tracing::info!(count = events.len(), "forwarded events to syslog");
-        Ok(())
-    }
-
-    /// Enqueue events to the syslog queue for later retry.
-    ///
-    /// This is called when the forward fails so events are not lost.
-    async fn enqueue_events(&self, events: &[AuditEvent]) -> Result<(), SyslogError> {
-        for event in events {
-            let json = serde_json::to_string(event)?;
-            let mut conn = self.pool.get().map_err(SyslogError::from)?;
-            let uow = db::UnitOfWork::new(&mut conn).map_err(SyslogError::Database)?;
-
-            // Read max_size from config for tail-drop enforcement.
-            let config = SyslogConfigRepository::get(&self.pool, &self.crypto)
-                .map_err(SyslogError::from_app_error)?;
-
-            if let Err(e) =
-                SyslogQueueRepository::enqueue(&uow, &json, &self.crypto, config.queue_max_size)
-            {
-                tracing::error!("failed to enqueue syslog event: {e}");
-                // Don't propagate enqueue failures -- we've already lost the
-                // network path, and failing the enqueue would double-drop.
-            } else {
-                uow.commit().map_err(SyslogError::Database)?;
-            }
-        }
         Ok(())
     }
 }

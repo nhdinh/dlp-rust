@@ -415,10 +415,12 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 created_at             TEXT NOT NULL,
                 retry_count            INTEGER NOT NULL DEFAULT 0,
                 last_error             TEXT NOT NULL DEFAULT '',
-                next_attempt_at        TEXT NOT NULL DEFAULT ''
+                next_attempt_at        TEXT NOT NULL DEFAULT '',
+                leased_until           TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_syslog_queue_created_at ON syslog_queue(created_at);
             CREATE INDEX IF NOT EXISTS idx_syslog_queue_next_attempt_at ON syslog_queue(next_attempt_at);
+            CREATE INDEX IF NOT EXISTS idx_syslog_queue_leased_until ON syslog_queue(leased_until);
 
             -- Phase 49: Server-side allowlist entries for universal injection protection.
             -- match_type CHECK constraint enforces only canonical match types.
@@ -1674,6 +1676,7 @@ mod tests {
             "retry_count",
             "last_error",
             "next_attempt_at",
+            "leased_until",
         ] {
             assert!(
                 columns.contains(&col.to_string()),
@@ -1704,6 +1707,10 @@ mod tests {
         assert!(
             indexes.contains(&"idx_syslog_queue_next_attempt_at".to_string()),
             "idx_syslog_queue_next_attempt_at must exist; found {indexes:?}"
+        );
+        assert!(
+            indexes.contains(&"idx_syslog_queue_leased_until".to_string()),
+            "idx_syslog_queue_leased_until must exist; found {indexes:?}"
         );
     }
 

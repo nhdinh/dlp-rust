@@ -240,6 +240,150 @@ impl SyslogQueueRepository {
         )
         .map_err(AppError::Database)
     }
+
+    /// Peek-and-claim oldest N events eligible for retry.
+    ///
+    /// Atomically sets `leased_until` on selected rows to prevent concurrent
+    /// drain workers (or drain across process restarts) from double-sending
+    /// the same events. Only selects rows that are unleased or whose lease
+    /// has expired.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` -- connection pool (read+write for claim).
+    /// * `crypto` -- active KEK handle for decryption.
+    /// * `batch_size` -- maximum number of events to return.
+    /// * `lease_duration_secs` -- how long the lease lasts.
+    ///
+    /// # Errors
+    ///
+    /// - [`AppError::Database`] on SELECT, UPDATE, or decrypt failure.
+    pub fn peek_and_claim(
+        pool: &Pool,
+        crypto: &SecretCrypto,
+        batch_size: usize,
+        lease_duration_secs: u64,
+    ) -> Result<Vec<QueuedEvent>, AppError> {
+        let conn = pool.get().map_err(AppError::from)?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let lease_until = (chrono::Utc::now()
+            + chrono::Duration::seconds(lease_duration_secs as i64))
+        .to_rfc3339();
+
+        // Select eligible rows (unleased or expired lease).
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, event_json_encrypted, event_json_nonce, retry_count, last_error \
+                 FROM syslog_queue \
+                 WHERE (next_attempt_at = '' OR next_attempt_at <= ?1) \
+                   AND (leased_until = '' OR leased_until <= ?1) \
+                 ORDER BY created_at LIMIT ?2",
+            )
+            .map_err(AppError::Database)?;
+        let claimed_ids: Vec<i64> = stmt
+            .query_map(params![&now, batch_size as i64], |row| {
+                let id: i64 = row.get(0)?;
+                Ok(id)
+            })
+            .map_err(AppError::Database)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::Database)?;
+        drop(stmt);
+
+        // Set lease on claimed rows.
+        if !claimed_ids.is_empty() {
+            let placeholders: Vec<String> =
+                claimed_ids.iter().map(|_| "?".to_string()).collect();
+            let sql = format!(
+                "UPDATE syslog_queue SET leased_until = ?1 WHERE id IN ({})",
+                placeholders.join(",")
+            );
+            let mut update_stmt = conn.prepare(&sql).map_err(AppError::Database)?;
+            let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&lease_until];
+            for id in &claimed_ids {
+                params_vec.push(id);
+            }
+            update_stmt
+                .execute(rusqlite::params_from_iter(params_vec.iter()))
+                .map_err(AppError::Database)?;
+        }
+
+        // Re-select claimed rows to decrypt and return.
+        if claimed_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<String> =
+            claimed_ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "SELECT id, event_json_encrypted, event_json_nonce, retry_count, last_error \
+             FROM syslog_queue \
+             WHERE id IN ({}) \
+             ORDER BY created_at",
+            placeholders.join(",")
+        );
+        let mut stmt = conn.prepare(&sql).map_err(AppError::Database)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(claimed_ids.iter()), |row| {
+                let id: i64 = row.get(0)?;
+                let ciphertext: Vec<u8> = row.get(1)?;
+                let nonce_bytes: Vec<u8> = row.get(2)?;
+                let retry_count: i64 = row.get(3)?;
+                let last_error: String = row.get(4)?;
+
+                let mut nonce = [0u8; NONCE_LEN];
+                nonce.copy_from_slice(&nonce_bytes);
+                let envelope = Envelope::new(ENVELOPE_VERSION_V1, nonce, ciphertext)
+                    .map_err(|e| {
+                        rusqlite::Error::InvalidParameterName(format!("envelope: {e}"))
+                    })?;
+                let aad = aad_for("syslog_queue", "event_json");
+                let plaintext = crypto
+                    .decrypt(&envelope, &aad)
+                    .map_err(|e| {
+                        rusqlite::Error::InvalidParameterName(format!("decrypt: {e}"))
+                    })?;
+                let event_json = plaintext.expose_secret().to_string();
+                Ok(QueuedEvent {
+                    id,
+                    event_json,
+                    retry_count,
+                    last_error,
+                })
+            })
+            .map_err(AppError::Database)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::Database)
+    }
+
+    /// Release the lease on specific rows so they can be claimed again.
+    ///
+    /// Call this when a forward attempt fails and the events should be
+    /// retried sooner than the lease expiry.
+    ///
+    /// # Arguments
+    ///
+    /// * `uow` -- active unit of work for the UPDATE.
+    /// * `ids` -- slice of row ids to release.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Database`] when the UPDATE fails.
+    pub fn release_lease(uow: &UnitOfWork, ids: &[i64]) -> Result<(), AppError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "UPDATE syslog_queue SET leased_until = '' WHERE id IN ({})",
+            placeholders.join(",")
+        );
+        let mut stmt = uow.tx.prepare(&sql).map_err(AppError::Database)?;
+        let params: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        stmt.execute(rusqlite::params_from_iter(params.iter()))
+            .map_err(AppError::Database)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -518,5 +662,114 @@ mod tests {
             err_msg.contains("decrypt") || err_msg.contains("InvalidParameterName"),
             "error should mention decrypt failure; got: {err_msg}"
         );
+    }
+
+    #[test]
+    fn peek_and_claim_sets_lease() {
+        let crypto = fixture_crypto();
+        let pool = new_pool(":memory:").expect("create pool");
+
+        let event_json = r#"{"event_id":"claim-test","timestamp":"2026-05-14T00:00:00Z"}"#;
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("begin uow");
+            SyslogQueueRepository::enqueue(&uow, event_json, &crypto, 100000).expect("enqueue");
+            uow.commit().expect("commit");
+        }
+
+        let claimed =
+            SyslogQueueRepository::peek_and_claim(&pool, &crypto, 10, 300).expect("peek_and_claim");
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].event_json, event_json);
+
+        // Second claim should return nothing because lease is still active.
+        let second =
+            SyslogQueueRepository::peek_and_claim(&pool, &crypto, 10, 300).expect("second claim");
+        assert_eq!(second.len(), 0, "active lease must prevent re-claim");
+    }
+
+    #[test]
+    fn release_lease_allows_reclaim() {
+        let crypto = fixture_crypto();
+        let pool = new_pool(":memory:").expect("create pool");
+
+        let event_json = r#"{"event_id":"release-test"}"#;
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("begin uow");
+            SyslogQueueRepository::enqueue(&uow, event_json, &crypto, 100000).expect("enqueue");
+            uow.commit().expect("commit");
+        }
+
+        let claimed =
+            SyslogQueueRepository::peek_and_claim(&pool, &crypto, 10, 300).expect("peek_and_claim");
+        assert_eq!(claimed.len(), 1);
+        let id = claimed[0].id;
+
+        // Release lease.
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("begin uow");
+            SyslogQueueRepository::release_lease(&uow, &[id]).expect("release_lease");
+            uow.commit().expect("commit");
+        }
+
+        // Should be reclaimable immediately.
+        let reclaimed =
+            SyslogQueueRepository::peek_and_claim(&pool, &crypto, 10, 300).expect("reclaim");
+        assert_eq!(reclaimed.len(), 1);
+        assert_eq!(reclaimed[0].id, id);
+    }
+
+    #[test]
+    fn peek_and_claim_returns_fifo_order() {
+        let crypto = fixture_crypto();
+        let pool = new_pool(":memory:").expect("create pool");
+
+        let events = vec![
+            r#"{"event_id":"first"}"#,
+            r#"{"event_id":"second"}"#,
+            r#"{"event_id":"third"}"#,
+        ];
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("begin uow");
+            for e in &events {
+                SyslogQueueRepository::enqueue(&uow, e, &crypto, 100000).expect("enqueue");
+            }
+            uow.commit().expect("commit");
+        }
+
+        let claimed =
+            SyslogQueueRepository::peek_and_claim(&pool, &crypto, 10, 300).expect("peek_and_claim");
+        assert_eq!(claimed.len(), 3);
+        assert_eq!(claimed[0].event_json, events[0]);
+        assert_eq!(claimed[1].event_json, events[1]);
+        assert_eq!(claimed[2].event_json, events[2]);
+    }
+
+    #[test]
+    fn peek_and_claim_respects_batch_size() {
+        let crypto = fixture_crypto();
+        let pool = new_pool(":memory:").expect("create pool");
+
+        {
+            let mut conn = pool.get().expect("acquire connection");
+            let uow = UnitOfWork::new(&mut conn).expect("begin uow");
+            for i in 0..5 {
+                SyslogQueueRepository::enqueue(
+                    &uow,
+                    &format!("{{\"event_id\":\"{i}\"}}"),
+                    &crypto,
+                    100000,
+                )
+                .expect("enqueue");
+            }
+            uow.commit().expect("commit");
+        }
+
+        let claimed =
+            SyslogQueueRepository::peek_and_claim(&pool, &crypto, 2, 300).expect("peek_and_claim");
+        assert_eq!(claimed.len(), 2);
     }
 }
