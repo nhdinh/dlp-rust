@@ -325,6 +325,8 @@ pub struct MutationContext {
     pub path: String,
     /// The classification tier string (e.g., "T3").
     pub tier: String,
+    /// The username performing the action (from JWT or "admin").
+    pub user_name: String,
 }
 
 impl MutationContext {
@@ -361,7 +363,7 @@ impl MutationContext {
         dlp_common::AuditEvent::new(
             dlp_common::EventType::AdminAction,
             String::new(),
-            "admin".to_string(),
+            self.user_name.clone(),
             resource,
             classification,
             action,
@@ -1024,6 +1026,7 @@ mod tests {
             new_state: Some("confirmed".to_string()),
             path: r"C:\Data\file.txt".to_string(),
             tier: "T3".to_string(),
+            user_name: "admin".to_string(),
         };
 
         let result = svc.with_mutation(ctx, |uow| {
@@ -1064,6 +1067,7 @@ mod tests {
             new_state: Some("confirmed".to_string()),
             path: r"C:\Data\file.txt".to_string(),
             tier: "T3".to_string(),
+            user_name: "admin".to_string(),
         };
 
         let result: Result<(), AppError> = svc.with_mutation(ctx, |_uow| {
@@ -1095,6 +1099,7 @@ mod tests {
             new_state: Some("confirmed".to_string()),
             path: r"C:\Data\file.txt".to_string(),
             tier: "T3".to_string(),
+            user_name: "admin".to_string(),
         };
 
         svc.with_mutation(ctx, |uow| {
