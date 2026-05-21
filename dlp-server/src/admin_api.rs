@@ -638,6 +638,25 @@ impl From<LabelRow> for LabelResponse {
     }
 }
 
+/// Paginated response for `GET /admin/labels`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaginatedLabelsResponse {
+    /// The label rows for the current page.
+    pub labels: Vec<LabelResponse>,
+    /// Total count of labels matching the filter (across all pages).
+    pub total: i64,
+    /// The limit used for this query.
+    pub limit: usize,
+    /// The offset used for this query.
+    pub offset: usize,
+}
+
+/// Default page size for label listing.
+const DEFAULT_LABEL_LIMIT: usize = 50;
+
+/// Maximum allowed page size to prevent unbounded responses (T-59-12).
+const MAX_LABEL_LIMIT: usize = 1000;
+
 /// Query-string filter for `GET /admin/labels`.
 #[derive(Debug, Default, Deserialize)]
 pub struct LabelFilter {
@@ -653,6 +672,17 @@ pub struct LabelFilter {
     /// Filter by department.
     #[serde(default)]
     pub department: Option<String>,
+    /// Maximum number of labels to return (default 50, max 1000).
+    #[serde(default = "default_label_limit")]
+    pub limit: usize,
+    /// Number of labels to skip (default 0).
+    #[serde(default)]
+    pub offset: usize,
+}
+
+/// Returns the default page size for label queries.
+fn default_label_limit() -> usize {
+    DEFAULT_LABEL_LIMIT
 }
 
 /// Optional query-string filter for `GET /admin/disk-registry` (D-07).
@@ -1086,6 +1116,7 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         )
         .route("/admin/labels/{id}/confirm", post(confirm_label))
         .route("/admin/labels/{id}/reject", post(reject_label))
+        .route("/admin/labels/{id}/expire", post(expire_label))
         .route("/admin/labels/departments", get(list_label_departments))
         // Phase 61: Approval Workflow Engine admin API (WORKFLOW-02..06)
         .route(
@@ -3948,18 +3979,23 @@ fn normalize_path(path: &str) -> String {
     p
 }
 
-/// `GET /admin/labels` — list all labels with optional filters.
+/// `GET /admin/labels` — list all labels with optional filters and pagination.
 ///
-/// Supports `?state=`, `?tier=`, `?owner_sid=` query params.
+/// Supports `?state=`, `?tier=`, `?owner_sid=`, `?department=`, `?limit=`, `?offset=` query params.
+/// Default limit is 50, max is 1000. Results are ordered by path ASC.
 async fn list_labels(
     State(state): State<Arc<AppState>>,
     req: axum::http::Request<axum::body::Body>,
-) -> Result<Json<Vec<LabelResponse>>, AppError> {
+) -> Result<Json<PaginatedLabelsResponse>, AppError> {
     let _username = AdminUsername::extract_from_headers(req.headers())?;
 
     let filter = axum::extract::Query::<LabelFilter>::from_request(req, &state)
         .await
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    // Clamp limit to max 1000 to prevent unbounded responses (T-59-12)
+    let limit = filter.limit.min(MAX_LABEL_LIMIT);
+    let offset = filter.offset;
 
     let pool = Arc::clone(&state.pool);
     let state_filter = filter.state.clone();
@@ -3967,23 +4003,36 @@ async fn list_labels(
     let owner_sid_filter = filter.owner_sid.clone();
     let department_filter = filter.department.clone();
 
-    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<LabelRow>, AppError> {
+    let (rows, total) = tokio::task::spawn_blocking(move || -> Result<(Vec<LabelRow>, i64), AppError> {
         let rows = LabelRepository::list_by_filters(
             &pool,
             state_filter.as_deref(),
             tier_filter.as_deref(),
             owner_sid_filter.as_deref(),
             department_filter.as_deref(),
-            None,
-            None,
+            Some(limit),
+            Some(offset),
         )
         .map_err(AppError::Database)?;
-        Ok(rows)
+        let total = LabelRepository::count_by_filters(
+            &pool,
+            state_filter.as_deref(),
+            tier_filter.as_deref(),
+            owner_sid_filter.as_deref(),
+            department_filter.as_deref(),
+        )
+        .map_err(AppError::Database)?;
+        Ok((rows, total))
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    Ok(Json(rows.into_iter().map(Into::into).collect()))
+    Ok(Json(PaginatedLabelsResponse {
+        labels: rows.into_iter().map(Into::into).collect(),
+        total,
+        limit,
+        offset,
+    }))
 }
 
 /// `GET /admin/labels/:id` — get a single label by ID.
@@ -4408,6 +4457,93 @@ async fn reject_label(
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     tracing::info!(label_id = %resp.id, "label rejected");
+    Ok(Json(resp))
+}
+
+/// `POST /admin/labels/:id/expire` — expire a label (any state -> expired).
+///
+/// Emits a transactional audit event via [`LabelService::with_mutation`].
+async fn expire_label(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Json<LabelResponse>, AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+    let _caller_sid = crate::admin_auth::verify_jwt(
+        req.headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?,
+    )?
+    .sid;
+
+    let path = req.uri().path();
+    let label_id = path
+        .strip_prefix("/admin/labels/")
+        .and_then(|rest| rest.strip_suffix("/expire"))
+        .or_else(|| {
+            path.strip_prefix("/labels/")
+                .and_then(|rest| rest.strip_suffix("/expire"))
+        })
+        .unwrap_or("")
+        .to_string();
+    if label_id.is_empty() {
+        return Err(AppError::BadRequest("missing label id in path".to_string()));
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let id = label_id.clone();
+    let pool = Arc::clone(&state.pool);
+    let label_svc = Arc::clone(&state.label_service);
+
+    let resp = tokio::task::spawn_blocking(move || -> Result<LabelResponse, AppError> {
+        let original = LabelRepository::get_by_id(&pool, &id).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("label {id} not found"))
+            }
+            other => AppError::Database(other),
+        })?;
+
+        let ctx = crate::label_service::MutationContext {
+            label_id: id.clone(),
+            action: "label_expire".to_string(),
+            old_state: Some(original.label_state.clone()),
+            new_state: Some("expired".to_string()),
+            path: original.path.clone(),
+            tier: original.tier.clone(),
+            user_name: username.clone(),
+        };
+
+        label_svc.with_mutation(ctx, |uow| {
+            let affected = LabelRepository::update_state(uow, &id, "expired", &now)
+                .map_err(AppError::Database)?;
+            if affected == 0 {
+                return Err(AppError::NotFound(format!("label {id} not found")));
+            }
+            Ok(())
+        })?;
+
+        Ok(LabelResponse {
+            id,
+            path: original.path,
+            object_type: original.object_type,
+            tier: original.tier,
+            label_state: "expired".to_string(),
+            owner_sid: original.owner_sid,
+            parent_label_id: original.parent_label_id,
+            acl_snapshot_id: original.acl_snapshot_id,
+            hash: original.hash,
+            scanner_confidence: original.scanner_confidence,
+            department: original.department,
+            created_at: original.created_at,
+            updated_at: now,
+        })
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(label_id = %resp.id, "label expired");
     Ok(Json(resp))
 }
 
@@ -8791,8 +8927,11 @@ mod tests {
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK);
         let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
-        let labels: Vec<LabelResponse> = serde_json::from_slice(&body).expect("parse");
-        assert!(labels.is_empty(), "fresh db must have no labels");
+        let page: PaginatedLabelsResponse = serde_json::from_slice(&body).expect("parse");
+        assert!(page.labels.is_empty(), "fresh db must have no labels");
+        assert_eq!(page.total, 0);
+        assert_eq!(page.limit, DEFAULT_LABEL_LIMIT);
+        assert_eq!(page.offset, 0);
     }
 
     /// GET /admin/labels?state=temporary returns only temporary labels.
@@ -8839,9 +8978,10 @@ mod tests {
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK);
         let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
-        let labels: Vec<LabelResponse> = serde_json::from_slice(&body).expect("parse");
-        assert_eq!(labels.len(), 1);
-        assert_eq!(labels[0].label_state, "temporary");
+        let page: PaginatedLabelsResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(page.labels.len(), 1);
+        assert_eq!(page.labels[0].label_state, "temporary");
+        assert_eq!(page.total, 1);
     }
 
     /// POST /admin/labels with valid data creates label, returns 201.
@@ -9295,18 +9435,403 @@ mod tests {
         assert_eq!(file.parent_label_id, Some(folder.id));
     }
 
-    /// GET /admin/labels without auth returns 401.
+    // ── Task 3: Expire endpoint and pagination tests ────────────────────────
+
+    /// POST /admin/labels/:id/expire changes any state to expired.
     #[tokio::test]
-    async fn test_label_routes_require_auth() {
+    async fn test_expire_label_success() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create a confirmed label
+        let json = r#"{"path":"\\\\server\\share\\file.txt","object_type":"file","tier":"T1","label_state":"confirmed"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let created: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        let id = created.id;
+
+        // Expire it
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/admin/labels/{id}/expire"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let expired: LabelResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(expired.label_state, "expired");
+    }
+
+    /// POST /admin/labels/:id/expire on non-existent label returns 404.
+    #[tokio::test]
+    async fn test_expire_label_not_found() {
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
         use tower::ServiceExt;
 
         let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels/nonexistent/expire")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// GET /admin/labels returns paginated response with defaults.
+    #[tokio::test]
+    async fn test_list_labels_paginated_defaults() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Create 3 labels
+        for i in 1..=3 {
+            let json = format!(
+                r#"{{"path":"\\\\server\\share\\doc{i}.txt","object_type":"file","tier":"T2","label_state":"temporary"}}"#
+            );
+            let req = Request::builder()
+                .method("POST")
+                .uri("/admin/labels")
+                .header("Authorization", format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(json))
+                .expect("build request");
+            let resp = app.clone().oneshot(req).await.expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::CREATED);
+        }
 
         let req = Request::builder()
             .method("GET")
             .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let page: PaginatedLabelsResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(page.labels.len(), 3);
+        assert_eq!(page.total, 3);
+        assert_eq!(page.limit, DEFAULT_LABEL_LIMIT);
+        assert_eq!(page.offset, 0);
+    }
+
+    /// GET /admin/labels?limit=2&offset=0 returns first page.
+    #[tokio::test]
+    async fn test_list_labels_paginated_first_page() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        for i in 1..=5 {
+            let json = format!(
+                r#"{{"path":"\\\\server\\share\\doc{i}.txt","object_type":"file","tier":"T2","label_state":"temporary"}}"#
+            );
+            let req = Request::builder()
+                .method("POST")
+                .uri("/admin/labels")
+                .header("Authorization", format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(json))
+                .expect("build request");
+            let resp = app.clone().oneshot(req).await.expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::CREATED);
+        }
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/labels?limit=2&offset=0")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let page: PaginatedLabelsResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(page.labels.len(), 2);
+        assert_eq!(page.total, 5);
+        assert_eq!(page.limit, 2);
+        assert_eq!(page.offset, 0);
+    }
+
+    /// GET /admin/labels?limit=2&offset=2 returns second page.
+    #[tokio::test]
+    async fn test_list_labels_paginated_second_page() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        for i in 1..=5 {
+            let json = format!(
+                r#"{{"path":"\\\\server\\share\\doc{i}.txt","object_type":"file","tier":"T2","label_state":"temporary"}}"#
+            );
+            let req = Request::builder()
+                .method("POST")
+                .uri("/admin/labels")
+                .header("Authorization", format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(json))
+                .expect("build request");
+            let resp = app.clone().oneshot(req).await.expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::CREATED);
+        }
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/labels?limit=2&offset=2")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let page: PaginatedLabelsResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(page.labels.len(), 2);
+        assert_eq!(page.total, 5);
+        assert_eq!(page.limit, 2);
+        assert_eq!(page.offset, 2);
+    }
+
+    /// GET /admin/labels?limit=1001 is clamped to max 1000.
+    #[tokio::test]
+    async fn test_list_labels_limit_clamped() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/labels?limit=1001")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let page: PaginatedLabelsResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(page.limit, MAX_LABEL_LIMIT);
+    }
+
+    /// GET /admin/labels?state=temporary&limit=1 returns paginated filtered results.
+    #[tokio::test]
+    async fn test_list_labels_filtered_and_paginated() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // 2 temporary
+        for i in 1..=2 {
+            let json = format!(
+                r#"{{"path":"\\\\server\\share\\temp{i}.txt","object_type":"file","tier":"T2","label_state":"temporary"}}"#
+            );
+            let req = Request::builder()
+                .method("POST")
+                .uri("/admin/labels")
+                .header("Authorization", format!("Bearer {jwt}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(json))
+                .expect("build request");
+            let resp = app.clone().oneshot(req).await.expect("oneshot");
+            assert_eq!(resp.status(), StatusCode::CREATED);
+        }
+        // 1 confirmed
+        let json = r#"{"path":"\\\\server\\share\\conf.txt","object_type":"file","tier":"T3","label_state":"confirmed"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json))
+            .expect("build request");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/labels?state=temporary&limit=1&offset=0")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let page: PaginatedLabelsResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(page.labels.len(), 1);
+        assert_eq!(page.total, 2);
+        assert_eq!(page.labels[0].label_state, "temporary");
+    }
+
+    // ── Task 4: Auth tests for all 8 label endpoints ─────────────────────────
+
+    /// GET /admin/labels without auth returns 401.
+    #[tokio::test]
+    async fn test_label_list_requires_auth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/labels")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// GET /admin/labels/:id without auth returns 401.
+    #[tokio::test]
+    async fn test_label_get_requires_auth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/labels/some-id")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// POST /admin/labels without auth returns 401.
+    #[tokio::test]
+    async fn test_label_create_requires_auth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// PUT /admin/labels/:id without auth returns 401.
+    #[tokio::test]
+    async fn test_label_update_requires_auth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/admin/labels/some-id")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// POST /admin/labels/:id/confirm without auth returns 401.
+    #[tokio::test]
+    async fn test_label_confirm_requires_auth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels/some-id/confirm")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// POST /admin/labels/:id/reject without auth returns 401.
+    #[tokio::test]
+    async fn test_label_reject_requires_auth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels/some-id/reject")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// POST /admin/labels/:id/expire without auth returns 401.
+    #[tokio::test]
+    async fn test_label_expire_requires_auth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/labels/some-id/expire")
+            .body(Body::empty())
+            .expect("build request");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// DELETE /admin/labels/:id without auth returns 401.
+    #[tokio::test]
+    async fn test_label_delete_requires_auth() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/admin/labels/some-id")
             .body(Body::empty())
             .expect("build request");
         let resp = app.oneshot(req).await.expect("oneshot");
