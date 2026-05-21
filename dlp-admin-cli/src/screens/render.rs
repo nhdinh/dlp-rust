@@ -2665,6 +2665,7 @@ pub use crate::screens::labels::{
 /// Draws the Label Management list screen as a scrollable table.
 ///
 /// Columns: Path (truncated), Type, Tier, State, Owner.
+#[allow(clippy::too_many_arguments)]
 fn draw_label_list(
     frame: &mut Frame,
     area: Rect,
@@ -2694,7 +2695,7 @@ fn draw_label_list(
         String::new()
     };
 
-    let total_pages = if total == 0 { 1 } else { (total + page_size - 1) / page_size };
+    let total_pages = if total == 0 { 1 } else { total.div_ceil(page_size) };
     let page_info = format!("Page {} of {} | {} per page", page + 1, total_pages, page_size);
 
     let header = Row::new(vec!["Path", "Type", "Tier", "State", "Owner"])
@@ -2762,6 +2763,7 @@ fn draw_label_list(
 /// Draws the Data Owner Review Queue screen.
 ///
 /// Columns: Path, Tier, Owner SID, Confidence, Created.
+#[allow(clippy::too_many_arguments)]
 fn draw_label_review_queue(
     frame: &mut Frame,
     area: Rect,
@@ -2785,7 +2787,7 @@ fn draw_label_review_queue(
         format!(" Data Owner Review Queue ({}) ", labels.len())
     };
 
-    let total_pages = if total == 0 { 1 } else { (total + page_size - 1) / page_size };
+    let total_pages = if total == 0 { 1 } else { total.div_ceil(page_size) };
     let page_info = format!("Page {} of {} | {} per page", page + 1, total_pages, page_size);
 
     if labels.is_empty() {
