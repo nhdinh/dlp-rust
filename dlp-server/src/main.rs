@@ -419,11 +419,11 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
 
-            // Peek a batch (does NOT remove rows).
+            // Peek-and-claim a batch (atomically sets leased_until).
             let batch = match tokio::task::spawn_blocking({
                 let pool = Arc::clone(&drain_pool);
                 let crypto = Arc::clone(&drain_crypto);
-                move || SyslogQueueRepository::peek_oldest(&pool, &crypto, 100)
+                move || SyslogQueueRepository::peek_and_claim(&pool, &crypto, 100, 300)
             })
             .await
             {
@@ -517,23 +517,28 @@ async fn main() -> anyhow::Result<()> {
                     observability::record_syslog_tls_error();
                     // Mark each event as failed with exponential backoff scheduling.
                     let next_attempt = compute_next_attempt(consecutive_failures);
-                    for qe in &batch {
-                        let _ = tokio::task::spawn_blocking({
-                            let pool = Arc::clone(&drain_pool);
-                            let id = qe.id;
-                            let error = e.to_string();
-                            let next = next_attempt.clone();
-                            move || -> Result<(), dlp_server::AppError> {
-                                let mut conn = pool.get()?;
-                                let uow = db::UnitOfWork::new(&mut conn)?;
-                                SyslogQueueRepository::mark_failed(&uow, id, &error, &next)?;
-                                uow.commit()?;
-                                Ok(())
+                    let ids: Vec<i64> = batch.iter().map(|qe| qe.id).collect();
+                    let batch_for_task = batch.clone();
+                    let _ = tokio::task::spawn_blocking({
+                        let pool = Arc::clone(&drain_pool);
+                        let error = e.to_string();
+                        let next = next_attempt.clone();
+                        move || -> Result<(), dlp_server::AppError> {
+                            let mut conn = pool.get()?;
+                            let uow = db::UnitOfWork::new(&mut conn)?;
+                            for qe in &batch_for_task {
+                                SyslogQueueRepository::mark_failed(
+                                    &uow, qe.id, &error, &next,
+                                )?;
                             }
-                        })
-                        .await;
-                        observability::record_syslog_retry(1);
-                    }
+                            // Release lease so events can be reclaimed sooner.
+                            SyslogQueueRepository::release_lease(&uow, &ids)?;
+                            uow.commit()?;
+                            Ok(())
+                        }
+                    })
+                    .await;
+                    observability::record_syslog_retry(batch.len() as u64);
                     consecutive_failures += 1;
                 }
             }
