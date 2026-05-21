@@ -1,42 +1,90 @@
-# Phase 59-04 Summary: Admin TUI Screens for Label Management
+---
+phase: 59-label-service
+plan: 04
+type: execute
+subsystem: dlp-admin-cli
+wave: 3
+depends_on:
+  - 59-02
+requirements:
+  - LABEL-04
+  - LABEL-07
+key_files:
+  created: []
+  modified:
+    - dlp-admin-cli/src/client.rs
+    - dlp-admin-cli/src/app.rs
+    - dlp-admin-cli/src/screens/dispatch.rs
+    - dlp-admin-cli/src/screens/render.rs
+    - dlp-admin-cli/src/screens/labels.rs
+decisions:
+  - "Moved PaginatedLabelsResponse out of impl EngineClient block to module scope (Rust does not allow structs inside impl blocks)"
+  - "Used #[allow(clippy::too_many_arguments)] on draw_label_list and draw_label_review_queue rather than refactoring into config structs (follows existing codebase pattern for render functions)"
+  - "Used total.div_ceil(page_size) instead of manual (total + page_size - 1) / page_size (clippy suggestion)"
+tech_stack:
+  added: []
+  patterns:
+    - "Paginated API client methods with limit/offset"
+    - "Server-side pagination with PageUp/PageDown key handling"
+    - "Confirmation dialog for destructive actions (expire) with path and tier display"
+metrics:
+  duration: "~8 minutes"
+  completed_date: "2026-05-21"
+  tasks: 3
+  files_modified: 5
+  commits: 3
+---
 
-## Objective
-Implement the admin TUI screens for label management and Data Owner review queue: LabelList, LabelReviewQueue, LabelDetail, and the multi-step label creation/editing flow.
+# Phase 59 Plan 04: Admin TUI Label Management Gaps Summary
 
-## Files Modified
+**One-liner:** Added expire client method, server-side pagination (PageUp/PageDown), and confirmation dialog with path/tier display to the admin TUI label management screens.
 
-| File | Changes |
-|------|---------|
-| `dlp-admin-cli/src/app.rs` | Added Screen variants (LabelList, LabelReviewQueue, LabelDetail, LabelForm), LabelFilter, LabelFormMode, InputPurpose label variants, ConfirmPurpose::DeleteLabel, OBJECT_TYPE_OPTIONS, TIER_OPTIONS. Updated MainMenu (7 items) and SystemMenu (10 items). |
-| `dlp-admin-cli/src/client.rs` | Added 7 label API client methods: list_labels, get_label, create_label, update_label, confirm_label, reject_label, delete_label. |
-| `dlp-admin-cli/src/screens/render.rs` | Added draw_label_list, draw_label_review_queue, draw_label_detail, draw_label_form. Updated menu rendering. |
-| `dlp-admin-cli/src/screens/dispatch.rs` | Added handle_label_list, handle_label_review_queue, handle_label_detail, handle_label_form. Added action helpers. Updated menu handlers, confirm handlers, on_text_confirmed. |
-| `dlp-admin-cli/src/screens/mod.rs` | Added `mod labels;` |
-| `dlp-admin-cli/src/screens/labels.rs` | New file with shared constants (LABEL_LIST_HINTS, LABEL_REVIEW_HINTS, LABEL_LIST_EMPTY, LABEL_REVIEW_EMPTY) and tests. |
+## What Was Built
 
-## Verification
+### Task 1: expire_label client method and paginated list_labels
+- Added `PaginatedLabelsResponse` struct with `labels`, `total`, `limit`, `offset` fields
+- Updated `list_labels` signature to accept `limit: usize` and `offset: usize` parameters
+- `list_labels` builds query string with required limit/offset and optional state/department filters
+- Added `expire_label(id: &str)` method sending POST to `admin/labels/{id}/expire`
 
-- `cargo check -p dlp-admin-cli`: PASS (2 warnings: unused InputPurpose variants, unused client methods — both expected)
-- `cargo test -p dlp-admin-cli`: PASS (236 tests, 3 suites)
+### Task 2: Expire action, pagination, and ConfirmPurpose variant
+- Added `page`, `page_size`, `total` fields to `Screen::LabelList` and `Screen::LabelReviewQueue`
+- Added `ConfirmPurpose::ExpireLabel { id, path, tier }` variant
+- Added 'x' key handler in `handle_label_list` showing confirm dialog with path and tier
+- Added `PageUp`/`PageDown` handlers adjusting page and reloading via `action_load_label_list_paginated`
+- Added `action_expire_label` calling `client.expire_label(id)` with error handling
+- Updated `action_load_label_list` to use paginated API and `action_load_label_review_queue_with_filter` similarly
+- Updated all `Screen::LabelList` and `Screen::LabelReviewQueue` construction sites with default pagination values
 
-## Success Criteria
+### Task 3: Pagination display and LabelDetail verification
+- Updated `LABEL_LIST_HINTS` to include `[x] Expire` and `[PgUp/PgDn] Page`
+- `draw_label_list` and `draw_label_review_queue` render pagination info in footer: "Page N of M | K per page"
+- Verified `Screen::LabelDetail` has no recursive enum issue (no `Screen`-typed field)
+- Added `test_label_detail_non_recursive` test constructing `LabelDetail` and asserting via `matches!`
 
-| Criterion | Status |
-|-----------|--------|
-| MainMenu has "Label Management" item that navigates to LabelList | PASS |
-| SystemMenu has "Label Review Queue" item that navigates to LabelReviewQueue | PASS |
-| LabelList shows scrollable table with Path, Type, Tier, State, Owner columns | PASS |
-| LabelList supports n (new), e (edit), d (delete), v (view), f (filter), Esc (back) | PASS |
-| LabelReviewQueue shows temporary labels with c (confirm), r (reject), Esc (back) | PASS |
-| Label creation uses 6-step form: path -> object_type -> tier -> owner_sid -> parent_label_id -> confirm | PASS |
-| Label edit pre-fills all 6 steps with existing values | PASS |
-| All HTTP errors display in status bar | PASS |
-| Confirm delete requires explicit 'y' confirmation | PASS |
+## Deviations from Plan
 
-## Threat Model Compliance
+None - plan executed exactly as written.
 
-| Threat ID | Category | Component | Disposition | Mitigation |
-|-----------|----------|-----------|-------------|------------|
-| T-59-11 | Repudiation | Label delete | mitigate | Confirm screen requires explicit 'y' before delete |
-| T-59-12 | Information Disclosure | Label detail | accept | Detail screen shows same fields as API returns |
-| T-59-13 | Denial of Service | Filter cycling | accept | Filter is client-side only; no server impact |
+## Commits
+
+| Hash | Type | Message |
+|------|------|---------|
+| ef9bdea | test(59-04) | add expire_label client method and paginated list_labels |
+| 0f1ebf0 | feat(59-04) | expire action, pagination, and ConfirmPurpose::ExpireLabel |
+| 95bbe17 | feat(59-04) | pagination display, updated hints, non-recursive LabelDetail test |
+
+## Verification Results
+
+- `cargo check -p dlp-admin-cli` - PASSED (no errors, no warnings)
+- `cargo test -p dlp-admin-cli` - PASSED (139 tests passed)
+- `cargo clippy -p dlp-admin-cli --lib -- -D warnings` - PASSED
+- `cargo build --workspace` - PASSED
+
+## Self-Check: PASSED
+
+- [x] All modified files exist and compile
+- [x] All commits exist in git history
+- [x] Tests pass
+- [x] Clippy passes on lib
+- [x] Workspace builds successfully
