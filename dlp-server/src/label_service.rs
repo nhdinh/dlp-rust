@@ -18,8 +18,10 @@ use std::time::{Duration, Instant};
 
 use dlp_common::Tier;
 
+use crate::audit_store;
 use crate::db::repositories::labels::LabelRepository;
-use crate::db::Pool;
+use crate::db::{Pool, UnitOfWork};
+use crate::AppError;
 
 /// Source of a label resolution result.
 ///
@@ -256,6 +258,117 @@ impl LabelService {
     /// Call this after any label CRUD operation.
     pub fn invalidate_cache(&self) {
         self.cache.invalidate();
+    }
+
+    /// Executes a label mutation with transactional audit and cache invalidation.
+    ///
+    /// This is the **mandatory** path for all label-mutating admin operations.
+    /// It guarantees:
+    /// 1. The mutation closure runs inside a single SQLite transaction.
+    /// 2. An audit event is emitted inside the **same** transaction — if audit
+    ///    insertion fails, the entire transaction rolls back (fail-closed per D-14).
+    /// 3. The cache is invalidated **after** successful commit.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T` — The return type of the mutation closure.
+    /// * `F` — The mutation closure type.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` — [`MutationContext`] carrying audit metadata.
+    /// * `mutation` — Closure that receives a [`UnitOfWork`] and performs the DB mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AppError::Database` if the transaction fails to commit.
+    /// Returns `AppError::Internal` if audit event serialization fails.
+    pub fn with_mutation<T, F>(&self, ctx: MutationContext, mutation: F) -> Result<T, AppError>
+    where
+        F: FnOnce(&UnitOfWork) -> Result<T, AppError>,
+    {
+        let mut conn = self.pool.get().map_err(AppError::from)?;
+        let uow = UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+
+        // Run the mutation first
+        let result = mutation(&uow)?;
+
+        // Build and emit audit event inside the same transaction
+        let audit_event = ctx.to_audit_event();
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+
+        // Commit — both mutation and audit atomically
+        uow.commit().map_err(AppError::Database)?;
+
+        // Invalidate cache after successful commit
+        self.invalidate_cache();
+
+        Ok(result)
+    }
+}
+
+/// Context for a label mutation, used to construct the mandatory audit event.
+///
+/// Carries all metadata needed to build an [`AuditEvent`] inside the same
+/// transaction as the mutation. All fields are required per D-14.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutationContext {
+    /// The label ID being mutated.
+    pub label_id: String,
+    /// The action name (maps to [`dlp_common::Action`] variant).
+    pub action: String,
+    /// Previous label state, if applicable.
+    pub old_state: Option<String>,
+    /// New label state, if applicable.
+    pub new_state: Option<String>,
+    /// The filesystem path of the labeled resource.
+    pub path: String,
+    /// The classification tier string (e.g., "T3").
+    pub tier: String,
+}
+
+impl MutationContext {
+    /// Converts this context into an [`AuditEvent`] for storage.
+    ///
+    /// The action string is matched against known [`Action`] variants.
+    /// Unrecognized actions fall back to [`Action::LabelUpdate`] (defense-in-depth).
+    fn to_audit_event(&self) -> dlp_common::AuditEvent {
+        let action = match self.action.as_str() {
+            "label_create" => dlp_common::Action::LabelCreate,
+            "label_update" => dlp_common::Action::LabelUpdate,
+            "label_confirm" => dlp_common::Action::LabelConfirm,
+            "label_reject" => dlp_common::Action::LabelReject,
+            "label_delete" => dlp_common::Action::LabelDelete,
+            "label_expire" => dlp_common::Action::LabelExpire,
+            _ => dlp_common::Action::LabelUpdate,
+        };
+
+        let classification = <Tier as std::convert::TryFrom<&str>>::try_from(&self.tier)
+            .unwrap_or(Tier::UnclassifiedBlocked)
+            .to_classification()
+            .unwrap_or(dlp_common::Classification::T3);
+
+        let resource = if let (Some(ref old), Some(ref new)) = (&self.old_state, &self.new_state) {
+            format!("label:{} at {} ({} -> {})", self.label_id, self.path, old, new)
+        } else if let Some(ref new) = self.new_state {
+            format!("label:{} at {} ({})", self.label_id, self.path, new)
+        } else if let Some(ref old) = self.old_state {
+            format!("label:{} at {} (was {})", self.label_id, self.path, old)
+        } else {
+            format!("label:{} at {}", self.label_id, self.path)
+        };
+
+        dlp_common::AuditEvent::new(
+            dlp_common::EventType::AdminAction,
+            String::new(),
+            "admin".to_string(),
+            resource,
+            classification,
+            action,
+            dlp_common::Decision::ALLOW,
+            "server".to_string(),
+            0,
+        )
     }
 }
 
