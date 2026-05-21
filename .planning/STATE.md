@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
 milestone: v0.11.0
-milestone_name: milestone
-status: ready_to_plan
-last_updated: 2026-05-20T11:25:03.562Z
-last_activity: 2026-05-20
+milestone_name: Real-Time File Access Prevention
+status: planning
+last_updated: "2026-05-21T02:55:00.000Z"
+last_activity: 2026-05-21
 progress:
   total_phases: 14
   completed_phases: 5
-  total_plans: 29
-  completed_plans: 69
-  percent: 36
-stopped_at: Phase 50 complete (6/6) — ready to discuss Phase 59
+  total_plans: 25
+  completed_plans: 23
+  percent: 38
 ---
 
 # Project State
@@ -27,8 +26,8 @@ stopped_at: Phase 50 complete (6/6) — ready to discuss Phase 59
 ## Current Position
 
 Phase: 59
-Plan: Not started
-Status: Ready to plan
+Plan: 01 complete
+Status: In progress
 Last activity: 2026-05-20
 Last activity: 2026-05-14 -- Phase 62 planning complete
 Last activity: 2026-05-13 -- All phases reopened for plan re-review
@@ -111,6 +110,7 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 13. **2026-05-12: Target architecture documents (`new_docs/`) merged into planning surface.** 47 gap items identified across 10 document areas. Gaps mapped to new requirements (LABEL-, WORKFLOW-, SYSLOG-, HASH-, DEVICE-, SCANNER-, SCREENSHOT-, WATERMARK-, EMAIL-, RDP-, BT-, BCK-). `new_docs/` deleted after merge to maintain single source of truth in `.planning/`.
 14. **Pilot-first path selected:** v0.11.0 focuses on Label Service + Data Owner Queue + Approval Workflow (manual labels, no scanner yet). v0.12.0 adds Scanner + remaining endpoint controls. This prioritizes pilot readiness over building a complete scanner first.
 15. **2026-05-12 (updated): Explicit minifilter ban reinforced.** Target architecture updated to forbid Windows Minifilter drivers and kernel-mode filesystem interception entirely. The existing user-mode architecture (IAT hooks + DACL tripwire + ETW + WFP + NTFS ACLs) already satisfies this constraint. New requirements ARCH-01..04 and pilot test TC-017 verify compliance. No code changes required — the constraint is architectural documentation and build-audit verification.
+16. **2026-05-21: Phase 59 Plan 01 complete.** ResolvedTier enum added to dlp-server with strictness-aware folder inheritance. Tier::strictness_rank() and is_stricter_than() added to dlp-common. LabelCache upgraded to store full CacheEntry metadata. resolve_tier now returns ResolvedTier (not Result<Tier>) and implements D-07b strictest-tier-wins semantics. 18 new tests, 659 total passing, clippy clean.
 
 ## Blockers
 

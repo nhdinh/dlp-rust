@@ -361,7 +361,7 @@ Plans:
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 0/0 | Not started | - |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 0/0 | Not started | - |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
-| 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Reopened for review | - |
+| 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 1/4 | In progress | 2026-05-21 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Reopened for review | - |
 | 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete   | 2026-05-13 |
 
