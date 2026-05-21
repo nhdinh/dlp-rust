@@ -4056,63 +4056,41 @@ async fn create_label(
         updated_at: now.clone(),
     };
 
-    // Persist via UnitOfWork
-    let pool = Arc::clone(&state.pool);
+    // Persist via transactional mutation (audit is mandatory, not best-effort)
     let r = resp.clone();
+    let label_svc = Arc::clone(&state.label_service);
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        let record = LabelUpsertRow {
-            id: &r.id,
-            path: &r.path,
-            object_type: &r.object_type,
-            tier: &r.tier,
-            label_state: &r.label_state,
-            owner_sid: r.owner_sid.as_deref(),
-            parent_label_id: r.parent_label_id.as_deref(),
-            acl_snapshot_id: r.acl_snapshot_id.as_deref(),
-            hash: r.hash.as_deref(),
-            scanner_confidence: r.scanner_confidence,
-            department: None,
-            created_at: &r.created_at,
-            updated_at: &r.updated_at,
+        let ctx = crate::label_service::MutationContext {
+            label_id: r.id.clone(),
+            action: "label_create".to_string(),
+            old_state: None,
+            new_state: Some(r.label_state.clone()),
+            path: r.path.clone(),
+            tier: r.tier.clone(),
+            user_name: username.clone(),
         };
-        LabelRepository::insert(&uow, &record).map_err(AppError::Database)?;
-        uow.commit().map_err(AppError::Database)?;
-        Ok(())
+        label_svc.with_mutation(ctx, |uow| {
+            let record = LabelUpsertRow {
+                id: &r.id,
+                path: &r.path,
+                object_type: &r.object_type,
+                tier: &r.tier,
+                label_state: &r.label_state,
+                owner_sid: r.owner_sid.as_deref(),
+                parent_label_id: r.parent_label_id.as_deref(),
+                acl_snapshot_id: r.acl_snapshot_id.as_deref(),
+                hash: r.hash.as_deref(),
+                scanner_confidence: r.scanner_confidence,
+                department: None,
+                created_at: &r.created_at,
+                updated_at: &r.updated_at,
+            };
+            LabelRepository::insert(uow, &record).map_err(AppError::Database)?;
+            Ok(())
+        })
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
-
-    // Invalidate cache after commit
-    state.label_service.invalidate_cache();
-
-    // Emit audit event after commit (best-effort)
-    let audit_event = dlp_common::AuditEvent::new(
-        dlp_common::EventType::AdminAction,
-        String::new(),
-        username.clone(),
-        format!("label:{} at {}", id, path),
-        dlp_common::Classification::T3,
-        dlp_common::Action::LabelCreate,
-        dlp_common::Decision::ALLOW,
-        "server".to_string(),
-        0,
-    );
-    let pool = Arc::clone(&state.pool);
-    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        audit_store::store_events_sync(&uow, &[audit_event])?;
-        uow.commit().map_err(AppError::Database)?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
-    .and_then(|r| r)
-    {
-        tracing::warn!(error = %e, "audit emission failed for label_create (best-effort)");
-    }
 
     tracing::info!(label_id = %id, path = %path, "label created");
     Ok((StatusCode::CREATED, Json(resp)))
@@ -4162,12 +4140,11 @@ async fn update_label(
     let path_norm = normalize_path(&body.path);
     let id = label_id.clone();
 
-    // Fetch original created_at, then update
+    // Fetch original created_at, then update via transactional mutation
     let pool = Arc::clone(&state.pool);
+    let body2 = body.clone();
+    let label_svc = Arc::clone(&state.label_service);
     let resp = tokio::task::spawn_blocking(move || -> Result<LabelResponse, AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-
         let original = LabelRepository::get_by_id(&pool, &id).map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => {
                 AppError::NotFound(format!("label {id} not found"))
@@ -4175,75 +4152,57 @@ async fn update_label(
             other => AppError::Database(other),
         })?;
 
-        let record = LabelUpsertRow {
-            id: &id,
-            path: &path_norm,
-            object_type: &canonical_object_type(&body.object_type),
-            tier: &canonical_tier(&body.tier),
-            label_state: &canonical_label_state(&body.label_state),
-            owner_sid: body.owner_sid.as_deref(),
-            parent_label_id: body.parent_label_id.as_deref(),
-            acl_snapshot_id: body.acl_snapshot_id.as_deref(),
-            hash: body.hash.as_deref(),
-            scanner_confidence: body.scanner_confidence,
-            department: body.department.as_deref(),
-            created_at: &original.created_at,
-            updated_at: &now,
+        let ctx = crate::label_service::MutationContext {
+            label_id: id.clone(),
+            action: "label_update".to_string(),
+            old_state: Some(original.label_state.clone()),
+            new_state: Some(canonical_label_state(&body2.label_state)),
+            path: path_norm.clone(),
+            tier: canonical_tier(&body2.tier),
+            user_name: username.clone(),
         };
-        let affected = LabelRepository::update(&uow, &record).map_err(AppError::Database)?;
-        if affected == 0 {
-            return Err(AppError::NotFound(format!("label {id} not found")));
-        }
-        uow.commit().map_err(AppError::Database)?;
+
+        label_svc.with_mutation(ctx, |uow| {
+            let record = LabelUpsertRow {
+                id: &id,
+                path: &path_norm,
+                object_type: &canonical_object_type(&body2.object_type),
+                tier: &canonical_tier(&body2.tier),
+                label_state: &canonical_label_state(&body2.label_state),
+                owner_sid: body2.owner_sid.as_deref(),
+                parent_label_id: body2.parent_label_id.as_deref(),
+                acl_snapshot_id: body2.acl_snapshot_id.as_deref(),
+                hash: body2.hash.as_deref(),
+                scanner_confidence: body2.scanner_confidence,
+                department: body2.department.as_deref(),
+                created_at: &original.created_at,
+                updated_at: &now,
+            };
+            let affected = LabelRepository::update(uow, &record).map_err(AppError::Database)?;
+            if affected == 0 {
+                return Err(AppError::NotFound(format!("label {id} not found")));
+            }
+            Ok(())
+        })?;
 
         Ok(LabelResponse {
             id,
             path: path_norm,
-            object_type: canonical_object_type(&body.object_type),
-            tier: canonical_tier(&body.tier),
-            label_state: canonical_label_state(&body.label_state),
-            owner_sid: body.owner_sid,
-            parent_label_id: body.parent_label_id,
-            acl_snapshot_id: body.acl_snapshot_id,
-            hash: body.hash,
-            scanner_confidence: body.scanner_confidence,
-            department: body.department,
+            object_type: canonical_object_type(&body2.object_type),
+            tier: canonical_tier(&body2.tier),
+            label_state: canonical_label_state(&body2.label_state),
+            owner_sid: body2.owner_sid,
+            parent_label_id: body2.parent_label_id,
+            acl_snapshot_id: body2.acl_snapshot_id,
+            hash: body2.hash,
+            scanner_confidence: body2.scanner_confidence,
+            department: body2.department,
             created_at: original.created_at,
             updated_at: now,
         })
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
-
-    // Invalidate cache after commit
-    state.label_service.invalidate_cache();
-
-    // Emit audit event (best-effort)
-    let audit_event = dlp_common::AuditEvent::new(
-        dlp_common::EventType::AdminAction,
-        String::new(),
-        username.clone(),
-        format!("label:{} at {}", resp.id, resp.path),
-        dlp_common::Classification::T3,
-        dlp_common::Action::LabelUpdate,
-        dlp_common::Decision::ALLOW,
-        "server".to_string(),
-        0,
-    );
-    let pool = Arc::clone(&state.pool);
-    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        audit_store::store_events_sync(&uow, &[audit_event])?;
-        uow.commit().map_err(AppError::Database)?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
-    .and_then(|r| r)
-    {
-        tracing::warn!(error = %e, "audit emission failed for label_update (best-effort)");
-    }
 
     tracing::info!(label_id = %resp.id, path = %resp.path, "label updated");
     Ok(Json(resp))
@@ -4285,11 +4244,9 @@ async fn confirm_label(
     let id = label_id.clone();
     let pool = Arc::clone(&state.pool);
     let username2 = username.clone();
+    let label_svc = Arc::clone(&state.label_service);
 
     let resp = tokio::task::spawn_blocking(move || -> Result<LabelResponse, AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-
         let original = LabelRepository::get_by_id(&pool, &id).map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => {
                 AppError::NotFound(format!("label {id} not found"))
@@ -4311,12 +4268,24 @@ async fn confirm_label(
             ));
         }
 
-        let affected = LabelRepository::update_state(&uow, &id, "confirmed", &now)
-            .map_err(AppError::Database)?;
-        if affected == 0 {
-            return Err(AppError::NotFound(format!("label {id} not found")));
-        }
-        uow.commit().map_err(AppError::Database)?;
+        let ctx = crate::label_service::MutationContext {
+            label_id: id.clone(),
+            action: "label_confirm".to_string(),
+            old_state: Some(original.label_state.clone()),
+            new_state: Some("confirmed".to_string()),
+            path: original.path.clone(),
+            tier: original.tier.clone(),
+            user_name: username.clone(),
+        };
+
+        label_svc.with_mutation(ctx, |uow| {
+            let affected = LabelRepository::update_state(uow, &id, "confirmed", &now)
+                .map_err(AppError::Database)?;
+            if affected == 0 {
+                return Err(AppError::NotFound(format!("label {id} not found")));
+            }
+            Ok(())
+        })?;
 
         Ok(LabelResponse {
             id,
@@ -4336,36 +4305,6 @@ async fn confirm_label(
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
-
-    // Invalidate cache after commit
-    state.label_service.invalidate_cache();
-
-    // Emit audit event (best-effort)
-    let audit_event = dlp_common::AuditEvent::new(
-        dlp_common::EventType::AdminAction,
-        String::new(),
-        username.clone(),
-        format!("label:{} confirmed", resp.id),
-        dlp_common::Classification::T3,
-        dlp_common::Action::LabelConfirm,
-        dlp_common::Decision::ALLOW,
-        "server".to_string(),
-        0,
-    );
-    let pool = Arc::clone(&state.pool);
-    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        audit_store::store_events_sync(&uow, &[audit_event])?;
-        uow.commit().map_err(AppError::Database)?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
-    .and_then(|r| r)
-    {
-        tracing::warn!(error = %e, "audit emission failed for label_confirm (best-effort)");
-    }
 
     tracing::info!(label_id = %resp.id, "label confirmed");
     Ok(Json(resp))
@@ -4407,11 +4346,9 @@ async fn reject_label(
     let id = label_id.clone();
     let pool = Arc::clone(&state.pool);
     let username2 = username.clone();
+    let label_svc = Arc::clone(&state.label_service);
 
     let resp = tokio::task::spawn_blocking(move || -> Result<LabelResponse, AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-
         let original = LabelRepository::get_by_id(&pool, &id).map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => {
                 AppError::NotFound(format!("label {id} not found"))
@@ -4432,12 +4369,24 @@ async fn reject_label(
             ));
         }
 
-        let affected = LabelRepository::update_state(&uow, &id, "rejected", &now)
-            .map_err(AppError::Database)?;
-        if affected == 0 {
-            return Err(AppError::NotFound(format!("label {id} not found")));
-        }
-        uow.commit().map_err(AppError::Database)?;
+        let ctx = crate::label_service::MutationContext {
+            label_id: id.clone(),
+            action: "label_reject".to_string(),
+            old_state: Some(original.label_state.clone()),
+            new_state: Some("rejected".to_string()),
+            path: original.path.clone(),
+            tier: original.tier.clone(),
+            user_name: username.clone(),
+        };
+
+        label_svc.with_mutation(ctx, |uow| {
+            let affected = LabelRepository::update_state(uow, &id, "rejected", &now)
+                .map_err(AppError::Database)?;
+            if affected == 0 {
+                return Err(AppError::NotFound(format!("label {id} not found")));
+            }
+            Ok(())
+        })?;
 
         Ok(LabelResponse {
             id,
@@ -4457,36 +4406,6 @@ async fn reject_label(
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
-
-    // Invalidate cache after commit
-    state.label_service.invalidate_cache();
-
-    // Emit audit event (best-effort)
-    let audit_event = dlp_common::AuditEvent::new(
-        dlp_common::EventType::AdminAction,
-        String::new(),
-        username.clone(),
-        format!("label:{} rejected", resp.id),
-        dlp_common::Classification::T3,
-        dlp_common::Action::LabelReject,
-        dlp_common::Decision::ALLOW,
-        "server".to_string(),
-        0,
-    );
-    let pool = Arc::clone(&state.pool);
-    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        audit_store::store_events_sync(&uow, &[audit_event])?;
-        uow.commit().map_err(AppError::Database)?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
-    .and_then(|r| r)
-    {
-        tracing::warn!(error = %e, "audit emission failed for label_reject (best-effort)");
-    }
 
     tracing::info!(label_id = %resp.id, "label rejected");
     Ok(Json(resp))
@@ -4515,66 +4434,45 @@ async fn delete_label(
 
     let pool = Arc::clone(&state.pool);
     let label_id = id.clone();
-    let result = tokio::task::spawn_blocking(move || -> Result<Option<String>, AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        // Get path for audit before deleting
-        let path_result: rusqlite::Result<String> = uow.tx.query_row(
-            "SELECT path FROM labels WHERE id = ?1",
+    let label_svc = Arc::clone(&state.label_service);
+    let path = tokio::task::spawn_blocking(move || -> Result<String, AppError> {
+        // Get path and tier for audit before deleting
+        let conn = pool.get().map_err(AppError::from)?;
+        let row_result: rusqlite::Result<(String, String, String)> = conn.query_row(
+            "SELECT path, tier, label_state FROM labels WHERE id = ?1",
             rusqlite::params![label_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         );
-        let path = match path_result {
+        let (path, tier, old_state) = match row_result {
             Ok(p) => p,
             Err(rusqlite::Error::QueryReturnedNoRows) => {
-                return Ok(None);
+                return Err(AppError::NotFound(format!("label {label_id} not found")));
             }
             Err(e) => return Err(AppError::Database(e)),
         };
-        let affected = LabelRepository::delete(&uow, &label_id).map_err(AppError::Database)?;
-        if affected == 0 {
-            return Ok(None);
-        }
-        uow.commit().map_err(AppError::Database)?;
-        Ok(Some(path))
+
+        let ctx = crate::label_service::MutationContext {
+            label_id: label_id.clone(),
+            action: "label_delete".to_string(),
+            old_state: Some(old_state),
+            new_state: None,
+            path: path.clone(),
+            tier,
+            user_name: username.clone(),
+        };
+
+        label_svc.with_mutation(ctx, |uow| {
+            let affected = LabelRepository::delete(uow, &label_id).map_err(AppError::Database)?;
+            if affected == 0 {
+                return Err(AppError::NotFound(format!("label {label_id} not found")));
+            }
+            Ok(())
+        })?;
+
+        Ok(path)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
-
-    let path = match result {
-        Some(p) => p,
-        None => return Err(AppError::NotFound(format!("label {id} not found"))),
-    };
-
-    // Invalidate cache after commit
-    state.label_service.invalidate_cache();
-
-    // Emit audit event (best-effort)
-    let audit_event = dlp_common::AuditEvent::new(
-        dlp_common::EventType::AdminAction,
-        String::new(),
-        username.clone(),
-        format!("label:{} at {}", id, path),
-        dlp_common::Classification::T3,
-        dlp_common::Action::LabelDelete,
-        dlp_common::Decision::ALLOW,
-        "server".to_string(),
-        0,
-    );
-    let pool = Arc::clone(&state.pool);
-    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        audit_store::store_events_sync(&uow, &[audit_event])?;
-        uow.commit().map_err(AppError::Database)?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))
-    .and_then(|r| r)
-    {
-        tracing::warn!(error = %e, "audit emission failed for label_delete (best-effort)");
-    }
 
     tracing::info!(label_id = %id, path = %path, "label deleted");
     Ok(StatusCode::NO_CONTENT)
