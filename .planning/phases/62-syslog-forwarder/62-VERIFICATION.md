@@ -1,6 +1,6 @@
 ---
 phase: 62-syslog-forwarder
-verified: 2026-05-21T12:00:00Z
+verified: 2026-05-21T10:52:06Z
 status: passed
 score: 19/19 must-haves verified
 overrides_applied: 0
@@ -29,35 +29,35 @@ human_verification:
 # Phase 62: Syslog Forwarder Verification Report
 
 **Phase Goal:** Native RFC 5424 syslog forwarding from dlp-server to configured SIEM/SOC collector over TLS, with encrypted offline queue on both agent and server sides.
-**Verified:** 2026-05-21T12:00:00Z
+**Verified:** 2026-05-21T10:52:06Z
 **Status:** PASSED
-**Re-verification:** Yes — after gap closure (Plan 04)
+**Re-verification:** Yes -- after gap closure (Plan 04)
 
 ## Goal Achievement
 
 ### Observable Truths
 
-| #   | Truth | Status | Evidence |
-| --- | ----- | ------ | -------- |
-| 1 | Syslog forwarding can be enabled/disabled via admin configuration | VERIFIED | `syslog_config` table with `enabled` field; admin API GET/PUT handlers; defaults to disabled (0) |
-| 2 | Failed syslog forwards are queued securely for later retry | VERIFIED | `audit_store.rs` enqueues to `syslog_queue` via `SyslogQueueRepository::enqueue` with KEK encryption; background drain loop retries |
-| 3 | Syslog configuration persists across server restarts | VERIFIED | `syslog_config` single-row table with CHECK(id=1); seeded on init; SQLite persistence |
-| 4 | Queued events drained in order, removed only after successful delivery | VERIFIED | `peek_oldest` returns FIFO without deleting; `delete` called only after `forward()` succeeds; 13 queue tests pass |
-| 5 | SyslogConnector formats RFC 5424 with correct PRI, TIMESTAMP, HOSTNAME, APP-NAME, PROCID, MSGID, MSG | VERIFIED | `format_rfc5424` produces `<PRI>1 TIMESTAMP HOSTNAME DLP-AUDIT PROCID MSGID - JSON\n`; 15 connector tests pass |
-| 6 | SyslogConnector connects over TLS 1.2+ using system CA store | VERIFIED | `build_tls_config` loads `rustls_native_certs` + `webpki_roots` fallback; `tokio-rustls` 0.26 dependency; TLS 1.3 config path exists |
-| 7 | Configurable severity mapping and facility code | VERIFIED | `map_severity` uses config fields; `validate_facility_code(16-23)` and `validate_severity(0-7)` enforced; defaults per D-03/D-04 |
-| 8 | Batched newline-delimited JSON by default | VERIFIED | `batching_enabled` default=1; `forward()` iterates events and writes each as separate RFC 5424 message with LF terminator |
-| 9 | JSON-in-MSG only (D-01/D-02) | VERIFIED | `serde_json::to_string(event)` produces flat JSON with all AuditEvent fields; newlines escaped |
-| 10 | Server queue uses KEK encryption with per-column AAD (R-62-01) | VERIFIED | `aad_for("syslog_queue", "event_json")` used in `enqueue` and `peek_oldest`; `Envelope` with nonce + ciphertext |
-| 11 | Queue uses peek-confirm-delete (R-62-02) | VERIFIED | `peek_oldest` does not delete; `delete` called after confirmed forward; `mark_failed` on error |
-| 12 | Pre-insert tail-drop (R-62-03) | VERIFIED | `enqueue` checks `count >= max_size` before encrypting/inserting; returns `AppError::BadRequest` |
-| 13 | TLS ServerName handles DNS and IP addresses (R-62-04) | VERIFIED | `resolve_server_name` uses `IpAddress` variant for IPs, `try_from` for DNS; tests for both |
-| 14 | Admin API has validation, rate limiting, auth (R-62-09, R-62-10) | VERIFIED | PUT validates port/facility/severity/policy/tls; test handler has `TEST_RATE_LIMITER` (1 per 10s); routes under `require_auth` middleware |
-| 15 | Drain loop has graceful shutdown, backoff, observability | VERIFIED | `tokio::select!` with `shutdown_rx`; `MissedTickBehavior::Skip`; exponential backoff capped at 60s; `record_syslog_*` metrics |
-| 16 | DPAPI functions in dlp-common with LocalMachine scope (R-62-14) | VERIFIED | `dlp-common/src/crypto/dpapi.rs` has `dpapi_protect_machine`/`dpapi_unprotect_machine` with `CRYPTPROTECT_LOCAL_MACHINE`; non-Windows stubs |
-| 17 | Agent queue uses INTEGER created_at, single drain worker (R-62-13, R-62-15) | VERIFIED | `created_at INTEGER NOT NULL` in schema; `DRAIN_IN_PROGRESS` atomic flag with `compare_exchange`; 9 queue tests pass |
-| 18 | Agent audit_emitter enqueues to offline_audit_queue when server unreachable | **VERIFIED** | `audit_emitter.rs` line 352-388: when `AUDIT_BUFFER` not set, calls `offline_audit_queue::enqueue_with_overflow_event`; `service.rs` line 132 calls `init_table` during startup |
-| 19 | Queue overflow emits synthetic queue_overflow audit event (R-62-16) | **VERIFIED** | `audit_emitter.rs` line 361-381: on `AtCapacity`, emits synthetic `AuditEvent` with `EventType::AdminAction`, `resource_path="queue_overflow"`, written to JSONL via `EMITTER.emit` |
+| #   | Truth | Status     | Evidence       |
+| --- | ----- | ---------- | -------------- |
+| 1   | Syslog forwarding can be enabled/disabled via admin configuration | VERIFIED | `syslog_config` table with `enabled` field; admin API GET/PUT handlers; defaults to disabled (0) |
+| 2   | Failed syslog forwards are queued securely for later retry | VERIFIED | `audit_store.rs` enqueues to `syslog_queue` via `SyslogQueueRepository::enqueue` with KEK encryption; background drain loop retries |
+| 3   | Syslog configuration persists across server restarts | VERIFIED | `syslog_config` single-row table with CHECK(id=1); seeded on init; SQLite persistence |
+| 4   | Queued events drained in order, removed only after successful delivery | VERIFIED | `peek_oldest` returns FIFO without deleting; `delete` called only after `forward()` succeeds; 13 queue tests pass |
+| 5   | SyslogConnector formats RFC 5424 with correct PRI, TIMESTAMP, HOSTNAME, APP-NAME, PROCID, MSGID, MSG | VERIFIED | `format_rfc5424` produces `<PRI>1 TIMESTAMP HOSTNAME DLP-AUDIT PROCID MSGID - JSON\n`; 15 connector tests pass |
+| 6   | SyslogConnector connects over TLS 1.2+ using system CA store | VERIFIED | `build_tls_config` loads `rustls_native_certs` + `webpki_roots` fallback; `tokio-rustls` 0.26 dependency; TLS 1.3 config path exists |
+| 7   | Configurable severity mapping and facility code | VERIFIED | `map_severity` uses config fields; `validate_facility_code(16-23)` and `validate_severity(0-7)` enforced; defaults per D-03/D-04 |
+| 8   | Batched newline-delimited JSON by default | VERIFIED | `batching_enabled` default=1; `forward()` iterates events and writes each as separate RFC 5424 message with LF terminator |
+| 9   | JSON-in-MSG only (D-01/D-02) | VERIFIED | `serde_json::to_string(event)` produces flat JSON with all AuditEvent fields; newlines escaped |
+| 10   | Server queue uses KEK encryption with per-column AAD (R-62-01) | VERIFIED | `aad_for("syslog_queue", "event_json")` used in `enqueue` and `peek_oldest`; `Envelope` with nonce + ciphertext |
+| 11   | Queue uses peek-confirm-delete (R-62-02) | VERIFIED | `peek_oldest` does not delete; `delete` called after confirmed forward; `mark_failed` on error |
+| 12   | Pre-insert tail-drop (R-62-03) | VERIFIED | `enqueue` checks `count >= max_size` before encrypting/inserting; returns `AppError::BadRequest` |
+| 13   | TLS ServerName handles DNS and IP addresses (R-62-04) | VERIFIED | `resolve_server_name` uses `IpAddress` variant for IPs, `try_from` for DNS; tests for both |
+| 14   | Admin API has validation, rate limiting, auth (R-62-09, R-62-10) | VERIFIED | PUT validates port/facility/severity/policy/tls; test handler has `TEST_RATE_LIMITER` (1 per 10s); routes under `require_auth` middleware |
+| 15   | Drain loop has graceful shutdown, backoff, observability | VERIFIED | `tokio::select!` with `shutdown_rx`; `MissedTickBehavior::Skip`; exponential backoff capped at 60s; `record_syslog_*` metrics |
+| 16   | DPAPI functions in dlp-common with LocalMachine scope (R-62-14) | VERIFIED | `dlp-common/src/crypto/dpapi.rs` has `dpapi_protect_machine`/`dpapi_unprotect_machine` with `CRYPTPROTECT_LOCAL_MACHINE`; non-Windows stubs |
+| 17   | Agent queue uses INTEGER created_at, single drain worker (R-62-13, R-62-15) | VERIFIED | `created_at INTEGER NOT NULL` in schema; `DRAIN_IN_PROGRESS` atomic flag with `compare_exchange`; 9 queue tests pass |
+| 18   | Agent audit_emitter enqueues to offline_audit_queue when server unreachable | VERIFIED | `audit_emitter.rs` line 355: when `AUDIT_BUFFER` not set, calls `offline_audit_queue::enqueue_with_overflow_event`; `service.rs` line 132 calls `init_table` during startup |
+| 19   | Queue overflow emits synthetic queue_overflow audit event (R-62-16) | VERIFIED | `audit_emitter.rs` line 362-381: on `AtCapacity`, emits synthetic `AuditEvent` with `EventType::AdminAction`, `resource_path="queue_overflow"`, written to JSONL via `EMITTER.emit` |
 
 **Score:** 19/19 truths verified (up from 17/19 in initial verification)
 
@@ -67,14 +67,14 @@ human_verification:
 | -------- | ----------- | ------ | ------- |
 | `dlp-server/src/db/mod.rs` | syslog_config + syslog_queue tables | VERIFIED | Tables with indexes, seed row, retry metadata |
 | `dlp-server/src/db/repositories/syslog_config.rs` | Config CRUD + validation | VERIFIED | 6 tests pass; facility/severity validation |
-| `dlp-server/src/db/repositories/syslog_queue.rs` | KEK-encrypted queue + peek-confirm-delete | VERIFIED | 8 tests pass; FIFO, tail-drop, mark_failed, count_ready |
+| `dlp-server/src/db/repositories/syslog_queue.rs` | KEK-encrypted queue + peek-confirm-delete | VERIFIED | 13 tests pass; FIFO, tail-drop, mark_failed, count_ready |
 | `dlp-server/src/syslog_connector.rs` | RFC 5424 + TLS transport | VERIFIED | 15 tests pass; PRI calc, ServerName, TLS config, newline escaping |
-| `dlp-server/src/admin_api.rs` | GET/PUT/test handlers | VERIFIED | 12 admin API tests pass; auth, validation, rate limiting |
+| `dlp-server/src/admin_api.rs` | GET/PUT/test handlers | VERIFIED | 10 admin API tests pass; auth, validation, rate limiting |
 | `dlp-server/src/lib.rs` | AppState with syslog field | VERIFIED | `pub syslog: syslog_connector::SyslogConnector` |
 | `dlp-server/src/main.rs` | Drain loop + graceful shutdown | VERIFIED | `tokio::select!`, `shutdown_rx`, `compute_next_attempt`, backoff |
 | `dlp-server/src/audit_store.rs` | Durable-first queuing | VERIFIED | `spawn_blocking` + `SyslogQueueRepository::enqueue` before HTTP response |
 | `dlp-server/src/observability.rs` | Metrics | VERIFIED | 6 tests pass; queue_depth, latency, retry, drop, tls_error |
-| `dlp-common/src/crypto/dpapi.rs` | DPAPI machine-scope | VERIFIED | 2 tests pass (Windows); non-Windows stub |
+| `dlp-common/src/crypto/dpapi.rs` | DPAPI machine-scope | VERIFIED | 3 tests pass (2 Windows, 1 non-Windows stub) |
 | `dlp-agent/src/offline_audit_queue.rs` | Agent queue with DPAPI | VERIFIED | 9 tests pass; init, enqueue, drain, delete, count, lock, created_at INTEGER |
 | `dlp-agent/src/audit_emitter.rs` | Queue integration + synthetic overflow | VERIFIED | Calls `enqueue_with_overflow_event` on AUDIT_BUFFER missing; handles AtCapacity |
 | `dlp-agent/src/service.rs` | DB init on startup | VERIFIED | `AGENT_DB` OnceLock<Mutex<Connection>>; `init_agent_db` calls `init_table` |
@@ -92,11 +92,11 @@ human_verification:
 | audit_store.rs | syslog_queue.rs | `SyslogQueueRepository::enqueue` in `spawn_blocking` | WIRED | Durable-first queuing before HTTP response |
 | admin_api.rs | syslog_config.rs | `SyslogConfigRepository::get/update` | WIRED | GET/PUT handlers call repository |
 | main.rs | AppState | `syslog: SyslogConnector::new` | WIRED | Initialized and passed to AppState |
-| main.rs drain loop | syslog_queue.rs | `peek_oldest` + `forward` + `delete`/`mark_failed` | WIRED | Full peek-confirm-delete cycle |
+| main.rs drain loop | syslog_queue.rs | `peek_and_claim` + `forward` + `delete`/`mark_failed` | WIRED | Full peek-confirm-delete cycle with atomic lease |
 | main.rs drain loop | observability.rs | `record_syslog_*` calls | WIRED | Metrics recorded at each step |
-| audit_emitter.rs | offline_audit_queue.rs | `offline_audit_queue::enqueue_with_overflow_event` | **WIRED** | Called when AUDIT_BUFFER not set (lines 352-388) |
-| server_client.rs (flush) | offline_audit_queue.rs | `offline_audit_queue::enqueue` on flush failure | **WIRED** | `AuditBuffer::flush` enqueues failed events (lines 940-968) |
-| offline.rs heartbeat | offline_audit_queue.rs | `drain` + `send_audit_events_json` + `delete` | **WIRED** | Lines 189-266: acquire lock, count, drain, forward, delete on success |
+| audit_emitter.rs | offline_audit_queue.rs | `offline_audit_queue::enqueue_with_overflow_event` | WIRED | Called when AUDIT_BUFFER not set (line 355) |
+| server_client.rs (flush) | offline_audit_queue.rs | `offline_audit_queue::enqueue` on flush failure | WIRED | `AuditBuffer::flush` enqueues failed events (line 957) |
+| offline.rs heartbeat | offline_audit_queue.rs | `drain` + `send_audit_events_json` + `delete` | WIRED | Lines 189-266: acquire lock, count, drain, forward, delete on success |
 | dlp-agent | dlp-common crypto | `dpapi_protect_machine` | WIRED | Agent queue uses dlp-common DPAPI |
 | dlp-admin-cli dispatch | syslog_config.rs | `handle_syslog_config` | WIRED | Screen routing in place |
 | dlp-admin-cli render | syslog_config.rs | `draw_syslog_config` | WIRED | Render match arm in place |
@@ -105,29 +105,34 @@ human_verification:
 
 | Artifact | Data Variable | Source | Produces Real Data | Status |
 | -------- | ------------- | ------ | ------------------ | ------ |
-| audit_store.rs | `syslog_events` (Arc<Vec<AuditEvent>>) | HTTP request events | Yes — real audit events | FLOWING |
-| audit_store.rs | `config.queue_max_size` | `SyslogConfigRepository::get` | Yes — DB query | FLOWING |
-| main.rs drain loop | `batch` (Vec<QueuedEvent>) | `SyslogQueueRepository::peek_oldest` | Yes — DB query + KEK decrypt | FLOWING |
-| main.rs drain loop | `events` (Vec<AuditEvent>) | `serde_json::from_str` on batch | Yes — deserialized from queue | FLOWING |
-| offline_audit_queue.rs | `event_json_dpapi` blob | `dpapi_protect_machine` | Yes — DPAPI encrypted on Windows | FLOWING |
-| audit_emitter.rs | `overflow` (synthetic AuditEvent) | `AuditEvent::new` on AtCapacity | Yes — synthetic event emitted to JSONL | FLOWING |
-| offline.rs drain | `events` (Vec<(i64, String)>) | `offline_audit_queue::drain` | Yes — DB query + DPAPI decrypt | FLOWING |
+| audit_store.rs | `syslog_events` (Arc<Vec<AuditEvent>>) | HTTP request events | Yes -- real audit events | FLOWING |
+| audit_store.rs | `config.queue_max_size` | `SyslogConfigRepository::get` | Yes -- DB query | FLOWING |
+| main.rs drain loop | `batch` (Vec<QueuedEvent>) | `SyslogQueueRepository::peek_and_claim` | Yes -- DB query + KEK decrypt | FLOWING |
+| main.rs drain loop | `events` (Vec<AuditEvent>) | `serde_json::from_str` on batch | Yes -- deserialized from queue | FLOWING |
+| offline_audit_queue.rs | `event_json_dpapi` blob | `dpapi_protect_machine` | Yes -- DPAPI encrypted on Windows | FLOWING |
+| audit_emitter.rs | `overflow` (synthetic AuditEvent) | `AuditEvent::new` on AtCapacity | Yes -- synthetic event emitted to JSONL | FLOWING |
+| offline.rs drain | `events` (Vec<(i64, String)>) | `offline_audit_queue::drain` | Yes -- DB query + DPAPI decrypt | FLOWING |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 | -------- | ------- | ------ | ------ |
-| dlp-server tests pass | `cargo test -p dlp-server --lib` | 498 passed, 3 ignored | PASS |
-| dlp-agent tests pass | `cargo test -p dlp-agent --lib` | 512+ passed | PASS |
-| dlp-common tests pass | `cargo test -p dlp-common --lib` | 176 passed | PASS |
-| dlp-admin-cli tests pass | `cargo test -p dlp-admin-cli --lib` | 133+ passed | PASS |
+| dlp-server tests pass | `cargo test -p dlp-server --lib` | 502 passed, 3 ignored | PASS |
+| dlp-agent tests pass | `cargo test -p dlp-agent --lib` | 583 passed | PASS |
+| dlp-common tests pass | `cargo test -p dlp-common --lib` | 192 passed | PASS |
+| dlp-admin-cli tests pass | `cargo test -p dlp-admin-cli --lib` | 139 passed | PASS |
+| dlp-user-ui tests pass | `cargo test -p dlp-user-ui --lib` | 27 passed | PASS |
+| Full workspace tests | `cargo test --all --lib` | 1646 passed, 4 ignored | PASS |
 | Syslog connector tests | `cargo test -p dlp-server --lib syslog_connector` | 15 passed | PASS |
 | Syslog queue tests | `cargo test -p dlp-server --lib syslog_queue` | 13 passed | PASS |
-| Syslog config tests | `cargo test -p dlp-server --lib syslog_config` | 17 passed | PASS |
-| Admin API syslog tests | `cargo test -p dlp-server --lib admin_api::tests::test_syslog` | 12 passed | PASS |
+| Syslog config tests | `cargo test -p dlp-server --lib syslog_config` | 6 passed | PASS |
+| Admin API syslog tests | `cargo test -p dlp-server --lib admin_api::tests::test_syslog` | 10 passed | PASS |
 | Agent queue tests | `cargo test -p dlp-agent --lib offline_audit_queue` | 9 passed | PASS |
-| DPAPI crypto tests | `cargo test -p dlp-common --lib crypto::dpapi` | 2 passed (Windows), 1 stub (non-Windows) | PASS |
+| DPAPI crypto tests | `cargo test -p dlp-common --lib crypto::dpapi` | 3 passed (2 Windows, 1 non-Windows) | PASS |
 | TUI syslog screen tests | `cargo test -p dlp-admin-cli --lib screens::syslog_config` | 12 passed | PASS |
+| Observability tests | `cargo test -p dlp-server --lib observability` | 6 passed | PASS |
+| Full workspace build | `cargo build --all` | Success | PASS |
+| Full workspace clippy | `cargo clippy --all -- -D warnings` | Clean | PASS |
 
 ### Requirements Coverage
 
@@ -144,7 +149,11 @@ human_verification:
 | ---- | ---- | ------- | -------- | ------ |
 | `dlp-admin-cli/src/screens/syslog_config.rs` | 67-68 | `#[allow(dead_code)]` on `BOOL_FIELDS` and `NUMERIC_FIELDS` | Info | Compiler appeasement for const arrays used in tests but not all production paths |
 
-No blockers. No unresolved debt markers (TBD/FIXME/XXX). No stubs or placeholder data.
+No blockers. No unresolved debt markers (TBD/FIXME/XXX) in phase 62 files. Two TODOs exist but are unrelated to phase 62:
+- `dlp-agent/src/audit_emitter.rs:52` -- TODO (Phase 5, N-SEC-07): compute SHA-256 hash -- pre-existing, unrelated
+- `dlp-server/src/admin_api.rs:7` -- TODO(followup): apply ME-01 mask-on-GET to siem-config -- pre-existing, unrelated
+
+No stubs or placeholder data in phase 62 implementation files.
 
 ### Human Verification Required
 
@@ -173,5 +182,5 @@ No blockers. No unresolved debt markers (TBD/FIXME/XXX). No stubs or placeholder
 
 ---
 
-_Verified: 2026-05-21T12:00:00Z_
+_Verified: 2026-05-21T10:52:06Z_
 _Verifier: Claude (gsd-verifier)_
