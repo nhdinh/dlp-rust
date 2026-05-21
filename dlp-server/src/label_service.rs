@@ -319,6 +319,7 @@ mod tests {
     use crate::db::new_pool;
     use crate::db::repositories::labels::{LabelRepository, LabelUpsertRow};
     use crate::db::UnitOfWork;
+    use crate::AppError;
 
     #[test]
     fn test_resolved_tier_exact() {
@@ -894,5 +895,119 @@ mod tests {
         let resolved2 = svc.resolve_tier(r"C:\Data\HR\file.txt");
         assert_eq!(resolved2.source(), "inherited");
         assert_eq!(resolved2.tier(), Tier::T4);
+    }
+
+    // --- with_mutation tests (transactional audit) ---
+
+    #[test]
+    fn test_with_mutation_commits_and_emits_audit() {
+        let pool = Arc::new(new_pool(":memory:").expect("create pool"));
+        let svc = LabelService::new(Arc::clone(&pool));
+
+        let ctx = MutationContext {
+            label_id: "lbl-001".to_string(),
+            action: "label_create".to_string(),
+            old_state: None,
+            new_state: Some("confirmed".to_string()),
+            path: r"C:\Data\file.txt".to_string(),
+            tier: "T3".to_string(),
+        };
+
+        let result = svc.with_mutation(ctx, |uow| {
+            LabelRepository::insert(
+                uow,
+                &LabelUpsertRow {
+                    id: "lbl-001",
+                    path: r"C:\Data\file.txt",
+                    object_type: "file",
+                    tier: "T3",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .map_err(AppError::Database)?;
+            Ok(42u32)
+        });
+
+        assert_eq!(result.expect("mutation ok"), 42);
+    }
+
+    #[test]
+    fn test_with_mutation_rolls_back_when_mutation_fails() {
+        let pool = Arc::new(new_pool(":memory:").expect("create pool"));
+        let svc = LabelService::new(Arc::clone(&pool));
+
+        let ctx = MutationContext {
+            label_id: "lbl-002".to_string(),
+            action: "label_create".to_string(),
+            old_state: None,
+            new_state: Some("confirmed".to_string()),
+            path: r"C:\Data\file.txt".to_string(),
+            tier: "T3".to_string(),
+        };
+
+        let result: Result<(), AppError> = svc.with_mutation(ctx, |_uow| {
+            Err(AppError::BadRequest("simulated mutation failure".to_string()))
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_with_mutation_invalidates_cache() {
+        let pool = Arc::new(new_pool(":memory:").expect("create pool"));
+        let svc = LabelService::new(Arc::clone(&pool));
+
+        svc.cache.insert(
+            r"C:\Data\file.txt".to_string(),
+            CacheEntry {
+                tier: Tier::T1,
+                source: ResolutionSource::Exact,
+                parent_path: None,
+                inserted: Instant::now(),
+            },
+        );
+
+        let ctx = MutationContext {
+            label_id: "lbl-003".to_string(),
+            action: "label_create".to_string(),
+            old_state: None,
+            new_state: Some("confirmed".to_string()),
+            path: r"C:\Data\file.txt".to_string(),
+            tier: "T3".to_string(),
+        };
+
+        svc.with_mutation(ctx, |uow| {
+            LabelRepository::insert(
+                uow,
+                &LabelUpsertRow {
+                    id: "lbl-003",
+                    path: r"C:\Data\file.txt",
+                    object_type: "file",
+                    tier: "T3",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .map_err(AppError::Database)?;
+            Ok(())
+        })
+        .expect("mutation ok");
+
+        assert!(svc.cache.get(r"C:\Data\file.txt").is_none());
     }
 }
