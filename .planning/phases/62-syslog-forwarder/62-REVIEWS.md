@@ -295,3 +295,151 @@ The phase is well-scoped and the technology choices are sound, but critical impl
 *Review completed: 2026-05-14*
 *Reviewers: Codex CLI, Claude Code (self-review)*
 *OpenCode: unavailable (empty output on invocation)*
+
+---
+
+## Codex Review — Cycle 1 (2026-05-21)
+
+### Summary
+
+The updated plans substantially improve the previous version: durable queueing, peek-confirm-delete, KEK/DPAPI encryption, crate-boundary fixes, graceful shutdown, and observability are now explicitly planned. The phase is much closer to implementable. The remaining risk is not that major components are missing, but that some components now overlap in ways that can create duplicate delivery, hidden drops, or compile/runtime surprises.
+
+### PLAN 62-01: Server-Side Core
+
+#### Strengths
+- KEK encryption, AAD, wrong-key tests, and queue retry metadata are now explicit.
+- Peek-confirm-delete semantics are correctly separated from deletion.
+- TLS 1.2+, system CA store, DNS/IP ServerName, and timeout concerns are addressed.
+- RFC 5424 formatting tests cover PRI, timestamps, MSGID, newline escaping, and disabled/empty forwarding.
+- Queue capacity is enforced pre-insert, matching tail-drop-newest semantics.
+
+#### Concerns
+- **HIGH:** SyslogConnector::forward() still appears responsible for enqueue-on-send-failure, but Wave 2 also makes audit_store.rs durable-first. This creates a duplicate ownership problem for queue insertion.
+- **MEDIUM:** Config allows fifo_head_drop and ring_buffer, but repository behavior only implements pre-insert tail-drop. Either implement all configured policies or reject unsupported ones.
+- **MEDIUM:** TLS config sketch may not correctly enforce TLS minimum versions with rustls 0.23 APIs.
+- **MEDIUM:** Syslog-over-TLS framing is underspecified. Some collectors expect RFC 5425 octet-counted framing.
+- **LOW:** Hostname, app-name, procid, and msgid should be sanitized to RFC 5424 printable ASCII/NILVALUE constraints.
+
+#### Suggestions
+- Make forward() transport-only: format and send, never enqueue. Let the caller/drain loop own queue state.
+- Restrict queue_policy to fifo_tail_drop for Phase 62 unless alternatives are implemented.
+- Add a mock TLS collector integration test.
+- Add explicit tests for corrupt encrypted queue rows and invalid RFC 5424 header fields.
+
+#### Risk Assessment: MEDIUM
+
+### PLAN 62-02: Application Wiring
+
+#### Strengths
+- Durable-first queueing directly addresses the prior delivery-semantics concern.
+- Drain loop now uses peek-confirm-delete and next_attempt_at.
+- Graceful shutdown with tokio::select! is included.
+- Admin API validation, test endpoint, and rate limiting are planned.
+- Observability metrics are now part of scope.
+
+#### Concerns
+- **HIGH:** The drain loop calls SyslogConnector::forward(&events). If forward() enqueues on failure, failed queued events can be inserted again instead of only marked failed.
+- **HIGH:** spawn_blocking alone is not a bounded queue. Tokio's blocking pool can still admit many tasks; audit ingestion needs a semaphore, bounded channel, or synchronous batch insert limit.
+- **MEDIUM:** The plan declares backoff reset per config generation, but the sketch only defines last_config_hash and does not actually compare/update it.
+- **MEDIUM:** Queue full handling is observability-only on the server side. Dropped audit forwarding attempts should emit structured audit/ops evidence.
+- **MEDIUM:** Test endpoint uses the raw Authorization header as a rate-limit key, which is memory-growth prone.
+
+#### Suggestions
+- Split APIs into enqueue_events() and send_batch_to_collector() so durable-first and drain behavior cannot accidentally recurse.
+- Add a Semaphore around syslog enqueue/send work.
+- Implement and test config-generation reset using updated_at or a hash of effective config.
+- Hash the session/user identity for rate limiting and expire old limiter entries.
+
+#### Risk Assessment: MEDIUM-HIGH
+
+### PLAN 62-03: Agent Queue + Admin TUI
+
+#### Strengths
+- DPAPI moved to dlp-common, resolving the circular dependency concern.
+- LocalMachine scope is explicit for SYSTEM service context.
+- Agent queue uses offline_audit_queue, which correctly avoids syslog-specific coupling.
+- Corrupt DPAPI rows are logged, deleted, and skipped.
+- Single drain worker via atomic guard addresses concurrent drain risk.
+- TUI fields, picker cycling, inline validation, and test action are well covered.
+
+#### Concerns
+- **HIGH:** Non-Windows behavior stores plaintext. That is useful for tests, but it violates the encrypted offline queue security model if non-Windows builds are ever used outside tests.
+- **MEDIUM:** Atomic drain lock must be released with RAII/drop guard. Manual release_drain_lock() risks permanent lockout on early return or panic.
+- **MEDIUM:** Agent queue overflow event behavior is split between Wave 3 and Wave 4.
+- **MEDIUM:** The TUI stores values in generic serde_json::Value; it should strongly match the server payload.
+- **LOW:** DPAPI memory returned by Windows APIs is freed, but tests should check repeated protect/unprotect paths.
+
+#### Suggestions
+- On non-Windows, either disable queue encryption tests with explicit cfg-only test helpers or use a test-only mock crypto provider.
+- Replace manual drain lock release with a DrainGuard that releases on Drop.
+- Persist an overflow marker/count so one synthetic event is emitted after reconnect.
+- Add TUI save/load round-trip tests against SyslogConfigPayload.
+
+#### Risk Assessment: MEDIUM
+
+### PLAN 62-04: Gap Closure
+
+#### Strengths
+- Correctly identifies that Wave 3 artifacts are not enough unless wired into production agent startup, emit, and heartbeat paths.
+- Adds init_table during service startup.
+- Adds enqueue on server failure and drain on heartbeat success.
+- Explicitly covers synthetic queue_overflow audit behavior.
+- Adds workspace-level verification.
+
+#### Concerns
+- **HIGH:** The suggested OnceLock<Connection> / static SQLite connection is risky. rusqlite::Connection is not a good shared global across async/service paths.
+- **HIGH:** Drain pseudocode includes invalid/unclear Rust (Ok(0) | Ok(0..) if count == 0).
+- **MEDIUM:** Draining on heartbeat success does not guarantee the audit ingest endpoint is healthy.
+- **MEDIUM:** Synthetic overflow event is written JSONL-only in the sketch, which may fail the requirement.
+- **MEDIUM:** Deleting drained events only after batch success is good, but partial server acceptance/idempotency is not defined.
+
+#### Suggestions
+- Use an agent DB handle abstraction or open short-lived SQLite connections per operation.
+- Add a production-realistic drain test using the existing server client method.
+- Define whether agent upload is all-or-nothing.
+- Persist overflow count and send a synthetic audit event through the normal server-bound path after reconnect.
+
+#### Risk Assessment: MEDIUM-HIGH
+
+## Current HIGH Concerns
+
+1. **Duplicate queue insertion (62-01/62-02):** SyslogConnector::forward() may enqueue on failure while audit_store.rs also enqueues durably first. Need transport-only forward().
+2. **spawn_blocking not bounded (62-02):** Tokio blocking pool can still admit many tasks under high volume. Need explicit semaphore or batch limit.
+3. **Non-Windows plaintext storage (62-03):** Agent queue stores plaintext on non-Windows. Need cfg-gated test-only behavior or mock crypto.
+4. **OnceLock<Connection> risk (62-04):** Static SQLite connection across async paths needs proper synchronization or per-operation connections.
+5. **Invalid Rust pseudocode (62-04):** Drain loop sketch has invalid match arms that need fixing.
+
+CYCLE_SUMMARY: current_high=5
+
+---
+
+## Codex Review — Cycle 3 (2026-05-21)
+
+### Findings
+
+**HIGH (1 remaining — now fixed):** Durable-first enqueue still swallows enqueue failure.
+- The `spawn_blocking` result was only checking `JoinError`, not the inner `Result<(), AppError>`.
+- Fix applied: use `.await.map_err(...)?` to propagate persistence failures to the HTTP handler.
+
+**MEDIUM:** `peek_and_claim` sketch selects IDs then updates in separate steps without a transaction.
+- Two drainers could select the same rows before either updates the lease.
+- Suggested fix: use `BEGIN IMMEDIATE` transaction, or conditional `UPDATE ... WHERE id IN (...) AND (leased_until = '' OR leased_until <= ?)` followed by re-selecting claimed rows.
+
+**MEDIUM:** `release_lease()` added but not used on forward failure.
+- Failed rows wait for lease expiry even if `next_attempt_at` is sooner.
+- Fix: call `release_lease(&uow, &ids)` alongside `mark_failed()` in the drain loop error path.
+
+### Previous HIGH Status
+
+- forward() enqueue recursion / duplicate ownership: **RESOLVED**
+- Unbounded task growth: **RESOLVED** (synchronous await)
+- Non-Windows plaintext fallback: **RESOLVED** (test-only mock prefix)
+- Drain lock leak: **RESOLVED** (DrainGuard RAII)
+- Global SQLite connection: **RESOLVED** (per-operation connections)
+- Queue lease safety: **PARTIALLY RESOLVED** (leased_until + peek_and_claim design is correct; atomicity in sketch needs tightening)
+- Durable-first enqueue failure propagation: **FIXED in cycle 3**
+
+CYCLE_SUMMARY: current_high=0
+
+## Current HIGH Concerns
+None.
