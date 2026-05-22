@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Real-Time File Access Prevention
 status: executing
-last_updated: "2026-05-22T06:32:58.335Z"
+last_updated: "2026-05-22T06:44:49.613Z"
 last_activity: 2026-05-22
 progress:
   total_phases: 14
   completed_phases: 6
   total_plans: 31
-  completed_plans: 27
+  completed_plans: 28
   percent: 43
 ---
 
@@ -26,7 +26,7 @@ progress:
 ## Current Position
 
 Phase: 51 (ntdll-syscall-stub-trampolines-edr-coexistence) — EXECUTING
-Plan: 3 of 6
+Plan: 4 of 6
 Status: Ready to execute
 Last activity: 2026-05-22
 
@@ -175,6 +175,32 @@ Active surface to consume in v0.11.0 implementation:
 - 24 new tests (10 edr_detector + 14 thread_suspender), 227 total dlp-hook-dll tests pass
 - Clippy clean (-D warnings)
 - Commits: 7d0fc01, 65ea767
+
+## Plan 51-02 Completed (2026-05-22)
+
+- retour 0.4.0-alpha.4 dependency added for cross-architecture Detours-style trampolines
+- Extended HookDescriptor with ntdll_stub_addr and original_ntdll_bytes (Copy-compatible)
+- Created NtdllPatcher with per-stub state machine (StubPatchState enum)
+- Implemented patch_all_stubs() consulting EDR detector before each patch
+- Implemented patch_stub() using thread_suspender::with_suspended_threads for atomic safety
+- Implemented unpatch_all_stubs() calling detour.disable() — never reads from disk (D-06)
+- Static DETOURS Mutex array for RawDetour handle storage
+- 12 unit tests covering state transitions, per-stub granularity, error paths
+- All 239 dlp-hook-dll tests pass; clippy clean
+- Commits: d9d38e5, a56028d
+
+## Plan 51-03 Completed (2026-05-22)
+
+- Four NtdllTrampoline* functions added: NtCreateFile, NtOpenFile, NtWriteFile, NtSetInformationFile
+- All use guard_trampoline + with_reentrancy_guard + fail_closed! pattern
+- Path-based trampolines call extract_nt_path; handle-based call classify_and_log_handle
+- All call get_original_trampoline() for retour-generated trampoline, with fallback to resolve_ntdll_proc
+- NTDLL_STUBS constant activated (removed #[cfg(any())] guard)
+- find_detour_for_stub() wired to NTDLL_STUBS lookup
+- Pub free function get_original_trampoline() added for trampoline access without NtdllPatcher instance
+- 5 export tests added and passing
+- All 244 dlp-hook-dll tests pass; clippy clean (-D warnings)
+- Commits: a5c4a7b, ecf6f8a
 
 ## Operator Next Steps
 
