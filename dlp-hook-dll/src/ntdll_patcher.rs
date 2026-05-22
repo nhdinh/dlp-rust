@@ -292,6 +292,11 @@ impl NtdllPatcher {
         // this will look up the detour from NTDLL_STUBS.
         let detour_fn = find_detour_for_stub(fn_name)?;
 
+        // Alignment check: retour expects properly aligned function pointers.
+        if !(stub_addr as usize).is_multiple_of(std::mem::align_of::<usize>()) {
+            return Err(PatchError::DetourFailed);
+        }
+
         // Execute the patch under thread suspension.
         let result = crate::thread_suspender::with_suspended_threads(stub_addr, || {
             let detour = unsafe { retour::RawDetour::new(stub_addr as *const (), detour_fn) }
