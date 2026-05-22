@@ -114,6 +114,22 @@ pub enum BypassReason {
     EdrDetected,
 }
 
+/// Result of verifying a patched ntdll stub's integrity.
+///
+/// Per D-13: re-verification is per-stub, not all-or-nothing. One stub can be
+/// clean while another is overwritten by EDR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StubIntegrity {
+    /// First 5 bytes match our JMP pattern (0xE9 targeting our trampoline).
+    Clean,
+    /// Bytes do not match our JMP pattern — EDR or another hook overwrote us.
+    Overwritten,
+    /// Stub was never patched (Unpatched, SkippedEdr, or SkippedRaced state).
+    NotPatched,
+    /// Could not read stub bytes (null pointer or access denied).
+    Unknown,
+}
+
 // ---------------------------------------------------------------------------
 // NtdllPatcher
 // ---------------------------------------------------------------------------
@@ -354,6 +370,117 @@ impl NtdllPatcher {
         }
         get_detour_trampoline(fn_name)
     }
+
+    /// Verifies the integrity of a single ntdll stub.
+    ///
+    /// Per D-12: reads the first 5 bytes of the stub and verifies they match
+    /// our JMP pattern (0xE9 rel32 targeting our trampoline range). This is
+    /// per-stub — one stub can be clean while another is overwritten.
+    ///
+    /// # Arguments
+    ///
+    /// * `fn_name` — The ntdll function name (e.g., "NtCreateFile").
+    ///
+    /// # Returns
+    ///
+    /// [`StubIntegrity::Clean`] if the stub bytes match our JMP pattern,
+    /// [`StubIntegrity::Overwritten`] if EDR or another hook replaced our JMP,
+    /// [`StubIntegrity::NotPatched`] if the stub was never patched,
+    /// [`StubIntegrity::Unknown`] if the stub address could not be read.
+    #[must_use]
+    pub fn verify_stub_integrity(&self, fn_name: &str) -> StubIntegrity {
+        let name = match stub_name_from_str(fn_name) {
+            Some(n) => n,
+            None => return StubIntegrity::Unknown,
+        };
+
+        // If not in Patched state, there is nothing to verify.
+        if *self.stub_state(name) != StubPatchState::Patched {
+            return StubIntegrity::NotPatched;
+        }
+
+        // Find the HookDescriptor to get the stub address.
+        let stub_addr = match find_hook_descriptor(fn_name) {
+            Some(hook) => unsafe { (*hook).ntdll_stub_addr },
+            None => return StubIntegrity::Unknown,
+        };
+
+        if stub_addr.is_null() {
+            return StubIntegrity::Unknown;
+        }
+
+        // SAFETY: stub_addr is a valid ntdll stub address that we patched.
+        // We read 5 bytes atomically (x64: aligned 8-byte read is atomic).
+        let first_byte = unsafe { std::ptr::read(stub_addr) };
+
+        // Step 1: Verify first byte is 0xE9 (JMP rel32).
+        // Original ntdll stub starts with `mov r10, rcx` = 0x4C 0x8B 0xD1.
+        // If not 0xE9, someone overwrote our JMP with something else.
+        if first_byte != 0xE9 {
+            return StubIntegrity::Overwritten;
+        }
+
+        // Step 2: Read the rel32 offset and calculate the JMP target.
+        // SAFETY: stub_addr+1 is within the stub (we read 4 bytes for rel32).
+        let rel32 = unsafe { std::ptr::read_unaligned(stub_addr.add(1) as *const i32) };
+        let target = unsafe { stub_addr.add(5).offset(rel32 as isize) };
+
+        // Step 3: Verify the target falls within our trampoline function range.
+        // We check if the target is within any of our NtdllTrampoline* functions.
+        // Each function is at most a few KB, so we use a generous 64KB window.
+        // This distinguishes our JMP (targeting our trampoline) from an EDR JMP
+        // (targeting EDR code).
+        if is_target_in_our_trampoline_range(target) {
+            StubIntegrity::Clean
+        } else {
+            StubIntegrity::Overwritten
+        }
+    }
+
+    /// Marks a stub as permanently overwritten and emits a bypass alert.
+    ///
+    /// Per D-07: on HookOverwritten detection, emit alert and mark stub as
+    /// "EDR-controlled, skip permanently." Do NOT re-patch.
+    ///
+    /// # Arguments
+    ///
+    /// * `fn_name` — The ntdll function name (e.g., "NtCreateFile").
+    pub fn mark_stub_overwritten(&mut self, fn_name: &str) {
+        let name = match stub_name_from_str(fn_name) {
+            Some(n) => n,
+            None => return,
+        };
+
+        self.stubs[name.index()] = StubPatchState::Overwritten;
+
+        let msg = format!(
+            "[dlp-hook] ntdll stub marked Overwritten: {}\0",
+            fn_name
+        );
+        crate::debug_log(&msg);
+
+        emit_bypass_alert(BypassReason::HookOverwritten, fn_name);
+    }
+
+    /// Verifies all 4 ntdll stubs independently.
+    ///
+    /// Returns a vector of (fn_name, integrity) pairs. Per D-13: each stub is
+    /// checked independently — one can be clean while another is overwritten.
+    #[must_use]
+    pub fn verify_all_stubs(&self) -> Vec<(&'static str, StubIntegrity)> {
+        let mut results = Vec::with_capacity(4);
+        for name in [
+            StubName::NtCreateFile,
+            StubName::NtOpenFile,
+            StubName::NtWriteFile,
+            StubName::NtSetInformationFile,
+        ] {
+            let fn_name = name.as_str();
+            let integrity = self.verify_stub_integrity(fn_name);
+            results.push((fn_name, integrity));
+        }
+        results
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +581,42 @@ fn find_detour_for_stub(fn_name: &str) -> Result<*const (), PatchError> {
         }
     }
     Err(PatchError::DetourFailed)
+}
+
+/// Checks whether a JMP target address falls within our trampoline range.
+///
+/// We compare the target against the addresses of our four ntdll trampoline
+/// functions. Each trampoline is at most a few KB, so we use a generous 64KB
+/// window to account for code layout variations.
+///
+/// # Arguments
+///
+/// * `target` — The calculated JMP target address.
+///
+/// # Returns
+///
+/// `true` if the target is within any of our trampoline functions.
+fn is_target_in_our_trampoline_range(target: *mut u8) -> bool {
+    // SAFETY: We are comparing raw pointers as integers. The trampolines are
+    // valid function addresses in our module's .text section.
+    let target_usize = target as usize;
+    let trampolines: [*const (); 4] = [
+        crate::trampolines::NtdllTrampolineNtCreateFile as *const (),
+        crate::trampolines::NtdllTrampolineNtOpenFile as *const (),
+        crate::trampolines::NtdllTrampolineNtWriteFile as *const (),
+        crate::trampolines::NtdllTrampolineNtSetInformationFile as *const (),
+    ];
+
+    const TRAMPOLINE_WINDOW: usize = 64 * 1024; // 64KB generous window
+
+    for tramp in trampolines {
+        let base = tramp as usize;
+        // Handle wrap-around gracefully.
+        if target_usize >= base && target_usize.saturating_sub(base) < TRAMPOLINE_WINDOW {
+            return true;
+        }
+    }
+    false
 }
 
 /// Emits a bypass alert via the named pipe.
@@ -640,5 +803,85 @@ mod tests {
         let _ = format!("{:?}", BypassReason::HookOverwritten);
         let _ = format!("{:?}", BypassReason::PatchRaced);
         let _ = format!("{:?}", BypassReason::EdrDetected);
+    }
+
+    #[test]
+    fn verify_stub_integrity_not_patched() {
+        // Unpatched stub should return NotPatched.
+        let patcher = NtdllPatcher::new(true);
+        let result = patcher.verify_stub_integrity("NtCreateFile");
+        assert_eq!(result, StubIntegrity::NotPatched);
+    }
+
+    #[test]
+    fn verify_stub_integrity_unknown_name() {
+        // Unknown function name should return Unknown.
+        let patcher = NtdllPatcher::new(true);
+        let result = patcher.verify_stub_integrity("NtQuerySystemInformation");
+        assert_eq!(result, StubIntegrity::Unknown);
+    }
+
+    #[test]
+    fn verify_stub_mark_overwritten() {
+        // mark_stub_overwritten should set state to Overwritten.
+        let mut patcher = NtdllPatcher::new(true);
+
+        // Start as Unpatched.
+        assert_eq!(
+            *patcher.stub_state(StubName::NtCreateFile),
+            StubPatchState::Unpatched
+        );
+
+        patcher.mark_stub_overwritten("NtCreateFile");
+
+        assert_eq!(
+            *patcher.stub_state(StubName::NtCreateFile),
+            StubPatchState::Overwritten
+        );
+    }
+
+    #[test]
+    fn verify_all_stubs_returns_four_results() {
+        let patcher = NtdllPatcher::new(true);
+        let results = patcher.verify_all_stubs();
+        assert_eq!(results.len(), 4);
+
+        // All should be NotPatched since nothing was actually patched.
+        for (name, integrity) in &results {
+            assert_eq!(*integrity, StubIntegrity::NotPatched, "{} should be NotPatched", name);
+        }
+    }
+
+    #[test]
+    fn stub_integrity_equality() {
+        assert_eq!(StubIntegrity::Clean, StubIntegrity::Clean);
+        assert_ne!(StubIntegrity::Clean, StubIntegrity::Overwritten);
+        assert_ne!(StubIntegrity::NotPatched, StubIntegrity::Unknown);
+    }
+
+    #[test]
+    fn is_target_in_our_trampoline_range_detects_our_trampolines() {
+        // Verify that our own trampoline addresses are recognized.
+        let addr = crate::trampolines::NtdllTrampolineNtCreateFile as *mut u8;
+        assert!(is_target_in_our_trampoline_range(addr));
+
+        let addr = crate::trampolines::NtdllTrampolineNtOpenFile as *mut u8;
+        assert!(is_target_in_our_trampoline_range(addr));
+
+        let addr = crate::trampolines::NtdllTrampolineNtWriteFile as *mut u8;
+        assert!(is_target_in_our_trampoline_range(addr));
+
+        let addr = crate::trampolines::NtdllTrampolineNtSetInformationFile as *mut u8;
+        assert!(is_target_in_our_trampoline_range(addr));
+    }
+
+    #[test]
+    fn is_target_in_our_trampoline_range_rejects_foreign_address() {
+        // A null pointer should not be in our range.
+        assert!(!is_target_in_our_trampoline_range(std::ptr::null_mut()));
+
+        // A high arbitrary address should not match.
+        let far_addr = 0xFFFF_FFFF_FFFF_0000 as *mut u8;
+        assert!(!is_target_in_our_trampoline_range(far_addr));
     }
 }
