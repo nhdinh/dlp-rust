@@ -487,7 +487,7 @@ impl CacheLookup {
             return None;
         }
 
-        let hash = fnv1a_64(path.as_bytes());
+        let hash = dlp_common::fnv1a_64(path.as_bytes());
         let mut idx = (hash as usize) % hash_slots;
         let created_at = header.created_at_epoch_secs;
 
@@ -646,16 +646,6 @@ fn is_eight_three_short_name(path: &str) -> bool {
 // ---------------------------------------------------------------------------
 // FNV-1a hash
 // ---------------------------------------------------------------------------
-
-/// FNV-1a 64-bit hash.
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for &b in bytes {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
-}
 
 // ---------------------------------------------------------------------------
 // Classification conversion
@@ -895,8 +885,8 @@ mod tests {
 
     #[test]
     fn fnv1a_known_values() {
-        assert_eq!(fnv1a_64(b""), 0xcbf29ce484222325);
-        assert_eq!(fnv1a_64(b"hello"), 0xa430d84680aabd0b);
+        assert_eq!(dlp_common::fnv1a_64(b""), 0xcbf29ce484222325);
+        assert_eq!(dlp_common::fnv1a_64(b"hello"), 0xa430d84680aabd0b);
     }
 
     #[test]

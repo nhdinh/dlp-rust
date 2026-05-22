@@ -574,7 +574,7 @@ impl ClassificationCache {
         // Write hash entries with open addressing.
         let mut hash_count = 0u64;
         for (path, tier, ttl) in &hash_entries {
-            let hash = fnv1a_64(path.as_bytes());
+            let hash = dlp_common::fnv1a_64(path.as_bytes());
             let mut idx = (hash % hash_slots) as usize;
             let mut inserted = false;
             for _ in 0..hash_slots as usize {
@@ -832,16 +832,6 @@ impl Drop for ClassificationCache {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// FNV-1a 64-bit hash.
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for &b in bytes {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
-}
 
 /// Convert `Classification` to its numeric tier value (1–4).
 fn tier_to_u8(tier: Classification) -> u8 {
@@ -1118,9 +1108,9 @@ mod tests {
     #[test]
     fn fnv1a_known_value() {
         // Known FNV-1a 64-bit value for empty input.
-        assert_eq!(fnv1a_64(b""), 0xcbf29ce484222325);
+        assert_eq!(dlp_common::fnv1a_64(b""), 0xcbf29ce484222325);
         // Known FNV-1a 64-bit value for "hello".
-        assert_eq!(fnv1a_64(b"hello"), 0xa430d84680aabd0b);
+        assert_eq!(dlp_common::fnv1a_64(b"hello"), 0xa430d84680aabd0b);
     }
 
     // ── Tier conversion tests ───────────────────────────────────────────────
