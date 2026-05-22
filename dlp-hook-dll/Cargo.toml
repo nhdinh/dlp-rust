@@ -7,7 +7,7 @@ license.workspace = true
 description = "DLP API hook DLL for cloud sync client interception"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 windows = { version = "0.62", features = [

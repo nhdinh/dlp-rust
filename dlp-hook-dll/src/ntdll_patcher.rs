@@ -481,6 +481,15 @@ impl NtdllPatcher {
         }
         results
     }
+
+    /// Returns a copy of all stub states for inspection.
+    ///
+    /// Used by tests and diagnostics to check the current state of each stub
+    /// without exposing internal mutable access.
+    #[must_use]
+    pub fn stub_states(&self) -> [StubPatchState; 4] {
+        self.stubs.clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
