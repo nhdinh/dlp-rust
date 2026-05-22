@@ -140,7 +140,7 @@ Plans:
   3. The 30-second re-verification thread emits `BypassAlert(reason=HookOverwritten)` within one verification cycle when an EDR re-patches over our trampoline; the alert reaches the admin TUI Bypass Alerts feed (Phase 53/54).
   4. The patcher's suspend-all-other-threads protocol blocks if any thread RIP lands in `[stub, stub+5]`; under the chaos-test fixture (1000 threads spinning on `NtCreateFile`), no torn-instruction crash is observed across 100 patch cycles.
   5. The `enable_ntdll_patching` policy flag defaults off; per-customer rollout is auditable via SIEM (`siem.ntdll_patching_enabled` event at boot).
-**Plans:** 6/6 plans planned
+**Plans:** 2/6 plans executed
 
 Plans:
 - [x] `51-01-PLAN.md` — EDR Detection + Thread Safety: edr_detector.rs + thread_suspender.rs + lib.rs mods
@@ -296,7 +296,7 @@ Plans:
 | 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-16 |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 5/5 | Complete    | 2026-05-19 |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 6/6 | Complete    | 2026-05-20 |
-| 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 1/6 | In Progress | 2026-05-22 |
+| 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 2/6 | In Progress|  |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 0/0 | Not started | - |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 0/0 | Not started | - |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 0/0 | Not started | - |
