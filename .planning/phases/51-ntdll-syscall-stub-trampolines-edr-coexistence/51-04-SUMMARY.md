@@ -126,6 +126,18 @@ None — all security-relevant surface (stub byte reading, alert emission, state
 - Plan 06 can wire the `verify_fn` callback to a closure that calls `NtdllPatcher::verify_all_stubs()` and handles `Overwritten` results
 - Plan 06 can build the chaos test fixture that exercises `patch_all_stubs()` / `unpatch_all_stubs()` cycles under thread load
 
+## Self-Check: PASSED
+
+- [x] `dlp-hook-dll/src/ntdll_patcher.rs` exists and contains `StubIntegrity`, `verify_stub_integrity`, `mark_stub_overwritten`, `verify_all_stubs`
+- [x] `dlp-hook-dll/src/background_thread.rs` exists and contains `TRAMPOLINE_VERIFY_INTERVAL_MS`, `TRAMPOLINE_VERIFY_TICKS`, `verify_fn` callback
+- [x] `dlp-hook-dll/src/trampolines.rs` updated with `None` for `verify_fn`
+- [x] `cargo test -p dlp-hook-dll` passes: 253 passed, 0 failed, 1 ignored
+- [x] `cargo clippy -p dlp-hook-dll -- -D warnings` is clean
+- [x] Commit `f9e4692` exists (Task 1)
+- [x] Commit `7c90620` exists (Task 2)
+- [x] Commit `b7f4c14` exists (SUMMARY.md)
+- [x] Commit `9244a5f` exists (STATE.md + ROADMAP.md)
+
 ---
 *Phase: 51-ntdll-syscall-stub-trampolines-edr-coexistence*
 *Completed: 2026-05-22*

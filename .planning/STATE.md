@@ -27,7 +27,7 @@ progress:
 
 Phase: 51 (ntdll-syscall-stub-trampolines-edr-coexistence) — EXECUTING
 Plan: 4 of 6
-Status: Ready to execute
+Status: Completed
 Last activity: 2026-05-22
 
 ## Progress
@@ -107,6 +107,7 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 14. **Pilot-first path selected:** v0.11.0 focuses on Label Service + Data Owner Queue + Approval Workflow (manual labels, no scanner yet). v0.12.0 adds Scanner + remaining endpoint controls. This prioritizes pilot readiness over building a complete scanner first.
 15. **2026-05-12 (updated): Explicit minifilter ban reinforced.** Target architecture updated to forbid Windows Minifilter drivers and kernel-mode filesystem interception entirely. The existing user-mode architecture (IAT hooks + DACL tripwire + ETW + WFP + NTFS ACLs) already satisfies this constraint. New requirements ARCH-01..04 and pilot test TC-017 verify compliance. No code changes required — the constraint is architectural documentation and build-audit verification.
 16. **2026-05-21: Phase 59 Plan 01 complete.** ResolvedTier enum added to dlp-server with strictness-aware folder inheritance. Tier::strictness_rank() and is_stricter_than() added to dlp-common. LabelCache upgraded to store full CacheEntry metadata. resolve_tier now returns ResolvedTier (not Result<Tier>) and implements D-07b strictest-tier-wins semantics. 18 new tests, 659 total passing, clippy clean.
+17. **2026-05-22: Phase 51 Plans 01-04 complete.** EDR detection (edr_detector.rs), thread suspend protocol (thread_suspender.rs), ntdll patcher core with retour (ntdll_patcher.rs), ntdll trampoline bodies (trampolines.rs), and background re-verification thread (background_thread.rs) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied.
 
 ## Blockers
 
@@ -201,6 +202,21 @@ Active surface to consume in v0.11.0 implementation:
 - 5 export tests added and passing
 - All 244 dlp-hook-dll tests pass; clippy clean (-D warnings)
 - Commits: a5c4a7b, ecf6f8a
+
+## Plan 51-04 Completed (2026-05-22)
+
+- StubIntegrity enum added (Clean, Overwritten, NotPatched, Unknown) per D-12/D-13
+- verify_stub_integrity: reads first 5 bytes, checks 0xE9 JMP + rel32 target in our trampoline range (64KB window)
+- mark_stub_overwritten: sets state to Overwritten, emits BypassAlert(HookOverwritten) per D-07
+- verify_all_stubs: iterates all 4 stubs independently (per-stub granularity per D-13)
+- is_target_in_our_trampoline_range: compares JMP target against NtdllTrampoline* function addresses
+- TRAMPOLINE_VERIFY_INTERVAL_MS = 30_000, TRAMPOLINE_VERIFY_TICKS = 300
+- start_background_thread extended with optional verify_fn callback
+- background_thread_loop calls verify_fn every 300 ticks; existing ISOLATED/RESYNC logic unchanged
+- trampolines.rs call site updated to pass None (wiring deferred to Plan 06)
+- 12 new tests (7 ntdll_patcher + 5 background_thread), 253 total dlp-hook-dll tests pass
+- Clippy clean (-D warnings)
+- Commits: f9e4692, 7c90620, b7f4c14
 
 ## Operator Next Steps
 
