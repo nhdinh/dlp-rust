@@ -501,7 +501,7 @@ impl NtdllPatcher {
 // Detour storage (static, since RawDetour is not Copy/Clone)
 // ---------------------------------------------------------------------------
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 /// Static storage for the 4 retour detours.
 ///
@@ -515,19 +515,17 @@ fn store_detour(fn_name: &str, detour: retour::RawDetour) {
         Some(n) => n.index(),
         None => return,
     };
-    if let Ok(mut guard) = DETOURS.lock() {
-        guard[idx] = Some(detour);
-    }
+    DETOURS.lock()[idx] = Some(detour);
 }
 
 fn take_detour(fn_name: &str) -> Option<retour::RawDetour> {
     let idx = stub_name_from_str(fn_name)?.index();
-    DETOURS.lock().ok()?.get_mut(idx)?.take()
+    DETOURS.lock().get_mut(idx)?.take()
 }
 
 fn get_detour_trampoline(fn_name: &str) -> Option<*const ()> {
     let idx = stub_name_from_str(fn_name)?.index();
-    let guard = DETOURS.lock().ok()?;
+    let guard = DETOURS.lock();
     guard[idx].as_ref().map(|d| d.trampoline() as *const ())
 }
 
