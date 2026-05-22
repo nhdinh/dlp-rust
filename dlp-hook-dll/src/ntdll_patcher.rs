@@ -390,6 +390,24 @@ fn get_detour_trampoline(fn_name: &str) -> Option<*const ()> {
     guard[idx].as_ref().map(|d| d.trampoline() as *const ())
 }
 
+/// Returns the original trampoline pointer for a patched stub.
+///
+/// This free function is callable from ntdll trampolines (which do not have
+/// access to a [`NtdllPatcher`] instance). It looks up the detour in the
+/// static `DETOURS` array and returns retour's generated trampoline pointer.
+///
+/// # Arguments
+///
+/// * `fn_name` — The ntdll function name (e.g., "NtCreateFile").
+///
+/// # Returns
+///
+/// `Some(trampoline_ptr)` if the stub is patched and the detour exists,
+/// `None` otherwise.
+pub fn get_original_trampoline(fn_name: &str) -> Option<*const ()> {
+    get_detour_trampoline(fn_name)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

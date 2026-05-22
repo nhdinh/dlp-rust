@@ -1365,6 +1365,574 @@ pub unsafe extern "system" fn HookNtSetInformationFile(
 }
 
 // ---------------------------------------------------------------------------
+// Ntdll-specific trampolines (Phase 51)
+//
+// These trampolines are installed by ntdll_patcher via retour::RawDetour
+// on the ntdll syscall stubs themselves (not the IAT). They follow the same
+// classification pipeline as IAT trampolines but call the original stub
+// through retour's generated trampoline instead of the IAT-saved pointer.
+// ---------------------------------------------------------------------------
+
+/// Classification hook for `NtCreateFile` via ntdll stub patching.
+///
+/// Path-based: extracts the path from `OBJECT_ATTRIBUTES` and sends it to
+/// the agent. Deny returns `NTSTATUS(STATUS_ACCESS_DENIED)`.
+/// Guard name: "NtCreateFile_ntdll" (distinguishes from IAT hook).
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn NtdllTrampolineNtCreateFile(
+    filehandle: *mut HANDLE,
+    desiredaccess: u32,
+    objectattributes: *mut std::ffi::c_void,
+    iostatusblock: *mut std::ffi::c_void,
+    allocationsize: *const i64,
+    fileattributes: u32,
+    shareaccess: u32,
+    createdisposition: u32,
+    createoptions: u32,
+    eabuffer: *mut std::ffi::c_void,
+    ealength: u32,
+) -> NTSTATUS {
+    crate::crash_guard::guard_trampoline(
+        "NtCreateFile_ntdll",
+        || {
+            crate::crash_guard::with_reentrancy_guard(
+                || {
+                    let path = crate::extract_nt_path(objectattributes);
+                    if let Some(_deny) = classify_and_log_path(&path, "CREATE", "NtCreateFile") {
+                        return crate::fail_closed!(StatusAccessDenied);
+                    }
+                    let original_ptr = crate::ntdll_patcher::get_original_trampoline("NtCreateFile");
+                    if let Some(ptr) = original_ptr {
+                        let original: crate::NtCreateFileFn = std::mem::transmute(ptr);
+                        original(
+                            filehandle,
+                            desiredaccess,
+                            objectattributes,
+                            iostatusblock,
+                            allocationsize,
+                            fileattributes,
+                            shareaccess,
+                            createdisposition,
+                            createoptions,
+                            eabuffer,
+                            ealength,
+                        )
+                    } else {
+                        let fallback = crate::resolve_nt_create_file().unwrap_or_else(|| {
+                            panic!("NtCreateFile original unavailable and resolution failed")
+                        });
+                        fallback(
+                            filehandle,
+                            desiredaccess,
+                            objectattributes,
+                            iostatusblock,
+                            allocationsize,
+                            fileattributes,
+                            shareaccess,
+                            createdisposition,
+                            createoptions,
+                            eabuffer,
+                            ealength,
+                        )
+                    }
+                },
+                || {
+                    let original_ptr = crate::ntdll_patcher::get_original_trampoline("NtCreateFile");
+                    if let Some(ptr) = original_ptr {
+                        let original: crate::NtCreateFileFn = std::mem::transmute(ptr);
+                        original(
+                            filehandle,
+                            desiredaccess,
+                            objectattributes,
+                            iostatusblock,
+                            allocationsize,
+                            fileattributes,
+                            shareaccess,
+                            createdisposition,
+                            createoptions,
+                            eabuffer,
+                            ealength,
+                        )
+                    } else {
+                        let fallback = crate::resolve_nt_create_file().unwrap_or_else(|| {
+                            panic!("NtCreateFile original unavailable and resolution failed")
+                        });
+                        fallback(
+                            filehandle,
+                            desiredaccess,
+                            objectattributes,
+                            iostatusblock,
+                            allocationsize,
+                            fileattributes,
+                            shareaccess,
+                            createdisposition,
+                            createoptions,
+                            eabuffer,
+                            ealength,
+                        )
+                    }
+                },
+            )
+        },
+        || {
+            let fallback = crate::resolve_nt_create_file().unwrap_or_else(|| {
+                panic!("NtCreateFile original unavailable and resolution failed")
+            });
+            fallback(
+                filehandle,
+                desiredaccess,
+                objectattributes,
+                iostatusblock,
+                allocationsize,
+                fileattributes,
+                shareaccess,
+                createdisposition,
+                createoptions,
+                eabuffer,
+                ealength,
+            )
+        },
+    )
+}
+
+/// Classification hook for `NtOpenFile` via ntdll stub patching.
+///
+/// Path-based: extracts the path from `OBJECT_ATTRIBUTES` and sends it to
+/// the agent. Deny returns `NTSTATUS(STATUS_ACCESS_DENIED)`.
+/// Guard name: "NtOpenFile_ntdll".
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
+    filehandle: *mut HANDLE,
+    desiredaccess: u32,
+    objectattributes: *mut std::ffi::c_void,
+    iostatusblock: *mut std::ffi::c_void,
+    shareaccess: u32,
+    openoptions: u32,
+) -> NTSTATUS {
+    crate::crash_guard::guard_trampoline(
+        "NtOpenFile_ntdll",
+        || {
+            crate::crash_guard::with_reentrancy_guard(
+                || {
+                    let path = crate::extract_nt_path(objectattributes);
+                    if let Some(_deny) = classify_and_log_path(&path, "OPEN", "NtOpenFile") {
+                        return crate::fail_closed!(StatusAccessDenied);
+                    }
+                    let original_ptr = crate::ntdll_patcher::get_original_trampoline("NtOpenFile");
+                    if let Some(ptr) = original_ptr {
+                        let original: unsafe extern "system" fn(
+                            *mut HANDLE,
+                            u32,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            u32,
+                            u32,
+                        ) -> NTSTATUS = std::mem::transmute(ptr);
+                        original(
+                            filehandle,
+                            desiredaccess,
+                            objectattributes,
+                            iostatusblock,
+                            shareaccess,
+                            openoptions,
+                        )
+                    } else {
+                        let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile"))
+                            .unwrap_or_else(|| {
+                                panic!("NtOpenFile original unavailable and resolution failed")
+                            });
+                        let original: unsafe extern "system" fn(
+                            *mut HANDLE,
+                            u32,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            u32,
+                            u32,
+                        ) -> NTSTATUS = std::mem::transmute(fallback);
+                        original(
+                            filehandle,
+                            desiredaccess,
+                            objectattributes,
+                            iostatusblock,
+                            shareaccess,
+                            openoptions,
+                        )
+                    }
+                },
+                || {
+                    let original_ptr = crate::ntdll_patcher::get_original_trampoline("NtOpenFile");
+                    if let Some(ptr) = original_ptr {
+                        let original: unsafe extern "system" fn(
+                            *mut HANDLE,
+                            u32,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            u32,
+                            u32,
+                        ) -> NTSTATUS = std::mem::transmute(ptr);
+                        original(
+                            filehandle,
+                            desiredaccess,
+                            objectattributes,
+                            iostatusblock,
+                            shareaccess,
+                            openoptions,
+                        )
+                    } else {
+                        let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile"))
+                            .unwrap_or_else(|| {
+                                panic!("NtOpenFile original unavailable and resolution failed")
+                            });
+                        let original: unsafe extern "system" fn(
+                            *mut HANDLE,
+                            u32,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            u32,
+                            u32,
+                        ) -> NTSTATUS = std::mem::transmute(fallback);
+                        original(
+                            filehandle,
+                            desiredaccess,
+                            objectattributes,
+                            iostatusblock,
+                            shareaccess,
+                            openoptions,
+                        )
+                    }
+                },
+            )
+        },
+        || {
+            let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile"))
+                .unwrap_or_else(|| {
+                    panic!("NtOpenFile original unavailable and resolution failed")
+                });
+            let original: unsafe extern "system" fn(
+                *mut HANDLE,
+                u32,
+                *mut std::ffi::c_void,
+                *mut std::ffi::c_void,
+                u32,
+                u32,
+            ) -> NTSTATUS = std::mem::transmute(fallback);
+            original(
+                filehandle,
+                desiredaccess,
+                objectattributes,
+                iostatusblock,
+                shareaccess,
+                openoptions,
+            )
+        },
+    )
+}
+
+/// Classification hook for `NtWriteFile` via ntdll stub patching.
+///
+/// Handle-based: sends the HANDLE value to the agent for path resolution.
+/// Deny returns `NTSTATUS(STATUS_ACCESS_DENIED)`.
+/// Guard name: "NtWriteFile_ntdll".
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
+    filehandle: HANDLE,
+    event: HANDLE,
+    apcroutine: *mut std::ffi::c_void,
+    apccontext: *mut std::ffi::c_void,
+    iostatusblock: *mut std::ffi::c_void,
+    buffer: *const u8,
+    length: u32,
+    byteoffset: *const i64,
+    key: *mut u32,
+) -> NTSTATUS {
+    crate::crash_guard::guard_trampoline(
+        "NtWriteFile_ntdll",
+        || {
+            crate::crash_guard::with_reentrancy_guard(
+                || {
+                    let handle_value = filehandle.0 as u64;
+                    if let Some(_deny) =
+                        classify_and_log_handle(handle_value, "NT_WRITE", "NtWriteFile")
+                    {
+                        return crate::fail_closed!(StatusAccessDenied);
+                    }
+                    let original_ptr = crate::ntdll_patcher::get_original_trampoline("NtWriteFile");
+                    if let Some(ptr) = original_ptr {
+                        let original: unsafe extern "system" fn(
+                            HANDLE,
+                            HANDLE,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            *const u8,
+                            u32,
+                            *const i64,
+                            *mut u32,
+                        ) -> NTSTATUS = std::mem::transmute(ptr);
+                        original(
+                            filehandle,
+                            event,
+                            apcroutine,
+                            apccontext,
+                            iostatusblock,
+                            buffer,
+                            length,
+                            byteoffset,
+                            key,
+                        )
+                    } else {
+                        let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile"))
+                            .unwrap_or_else(|| {
+                                panic!("NtWriteFile original unavailable and resolution failed")
+                            });
+                        let original: unsafe extern "system" fn(
+                            HANDLE,
+                            HANDLE,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            *const u8,
+                            u32,
+                            *const i64,
+                            *mut u32,
+                        ) -> NTSTATUS = std::mem::transmute(fallback);
+                        original(
+                            filehandle,
+                            event,
+                            apcroutine,
+                            apccontext,
+                            iostatusblock,
+                            buffer,
+                            length,
+                            byteoffset,
+                            key,
+                        )
+                    }
+                },
+                || {
+                    let original_ptr = crate::ntdll_patcher::get_original_trampoline("NtWriteFile");
+                    if let Some(ptr) = original_ptr {
+                        let original: unsafe extern "system" fn(
+                            HANDLE,
+                            HANDLE,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            *const u8,
+                            u32,
+                            *const i64,
+                            *mut u32,
+                        ) -> NTSTATUS = std::mem::transmute(ptr);
+                        original(
+                            filehandle,
+                            event,
+                            apcroutine,
+                            apccontext,
+                            iostatusblock,
+                            buffer,
+                            length,
+                            byteoffset,
+                            key,
+                        )
+                    } else {
+                        let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile"))
+                            .unwrap_or_else(|| {
+                                panic!("NtWriteFile original unavailable and resolution failed")
+                            });
+                        let original: unsafe extern "system" fn(
+                            HANDLE,
+                            HANDLE,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            *const u8,
+                            u32,
+                            *const i64,
+                            *mut u32,
+                        ) -> NTSTATUS = std::mem::transmute(fallback);
+                        original(
+                            filehandle,
+                            event,
+                            apcroutine,
+                            apccontext,
+                            iostatusblock,
+                            buffer,
+                            length,
+                            byteoffset,
+                            key,
+                        )
+                    }
+                },
+            )
+        },
+        || {
+            let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile"))
+                .unwrap_or_else(|| {
+                    panic!("NtWriteFile original unavailable and resolution failed")
+                });
+            let original: unsafe extern "system" fn(
+                HANDLE,
+                HANDLE,
+                *mut std::ffi::c_void,
+                *mut std::ffi::c_void,
+                *mut std::ffi::c_void,
+                *const u8,
+                u32,
+                *const i64,
+                *mut u32,
+            ) -> NTSTATUS = std::mem::transmute(fallback);
+            original(
+                filehandle,
+                event,
+                apcroutine,
+                apccontext,
+                iostatusblock,
+                buffer,
+                length,
+                byteoffset,
+                key,
+            )
+        },
+    )
+}
+
+/// Classification hook for `NtSetInformationFile` via ntdll stub patching.
+///
+/// Handle-based: sends the HANDLE value to the agent for path resolution.
+/// Deny returns `NTSTATUS(STATUS_ACCESS_DENIED)`.
+/// Guard name: "NtSetInformationFile_ntdll".
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
+    filehandle: HANDLE,
+    iostatusblock: *mut std::ffi::c_void,
+    fileinformation: *mut std::ffi::c_void,
+    length: u32,
+    fileinformationclass: u32,
+) -> NTSTATUS {
+    crate::crash_guard::guard_trampoline(
+        "NtSetInformationFile_ntdll",
+        || {
+            crate::crash_guard::with_reentrancy_guard(
+                || {
+                    let handle_value = filehandle.0 as u64;
+                    if let Some(_deny) = classify_and_log_handle(
+                        handle_value,
+                        "NT_SET_INFO",
+                        "NtSetInformationFile",
+                    ) {
+                        return crate::fail_closed!(StatusAccessDenied);
+                    }
+                    let original_ptr =
+                        crate::ntdll_patcher::get_original_trampoline("NtSetInformationFile");
+                    if let Some(ptr) = original_ptr {
+                        let original: unsafe extern "system" fn(
+                            HANDLE,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            u32,
+                            u32,
+                        ) -> NTSTATUS = std::mem::transmute(ptr);
+                        original(
+                            filehandle,
+                            iostatusblock,
+                            fileinformation,
+                            length,
+                            fileinformationclass,
+                        )
+                    } else {
+                        let fallback = crate::resolve_ntdll_proc(windows::core::s!(
+                            "NtSetInformationFile"
+                        ))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "NtSetInformationFile original unavailable and resolution failed"
+                            )
+                        });
+                        let original: unsafe extern "system" fn(
+                            HANDLE,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            u32,
+                            u32,
+                        ) -> NTSTATUS = std::mem::transmute(fallback);
+                        original(
+                            filehandle,
+                            iostatusblock,
+                            fileinformation,
+                            length,
+                            fileinformationclass,
+                        )
+                    }
+                },
+                || {
+                    let original_ptr =
+                        crate::ntdll_patcher::get_original_trampoline("NtSetInformationFile");
+                    if let Some(ptr) = original_ptr {
+                        let original: unsafe extern "system" fn(
+                            HANDLE,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            u32,
+                            u32,
+                        ) -> NTSTATUS = std::mem::transmute(ptr);
+                        original(
+                            filehandle,
+                            iostatusblock,
+                            fileinformation,
+                            length,
+                            fileinformationclass,
+                        )
+                    } else {
+                        let fallback = crate::resolve_ntdll_proc(windows::core::s!(
+                            "NtSetInformationFile"
+                        ))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "NtSetInformationFile original unavailable and resolution failed"
+                            )
+                        });
+                        let original: unsafe extern "system" fn(
+                            HANDLE,
+                            *mut std::ffi::c_void,
+                            *mut std::ffi::c_void,
+                            u32,
+                            u32,
+                        ) -> NTSTATUS = std::mem::transmute(fallback);
+                        original(
+                            filehandle,
+                            iostatusblock,
+                            fileinformation,
+                            length,
+                            fileinformationclass,
+                        )
+                    }
+                },
+            )
+        },
+        || {
+            let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtSetInformationFile"))
+                .unwrap_or_else(|| {
+                    panic!("NtSetInformationFile original unavailable and resolution failed")
+                });
+            let original: unsafe extern "system" fn(
+                HANDLE,
+                *mut std::ffi::c_void,
+                *mut std::ffi::c_void,
+                u32,
+                u32,
+            ) -> NTSTATUS = std::mem::transmute(fallback);
+            original(
+                filehandle,
+                iostatusblock,
+                fileinformation,
+                length,
+                fileinformationclass,
+            )
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
