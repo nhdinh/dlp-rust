@@ -143,6 +143,32 @@ pub struct HandleHookRequest {
     pub pid: u32,
 }
 
+/// Alert emitted by the hook DLL when it detects a bypass attempt or EDR conflict.
+///
+/// Sent from the hook DLL to the agent via the existing named pipe IPC path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BypassAlert {
+    /// The reason for the alert.
+    pub reason: BypassReason,
+    /// The affected ntdll stub name (e.g., "NtCreateFile").
+    pub stub_name: String,
+    /// Process ID where the alert occurred.
+    pub pid: u32,
+    /// Timestamp (Unix epoch seconds).
+    pub timestamp_secs: u64,
+}
+
+/// Reasons a bypass alert can be emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BypassReason {
+    /// Our trampoline was overwritten by EDR (or other hook).
+    HookOverwritten,
+    /// Thread RIP was inside the stub range during patch attempt.
+    PatchRaced,
+    /// EDR detected at boot, patching skipped for this stub.
+    EdrDetected,
+}
+
 /// Current protocol version.
 pub const CURRENT_PROTOCOL_VERSION: u8 = 1;
 
@@ -327,5 +353,33 @@ mod tests {
     #[test]
     fn negotiate_protocol_both_zero_fails() {
         assert!(negotiate_protocol(0, 0).is_err());
+    }
+
+    // --- Phase 51: BypassAlert ---
+
+    #[test]
+    fn bypass_alert_roundtrip() {
+        let alert = BypassAlert {
+            reason: BypassReason::HookOverwritten,
+            stub_name: "NtCreateFile".to_string(),
+            pid: 1234,
+            timestamp_secs: 1_700_000_000,
+        };
+        let bytes = bincode::serialize(&alert).unwrap();
+        let round_trip: BypassAlert = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(alert, round_trip);
+    }
+
+    #[test]
+    fn bypass_reason_serde() {
+        for reason in [
+            BypassReason::HookOverwritten,
+            BypassReason::PatchRaced,
+            BypassReason::EdrDetected,
+        ] {
+            let json = serde_json::to_string(&reason).unwrap();
+            let rt: BypassReason = serde_json::from_str(&json).unwrap();
+            assert_eq!(reason, rt);
+        }
     }
 }
