@@ -437,12 +437,22 @@ fn find_hook_descriptor(fn_name: &str) -> Option<*mut crate::HookDescriptor> {
 
 /// Finds the detour function pointer for a stub.
 ///
-/// This is a placeholder that will be replaced in Plan 03 when the
-/// `NtdllTrampoline*` functions are defined. For now it returns an error
-/// so the module compiles and tests can verify state transitions.
-fn find_detour_for_stub(_fn_name: &str) -> Result<*const (), PatchError> {
-    // Plan 03: look up in NTDLL_STUBS constant.
-    // For now, return a dummy function pointer for testing.
+/// Looks up the ntdll function name in the [`NTDLL_STUBS`] constant and
+/// returns the corresponding trampoline pointer.
+///
+/// # Arguments
+///
+/// * `fn_name` — The ntdll function name (e.g., "NtCreateFile").
+///
+/// # Returns
+///
+/// `Ok(trampoline_ptr)` if found, `Err(PatchError::DetourFailed)` otherwise.
+fn find_detour_for_stub(fn_name: &str) -> Result<*const (), PatchError> {
+    for (name, ptr) in crate::NTDLL_STUBS {
+        if *name == fn_name {
+            return Ok(*ptr);
+        }
+    }
     Err(PatchError::DetourFailed)
 }
 

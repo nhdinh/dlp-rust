@@ -2098,4 +2098,74 @@ mod tests {
             ]
         };
     }
+
+    // -- Ntdll trampoline export tests (Phase 51-03) --
+
+    #[test]
+    fn ntdll_trampoline_ntcreatefile_is_exported() {
+        let _fn: unsafe extern "system" fn(
+            *mut HANDLE,
+            u32,
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+            *const i64,
+            u32,
+            u32,
+            u32,
+            u32,
+            *mut std::ffi::c_void,
+            u32,
+        ) -> NTSTATUS = NtdllTrampolineNtCreateFile;
+    }
+
+    #[test]
+    fn ntdll_trampoline_ntopenfile_is_exported() {
+        let _fn: unsafe extern "system" fn(
+            *mut HANDLE,
+            u32,
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+            u32,
+            u32,
+        ) -> NTSTATUS = NtdllTrampolineNtOpenFile;
+    }
+
+    #[test]
+    fn ntdll_trampoline_ntwritefile_is_exported() {
+        let _fn: unsafe extern "system" fn(
+            HANDLE,
+            HANDLE,
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+            *const u8,
+            u32,
+            *const i64,
+            *mut u32,
+        ) -> NTSTATUS = NtdllTrampolineNtWriteFile;
+    }
+
+    #[test]
+    fn ntdll_trampoline_ntsetinformationfile_is_exported() {
+        let _fn: unsafe extern "system" fn(
+            HANDLE,
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+            u32,
+            u32,
+        ) -> NTSTATUS = NtdllTrampolineNtSetInformationFile;
+    }
+
+    #[test]
+    fn all_ntdll_trampolines_have_no_mangle() {
+        // Compile-time check: all four ntdll trampolines are exported.
+        let _trampolines: [unsafe extern "system" fn(); 4] = unsafe {
+            [
+                std::mem::transmute(NtdllTrampolineNtCreateFile as *const ()),
+                std::mem::transmute(NtdllTrampolineNtOpenFile as *const ()),
+                std::mem::transmute(NtdllTrampolineNtWriteFile as *const ()),
+                std::mem::transmute(NtdllTrampolineNtSetInformationFile as *const ()),
+            ]
+        };
+    }
 }

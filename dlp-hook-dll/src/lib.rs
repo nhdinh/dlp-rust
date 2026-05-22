@@ -457,12 +457,6 @@ const HOOKS: &[HookDescriptor] = &[
 /// on the ntdll syscall stubs themselves (not the IAT). They follow the same
 /// classification pipeline as IAT trampolines but call the original stub
 /// through retour's generated trampoline instead of the IAT-saved pointer.
-///
-/// NOTE: The `NtdllTrampoline*` functions are defined in Plan 03. This
-/// constant is conditionally compiled out until they exist, to keep Plan 02
-/// compilable independently.
-#[cfg(any())]
-#[allow(dead_code)]
 const NTDLL_STUBS: &[(&str, *const ())] = &[
     (
         "NtCreateFile",
