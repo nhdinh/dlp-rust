@@ -144,9 +144,9 @@ Plans:
 
 Plans:
 - [x] `51-01-PLAN.md` — EDR Detection + Thread Safety: edr_detector.rs + thread_suspender.rs + lib.rs mods
-- [ ] `51-02-PLAN.md` — Ntdll Patcher Core: retour dependency + HookDescriptor extension + ntdll_patcher.rs with per-stub state machine
-- [ ] `51-03-PLAN.md` — Ntdll Trampoline Bodies: NtdllTrampolineNtCreateFile/NtOpenFile/NtWriteFile/NtSetInformationFile with guard_trampoline pattern
-- [ ] `51-04-PLAN.md` — Background Thread Extension: 30-second trampoline re-verification + StubIntegrity checks + BypassAlert emission
+- [x] `51-02-PLAN.md` — Ntdll Patcher Core: retour dependency + HookDescriptor extension + ntdll_patcher.rs with per-stub state machine
+- [x] `51-03-PLAN.md` — Ntdll Trampoline Bodies: NtdllTrampolineNtCreateFile/NtOpenFile/NtWriteFile/NtSetInformationFile with guard_trampoline pattern
+- [x] `51-04-PLAN.md` — Background Thread Extension: 30-second trampoline re-verification + StubIntegrity checks + BypassAlert emission
 - [ ] `51-05-PLAN.md` — Agent Config + SIEM Events: enable_ntdll_patching flag + BypassAlert/BypassReason types + NtdllPatchingEnabled audit events
 - [ ] `51-06-PLAN.md` — Integration + Chaos Test: lazy OnceLock init (NOT from DllMain) + global patcher wiring + 1000-thread chaos fixture
 
@@ -296,7 +296,7 @@ Plans:
 | 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-16 |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 5/5 | Complete    | 2026-05-19 |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 6/6 | Complete    | 2026-05-20 |
-| 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 3/6 | In Progress|  |
+| 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 4/6 | In Progress|  |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 0/0 | Not started | - |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 0/0 | Not started | - |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 0/0 | Not started | - |
@@ -350,4 +350,4 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 
 ---
 
-*Last updated: 2026-05-22 — Phase 51 in progress (1/6 plans complete: 51-01).*
+*Last updated: 2026-05-22 — Phase 51 in progress (4/6 plans complete: 51-01 through 51-04).*
