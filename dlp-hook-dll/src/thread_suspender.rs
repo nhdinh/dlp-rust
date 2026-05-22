@@ -19,19 +19,15 @@
 //! where a panic would leave other threads suspended indefinitely.
 
 use std::ffi::c_void;
+use windows::Wdk::System::SystemInformation::{NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS};
+use windows::Wdk::System::Threading::{NtQueryInformationThread, THREADINFOCLASS};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Threading::{
-    GetCurrentProcessId, GetCurrentThreadId, OpenThread, SuspendThread, ResumeThread,
-    THREAD_SUSPEND_RESUME, THREAD_QUERY_INFORMATION,
+    GetCurrentProcessId, GetCurrentThreadId, OpenThread, ResumeThread, SuspendThread,
+    THREAD_QUERY_INFORMATION, THREAD_SUSPEND_RESUME,
 };
 use windows::Win32::System::WindowsProgramming::{
     SYSTEM_PROCESS_INFORMATION, SYSTEM_THREAD_INFORMATION,
-};
-use windows::Wdk::System::SystemInformation::{
-    NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS,
-};
-use windows::Wdk::System::Threading::{
-    NtQueryInformationThread, THREADINFOCLASS,
 };
 
 // ---------------------------------------------------------------------------
@@ -202,9 +198,8 @@ pub fn enumerate_process_threads(pid: u32) -> Result<Vec<ThreadInfo>, PatchError
                 // the thread array starts at the address of the first thread
                 // entry, which we can find by scanning from the end of the
                 // process struct. We use offset_of approach via a helper.
-                let thread_array_ptr = (ptr as *const u8)
-                    .add(process_info_data_size())
-                    as *const c_void;
+                let thread_array_ptr =
+                    (ptr as *const u8).add(process_info_data_size()) as *const c_void;
                 let num_threads = entry.NumberOfThreads as usize;
 
                 for i in 0..num_threads {
@@ -222,9 +217,8 @@ pub fn enumerate_process_threads(pid: u32) -> Result<Vec<ThreadInfo>, PatchError
                     // For cross-architecture compatibility, we use a simpler
                     // approach: read the TID from the thread array using
                     // NtQueryInformationThread on each thread we open.
-                    let thread_entry_ptr = thread_array_ptr.add(
-                        i * std::mem::size_of::<SYSTEM_THREAD_INFORMATION>()
-                    );
+                    let thread_entry_ptr =
+                        thread_array_ptr.add(i * std::mem::size_of::<SYSTEM_THREAD_INFORMATION>());
 
                     // Read ClientId from the thread entry.
                     // CLIENT_ID offset within SYSTEM_THREAD_INFORMATION:
@@ -233,10 +227,10 @@ pub fn enumerate_process_threads(pid: u32) -> Result<Vec<ThreadInfo>, PatchError
                     //
                     // We use read_unaligned because the thread array may not be
                     // perfectly aligned relative to the process info struct.
-                    let client_id_offset = 24 + std::mem::size_of::<u32>()
-                        + std::mem::size_of::<*mut c_void>();
-                    let client_id_ptr = (thread_entry_ptr as *const u8)
-                        .add(client_id_offset) as *const [u8; 16];
+                    let client_id_offset =
+                        24 + std::mem::size_of::<u32>() + std::mem::size_of::<*mut c_void>();
+                    let client_id_ptr =
+                        (thread_entry_ptr as *const u8).add(client_id_offset) as *const [u8; 16];
                     let client_id_bytes = std::ptr::read_unaligned(client_id_ptr);
                     // CLIENT_ID = { UniqueProcess: HANDLE, UniqueThread: HANDLE }
                     // On x64: each HANDLE is 8 bytes, total 16 bytes.
@@ -246,9 +240,14 @@ pub fn enumerate_process_threads(pid: u32) -> Result<Vec<ThreadInfo>, PatchError
                     let tid = {
                         let handle_bytes = &client_id_bytes[8..16];
                         let ptr = usize::from_le_bytes([
-                            handle_bytes[0], handle_bytes[1], handle_bytes[2],
-                            handle_bytes[3], handle_bytes[4], handle_bytes[5],
-                            handle_bytes[6], handle_bytes[7],
+                            handle_bytes[0],
+                            handle_bytes[1],
+                            handle_bytes[2],
+                            handle_bytes[3],
+                            handle_bytes[4],
+                            handle_bytes[5],
+                            handle_bytes[6],
+                            handle_bytes[7],
                         ]);
                         ptr as u32
                     };
@@ -256,17 +255,16 @@ pub fn enumerate_process_threads(pid: u32) -> Result<Vec<ThreadInfo>, PatchError
                     let tid = {
                         let handle_bytes = &client_id_bytes[4..8];
                         u32::from_le_bytes([
-                            handle_bytes[0], handle_bytes[1],
-                            handle_bytes[2], handle_bytes[3],
+                            handle_bytes[0],
+                            handle_bytes[1],
+                            handle_bytes[2],
+                            handle_bytes[3],
                         ])
                     };
 
                     // Open thread with suspend + query access.
-                    let handle = OpenThread(
-                        THREAD_SUSPEND_RESUME | THREAD_QUERY_INFORMATION,
-                        false,
-                        tid,
-                    );
+                    let handle =
+                        OpenThread(THREAD_SUSPEND_RESUME | THREAD_QUERY_INFORMATION, false, tid);
 
                     if let Ok(h) = handle {
                         threads.push(ThreadInfo { tid, handle: h });
@@ -665,11 +663,15 @@ mod tests {
     fn rip_in_range_detection_exact_boundary() {
         let stub_addr = 0x1000 as *const u8;
         // Exactly at stub_start.
-        assert!((stub_addr as usize) >= (stub_addr as usize)
-                && (stub_addr as usize) < (stub_addr as usize) + 5);
+        assert!(
+            (stub_addr as usize) >= (stub_addr as usize)
+                && (stub_addr as usize) < (stub_addr as usize) + 5
+        );
         // Exactly one before stub_end.
-        assert!((stub_addr as usize + 4) >= (stub_addr as usize)
-                && (stub_addr as usize + 4) < (stub_addr as usize) + 5);
+        assert!(
+            (stub_addr as usize + 4) >= (stub_addr as usize)
+                && (stub_addr as usize + 4) < (stub_addr as usize) + 5
+        );
     }
 
     #[test]
@@ -678,7 +680,11 @@ mod tests {
         // We use a stub address of null (never dereferenced because no other
         // threads exist to check).
         let result = with_suspended_threads(std::ptr::null(), || 42);
-        assert!(result.is_ok(), "single-thread case should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "single-thread case should succeed: {:?}",
+            result
+        );
         assert_eq!(result.unwrap(), 42);
     }
 
@@ -686,7 +692,11 @@ mod tests {
     fn enumerate_process_threads_self() {
         let pid = unsafe { GetCurrentProcessId() };
         let threads = enumerate_process_threads(pid);
-        assert!(threads.is_ok(), "should enumerate self threads: {:?}", threads);
+        assert!(
+            threads.is_ok(),
+            "should enumerate self threads: {:?}",
+            threads
+        );
         let threads = threads.unwrap();
         // There should be at least one thread (the current thread).
         // NOTE: OpenThread may fail in test environments with limited

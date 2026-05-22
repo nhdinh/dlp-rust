@@ -218,14 +218,8 @@ impl EdrDetector {
         let mut modules: Vec<HMODULE> = vec![HMODULE(std::ptr::null_mut()); module_count];
 
         // Second call: fill the buffer.
-        let ok = unsafe {
-            EnumProcessModules(
-                h,
-                modules.as_mut_ptr() as *mut _,
-                needed,
-                &mut needed,
-            )
-        };
+        let ok =
+            unsafe { EnumProcessModules(h, modules.as_mut_ptr() as *mut _, needed, &mut needed) };
         if ok.is_err() {
             let _ = unsafe { CloseHandle(h) };
             return;
@@ -239,13 +233,8 @@ impl EdrDetector {
 
             // Get module file name.
             let mut name_buf = vec![0u16; 512];
-            let name_len = unsafe {
-                GetModuleFileNameExW(
-                    Some(h),
-                    Some(module_base),
-                    &mut name_buf,
-                )
-            };
+            let name_len =
+                unsafe { GetModuleFileNameExW(Some(h), Some(module_base), &mut name_buf) };
 
             if name_len == 0 {
                 continue;
@@ -359,7 +348,9 @@ mod tests {
     #[test]
     fn edr_detector_clean_stub_no_jmp() {
         // Simulate a clean ntdll stub prologue: mov r10, rcx (0x4C 0x8B 0xD1).
-        let stub: [u8; 12] = [0x4C, 0x8B, 0xD1, 0xB8, 0x55, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xC3, 0x00];
+        let stub: [u8; 12] = [
+            0x4C, 0x8B, 0xD1, 0xB8, 0x55, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xC3, 0x00,
+        ];
         let mut detector = EdrDetector::new();
 
         // Inject a fake non-EDR module so Phase 1 passes.
@@ -480,7 +471,10 @@ mod tests {
             size: 0x1000,
             name: "test.dll".to_string(),
         }];
-        assert!(is_address_in_edr_module_range(0x1500 as *const c_void, &modules));
+        assert!(is_address_in_edr_module_range(
+            0x1500 as *const c_void,
+            &modules
+        ));
     }
 
     #[test]
@@ -490,7 +484,10 @@ mod tests {
             size: 0x1000,
             name: "test.dll".to_string(),
         }];
-        assert!(!is_address_in_edr_module_range(0x3000 as *const c_void, &modules));
+        assert!(!is_address_in_edr_module_range(
+            0x3000 as *const c_void,
+            &modules
+        ));
     }
 
     #[test]
@@ -501,9 +498,15 @@ mod tests {
             name: "test.dll".to_string(),
         }];
         // Exactly at base.
-        assert!(is_address_in_edr_module_range(0x1000 as *const c_void, &modules));
+        assert!(is_address_in_edr_module_range(
+            0x1000 as *const c_void,
+            &modules
+        ));
         // One byte past end (0x1000 + 0x1000 = 0x2000).
-        assert!(!is_address_in_edr_module_range(0x2000 as *const c_void, &modules));
+        assert!(!is_address_in_edr_module_range(
+            0x2000 as *const c_void,
+            &modules
+        ));
     }
 
     #[test]
