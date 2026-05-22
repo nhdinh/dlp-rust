@@ -9,8 +9,8 @@ progress:
   total_phases: 14
   completed_phases: 6
   total_plans: 31
-  completed_plans: 28
-  percent: 43
+  completed_plans: 29
+  percent: 45
 ---
 
 # Project State
@@ -26,7 +26,7 @@ progress:
 ## Current Position
 
 Phase: 51 (ntdll-syscall-stub-trampolines-edr-coexistence) — EXECUTING
-Plan: 4 of 6
+Plan: 5 of 6
 Status: Completed
 Last activity: 2026-05-22
 
@@ -217,6 +217,18 @@ Active surface to consume in v0.11.0 implementation:
 - 12 new tests (7 ntdll_patcher + 5 background_thread), 253 total dlp-hook-dll tests pass
 - Clippy clean (-D warnings)
 - Commits: f9e4692, 7c90620, b7f4c14
+
+## Plan 51-05 Completed (2026-05-22)
+
+- BypassAlert struct and BypassReason enum added to dlp-common/src/hook_ipc.rs
+- Three EventType variants added: NtdllPatchingEnabled, NtdllPatchingEdrDetected, HookOverwritten
+- All three new variants wired to routed_to_siem()
+- enable_ntdll_patching: Option<bool> added to AgentConfig with serde(default)
+- Service startup emits EventType::NtdllPatchingEnabled SIEM event when flag is true
+- 5 new tests in dlp-common (bypass_alert_roundtrip, bypass_reason_serde, 3 SIEM routing)
+- 2 new tests in dlp-agent (enable_ntdll_patching default + deserialize)
+- 197 dlp-common tests pass; 585 dlp-agent tests pass; clippy clean (-D warnings)
+- Commits: 9a3ef9d, 7684fae, 49a5b34
 
 ## Operator Next Steps
 
