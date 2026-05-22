@@ -60,7 +60,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 48: Hook DLL Surface Expansion + Crash Hardening + Build Harness** — extend and harden the v0.9.0 hook into a single unified DLL with the full file-I/O surface, x86 sibling, and Authenticode signing pipeline. (completed 2026-05-15)
 - [x] **Phase 49: Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback** — drive the wider hook surface into every non-allowlisted user process via ETW Kernel-Process and `CreateRemoteThread`. (completed 2026-05-19)
 - [x] **Phase 50: Shared-Memory Classification Cache + Fail-Mode State Machine** — give the hook DLL a survivable sub-50µs hot path and a tier-gated asymmetric fail policy. (completed 2026-05-20)
-- [ ] **Phase 51: ntdll Syscall-Stub Trampolines + EDR Coexistence** — close the direct-syscall bypass behind a default-off feature flag with detect-before-patch EDR safety.
+- [x] **Phase 51: ntdll Syscall-Stub Trampolines + EDR Coexistence** — close the direct-syscall bypass behind a default-off feature flag with detect-before-patch EDR safety. (completed 2026-05-22)
 - [ ] **Phase 52: DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc** — kernel-enforced NTFS backstop for T3/T4 roots, plus the carried-forward DPAPI recovery runbook.
 - [ ] **Phase 53: ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring** — turn hook-vs-ETW divergence into auditable BypassAlert events routed through SIEM and the alert router.
 - [ ] **Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens** — operator UX for the two new server surfaces.
@@ -140,14 +140,14 @@ Plans:
   3. The 30-second re-verification thread emits `BypassAlert(reason=HookOverwritten)` within one verification cycle when an EDR re-patches over our trampoline; the alert reaches the admin TUI Bypass Alerts feed (Phase 53/54).
   4. The patcher's suspend-all-other-threads protocol blocks if any thread RIP lands in `[stub, stub+5]`; under the chaos-test fixture (1000 threads spinning on `NtCreateFile`), no torn-instruction crash is observed across 100 patch cycles.
   5. The `enable_ntdll_patching` policy flag defaults off; per-customer rollout is auditable via SIEM (`siem.ntdll_patching_enabled` event at boot).
-**Plans:** 3/6 plans executed
+**Plans:** 5/6 plans executed
 
 Plans:
 - [x] `51-01-PLAN.md` — EDR Detection + Thread Safety: edr_detector.rs + thread_suspender.rs + lib.rs mods
 - [x] `51-02-PLAN.md` — Ntdll Patcher Core: retour dependency + HookDescriptor extension + ntdll_patcher.rs with per-stub state machine
 - [x] `51-03-PLAN.md` — Ntdll Trampoline Bodies: NtdllTrampolineNtCreateFile/NtOpenFile/NtWriteFile/NtSetInformationFile with guard_trampoline pattern
 - [x] `51-04-PLAN.md` — Background Thread Extension: 30-second trampoline re-verification + StubIntegrity checks + BypassAlert emission
-- [ ] `51-05-PLAN.md` — Agent Config + SIEM Events: enable_ntdll_patching flag + BypassAlert/BypassReason types + NtdllPatchingEnabled audit events
+- [x] `51-05-PLAN.md` — Agent Config + SIEM Events: enable_ntdll_patching flag + BypassAlert/BypassReason types + NtdllPatchingEnabled audit events
 - [ ] `51-06-PLAN.md` — Integration + Chaos Test: lazy OnceLock init (NOT from DllMain) + global patcher wiring + 1000-thread chaos fixture
 
 ### Phase 52: DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc
