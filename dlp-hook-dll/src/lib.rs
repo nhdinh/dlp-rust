@@ -29,6 +29,7 @@
 //! | `HookNtSetInformationFile` | Trampoline for `NtSetInformationFile` |
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HANDLE, NTSTATUS};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
@@ -97,6 +98,21 @@ const UNICODE_STRING_BUFFER_OFFSET: isize = 0x04;
 
 /// Guard to ensure one-time initialisation.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
+
+/// Phase 51: Whether ntdll patching is enabled (read from shared memory during init).
+/// Trampolines check this flag before attempting lazy initialization.
+static NTDLL_PATCHING_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Phase 51: Global NtdllPatcher instance, lazily initialized on first hook call.
+///
+/// NEVER created from DllMain — DllMain holds the Windows loader lock, and any
+/// operation that might trigger DLL loading (including retour's internal
+/// operations) would deadlock. Instead, the patcher is created on the first
+/// trampoline invocation, which always runs outside the loader lock.
+///
+/// The Mutex ensures only one thread initializes the patcher and only one
+/// patch/unpatch operation runs at a time.
+static NTDLL_PATCHER: OnceLock<Mutex<crate::ntdll_patcher::NtdllPatcher>> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Type aliases for original function pointers (clippy: complex types)
@@ -497,9 +513,32 @@ extern "system" fn DllMain(_inst: isize, reason: u32, _reserved: usize) -> i32 {
 // init — patches all IAT entries driven by HOOKS table
 // ---------------------------------------------------------------------------
 
+/// Initialise the global NtdllPatcher if not already done.
+///
+/// Called from hook trampolines — never from `DllMain` (loader-lock safety).
+/// The `enabled` flag is stored during `init()` from shared memory.
+fn lazy_init_ntdll_patcher(enabled: bool) -> &'static Mutex<crate::ntdll_patcher::NtdllPatcher> {
+    NTDLL_PATCHER.get_or_init(|| {
+        let patcher = crate::ntdll_patcher::NtdllPatcher::new(enabled);
+        Mutex::new(patcher)
+    })
+}
+
+/// Read the ntdll patching enable flag from shared memory.
+///
+/// The agent writes this flag during injection (Plan 05, Task 2).
+/// For now, returns `false` (disabled) until shared memory wiring is complete.
+/// Phase 53 will wire this to the actual shared memory segment.
+fn read_ntdll_patching_flag_from_shared_memory() -> bool {
+    // TODO(Phase 53): Read from actual shared memory segment.
+    // The agent sets this flag based on `enable_ntdll_patching` config.
+    false
+}
+
 /// Initialises the hook DLL.
 ///
 /// Saves original function pointers and patches the host module's IAT.
+/// Per D-19: ordering is self-allowlist check -> IAT patch -> read ntdll flag.
 fn init() {
     if INITIALISED.swap(true, Ordering::SeqCst) {
         return;
@@ -535,6 +574,18 @@ fn init() {
                 }
             }
         }
+    }
+
+    // Phase 51: ntdll stub patching (conditional, lazy-init).
+    // The patcher is NOT created here — we only read the enable flag
+    // from shared memory (set by agent during injection) and store it
+    // for later lazy initialization on first trampoline call.
+    let ntdll_patching_enabled = read_ntdll_patching_flag_from_shared_memory();
+    if ntdll_patching_enabled {
+        debug_log("[dlp-hook] init: ntdll patching enabled, will lazy-init on first hook call\0");
+        NTDLL_PATCHING_ENABLED.store(true, Ordering::Relaxed);
+    } else {
+        debug_log("[dlp-hook] init: ntdll patching disabled\0");
     }
 
     debug_log("[dlp-hook] initialised — IAT hooks active\0");
