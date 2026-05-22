@@ -1,8 +1,12 @@
-//! Background thread for ISOLATED-state RESYNC detection.
+//! Background thread for ISOLATED-state RESYNC detection and trampoline
+//! integrity verification.
 //!
 //! Polls the shared-memory cache version word every 100ms when the fail-mode
 //! state machine is in ISOLATED or RESYNC states. Triggers automatic recovery
 //! when a fresh cache version is detected.
+//!
+//! Additionally verifies ntdll trampoline integrity every 30 seconds per D-11.
+//! Detects when EDR overwrites our trampolines and emits HookOverwritten alerts.
 //!
 //! # Design
 //!
@@ -11,6 +15,8 @@
 //! - Uses `CreateEventW` for clean shutdown signaling.
 //! - Only polls when in ISOLATED or RESYNC state to minimize CPU usage.
 //! - 100ms polling interval balances latency vs CPU (10 checks/second).
+//! - Trampoline verification runs every 300 ticks (30 seconds) as an additional
+//!   task in the same timer loop per D-11.
 //!
 //! # Cache Non-Authoritative Invariant
 //!
@@ -22,6 +28,16 @@ use std::sync::{Arc, OnceLock};
 
 use crate::classification_cache::CacheHeader;
 use crate::fail_mode::{FailModeState, FailState};
+
+/// Interval between trampoline integrity checks in milliseconds.
+///
+/// Per D-11: verify trampoline integrity every 30 seconds.
+const TRAMPOLINE_VERIFY_INTERVAL_MS: u32 = 30_000;
+
+/// Number of 100ms loop iterations between trampoline verification checks.
+///
+/// 30_000ms / 100ms = 300 ticks.
+const TRAMPOLINE_VERIFY_TICKS: u32 = TRAMPOLINE_VERIFY_INTERVAL_MS / 100;
 
 /// Global background thread handle.
 ///
@@ -47,7 +63,7 @@ pub struct BackgroundThread {
 unsafe impl Send for BackgroundThread {}
 unsafe impl Sync for BackgroundThread {}
 
-/// Start the background thread for RESYNC detection.
+/// Start the background thread for RESYNC detection and trampoline verification.
 ///
 /// This is a no-op if the thread is already running. Called lazily on the
 /// first hook call (not from `DllMain`).
@@ -56,7 +72,14 @@ unsafe impl Sync for BackgroundThread {}
 ///
 /// * `cache_header` - Pointer to the shared-memory cache header.
 /// * `fail_state` - Shared fail-mode state machine.
-pub fn start_background_thread(cache_header: *const CacheHeader, fail_state: Arc<FailModeState>) {
+/// * `verify_fn` - Optional callback for trampoline integrity verification.
+///   Called every 300 ticks (30 seconds). Pass `None` if ntdll patching is
+///   not enabled.
+pub fn start_background_thread(
+    cache_header: *const CacheHeader,
+    fail_state: Arc<FailModeState>,
+    verify_fn: Option<fn()>,
+) {
     if THREAD_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -82,7 +105,7 @@ pub fn start_background_thread(cache_header: *const CacheHeader, fail_state: Arc
     let thread_handle = std::thread::spawn(move || {
         let header_ptr = header_addr as *const CacheHeader;
         let event_handle = windows::Win32::Foundation::HANDLE(event_addr as *mut std::ffi::c_void);
-        background_thread_loop(header_ptr, fail_state_clone, event_handle);
+        background_thread_loop(header_ptr, fail_state_clone, event_handle, verify_fn);
     });
 
     let _ = BACKGROUND_THREAD.set(BackgroundThread {
@@ -113,15 +136,27 @@ pub fn shutdown_background_thread() {
 /// Background thread main loop.
 ///
 /// Polls the cache version word every 100ms when in ISOLATED or RESYNC state.
+/// Additionally calls the optional trampoline verification callback every 300
+/// ticks (30 seconds) per D-11.
+///
+/// # Arguments
+///
+/// * `cache_header` - Pointer to the shared-memory cache header.
+/// * `fail_state` - Shared fail-mode state machine.
+/// * `shutdown_event` - Windows event handle for clean shutdown.
+/// * `verify_fn` - Optional callback for trampoline integrity verification.
 fn background_thread_loop(
     cache_header: *const CacheHeader,
     fail_state: Arc<FailModeState>,
     shutdown_event: windows::Win32::Foundation::HANDLE,
+    verify_fn: Option<fn()>,
 ) {
     // SAFETY: WaitForSingleObject on valid handles.
     unsafe {
         use windows::Win32::Foundation::WAIT_OBJECT_0;
         use windows::Win32::System::Threading::WaitForSingleObject;
+
+        let mut tick_counter: u32 = 0;
 
         loop {
             // Wait 100ms for shutdown signal.
@@ -129,6 +164,16 @@ fn background_thread_loop(
             if wait_result == WAIT_OBJECT_0 {
                 // Shutdown signaled.
                 break;
+            }
+
+            tick_counter += 1;
+
+            // Trampoline verification: every 300 ticks (30 seconds).
+            if tick_counter >= TRAMPOLINE_VERIFY_TICKS {
+                tick_counter = 0;
+                if let Some(f) = verify_fn {
+                    f();
+                }
             }
 
             let current_state = fail_state.current_state();
@@ -187,7 +232,7 @@ mod tests {
     fn background_thread_stub_exists() {
         // Verify the module compiles and functions are callable.
         let state = Arc::new(FailModeState::new());
-        start_background_thread(std::ptr::null(), state);
+        start_background_thread(std::ptr::null(), state, None);
         shutdown_background_thread();
     }
 
@@ -220,12 +265,24 @@ mod tests {
         THREAD_STARTED.store(false, Ordering::SeqCst);
 
         // First start should succeed.
-        start_background_thread(std::ptr::null(), Arc::clone(&state));
+        start_background_thread(std::ptr::null(), Arc::clone(&state), None);
 
         // Second start should be a no-op.
-        start_background_thread(std::ptr::null(), state);
+        start_background_thread(std::ptr::null(), state, None);
 
         // Clean up.
         shutdown_background_thread();
+    }
+
+    #[test]
+    fn trampoline_verify_interval_is_300_ticks() {
+        assert_eq!(TRAMPOLINE_VERIFY_INTERVAL_MS, 30_000);
+        assert_eq!(TRAMPOLINE_VERIFY_TICKS, 300);
+    }
+
+    #[test]
+    fn trampoline_verify_ticks_math() {
+        // Verify the constant math is correct: 30s / 100ms = 300.
+        assert_eq!(TRAMPOLINE_VERIFY_TICKS, TRAMPOLINE_VERIFY_INTERVAL_MS / 100);
     }
 }

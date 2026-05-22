@@ -40,7 +40,9 @@ fn get_fail_state() -> &'static Arc<FailModeState> {
         let state = Arc::new(FailModeState::new());
         if let Some(cache) = crate::classification_cache::CacheLookup::get() {
             let header = cache as *const _ as *const crate::classification_cache::CacheHeader;
-            crate::background_thread::start_background_thread(header, Arc::clone(&state));
+            // Pass None for verify_fn — ntdll trampoline verification callback
+            // will be wired in Plan 06 when NtdllPatcher is initialized.
+            crate::background_thread::start_background_thread(header, Arc::clone(&state), None);
         }
         state
     })
