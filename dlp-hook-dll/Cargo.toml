@@ -29,6 +29,8 @@ windows = { version = "0.62", features = [
 serde = { workspace = true }
 bincode = "1.3"
 tracing = { workspace = true }
+# Phase 51: Detours-style ntdll syscall-stub trampolines.
+retour = "0.4.0-alpha.4"
 
 [dev-dependencies]
 dlp-agent = { path = "../dlp-agent" }

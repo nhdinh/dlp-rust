@@ -52,6 +52,7 @@ mod crash_guard;
 pub mod edr_detector;
 mod fail_closed;
 mod fail_mode;
+mod ntdll_patcher;
 mod pe_utils;
 mod perf_telemetry;
 mod pipe_client;
@@ -286,6 +287,11 @@ static mut IAT_NT_SET_INFORMATION_FILE: Option<*mut usize> = None;
 ///
 /// The `HOOKS` table drives `init()` (patch all), `UnhookAll()` (restore all),
 /// and debug logging.
+///
+/// Phase 51: Extended with ntdll stub fields for direct-syscall bypass defense.
+/// The `detour` handle is intentionally NOT stored here because
+/// `retour::RawDetour` is neither `Copy` nor `Clone`. Detour handles live in
+/// the [`NtdllPatcher`] struct's per-stub state machine instead.
 #[derive(Clone, Copy)]
 struct HookDescriptor {
     /// Human-readable function name (e.g., "WriteFile").
@@ -304,6 +310,17 @@ struct HookDescriptor {
     /// Return value to inject on denial.
     #[allow(dead_code)]
     deny_return: DenyReturn,
+    /// Address of the ntdll syscall stub (resolved at runtime).
+    ///
+    /// Phase 51: Set by `ntdll_patcher` when patching the stub.
+    #[allow(dead_code)]
+    ntdll_stub_addr: *mut u8,
+    /// Original 5 bytes of the ntdll stub (saved before patching).
+    ///
+    /// Phase 51: Saved before `retour` patches the stub; used for integrity
+    /// verification in the background re-verification thread.
+    #[allow(dead_code)]
+    original_ntdll_bytes: [u8; 5],
 }
 
 /// The canonical hook table — 12 entries covering the full file-I/O surface.
@@ -315,6 +332,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_CREATE_FILE_W as *mut usize,
         trampoline_ptr: trampolines::HookCreateFileW as *const (),
         deny_return: DenyReturn::InvalidHandleValue,
+        ntdll_stub_addr: std::ptr::null_mut(),
+        original_ntdll_bytes: [0u8; 5],
     },
     HookDescriptor {
         fn_name: "NtCreateFile",
@@ -323,6 +342,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_NT_CREATE_FILE as *mut usize,
         trampoline_ptr: trampolines::HookNtCreateFile as *const (),
         deny_return: DenyReturn::StatusAccessDenied,
+        ntdll_stub_addr: std::ptr::null_mut(),
+        original_ntdll_bytes: [0u8; 5],
     },
     HookDescriptor {
         fn_name: "WriteFile",
@@ -331,6 +352,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_WRITE_FILE as *mut usize,
         trampoline_ptr: trampolines::HookWriteFile as *const (),
         deny_return: DenyReturn::BoolFalse,
+        ntdll_stub_addr: std::ptr::null_mut(),
+        original_ntdll_bytes: [0u8; 5],
     },
     HookDescriptor {
         fn_name: "WriteFileEx",
@@ -339,6 +362,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_WRITE_FILE_EX as *mut usize,
         trampoline_ptr: trampolines::HookWriteFileEx as *const (),
         deny_return: DenyReturn::BoolFalse,
+        ntdll_stub_addr: std::ptr::null_mut(),
+        original_ntdll_bytes: [0u8; 5],
     },
     HookDescriptor {
         fn_name: "MoveFileExW",
@@ -347,6 +372,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_MOVE_FILE_EX_W as *mut usize,
         trampoline_ptr: trampolines::HookMoveFileExW as *const (),
         deny_return: DenyReturn::BoolFalse,
+        ntdll_stub_addr: std::ptr::null_mut(),
+        original_ntdll_bytes: [0u8; 5],
     },
     HookDescriptor {
         fn_name: "CopyFileExW",
@@ -355,6 +382,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_COPY_FILE_EX_W as *mut usize,
         trampoline_ptr: trampolines::HookCopyFileExW as *const (),
         deny_return: DenyReturn::BoolFalse,
+        ntdll_stub_addr: std::ptr::null_mut(),
+        original_ntdll_bytes: [0u8; 5],
     },
     HookDescriptor {
         fn_name: "DeleteFileW",
@@ -363,6 +392,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_DELETE_FILE_W as *mut usize,
         trampoline_ptr: trampolines::HookDeleteFileW as *const (),
         deny_return: DenyReturn::BoolFalse,
+        ntdll_stub_addr: std::ptr::null_mut(),
+        original_ntdll_bytes: [0u8; 5],
     },
     HookDescriptor {
         fn_name: "ReplaceFileW",
@@ -371,6 +402,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_REPLACE_FILE_W as *mut usize,
         trampoline_ptr: trampolines::HookReplaceFileW as *const (),
         deny_return: DenyReturn::BoolFalse,
+        ntdll_stub_addr: std::ptr::null_mut(),
+        original_ntdll_bytes: [0u8; 5],
     },
     HookDescriptor {
         fn_name: "SetFileInformationByHandle",
@@ -379,6 +412,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_SET_FILE_INFORMATION_BY_HANDLE as *mut usize,
         trampoline_ptr: trampolines::HookSetFileInformationByHandle as *const (),
         deny_return: DenyReturn::BoolFalse,
+        ntdll_stub_addr: std::ptr::null_mut(),
+        original_ntdll_bytes: [0u8; 5],
     },
     HookDescriptor {
         fn_name: "NtOpenFile",
@@ -387,6 +422,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_NT_OPEN_FILE as *mut usize,
         trampoline_ptr: trampolines::HookNtOpenFile as *const (),
         deny_return: DenyReturn::StatusAccessDenied,
+        ntdll_stub_addr: std::ptr::null_mut(),
+        original_ntdll_bytes: [0u8; 5],
     },
     HookDescriptor {
         fn_name: "NtWriteFile",
@@ -395,6 +432,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_NT_WRITE_FILE as *mut usize,
         trampoline_ptr: trampolines::HookNtWriteFile as *const (),
         deny_return: DenyReturn::StatusAccessDenied,
+        ntdll_stub_addr: std::ptr::null_mut(),
+        original_ntdll_bytes: [0u8; 5],
     },
     HookDescriptor {
         fn_name: "NtSetInformationFile",
@@ -403,7 +442,44 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_NT_SET_INFORMATION_FILE as *mut usize,
         trampoline_ptr: trampolines::HookNtSetInformationFile as *const (),
         deny_return: DenyReturn::StatusAccessDenied,
+        ntdll_stub_addr: std::ptr::null_mut(),
+        original_ntdll_bytes: [0u8; 5],
     },
+];
+
+// ---------------------------------------------------------------------------
+// Phase 51: Ntdll stub trampoline mapping (Plan 03 will define the trampolines)
+// ---------------------------------------------------------------------------
+
+/// Maps ntdll function names to their ntdll-specific trampoline targets.
+///
+/// These trampolines are installed by `ntdll_patcher` via `retour::RawDetour`
+/// on the ntdll syscall stubs themselves (not the IAT). They follow the same
+/// classification pipeline as IAT trampolines but call the original stub
+/// through retour's generated trampoline instead of the IAT-saved pointer.
+///
+/// NOTE: The `NtdllTrampoline*` functions are defined in Plan 03. This
+/// constant is conditionally compiled out until they exist, to keep Plan 02
+/// compilable independently.
+#[cfg(any())]
+#[allow(dead_code)]
+const NTDLL_STUBS: &[(&str, *const ())] = &[
+    (
+        "NtCreateFile",
+        trampolines::NtdllTrampolineNtCreateFile as *const (),
+    ),
+    (
+        "NtOpenFile",
+        trampolines::NtdllTrampolineNtOpenFile as *const (),
+    ),
+    (
+        "NtWriteFile",
+        trampolines::NtdllTrampolineNtWriteFile as *const (),
+    ),
+    (
+        "NtSetInformationFile",
+        trampolines::NtdllTrampolineNtSetInformationFile as *const (),
+    ),
 ];
 
 // ---------------------------------------------------------------------------
