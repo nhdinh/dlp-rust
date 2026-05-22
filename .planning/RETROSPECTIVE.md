@@ -11,6 +11,7 @@
 | v0.3.0 | 6 | 14 | ~3 | ~2.0 phases/day |
 | v0.4.0 | 5 | 9 | ~4 | ~1.3 phases/day |
 | v0.5.0 | 4 | 7 | ~2 | ~2.0 phases/day |
+| v0.11.0 | 4 | 13 | ~9 | ~0.4 phases/day |
 
 ### Phase Completion Rate
 
@@ -29,6 +30,50 @@
 - Two human verification items for Phase 6 still open (live TOML write-back, zero-warning build)
 - v0.3.0: axum 0.7 → 0.8 migration required by tower-governor (Phase 8); unplanned dependency upgrade
 - v0.4.0: Phase 19 UAT deferred mid-session (TUI feature not ready); routed to Phase 20 same session
+
+---
+
+## Milestone: v0.11.0 — Label Service + Workflow + Syslog
+
+**Shipped:** 2026-05-22
+**Phases:** 4 (59-62) | **Plans:** 13 | **Days:** 9 (2026-05-12 → 2026-05-21)
+
+### What Was Built
+
+- **Label Service (Phase 59)** — SQLite labels table with folder inheritance via ResolvedTier strictness semantics; label-aware ABAC evaluation with fail-closed fallback; paginated admin API with SQL-level filtering; full admin TUI label management screens
+- **Data Owner Review Queue (Phase 60)** — JWT SID-claim scoping for Data Owners; confirm/reject actions with SIEM audit events; scanner_confidence and department columns; ABAC cache invalidation on state change
+- **Approval Workflow Engine (Phase 61)** — SQLite approvals table with TOCTOU-guarded state transitions; Ed25519 JWT token signing/verification; T3 Data Owner grant with expiry; T4 Board digital signature with canonical message format; agent-side ApprovalCache with DashMap and 60-second poll sync
+- **Syslog Forwarder (Phase 62)** — RFC 5424 message formatting with configurable PRI/facility/severity; TLS 1.2+ connection via rustls; KEK-encrypted server-side queue with peek-confirm-delete semantics; DPAPI-encrypted agent-side offline queue; admin TUI config screen; heartbeat-driven drain loop with synthetic queue_overflow events
+
+### What Worked
+
+- **Pilot-first prioritization** — Explicitly deferring scanner (v0.12.0) and focusing on manual label + approval workflow unblocked pilot readiness faster than building scanner first
+- **Reusing existing patterns** — Label TUI screens followed PolicyList/PrintConfig patterns; approval screens followed LabelList patterns; reduced design overhead
+- **Ed25519 for T4 signatures** — Lightweight, well-supported in Rust (`ed25519-dalek`), no certificate chain complexity for Board-level signing
+
+### What Was Inefficient
+
+- **ROADMAP.md drift** — v0.11.0 phases (59-62) were tracked in STATE.md but never properly added to ROADMAP.md; Phase 62 doesn't appear in ROADMAP at all. Milestone archiving had to reconstruct from phase directories.
+- **Requirements file staleness** — REQUIREMENTS.md still shows most v0.11.0 requirements as unchecked despite being shipped. Traceability table was not maintained during execution.
+- **Phase 60/61 UAT gaps** — Data Owner review queue and approval workflow have human-verification items (TUI key handling, real Windows DPAPI round-trip) that can't be automated but were deferred rather than scheduled.
+
+### Patterns Established
+
+- **ResolvedTier enum** — Explicit `UnclassifiedBlocked`, `LookupFailed`, `NotLabeled` variants instead of `Option<Tier>`; makes fail-closed semantics visible in the type system
+- **TOCTOU guard pattern** — `UPDATE ... WHERE status = ?` with `rows_affected() == 1` check; returns 409 Conflict on race; used in both label review and approval workflows
+- **Poll-based authoritative sync** — Agent polls server every 60s for approval tokens rather than server push; simpler, survives network partitions, no persistent connections
+
+### Key Lessons
+
+- **Type system for security invariants** — ResolvedTier's explicit error variants prevented multiple bug classes that `Option<Tier>` would have hidden
+- **Deferred != forgotten** — Phases 63-64 (Hash Chain, Device Identity) were planned in v0.11.0 scope but never started. If they're not in the next milestone roadmap within 2 weeks, they'll become orphan requirements.
+- **Human verification needs scheduling** — TUI interactions and Windows-specific crypto (DPAPI) need real-machine testing. Deferring them to "someday" means they accumulate as audit debt.
+
+### Cost Observations
+
+- Model mix: Primarily opus for planning/review, sonnet for implementation
+- Sessions: ~12 sessions over 9 days
+- Notable: Phase 62 (syslog) was implemented in 2 focused sessions (Waves 1+2 server-side, Wave 3 agent+TUI) — wave-based execution pattern continues to work well
 
 ---
 

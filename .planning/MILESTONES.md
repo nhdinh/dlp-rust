@@ -1,5 +1,25 @@
 # Milestones
 
+## v0.11.0 Label Service + Workflow + Syslog (Shipped: 2026-05-22)
+
+**Phases completed:** 4 phases (59-62), 13 plans, ~50 tasks
+**Timeline:** 2026-05-12 to 2026-05-21 (9 days)
+**Requirements:** LABEL-01..07, WORKFLOW-01..06, SYSLOG-01..04
+
+**Key accomplishments:**
+
+- **Label Service** — SQLite schema with folder inheritance, ResolvedTier strictness semantics, label-aware ABAC evaluation with fail-closed fallback, paginated admin API, and full admin TUI management screens (Phase 59; 4 plans)
+- **Data Owner Review Queue** — JWT-scoped Data Owner confirmation/reject workflow with SIEM audit events, scanner confidence tracking, department filtering, and ABAC cache invalidation (Phase 60; 1 plan)
+- **Approval Workflow Engine** — T3 Data Owner approval with expiry, T4 Board digital signature via Ed25519 JWT tokens, TOCTOU-guarded SQLite state machine, agent-side ApprovalCache with DashMap and poll-based sync (Phase 61; 4 plans)
+- **Syslog Forwarder** — Native RFC 5424 formatting over TLS 1.2+, encrypted offline queue with KEK-enveloped SQLite storage, agent-side DPAPI-encrypted local queue, admin TUI configuration screen, and heartbeat-driven drain loop (Phase 62; 4 plans)
+- **Shared-Memory Classification Cache** — Sub-50us hot-path decisions via two-tier lookup, thread-local LRU with version invalidation, hardened path normalization, and tier-gated asymmetric fail-closed/fail-open behavior (Phase 50; carried forward from v0.10.0)
+
+**Known gaps at close:**
+- Phases 63-64 (Tamper-Evident Audit HASH-01..04, Device Identity Expansion DEVICE-01..05) were planned but not executed — deferred to v0.12.0 or later
+- v0.10.0 phases 51-58 (ntdll patching, DACL tripwire, ETW consumer, TUI screens, monitor mode, drive enumeration, deployment guide, differentiators) remain unstarted
+
+---
+
 ## v0.12.0 Scanner Integration + Endpoint Controls (Planned)
 
 **Phases:** 65–70 (6 phases)
@@ -8,6 +28,7 @@
 **Goal:** Add automated data discovery and close remaining endpoint enforcement gaps.
 
 **Planned features:**
+
 - File Scanner — share/folder enumeration, metadata collection, rule-based classifier (Vietnamese PII), temporary label auto-assignment. OCR deferred to v0.12.1+.
 - Screenshot Control — detect and block/alert on screenshots involving T3/T4 data.
 - Print Watermarking — overlay user/timestamp/device/tier/approval ID on approved print output.
@@ -25,6 +46,7 @@
 **Goal:** Unblock pilot deployment by giving operators a way to label data, review temporary labels, and grant time-bounded approvals for T3/T4 exceptions. Manual labels only — scanner comes in v0.12.0.
 
 **Planned features:**
+
 - Label Service — central database for file/folder labels with states (temporary/confirmed/rejected/expired), folder inheritance, and manual assignment API.
 - Data Owner Review Queue — admin TUI screen for Data Owners to confirm or reject temporary labels.
 - Approval Workflow Engine — T3 Data Owner approval with expiry; T4 Board digital signature; approval token validation in agent.
