@@ -1,7 +1,7 @@
 ---
 milestone: v0.11.0
 milestone_name: Label Service + Workflow + Audit
-last_updated: 2026-05-20
+last_updated: 2026-05-22
 total_phases: 6
 v1_requirements: 26
 coverage: 26/26
@@ -140,14 +140,15 @@ Plans:
   3. The 30-second re-verification thread emits `BypassAlert(reason=HookOverwritten)` within one verification cycle when an EDR re-patches over our trampoline; the alert reaches the admin TUI Bypass Alerts feed (Phase 53/54).
   4. The patcher's suspend-all-other-threads protocol blocks if any thread RIP lands in `[stub, stub+5]`; under the chaos-test fixture (1000 threads spinning on `NtCreateFile`), no torn-instruction crash is observed across 100 patch cycles.
   5. The `enable_ntdll_patching` policy flag defaults off; per-customer rollout is auditable via SIEM (`siem.ntdll_patching_enabled` event at boot).
-**Plans:** 5 plans (49-01 through 49-05)
+**Plans:** 6/6 plans planned
 
 Plans:
-- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
-- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
-- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
-- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
-- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
+- [ ] `51-01-PLAN.md` — EDR Detection + Thread Safety: edr_detector.rs + thread_suspender.rs + lib.rs mods
+- [ ] `51-02-PLAN.md` — Ntdll Patcher Core: retour dependency + HookDescriptor extension + ntdll_patcher.rs with per-stub state machine
+- [ ] `51-03-PLAN.md` — Ntdll Trampoline Bodies: NtdllTrampolineNtCreateFile/NtOpenFile/NtWriteFile/NtSetInformationFile with guard_trampoline pattern
+- [ ] `51-04-PLAN.md` — Background Thread Extension: 30-second trampoline re-verification + StubIntegrity checks + BypassAlert emission
+- [ ] `51-05-PLAN.md` — Agent Config + SIEM Events: enable_ntdll_patching flag + BypassAlert/BypassReason types + NtdllPatchingEnabled audit events
+- [ ] `51-06-PLAN.md` — Integration + Chaos Test: lazy OnceLock init (NOT from DllMain) + global patcher wiring + 1000-thread chaos fixture
 
 ### Phase 52: DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc
 **Goal**: T3/T4 root paths carry an explicit, canonically-ordered NTFS Deny ACE that survives operator and adversary tampering, with a repair watcher that distinguishes operator-staged removals from out-of-band tampering. The DPAPI master-key recovery runbook (carried forward from v1.0.0) ships alongside.
@@ -159,15 +160,7 @@ Plans:
   3. Operator-initiated removal via the Phase 54 admin TUI flows through the two-phase staged update (server `protected_paths_pending_change` → agent stages diff → ACE event arrives) and produces NO spurious tamper alert.
   4. The admin API exposes `GET`/`POST`/`PUT`/`DELETE /admin/protected-paths/:id`; the agent pulls protected-path config via `policy_sync` cadence and stores it in the new `protected_paths` + `protected_path_aces` SQLite tables (with foreign keys); 60 KB ACL size guard rejects oversize ACL writes with a clear operator error.
   5. `docs/operations/dpapi-recovery.md` exists and documents both the `re-init-from-env-vars` and `restore-from-backup` flows when DPAPI unprotect fails on agent restart, with a UAT verification that an operator can recover a corrupted DPAPI master key without manual SQL.
-**Plans:** 5 plans (49-01 through 49-05)
-
-Plans:
-- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
-- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
-- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
-- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
-- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
-**UI hint**: yes
+**Plans:** 0/5 plans planned
 
 ### Phase 53: ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring
 **Goal**: Every file operation that ETW Kernel-File records but the hook DLL never journaled is correlated within +/-5 ms QPC and surfaced as a BypassAlert through SIEM, the alert router, and a server endpoint feeding the Phase 54 admin TUI.
@@ -179,14 +172,7 @@ Plans:
   3. Each hook DLL writes a ring entry `(seq, file_object, op, path_hash, ts_qpc)` to its per-process `Global\DlpHookJournal_<pid>` BEFORE returning a decision, so denials are also journaled and not falsely flagged as bypasses.
   4. Allowlisted PIDs (AV/EDR, self, system-critical, PPL) are dropped pre-correlation; the bypass-alerts feed contains zero entries from Defender/CrowdStrike/SentinelOne in the soak-test fixture.
   5. `POST /audit/bypass` ingests agent-emitted bypass alerts; alerts route through `siem_connector::relay` and (when `severity >= ALERT`) `alert_router::send` with no new outbound transport added; `GET /admin/bypass-alerts?since=&severity=` and `POST /admin/bypass-alerts/:id/ack` round-trip cleanly.
-**Plans:** 5 plans (49-01 through 49-05)
-
-Plans:
-- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
-- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
-- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
-- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
-- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
+**Plans:** 0/5 plans planned
 
 ### Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens
 **Goal**: An operator can fully manage Protected Paths and triage Bypass Alerts from the admin TUI without touching SQLite, the registry, or any raw config file.
@@ -197,14 +183,7 @@ Plans:
   2. The Bypass Alerts screen shows a paginated event feed with per-event detail (image path + SHA-256, file path, operation, QPC timestamp, correlation reason); the operator can ack/dismiss with a single keypress and filter by severity.
   3. Both screens follow the existing `screens/usb_enforcement.rs` and `screens/print_config.rs` pattern (mod/dispatch/render/client/app.rs extensions); navigation, focus, and Esc-back semantics match every other admin TUI screen.
   4. Eight new client methods (`list_protected_paths`, `create_protected_path`, `update_protected_path`, `delete_protected_path`, `list_bypass_alerts`, `ack_bypass_alert`, plus the two screens' navigation entry points) exist, are unit-tested, and surface server errors as user-readable toasts.
-**Plans:** 5 plans (49-01 through 49-05)
-
-Plans:
-- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
-- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
-- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
-- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
-- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
+**Plans:** 0/5 plans planned
 **UI hint**: yes
 
 ### Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode
@@ -216,15 +195,7 @@ Plans:
   2. A policy in `Audit` mode produces a full audit event (`policy_mode = Audit`, `would_have_denied = true`) on a violation but the hook returns ALLOW; the file operation succeeds and the SIEM relay forwards the would-have-blocked event.
   3. A policy in `AuditAndBlock` mode produces both an audit event and a DENY return; the audit event records `policy_mode = AuditAndBlock` so post-deployment review can distinguish it from pure-`Block`.
   4. The Conditions Builder dropdown is exercised by an integration test that round-trips Audit → Block → AuditAndBlock through `PUT /admin/policies/:id` and verifies the agent sees each mode within one `policy_sync` cycle.
-**Plans:** 5 plans (49-01 through 49-05)
-
-Plans:
-- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
-- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
-- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
-- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
-- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
-**UI hint**: yes
+**Plans:** 0/5 plans planned
 
 ### Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)
 **Goal**: SD cards, optical (CD/DVD/Blu-ray), and virtual (Daemon Tools / VHD / VHDX / Explorer-mounted ISO) drives are first-class citizens in device enumeration and the ABAC engine, with policy expressible as `source_volume_class → destination_volume_class`.
@@ -235,14 +206,7 @@ Plans:
   2. The ABAC attribute set grows from 5 to 7 with `source_volume_class` and `destination_volume_class`; an integration test proves a policy "DENY copy from LocalNTFS T4 to Optical" blocks an actual `CopyFileExW` to a registered optical drive on the test endpoint.
   3. The admin TUI Conditions Builder exposes `source_volume_class` and `destination_volume_class` as dropdowns with the six enum values; the existing USB/disk allowlist screens render SD/Optical/Virtual rows alongside USB without UI breakage.
   4. `WM_DEVICECHANGE` handlers cover virtual mounts (Daemon Tools, ISO mounting via Windows Explorer, VHD/VHDX mount) by registering `GUID_DEVINTERFACE_VOLUME` notification handlers for non-USB volume classes; the 500 ms deferred-processing pattern from v0.7.0 is preserved.
-**Plans:** 5 plans (49-01 through 49-05)
-
-Plans:
-- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
-- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
-- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
-- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
-- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
+**Plans:** 0/5 plans planned
 **UI hint**: yes
 
 ### Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT
@@ -254,14 +218,7 @@ Plans:
   2. Every shipped binary has SHA-256 + SHA-512 hashes published in `RELEASE_NOTES.md`; the Microsoft binary submission flow (`wdsi/filesubmission`) is documented; a `signtool verify` command for Authenticode timestamp verification is included; reproducible by an operator from the documented commands alone.
   3. The deployment guide explicitly addresses Secure Boot reality (AppInit_DLLs is inert; `siem.appinit_dlls_disabled` will fire), the PPL coverage gap (lsass/MsMpEng/EDR-self) and the DACL-tripwire backstop, `SeSystemProfilePrivilege` preservation across upgrades, and the post-install reboot requirement for hook activation.
   4. UAT executes on a real Windows 11 host with real OneDrive/Google Drive/Dropbox/Box clients, real printers, and real USB/SD/optical/virtual drives; every v0.9.0 cloud-sync regression test plus every v0.10.0 active-blocking scenario passes; the CRIT-04 benchmark gate (<= 25% wall-clock overhead on representative `cargo build` + `Office app launch` workloads) holds; results are captured in `.planning/milestones/v0.10.0-UAT.md`.
-**Plans:** 5 plans (49-01 through 49-05)
-
-Plans:
-- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
-- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
-- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
-- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
-- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
+**Plans:** 0/5 plans planned
 
 ### Phase 58: Differentiators Bundle (Override + Diagnostic + Hash Evidence + Self-Health)
 **Goal**: The four highest-value differentiators ship as a bundle that materially improves operator deployability and forensic posture; cuttable as a unit to v0.10.1 if scope pressure hits.
@@ -272,15 +229,7 @@ Plans:
   2. The diagnostic-mode admin TUI screen displays the full decision tree per blocked event — which hook fired, classification source + age, ABAC subject/resource/action/environment values, matched policy ID + mode, decision latency in microseconds — sufficient to triage a real false-positive without leaving the TUI.
   3. Block events on `WriteFile`/`WriteFileEx` carry a `content_sha256` hash of the would-be-written content (computed via the OS file handle, NOT a second open); audit-event consumers and SIEM relay forward the hash unchanged for forensic chain-of-custody.
   4. The hook DLL emits per-host self-health counters (injected_pids, patched_modules, pipe_round_trips, cache_hit_rate, fail_state) that the admin TUI surfaces on a coexistence dashboard, letting an operator see at a glance which endpoints have healthy hooks and which are degraded by AV/EDR interaction.
-**Plans:** 5 plans (49-01 through 49-05)
-
-Plans:
-- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
-- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
-- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
-- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
-- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
-**UI hint**: yes
+**Plans:** 0/5 plans planned
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 **Goal**: A label service provides persistent data classification labels with folder inheritance, manual assignment, and admin API/TUI management.
@@ -304,14 +253,7 @@ Plans:
   3. Scanner confidence is displayed in the review queue.
   4. Department filter scopes the review queue.
   5. Confirm invalidates the ABAC label resolution cache.
-**Plans:** 5 plans (49-01 through 49-05)
-
-Plans:
-- [ ] `49-01-PLAN.md` — Agent Core Modules: process_registry.rs + allowlist.rs + appinit.rs + lib.rs mods + Cargo.toml deps
-- [ ] `49-02-PLAN.md` — Server-Side Allowlist: SQLite table + AllowlistRepository + /admin/allowlist CRUD API
-- [ ] `49-03-PLAN.md` — ETW Watcher + Universal Injector: process_watcher.rs + universal_injector.rs + service.rs integration
-- [ ] `49-04-PLAN.md` — Config Wiring + Admin TUI: AgentConfig extension + server_client payload + allowlist screen
-- [ ] `49-05-PLAN.md` — Telemetry + Installer + Tests: periodic tasks + AppInit_DLLs setup + full workspace test suite
+**Plans:** 1/1 plans planned
 **UI hint**: yes
 
 ### Phase 61: Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature
@@ -354,7 +296,7 @@ Plans:
 | 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-16 |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 5/5 | Complete    | 2026-05-19 |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 6/6 | Complete    | 2026-05-20 |
-| 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 0/0 | Not started | - |
+| 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 6/6 | Planned     | - |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 0/0 | Not started | - |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 0/0 | Not started | - |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 0/0 | Not started | - |
@@ -408,4 +350,4 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 
 ---
 
-*Last updated: 2026-05-20 — Phase 50 planned (6 plans: 50-01 through 50-06).*
+*Last updated: 2026-05-22 — Phase 51 planned (6 plans: 51-01 through 51-06).*
