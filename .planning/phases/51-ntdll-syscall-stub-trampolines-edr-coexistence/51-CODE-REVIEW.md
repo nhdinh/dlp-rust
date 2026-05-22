@@ -1,6 +1,7 @@
 ---
 phase: 51-ntdll-syscall-stub-trampolines-edr-coexistence
 reviewed: 2026-05-22T15:30:00Z
+fixed: 2026-05-22T18:45:00Z
 depth: deep
 files_reviewed: 11
 files_reviewed_list:
@@ -16,11 +17,11 @@ files_reviewed_list:
   - dlp-agent/src/config.rs
   - dlp-agent/src/service.rs
 findings:
-  critical: 4
-  warning: 6
+  critical: 0
+  warning: 0
   info: 4
-  total: 14
-status: issues_found
+  total: 4
+status: resolved
 ---
 
 # Phase 51: Code Review Report
@@ -394,6 +395,28 @@ If an old hook DLL (pre-Phase 51) is injected, the agent will log "ntdll patchin
 
 ---
 
+## Fixes Applied
+
+All 10 in-scope findings (4 Critical + 6 Warning) were fixed on 2026-05-22:
+
+| Finding | Commit | Description |
+|---------|--------|-------------|
+| CR-01 | `d9b2526` | Replaced 15 `panic!` in trampolines with fail-closed NTSTATUS |
+| CR-02 | `79aba62` | Added alignment check before `RawDetour::new` |
+| CR-03 | `c6bf822` | Replaced `THREADINFOCLASS(0)` with `GetThreadContext` |
+| CR-04 | `f022fe1` | Replaced `std::sync::Mutex` with `parking_lot::Mutex` |
+| WR-01 | `268513a` | Deduplicated `fnv1a_64` into `dlp-common` |
+| WR-02 | `1a87cb8` | Implemented `emit_bypass_alert` with pipe IPC |
+| WR-03 | `3c6af85` | Runtime-computed trampoline range |
+| WR-04 | `afa62a9` | Added null check for `stub_addr` |
+| WR-05 | `d9552fd` | Defensive null check in `background_thread_loop` |
+| WR-06 | `c1754dc` | Replaced `VirtualQuery` with `GetModuleInformation` |
+
+**Verification:** `cargo check` clean, `cargo clippy -D warnings` clean, 253 dlp-hook-dll tests pass.
+
+---
+
 _Reviewed: 2026-05-22T15:30:00Z_
+_Fixed: 2026-05-22T18:45:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: deep_
