@@ -65,6 +65,12 @@ pub enum EventType {
     ApprovalExpiry,
     /// The Board public key was updated (WORKFLOW-06, Phase 61).
     ApprovalBoardKeyUpdate,
+    /// Phase 51: ntdll patching was enabled at agent boot.
+    NtdllPatchingEnabled,
+    /// Phase 51: EDR was detected at boot while ntdll patching is enabled.
+    NtdllPatchingEdrDetected,
+    /// Phase 51: A hook trampoline was overwritten (potential bypass or EDR conflict).
+    HookOverwritten,
 }
 
 impl EventType {
@@ -90,6 +96,9 @@ impl EventType {
                 | Self::ApprovalUse
                 | Self::ApprovalExpiry
                 | Self::ApprovalBoardKeyUpdate
+                | Self::NtdllPatchingEnabled
+                | Self::NtdllPatchingEdrDetected
+                | Self::HookOverwritten
         )
     }
 
@@ -1077,5 +1086,22 @@ mod tests {
             event.owner_user.is_none(),
             "missing owner_user must default to None"
         );
+    }
+
+    // --- Phase 51: Ntdll patching event types ---
+
+    #[test]
+    fn event_type_ntdll_patching_enabled_routed_to_siem() {
+        assert!(EventType::NtdllPatchingEnabled.routed_to_siem());
+    }
+
+    #[test]
+    fn event_type_ntdll_patching_edr_detected_routed_to_siem() {
+        assert!(EventType::NtdllPatchingEdrDetected.routed_to_siem());
+    }
+
+    #[test]
+    fn event_type_hook_overwritten_routed_to_siem() {
+        assert!(EventType::HookOverwritten.routed_to_siem());
     }
 }
