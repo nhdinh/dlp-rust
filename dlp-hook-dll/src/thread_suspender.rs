@@ -20,7 +20,7 @@
 
 use std::ffi::c_void;
 use windows::Wdk::System::SystemInformation::{NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS};
-use windows::Wdk::System::Threading::{NtQueryInformationThread, THREADINFOCLASS};
+use windows::Win32::System::Diagnostics::Debug::GetThreadContext;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, GetCurrentThreadId, OpenThread, ResumeThread, SuspendThread,
@@ -321,15 +321,7 @@ pub unsafe fn get_thread_rip(thread_handle: HANDLE) -> Result<usize, PatchError>
             ..Default::default()
         };
 
-        let status = NtQueryInformationThread(
-            thread_handle,
-            THREADINFOCLASS(0), // ThreadContext
-            &mut ctx as *mut _ as *mut c_void,
-            std::mem::size_of::<CONTEXT>() as u32,
-            std::ptr::null_mut(),
-        );
-
-        if status.is_err() {
+        if unsafe { GetThreadContext(thread_handle, &mut ctx) }.is_err() {
             return Err(PatchError::EnumerationFailed);
         }
 
@@ -347,15 +339,7 @@ pub unsafe fn get_thread_rip(thread_handle: HANDLE) -> Result<usize, PatchError>
             ..Default::default()
         };
 
-        let status = NtQueryInformationThread(
-            thread_handle,
-            THREADINFOCLASS(0), // ThreadContext
-            &mut ctx as *mut _ as *mut c_void,
-            std::mem::size_of::<WOW64_CONTEXT>() as u32,
-            std::ptr::null_mut(),
-        );
-
-        if status.is_err() {
+        if unsafe { GetThreadContext(thread_handle, &mut ctx) }.is_err() {
             return Err(PatchError::EnumerationFailed);
         }
 
