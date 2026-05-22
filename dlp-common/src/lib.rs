@@ -13,6 +13,7 @@ pub mod classifier;
 pub mod crypto;
 pub mod disk;
 pub mod endpoint;
+pub mod hash;
 pub mod hook_ipc;
 pub mod label;
 pub mod usb;
@@ -31,6 +32,7 @@ pub use disk::{
     EncryptionMethod, EncryptionStatus,
 };
 pub use endpoint::{AppIdentity, AppTrustTier, DeviceIdentity, SignatureState, UsbTrustTier};
+pub use hash::fnv1a_64;
 pub use hook_ipc::{HookRequest, HookResponse};
 pub use label::{Label, LabelState, ObjectType, Tier};
 pub use usb::{
