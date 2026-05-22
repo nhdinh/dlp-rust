@@ -1,9 +1,9 @@
 ---
 name: DLP-RUST
-version: v0.10.0-planning
-last_updated: 2026-05-12
+version: v0.11.0-shipped
+last_updated: 2026-05-22
 status: in_progress
-shipped: v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0, v0.7.1, v0.8.0, v0.8.1, v0.9.0
+shipped: v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0, v0.7.1, v0.8.0, v0.8.1, v0.9.0, v0.11.0
 active_milestone: v0.10.0
 ---
 
@@ -82,10 +82,11 @@ If NTFS ALLOW and ABAC DENY → FINAL RESULT = DENY. ABAC always tightens, never
 
 ### Project Scale
 
-- 9 milestones shipped (v0.2.0 through v0.9.0)
-- 46 phases executed
-- ~8 months of development through 2026-05-11
-- 700+ tests across the workspace, clippy-clean
+- 10 milestones shipped (v0.2.0 through v0.9.0, v0.11.0)
+- 50 phases executed
+- ~9 months of development through 2026-05-22
+- 659+ tests across the workspace, clippy-clean
+- ~120K LOC Rust
 
 ## Current Milestone: v0.10.0 Real-Time File Access Prevention
 
@@ -106,20 +107,21 @@ If NTFS ALLOW and ABAC DENY → FINAL RESULT = DENY. ABAC always tightens, never
 
 **v1.0.0 Enterprise Hardening dropped.** HARD-02 through HARD-08 move to Out of Scope. HARD-01 (Secrets Encryption at Rest) stays validated — Phase 47 is shipped and carries forward as a v0.10.0 prerequisite. Phase 47's planning artifacts (`.planning/phases/47-secrets-encryption-at-rest/`) are retained, including the DPAPI-recovery handoff originally slated for v1.0.0 Phase 52 (now folded into v0.10.0's operational documentation surface).
 
+## Shipped Milestones
+
+### v0.11.0 — Label Service + Workflow + Syslog (Shipped: 2026-05-22)
+
+**Delivered:**
+- **Label Service** — SQLite schema with folder inheritance, ResolvedTier strictness semantics, label-aware ABAC evaluation, paginated admin API, admin TUI screens (Phase 59)
+- **Data Owner Review Queue** — JWT-scoped confirmation/reject with SIEM audit, scanner confidence, department filtering (Phase 60)
+- **Approval Workflow Engine** — T3 Data Owner approval with expiry, T4 Board Ed25519 digital signature, agent-side token validation (Phase 61)
+- **Syslog Forwarder** — RFC 5424 over TLS, encrypted offline queue (KEK + DPAPI), admin TUI config screen (Phase 62)
+
+**Deferred from v0.11.0:**
+- Tamper-Evident Audit (HASH-01..04) → v0.12.0 or later
+- Device Identity Expansion (DEVICE-01..05) → v0.12.0 or later
+
 ## Next Milestones (Pilot-First Path)
-
-### v0.11.0 — Label Service + Data Owner Queue + Approval Workflow
-
-**Goal:** Unblock pilot deployment by giving operators a way to label data, review temporary labels, and grant time-bounded approvals for T3/T4 exceptions. This milestone does NOT include the scanner (manual labels only) — the scanner comes in v0.12.0.
-
-**Target features:**
-
-- **Label Service** — central database for file/folder labels with states (temporary/confirmed/rejected/expired), folder inheritance, and manual assignment API.
-- **Data Owner Review Queue** — admin TUI screen for Data Owners to confirm or reject temporary labels assigned during pilot onboarding.
-- **Approval Workflow Engine** — T3 Data Owner approval with expiry; T4 Board digital signature; approval token validation in agent; `/admin/overrides` endpoint and TUI screen.
-- **Syslog Forwarder** — RFC 5424 syslog to SIEM/SOC over TLS; encrypted offline queue.
-- **Tamper-Evident Audit (Hash Chain)** — SHA-256 append-only hash chain on agent audit logs; server-side verification.
-- **Device Identity Expansion** — fingerprint hash, MAC addresses, VPN state, domain state, health status in agent heartbeat and ABAC context.
 
 ### v0.12.0 — Scanner Integration + Endpoint Controls
 
