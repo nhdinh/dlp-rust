@@ -610,16 +610,11 @@ fn is_target_in_our_trampoline_range(target: *mut u8) -> bool {
         crate::trampolines::NtdllTrampolineNtSetInformationFile as *const (),
     ];
 
-    const TRAMPOLINE_WINDOW: usize = 64 * 1024; // 64KB generous window
-
-    for tramp in trampolines {
-        let base = tramp as usize;
-        // Handle wrap-around gracefully.
-        if target_usize >= base && target_usize.saturating_sub(base) < TRAMPOLINE_WINDOW {
-            return true;
-        }
-    }
-    false
+    let min = trampolines.iter().map(|t| *t as usize).min().unwrap_or(0);
+    let max = trampolines.iter().map(|t| *t as usize).max().unwrap_or(0);
+    // Add generous margin for function size + padding
+    let margin = 16 * 1024; // 16KB per function
+    target_usize >= min.saturating_sub(margin) && target_usize <= max.saturating_add(margin)
 }
 
 /// Emits a bypass alert via the named pipe.
