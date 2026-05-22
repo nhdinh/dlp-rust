@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Real-Time File Access Prevention
 status: executing
-last_updated: "2026-05-22T06:44:49.613Z"
+last_updated: "2026-05-22T07:17:47.000Z"
 last_activity: 2026-05-22
 progress:
   total_phases: 14
   completed_phases: 6
   total_plans: 31
-  completed_plans: 29
-  percent: 45
+  completed_plans: 30
+  percent: 46
 ---
 
 # Project State
@@ -25,8 +25,8 @@ progress:
 
 ## Current Position
 
-Phase: 51 (ntdll-syscall-stub-trampolines-edr-coexistence) — EXECUTING
-Plan: 5 of 6
+Phase: 51 (ntdll-syscall-stub-trampolines-edr-coexistence) — COMPLETED
+Plan: 6 of 6
 Status: Completed
 Last activity: 2026-05-22
 
@@ -108,6 +108,7 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 15. **2026-05-12 (updated): Explicit minifilter ban reinforced.** Target architecture updated to forbid Windows Minifilter drivers and kernel-mode filesystem interception entirely. The existing user-mode architecture (IAT hooks + DACL tripwire + ETW + WFP + NTFS ACLs) already satisfies this constraint. New requirements ARCH-01..04 and pilot test TC-017 verify compliance. No code changes required — the constraint is architectural documentation and build-audit verification.
 16. **2026-05-21: Phase 59 Plan 01 complete.** ResolvedTier enum added to dlp-server with strictness-aware folder inheritance. Tier::strictness_rank() and is_stricter_than() added to dlp-common. LabelCache upgraded to store full CacheEntry metadata. resolve_tier now returns ResolvedTier (not Result<Tier>) and implements D-07b strictest-tier-wins semantics. 18 new tests, 659 total passing, clippy clean.
 17. **2026-05-22: Phase 51 Plans 01-04 complete.** EDR detection (edr_detector.rs), thread suspend protocol (thread_suspender.rs), ntdll patcher core with retour (ntdll_patcher.rs), ntdll trampoline bodies (trampolines.rs), and background re-verification thread (background_thread.rs) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied.
+18. **2026-05-22: Phase 51 Plans 05-06 complete.** BypassAlert IPC types (dlp-common), enable_ntdll_patching config flag (dlp-agent), service startup SIEM emission, OnceLock lazy init integration in lib.rs, and chaos test fixture (1000 threads + 100 patch cycles) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied. Phase 51 COMPLETE.
 
 ## Blockers
 
@@ -230,6 +231,20 @@ Active surface to consume in v0.11.0 implementation:
 - 197 dlp-common tests pass; 585 dlp-agent tests pass; clippy clean (-D warnings)
 - Commits: 9a3ef9d, 7684fae, 49a5b34
 
+## Plan 51-06 Completed (2026-05-22)
+
+- NTDLL_PATCHER OnceLock<Mutex<NtdllPatcher>> added to lib.rs for lazy initialization
+- lazy_init_ntdll_patcher function initializes patcher on first hook call (never from DllMain)
+- NTDLL_PATCHING_ENABLED AtomicBool controls whether lazy init happens (~1ns fast-path)
+- init() reads flag from shared memory stub but does NOT create patcher (avoids DllMain deadlock)
+- All four NtdllTrampoline* functions call get_original_trampoline() free function for retour trampoline
+- ntdll_patcher module changed to pub for integration test access
+- ntdll_chaos_test.rs integration test: 1000 threads + 100 patch/unpatch cycles, marked #[ignore]
+- ntdll_patcher_smoke_test runs by default: verifies state machine, get_original_trampoline, verify_stub_integrity
+- 253 dlp-hook-dll tests pass; clippy clean (-D warnings)
+- Commits: e9fb126, 0f37ba1, 28f2340
+
 ## Operator Next Steps
 
+- Phase 51 is COMPLETE. All 6 plans delivered.
 - Start the next milestone with /gsd-new-milestone
