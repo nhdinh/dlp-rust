@@ -1151,6 +1151,29 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
             None
         };
 
+    // ── Phase 51: ntdll patching config ───────────────────────────────────
+    let enable_ntdll_patching = agent_config.enable_ntdll_patching.unwrap_or(false);
+    if enable_ntdll_patching {
+        info!("ntdll patching enabled — will pass flag to hook DLL injector");
+        // Emit SIEM event per D-15.
+        // The hook DLL will emit BypassAlert(reason=EdrDetected) when EDR is
+        // detected at boot; the agent converts that to EventType::NtdllPatchingEdrDetected.
+        let agent_id = std::env::var("DLP_AGENT_ID")
+            .unwrap_or_else(|_| hostname::get().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()));
+        let event = dlp_common::audit::AuditEvent::new(
+            dlp_common::audit::EventType::NtdllPatchingEnabled,
+            "SYSTEM".to_string(),
+            "SYSTEM".to_string(),
+            "N/A".to_string(),
+            dlp_common::Classification::T1,
+            dlp_common::Action::PolicyUpdate,
+            dlp_common::Decision::ALLOW,
+            agent_id,
+            0,
+        );
+        crate::audit_emitter::emit(&event).ok();
+    }
+
     // ── Sync-client process watcher (M017/S02) ───────────────────────────
     // Only active when hook injection is enabled. Uses a std::thread (not a
     // Tokio task) to avoid blocking the async reactor during sleep intervals.

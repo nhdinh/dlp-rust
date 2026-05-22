@@ -266,6 +266,11 @@ pub struct AgentConfig {
     /// Phase 49: Version of the allowlist config (for change detection).
     #[serde(default)]
     pub allowlist_version: i64,
+
+    /// Phase 51: Enable ntdll syscall-stub patching for direct-syscall bypass defense.
+    /// When `None`, defaults to `false`. Must be explicitly enabled by operator.
+    #[serde(default)]
+    pub enable_ntdll_patching: Option<bool>,
 }
 
 impl AgentConfig {
@@ -608,6 +613,19 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_config_enable_ntdll_patching_default() {
+        let config = AgentConfig::default();
+        assert!(config.enable_ntdll_patching.is_none());
+    }
+
+    #[test]
+    fn test_agent_config_enable_ntdll_patching_deserialize() {
+        let toml_str = "enable_ntdll_patching = true\n";
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(config.enable_ntdll_patching, Some(true));
+    }
+
+    #[test]
     fn test_agent_config_new_fields_deserialize() {
         let toml_str = "heartbeat_interval_secs = 60\noffline_cache_enabled = false\n";
         let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
@@ -643,6 +661,7 @@ mod tests {
             universal_injection_enabled: None,
             allowlist_entries: Vec::new(),
             allowlist_version: 0,
+            enable_ntdll_patching: None,
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
         };
@@ -689,6 +708,7 @@ mod tests {
             universal_injection_enabled: None,
             allowlist_entries: Vec::new(),
             allowlist_version: 0,
+            enable_ntdll_patching: None,
         };
 
         let tmp_path = std::env::temp_dir().join("test_agent_config_save_server_url.toml");
