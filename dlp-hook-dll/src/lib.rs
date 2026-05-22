@@ -55,6 +55,7 @@ mod fail_mode;
 mod pe_utils;
 mod perf_telemetry;
 mod pipe_client;
+pub mod thread_suspender;
 pub mod trampolines;
 
 pub use fail_closed::DenyReturn;
