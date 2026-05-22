@@ -1394,6 +1394,12 @@ pub unsafe extern "system" fn NtdllTrampolineNtCreateFile(
     eabuffer: *mut std::ffi::c_void,
     ealength: u32,
 ) -> NTSTATUS {
+    // Phase 51: Lazy-init ntdll patcher on first trampoline invocation.
+    // The AtomicBool check is ~1ns; Mutex lock only on first call.
+    if crate::NTDLL_PATCHING_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = crate::lazy_init_ntdll_patcher(true);
+    }
+
     crate::crash_guard::guard_trampoline(
         "NtCreateFile_ntdll",
         || {
@@ -1511,6 +1517,11 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
     shareaccess: u32,
     openoptions: u32,
 ) -> NTSTATUS {
+    // Phase 51: Lazy-init ntdll patcher on first trampoline invocation.
+    if crate::NTDLL_PATCHING_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = crate::lazy_init_ntdll_patcher(true);
+    }
+
     crate::crash_guard::guard_trampoline(
         "NtOpenFile_ntdll",
         || {
@@ -1647,6 +1658,11 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
     byteoffset: *const i64,
     key: *mut u32,
 ) -> NTSTATUS {
+    // Phase 51: Lazy-init ntdll patcher on first trampoline invocation.
+    if crate::NTDLL_PATCHING_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = crate::lazy_init_ntdll_patcher(true);
+    }
+
     crate::crash_guard::guard_trampoline(
         "NtWriteFile_ntdll",
         || {
@@ -1811,6 +1827,11 @@ pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
     length: u32,
     fileinformationclass: u32,
 ) -> NTSTATUS {
+    // Phase 51: Lazy-init ntdll patcher on first trampoline invocation.
+    if crate::NTDLL_PATCHING_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = crate::lazy_init_ntdll_patcher(true);
+    }
+
     crate::crash_guard::guard_trampoline(
         "NtSetInformationFile_ntdll",
         || {
