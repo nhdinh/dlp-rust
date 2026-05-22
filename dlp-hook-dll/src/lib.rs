@@ -49,6 +49,7 @@ mod allowlist;
 mod background_thread;
 mod classification_cache;
 mod crash_guard;
+pub mod edr_detector;
 mod fail_closed;
 mod fail_mode;
 mod pe_utils;

@@ -21,6 +21,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Pipes",
     "Win32_System_Kernel",
     "Win32_System_Performance",
+    "Win32_System_ProcessStatus",
 ] }
 serde = { workspace = true }
 bincode = "1.3"
