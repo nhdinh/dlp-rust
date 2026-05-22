@@ -28,8 +28,8 @@
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HMODULE};
-use windows::Win32::System::ProcessStatus::{EnumProcessModules, GetModuleFileNameExW};
-use windows::Win32::System::Threading::{GetCurrentProcessId, OpenProcess};
+use windows::Win32::System::ProcessStatus::{EnumProcessModules, GetModuleFileNameExW, GetModuleInformation, MODULEINFO};
+use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, OpenProcess};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -308,22 +308,20 @@ pub fn is_address_in_edr_module_range(addr: *const c_void, modules: &[ModuleInfo
 ///
 /// `base` must be a valid module base address from `EnumProcessModules`.
 unsafe fn get_module_size(base: *const c_void) -> Option<usize> {
-    use windows::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION};
-
-    let mut info = MEMORY_BASIC_INFORMATION::default();
-    let result = VirtualQuery(
-        Some(base),
+    let mut info = MODULEINFO::default();
+    let h = GetCurrentProcess();
+    let result = GetModuleInformation(
+        h,
+        HMODULE(base as *mut _),
         &mut info,
-        std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+        std::mem::size_of::<MODULEINFO>() as u32,
     );
 
-    if result == 0 {
-        return None;
+    if result.is_ok() {
+        Some(info.SizeOfImage as usize)
+    } else {
+        None
     }
-
-    // The region size from VirtualQuery gives us the allocation size
-    // starting from the base address.
-    Some(info.RegionSize)
 }
 
 // ---------------------------------------------------------------------------
