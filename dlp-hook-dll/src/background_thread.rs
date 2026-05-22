@@ -151,6 +151,21 @@ fn background_thread_loop(
     shutdown_event: windows::Win32::Foundation::HANDLE,
     verify_fn: Option<fn()>,
 ) {
+    // Defensive: if no cache is available, just wait for shutdown.
+    if cache_header.is_null() {
+        unsafe {
+            use windows::Win32::Foundation::WAIT_OBJECT_0;
+            use windows::Win32::System::Threading::WaitForSingleObject;
+            loop {
+                let wait_result = WaitForSingleObject(shutdown_event, 100);
+                if wait_result == WAIT_OBJECT_0 {
+                    break;
+                }
+            }
+        }
+        return;
+    }
+
     // SAFETY: WaitForSingleObject on valid handles.
     unsafe {
         use windows::Win32::Foundation::WAIT_OBJECT_0;
