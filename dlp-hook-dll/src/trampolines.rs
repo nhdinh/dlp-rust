@@ -487,11 +487,9 @@ pub unsafe extern "system" fn HookNtCreateFile(
                     if let Some(_deny) = classify_and_log_path(&path, "CREATE", "NtCreateFile") {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
-                    let original = crate::ORIGINAL_NT_CREATE_FILE.unwrap_or_else(|| {
-                        crate::resolve_nt_create_file().unwrap_or_else(|| {
-                            panic!("NtCreateFile original unavailable and resolution failed")
-                        })
-                    });
+                    let Some(original) = (unsafe { crate::ORIGINAL_NT_CREATE_FILE.or_else(|| crate::resolve_nt_create_file()) }) else {
+                        return crate::fail_closed!(StatusAccessDenied);
+                    };
                     original(
                         filehandle,
                         desiredaccess,
@@ -507,11 +505,9 @@ pub unsafe extern "system" fn HookNtCreateFile(
                     )
                 },
                 || {
-                    let original = crate::ORIGINAL_NT_CREATE_FILE.unwrap_or_else(|| {
-                        crate::resolve_nt_create_file().unwrap_or_else(|| {
-                            panic!("NtCreateFile original unavailable and resolution failed")
-                        })
-                    });
+                    let Some(original) = (unsafe { crate::ORIGINAL_NT_CREATE_FILE.or_else(|| crate::resolve_nt_create_file()) }) else {
+                        return crate::fail_closed!(StatusAccessDenied);
+                    };
                     original(
                         filehandle,
                         desiredaccess,
@@ -529,11 +525,9 @@ pub unsafe extern "system" fn HookNtCreateFile(
             )
         },
         || {
-            let original = crate::ORIGINAL_NT_CREATE_FILE.unwrap_or_else(|| {
-                crate::resolve_nt_create_file().unwrap_or_else(|| {
-                    panic!("NtCreateFile original unavailable and resolution failed")
-                })
-            });
+            let Some(original) = (unsafe { crate::ORIGINAL_NT_CREATE_FILE.or_else(|| crate::resolve_nt_create_file()) }) else {
+                return crate::fail_closed!(StatusAccessDenied);
+            };
             original(
                 filehandle,
                 desiredaccess,
@@ -1426,9 +1420,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtCreateFile(
                             ealength,
                         )
                     } else {
-                        let fallback = crate::resolve_nt_create_file().unwrap_or_else(|| {
-                            panic!("NtCreateFile original unavailable and resolution failed")
-                        });
+                        let Some(fallback) = (unsafe { crate::resolve_nt_create_file() }) else {
+                            return crate::fail_closed!(StatusAccessDenied);
+                        };
                         fallback(
                             filehandle,
                             desiredaccess,
@@ -1462,9 +1456,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtCreateFile(
                             ealength,
                         )
                     } else {
-                        let fallback = crate::resolve_nt_create_file().unwrap_or_else(|| {
-                            panic!("NtCreateFile original unavailable and resolution failed")
-                        });
+                        let Some(fallback) = (unsafe { crate::resolve_nt_create_file() }) else {
+                            return crate::fail_closed!(StatusAccessDenied);
+                        };
                         fallback(
                             filehandle,
                             desiredaccess,
@@ -1483,9 +1477,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtCreateFile(
             )
         },
         || {
-            let fallback = crate::resolve_nt_create_file().unwrap_or_else(|| {
-                panic!("NtCreateFile original unavailable and resolution failed")
-            });
+            let Some(fallback) = (unsafe { crate::resolve_nt_create_file() }) else {
+                return crate::fail_closed!(StatusAccessDenied);
+            };
             fallback(
                 filehandle,
                 desiredaccess,
@@ -1550,10 +1544,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
                             openoptions,
                         )
                     } else {
-                        let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile"))
-                            .unwrap_or_else(|| {
-                                panic!("NtOpenFile original unavailable and resolution failed")
-                            });
+                        let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile")) }) else {
+                            return crate::fail_closed!(StatusAccessDenied);
+                        };
                         let original: unsafe extern "system" fn(
                             *mut HANDLE,
                             u32,
@@ -1592,10 +1585,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
                             openoptions,
                         )
                     } else {
-                        let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile"))
-                            .unwrap_or_else(|| {
-                                panic!("NtOpenFile original unavailable and resolution failed")
-                            });
+                        let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile")) }) else {
+                            return crate::fail_closed!(StatusAccessDenied);
+                        };
                         let original: unsafe extern "system" fn(
                             *mut HANDLE,
                             u32,
@@ -1617,10 +1609,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
             )
         },
         || {
-            let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile"))
-                .unwrap_or_else(|| {
-                    panic!("NtOpenFile original unavailable and resolution failed")
-                });
+            let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile")) }) else {
+                return crate::fail_closed!(StatusAccessDenied);
+            };
             let original: unsafe extern "system" fn(
                 *mut HANDLE,
                 u32,
@@ -1699,10 +1690,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
                             key,
                         )
                     } else {
-                        let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile"))
-                            .unwrap_or_else(|| {
-                                panic!("NtWriteFile original unavailable and resolution failed")
-                            });
+                        let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile")) }) else {
+                            return crate::fail_closed!(StatusAccessDenied);
+                        };
                         let original: unsafe extern "system" fn(
                             HANDLE,
                             HANDLE,
@@ -1753,10 +1743,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
                             key,
                         )
                     } else {
-                        let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile"))
-                            .unwrap_or_else(|| {
-                                panic!("NtWriteFile original unavailable and resolution failed")
-                            });
+                        let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile")) }) else {
+                            return crate::fail_closed!(StatusAccessDenied);
+                        };
                         let original: unsafe extern "system" fn(
                             HANDLE,
                             HANDLE,
@@ -1784,10 +1773,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
             )
         },
         || {
-            let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile"))
-                .unwrap_or_else(|| {
-                    panic!("NtWriteFile original unavailable and resolution failed")
-                });
+            let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile")) }) else {
+                return crate::fail_closed!(StatusAccessDenied);
+            };
             let original: unsafe extern "system" fn(
                 HANDLE,
                 HANDLE,
@@ -1863,14 +1851,11 @@ pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
                             fileinformationclass,
                         )
                     } else {
-                        let fallback = crate::resolve_ntdll_proc(windows::core::s!(
+                        let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!(
                             "NtSetInformationFile"
-                        ))
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "NtSetInformationFile original unavailable and resolution failed"
-                            )
-                        });
+                        )) }) else {
+                            return crate::fail_closed!(StatusAccessDenied);
+                        };
                         let original: unsafe extern "system" fn(
                             HANDLE,
                             *mut std::ffi::c_void,
@@ -1906,14 +1891,11 @@ pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
                             fileinformationclass,
                         )
                     } else {
-                        let fallback = crate::resolve_ntdll_proc(windows::core::s!(
+                        let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!(
                             "NtSetInformationFile"
-                        ))
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "NtSetInformationFile original unavailable and resolution failed"
-                            )
-                        });
+                        )) }) else {
+                            return crate::fail_closed!(StatusAccessDenied);
+                        };
                         let original: unsafe extern "system" fn(
                             HANDLE,
                             *mut std::ffi::c_void,
@@ -1933,10 +1915,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
             )
         },
         || {
-            let fallback = crate::resolve_ntdll_proc(windows::core::s!("NtSetInformationFile"))
-                .unwrap_or_else(|| {
-                    panic!("NtSetInformationFile original unavailable and resolution failed")
-                });
+            let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtSetInformationFile")) }) else {
+                return crate::fail_closed!(StatusAccessDenied);
+            };
             let original: unsafe extern "system" fn(
                 HANDLE,
                 *mut std::ffi::c_void,
