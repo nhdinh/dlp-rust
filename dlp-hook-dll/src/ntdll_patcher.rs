@@ -227,6 +227,13 @@ impl NtdllPatcher {
                 }
             };
 
+            // Defensive null check after GetProcAddress.
+            if stub_addr.is_null() {
+                let msg = format!("[dlp-hook] ntdll patch: resolved null address for {} ", fn_name);
+                crate::debug_log(&msg);
+                continue;
+            }
+
             // Check EDR detection before patching.
             let edr_detected = unsafe { self.edr_detector.is_edr_hooked(stub_addr) };
             if edr_detected {
