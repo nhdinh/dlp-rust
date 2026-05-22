@@ -891,8 +891,8 @@ mod tests {
 
     #[test]
     fn fnv1a_deterministic() {
-        let h1 = fnv1a_64(b"C:\\test\\file.txt");
-        let h2 = fnv1a_64(b"C:\\test\\file.txt");
+        let h1 = dlp_common::fnv1a_64(b"C:\\test\\file.txt");
+        let h2 = dlp_common::fnv1a_64(b"C:\\test\\file.txt");
         assert_eq!(h1, h2);
     }
 
