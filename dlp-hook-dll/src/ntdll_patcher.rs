@@ -103,16 +103,7 @@ impl std::fmt::Display for PatchError {
 
 impl std::error::Error for PatchError {}
 
-/// Reasons a bypass alert can be emitted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BypassReason {
-    /// Our trampoline was overwritten by EDR (or other hook).
-    HookOverwritten,
-    /// Thread RIP was inside the stub range during patch attempt.
-    PatchRaced,
-    /// EDR detected at boot, patching skipped for this stub.
-    EdrDetected,
-}
+pub use dlp_common::hook_ipc::BypassReason;
 
 /// Result of verifying a patched ntdll stub's integrity.
 ///
@@ -635,11 +626,25 @@ fn is_target_in_our_trampoline_range(target: *mut u8) -> bool {
 ///
 /// This is best-effort; if the pipe fails, log via `debug_log` and continue.
 fn emit_bypass_alert(reason: BypassReason, stub_name: &str) {
-    // Plan 05: construct BypassAlert struct, serialize with bincode,
-    // send via pipe_client::send_raw_request.
-    // For now, just log.
+    let alert = dlp_common::hook_ipc::BypassAlert {
+        reason,
+        stub_name: stub_name.to_string(),
+        pid: std::process::id(),
+        timestamp_secs: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    };
+    if let Ok(payload) = bincode::serialize(&alert) {
+        let _ = crate::pipe_client::send_raw_request(
+            crate::DEFAULT_PIPE_NAME,
+            &payload,
+            50,
+        );
+    }
+    // Also log locally
     let msg = format!(
-        "[dlp-hook] BypassAlert: reason={:?} stub={}\0",
+        "[dlp-hook] BypassAlert: reason={:?} stub={} ",
         reason, stub_name
     );
     crate::debug_log(&msg);
