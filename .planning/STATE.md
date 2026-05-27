@@ -4,7 +4,7 @@ milestone: v0.11.0
 milestone_name: Real-Time File Access Prevention
 status: completed
 last_updated: "2026-05-27T18:11:00.654Z"
-last_activity: 2026-05-27 -- Phase 53 Plan 02 executed (hook journal ring buffer)
+last_activity: 2026-05-28 -- Phase 53 Plan 05 executed (server-side bypass alert storage)
 progress:
   total_phases: 14
   completed_phases: 7
@@ -26,9 +26,9 @@ progress:
 ## Current Position
 
 Phase: 53
-Plan: 04
+Plan: 05
 Status: Completed
-Last activity: 2026-05-28 -- Phase 53 Plan 04 executed (bypass correlator with ETW-to-journal matching)
+Last activity: 2026-05-28 -- Phase 53 Plan 05 executed (server-side bypass alert storage with SQLite schema, repository, admin API routes, and agent batch ingest)
 
 ## Progress
 
@@ -112,6 +112,7 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 19. **2026-05-27: Phase 52 Plan 06 complete.** Admin API CRUD for protected paths with Windows API validation (GetFullPathNameW), agent config payload extension, and AppState wiring. 520 dlp-server tests pass, all dlp-agent tests pass, clippy clean. DACL-03 requirement satisfied.
 20. **2026-05-27: Phase 52 Plan 05 complete.** DPAPI recovery runbook (`docs/operations/dpapi-recovery.md`) with re-init-from-env-vars and restore-from-backup flows, PowerShell verification snippets, UAT checklist (7 positive + 6 negative cases). Audit wiring verified: `DaclTamperDetected` routes to SIEM with `triggers_alert=true`, `DaclTripwireTooLarge` routes with `triggers_alert=false`. Full workspace test suite passes (520 lib tests), clippy clean (-D warnings), cargo build clean. Beads issue `dlp-rust-aq4` closed. DACL-05 requirement satisfied. Phase 52 COMPLETE (all 7 plans).
 21. **2026-05-28: Phase 53 Plan 04 complete.** Bypass correlator matching ETW Kernel-File events against hook DLL journal entries. Extended BypassReason with NoHookJournal/OpMismatch; extended BypassAlert with 10 v2 fields and #[serde(default)] backward compat. QPC calibration pair at startup (CR-01), on-demand journal discovery with exponential backoff capped at 30s (CR-02), exact filename allowlist (WR-01), severity mapping with reduced mode capping crit->warn (WR-03), image SHA cache with 1h/5min TTL (WR-06), PID reuse detection (WR-07), alert batching with UUID batch_id and max 3 retries with new batch_id per retry (WR-08, WR-10, IN-02), explicit file_object wiring from ETW event (CR-08). 28 unit tests, 689 dlp-agent tests pass, 252 dlp-common tests pass, clippy clean (-D warnings). ETW-03 requirement satisfied.
+22. **2026-05-28: Phase 53 Plan 05 complete.** Server-side bypass alert storage: `bypass_alerts` SQLite table with CHECK constraints, 5 indexes (including pid per WR-05), composite unique constraint for dedup (WR-08). `BypassAlertsRepository` with list_by_filters, insert, insert_batch, ack_by_id, get_by_id — 15 unit tests. Three HTTP routes: POST /audit/bypass (agent JWT, max 100 alerts, v1+v2 deserialization), GET /admin/bypass-alerts (admin JWT, paginated filtered), POST /admin/bypass-alerts/{id}/ack (admin JWT, idempotent). 14 integration tests. SIEM relay for all alerts; alert router for crit severity. 542+ dlp-server lib tests pass, 14 integration tests pass, clippy clean (-D warnings), cargo build --workspace passes. ETW-04 requirement satisfied.
 
 ## Blockers
 

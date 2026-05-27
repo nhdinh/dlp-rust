@@ -224,7 +224,7 @@ Plans:
 - [ ] `53-04-PLAN.md` — Bypass Correlator: on-demand journal discovery + exponential backoff, +/-5ms QPC tolerance, path-hash exact match, allowlist pre-filter (Defender/CrowdStrike), explicit `file_object` wiring from ETW event (CR-08), NEW `batch_id` per retry (WR-10), skip unconverted NT paths (WR-11), `#[serde(default)]` on all new fields (WR-12), 26 unit tests
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] `53-05-PLAN.md` — Server-Side Bypass Alert Storage: `bypass_alerts` SQLite schema with `file_object INTEGER NOT NULL DEFAULT 0` (WR-12), `POST /audit/bypass` batch ingest (max 100, JWT-validated agent_id), v1+v2 deserialization with `#[serde(default)]`, `GET /admin/bypass-alerts` paginated filtered, `POST /admin/bypass-alerts/:id/ack` idempotent, 5 integration tests
+- [x] `53-05-PLAN.md` — Server-Side Bypass Alert Storage: `bypass_alerts` SQLite schema with `file_object INTEGER NOT NULL DEFAULT 0` (WR-12), `POST /audit/bypass` batch ingest (max 100, JWT-validated agent_id), v1+v2 deserialization with `#[serde(default)]`, `GET /admin/bypass-alerts` paginated filtered, `POST /admin/bypass-alerts/:id/ack` idempotent, 14 integration tests *(completed 2026-05-28)*
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] `53-06-PLAN.md` — SIEM + Alert Router Wiring: `BypassAlertDetected` routes through `routed_to_siem()` and `triggers_alert()`, `EtwConsumerGatedOff` routes to SIEM only (CR-09), crit severity triggers alert_router::send, warn/info routes to SIEM only, 8 end-to-end integration tests including file_object E2E (CR-08) and v1 backward compat (WR-12)
@@ -384,7 +384,7 @@ Plans:
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 6/6 | Complete    | 2026-05-20 |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 6/6 | Complete    | 2026-05-22 |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 7/7 | Complete    | 2026-05-27 |
-| 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Planned (revised 2026-05-27) | - |
+| 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 5/6 | In progress | 2026-05-28 |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 0/0 | Not started | - |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 0/0 | Not started | - |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 0/0 | Not started | - |
