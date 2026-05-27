@@ -271,6 +271,13 @@ pub struct AgentConfig {
     /// When `None`, defaults to `false`. Must be explicitly enabled by operator.
     #[serde(default)]
     pub enable_ntdll_patching: Option<bool>,
+
+    /// Phase 52: Protected paths for DACL tripwire.
+    ///
+    /// Registry of paths that receive tripwire protection. Populated by
+    /// server config push. Defaults to empty for backward compatibility.
+    #[serde(default)]
+    pub protected_paths: Vec<crate::server_client::ProtectedPathConfig>,
 }
 
 impl AgentConfig {
@@ -662,6 +669,7 @@ mod tests {
             allowlist_entries: Vec::new(),
             allowlist_version: 0,
             enable_ntdll_patching: None,
+            protected_paths: Vec::new(),
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
         };
@@ -709,6 +717,7 @@ mod tests {
             allowlist_entries: Vec::new(),
             allowlist_version: 0,
             enable_ntdll_patching: None,
+            protected_paths: Vec::new(),
         };
 
         let tmp_path = std::env::temp_dir().join("test_agent_config_save_server_url.toml");

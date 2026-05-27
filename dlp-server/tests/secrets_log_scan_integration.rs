@@ -142,9 +142,8 @@ fn build_state(pool: &Arc<db::Pool>, crypto: &Arc<SecretCrypto>) -> Arc<AppState
         label_service,
         approval_token_service,
         syslog,
-        label_aware_enabled: std::sync::Arc::new(
-            std::sync::atomic::AtomicBool::new(false),
-        ),
+        label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        protected_paths: std::sync::Arc::new(dlp_server::db::repositories::protected_paths::ProtectedPathsRepository),
     })
 }
 

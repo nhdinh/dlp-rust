@@ -70,6 +70,8 @@ pub struct AppState {
     /// Default is `false` (off) until the operator explicitly enables it
     /// via the `label_aware_evaluation_enabled` key in `system_kv`.
     pub label_aware_enabled: Arc<AtomicBool>,
+    /// Phase 52: Protected paths repository for admin API and agent config sync.
+    pub protected_paths: Arc<db::repositories::protected_paths::ProtectedPathsRepository>,
 }
 
 impl AppState {
@@ -110,6 +112,7 @@ impl std::fmt::Debug for AppState {
                     "false"
                 },
             )
+            .field("protected_paths", &"ProtectedPathsRepository(...)")
             .finish()
     }
 }
@@ -268,6 +271,7 @@ mod app_state_tests {
             ),
             syslog: crate::syslog_connector::SyslogConnector::new(Arc::clone(&pool), crypto),
             label_aware_enabled: Arc::new(AtomicBool::new(flag)),
+            protected_paths: Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         }
     }
 
