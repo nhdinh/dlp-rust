@@ -72,6 +72,8 @@ pub struct AppState {
     pub label_aware_enabled: Arc<AtomicBool>,
     /// Phase 52: Protected paths repository for admin API and agent config sync.
     pub protected_paths: Arc<db::repositories::protected_paths::ProtectedPathsRepository>,
+    /// Phase 53: Bypass alerts repository for admin API and agent ingest.
+    pub bypass_alerts: Arc<db::repositories::bypass_alerts::BypassAlertsRepository>,
 }
 
 impl AppState {
@@ -113,6 +115,7 @@ impl std::fmt::Debug for AppState {
                 },
             )
             .field("protected_paths", &"ProtectedPathsRepository(...)")
+            .field("bypass_alerts", &"BypassAlertsRepository(...)")
             .finish()
     }
 }
@@ -271,7 +274,12 @@ mod app_state_tests {
             ),
             syslog: crate::syslog_connector::SyslogConnector::new(Arc::clone(&pool), crypto),
             label_aware_enabled: Arc::new(AtomicBool::new(flag)),
-            protected_paths: Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         }
     }
 

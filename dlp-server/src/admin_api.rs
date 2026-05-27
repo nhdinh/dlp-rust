@@ -34,6 +34,9 @@ use crate::db::repositories::{
     ManagedOriginRow, ManagedOriginsRepository, PolicyRepository, SiemConfigRepository,
     SyslogConfigRepository, SyslogConfigRow,
 };
+use crate::db::repositories::bypass_alerts::{
+    BypassAlertFilter, BypassAlertInsertRow, BypassAlertRow, BypassAlertsRepository,
+};
 use crate::exception_store;
 use crate::policy_store::mode_str;
 use crate::rate_limiter::{self, default_config, policy_config};
@@ -1065,6 +1068,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
             "/audit/events",
             post(audit_store::ingest_events).route_layer(rate_limiter::per_agent_config()),
         )
+        .route(
+            "/audit/bypass",
+            post(bypass_batch_ingest_handler).route_layer(rate_limiter::per_agent_config()),
+        )
         .route("/agent-credentials/auth-hash", get(get_agent_auth_hash))
         .route("/agent-config/{id}", get(get_agent_config_for_agent))
         .route("/admin/device-registry", get(list_device_registry_handler))
@@ -1242,6 +1249,12 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
             get(get_protected_path_handler)
                 .put(update_protected_path_handler)
                 .delete(delete_protected_path_handler),
+        )
+        // Phase 53: Bypass alerts admin API
+        .route("/admin/bypass-alerts", get(list_bypass_alerts_handler))
+        .route(
+            "/admin/bypass-alerts/{id}/ack",
+            post(ack_bypass_alert_handler),
         )
         .route_layer(default_config())
         .layer(middleware::from_fn(admin_auth::require_auth));
@@ -2309,17 +2322,16 @@ async fn get_agent_config_for_agent(
         payload.disk_allowlist = disk_allowlist;
 
         // Phase 52: Populate protected paths from repository.
-        let protected_paths: Vec<ProtectedPathConfig> =
-            ProtectedPathsRepository::list_all(&pool)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| ProtectedPathConfig {
-                    id: r.id,
-                    path: r.path,
-                    tier: r.tier,
-                    source: r.source,
-                })
-                .collect();
+        let protected_paths: Vec<ProtectedPathConfig> = ProtectedPathsRepository::list_all(&pool)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| ProtectedPathConfig {
+                id: r.id,
+                path: r.path,
+                tier: r.tier,
+                source: r.source,
+            })
+            .collect();
         payload.protected_paths = protected_paths;
 
         Ok(payload)
@@ -4776,13 +4788,7 @@ fn validate_protected_path(path: &str) -> Result<(), AppError> {
 
     let wide_path: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
     let mut buffer = vec![0u16; 512];
-    let len = unsafe {
-        GetFullPathNameW(
-            PCWSTR(wide_path.as_ptr()),
-            Some(&mut buffer),
-            None,
-        )
-    };
+    let len = unsafe { GetFullPathNameW(PCWSTR(wide_path.as_ptr()), Some(&mut buffer), None) };
     if len == 0 {
         return Err(AppError::BadRequest("path is invalid".to_string()));
     }
@@ -4790,7 +4796,9 @@ fn validate_protected_path(path: &str) -> Result<(), AppError> {
 
     // Reject UNC paths.
     if canonical.starts_with("\\\\") {
-        return Err(AppError::BadRequest("UNC paths are not supported".to_string()));
+        return Err(AppError::BadRequest(
+            "UNC paths are not supported".to_string(),
+        ));
     }
     // Reject extended-length paths.
     if canonical.starts_with("\\\\?\\") {
@@ -4815,7 +4823,9 @@ fn validate_protected_path(path: &str) -> Result<(), AppError> {
     }
     // Reject 8.3 short names.
     if canonical.contains('~') {
-        return Err(AppError::BadRequest("8.3 short names are not supported".to_string()));
+        return Err(AppError::BadRequest(
+            "8.3 short names are not supported".to_string(),
+        ));
     }
 
     Ok(())
@@ -4843,7 +4853,8 @@ async fn list_protected_paths_handler(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
-    let responses: Vec<ProtectedPathResponse> = rows.into_iter().map(ProtectedPathResponse::from).collect();
+    let responses: Vec<ProtectedPathResponse> =
+        rows.into_iter().map(ProtectedPathResponse::from).collect();
     Ok(Json(responses))
 }
 
@@ -4855,7 +4866,9 @@ async fn get_protected_path_handler(
     let pool = Arc::clone(&state.pool);
     let row = tokio::task::spawn_blocking(move || -> Result<ProtectedPathRow, AppError> {
         ProtectedPathsRepository::get_by_id(&pool, &id).map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => AppError::NotFound(format!("protected path {id} not found")),
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("protected path {id} not found"))
+            }
             _ => AppError::Database(e),
         })
     })
@@ -4964,9 +4977,12 @@ async fn update_protected_path_handler(
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        let rows = ProtectedPathsRepository::update(&uow, &row_for_update).map_err(AppError::Database)?;
+        let rows =
+            ProtectedPathsRepository::update(&uow, &row_for_update).map_err(AppError::Database)?;
         if rows == 0 {
-            return Err(AppError::NotFound(format!("protected path {id_for_update} not found")));
+            return Err(AppError::NotFound(format!(
+                "protected path {id_for_update} not found"
+            )));
         }
         uow.commit().map_err(AppError::Database)?;
         Ok(())
@@ -4997,9 +5013,12 @@ async fn delete_protected_path_handler(
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        let rows = ProtectedPathsRepository::delete_by_id(&uow, &id_for_delete).map_err(AppError::Database)?;
+        let rows = ProtectedPathsRepository::delete_by_id(&uow, &id_for_delete)
+            .map_err(AppError::Database)?;
         if rows == 0 {
-            return Err(AppError::NotFound(format!("protected path {id_for_delete} not found")));
+            return Err(AppError::NotFound(format!(
+                "protected path {id_for_delete} not found"
+            )));
         }
         uow.commit().map_err(AppError::Database)?;
         Ok(())
@@ -5026,6 +5045,252 @@ async fn sync_protected_paths_handler(
 
     tracing::info!(inserted = %count, "protected paths sync completed");
     Ok(Json(serde_json::json!({ "inserted": count })))
+}
+
+// ---------------------------------------------------------------------------
+// Phase 53: Bypass alert handlers
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /audit/bypass` — agent batch ingest.
+#[derive(Debug, Deserialize)]
+struct BypassAlertBatch {
+    /// Unique identifier of the agent emitting this batch.
+    agent_id: String,
+    /// UUID v4 for idempotency (IN-02).
+    batch_id: String,
+    /// Bypass alerts from the agent.
+    alerts: Vec<dlp_common::hook_ipc::BypassAlert>,
+}
+
+/// Response for `GET /admin/bypass-alerts`.
+#[derive(Debug, Serialize)]
+struct BypassAlertListResponse {
+    /// Total number of alerts matching the filter (same as alerts.len() for
+    /// this response; future versions may include a separate count query).
+    total: usize,
+    /// Alert rows.
+    alerts: Vec<BypassAlertRow>,
+}
+
+/// Response for `POST /audit/bypass`.
+#[derive(Debug, Serialize)]
+struct BypassAlertIngestResponse {
+    /// Number of alerts inserted.
+    inserted: usize,
+    /// Number of alerts skipped (duplicates).
+    skipped: usize,
+}
+
+/// Query parameters for `GET /admin/bypass-alerts`.
+#[derive(Debug, Deserialize)]
+struct BypassAlertQuery {
+    /// ISO-8601 lower bound (inclusive).
+    since: Option<String>,
+    /// Comma-separated severity values (e.g., "crit,warn").
+    severity: Option<String>,
+    /// Filter by acknowledged status.
+    acknowledged: Option<bool>,
+    /// Filter by agent ID.
+    agent_id: Option<String>,
+    /// Filter by PID (WR-05).
+    pid: Option<i32>,
+    /// Maximum rows to return (default 50, capped at 500).
+    limit: Option<usize>,
+    /// Number of rows to skip.
+    offset: Option<usize>,
+}
+
+/// Maps a `BypassReason` to the DB `correlation_reason` string.
+fn bypass_reason_to_string(reason: dlp_common::hook_ipc::BypassReason) -> String {
+    match reason {
+        dlp_common::hook_ipc::BypassReason::HookOverwritten => "hook_overwritten".to_string(),
+        dlp_common::hook_ipc::BypassReason::PatchRaced => "hook_overwritten".to_string(),
+        dlp_common::hook_ipc::BypassReason::EdrDetected => "hook_overwritten".to_string(),
+        dlp_common::hook_ipc::BypassReason::NoHookJournal => "no_hook_journal".to_string(),
+        dlp_common::hook_ipc::BypassReason::OpMismatch => "op_mismatch".to_string(),
+    }
+}
+
+/// `POST /audit/bypass` — agent batch ingest of bypass alerts.
+///
+/// Accepts up to 100 alerts per batch. Validates batch size. Converts each
+/// `BypassAlert` to a `BypassAlertInsertRow` and inserts with `INSERT OR IGNORE`
+/// for deduplication (WR-08). Routes inserted alerts to SIEM and triggers the
+/// alert router for crit severity.
+///
+/// # Errors
+///
+/// Returns `AppError::BadRequest` if the batch exceeds 100 alerts.
+async fn bypass_batch_ingest_handler(
+    State(state): State<Arc<AppState>>,
+    Json(batch): Json<BypassAlertBatch>,
+) -> Result<Json<BypassAlertIngestResponse>, AppError> {
+    if batch.alerts.is_empty() {
+        return Err(AppError::BadRequest("alert batch must not be empty".to_string()));
+    }
+    if batch.alerts.len() > 100 {
+        return Err(AppError::BadRequest(
+            format!("batch exceeds maximum of 100 alerts (got {})", batch.alerts.len()),
+        ));
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let agent_id = batch.agent_id.clone();
+    let batch_id = batch.batch_id.clone();
+
+    // Convert BypassAlert structs to insert rows.
+    let insert_rows: Vec<BypassAlertInsertRow> = batch
+        .alerts
+        .iter()
+        .map(|alert| BypassAlertInsertRow {
+            agent_id: agent_id.clone(),
+            pid: alert.pid as i32,
+            image_path: alert.image_path.clone(),
+            image_sha256: alert.image_sha256.clone(),
+            file_path: alert.file_path.clone(),
+            operation: alert.operation.clone(),
+            file_object: alert.file_object as i64,
+            qpc_timestamp: alert.qpc_timestamp as i64,
+            created_at: now.clone(),
+            severity: alert.severity.clone(),
+            correlation_reason: bypass_reason_to_string(alert.reason),
+            batch_id: Some(batch_id.clone()),
+        })
+        .collect();
+
+    let pool = Arc::clone(&state.pool);
+    let rows_for_insert = insert_rows.clone();
+    let (inserted, skipped) = tokio::task::spawn_blocking(
+        move || -> Result<(usize, usize), AppError> {
+            let mut conn = pool.get().map_err(AppError::from)?;
+            let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+            let result = BypassAlertsRepository::insert_batch(&uow, &rows_for_insert)
+                .map_err(AppError::Database)?;
+            uow.commit().map_err(AppError::Database)?;
+            Ok(result)
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    // Best-effort SIEM relay and alert routing for inserted alerts.
+    // Fire-and-forget so HTTP response is not delayed.
+    if inserted > 0 {
+        let siem = state.siem.clone();
+        let alert_router = state.alert.clone();
+        let alerts_for_routing = batch.alerts;
+        let agent_id_for_routing = agent_id.clone();
+        tokio::spawn(async move {
+            let mut audit_events: Vec<dlp_common::audit::AuditEvent> = Vec::new();
+            let mut crit_indices: Vec<usize> = Vec::new();
+            for (i, alert) in alerts_for_routing.iter().enumerate() {
+                let audit_event = dlp_common::audit::AuditEvent::new(
+                    dlp_common::audit::EventType::BypassAlertDetected,
+                    "SYSTEM".to_string(),
+                    "bypass-correlator".to_string(),
+                    alert.file_path.clone(),
+                    dlp_common::Classification::T4,
+                    dlp_common::Action::WRITE,
+                    dlp_common::Decision::DENY,
+                    agent_id_for_routing.clone(),
+                    alert.pid,
+                );
+                if alert.severity == "crit" {
+                    crit_indices.push(i);
+                }
+                audit_events.push(audit_event);
+            }
+
+            // Relay all events to SIEM in one call.
+            if let Err(e) = siem.relay_events(&audit_events).await {
+                tracing::warn!(error = %e, "SIEM relay failed for bypass alerts");
+            }
+
+            // Send alerts for crit severity events.
+            for idx in crit_indices {
+                if let Err(e) = alert_router.send_alert(&audit_events[idx]).await {
+                    tracing::warn!(error = %e, "alert router failed for crit bypass alert");
+                }
+            }
+        });
+    }
+
+    tracing::info!(
+        agent_id = %batch.agent_id,
+        batch_id = %batch.batch_id,
+        inserted,
+        skipped,
+        "bypass alert batch ingested"
+    );
+
+    Ok(Json(BypassAlertIngestResponse { inserted, skipped }))
+}
+
+/// `GET /admin/bypass-alerts` — list bypass alerts with optional filters.
+///
+/// Supports filtering by since, severity, acknowledged, agent_id, pid,
+/// limit (default 50, max 500), and offset.
+async fn list_bypass_alerts_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<BypassAlertQuery>,
+) -> Result<Json<BypassAlertListResponse>, AppError> {
+    let severity_list = q.severity.map(|s| {
+        s.split(',')
+            .map(|part| part.trim().to_string())
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<String>>()
+    });
+
+    let filter = BypassAlertFilter {
+        since: q.since,
+        severity: severity_list,
+        acknowledged: q.acknowledged,
+        agent_id: q.agent_id,
+        pid: q.pid,
+        limit: q.limit,
+        offset: q.offset,
+    };
+
+    let pool = Arc::clone(&state.pool);
+    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<BypassAlertRow>, AppError> {
+        BypassAlertsRepository::list_by_filters(&pool, &filter).map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    let total = rows.len();
+    Ok(Json(BypassAlertListResponse { total, alerts: rows }))
+}
+
+/// `POST /admin/bypass-alerts/{id}/ack` — acknowledge a bypass alert.
+///
+/// Requires admin JWT. Idempotent — acking an already-acked alert returns 200.
+/// Returns 404 if the alert ID does not exist.
+async fn ack_bypass_alert_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<StatusCode, AppError> {
+    let ack_by = AdminUsername::extract_from_headers(req.headers())?;
+    let pool = Arc::clone(&state.pool);
+    let ack_by_for_log = ack_by.clone();
+    let affected = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let count = BypassAlertsRepository::ack_by_id(&uow, id, &ack_by)
+            .map_err(AppError::Database)?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(count)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    if affected == 0 {
+        return Err(AppError::NotFound(format!("bypass alert {id} not found")));
+    }
+
+    tracing::info!(alert_id = %id, ack_by = %ack_by_for_log, "bypass alert acknowledged");
+    Ok(StatusCode::OK)
 }
 
 #[cfg(test)]
@@ -5280,7 +5545,12 @@ mod tests {
             approval_token_service,
             syslog,
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         admin_router(state)
     }
@@ -5357,7 +5627,12 @@ mod tests {
                 std::sync::Arc::clone(&crypto),
             ),
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         let app = admin_router(state);
 
@@ -5425,7 +5700,12 @@ mod tests {
                 std::sync::Arc::clone(&crypto),
             ),
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         let app = admin_router(state);
 
@@ -5547,7 +5827,12 @@ mod tests {
                 std::sync::Arc::clone(&crypto),
             ),
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         let app = admin_router(state);
 
@@ -5712,7 +5997,12 @@ mod tests {
                 std::sync::Arc::clone(&crypto),
             ),
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         let app = admin_router(state);
 
@@ -5959,7 +6249,12 @@ mod tests {
                 std::sync::Arc::clone(&crypto),
             ),
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -6877,7 +7172,12 @@ mod tests {
                 std::sync::Arc::clone(&crypto),
             ),
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         let app = admin_router(state);
 
@@ -7029,7 +7329,12 @@ mod tests {
                 std::sync::Arc::clone(&crypto),
             ),
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -7127,7 +7432,12 @@ mod tests {
                 std::sync::Arc::clone(&crypto),
             ),
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -7566,7 +7876,12 @@ mod tests {
                 std::sync::Arc::clone(&crypto),
             ),
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         let app = admin_router(state);
 
@@ -7657,7 +7972,12 @@ mod tests {
                 std::sync::Arc::clone(&crypto),
             ),
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         let app = admin_router(state);
 
@@ -7748,7 +8068,12 @@ mod tests {
                 std::sync::Arc::clone(&crypto),
             ),
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         let app = admin_router(state);
 
@@ -8443,7 +8768,12 @@ mod tests {
                 std::sync::Arc::clone(&crypto),
             ),
             label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         })
     }
 
@@ -8858,7 +9188,12 @@ mod tests {
                     std::sync::Arc::clone(&crypto),
                 ),
                 label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+                protected_paths: std::sync::Arc::new(
+                    crate::db::repositories::protected_paths::ProtectedPathsRepository,
+                ),
+                bypass_alerts: std::sync::Arc::new(
+                    crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+                ),
             });
             // Minimal router with just the disk-registry delete route for isolation.
             axum::Router::new()
@@ -8933,7 +9268,12 @@ mod tests {
                     std::sync::Arc::clone(&crypto),
                 ),
                 label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+                protected_paths: std::sync::Arc::new(
+                    crate::db::repositories::protected_paths::ProtectedPathsRepository,
+                ),
+                bypass_alerts: std::sync::Arc::new(
+                    crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+                ),
             });
             axum::Router::new()
                 .route(
@@ -9278,7 +9618,12 @@ mod tests {
                     std::sync::Arc::clone(&crypto),
                 ),
                 label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
+                protected_paths: std::sync::Arc::new(
+                    crate::db::repositories::protected_paths::ProtectedPathsRepository,
+                ),
+                bypass_alerts: std::sync::Arc::new(
+                    crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+                ),
             });
             axum::Router::new()
                 .route(
@@ -11283,7 +11628,9 @@ mod tests {
         let create_resp = app.clone().oneshot(create_req).await.expect("oneshot POST");
         assert_eq!(create_resp.status(), StatusCode::CREATED);
 
-        let body = to_bytes(create_resp.into_body(), 64 * 1024).await.expect("body");
+        let body = to_bytes(create_resp.into_body(), 64 * 1024)
+            .await
+            .expect("body");
         let created: ProtectedPathResponse = serde_json::from_slice(&body).expect("parse");
         assert_eq!(created.path, r"C:\Data\Secret");
         assert_eq!(created.tier, "T4");
@@ -11301,7 +11648,9 @@ mod tests {
         let list_resp = app.clone().oneshot(list_req).await.expect("oneshot GET");
         assert_eq!(list_resp.status(), StatusCode::OK);
 
-        let body = to_bytes(list_resp.into_body(), 64 * 1024).await.expect("body");
+        let body = to_bytes(list_resp.into_body(), 64 * 1024)
+            .await
+            .expect("body");
         let list: Vec<ProtectedPathResponse> = serde_json::from_slice(&body).expect("parse");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, id);
@@ -11336,7 +11685,9 @@ mod tests {
         let update_resp = app.clone().oneshot(update_req).await.expect("oneshot PUT");
         assert_eq!(update_resp.status(), StatusCode::OK);
 
-        let body = to_bytes(update_resp.into_body(), 64 * 1024).await.expect("body");
+        let body = to_bytes(update_resp.into_body(), 64 * 1024)
+            .await
+            .expect("body");
         let updated: ProtectedPathResponse = serde_json::from_slice(&body).expect("parse");
         assert_eq!(updated.path, r"C:\Data\Secret2");
         assert_eq!(updated.tier, "T3");
@@ -11360,7 +11711,9 @@ mod tests {
             .body(Body::empty())
             .expect("build GET");
         let list_resp = app.oneshot(list_req).await.expect("oneshot GET");
-        let body = to_bytes(list_resp.into_body(), 64 * 1024).await.expect("body");
+        let body = to_bytes(list_resp.into_body(), 64 * 1024)
+            .await
+            .expect("body");
         let list: Vec<ProtectedPathResponse> = serde_json::from_slice(&body).expect("parse");
         assert!(list.is_empty());
     }
@@ -11458,7 +11811,9 @@ mod tests {
             .uri("/admin/protected-paths")
             .header("Authorization", format!("Bearer {jwt}"))
             .header("Content-Type", "application/json")
-            .body(Body::from(serde_json::to_string(&body_json).expect("serialize")))
+            .body(Body::from(
+                serde_json::to_string(&body_json).expect("serialize"),
+            ))
             .expect("build POST");
         let resp = app.clone().oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::CREATED);
@@ -11469,7 +11824,9 @@ mod tests {
             .uri("/admin/protected-paths")
             .header("Authorization", format!("Bearer {jwt}"))
             .header("Content-Type", "application/json")
-            .body(Body::from(serde_json::to_string(&body_json).expect("serialize")))
+            .body(Body::from(
+                serde_json::to_string(&body_json).expect("serialize"),
+            ))
             .expect("build POST");
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::CONFLICT);
