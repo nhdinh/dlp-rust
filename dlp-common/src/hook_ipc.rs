@@ -146,16 +146,50 @@ pub struct HandleHookRequest {
 /// Alert emitted by the hook DLL when it detects a bypass attempt or EDR conflict.
 ///
 /// Sent from the hook DLL to the agent via the existing named pipe IPC path.
+/// Phase 53: Extended with ETW correlation fields for bypass correlator.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BypassAlert {
     /// The reason for the alert.
     pub reason: BypassReason,
     /// The affected ntdll stub name (e.g., "NtCreateFile").
+    /// Only meaningful for HookOverwritten and PatchRaced reasons.
+    /// For NoHookJournal and OpMismatch, this is set to "etw_correlation".
     pub stub_name: String,
     /// Process ID where the alert occurred.
     pub pid: u32,
     /// Timestamp (Unix epoch seconds).
     pub timestamp_secs: u64,
+    /// Protocol version — set to 2 for Phase 53 alerts; set to 1 for Phase 51 alerts.
+    #[serde(default)]
+    pub version: u32,
+    /// Unique identifier of the agent that emitted this alert.
+    #[serde(default)]
+    pub agent_id: String,
+    /// Full path to the process image executable.
+    #[serde(default)]
+    pub image_path: String,
+    /// SHA-256 hex digest of the process executable (None if computation failed).
+    #[serde(default)]
+    pub image_sha256: Option<String>,
+    /// File path involved in the operation (from ETW event).
+    #[serde(default)]
+    pub file_path: String,
+    /// Human-readable operation type (e.g., "Create", "Write", "Delete", "SetInfo").
+    #[serde(default)]
+    pub operation: String,
+    /// Kernel FILE_OBJECT pointer (forensics correlation only).
+    /// EXPLICITLY set from ETW event.file_object per CR-08.
+    #[serde(default)]
+    pub file_object: u64,
+    /// QueryPerformanceCounter timestamp at correlation time.
+    #[serde(default)]
+    pub qpc_timestamp: u64,
+    /// Severity level: "crit", "warn", or "info".
+    #[serde(default)]
+    pub severity: String,
+    /// Human-readable correlation reason for SIEM routing.
+    #[serde(default)]
+    pub correlation_reason: String,
 }
 
 /// Reasons a bypass alert can be emitted.
@@ -167,6 +201,12 @@ pub enum BypassReason {
     PatchRaced,
     /// EDR detected at boot, patching skipped for this stub.
     EdrDetected,
+    /// No matching hook journal entry found for an ETW Kernel-File event.
+    /// Indicates the hook DLL did not observe a file operation that the kernel did.
+    NoHookJournal,
+    /// Journal entry found but the operation type differed from the ETW event.
+    /// Indicates potential tampering with the hook's operation classification.
+    OpMismatch,
 }
 
 /// Current protocol version.
@@ -364,6 +404,16 @@ mod tests {
             stub_name: "NtCreateFile".to_string(),
             pid: 1234,
             timestamp_secs: 1_700_000_000,
+            version: 1,
+            agent_id: "AGENT-TEST".to_string(),
+            image_path: r"C:\Test\app.exe".to_string(),
+            image_sha256: None,
+            file_path: r"C:\Data\file.txt".to_string(),
+            operation: "Create".to_string(),
+            file_object: 0,
+            qpc_timestamp: 0,
+            severity: "crit".to_string(),
+            correlation_reason: "HookOverwritten".to_string(),
         };
         let bytes = bincode::serialize(&alert).unwrap();
         let round_trip: BypassAlert = bincode::deserialize(&bytes).unwrap();
@@ -381,5 +431,121 @@ mod tests {
             let rt: BypassReason = serde_json::from_str(&json).unwrap();
             assert_eq!(reason, rt);
         }
+    }
+
+    // --- Phase 53: Extended BypassReason and BypassAlert ---
+
+    #[test]
+    fn test_bypass_reason_no_hook_journal_serde() {
+        let reason = BypassReason::NoHookJournal;
+        let json = serde_json::to_string(&reason).unwrap();
+        let rt: BypassReason = serde_json::from_str(&json).unwrap();
+        assert_eq!(reason, rt);
+    }
+
+    #[test]
+    fn test_bypass_reason_op_mismatch_serde() {
+        let reason = BypassReason::OpMismatch;
+        let json = serde_json::to_string(&reason).unwrap();
+        let rt: BypassReason = serde_json::from_str(&json).unwrap();
+        assert_eq!(reason, rt);
+    }
+
+    #[test]
+    fn test_bypass_alert_v2_serde() {
+        let alert = BypassAlert {
+            reason: BypassReason::NoHookJournal,
+            stub_name: "etw_correlation".to_string(),
+            pid: 1234,
+            timestamp_secs: 1_700_000_000,
+            version: 2,
+            agent_id: "AGENT-TEST".to_string(),
+            image_path: r"C:\Test\app.exe".to_string(),
+            image_sha256: Some(
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            ),
+            file_path: r"C:\Data\secret.docx".to_string(),
+            operation: "Write".to_string(),
+            file_object: 0xDEADBEEF,
+            qpc_timestamp: 1_000_000,
+            severity: "crit".to_string(),
+            correlation_reason: "NoHookJournal on protected path".to_string(),
+        };
+        let json = serde_json::to_string(&alert).unwrap();
+        let rt: BypassAlert = serde_json::from_str(&json).unwrap();
+        assert_eq!(alert.reason, rt.reason);
+        assert_eq!(alert.version, rt.version);
+        assert_eq!(alert.agent_id, rt.agent_id);
+        assert_eq!(alert.image_path, rt.image_path);
+        assert_eq!(alert.image_sha256, rt.image_sha256);
+        assert_eq!(alert.file_path, rt.file_path);
+        assert_eq!(alert.operation, rt.operation);
+        assert_eq!(alert.file_object, rt.file_object);
+        assert_eq!(alert.qpc_timestamp, rt.qpc_timestamp);
+        assert_eq!(alert.severity, rt.severity);
+        assert_eq!(alert.correlation_reason, rt.correlation_reason);
+    }
+
+    #[test]
+    fn test_bypass_alert_v1_backward_compat() {
+        // Simulate a Phase 51 alert (only original fields) serialized as JSON.
+        // All new fields must deserialize to their default values per WR-12.
+        let v1_json = r#"{
+            "reason": "HookOverwritten",
+            "stub_name": "NtCreateFile",
+            "pid": 1234,
+            "timestamp_secs": 1700000000
+        }"#;
+        let alert: BypassAlert = serde_json::from_str(v1_json).unwrap();
+        assert_eq!(alert.reason, BypassReason::HookOverwritten);
+        assert_eq!(alert.stub_name, "NtCreateFile");
+        assert_eq!(alert.pid, 1234);
+        assert_eq!(alert.timestamp_secs, 1_700_000_000);
+        // New fields must have default values.
+        assert_eq!(alert.version, 0);
+        assert_eq!(alert.agent_id, "");
+        assert_eq!(alert.image_path, "");
+        assert!(alert.image_sha256.is_none());
+        assert_eq!(alert.file_path, "");
+        assert_eq!(alert.operation, "");
+        assert_eq!(alert.file_object, 0);
+        assert_eq!(alert.qpc_timestamp, 0);
+        assert_eq!(alert.severity, "");
+        assert_eq!(alert.correlation_reason, "");
+    }
+
+    #[test]
+    fn test_bypass_alert_v1_deserializes_default_version() {
+        // Verify that a v1-serialized alert deserializes with version=0
+        // (the default for u32 via serde(default)).
+        let v1_json = r#"{
+            "reason": "EdrDetected",
+            "stub_name": "NtCreateFile",
+            "pid": 5678,
+            "timestamp_secs": 1700000001
+        }"#;
+        let alert: BypassAlert = serde_json::from_str(v1_json).unwrap();
+        assert_eq!(alert.version, 0);
+    }
+
+    #[test]
+    fn test_bypass_alert_stub_name_etw_correlation() {
+        let alert = BypassAlert {
+            reason: BypassReason::NoHookJournal,
+            stub_name: "etw_correlation".to_string(),
+            pid: 1234,
+            timestamp_secs: 1_700_000_000,
+            version: 2,
+            agent_id: "AGENT-TEST".to_string(),
+            image_path: r"C:\Test\app.exe".to_string(),
+            image_sha256: None,
+            file_path: r"C:\Data\file.txt".to_string(),
+            operation: "Create".to_string(),
+            file_object: 0,
+            qpc_timestamp: 0,
+            severity: "warn".to_string(),
+            correlation_reason: "NoHookJournal".to_string(),
+        };
+        assert_eq!(alert.stub_name, "etw_correlation");
     }
 }

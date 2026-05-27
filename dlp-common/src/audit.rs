@@ -83,6 +83,9 @@ pub enum EventType {
     EtwConsumerGatedOff,
     /// Phase 53: ETW Kernel-File consumer lost events (buffer overflow or session issue).
     EtwConsumerLostEvents,
+    /// Phase 53: Bypass correlator detected a hook-vs-ETW divergence.
+    /// Emitted when the correlator finds NoHookJournal or OpMismatch.
+    BypassAlertDetected,
 }
 
 impl EventType {
@@ -117,6 +120,7 @@ impl EventType {
                 | Self::EtwConsumerStopped
                 | Self::EtwConsumerGatedOff
                 | Self::EtwConsumerLostEvents
+                | Self::BypassAlertDetected
         )
     }
 
@@ -130,6 +134,7 @@ impl EventType {
                 | Self::ApprovalGrant
                 | Self::DaclTamperDetected
                 | Self::EtwConsumerLostEvents
+                | Self::BypassAlertDetected
         )
     }
 }
@@ -1270,5 +1275,33 @@ mod tests {
         let json3 = serde_json::to_string(&event3).unwrap();
         let rt3: AuditEvent = serde_json::from_str(&json3).unwrap();
         assert_eq!(rt3.event_type, EventType::EtwConsumerLostEvents);
+    }
+
+    #[test]
+    fn test_bypass_alert_detected_routed_to_siem() {
+        assert!(EventType::BypassAlertDetected.routed_to_siem());
+    }
+
+    #[test]
+    fn test_bypass_alert_detected_triggers_alert() {
+        assert!(EventType::BypassAlertDetected.triggers_alert());
+    }
+
+    #[test]
+    fn test_bypass_alert_detected_serde_roundtrip() {
+        let event = AuditEvent::new(
+            EventType::BypassAlertDetected,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\Secret.docx".to_string(),
+            Classification::T3,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-01".to_string(),
+            1,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let rt: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.event_type, EventType::BypassAlertDetected);
     }
 }
