@@ -8,7 +8,7 @@ use rusqlite::params;
 use crate::db::{Pool, UnitOfWork};
 
 /// Plain data row returned by bypass alert reads.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct BypassAlertRow {
     /// Auto-increment primary key.
     pub id: i64,
@@ -170,15 +170,15 @@ impl BypassAlertsRepository {
             }
         }
         // acknowledged does not add a param (IS NULL / IS NOT NULL).
-        if filter.agent_id.is_some() {
-            params.push(Box::new(filter.agent_id.clone().unwrap()));
+        if let Some(ref agent_id) = filter.agent_id {
+            params.push(Box::new(agent_id.clone()));
         }
-        if filter.pid.is_some() {
-            params.push(Box::new(filter.pid.unwrap()));
+        if let Some(pid) = filter.pid {
+            params.push(Box::new(pid));
         }
         params.push(Box::new(limit as i64));
-        if filter.offset.is_some() {
-            params.push(Box::new(filter.offset.unwrap() as i64));
+        if let Some(offset) = filter.offset {
+            params.push(Box::new(offset as i64));
         }
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =

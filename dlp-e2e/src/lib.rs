@@ -101,7 +101,12 @@ pub mod server {
             approval_token_service,
             syslog,
             label_aware_enabled: Arc::new(AtomicBool::new(false)),
-            protected_paths: Arc::new(dlp_server::db::repositories::protected_paths::ProtectedPathsRepository),
+            protected_paths: Arc::new(
+                dlp_server::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: Arc::new(
+                dlp_server::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
         });
         (admin_router(state), pool)
     }
