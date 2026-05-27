@@ -495,6 +495,32 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 updated_at        TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_protected_path_aces_path ON protected_path_aces(protected_path_id);
+
+            -- Phase 53: Bypass alerts table for ETW Kernel-File bypass correlator.
+            -- Stores bypass alerts from agents with deduplication, severity, and ack tracking.
+            CREATE TABLE IF NOT EXISTS bypass_alerts (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id            TEXT NOT NULL,
+                pid                 INTEGER NOT NULL,
+                image_path          TEXT NOT NULL,
+                image_sha256        TEXT NULL,
+                file_path           TEXT NOT NULL,
+                operation           TEXT NOT NULL,
+                file_object         INTEGER NOT NULL DEFAULT 0,
+                qpc_timestamp       INTEGER NOT NULL,
+                created_at          TEXT NOT NULL,
+                severity            TEXT NOT NULL CHECK(severity IN ('info', 'warn', 'crit')),
+                ack_by              TEXT NULL REFERENCES admin_users(username),
+                ack_at              TEXT NULL,
+                correlation_reason  TEXT NOT NULL CHECK(correlation_reason IN ('no_hook_journal', 'op_mismatch', 'hook_overwritten')),
+                batch_id            TEXT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_bypass_alerts_agent ON bypass_alerts(agent_id);
+            CREATE INDEX IF NOT EXISTS idx_bypass_alerts_severity ON bypass_alerts(severity);
+            CREATE INDEX IF NOT EXISTS idx_bypass_alerts_created_at ON bypass_alerts(created_at);
+            CREATE INDEX IF NOT EXISTS idx_bypass_alerts_ack ON bypass_alerts(ack_by, ack_at);
+            CREATE INDEX IF NOT EXISTS idx_bypass_alerts_pid ON bypass_alerts(pid);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_bypass_alerts_dedup ON bypass_alerts(agent_id, pid, qpc_timestamp, file_path);
 ",
     )
     .context("failed to initialize database tables")?;
@@ -1785,5 +1811,174 @@ mod tests {
         assert_eq!(retry_count, 0, "default retry_count must be 0");
         assert_eq!(last_error, "", "default last_error must be empty");
         assert_eq!(next_attempt_at, "", "default next_attempt_at must be empty");
+    }
+
+    // Phase 53: bypass_alerts table schema validation tests.
+
+    #[test]
+    fn test_bypass_alerts_table_exists() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='bypass_alerts'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query sqlite_master");
+        assert_eq!(count, 1, "bypass_alerts table must exist after init");
+    }
+
+    #[test]
+    fn test_bypass_alerts_indexes_exist() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let indexes: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='bypass_alerts'")
+            .expect("prepare")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query")
+            .filter_map(Result::ok)
+            .collect();
+
+        let expected = [
+            "idx_bypass_alerts_agent",
+            "idx_bypass_alerts_severity",
+            "idx_bypass_alerts_created_at",
+            "idx_bypass_alerts_ack",
+            "idx_bypass_alerts_pid",
+            "idx_bypass_alerts_dedup",
+        ];
+        for idx in &expected {
+            assert!(
+                indexes.contains(&idx.to_string()),
+                "index '{idx}' must exist on bypass_alerts table; found {indexes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_bypass_alerts_dedup_unique_constraint() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        conn.execute(
+            "INSERT INTO bypass_alerts \
+             (agent_id, pid, image_path, file_path, operation, qpc_timestamp, created_at, severity, correlation_reason) \
+             VALUES ('agent-1', 1234, 'C:\\app.exe', 'C:\\file.txt', 'Create', 1000, '2026-01-01T00:00:00Z', 'crit', 'no_hook_journal')",
+            [],
+        )
+        .expect("first insert must succeed");
+
+        let result = conn.execute(
+            "INSERT INTO bypass_alerts \
+             (agent_id, pid, image_path, file_path, operation, qpc_timestamp, created_at, severity, correlation_reason) \
+             VALUES ('agent-1', 1234, 'C:\\app.exe', 'C:\\file.txt', 'Create', 1000, '2026-01-01T00:00:00Z', 'crit', 'no_hook_journal')",
+            [],
+        );
+        assert!(result.is_err(), "duplicate (agent_id, pid, qpc_timestamp, file_path) must fail UNIQUE constraint");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("UNIQUE constraint failed"),
+            "error must mention UNIQUE constraint; got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_bypass_alerts_severity_check_constraint() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let result = conn.execute(
+            "INSERT INTO bypass_alerts \
+             (agent_id, pid, image_path, file_path, operation, qpc_timestamp, created_at, severity, correlation_reason) \
+             VALUES ('agent-1', 1234, 'C:\\app.exe', 'C:\\file.txt', 'Create', 1000, '2026-01-01T00:00:00Z', 'invalid', 'no_hook_journal')",
+            [],
+        );
+        assert!(result.is_err(), "invalid severity must fail CHECK constraint");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("CHECK constraint failed"),
+            "error must mention CHECK constraint; got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_bypass_alerts_correlation_reason_check_constraint() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let result = conn.execute(
+            "INSERT INTO bypass_alerts \
+             (agent_id, pid, image_path, file_path, operation, qpc_timestamp, created_at, severity, correlation_reason) \
+             VALUES ('agent-1', 1234, 'C:\\app.exe', 'C:\\file.txt', 'Create', 1000, '2026-01-01T00:00:00Z', 'crit', 'invalid_reason')",
+            [],
+        );
+        assert!(result.is_err(), "invalid correlation_reason must fail CHECK constraint");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("CHECK constraint failed"),
+            "error must mention CHECK constraint; got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_bypass_alerts_file_object_default() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        conn.execute(
+            "INSERT INTO bypass_alerts \
+             (agent_id, pid, image_path, file_path, operation, qpc_timestamp, created_at, severity, correlation_reason) \
+             VALUES ('agent-1', 1234, 'C:\\app.exe', 'C:\\file.txt', 'Create', 1000, '2026-01-01T00:00:00Z', 'crit', 'no_hook_journal')",
+            [],
+        )
+        .expect("insert must succeed");
+
+        let file_object: i64 = conn
+            .query_row(
+                "SELECT file_object FROM bypass_alerts WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query file_object");
+        assert_eq!(file_object, 0, "file_object must default to 0 when not provided");
+    }
+
+    #[test]
+    fn test_bypass_alerts_ack_foreign_key() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        // Insert an admin user so the FK can resolve.
+        conn.execute(
+            "INSERT INTO admin_users (username, password_hash, created_at) \
+             VALUES ('admin-1', 'hash', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert admin user");
+
+        conn.execute(
+            "INSERT INTO bypass_alerts \
+             (agent_id, pid, image_path, file_path, operation, qpc_timestamp, created_at, severity, correlation_reason) \
+             VALUES ('agent-1', 1234, 'C:\\app.exe', 'C:\\file.txt', 'Create', 1000, '2026-01-01T00:00:00Z', 'crit', 'no_hook_journal')",
+            [],
+        )
+        .expect("insert bypass alert");
+
+        // Update ack_by to a valid admin user.
+        conn.execute(
+            "UPDATE bypass_alerts SET ack_by = 'admin-1', ack_at = '2026-01-02T00:00:00Z' WHERE id = 1",
+            [],
+        )
+        .expect("ack with valid admin must succeed");
+
+        // Update ack_by to an invalid admin user must fail FK.
+        let result = conn.execute(
+            "UPDATE bypass_alerts SET ack_by = 'nonexistent-admin' WHERE id = 1",
+            [],
+        );
+        assert!(result.is_err(), "ack_by referencing nonexistent admin must fail FK constraint");
     }
 }
