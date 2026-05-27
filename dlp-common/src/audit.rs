@@ -75,6 +75,14 @@ pub enum EventType {
     DaclTripwireTooLarge,
     /// Phase 52: The repair watcher detected out-of-band ACL modification.
     DaclTamperDetected,
+    /// Phase 53: ETW Kernel-File consumer started successfully.
+    EtwConsumerStarted,
+    /// Phase 53: ETW Kernel-File consumer stopped (clean shutdown or error).
+    EtwConsumerStopped,
+    /// Phase 53: ETW Kernel-File consumer gated off by policy (CR-09: distinct from Stopped).
+    EtwConsumerGatedOff,
+    /// Phase 53: ETW Kernel-File consumer lost events (buffer overflow or session issue).
+    EtwConsumerLostEvents,
 }
 
 impl EventType {
@@ -105,6 +113,10 @@ impl EventType {
                 | Self::HookOverwritten
                 | Self::DaclTripwireTooLarge
                 | Self::DaclTamperDetected
+                | Self::EtwConsumerStarted
+                | Self::EtwConsumerStopped
+                | Self::EtwConsumerGatedOff
+                | Self::EtwConsumerLostEvents
         )
     }
 
@@ -113,7 +125,11 @@ impl EventType {
     pub fn triggers_alert(self) -> bool {
         matches!(
             self,
-            Self::Alert | Self::ServiceStopFailed | Self::ApprovalGrant | Self::DaclTamperDetected
+            Self::Alert
+                | Self::ServiceStopFailed
+                | Self::ApprovalGrant
+                | Self::DaclTamperDetected
+                | Self::EtwConsumerLostEvents
         )
     }
 }
@@ -1164,5 +1180,95 @@ mod tests {
         let json2 = serde_json::to_string(&event2).unwrap();
         let rt2: AuditEvent = serde_json::from_str(&json2).unwrap();
         assert_eq!(rt2.event_type, EventType::DaclTamperDetected);
+    }
+
+    // --- Phase 53: ETW Kernel-File consumer event types ---
+
+    #[test]
+    fn test_etw_consumer_started_routed_to_siem() {
+        assert!(EventType::EtwConsumerStarted.routed_to_siem());
+    }
+
+    #[test]
+    fn test_etw_consumer_stopped_routed_to_siem() {
+        assert!(EventType::EtwConsumerStopped.routed_to_siem());
+    }
+
+    #[test]
+    fn test_etw_consumer_gated_off_routed_to_siem() {
+        assert!(EventType::EtwConsumerGatedOff.routed_to_siem());
+    }
+
+    #[test]
+    fn test_etw_consumer_lost_events_routed_to_siem() {
+        assert!(EventType::EtwConsumerLostEvents.routed_to_siem());
+    }
+
+    #[test]
+    fn test_etw_consumer_lost_events_triggers_alert() {
+        assert!(EventType::EtwConsumerLostEvents.triggers_alert());
+    }
+
+    #[test]
+    fn test_etw_consumer_started_does_not_trigger_alert() {
+        assert!(!EventType::EtwConsumerStarted.triggers_alert());
+    }
+
+    #[test]
+    fn test_etw_consumer_stopped_does_not_trigger_alert() {
+        assert!(!EventType::EtwConsumerStopped.triggers_alert());
+    }
+
+    #[test]
+    fn test_etw_consumer_gated_off_does_not_trigger_alert() {
+        assert!(!EventType::EtwConsumerGatedOff.triggers_alert());
+    }
+
+    #[test]
+    fn test_etw_consumer_event_serde_roundtrip() {
+        let event = AuditEvent::new(
+            EventType::EtwConsumerStarted,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\Secret.docx".to_string(),
+            Classification::T3,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-01".to_string(),
+            1,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let rt: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.event_type, EventType::EtwConsumerStarted);
+
+        let event2 = AuditEvent::new(
+            EventType::EtwConsumerGatedOff,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\Secret.docx".to_string(),
+            Classification::T3,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-01".to_string(),
+            1,
+        );
+        let json2 = serde_json::to_string(&event2).unwrap();
+        let rt2: AuditEvent = serde_json::from_str(&json2).unwrap();
+        assert_eq!(rt2.event_type, EventType::EtwConsumerGatedOff);
+
+        let event3 = AuditEvent::new(
+            EventType::EtwConsumerLostEvents,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\Secret.docx".to_string(),
+            Classification::T3,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-01".to_string(),
+            1,
+        );
+        let json3 = serde_json::to_string(&event3).unwrap();
+        let rt3: AuditEvent = serde_json::from_str(&json3).unwrap();
+        assert_eq!(rt3.event_type, EventType::EtwConsumerLostEvents);
     }
 }

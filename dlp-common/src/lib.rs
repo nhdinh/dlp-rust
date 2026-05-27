@@ -16,6 +16,7 @@ pub mod endpoint;
 pub mod hash;
 pub mod hook_ipc;
 pub mod label;
+pub mod path_hash;
 pub mod usb;
 
 pub use abac::*;
@@ -35,6 +36,7 @@ pub use endpoint::{AppIdentity, AppTrustTier, DeviceIdentity, SignatureState, Us
 pub use hash::fnv1a_64;
 pub use hook_ipc::{HookRequest, HookResponse};
 pub use label::{Label, LabelState, ObjectType, Tier};
+pub use path_hash::{normalize_path, nt_path_to_dos_path, path_hash};
 pub use usb::{
     enumerate_connected_usb_devices, parse_usb_device_path, DEFAULT_USB_BLOCKED_FAILURE_MODE,
     DEFAULT_USB_NONE_SERIAL_POLICY, DEFAULT_USB_STARTUP_RESOLUTION_MODE, USB_FAILURE_MODES,
