@@ -452,3 +452,218 @@ async fn test_ack_bypass_alert_requires_auth() {
     let resp = app.clone().oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 53 Plan 06: SIEM + Alert Router Integration Tests
+// ---------------------------------------------------------------------------
+
+/// CR-08: Verify that `file_object` from a v2 alert is preserved end-to-end
+/// in the database.
+#[tokio::test]
+async fn test_bypass_alert_file_object_preserved() {
+    let (app, pool) = build_test_app();
+
+    let alert = serde_json::json!({
+        "reason": "NoHookJournal",
+        "stub_name": "NtCreateFile",
+        "pid": 1234,
+        "timestamp_secs": 1700000000,
+        "version": 2,
+        "agent_id": "agent-test",
+        "image_path": r"C:\Test\app.exe",
+        "image_sha256": null,
+        "file_path": r"C:\Secret.docx",
+        "operation": "Create",
+        "file_object": 3735928559_i64, // 0xDEADBEEF
+        "qpc_timestamp": 1000,
+        "severity": "crit",
+        "correlation_reason": "NoHookJournal",
+    });
+
+    let (status, _) = post_bypass_batch(app.clone(), "agent-1", "batch-e2e-001", vec![alert]).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let conn = pool.get().expect("conn");
+    let file_object: i64 = conn
+        .query_row(
+            "SELECT file_object FROM bypass_alerts WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("query");
+    assert_eq!(file_object, 3735928559_i64, "file_object must be preserved end-to-end");
+}
+
+/// Verify that a mixed-severity batch (2 crit + 3 warn) inserts all alerts
+/// with correct severity values in the database.
+#[tokio::test]
+async fn test_bypass_alert_batch_mixed_severity_db_state() {
+    let (app, pool) = build_test_app();
+
+    let alerts = vec![
+        make_alert(1001, r"C:\crit1.txt", "crit", "NoHookJournal"),
+        make_alert(1002, r"C:\crit2.txt", "crit", "OpMismatch"),
+        make_alert(1003, r"C:\warn1.txt", "warn", "NoHookJournal"),
+        make_alert(1004, r"C:\warn2.txt", "warn", "OpMismatch"),
+        make_alert(1005, r"C:\warn3.txt", "warn", "NoHookJournal"),
+    ];
+
+    let (status, json) = post_bypass_batch(app.clone(), "agent-1", "batch-mixed-001", alerts).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["inserted"], 5);
+    assert_eq!(json["skipped"], 0);
+
+    let conn = pool.get().expect("conn");
+    let crit_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM bypass_alerts WHERE severity = 'crit'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("query crit count");
+    let warn_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM bypass_alerts WHERE severity = 'warn'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("query warn count");
+
+    assert_eq!(crit_count, 2, "expected 2 crit alerts in DB");
+    assert_eq!(warn_count, 3, "expected 3 warn alerts in DB");
+}
+
+/// Verify that the AuditEvent constructed by the handler for SIEM relay
+/// contains the correct fields and serializes to expected JSON structure.
+///
+/// Note: The actual SIEM relay call happens in a fire-and-forget tokio::spawn
+/// task after the HTTP response returns. This test verifies the event
+/// structure that would be relayed, which is validated by unit tests in
+/// siem_connector.rs.
+#[tokio::test]
+async fn test_bypass_alert_siem_payload_structure() {
+    // Construct the same AuditEvent the handler would create for a crit alert.
+    let event = dlp_common::audit::AuditEvent::new(
+        dlp_common::audit::EventType::BypassAlertDetected,
+        "SYSTEM".to_string(),
+        "bypass-correlator".to_string(),
+        r"C:\Secret.docx".to_string(),
+        dlp_common::Classification::T4,
+        dlp_common::Action::WRITE,
+        dlp_common::Decision::DENY,
+        "AGENT-TEST".to_string(),
+        1234,
+    );
+
+    let json = serde_json::to_string(&event).expect("serialize audit event");
+
+    // Verify core fields are present in the JSON payload.
+    assert!(json.contains("\"event_type\":\"BYPASS_ALERT_DETECTED\""), "event_type missing: {json}");
+    assert!(json.contains("\"user_name\":\"bypass-correlator\""), "user_name missing: {json}");
+    assert!(json.contains("\"resource_path\":\"C:\\\\Secret.docx\""), "resource_path missing: {json}");
+    assert!(json.contains("\"classification\":\"T4\""), "classification missing: {json}");
+    assert!(json.contains("\"action_attempted\":\"WRITE\""), "action_attempted missing: {json}");
+    assert!(json.contains("\"decision\":\"DENY\""), "decision missing: {json}");
+    assert!(json.contains("\"agent_id\":\"AGENT-TEST\""), "agent_id missing: {json}");
+    assert!(json.contains("\"session_id\":1234"), "session_id missing: {json}");
+
+    // Verify routed_to_siem and triggers_alert semantics.
+    assert!(
+        dlp_common::audit::EventType::BypassAlertDetected.routed_to_siem(),
+        "BypassAlertDetected must route to SIEM"
+    );
+    assert!(
+        dlp_common::audit::EventType::BypassAlertDetected.triggers_alert(),
+        "BypassAlertDetected must trigger alert"
+    );
+}
+
+/// Verify that the handler's severity-based routing logic correctly
+/// identifies crit alerts for alert router dispatch.
+///
+/// Note: The actual alert router call happens in a fire-and-forget task.
+/// This test verifies the routing predicate (severity == "crit") by
+/// checking DB state and the event construction logic.
+#[tokio::test]
+async fn test_bypass_alert_crit_routing_predicate() {
+    let (app, pool) = build_test_app();
+
+    // Post 1 crit alert.
+    let crit_alert = make_alert(2001, r"C:\crit.txt", "crit", "NoHookJournal");
+    let (status, json) = post_bypass_batch(app.clone(), "agent-1", "batch-crit-001", vec![crit_alert]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["inserted"], 1);
+
+    // Verify DB has crit severity.
+    let conn = pool.get().expect("conn");
+    let severity: String = conn
+        .query_row("SELECT severity FROM bypass_alerts WHERE pid = 2001", [], |r| r.get(0))
+        .expect("query");
+    assert_eq!(severity, "crit", "severity must be crit for alert router routing");
+
+    // Verify the event type triggers_alert.
+    assert!(
+        dlp_common::audit::EventType::BypassAlertDetected.triggers_alert(),
+        "BypassAlertDetected must trigger alert router"
+    );
+}
+
+/// Verify that warn severity alerts are stored in DB but do not trigger
+/// the alert router (per severity-based routing).
+///
+/// Note: The alert router is only called for severity == "crit".
+/// This test verifies the warn path through DB state and routing predicates.
+#[tokio::test]
+async fn test_bypass_alert_warn_routing_predicate() {
+    let (app, pool) = build_test_app();
+
+    // Post 1 warn alert.
+    let warn_alert = make_alert(2002, r"C:\warn.txt", "warn", "NoHookJournal");
+    let (status, json) = post_bypass_batch(app.clone(), "agent-1", "batch-warn-001", vec![warn_alert]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["inserted"], 1);
+
+    // Verify DB has warn severity.
+    let conn = pool.get().expect("conn");
+    let severity: String = conn
+        .query_row("SELECT severity FROM bypass_alerts WHERE pid = 2002", [], |r| r.get(0))
+        .expect("query");
+    assert_eq!(severity, "warn", "severity must be warn");
+
+    // Verify the event type still routes to SIEM even for warn.
+    assert!(
+        dlp_common::audit::EventType::BypassAlertDetected.routed_to_siem(),
+        "BypassAlertDetected must route to SIEM regardless of severity"
+    );
+}
+
+/// CR-09: Verify EtwConsumerGatedOff event routes to SIEM but does not
+/// trigger the alert router.
+#[tokio::test]
+async fn test_etw_consumer_gated_off_routing_semantics() {
+    // Verify routing predicates at the event type level.
+    assert!(
+        dlp_common::audit::EventType::EtwConsumerGatedOff.routed_to_siem(),
+        "EtwConsumerGatedOff must route to SIEM per CR-09"
+    );
+    assert!(
+        !dlp_common::audit::EventType::EtwConsumerGatedOff.triggers_alert(),
+        "EtwConsumerGatedOff must NOT trigger alert per CR-09"
+    );
+
+    // Construct the event as the ETW consumer would emit it.
+    let event = dlp_common::audit::AuditEvent::new(
+        dlp_common::audit::EventType::EtwConsumerGatedOff,
+        "SYSTEM".to_string(),
+        "etw-consumer".to_string(),
+        "N/A".to_string(),
+        dlp_common::Classification::T1,
+        dlp_common::Action::READ,
+        dlp_common::Decision::ALLOW,
+        "AGENT-TEST".to_string(),
+        0,
+    );
+
+    let json = serde_json::to_string(&event).expect("serialize");
+    assert!(json.contains("\"event_type\":\"ETW_CONSUMER_GATED_OFF\""), "event_type missing: {json}");
+}
