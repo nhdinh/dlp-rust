@@ -384,7 +384,7 @@ Plans:
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 6/6 | Complete    | 2026-05-20 |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 6/6 | Complete    | 2026-05-22 |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 7/7 | Complete    | 2026-05-27 |
-| 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 5/6 | In progress | 2026-05-28 |
+| 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Complete    | 2026-05-28 |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 0/0 | Not started | - |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 0/0 | Not started | - |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 0/0 | Not started | - |
