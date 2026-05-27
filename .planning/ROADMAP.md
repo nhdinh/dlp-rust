@@ -213,7 +213,7 @@ Plans:
   4. Allowlisted PIDs (AV/EDR, self, system-critical, PPL) are dropped pre-correlation; the bypass-alerts feed contains zero entries from Defender/CrowdStrike/SentinelOne in the soak-test fixture.
   5. `POST /audit/bypass` ingests agent-emitted bypass alerts; alerts route through `siem_connector::relay` and (when `severity >= ALERT`) `alert_router::send` with no new outbound transport added; `GET /admin/bypass-alerts?since=&severity=` and `POST /admin/bypass-alerts/:id/ack` round-trip cleanly.
 
-**Plans:** 0/5 plans planned
+**Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 
 ### Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens
 
@@ -227,7 +227,7 @@ Plans:
   3. Both screens follow the existing `screens/usb_enforcement.rs` and `screens/print_config.rs` pattern (mod/dispatch/render/client/app.rs extensions); navigation, focus, and Esc-back semantics match every other admin TUI screen.
   4. Eight new client methods (`list_protected_paths`, `create_protected_path`, `update_protected_path`, `delete_protected_path`, `list_bypass_alerts`, `ack_bypass_alert`, plus the two screens' navigation entry points) exist, are unit-tested, and surface server errors as user-readable toasts.
 
-**Plans:** 0/5 plans planned
+**Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 **UI hint**: yes
 
 ### Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode
@@ -242,7 +242,7 @@ Plans:
   3. A policy in `AuditAndBlock` mode produces both an audit event and a DENY return; the audit event records `policy_mode = AuditAndBlock` so post-deployment review can distinguish it from pure-`Block`.
   4. The Conditions Builder dropdown is exercised by an integration test that round-trips Audit → Block → AuditAndBlock through `PUT /admin/policies/:id` and verifies the agent sees each mode within one `policy_sync` cycle.
 
-**Plans:** 0/5 plans planned
+**Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 
 ### Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)
 
@@ -256,7 +256,7 @@ Plans:
   3. The admin TUI Conditions Builder exposes `source_volume_class` and `destination_volume_class` as dropdowns with the six enum values; the existing USB/disk allowlist screens render SD/Optical/Virtual rows alongside USB without UI breakage.
   4. `WM_DEVICECHANGE` handlers cover virtual mounts (Daemon Tools, ISO mounting via Windows Explorer, VHD/VHDX mount) by registering `GUID_DEVINTERFACE_VOLUME` notification handlers for non-USB volume classes; the 500 ms deferred-processing pattern from v0.7.0 is preserved.
 
-**Plans:** 0/5 plans planned
+**Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 **UI hint**: yes
 
 ### Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT
@@ -271,7 +271,7 @@ Plans:
   3. The deployment guide explicitly addresses Secure Boot reality (AppInit_DLLs is inert; `siem.appinit_dlls_disabled` will fire), the PPL coverage gap (lsass/MsMpEng/EDR-self) and the DACL-tripwire backstop, `SeSystemProfilePrivilege` preservation across upgrades, and the post-install reboot requirement for hook activation.
   4. UAT executes on a real Windows 11 host with real OneDrive/Google Drive/Dropbox/Box clients, real printers, and real USB/SD/optical/virtual drives; every v0.9.0 cloud-sync regression test plus every v0.10.0 active-blocking scenario passes; the CRIT-04 benchmark gate (<= 25% wall-clock overhead on representative `cargo build` + `Office app launch` workloads) holds; results are captured in `.planning/milestones/v0.10.0-UAT.md`.
 
-**Plans:** 0/5 plans planned
+**Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 
 ### Phase 58: Differentiators Bundle (Override + Diagnostic + Hash Evidence + Self-Health)
 
@@ -285,7 +285,7 @@ Plans:
   3. Block events on `WriteFile`/`WriteFileEx` carry a `content_sha256` hash of the would-be-written content (computed via the OS file handle, NOT a second open); audit-event consumers and SIEM relay forward the hash unchanged for forensic chain-of-custody.
   4. The hook DLL emits per-host self-health counters (injected_pids, patched_modules, pipe_round_trips, cache_hit_rate, fail_state) that the admin TUI surfaces on a coexistence dashboard, letting an operator see at a glance which endpoints have healthy hooks and which are degraded by AV/EDR interaction.
 
-**Plans:** 0/5 plans planned
+**Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
@@ -363,7 +363,7 @@ Plans:
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 6/6 | Complete    | 2026-05-20 |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 6/6 | Complete    | 2026-05-22 |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 7/7 | Complete    | 2026-05-27 |
-| 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 0/0 | Not started | - |
+| 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 0/6 | Planned    | - |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 0/0 | Not started | - |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 0/0 | Not started | - |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 0/0 | Not started | - |
