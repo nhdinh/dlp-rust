@@ -156,6 +156,9 @@ pub mod process_watcher;
 pub mod etw_kernel_file;
 
 #[cfg(windows)]
+pub mod bypass_correlator;
+
+#[cfg(windows)]
 pub mod universal_injector;
 
 /// Shared test helpers for modules that mutate the global DiskEnumerator OnceLock.
