@@ -26,9 +26,9 @@ progress:
 ## Current Position
 
 Phase: 52
-Plan: 02
+Plan: 04
 Status: Ready to execute
-Last activity: 2026-05-27 -- Phase 52 planning complete
+Last activity: 2026-05-27 -- Phase 52 Plan 04 complete (DACL Staging Data Layer)
 
 ## Progress
 
@@ -244,7 +244,21 @@ Active surface to consume in v0.11.0 implementation:
 - 253 dlp-hook-dll tests pass; clippy clean (-D warnings)
 - Commits: e9fb126, 0f37ba1, 28f2340
 
+## Plan 52-04 Completed (2026-05-27)
+
+- dacl_staging.rs created with StagingState enum, StagingRow struct, DaclStaging data layer
+- Per-path locking via DashMap<String, Arc<parking_lot::Mutex<()>>>
+- init_staging_table() creates protected_paths_staging with CHECK constraint and two indexes
+- Methods: stage_removal, stage_add, mark_applied, is_staged, is_staged_and_applied, get_state, get_row, list_all, gc_expired_rows
+- stage_removals() free function for batch integration with config diff logic (Plan 52-07)
+- spawn_gc_task() for TTL-based GC with configurable interval
+- 15 unit tests covering state machine, per-path locking, concurrent access, GC behavior, idempotency, batch staging, schema validation
+- service.rs init_agent_db() creates staging table alongside existing agent tables
+- lib.rs exports dacl_staging module
+- Clippy clean (-D warnings), cargo fmt clean, cargo build -p dlp-agent passes
+- Commit: c8c2787
+
 ## Operator Next Steps
 
-- Phase 51 is COMPLETE. All 6 plans delivered.
+- Phase 52: Plans 01 (DACL Tripwire) and 04 (DACL Staging) complete. Plans 02 (Repair Watcher), 03 (Protected Paths DB), 05 (DPAPI Recovery Doc) remain.
 - Start the next milestone with /gsd-new-milestone
