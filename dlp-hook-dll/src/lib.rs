@@ -53,6 +53,7 @@ mod crash_guard;
 pub mod edr_detector;
 mod fail_closed;
 mod fail_mode;
+mod hook_journal;
 pub mod ntdll_patcher;
 mod pe_utils;
 mod perf_telemetry;
