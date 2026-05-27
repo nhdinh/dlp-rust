@@ -254,17 +254,14 @@ async fn main() -> anyhow::Result<()> {
     // Read the initial label_aware_evaluation_enabled flag from system_kv.
     // Default is false (off) per D-11: admins must explicitly enable.
     let label_aware_enabled = Arc::new(std::sync::atomic::AtomicBool::new({
-        let conn = pool.get().map_err(|e| {
-            anyhow::anyhow!("failed to acquire connection for system_kv read: {e}")
-        })?;
-        dlp_server::db::repositories::system_kv::get(
-            &conn,
-            "label_aware_evaluation_enabled",
-        )
-        .ok()
-        .flatten()
-        .map(|v| v == "1")
-        .unwrap_or(false)
+        let conn = pool
+            .get()
+            .map_err(|e| anyhow::anyhow!("failed to acquire connection for system_kv read: {e}"))?;
+        dlp_server::db::repositories::system_kv::get(&conn, "label_aware_evaluation_enabled")
+            .ok()
+            .flatten()
+            .map(|v| v == "1")
+            .unwrap_or(false)
     }));
     info!(
         enabled = label_aware_enabled.load(std::sync::atomic::Ordering::Relaxed),
@@ -295,6 +292,7 @@ async fn main() -> anyhow::Result<()> {
         approval_token_service,
         syslog: syslog.clone(),
         label_aware_enabled: Arc::clone(&label_aware_enabled),
+        protected_paths: Arc::new(db::repositories::protected_paths::ProtectedPathsRepository),
     });
 
     // Start the background heartbeat sweeper (marks agents offline
@@ -527,9 +525,7 @@ async fn main() -> anyhow::Result<()> {
                             let mut conn = pool.get()?;
                             let uow = db::UnitOfWork::new(&mut conn)?;
                             for qe in &batch_for_task {
-                                SyslogQueueRepository::mark_failed(
-                                    &uow, qe.id, &error, &next,
-                                )?;
+                                SyslogQueueRepository::mark_failed(&uow, qe.id, &error, &next)?;
                             }
                             // Release lease so events can be reclaimed sooner.
                             SyslogQueueRepository::release_lease(&uow, &ids)?;

@@ -134,6 +134,26 @@ pub struct AllowlistConfigEntry {
 }
 
 // ---------------------------------------------------------------------------
+// ProtectedPathConfig
+// ---------------------------------------------------------------------------
+
+/// Single protected path entry in the agent config payload.
+///
+/// Mirrors the server-side `ProtectedPathConfig` shape. Sent to agents
+/// so they know which paths receive DACL tripwire protection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProtectedPathConfig {
+    /// Server-generated UUID.
+    pub id: String,
+    /// Filesystem path of the protected object.
+    pub path: String,
+    /// Data tier: `"T3"` or `"T4"`.
+    pub tier: String,
+    /// Source of the entry: `"auto"` or `"manual"`.
+    pub source: String,
+}
+
+// ---------------------------------------------------------------------------
 // AgentConfigPayload
 // ---------------------------------------------------------------------------
 
@@ -221,6 +241,13 @@ pub struct AgentConfigPayload {
     /// Phase 49: Version of the allowlist config (for change detection).
     #[serde(default)]
     pub allowlist_version: i64,
+
+    /// Phase 52: Protected paths for DACL tripwire.
+    ///
+    /// Sent to agents so they know which paths receive tripwire protection.
+    /// Defaults to empty for backward compatibility with older server builds.
+    #[serde(default)]
+    pub protected_paths: Vec<ProtectedPathConfig>,
 }
 
 fn default_usb_blocked_failure_mode() -> String {
@@ -1198,6 +1225,7 @@ mod tests {
             print_max_pages: 100,
             allowlist_entries: vec![],
             allowlist_version: 0,
+            protected_paths: vec![],
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -1232,6 +1260,7 @@ mod tests {
             print_max_pages: 100,
             allowlist_entries: vec![],
             allowlist_version: 0,
+            protected_paths: vec![],
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -1313,6 +1342,7 @@ mod tests {
             print_max_pages: 100,
             allowlist_entries: vec![],
             allowlist_version: 0,
+            protected_paths: vec![],
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -1544,6 +1574,7 @@ mod tests {
             print_max_pages: 100,
             allowlist_entries: vec![],
             allowlist_version: 0,
+            protected_paths: vec![],
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");

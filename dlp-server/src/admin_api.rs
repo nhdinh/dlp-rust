@@ -26,6 +26,7 @@ use crate::audit_store;
 use crate::db;
 use crate::db::repositories;
 use crate::db::repositories::labels::{LabelRepository, LabelRow, LabelUpsertRow};
+use crate::db::repositories::protected_paths::{ProtectedPathRow, ProtectedPathsRepository};
 use crate::db::repositories::{
     validate_facility_code, validate_severity, AgentConfigRepository, AlertRouterConfigRepository,
     AllowlistAuditRepository, AllowlistAuditRow, AllowlistEntryRow, AllowlistRepository,
@@ -101,9 +102,11 @@ async fn evaluate_handler(
 
     // NOTE: evaluate() is synchronous — no .await here.
     // Pass label_service and cached flag for label-aware evaluation (Phase 59, D-10).
-    let response = state
-        .policy_store
-        .evaluate(&ctx, Some(&state.label_service), state.is_label_aware_enabled());
+    let response = state.policy_store.evaluate(
+        &ctx,
+        Some(&state.label_service),
+        state.is_label_aware_enabled(),
+    );
     Ok(Json(response))
 }
 
@@ -328,6 +331,77 @@ pub struct AllowlistConfigEntry {
     pub priority: i64,
 }
 
+// ---------------------------------------------------------------------------
+// Phase 52: Protected paths request / response types
+// ---------------------------------------------------------------------------
+
+/// Agent-facing configuration entry for a protected path.
+///
+/// Sent to agents via the config poll endpoint so the DACL tripwire
+/// knows which paths to monitor and which tier to enforce.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProtectedPathConfig {
+    /// Server-generated UUID.
+    pub id: String,
+    /// Filesystem or SMB path of the protected object.
+    pub path: String,
+    /// Data tier: `T3` or `T4`.
+    pub tier: String,
+    /// Source of the entry: `"auto"` or `"manual"`.
+    pub source: String,
+}
+
+/// Request body for `POST /admin/protected-paths`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProtectedPathRequest {
+    /// Filesystem or SMB path of the protected object.
+    pub path: String,
+    /// Source of the entry: `"auto"` or `"manual"`.
+    pub source: String,
+    /// Whether this entry overrides auto-population for the same path.
+    pub is_override: bool,
+    /// Data tier: `"T3"` or `"T4"`.
+    pub tier: String,
+    /// Soft FK to `labels(id)`. `None` for manual entries.
+    pub label_id: Option<String>,
+}
+
+/// Response body returned by protected paths endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtectedPathResponse {
+    /// Server-generated UUID.
+    pub id: String,
+    /// Filesystem or SMB path of the protected object.
+    pub path: String,
+    /// Source of the entry: `"auto"` or `"manual"`.
+    pub source: String,
+    /// Whether this entry overrides auto-population for the same path.
+    pub is_override: bool,
+    /// Data tier: `"T3"` or `"T4"`.
+    pub tier: String,
+    /// Soft FK to `labels(id)`. `None` for manual entries.
+    pub label_id: Option<String>,
+    /// ISO-8601 timestamp of creation.
+    pub created_at: String,
+    /// ISO-8601 timestamp of last update.
+    pub updated_at: String,
+}
+
+impl From<ProtectedPathRow> for ProtectedPathResponse {
+    fn from(row: ProtectedPathRow) -> Self {
+        Self {
+            id: row.id,
+            path: row.path,
+            source: row.source,
+            is_override: row.is_override,
+            tier: row.tier,
+            label_id: row.label_id,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
 /// Read/write payload for agent configuration distribution.
 ///
 /// Used by `GET/PUT /admin/agent-config` (global default) and
@@ -380,6 +454,12 @@ pub struct AgentConfigPayload {
     /// Phase 49: Version of the allowlist config (for change detection).
     #[serde(default)]
     pub allowlist_version: i64,
+    /// Phase 52: Protected paths for DACL tripwire.
+    ///
+    /// Sent to agents so they know which paths receive tripwire protection.
+    /// Defaults to empty for backward compatibility with older server builds.
+    #[serde(default)]
+    pub protected_paths: Vec<ProtectedPathConfig>,
 }
 
 fn default_usb_blocked_failure_mode() -> String {
@@ -419,6 +499,7 @@ impl Default for AgentConfigPayload {
             print_max_pages: 100,
             allowlist_entries: Vec::new(),
             allowlist_version: 0,
+            protected_paths: Vec::new(),
         }
     }
 }
@@ -1146,6 +1227,21 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route(
             "/admin/syslog-config/test",
             post(test_syslog_config_handler),
+        )
+        // Phase 52: Protected paths admin API (DACL-03)
+        .route(
+            "/admin/protected-paths",
+            get(list_protected_paths_handler).post(create_protected_path_handler),
+        )
+        .route(
+            "/admin/protected-paths/sync",
+            post(sync_protected_paths_handler),
+        )
+        .route(
+            "/admin/protected-paths/{id}",
+            get(get_protected_path_handler)
+                .put(update_protected_path_handler)
+                .delete(delete_protected_path_handler),
         )
         .route_layer(default_config())
         .layer(middleware::from_fn(admin_auth::require_auth));
@@ -2182,6 +2278,7 @@ async fn get_agent_config_for_agent(
                 print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
                 allowlist_entries,
                 allowlist_version,
+                protected_paths: Vec::new(),
             },
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // Fall back to global default.
@@ -2203,12 +2300,28 @@ async fn get_agent_config_for_agent(
                     print_max_pages: usize::try_from(row.print_max_pages).unwrap_or(100),
                     allowlist_entries,
                     allowlist_version,
+                    protected_paths: Vec::new(),
                 }
             }
             Err(e) => return Err(AppError::Database(e)),
         };
         // Populate disk_allowlist after the config branch is resolved (D-02/D-03).
         payload.disk_allowlist = disk_allowlist;
+
+        // Phase 52: Populate protected paths from repository.
+        let protected_paths: Vec<ProtectedPathConfig> =
+            ProtectedPathsRepository::list_all(&pool)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| ProtectedPathConfig {
+                    id: r.id,
+                    path: r.path,
+                    tier: r.tier,
+                    source: r.source,
+                })
+                .collect();
+        payload.protected_paths = protected_paths;
+
         Ok(payload)
     })
     .await
@@ -2337,6 +2450,7 @@ async fn get_global_agent_config_handler(
         // allowlist is agent-only; admin GET does not include it.
         allowlist_entries: Vec::new(),
         allowlist_version: 0,
+        protected_paths: Vec::new(),
     }))
 }
 
@@ -2467,6 +2581,7 @@ async fn get_agent_config_override_handler(
         // allowlist is agent-only; admin GET does not include it.
         allowlist_entries: Vec::new(),
         allowlist_version: 0,
+        protected_paths: Vec::new(),
     }))
 }
 
@@ -4003,29 +4118,30 @@ async fn list_labels(
     let owner_sid_filter = filter.owner_sid.clone();
     let department_filter = filter.department.clone();
 
-    let (rows, total) = tokio::task::spawn_blocking(move || -> Result<(Vec<LabelRow>, i64), AppError> {
-        let rows = LabelRepository::list_by_filters(
-            &pool,
-            state_filter.as_deref(),
-            tier_filter.as_deref(),
-            owner_sid_filter.as_deref(),
-            department_filter.as_deref(),
-            Some(limit),
-            Some(offset),
-        )
-        .map_err(AppError::Database)?;
-        let total = LabelRepository::count_by_filters(
-            &pool,
-            state_filter.as_deref(),
-            tier_filter.as_deref(),
-            owner_sid_filter.as_deref(),
-            department_filter.as_deref(),
-        )
-        .map_err(AppError::Database)?;
-        Ok((rows, total))
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    let (rows, total) =
+        tokio::task::spawn_blocking(move || -> Result<(Vec<LabelRow>, i64), AppError> {
+            let rows = LabelRepository::list_by_filters(
+                &pool,
+                state_filter.as_deref(),
+                tier_filter.as_deref(),
+                owner_sid_filter.as_deref(),
+                department_filter.as_deref(),
+                Some(limit),
+                Some(offset),
+            )
+            .map_err(AppError::Database)?;
+            let total = LabelRepository::count_by_filters(
+                &pool,
+                state_filter.as_deref(),
+                tier_filter.as_deref(),
+                owner_sid_filter.as_deref(),
+                department_filter.as_deref(),
+            )
+            .map_err(AppError::Database)?;
+            Ok((rows, total))
+        })
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     Ok(Json(PaginatedLabelsResponse {
         labels: rows.into_iter().map(Into::into).collect(),
@@ -4639,6 +4755,279 @@ async fn list_label_departments(
     Ok(Json(depts))
 }
 
+// ---------------------------------------------------------------------------
+// Protected paths handlers (Phase 52)
+// ---------------------------------------------------------------------------
+
+/// Validates a protected path using Windows API canonicalization.
+///
+/// Uses `GetFullPathNameW` to canonicalize the path, then rejects:
+/// - UNC paths (`\\server\share`)
+/// - Extended-length paths (`\\?\...`)
+/// - Volume GUID paths (`\\?\Volume{...}`)
+/// - 8.3 short names (containing `~`)
+/// - Non-absolute paths (must be `X:\...`)
+///
+/// This runs server-side; the agent also validates before applying ACLs.
+#[cfg(windows)]
+fn validate_protected_path(path: &str) -> Result<(), AppError> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetFullPathNameW;
+
+    let wide_path: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut buffer = vec![0u16; 512];
+    let len = unsafe {
+        GetFullPathNameW(
+            PCWSTR(wide_path.as_ptr()),
+            Some(&mut buffer),
+            None,
+        )
+    };
+    if len == 0 {
+        return Err(AppError::BadRequest("path is invalid".to_string()));
+    }
+    let canonical = String::from_utf16_lossy(&buffer[..len as usize]);
+
+    // Reject UNC paths.
+    if canonical.starts_with("\\\\") {
+        return Err(AppError::BadRequest("UNC paths are not supported".to_string()));
+    }
+    // Reject extended-length paths.
+    if canonical.starts_with("\\\\?\\") {
+        return Err(AppError::BadRequest(
+            "extended-length paths are not supported".to_string(),
+        ));
+    }
+    // Reject volume GUID paths.
+    if canonical.starts_with("\\\\?\\Volume{") {
+        return Err(AppError::BadRequest(
+            "volume GUID paths are not supported".to_string(),
+        ));
+    }
+    // Must be absolute drive path (e.g., C:\Data).
+    if !(canonical.len() >= 3
+        && canonical.as_bytes()[1] == b':'
+        && canonical.as_bytes()[2] == b'\\')
+    {
+        return Err(AppError::BadRequest(
+            "path must be an absolute NTFS path (e.g., C:\\Data)".to_string(),
+        ));
+    }
+    // Reject 8.3 short names.
+    if canonical.contains('~') {
+        return Err(AppError::BadRequest("8.3 short names are not supported".to_string()));
+    }
+
+    Ok(())
+}
+
+/// Non-Windows fallback: basic absolute-path check.
+#[cfg(not(windows))]
+fn validate_protected_path(path: &str) -> Result<(), AppError> {
+    if !(path.len() >= 3 && path.as_bytes()[1] == b':' && path.as_bytes()[2] == b'\\') {
+        return Err(AppError::BadRequest(
+            "path must be an absolute NTFS path (e.g., C:\\Data)".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// `GET /admin/protected-paths` — list all protected paths.
+async fn list_protected_paths_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<ProtectedPathResponse>>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<ProtectedPathRow>, AppError> {
+        ProtectedPathsRepository::list_all(&pool).map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    let responses: Vec<ProtectedPathResponse> = rows.into_iter().map(ProtectedPathResponse::from).collect();
+    Ok(Json(responses))
+}
+
+/// `GET /admin/protected-paths/{id}` — get a single protected path.
+async fn get_protected_path_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<ProtectedPathResponse>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let row = tokio::task::spawn_blocking(move || -> Result<ProtectedPathRow, AppError> {
+        ProtectedPathsRepository::get_by_id(&pool, &id).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => AppError::NotFound(format!("protected path {id} not found")),
+            _ => AppError::Database(e),
+        })
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(ProtectedPathResponse::from(row)))
+}
+
+/// `POST /admin/protected-paths` — create a new protected path.
+///
+/// Returns 201 Created with the new resource. Returns 409 Conflict if the
+/// path already exists (UNIQUE constraint).
+async fn create_protected_path_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ProtectedPathRequest>,
+) -> Result<(StatusCode, Json<ProtectedPathResponse>), AppError> {
+    // Validate path.
+    validate_protected_path(&req.path)?;
+
+    // Validate tier.
+    if req.tier != "T3" && req.tier != "T4" {
+        return Err(AppError::UnprocessableEntity(
+            "tier must be 'T3' or 'T4'".to_string(),
+        ));
+    }
+    // Validate source.
+    if req.source != "auto" && req.source != "manual" {
+        return Err(AppError::UnprocessableEntity(
+            "source must be 'auto' or 'manual'".to_string(),
+        ));
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let row = ProtectedPathRow {
+        id: id.clone(),
+        path: req.path,
+        source: req.source,
+        is_override: req.is_override,
+        tier: req.tier,
+        label_id: req.label_id,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    let pool = Arc::clone(&state.pool);
+    let row_for_insert = row.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        ProtectedPathsRepository::insert(&uow, &row_for_insert).map_err(|e| {
+            if e.to_string().contains("UNIQUE constraint failed") {
+                AppError::Conflict(format!("path '{}' already exists", row_for_insert.path))
+            } else {
+                AppError::Database(e)
+            }
+        })?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(path_id = %id, "protected path created");
+    Ok((StatusCode::CREATED, Json(ProtectedPathResponse::from(row))))
+}
+
+/// `PUT /admin/protected-paths/{id}` — update an existing protected path.
+async fn update_protected_path_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<ProtectedPathRequest>,
+) -> Result<Json<ProtectedPathResponse>, AppError> {
+    // Validate path.
+    validate_protected_path(&req.path)?;
+
+    // Validate tier.
+    if req.tier != "T3" && req.tier != "T4" {
+        return Err(AppError::UnprocessableEntity(
+            "tier must be 'T3' or 'T4'".to_string(),
+        ));
+    }
+    // Validate source.
+    if req.source != "auto" && req.source != "manual" {
+        return Err(AppError::UnprocessableEntity(
+            "source must be 'auto' or 'manual'".to_string(),
+        ));
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let row = ProtectedPathRow {
+        id: id.clone(),
+        path: req.path,
+        source: req.source,
+        is_override: req.is_override,
+        tier: req.tier,
+        label_id: req.label_id,
+        created_at: String::new(), // not used by update
+        updated_at: now,
+    };
+
+    let pool = Arc::clone(&state.pool);
+    let row_for_update = row.clone();
+    let id_for_update = id.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let rows = ProtectedPathsRepository::update(&uow, &row_for_update).map_err(AppError::Database)?;
+        if rows == 0 {
+            return Err(AppError::NotFound(format!("protected path {id_for_update} not found")));
+        }
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    // Re-fetch to return the full row.
+    let pool = Arc::clone(&state.pool);
+    let id_for_refetch = id.clone();
+    let refreshed = tokio::task::spawn_blocking(move || -> Result<ProtectedPathRow, AppError> {
+        ProtectedPathsRepository::get_by_id(&pool, &id_for_refetch).map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(path_id = %id, "protected path updated");
+    Ok(Json(ProtectedPathResponse::from(refreshed)))
+}
+
+/// `DELETE /admin/protected-paths/{id}` — delete a protected path.
+async fn delete_protected_path_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let id_for_delete = id.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        let rows = ProtectedPathsRepository::delete_by_id(&uow, &id_for_delete).map_err(AppError::Database)?;
+        if rows == 0 {
+            return Err(AppError::NotFound(format!("protected path {id_for_delete} not found")));
+        }
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(path_id = %id, "protected path deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /admin/protected-paths/sync` — auto-populate from labels.
+///
+/// Returns the count of newly inserted paths.
+async fn sync_protected_paths_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let count = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
+        ProtectedPathsRepository::sync_from_labels(&pool).map_err(AppError::Database)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(inserted = %count, "protected paths sync completed");
+    Ok(Json(serde_json::json!({ "inserted": count })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4890,9 +5279,8 @@ mod tests {
             label_service,
             approval_token_service,
             syslog,
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         });
         admin_router(state)
     }
@@ -4968,9 +5356,8 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         });
         let app = admin_router(state);
 
@@ -5037,9 +5424,8 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         });
         let app = admin_router(state);
 
@@ -5160,9 +5546,8 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         });
         let app = admin_router(state);
 
@@ -5326,9 +5711,8 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         });
         let app = admin_router(state);
 
@@ -5574,9 +5958,8 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -6493,9 +6876,8 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         });
         let app = admin_router(state);
 
@@ -6646,9 +7028,8 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -6745,9 +7126,8 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -7185,9 +7565,8 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         });
         let app = admin_router(state);
 
@@ -7277,9 +7656,8 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         });
         let app = admin_router(state);
 
@@ -7369,9 +7747,8 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         });
         let app = admin_router(state);
 
@@ -8065,9 +8442,8 @@ mod tests {
                 std::sync::Arc::clone(&pool),
                 std::sync::Arc::clone(&crypto),
             ),
-            label_aware_enabled: std::sync::Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
         })
     }
 
@@ -8481,9 +8857,8 @@ mod tests {
                     std::sync::Arc::clone(&pool),
                     std::sync::Arc::clone(&crypto),
                 ),
-                label_aware_enabled: std::sync::Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
+                label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
             });
             // Minimal router with just the disk-registry delete route for isolation.
             axum::Router::new()
@@ -8557,9 +8932,8 @@ mod tests {
                     std::sync::Arc::clone(&pool),
                     std::sync::Arc::clone(&crypto),
                 ),
-                label_aware_enabled: std::sync::Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
+                label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
             });
             axum::Router::new()
                 .route(
@@ -8903,9 +9277,8 @@ mod tests {
                     std::sync::Arc::clone(&pool),
                     std::sync::Arc::clone(&crypto),
                 ),
-                label_aware_enabled: std::sync::Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
+                label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                protected_paths: std::sync::Arc::new(crate::db::repositories::protected_paths::ProtectedPathsRepository),
             });
             axum::Router::new()
                 .route(
@@ -10877,5 +11250,292 @@ mod tests {
             audits.is_empty(),
             "audit log should be empty for entry with no audit records"
         );
+    }
+
+    // ── Phase 52: Protected paths tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_protected_paths_crud_roundtrip() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // 1. Create a protected path.
+        let create_req = Request::builder()
+            .method("POST")
+            .uri("/admin/protected-paths")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "path": r"C:\Data\Secret",
+                    "source": "manual",
+                    "is_override": false,
+                    "tier": "T4",
+                    "label_id": null
+                }))
+                .expect("serialize"),
+            ))
+            .expect("build POST");
+        let create_resp = app.clone().oneshot(create_req).await.expect("oneshot POST");
+        assert_eq!(create_resp.status(), StatusCode::CREATED);
+
+        let body = to_bytes(create_resp.into_body(), 64 * 1024).await.expect("body");
+        let created: ProtectedPathResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(created.path, r"C:\Data\Secret");
+        assert_eq!(created.tier, "T4");
+        assert_eq!(created.source, "manual");
+
+        let id = created.id;
+
+        // 2. List protected paths.
+        let list_req = Request::builder()
+            .method("GET")
+            .uri("/admin/protected-paths")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let list_resp = app.clone().oneshot(list_req).await.expect("oneshot GET");
+        assert_eq!(list_resp.status(), StatusCode::OK);
+
+        let body = to_bytes(list_resp.into_body(), 64 * 1024).await.expect("body");
+        let list: Vec<ProtectedPathResponse> = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, id);
+
+        // 3. Get by id.
+        let get_req = Request::builder()
+            .method("GET")
+            .uri(format!("/admin/protected-paths/{id}"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let get_resp = app.clone().oneshot(get_req).await.expect("oneshot GET");
+        assert_eq!(get_resp.status(), StatusCode::OK);
+
+        // 4. Update the path.
+        let update_req = Request::builder()
+            .method("PUT")
+            .uri(format!("/admin/protected-paths/{id}"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "path": r"C:\Data\Secret2",
+                    "source": "manual",
+                    "is_override": true,
+                    "tier": "T3",
+                    "label_id": null
+                }))
+                .expect("serialize"),
+            ))
+            .expect("build PUT");
+        let update_resp = app.clone().oneshot(update_req).await.expect("oneshot PUT");
+        assert_eq!(update_resp.status(), StatusCode::OK);
+
+        let body = to_bytes(update_resp.into_body(), 64 * 1024).await.expect("body");
+        let updated: ProtectedPathResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(updated.path, r"C:\Data\Secret2");
+        assert_eq!(updated.tier, "T3");
+        assert!(updated.is_override);
+
+        // 5. Delete the path.
+        let del_req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/admin/protected-paths/{id}"))
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build DELETE");
+        let del_resp = app.clone().oneshot(del_req).await.expect("oneshot DELETE");
+        assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
+
+        // 6. List should be empty.
+        let list_req = Request::builder()
+            .method("GET")
+            .uri("/admin/protected-paths")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let list_resp = app.oneshot(list_req).await.expect("oneshot GET");
+        let body = to_bytes(list_resp.into_body(), 64 * 1024).await.expect("body");
+        let list: Vec<ProtectedPathResponse> = serde_json::from_slice(&body).expect("parse");
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_protected_paths_validation_rejects_invalid_paths() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Test UNC path rejection.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/protected-paths")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "path": r"\\server\share",
+                    "source": "manual",
+                    "is_override": false,
+                    "tier": "T4",
+                    "label_id": null
+                }))
+                .expect("serialize"),
+            ))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Test invalid tier.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/protected-paths")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "path": r"C:\Data",
+                    "source": "manual",
+                    "is_override": false,
+                    "tier": "T1",
+                    "label_id": null
+                }))
+                .expect("serialize"),
+            ))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Test invalid source.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/protected-paths")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "path": r"C:\Data",
+                    "source": "invalid",
+                    "is_override": false,
+                    "tier": "T4",
+                    "label_id": null
+                }))
+                .expect("serialize"),
+            ))
+            .expect("build POST");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn test_protected_paths_duplicate_returns_409() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let body_json = serde_json::json!({
+            "path": r"C:\Data\Unique",
+            "source": "manual",
+            "is_override": false,
+            "tier": "T4",
+            "label_id": null
+        });
+
+        // First create succeeds.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/protected-paths")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&body_json).expect("serialize")))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Second create with same path returns 409.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/protected-paths")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&body_json).expect("serialize")))
+            .expect("build POST");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_protected_paths_get_not_found_returns_404() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/protected-paths/nonexistent-id")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .expect("build GET");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_protected_paths_agent_config_includes_protected_paths() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let jwt = mint_admin_jwt();
+
+        // Seed a protected path.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/protected-paths")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "path": r"C:\AgentTest",
+                    "source": "manual",
+                    "is_override": false,
+                    "tier": "T3",
+                    "label_id": null
+                }))
+                .expect("serialize"),
+            ))
+            .expect("build POST");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Fetch agent config — should include the protected path.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/agent-config/test-agent-01")
+            .body(Body::empty())
+            .expect("build GET");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let payload: AgentConfigPayload = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(payload.protected_paths.len(), 1);
+        assert_eq!(payload.protected_paths[0].path, r"C:\AgentTest");
+        assert_eq!(payload.protected_paths[0].tier, "T3");
     }
 }

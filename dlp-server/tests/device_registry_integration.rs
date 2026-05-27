@@ -87,9 +87,8 @@ fn build_test_app() -> (axum::Router, Arc<db::Pool>) {
         label_service,
         approval_token_service,
         syslog,
-        label_aware_enabled: std::sync::Arc::new(
-            std::sync::atomic::AtomicBool::new(false),
-        ),
+        label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        protected_paths: std::sync::Arc::new(dlp_server::db::repositories::protected_paths::ProtectedPathsRepository),
     });
     (admin_router(state), pool)
 }

@@ -864,6 +864,15 @@ struct RunLoopContext {
     /// Phase 50: Cache pusher background thread handle.
     #[allow(dead_code)]
     cache_pusher_handle: Option<std::thread::JoinHandle<()>>,
+    /// Phase 52: DACL repair watcher for protected path ACL tamper detection.
+    #[allow(dead_code)]
+    dacl_watcher: Option<crate::dacl_repair_watcher::DaclWatcher>,
+    /// Phase 52: Shutdown signal for the DACL repair task.
+    dacl_watcher_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Phase 52: Handle for the DACL repair task.
+    dacl_watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 52: Handle for the DACL polling backstop task.
+    dacl_poll_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// The main service run loop.
@@ -1298,6 +1307,15 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         None
     };
 
+    // ── Phase 52: DaclWatcher (after WfpManager, before PrintEnforcer) ────
+    // Wfp network filters must be active before file ACLs are modified.
+    let (
+        dacl_watcher_opt,
+        dacl_watcher_shutdown_opt,
+        dacl_watcher_handle_opt,
+        dacl_poll_handle_opt,
+    ) = init_dacl_watcher(&agent_config, ad_client.as_ref().as_ref()).await;
+
     // ── PrintEnforcer (M017/S04) ──────────────────────────────────────────
     let print_enforcer_opt: Option<crate::print_enforcer::PrintEnforcer> = {
         let watcher_config = crate::print_watcher::PrintWatcherConfig {
@@ -1400,6 +1418,10 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         retry_handle,
         classification_cache,
         cache_pusher_handle: Some(_cache_pusher_handle),
+        dacl_watcher: dacl_watcher_opt,
+        dacl_watcher_shutdown: dacl_watcher_shutdown_opt,
+        dacl_watcher_handle: dacl_watcher_handle_opt,
+        dacl_poll_handle: dacl_poll_handle_opt,
     }
 }
 
@@ -1530,6 +1552,98 @@ fn init_offline_manager(
         om = om.with_server_client(sc.clone());
     }
     Arc::new(om)
+}
+
+/// Initialises the DACL repair watcher for protected path ACL tamper detection.
+///
+/// For each path in `agent_config.monitored_paths` (temporary until dedicated
+/// `protected_paths` field is added in Plan 04):
+/// 1. Calls `apply_tripwire_recursive()` to establish the canonical ACL.
+/// 2. Registers a `ReadDirectoryChangesW` watcher with the returned snapshot.
+/// 3. Starts the debounced repair task and the 60-second polling backstop.
+///
+/// The DLP-Admin SID is resolved from the AD client if available.
+///
+/// Returns `(watcher, shutdown_tx, repair_handle, poll_handle)` where all are
+/// `None` when no monitored paths are configured or the watcher is disabled.
+#[allow(clippy::type_complexity)]
+async fn init_dacl_watcher(
+    agent_config: &crate::config::AgentConfig,
+    ad_client: Option<&dlp_common::AdClient>,
+) -> (
+    Option<crate::dacl_repair_watcher::DaclWatcher>,
+    Option<tokio::sync::watch::Sender<bool>>,
+    Option<tokio::task::JoinHandle<()>>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    if agent_config.monitored_paths.is_empty() {
+        info!("no monitored paths configured — skipping DaclWatcher");
+        return (None, None, None, None);
+    }
+
+    let watcher = crate::dacl_repair_watcher::DaclWatcher::new();
+
+    // Resolve DLP-Admin SID from AD client if available.
+    let dlp_admin_sid: Option<String> = ad_client.and_then(|_client| {
+        // Attempt to resolve the DLP-Admin group SID.
+        // In a full implementation, this would query AD for the group's SID.
+        // For now, we use a well-known SID placeholder or config override.
+        std::env::var("DLP_ADMIN_SID").ok()
+    });
+    watcher.set_dlp_admin_sid(dlp_admin_sid.clone());
+
+    // Apply tripwire and register watcher for each monitored path.
+    for path_str in &agent_config.monitored_paths {
+        let path = std::path::PathBuf::from(path_str);
+        if !path.exists() {
+            warn!(path = %path.display(), "monitored path does not exist — skipping");
+            continue;
+        }
+
+        match crate::dacl_tripwire::apply_tripwire_recursive(&path, dlp_admin_sid.as_deref()) {
+            Ok((count, snapshots)) => {
+                info!(
+                    path = %path.display(),
+                    count,
+                    "DACL tripwire applied recursively"
+                );
+                // Register the watcher with the root snapshot (first in list).
+                if let Some(snapshot) = snapshots.first() {
+                    if let Err(e) = watcher.register(&path, snapshot.clone()) {
+                        warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "failed to register DACL watcher"
+                        );
+                    } else {
+                        info!(path = %path.display(), "DACL watcher registered");
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "failed to apply DACL tripwire — watcher not registered"
+                );
+            }
+        }
+    }
+
+    // Start repair task and polling backstop.
+    let (repair_shutdown_tx, repair_shutdown_rx) = tokio::sync::watch::channel(false);
+    let repair_handle = watcher.start_repair_task(repair_shutdown_rx);
+
+    let (_poll_shutdown_tx, poll_shutdown_rx) = tokio::sync::watch::channel(false);
+    let poll_handle = watcher.start_poll_backstop(60, poll_shutdown_rx);
+
+    info!("DaclWatcher initialised with repair task and polling backstop");
+    (
+        Some(watcher),
+        Some(repair_shutdown_tx),
+        Some(repair_handle),
+        Some(poll_handle),
+    )
 }
 
 /// Spawns the Policy Engine heartbeat task.
@@ -2482,6 +2596,32 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     #[cfg(windows)]
     reenable_usb_devices(&ctx.detector_arc);
 
+    // Stop DaclWatcher BEFORE WfpManager unregister (ACLs still protected during WFP teardown).
+    if let Some(shutdown_tx) = ctx.dacl_watcher_shutdown {
+        crate::password_stop::debug_log("run_loop: signalling DACL watcher shutdown");
+        let _ = shutdown_tx.send(true);
+    }
+    if let Some(handle) = ctx.dacl_watcher_handle {
+        match tokio::time::timeout(Duration::from_secs(5), handle).await {
+            Ok(Ok(())) => debug!("DACL repair task shut down cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "DACL repair task panicked"),
+            Err(_) => warn!("DACL repair task did not shut down within 5s"),
+        }
+    }
+    if let Some(handle) = ctx.dacl_poll_handle {
+        match tokio::time::timeout(Duration::from_secs(5), handle).await {
+            Ok(Ok(())) => debug!("DACL polling backstop shut down cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "DACL polling backstop panicked"),
+            Err(_) => warn!("DACL polling backstop did not shut down within 5s"),
+        }
+    }
+    if let Some(ref watcher) = ctx.dacl_watcher {
+        crate::password_stop::debug_log("run_loop: unregistering all DACL watchers");
+        watcher.unregister_all();
+        crate::password_stop::debug_log("run_loop: all DACL watchers unregistered");
+        info!("DACL watcher stopped");
+    }
+
     // Unregister WFP filters and close engine (M017/S01).
     if let Some(manager) = ctx.wfp_manager {
         crate::password_stop::debug_log("run_loop: unregistering WFP manager");
@@ -2894,6 +3034,7 @@ mod tests {
             print_max_pages: 100,
             allowlist_entries: vec![],
             allowlist_version: 0,
+            protected_paths: vec![],
         }
     }
 
