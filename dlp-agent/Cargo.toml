@@ -87,6 +87,10 @@ windows = { version = "0.62", features = [
     "Win32_System_Diagnostics_ToolHelp",
     # Phase 49: GetFirmwareEnvironmentVariableW for Secure Boot detection
     "Win32_System_WindowsProgramming",
+    # Phase 53: QueryPerformanceCounter, QueryPerformanceFrequency for bypass correlator
+    "Win32_System_Performance",
+    # Phase 53: GetSystemTimePreciseAsFileTime for QPC calibration
+    "Win32_System_SystemInformation",
 ] }
 
 # WMI for BitLocker queries (Phase 34 - Win32_EncryptableVolume in
@@ -116,6 +120,9 @@ ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
 jsonwebtoken = "9"
 hex = "0.4"
 rand = "0.8"
+
+# Phase 53 — Bypass correlator: SHA-256 for image path hashing
+sha2 = "0.10"
 
 # Phase 62 — Offline audit queue (DPAPI-encrypted SQLite)
 rusqlite = { workspace = true }

@@ -930,6 +930,13 @@ struct RunLoopContext {
     dacl_removal_shutdown: Option<tokio::sync::watch::Sender<bool>>,
     /// Phase 52-07: Handle for the removal application task.
     dacl_removal_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 53: ETW Kernel-File consumer.
+    #[allow(dead_code)]
+    etw_consumer: Option<crate::etw_kernel_file::EtwKernelFileConsumer>,
+    /// Phase 53: Shutdown signal for the bypass correlator task.
+    correlator_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Phase 53: Handle for the bypass correlator task.
+    correlator_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// The main service run loop.
@@ -1412,6 +1419,61 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
     )
     .await;
 
+    // ── Phase 53: ETW Kernel-File consumer + Bypass Correlator ────────────
+    let mut etw_consumer = crate::etw_kernel_file::EtwKernelFileConsumer::new();
+    let etw_consumer_state = etw_consumer.start(&agent_config);
+
+    // Emit audit event for ETW consumer state.
+    match &etw_consumer_state {
+        crate::etw_kernel_file::EtwConsumerState::Started => {
+            info!("ETW Kernel-File consumer started");
+        }
+        crate::etw_kernel_file::EtwConsumerState::GatedOff { reason } => {
+            warn!(reason = %reason, "ETW Kernel-File consumer gated off");
+        }
+        crate::etw_kernel_file::EtwConsumerState::Failed { error } => {
+            error!(error = %error, "ETW Kernel-File consumer failed to start");
+        }
+    }
+
+    // Start bypass correlator if ETW consumer started successfully.
+    let (correlator_shutdown_tx, correlator_handle) =
+        if matches!(etw_consumer_state, crate::etw_kernel_file::EtwConsumerState::Started) {
+            if let (Some(process_watcher), Some(sc)) =
+                (process_watcher_opt.as_ref(), server_client.as_ref())
+            {
+                let reduced_mode = !agent_config.bypass_correlator_enabled();
+                let correlator = crate::bypass_correlator::BypassCorrelator::new(
+                    crate::bypass_correlator::CorrelatorConfig {
+                        reduced_mode,
+                        ..Default::default()
+                    },
+                )
+                .with_protected_paths(agent_config.monitored_paths.clone());
+
+                let etw_rx = etw_consumer.receiver().clone();
+                let process_rx = process_watcher.receiver().clone();
+                let sc = sc.clone();
+
+                let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+                let handle = tokio::spawn(async move {
+                    tokio::select! {
+                        _ = correlator.run(etw_rx, process_rx, sc) => {},
+                        _ = shutdown_rx.changed() => {
+                            info!("bypass correlator shutting down");
+                        }
+                    }
+                });
+                (Some(shutdown_tx), Some(handle))
+            } else {
+                warn!("process watcher or server client unavailable — skipping bypass correlator");
+                (None, None)
+            }
+        } else {
+            warn!("ETW consumer not started — bypass correlator disabled");
+            (None, None)
+        };
+
     // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
     let (enc_shutdown_tx, enc_handle) = spawn_encryption_task(audit_ctx.clone(), recheck_interval);
 
@@ -1487,6 +1549,12 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         dacl_gc_handle: dacl_gc_handle_opt,
         dacl_removal_shutdown: None,
         dacl_removal_handle: dacl_removal_handle_opt,
+        // Phase 53: ETW Kernel-File consumer.
+        etw_consumer: Some(etw_consumer),
+        // Phase 53: Bypass correlator shutdown signal.
+        correlator_shutdown: correlator_shutdown_tx,
+        // Phase 53: Bypass correlator task handle.
+        correlator_handle,
     }
 }
 
@@ -2927,6 +2995,25 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
         let _ = h.await;
     }
     crate::password_stop::debug_log("run_loop: audit buffer stopped");
+
+    // Phase 53: Stop bypass correlator.
+    if let Some(shutdown_tx) = ctx.correlator_shutdown {
+        crate::password_stop::debug_log("run_loop: signalling bypass correlator shutdown");
+        let _ = shutdown_tx.send(true);
+    }
+    if let Some(handle) = ctx.correlator_handle {
+        match tokio::time::timeout(Duration::from_secs(5), handle).await {
+            Ok(Ok(())) => debug!("bypass correlator shut down cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "bypass correlator panicked"),
+            Err(_) => warn!("bypass correlator did not shut down within 5s"),
+        }
+    }
+    // Stop ETW Kernel-File consumer.
+    if let Some(mut consumer) = ctx.etw_consumer {
+        crate::password_stop::debug_log("run_loop: stopping ETW Kernel-File consumer");
+        consumer.stop();
+    }
+    crate::password_stop::debug_log("run_loop: bypass correlator stopped");
 
     crate::password_stop::debug_log("run_loop: shutdown complete");
     info!(

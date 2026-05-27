@@ -829,6 +829,56 @@ impl ServerClient {
         debug!(request_id = %body.request_id, "submitted approval request to server");
         Ok(body.request_id)
     }
+
+    // ---------------------------------------------------------------------------
+    // Phase 53: Bypass alert batch posting
+    // ---------------------------------------------------------------------------
+
+    /// Posts a batch of bypass alerts to the server.
+    ///
+    /// Calls `POST /audit/bypass` with the batch payload. The server validates
+    /// the agent_id against the JWT claim (T-53-15 mitigation).
+    ///
+    /// # Arguments
+    ///
+    /// * `batch_id` — UUID v4 identifier for idempotency.
+    /// * `alerts` — slice of `BypassAlert` to send.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerClientError::Http` on network failures.
+    /// Returns `ServerClientError::ServerError` on non-2xx responses.
+    pub async fn post_bypass(
+        &self,
+        batch_id: &str,
+        alerts: &[dlp_common::hook_ipc::BypassAlert],
+    ) -> Result<(), ServerClientError> {
+        if alerts.is_empty() {
+            return Ok(());
+        }
+
+        let url = format!("{}/audit/bypass", self.base_url);
+
+        let payload = serde_json::json!({
+            "batch_id": batch_id,
+            "agent_id": self.agent_id,
+            "alerts": alerts,
+        });
+
+        let resp = self.client.post(&url).json(&payload).send().await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
+            return Err(ServerClientError::ServerError { status, body });
+        }
+
+        debug!(count = alerts.len(), batch_id, "bypass alerts posted to server");
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
