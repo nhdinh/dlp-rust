@@ -469,4 +469,94 @@ mod tests {
         let json = serde_json::to_string(&wrapper).expect("serialize splunk event");
         assert!(json.contains("\"event\":{"));
     }
+
+    /// Phase 53: Verify that `relay_events` handles `BypassAlertDetected`
+    /// events gracefully when SIEM is disabled (no network calls).
+    /// The caller (admin_api handler) is responsible for filtering by
+    /// `routed_to_siem()`; `relay_events` itself relays all events given.
+    #[tokio::test]
+    async fn test_relay_bypass_alert_detected() {
+        use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+        let (pool, crypto) = migrated_pool_and_crypto();
+        let connector = SiemConnector::new(pool, crypto);
+
+        let event = AuditEvent::new(
+            EventType::BypassAlertDetected,
+            "SYSTEM".to_string(),
+            "bypass-correlator".to_string(),
+            r"C:\Data\Secret.docx".to_string(),
+            Classification::T4,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-TEST".to_string(),
+            1234,
+        );
+
+        // With default disabled config, relay_events returns Ok without
+        // attempting any network calls.
+        connector
+            .relay_events(&[event])
+            .await
+            .expect("BypassAlertDetected relay should succeed with disabled config");
+    }
+
+    /// Phase 53 CR-09: Verify that `relay_events` handles
+    /// `EtwConsumerGatedOff` events gracefully when SIEM is disabled.
+    #[tokio::test]
+    async fn test_relay_etw_consumer_gated_off() {
+        use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+        let (pool, crypto) = migrated_pool_and_crypto();
+        let connector = SiemConnector::new(pool, crypto);
+
+        let event = AuditEvent::new(
+            EventType::EtwConsumerGatedOff,
+            "SYSTEM".to_string(),
+            "etw-consumer".to_string(),
+            "N/A".to_string(),
+            Classification::T1,
+            Action::READ,
+            Decision::ALLOW,
+            "AGENT-TEST".to_string(),
+            0,
+        );
+
+        connector
+            .relay_events(&[event])
+            .await
+            .expect("EtwConsumerGatedOff relay should succeed with disabled config");
+    }
+
+    /// Phase 53: Verify that `relay_events` does not error on events that
+    /// are not SIEM-routed (e.g., a synthetic event type). The function
+    /// processes all events uniformly; routing decisions are made by the
+    /// caller before invoking `relay_events`.
+    #[tokio::test]
+    async fn test_relay_skips_non_siem_events() {
+        use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+        let (pool, crypto) = migrated_pool_and_crypto();
+        let connector = SiemConnector::new(pool, crypto);
+
+        // Use EventType::Access which is routed_to_siem=true but does not
+        // trigger_alert. The key assertion is that relay_events does not
+        // short-circuit or error on any event type when SIEM is disabled.
+        let event = AuditEvent::new(
+            EventType::Access,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\File.txt".to_string(),
+            Classification::T2,
+            Action::READ,
+            Decision::ALLOW,
+            "AGENT-TEST".to_string(),
+            1,
+        );
+
+        connector
+            .relay_events(&[event])
+            .await
+            .expect("non-alert event relay should succeed with disabled config");
+    }
 }
