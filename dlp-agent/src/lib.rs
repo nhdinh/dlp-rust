@@ -110,6 +110,9 @@ pub mod device_controller;
 #[cfg(windows)]
 pub mod device_registry;
 
+#[cfg(windows)]
+pub mod dacl_tripwire;
+
 pub mod chrome;
 
 #[cfg(windows)]
