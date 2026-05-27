@@ -324,8 +324,12 @@ impl DaclWatcher {
         #[cfg(windows)]
         {
             use std::time::Duration;
+            #[cfg(test)]
+            const TIMEOUT_SECS: u64 = 0;
+            #[cfg(not(test))]
+            const TIMEOUT_SECS: u64 = 2;
             let start = std::time::Instant::now();
-            while start.elapsed() < Duration::from_secs(2) {
+            while start.elapsed() < Duration::from_secs(TIMEOUT_SECS) {
                 std::thread::sleep(Duration::from_millis(50));
             }
             // After timeout, drop the handle (detaches the thread).
