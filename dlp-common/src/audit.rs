@@ -71,6 +71,10 @@ pub enum EventType {
     NtdllPatchingEdrDetected,
     /// Phase 51: A hook trampoline was overwritten (potential bypass or EDR conflict).
     HookOverwritten,
+    /// Phase 52: A protected path's ACL exceeds 60 KB after adding the DLP Deny ACE.
+    DaclTripwireTooLarge,
+    /// Phase 52: The repair watcher detected out-of-band ACL modification.
+    DaclTamperDetected,
 }
 
 impl EventType {
@@ -99,6 +103,8 @@ impl EventType {
                 | Self::NtdllPatchingEnabled
                 | Self::NtdllPatchingEdrDetected
                 | Self::HookOverwritten
+                | Self::DaclTripwireTooLarge
+                | Self::DaclTamperDetected
         )
     }
 
@@ -107,7 +113,7 @@ impl EventType {
     pub fn triggers_alert(self) -> bool {
         matches!(
             self,
-            Self::Alert | Self::ServiceStopFailed | Self::ApprovalGrant
+            Self::Alert | Self::ServiceStopFailed | Self::ApprovalGrant | Self::DaclTamperDetected
         )
     }
 }
@@ -1103,5 +1109,60 @@ mod tests {
     #[test]
     fn event_type_hook_overwritten_routed_to_siem() {
         assert!(EventType::HookOverwritten.routed_to_siem());
+    }
+
+    // --- Phase 52: DACL tripwire event types ---
+
+    #[test]
+    fn test_dacl_tripwire_too_large_routed_to_siem() {
+        assert!(EventType::DaclTripwireTooLarge.routed_to_siem());
+    }
+
+    #[test]
+    fn test_dacl_tamper_detected_routed_to_siem() {
+        assert!(EventType::DaclTamperDetected.routed_to_siem());
+    }
+
+    #[test]
+    fn test_dacl_tamper_detected_triggers_alert() {
+        assert!(EventType::DaclTamperDetected.triggers_alert());
+    }
+
+    #[test]
+    fn test_dacl_tripwire_too_large_does_not_trigger_alert() {
+        assert!(!EventType::DaclTripwireTooLarge.triggers_alert());
+    }
+
+    #[test]
+    fn test_dacl_event_serde_roundtrip() {
+        let event = AuditEvent::new(
+            EventType::DaclTripwireTooLarge,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\Secret.docx".to_string(),
+            Classification::T3,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-01".to_string(),
+            1,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let rt: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.event_type, EventType::DaclTripwireTooLarge);
+
+        let event2 = AuditEvent::new(
+            EventType::DaclTamperDetected,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\Secret.docx".to_string(),
+            Classification::T3,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-01".to_string(),
+            1,
+        );
+        let json2 = serde_json::to_string(&event2).unwrap();
+        let rt2: AuditEvent = serde_json::from_str(&json2).unwrap();
+        assert_eq!(rt2.event_type, EventType::DaclTamperDetected);
     }
 }
