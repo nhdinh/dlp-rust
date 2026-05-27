@@ -215,6 +215,27 @@ Plans:
 
 **Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 
+**Wave 1** *(no dependencies)*
+- [ ] `53-01-PLAN.md` — ETW Kernel-File Consumer: ferrisetw 1.2.0 integration, 256KB x 200 buffers, CREATE/WRITE/DELETE_PATH parsing, System32/WinSxS filter, `EventType::EtwConsumerGatedOff` distinct from Stopped (CR-09), `EtwFileEvent.nt_path_converted` flag (WR-11), 19 unit tests
+- [ ] `53-02-PLAN.md` — Hook DLL Journal Ring Buffer: per-process `GlobalDlpHookJournal_<pid>` shared memory (64 KiB), 56-byte `JournalEntry` with seq/file_object/op/path_hash/ts_qpc, Release fence (CR-03), ERROR_ALREADY_EXISTS handling (CR-04)
+- [ ] `53-03-PLAN.md` — Shared Path Normalization in dlp-common: extracted `normalize_path` + `fnv1a_64` from classification_cache.rs, `nt_path_to_dos_path()` for ETW FileName conversion (WR-09), 21 unit tests, zero hash-mismatch risk between DLL and correlator
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] `53-04-PLAN.md` — Bypass Correlator: on-demand journal discovery + exponential backoff, +/-5ms QPC tolerance, path-hash exact match, allowlist pre-filter (Defender/CrowdStrike), explicit `file_object` wiring from ETW event (CR-08), NEW `batch_id` per retry (WR-10), skip unconverted NT paths (WR-11), `#[serde(default)]` on all new fields (WR-12), 26 unit tests
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] `53-05-PLAN.md` — Server-Side Bypass Alert Storage: `bypass_alerts` SQLite schema with `file_object INTEGER NOT NULL DEFAULT 0` (WR-12), `POST /audit/bypass` batch ingest (max 100, JWT-validated agent_id), v1+v2 deserialization with `#[serde(default)]`, `GET /admin/bypass-alerts` paginated filtered, `POST /admin/bypass-alerts/:id/ack` idempotent, 5 integration tests
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] `53-06-PLAN.md` — SIEM + Alert Router Wiring: `BypassAlertDetected` routes through `routed_to_siem()` and `triggers_alert()`, `EtwConsumerGatedOff` routes to SIEM only (CR-09), crit severity triggers alert_router::send, warn/info routes to SIEM only, 8 end-to-end integration tests including file_object E2E (CR-08) and v1 backward compat (WR-12)
+
+**Cross-cutting constraints:**
+- CR-08: `file_object` explicitly wired from ETW event through correlator to DB to SIEM payload — verified by dedicated test with 0xDEADBEEF mock value
+- CR-09: `EtwConsumerGatedOff` is a distinct event type from `EtwConsumerStopped`; gated-off path emits GatedOff (not Stopped); re-enable emits Started (no backwards Stopped)
+- WR-10: Failed batch retry generates NEW `batch_id` (UUID v4) per attempt; server dedup never blocks legitimate retries
+- WR-11: `EtwFileEvent.nt_path_converted: bool` field; correlator skips events where conversion failed with `tracing::warn!`
+- WR-12: ALL new `BypassAlert` fields have `#[serde(default)]`; DB schema has `DEFAULT 0` for `file_object`; v1 alerts deserialize without error
+
 ### Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens
 
 **Goal**: An operator can fully manage Protected Paths and triage Bypass Alerts from the admin TUI without touching SQLite, the registry, or any raw config file.
@@ -363,7 +384,7 @@ Plans:
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 6/6 | Complete    | 2026-05-20 |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 6/6 | Complete    | 2026-05-22 |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 7/7 | Complete    | 2026-05-27 |
-| 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 0/6 | Planned    | - |
+| 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Planned (revised 2026-05-27) | - |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 0/0 | Not started | - |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 0/0 | Not started | - |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 0/0 | Not started | - |
@@ -415,4 +436,4 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 
 ---
 
-*Last updated: 2026-05-27 — Phase 52 planning revised (7 plans, 3 waves).*
+*Last updated: 2026-05-27 — Phase 52 + 53 planning revised (13 plans, 7 waves total).*
