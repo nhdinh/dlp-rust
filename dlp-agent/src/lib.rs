@@ -113,6 +113,12 @@ pub mod device_registry;
 #[cfg(windows)]
 pub mod dacl_tripwire;
 
+#[cfg(windows)]
+pub mod dacl_repair_watcher;
+
+#[cfg(windows)]
+pub mod dacl_staging;
+
 pub mod chrome;
 
 #[cfg(windows)]

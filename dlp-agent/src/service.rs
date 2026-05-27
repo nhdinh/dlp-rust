@@ -131,6 +131,8 @@ fn init_agent_db() -> Result<(), anyhow::Error> {
         .with_context(|| format!("opening agent db: {}", db_path.display()))?;
     crate::offline_audit_queue::init_table(&conn)
         .with_context(|| "initialising offline_audit_queue table")?;
+    crate::dacl_staging::init_staging_table(&conn)
+        .with_context(|| "initialising protected_paths_staging table")?;
     info!(db_path = %db_path.display(), "agent SQLite DB initialised");
     let _ = AGENT_DB.set(std::sync::Mutex::new(conn));
     Ok(())
@@ -1158,8 +1160,11 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         // Emit SIEM event per D-15.
         // The hook DLL will emit BypassAlert(reason=EdrDetected) when EDR is
         // detected at boot; the agent converts that to EventType::NtdllPatchingEdrDetected.
-        let agent_id = std::env::var("DLP_AGENT_ID")
-            .unwrap_or_else(|_| hostname::get().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()));
+        let agent_id = std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| {
+            hostname::get()
+                .map(|h| h.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "AGENT-UNKNOWN".to_string())
+        });
         let event = dlp_common::audit::AuditEvent::new(
             dlp_common::audit::EventType::NtdllPatchingEnabled,
             "SYSTEM".to_string(),
