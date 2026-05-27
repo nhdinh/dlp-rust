@@ -126,6 +126,9 @@ crossbeam-channel = "0.5"
 glob = "0.3"
 rayon = "1.11"
 
+# Phase 52 — DACL tripwire: recursive directory traversal with junction/symlink skip
+walkdir = "2.5"
+
 # Print spooler XPS parsing (M017/S04)
 zip = "2"
 quick-xml = "0.36"
