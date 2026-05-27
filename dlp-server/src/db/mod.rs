@@ -489,7 +489,7 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
             -- ON DELETE CASCADE removes the ACE when the parent path is deleted.
             CREATE TABLE IF NOT EXISTS protected_path_aces (
                 id                TEXT PRIMARY KEY,
-                protected_path_id TEXT NOT NULL REFERENCES protected_paths(id) ON DELETE CASCADE,
+                protected_path_id TEXT NOT NULL UNIQUE REFERENCES protected_paths(id) ON DELETE CASCADE,
                 sddl              TEXT NOT NULL,
                 created_at        TEXT NOT NULL,
                 updated_at        TEXT NOT NULL
