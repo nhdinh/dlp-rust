@@ -521,7 +521,7 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
             CREATE INDEX IF NOT EXISTS idx_bypass_alerts_ack ON bypass_alerts(ack_by, ack_at);
             CREATE INDEX IF NOT EXISTS idx_bypass_alerts_pid ON bypass_alerts(pid);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_bypass_alerts_dedup ON bypass_alerts(agent_id, pid, qpc_timestamp, file_path);
-",
+        ",
     )
     .context("failed to initialize database tables")?;
 
