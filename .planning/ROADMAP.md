@@ -180,17 +180,25 @@ Plans:
   4. The admin API exposes `GET`/`POST`/`PUT`/`DELETE /admin/protected-paths/:id`; the agent pulls protected-path config via `policy_sync` cadence and stores it in the new `protected_paths` + `protected_path_aces` SQLite tables (with foreign keys); 60 KB ACL size guard rejects oversize ACL writes with a clear operator error.
   5. `docs/operations/dpapi-recovery.md` exists and documents both the `re-init-from-env-vars` and `restore-from-backup` flows when DPAPI unprotect fails on agent restart, with a UAT verification that an operator can recover a corrupted DPAPI master key without manual SQL.
 
-**Plans:** 7/7 plans planned
+**Plans:** 7/7 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 
-Plans:
+**Wave 1** *(no dependencies)*
+- [x] `52-01-PLAN.md` — DACL Tripwire Writer: raw ACL construction, explicit canonical algorithm (DLP Deny first, SYSTEM/DLP-Admin Allows, preserved non-DLP ACEs, inherited), SDDL snapshot, 60 KB guard on ALL write paths, access-control proof matrix, fail-closed 10K limit
+- [x] `52-03-PLAN.md` — Protected Paths Server-Side Schema: SQLite schema with UNIQUE path, repository with conflict-aware sync_from_labels (manual entries preserved, tier-upgraded on conflict)
 
-- [x] `52-01-PLAN.md` — DACL Tripwire Writer: raw ACL construction (CreateWellKnownSid), SDDL snapshot, recursive apply, 60 KB guard
-- [x] `52-02-PLAN.md` — DACL Repair Watcher: ReadDirectoryChangesW per-path, crossbeam channel, 60s poll backstop, DaclTamperDetected audit
-- [x] `52-03-PLAN.md` — Protected Paths Server-Side Schema: SQLite schema (protected_paths + protected_path_aces), repository CRUD, tests
-- [x] `52-04-PLAN.md` — Two-Phase Staged Updates Data Layer: agent SQLite staging table, DaclStaging struct, GC task, DB init
-- [x] `52-05-PLAN.md` — DPAPI Recovery Doc + Final Integration: runbook, audit wiring, full test suite, ROADMAP update
-- [x] `52-06-PLAN.md` — Protected Paths Admin API + Config Sync: CRUD routes, AgentConfigPayload extension, AppState wiring
-- [x] `52-07-PLAN.md` — Staged Update Integration: config diff in apply_payload_to_config, watcher suppression, removal application task
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] `52-02-PLAN.md` — DACL Repair Watcher: ReadDirectoryChangesW per-path with bWatchSubtree=true, crossbeam channel, debounced repair (500ms-2s), 60s polling backstop with FULL subtree walk, DaclTamperDetected audit with triggers_alert=true
+- [x] `52-04-PLAN.md` — Two-Phase Staged Updates Data Layer: agent SQLite staging table, explicit StagingState enum (STAGED -> WATCHER_SUPPRESSED -> ACL_REMOVED -> APPLIED -> GC), per-path locking via DashMap<PathBuf, Mutex<()>>, adaptive GC
+- [x] `52-06-PLAN.md` — Protected Paths Admin API + Config Sync: CRUD routes with Windows API path validation (GetFullPathNameW, rejects UNC/extended-length/volume GUID/8.3), AgentConfigPayload extension, AppState wiring
+
+**Wave 3** *(blocked on Waves 1-2 completion)*
+- [x] `52-07-PLAN.md` — Staged Update Integration: config diff in apply_payload_to_config with per-path lock coordination, staging-aware tamper suppression with state machine crash recovery, removal application task, expired-staging tamper alert negative case
+- [x] `52-05-PLAN.md` — DPAPI Recovery Doc + Final Integration: runbook verified against Phase 47 env vars/service names, negative UAT cases (expired staging alert, partial apply rejection, junction skip), full audit wiring verification, workspace test suite
+
+**Cross-cutting constraints:**
+- All audit events (`DaclTripwireTooLarge`, `DaclTamperDetected`) wired through `routed_to_siem()` with correct `triggers_alert()` semantics in Plans 01 and 02 (not deferred)
+- Per-path locking (`DashMap<PathBuf, Mutex<()>>`) serializes all concurrent operations on the same path across Plans 04 and 07
+- Windows API canonicalization (`GetFullPathNameW`) replaces regex validation in Plans 01 and 06
 
 ### Phase 53: ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring
 
