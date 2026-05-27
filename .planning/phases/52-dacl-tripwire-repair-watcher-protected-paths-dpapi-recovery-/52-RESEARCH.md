@@ -1,3 +1,31 @@
+---
+phase: 52-dacl-tripwire-repair-watcher-protected-paths-dpapi-recovery-
+plan: research
+type: research
+wave: 0
+depends_on: []
+files_modified:
+  - .planning/phases/52-dacl-tripwire-repair-watcher-protected-paths-dpapi-recovery-/52-RESEARCH.md
+autonomous: true
+requirements:
+  - DACL-01
+  - DACL-02
+  - DACL-03
+  - DACL-04
+  - DACL-05
+
+must_haves:
+  truths:
+    - "Research covers all 5 DACL requirements with implementation patterns"
+    - "All open questions are resolved with concrete decisions"
+    - "Package legitimacy audit is complete"
+    - "Validation architecture is documented"
+  artifacts:
+    - path: ".planning/phases/52-dacl-tripwire-repair-watcher-protected-paths-dpapi-recovery-/52-RESEARCH.md"
+      provides: "Complete research document with resolved questions"
+  key_links: []
+---
+
 # Phase 52: DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc - Research
 
 **Researched:** 2026-05-22
@@ -47,7 +75,7 @@ The DPAPI recovery runbook (DACL-05) documents re-init-from-env-vars and restore
 - **D-11:** Canonical ACL order: (1) Explicit Deny ACEs (DLP tripwire first), (2) Explicit Allow ACEs, (3) Inherited ACEs.
 - **D-12:** SYSTEM (S-1-5-18) and DLP-Admin AD group retain full access through explicit Allow ACEs before Deny.
 - **D-13:** Repair stores canonical ACL snapshot as SDDL string per protected path. Repair replaces entire DACL (not appends).
-- **D-14:** 60 KB ACL size limit. Exceeded → reject with `ERROR_INVALID_ACL` mapped to user-readable message.
+- **D-14:** 60 KB ACL size limit. Exceeded -> reject with `ERROR_INVALID_ACL` mapped to user-readable message.
 - **D-15:** DPAPI recovery runbook at `docs/operations/dpapi-recovery.md` with prerequisites, both flows, PowerShell snippets, UAT checklist.
 
 ### Claude's Discretion
@@ -75,7 +103,7 @@ The DPAPI recovery runbook (DACL-05) documents re-init-from-env-vars and restore
 | DACL-01 | Tripwire writer using `SetNamedSecurityInfoW` + `PROTECTED_DACL_SECURITY_INFORMATION`; explicit `ACCESS_DENIED_ACE` at top of DACL with `OBJECT_INHERIT_ACE \| CONTAINER_INHERIT_ACE`; mask covers `FILE_WRITE_DATA \| FILE_APPEND_DATA \| DELETE \| FILE_WRITE_ATTRIBUTES \| WRITE_DAC \| WRITE_OWNER`; SID = S-1-5-11; 60 KB ACL guard | `protection.rs` provides raw ACL buffer pattern; `device_controller.rs` provides `SetFileSecurityW` + SDDL patterns; `Win32_Security_Authorization` feature already enabled |
 | DACL-02 | Repair watcher using `ReadDirectoryChangesW` with `FILE_NOTIFY_CHANGE_SECURITY` per root; 60s poll backstop; subtree-walk replace-not-append for ACE updates (canonical order per MS-DTYP) | `process_watcher.rs` provides crossbeam channel + dedicated thread pattern; `notify` crate not used for security events -- raw `ReadDirectoryChangesW` needed |
 | DACL-03 | `protected_paths` + `protected_path_aces` SQLite tables with FKs; repository; admin API CRUD (`GET`/`POST`/`PUT`/`DELETE /admin/protected-paths/:id`); agent pulls via `policy_sync` | `allowlist.rs` repository provides CRUD pattern; `admin_api.rs` provides axum route pattern; `db/mod.rs` provides `init_tables()` + `run_migrations()` |
-| DACL-04 | Two-phase staged updates: server sends `protected_paths_pending_change` first → agent stages expected-state diff → on next ACE event watcher knows operator-initiated removals don't trigger spurious tamper alerts | `apply_payload_to_config()` in `service.rs` provides config diff/merge pattern; agent SQLite `offline_audit_queue` provides local table pattern |
+| DACL-04 | Two-phase staged updates: server sends `protected_paths_pending_change` first -> agent stages expected-state diff -> on next ACE event watcher knows operator-initiated removals don't trigger spurious tamper alerts | `apply_payload_to_config()` in `service.rs` provides config diff/merge pattern; agent SQLite `offline_audit_queue` provides local table pattern |
 | DACL-05 | DPAPI master-key recovery runbook: documents `re-init-from-env-vars` and `restore-from-backup` flows when DPAPI unprotect fails; lives at `docs/operations/dpapi-recovery.md` | Phase 47 research documents DPAPI failure modes; `secret_kek_history` table schema documented; `SecretCrypto::load_active_or_bootstrap()` failure path exists |
 
 ---
@@ -262,7 +290,7 @@ fn build_deny_authusers_dacl(denied_mask: u32) -> Result<Vec<u8>> {
 ```
 
 ### Pattern 2: WfpManager Lifecycle (from `wfp_manager.rs`)
-**What:** A struct with `new()` → `register()` → `unregister()` lifecycle, using `parking_lot::Mutex` for internal state.
+**What:** A struct with `new()` -> `register()` -> `unregister()` lifecycle, using `parking_lot::Mutex` for internal state.
 **When to use:** Any subsystem that needs init/start/stop with shared mutable state across threads.
 **Example:**
 ```rust
@@ -499,7 +527,7 @@ fn run_security_watcher(
         return;
     }
 
-    let mut buffer = [0u8; 4096];
+    let mut buffer = [0u8; 65536];
     let mut bytes_returned: u32 = 0;
 
     loop {
@@ -563,22 +591,30 @@ fn run_security_watcher(
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **ReadDirectoryChangesW buffer sizing for high-volume paths**
-   - What we know: A 4 KB buffer is standard. `ERROR_NOTIFY_ENUM_DIR` (1022) occurs on overflow.
-   - What's unclear: Whether 4 KB is sufficient for T3/T4 roots with heavy file activity (e.g., build outputs, temp directories).
-   - Recommendation: Start with 4 KB and monitor for overflow events in telemetry. Increase to 16 KB if overflow rate > 0.1%.
+1. **ReadDirectoryChangesW buffer sizing for high-volume paths (RESOLVED)**
+   - Decision: Use a 64 KB buffer (standard for directory changes monitoring).
+   - Rationale: 64 KB is the maximum buffer size recommended by Microsoft for `ReadDirectoryChangesW` and provides sufficient headroom for high-volume paths. The 60-second polling backstop catches any events that might still overflow. On `ERROR_NOTIFY_ENUM_DIR` (1022), the watcher triggers an immediate full scan of the affected path.
+   - Implementation: `let mut buffer = [0u8; 65536];` in the watcher thread loop.
 
-2. **Subtree repair performance on deeply nested directories**
-   - What we know: The 10,000-file limit prevents runaway walks.
-   - What's unclear: Whether a single `SetFileSecurityW` call on a directory with `CONTAINER_INHERIT_ACE` propagates to all children, or if explicit per-file ACLs are required for the tripwire to be effective.
-   - Recommendation: Test on a deeply nested directory tree. If inheritance alone is insufficient (e.g., files with `SE_DACL_PROTECTED`), the repair must walk all children.
+2. **Subtree repair performance on deeply nested directories (RESOLVED)**
+   - Decision: Use BFS with early termination at the 10,000-file limit (per D-03).
+   - Rationale: The 10,000-file limit prevents runaway walks on deeply nested directories. `SetFileSecurityW` with `CONTAINER_INHERIT_ACE` propagates to children that have inheritance enabled, but files with `SE_DACL_PROTECTED` (broken inheritance) require explicit per-file ACLs. The repair watcher must walk all children to ensure coverage. BFS (breadth-first search) is preferred over DFS for ACL application because it processes directory entries level-by-level, which is more predictable for NTFS and allows early termination at the limit without deep stack recursion.
+   - Implementation: Use `walkdir` with `follow_links(false)` and `same_file_system(true)`. Count entries as they are yielded; stop at 10,000 and log a warning + emit `DaclTripwireTooLarge` audit event.
 
-3. **DLP-Admin AD group SID resolution at startup**
-   - What we know: The group SID is resolved from AD at agent startup and cached (D-12).
-   - What's unclear: The exact AD attribute or LDAP query to resolve the DLP-Admin group SID.
-   - Recommendation: Use the existing `AdClient` in `dlp-agent` to query the group by name (e.g., "DLP-Admins") and cache the SID. Fall back to SYSTEM-only Allow ACE if AD is unreachable.
+3. **DLP-Admin AD group SID resolution at startup (RESOLVED)**
+   - Decision: Cache the SID in `DaclWatcher` at init time via `LookupAccountNameW` in `service.rs` before starting the watcher. Store in `parking_lot::RwLock<Option<String>>`. Re-resolve on agent restart only.
+   - Rationale: `LookupAccountNameW` is the standard Win32 API for resolving an account name to a SID. It works for both local and domain accounts. The DLP-Admin group name is configured in the agent config (e.g., `dlp_admin_group = "DLP-Admins"`). If resolution fails (AD unreachable), fall back to SYSTEM-only Allow ACE (the Deny ACE for Authenticated Users still protects the path). Re-resolution on every restart ensures the cached SID stays current if the group is moved or renamed in AD.
+   - Implementation:
+     ```rust
+     fn resolve_dlp_admin_sid(group_name: &str) -> Option<String> {
+         // Use LookupAccountNameW to resolve group_name to SID
+         // Convert SID to string via ConvertSidToStringSidW
+         // Return Some(sid_string) or None on failure
+     }
+     ```
+     Call this in `run_loop_init()` before constructing `DaclWatcher`, and pass the resolved SID to `DaclWatcher::new()`.
 
 ---
 
@@ -607,7 +643,7 @@ fn run_security_watcher(
 | Quick run command | `cargo test -p dlp-agent dacl` (filter by module name) |
 | Full suite command | `cargo test --workspace` |
 
-### Phase Requirements → Test Map
+### Phase Requirements -> Test Map
 | Req ID | Behavior | Test Type | Automated Command | File Exists? |
 |--------|----------|-----------|-------------------|-------------|
 | DACL-01 | Tripwire writer applies Deny ACE to protected path | unit | `cargo test -p dlp-agent dacl_tripwire` | No -- Wave 0 |
