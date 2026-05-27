@@ -180,17 +180,17 @@ Plans:
   4. The admin API exposes `GET`/`POST`/`PUT`/`DELETE /admin/protected-paths/:id`; the agent pulls protected-path config via `policy_sync` cadence and stores it in the new `protected_paths` + `protected_path_aces` SQLite tables (with foreign keys); 60 KB ACL size guard rejects oversize ACL writes with a clear operator error.
   5. `docs/operations/dpapi-recovery.md` exists and documents both the `re-init-from-env-vars` and `restore-from-backup` flows when DPAPI unprotect fails on agent restart, with a UAT verification that an operator can recover a corrupted DPAPI master key without manual SQL.
 
-**Plans:** 0/7 plans planned
+**Plans:** 7/7 plans planned
 
 Plans:
 
-- [ ] `52-01-PLAN.md` — DACL Tripwire Writer: raw ACL construction (CreateWellKnownSid), SDDL snapshot, recursive apply, 60 KB guard
-- [ ] `52-02-PLAN.md` — DACL Repair Watcher: ReadDirectoryChangesW per-path, crossbeam channel, 60s poll backstop, DaclTamperDetected audit
-- [ ] `52-03-PLAN.md` — Protected Paths Server-Side Schema: SQLite schema (protected_paths + protected_path_aces), repository CRUD, tests
-- [ ] `52-04-PLAN.md` — Two-Phase Staged Updates Data Layer: agent SQLite staging table, DaclStaging struct, GC task, DB init
-- [ ] `52-05-PLAN.md` — DPAPI Recovery Doc + Final Integration: runbook, audit wiring, full test suite, ROADMAP update
-- [ ] `52-06-PLAN.md` — Protected Paths Admin API + Config Sync: CRUD routes, AgentConfigPayload extension, AppState wiring
-- [ ] `52-07-PLAN.md` — Staged Update Integration: config diff in apply_payload_to_config, watcher suppression, removal application task
+- [x] `52-01-PLAN.md` — DACL Tripwire Writer: raw ACL construction (CreateWellKnownSid), SDDL snapshot, recursive apply, 60 KB guard
+- [x] `52-02-PLAN.md` — DACL Repair Watcher: ReadDirectoryChangesW per-path, crossbeam channel, 60s poll backstop, DaclTamperDetected audit
+- [x] `52-03-PLAN.md` — Protected Paths Server-Side Schema: SQLite schema (protected_paths + protected_path_aces), repository CRUD, tests
+- [x] `52-04-PLAN.md` — Two-Phase Staged Updates Data Layer: agent SQLite staging table, DaclStaging struct, GC task, DB init
+- [x] `52-05-PLAN.md` — DPAPI Recovery Doc + Final Integration: runbook, audit wiring, full test suite, ROADMAP update
+- [x] `52-06-PLAN.md` — Protected Paths Admin API + Config Sync: CRUD routes, AgentConfigPayload extension, AppState wiring
+- [x] `52-07-PLAN.md` — Staged Update Integration: config diff in apply_payload_to_config, watcher suppression, removal application task
 
 ### Phase 53: ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring
 
