@@ -26,12 +26,12 @@
 //! - Malformed cache (bad magic/version/checksum/counts) enters degraded mode.
 //! - Reparse points, symlinks, junctions, volume GUIDs, ADS force pipe fallback.
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use dlp_common::hook_ipc::HookOp;
+use dlp_common::path_hash::normalize_path;
 use dlp_common::Classification;
 
 // ---------------------------------------------------------------------------
@@ -522,130 +522,8 @@ impl CacheLookup {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Path normalization
-// ---------------------------------------------------------------------------
-
-/// Hardened Windows path normalization.
-///
-/// Returns `Some(Cow<str>)` with the normalized path, or `None` if the path
-/// cannot be safely normalized (forces pipe fallback).
-///
-/// Normalization steps:
-/// 1. Strip NT path prefix `\\?\` or `\\.\`.
-/// 2. Handle UNC paths `\\server\share\...` — preserve leading `\\`.
-/// 3. Convert to uppercase for case-insensitive comparison.
-/// 4. Strip trailing backslashes (except root `C:\`).
-/// 5. Reject 8.3 short names (contains `~` followed by digit).
-/// 6. Replace forward slashes with backslashes.
-/// 7. Collapse multiple consecutive backslashes to single (except UNC prefix).
-/// 8. Detect and reject volume GUID paths.
-/// 9. Detect and reject ADS streams (contains `:` after drive letter).
-/// 10. Detect and reject trailing dots/spaces in path components.
-pub fn normalize_path(path: &str) -> Option<Cow<'_, str>> {
-    if path.is_empty() {
-        return None;
-    }
-
-    // Step 1: Strip NT path prefix.
-    let s = if path.starts_with(r"\\?\") || path.starts_with(r"\\.\") {
-        &path[4..]
-    } else {
-        path
-    };
-
-    // Step 2: Detect device paths (\\.\PhysicalDisk0 etc.) — reject.
-    if path.starts_with(r"\\.\") {
-        return None;
-    }
-
-    // Step 9 (early): Detect ADS streams (contains `:` after drive letter).
-    // ADS format: C:\file.txt:secret or C:\file.txt:$DATA
-    if let Some(colon_pos) = s.find(':') {
-        // Allow drive-letter colon at position 1 (e.g., "C:\").
-        if colon_pos != 1 || s.len() < 2 || s.as_bytes()[1] != b':' {
-            return None;
-        }
-        // Check for additional colons after the drive letter.
-        if s[2..].contains(':') {
-            return None;
-        }
-    }
-
-    // Step 8: Detect volume GUID paths.
-    if s.to_ascii_uppercase().contains("VOLUME{") {
-        return None;
-    }
-
-    // Step 5: Reject 8.3 short names.
-    if is_eight_three_short_name(s) {
-        return None;
-    }
-
-    // Step 6: Replace forward slashes with backslashes.
-    let mut result = s.replace('/', "\\");
-
-    // Step 7: Collapse multiple consecutive backslashes.
-    // Preserve UNC prefix (leading `\\`).
-    let is_unc = result.starts_with("\\\\");
-    let mut collapsed = String::with_capacity(result.len());
-    let mut prev_was_backslash = false;
-    for (i, ch) in result.chars().enumerate() {
-        if ch == '\\' {
-            if is_unc && i < 2 {
-                // Keep the first two backslashes for UNC.
-                collapsed.push(ch);
-                prev_was_backslash = true;
-            } else if !prev_was_backslash {
-                collapsed.push(ch);
-                prev_was_backslash = true;
-            }
-            // Skip consecutive backslashes.
-        } else {
-            collapsed.push(ch);
-            prev_was_backslash = false;
-        }
-    }
-    result = collapsed;
-
-    // Step 3: Convert to uppercase for case-insensitive comparison.
-    result = result.to_ascii_uppercase();
-
-    // Step 4: Strip trailing backslashes (except root `C:\`).
-    if result.len() > 3 && result.ends_with('\\') {
-        result.truncate(result.len() - 1);
-    }
-
-    // Step 10: Reject trailing dots/spaces in path components.
-    for component in result.split('\\') {
-        if component.ends_with('.') || component.ends_with(' ') {
-            return None;
-        }
-    }
-
-    Some(Cow::Owned(result))
-}
-
-/// Check if a path contains an 8.3 short name.
-///
-/// 8.3 short names contain `~` followed by a digit (e.g., `PROGRA~1`).
-fn is_eight_three_short_name(path: &str) -> bool {
-    for (i, ch) in path.char_indices() {
-        if ch == '~' {
-            // Check if next char is a digit.
-            if let Some(next) = path[i + 1..].chars().next() {
-                if next.is_ascii_digit() {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-// ---------------------------------------------------------------------------
-// FNV-1a hash
-// ---------------------------------------------------------------------------
+// Path normalization is now provided by dlp-common::path_hash::normalize_path.
+// See dlp-common/src/path_hash.rs for the shared implementation.
 
 // ---------------------------------------------------------------------------
 // Classification conversion
@@ -1107,15 +985,15 @@ mod tests {
 
     #[test]
     fn is_eight_three_short_name_detects() {
-        assert!(is_eight_three_short_name(r"C:\PROGRA~1"));
-        assert!(is_eight_three_short_name(r"C:\DOCUME~2"));
+        assert!(dlp_common::path_hash::normalize_path(r"C:\PROGRA~1").is_none());
+        assert!(dlp_common::path_hash::normalize_path(r"C:\DOCUME~2").is_none());
     }
 
     #[test]
     fn is_eight_three_short_name_allows_normal() {
-        assert!(!is_eight_three_short_name(r"C:\Program Files"));
-        assert!(!is_eight_three_short_name(r"C:\test~file"));
-        assert!(!is_eight_three_short_name(r"C:\no_tilde"));
+        assert!(dlp_common::path_hash::normalize_path(r"C:\Program Files").is_some());
+        assert!(dlp_common::path_hash::normalize_path(r"C:\test~file").is_some());
+        assert!(dlp_common::path_hash::normalize_path(r"C:\no_tilde").is_some());
     }
 
     #[test]
