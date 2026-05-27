@@ -19,6 +19,7 @@ pub mod labels;
 pub mod ldap_config;
 pub mod managed_origins;
 pub mod policies;
+pub mod protected_paths;
 pub mod secret_kek;
 pub mod siem_config;
 pub mod syslog_config;
@@ -41,6 +42,7 @@ pub use exceptions::ExceptionRepository;
 pub use ldap_config::{LdapConfigRepository, LdapConfigRow};
 pub use managed_origins::{ManagedOriginRow, ManagedOriginsRepository};
 pub use policies::{PolicyRepository, PolicyRow, PolicyUpdateRow};
+pub use protected_paths::{ProtectedPathAceRow, ProtectedPathRow, ProtectedPathsRepository};
 pub use siem_config::{SiemConfigRepository, SiemConfigRow};
 pub use syslog_config::{
     validate_facility_code, validate_severity, SyslogConfigRepository, SyslogConfigRow,
