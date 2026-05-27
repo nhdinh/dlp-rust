@@ -154,7 +154,9 @@ pub fn init_staging_table(conn: &Connection) -> Result<(), DaclStagingError> {
 /// All mutating methods acquire the per-path lock before touching the database.
 pub struct DaclStaging {
     conn: std::sync::Mutex<Connection>,
-    path_locks: DashMap<String, Arc<parking_lot::Mutex<()>>>,
+    /// Per-path locks for serializing concurrent operations on the same path.
+    /// Public so the repair watcher and removal task can coordinate.
+    pub path_locks: DashMap<String, Arc<parking_lot::Mutex<()>>>,
 }
 
 impl DaclStaging {
