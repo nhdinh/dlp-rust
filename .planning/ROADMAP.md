@@ -63,7 +63,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 49: Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback** — drive the wider hook surface into every non-allowlisted user process via ETW Kernel-Process and `CreateRemoteThread`. (completed 2026-05-19)
 - [x] **Phase 50: Shared-Memory Classification Cache + Fail-Mode State Machine** — give the hook DLL a survivable sub-50µs hot path and a tier-gated asymmetric fail policy. (completed 2026-05-20)
 - [x] **Phase 51: ntdll Syscall-Stub Trampolines + EDR Coexistence** — close the direct-syscall bypass behind a default-off feature flag with detect-before-patch EDR safety. (completed 2026-05-22)
-- [x] **Phase 52: DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc** — kernel-enforced NTFS backstop for T3/T4 roots, plus the carried-forward DPAPI recovery runbook. (Plans 01, 02, 04 complete 2026-05-27)
+- [x] **Phase 52: DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc** — kernel-enforced NTFS backstop for T3/T4 roots, plus the carried-forward DPAPI recovery runbook. (completed 2026-05-27)
 - [ ] **Phase 53: ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring** — turn hook-vs-ETW divergence into auditable BypassAlert events routed through SIEM and the alert router.
 - [ ] **Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens** — operator UX for the two new server surfaces.
 - [ ] **Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode** — safe-rollout mode every industry DLP requires before production deployment.
@@ -184,16 +184,16 @@ Plans:
 
 **Wave 1** *(no dependencies)*
 - [x] `52-01-PLAN.md` — DACL Tripwire Writer: raw ACL construction, explicit canonical algorithm (DLP Deny first, SYSTEM/DLP-Admin Allows, preserved non-DLP ACEs, inherited), SDDL snapshot, 60 KB guard on ALL write paths, access-control proof matrix, fail-closed 10K limit *(completed 2026-05-27)*
-- [x] `52-03-PLAN.md` — Protected Paths Server-Side Schema: SQLite schema with UNIQUE path, repository with conflict-aware sync_from_labels (manual entries preserved, tier-upgraded on conflict)
+- [x] `52-03-PLAN.md` — Protected Paths Server-Side Schema: SQLite schema with UNIQUE path, repository with conflict-aware sync_from_labels (manual entries preserved, tier-upgraded on conflict) *(completed 2026-05-27)*
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [x] `52-02-PLAN.md` — DACL Repair Watcher: ReadDirectoryChangesW per-path with bWatchSubtree=true, crossbeam channel, debounced repair (500ms-2s), 60s polling backstop with FULL subtree walk, DaclTamperDetected audit with triggers_alert=true
-- [x] `52-04-PLAN.md` — Two-Phase Staged Updates Data Layer: agent SQLite staging table, explicit StagingState enum (STAGED -> WATCHER_SUPPRESSED -> ACL_REMOVED -> APPLIED -> GC), per-path locking via DashMap<PathBuf, Mutex<()>>, adaptive GC
-- [x] `52-06-PLAN.md` — Protected Paths Admin API + Config Sync: CRUD routes with Windows API path validation (GetFullPathNameW, rejects UNC/extended-length/volume GUID/8.3), AgentConfigPayload extension, AppState wiring
+- [x] `52-02-PLAN.md` — DACL Repair Watcher: ReadDirectoryChangesW per-path with bWatchSubtree=true, crossbeam channel, debounced repair (500ms-2s), 60s polling backstop with FULL subtree walk, DaclTamperDetected audit with triggers_alert=true *(completed 2026-05-27)*
+- [x] `52-04-PLAN.md` — Two-Phase Staged Updates Data Layer: agent SQLite staging table, explicit StagingState enum (STAGED -> WATCHER_SUPPRESSED -> ACL_REMOVED -> APPLIED -> GC), per-path locking via DashMap<PathBuf, Mutex<()>>, adaptive GC *(completed 2026-05-27)*
+- [x] `52-06-PLAN.md` — Protected Paths Admin API + Config Sync: CRUD routes with Windows API path validation (GetFullPathNameW, rejects UNC/extended-length/volume GUID/8.3), AgentConfigPayload extension, AppState wiring *(completed 2026-05-27)*
 
 **Wave 3** *(blocked on Waves 1-2 completion)*
-- [x] `52-07-PLAN.md` — Staged Update Integration: config diff in apply_payload_to_config with per-path lock coordination, staging-aware tamper suppression with state machine crash recovery, removal application task, expired-staging tamper alert negative case
-- [x] `52-05-PLAN.md` — DPAPI Recovery Doc + Final Integration: runbook verified against Phase 47 env vars/service names, negative UAT cases (expired staging alert, partial apply rejection, junction skip), full audit wiring verification, workspace test suite
+- [x] `52-07-PLAN.md` — Staged Update Integration: config diff in apply_payload_to_config with per-path lock coordination, staging-aware tamper suppression with state machine crash recovery, removal application task, expired-staging tamper alert negative case *(completed 2026-05-27)*
+- [x] `52-05-PLAN.md` — DPAPI Recovery Doc + Final Integration: runbook verified against Phase 47 env vars/service names, negative UAT cases (expired staging alert, partial apply rejection, junction skip), full audit wiring verification, workspace test suite *(completed 2026-05-27)*
 
 **Cross-cutting constraints:**
 - All audit events (`DaclTripwireTooLarge`, `DaclTamperDetected`) wired through `routed_to_siem()` with correct `triggers_alert()` semantics in Plans 01 and 02 (not deferred)
@@ -362,7 +362,7 @@ Plans:
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 5/5 | Complete    | 2026-05-19 |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 6/6 | Complete    | 2026-05-20 |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 6/6 | Complete    | 2026-05-22 |
-| 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 0/7 | Planned     | - |
+| 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 7/7 | Complete    | 2026-05-27 |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 0/0 | Not started | - |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 0/0 | Not started | - |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 0/0 | Not started | - |
