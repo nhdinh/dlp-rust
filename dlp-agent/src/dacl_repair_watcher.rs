@@ -218,7 +218,12 @@ impl DaclWatcher {
         let thread = thread::Builder::new()
             .name(format!("dacl-watcher-{}", path_buf.display()))
             .spawn(move || {
-                run_security_watcher_thread(path_clone, event_tx, shutdown_clone, AtomicUsize::new(dir_handle_usize));
+                run_security_watcher_thread(
+                    path_clone,
+                    event_tx,
+                    shutdown_clone,
+                    AtomicUsize::new(dir_handle_usize),
+                );
             })
             .map_err(|e| {
                 // SAFETY: close handle on thread spawn failure.
@@ -634,9 +639,7 @@ fn run_security_watcher_thread(
     dir_handle: AtomicUsize,
 ) {
     use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::Storage::FileSystem::{
-        ReadDirectoryChangesW, FILE_NOTIFY_CHANGE_SECURITY,
-    };
+    use windows::Win32::Storage::FileSystem::{ReadDirectoryChangesW, FILE_NOTIFY_CHANGE_SECURITY};
 
     info!(path = %path.display(), "DACL watcher thread started");
 
