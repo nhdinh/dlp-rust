@@ -126,6 +126,23 @@ pub struct DaclWatcher {
     event_rx: Receiver<SecurityEvent>,
     /// Cached DLP-Admin SID string (resolved from AD or config).
     dlp_admin_sid: RwLock<Option<String>>,
+    /// Phase 52-07: Optional staging layer for two-phase removal protocol.
+    /// When present, the repair task checks staging before emitting tamper alerts.
+    staging: RwLock<Option<Arc<crate::dacl_staging::DaclStaging>>>,
+}
+
+impl Clone for DaclWatcher {
+    fn clone(&self) -> Self {
+        let (tx, rx) = bounded::<SecurityEvent>(CHANNEL_CAPACITY);
+        Self {
+            watchers: Mutex::new(HashMap::new()),
+            snapshots: Mutex::new(HashMap::new()),
+            event_tx: tx,
+            event_rx: rx,
+            dlp_admin_sid: RwLock::new(self.dlp_admin_sid.read().clone()),
+            staging: RwLock::new(self.staging.read().clone()),
+        }
+    }
 }
 
 impl DaclWatcher {
@@ -142,7 +159,22 @@ impl DaclWatcher {
             event_tx: tx,
             event_rx: rx,
             dlp_admin_sid: RwLock::new(None),
+            staging: RwLock::new(None),
         }
+    }
+
+    /// Sets the staging layer for two-phase removal protocol.
+    ///
+    /// When staging is set, the repair task checks the staging table before
+    /// emitting tamper alerts. Staged removals are suppressed and applied
+    /// under the per-path lock.
+    ///
+    /// # Arguments
+    ///
+    /// * `staging` — An `Arc<DaclStaging>` shared with the removal application task.
+    pub fn set_staging(&self, staging: Arc<crate::dacl_staging::DaclStaging>) {
+        let mut guard = self.staging.write();
+        *guard = Some(staging);
     }
 
     /// Registers a new watcher for the given path.
@@ -389,6 +421,10 @@ impl DaclWatcher {
     /// `HashMap<PathBuf, SecurityEvent>`, and resets a per-path timer on each
     /// new event. When the timer expires, `repair_acl` is called for that path.
     ///
+    /// Phase 52-07: Before calling `repair_acl`, checks the staging table. If
+    /// the path has a staged removal, the tamper alert is suppressed and the
+    /// removal is applied under the per-path lock.
+    ///
     /// This batches rapid changes (e.g., a script modifying many ACLs) into a
     /// single repair operation per path.
     ///
@@ -417,6 +453,7 @@ impl DaclWatcher {
         }
 
         let dlp_admin_sid = Arc::new(RwLock::new(self.dlp_admin_sid.read().clone()));
+        let staging_opt = self.staging.read().clone();
 
         tokio::spawn(async move {
             let mut pending: HashMap<PathBuf, SecurityEvent> = HashMap::new();
@@ -487,6 +524,54 @@ impl DaclWatcher {
                         for path in expired {
                             debounce_timers.remove(&path);
                             if let Some(event) = pending.remove(&path) {
+                                // Phase 52-07: Check staging before repair.
+                                let should_suppress = if let Some(ref staging) = staging_opt {
+                                    let path_str = path.to_string_lossy().to_string();
+                                    match staging.is_staged(&path_str) {
+                                        Ok(true) => {
+                                            // Staged operation — check state and apply removal.
+                                            if let Ok(Some(row)) = staging.get_row(&path_str) {
+                                                match row.operation.as_str() {
+                                                    "remove" if row.applied_at.is_none() => {
+                                                        // mark_applied already acquires the per-path
+                                                        // lock internally, so we call it directly.
+                                                        if let Err(e) = staging.mark_applied(&path_str) {
+                                                            tracing::warn!(path = %path.display(), error = %e, "failed to mark staged removal as applied");
+                                                        }
+                                                        tracing::info!(path = %path.display(), "staged removal applied — suppressing tamper alert");
+                                                        true
+                                                    }
+                                                    "remove" if row.applied_at.is_some() => {
+                                                        tracing::debug!(path = %path.display(), "staged removal already applied — suppressing alert");
+                                                        true
+                                                    }
+                                                    _ => {
+                                                        tracing::debug!(path = %path.display(), operation = %row.operation, "staged operation — suppressing alert");
+                                                        true
+                                                    }
+                                                }
+                                            } else {
+                                                tracing::debug!(path = %path.display(), "staged but row not found — suppressing alert");
+                                                true
+                                            }
+                                        }
+                                        Ok(false) => {
+                                            // Not staged — proceed with repair.
+                                            false
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(path = %path.display(), error = %e, "staging check failed — proceeding with tamper alert");
+                                            false
+                                        }
+                                    }
+                                } else {
+                                    false
+                                };
+
+                                if should_suppress {
+                                    continue;
+                                }
+
                                 let snap = {
                                     let snaps = snapshots.lock();
                                     snaps.get(&path).cloned()

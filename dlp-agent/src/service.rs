@@ -906,13 +906,24 @@ struct RunLoopContext {
     cache_pusher_handle: Option<std::thread::JoinHandle<()>>,
     /// Phase 52: DACL repair watcher for protected path ACL tamper detection.
     #[allow(dead_code)]
-    dacl_watcher: Option<crate::dacl_repair_watcher::DaclWatcher>,
+    dacl_watcher: Option<std::sync::Arc<crate::dacl_repair_watcher::DaclWatcher>>,
     /// Phase 52: Shutdown signal for the DACL repair task.
     dacl_watcher_shutdown: Option<tokio::sync::watch::Sender<bool>>,
     /// Phase 52: Handle for the DACL repair task.
     dacl_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// Phase 52: Handle for the DACL polling backstop task.
     dacl_poll_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 52-07: Staging layer for two-phase removal protocol.
+    #[allow(dead_code)]
+    dacl_staging: Option<Arc<crate::dacl_staging::DaclStaging>>,
+    /// Phase 52-07: Shutdown signal for the staging GC task.
+    dacl_gc_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Phase 52-07: Handle for the staging GC task.
+    dacl_gc_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 52-07: Shutdown signal for the removal application task.
+    dacl_removal_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Phase 52-07: Handle for the removal application task.
+    dacl_removal_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// The main service run loop.
@@ -1354,6 +1365,9 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         dacl_watcher_shutdown_opt,
         dacl_watcher_handle_opt,
         dacl_poll_handle_opt,
+        dacl_staging_opt,
+        dacl_gc_handle_opt,
+        dacl_removal_handle_opt,
     ) = init_dacl_watcher(&agent_config, ad_client.as_ref().as_ref()).await;
 
     // ── PrintEnforcer (M017/S04) ──────────────────────────────────────────
@@ -1462,6 +1476,11 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         dacl_watcher_shutdown: dacl_watcher_shutdown_opt,
         dacl_watcher_handle: dacl_watcher_handle_opt,
         dacl_poll_handle: dacl_poll_handle_opt,
+        dacl_staging: dacl_staging_opt,
+        dacl_gc_shutdown: None,
+        dacl_gc_handle: dacl_gc_handle_opt,
+        dacl_removal_shutdown: None,
+        dacl_removal_handle: dacl_removal_handle_opt,
     }
 }
 
@@ -1602,26 +1621,45 @@ fn init_offline_manager(
 /// 2. Registers a `ReadDirectoryChangesW` watcher with the returned snapshot.
 /// 3. Starts the debounced repair task and the 60-second polling backstop.
 ///
+/// Phase 52-07: Creates a `DaclStaging` instance, wires it into the watcher
+/// for tamper suppression, and spawns the GC task and removal application task.
+///
 /// The DLP-Admin SID is resolved from the AD client if available.
 ///
-/// Returns `(watcher, shutdown_tx, repair_handle, poll_handle)` where all are
-/// `None` when no monitored paths are configured or the watcher is disabled.
+/// Returns `(watcher, shutdown_tx, repair_handle, poll_handle, staging, gc_handle, removal_handle)`
+/// where all are `None` when no monitored paths are configured or the watcher is disabled.
 #[allow(clippy::type_complexity)]
 async fn init_dacl_watcher(
     agent_config: &crate::config::AgentConfig,
     ad_client: Option<&dlp_common::AdClient>,
 ) -> (
-    Option<crate::dacl_repair_watcher::DaclWatcher>,
+    Option<std::sync::Arc<crate::dacl_repair_watcher::DaclWatcher>>,
     Option<tokio::sync::watch::Sender<bool>>,
+    Option<tokio::task::JoinHandle<()>>,
+    Option<tokio::task::JoinHandle<()>>,
+    Option<Arc<crate::dacl_staging::DaclStaging>>,
     Option<tokio::task::JoinHandle<()>>,
     Option<tokio::task::JoinHandle<()>>,
 ) {
     if agent_config.monitored_paths.is_empty() {
         info!("no monitored paths configured — skipping DaclWatcher");
-        return (None, None, None, None);
+        return (None, None, None, None, None, None, None);
     }
 
+    // Phase 52-07: Create staging layer for two-phase removal protocol.
+    let staging = match crate::dacl_staging::DaclStaging::new(
+        &std::path::PathBuf::from(r"C:\ProgramData\DLP\agent.db"),
+    ) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            warn!(error = %e, "failed to create DaclStaging — continuing without staging");
+            // Continue without staging; tamper suppression will not work.
+            return init_dacl_watcher_without_staging(agent_config, ad_client).await;
+        }
+    };
+
     let watcher = crate::dacl_repair_watcher::DaclWatcher::new();
+    watcher.set_staging(Arc::clone(&staging));
 
     // Resolve DLP-Admin SID from AD client if available.
     let dlp_admin_sid: Option<String> = ad_client.and_then(|_client| {
@@ -1677,13 +1715,158 @@ async fn init_dacl_watcher(
     let (_poll_shutdown_tx, poll_shutdown_rx) = tokio::sync::watch::channel(false);
     let poll_handle = watcher.start_poll_backstop(60, poll_shutdown_rx);
 
-    info!("DaclWatcher initialised with repair task and polling backstop");
+    // Phase 52-07: Spawn GC task for expired staging rows (5-minute TTL, 60s interval).
+    let (_gc_shutdown_tx, gc_shutdown_rx) = tokio::sync::watch::channel(false);
+    let gc_handle = crate::dacl_staging::spawn_gc_task(
+        Arc::clone(&staging),
+        60,
+        5,
+        gc_shutdown_rx,
+    );
+
+    // Phase 52-07: Spawn removal application task (30s interval).
+    let (_removal_shutdown_tx, removal_shutdown_rx) = tokio::sync::watch::channel(false);
+    let watcher_arc = std::sync::Arc::new(watcher);
+    let removal_handle = spawn_removal_application_task(
+        Arc::clone(&staging),
+        Arc::clone(&watcher_arc),
+        30,
+        removal_shutdown_rx,
+    );
+
+    info!("DaclWatcher initialised with repair task, polling backstop, staging GC, and removal application");
     (
-        Some(watcher),
+        Some(watcher_arc),
         Some(repair_shutdown_tx),
         Some(repair_handle),
         Some(poll_handle),
+        Some(staging),
+        Some(gc_handle),
+        Some(removal_handle),
     )
+}
+
+/// Fallback initialisation without staging (when DaclStaging creation fails).
+#[allow(clippy::type_complexity)]
+async fn init_dacl_watcher_without_staging(
+    agent_config: &crate::config::AgentConfig,
+    ad_client: Option<&dlp_common::AdClient>,
+) -> (
+    Option<std::sync::Arc<crate::dacl_repair_watcher::DaclWatcher>>,
+    Option<tokio::sync::watch::Sender<bool>>,
+    Option<tokio::task::JoinHandle<()>>,
+    Option<tokio::task::JoinHandle<()>>,
+    Option<Arc<crate::dacl_staging::DaclStaging>>,
+    Option<tokio::task::JoinHandle<()>>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    if agent_config.monitored_paths.is_empty() {
+        return (None, None, None, None, None, None, None);
+    }
+
+    let watcher = crate::dacl_repair_watcher::DaclWatcher::new();
+
+    let dlp_admin_sid: Option<String> = ad_client.and_then(|_client| {
+        std::env::var("DLP_ADMIN_SID").ok()
+    });
+    watcher.set_dlp_admin_sid(dlp_admin_sid.clone());
+
+    for path_str in &agent_config.monitored_paths {
+        let path = std::path::PathBuf::from(path_str);
+        if !path.exists() {
+            continue;
+        }
+        if let Ok((_count, snapshots)) = crate::dacl_tripwire::apply_tripwire_recursive(&path, dlp_admin_sid.as_deref()) {
+            if let Some(snapshot) = snapshots.first() {
+                let _ = watcher.register(&path, snapshot.clone());
+            }
+        }
+    }
+
+    let (repair_shutdown_tx, repair_shutdown_rx) = tokio::sync::watch::channel(false);
+    let repair_handle = watcher.start_repair_task(repair_shutdown_rx);
+
+    let (_poll_shutdown_tx, poll_shutdown_rx) = tokio::sync::watch::channel(false);
+    let poll_handle = watcher.start_poll_backstop(60, poll_shutdown_rx);
+
+    (
+        Some(std::sync::Arc::new(watcher)),
+        Some(repair_shutdown_tx),
+        Some(repair_handle),
+        Some(poll_handle),
+        None,
+        None,
+        None,
+    )
+}
+
+/// Spawns a background task that applies staged removals on a fixed interval.
+///
+/// Reads staging rows with `operation = 'remove'` and `applied_at IS NULL`,
+/// applies the ACL removal, marks the row as applied, and unregisters the
+/// watcher for the path.
+///
+/// # Arguments
+///
+/// * `staging` — The `DaclStaging` instance.
+/// * `watcher` — The `DaclWatcher` (wrapped in Arc for shared access).
+/// * `interval_secs` — Poll interval in seconds.
+/// * `shutdown_rx` — Tokio watch receiver for graceful shutdown.
+///
+/// # Returns
+///
+/// A `JoinHandle` for the spawned task.
+fn spawn_removal_application_task(
+    staging: Arc<crate::dacl_staging::DaclStaging>,
+    watcher: std::sync::Arc<crate::dacl_repair_watcher::DaclWatcher>,
+    interval_secs: u64,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+        interval.tick().await; // consume immediate first tick
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    match staging.list_all() {
+                        Ok(rows) => {
+                            for row in rows {
+                                if row.operation == "remove" && row.applied_at.is_none() {
+                                    let path = std::path::PathBuf::from(&row.path);
+
+                                    // mark_applied already acquires the per-path lock
+                                    // internally, so we call it directly.
+
+                                    // Mark as applied (the ACL removal was done by admin API).
+                                    // We don't call remove_tripwire_from_path here because
+                                    // the admin API already modified the ACL. Our job is to
+                                    // mark the staging row so the watcher stops suppressing.
+                                    if let Err(e) = staging.mark_applied(&row.path) {
+                                        tracing::warn!(path = %row.path, error = %e, "failed to mark removal as applied");
+                                    } else {
+                                        tracing::info!(path = %row.path, "staged removal marked as applied");
+                                    }
+
+                                    // Unregister watcher for this path since it's no longer protected.
+                                    if let Err(e) = watcher.unregister(&path) {
+                                        tracing::warn!(path = %row.path, error = %e, "failed to unregister watcher for removed path");
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to list staging rows for removal application");
+                        }
+                    }
+                }
+                _ = shutdown_rx.changed() => {
+                    tracing::info!("removal application task shutting down");
+                    return;
+                }
+            }
+        }
+    })
 }
 
 /// Spawns the Policy Engine heartbeat task.
@@ -2637,6 +2820,32 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     reenable_usb_devices(&ctx.detector_arc);
 
     // Stop DaclWatcher BEFORE WfpManager unregister (ACLs still protected during WFP teardown).
+    // Phase 52-07: Stop removal application task first (so it stops modifying state).
+    if let Some(shutdown_tx) = ctx.dacl_removal_shutdown {
+        crate::password_stop::debug_log("run_loop: signalling DACL removal application shutdown");
+        let _ = shutdown_tx.send(true);
+    }
+    if let Some(handle) = ctx.dacl_removal_handle {
+        match tokio::time::timeout(Duration::from_secs(5), handle).await {
+            Ok(Ok(())) => debug!("DACL removal application task shut down cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "DACL removal application task panicked"),
+            Err(_) => warn!("DACL removal application task did not shut down within 5s"),
+        }
+    }
+
+    // Phase 52-07: Stop GC task next.
+    if let Some(shutdown_tx) = ctx.dacl_gc_shutdown {
+        crate::password_stop::debug_log("run_loop: signalling DACL staging GC shutdown");
+        let _ = shutdown_tx.send(true);
+    }
+    if let Some(handle) = ctx.dacl_gc_handle {
+        match tokio::time::timeout(Duration::from_secs(5), handle).await {
+            Ok(Ok(())) => debug!("DACL staging GC task shut down cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "DACL staging GC task panicked"),
+            Err(_) => warn!("DACL staging GC task did not shut down within 5s"),
+        }
+    }
+
     if let Some(shutdown_tx) = ctx.dacl_watcher_shutdown {
         crate::password_stop::debug_log("run_loop: signalling DACL watcher shutdown");
         let _ = shutdown_tx.send(true);
