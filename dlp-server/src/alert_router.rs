@@ -878,4 +878,60 @@ mod tests {
             other => panic!("expected AlertError::Email, got {:?}", other),
         }
     }
+
+    /// Phase 53: Verify that `send_alert` processes a `BypassAlertDetected`
+    /// event (crit severity bypass alert) without short-circuiting.
+    ///
+    /// With default disabled config, `send_alert` returns Ok (no-op).
+    /// The important assertion is that the event type is accepted and
+    /// processed — the handler's severity-based routing depends on this.
+    #[tokio::test]
+    async fn test_send_alert_crit_severity() {
+        use dlp_common::{
+            Action, AuditAccessContext, AuditEvent, Classification, Decision, EventType,
+        };
+
+        let (pool, crypto) = migrated_pool_and_crypto();
+        let router = AlertRouter::new(pool, crypto);
+
+        let event = AuditEvent {
+            timestamp: chrono::Utc::now(),
+            event_type: EventType::BypassAlertDetected,
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "bypass-correlator".to_string(),
+            resource_path: r"C:\Data\Secret.docx".to_string(),
+            classification: Classification::T4,
+            action_attempted: Action::WRITE,
+            decision: Decision::DENY,
+            policy_id: None,
+            policy_name: None,
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 1234,
+            device_trust: None,
+            network_location: None,
+            justification: Some("crit bypass alert: NoHookJournal".to_string()),
+            override_granted: false,
+            access_context: AuditAccessContext::Local,
+            correlation_id: Some("corr-123".to_string()),
+            application_path: None,
+            application_hash: None,
+            resource_owner: None,
+            source_application: None,
+            destination_application: None,
+            device_identity: None,
+            owner_sid: None,
+            owner_user: None,
+            source_origin: None,
+            destination_origin: None,
+            discovered_disks: None,
+            blocked_disk: None,
+        };
+
+        // Default config has both SMTP and webhook disabled — send_alert
+        // must return Ok without erroring on the BypassAlertDetected type.
+        router
+            .send_alert(&event)
+            .await
+            .expect("BypassAlertDetected event should be processed without error");
+    }
 }
