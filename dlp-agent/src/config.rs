@@ -272,6 +272,12 @@ pub struct AgentConfig {
     #[serde(default)]
     pub enable_ntdll_patching: Option<bool>,
 
+    /// Phase 53: Enable ETW Kernel-File consumer and bypass correlator.
+    /// When `None`, defaults to the value of `enable_ntdll_patching` for
+    /// backward compatibility.
+    #[serde(default)]
+    pub enable_bypass_correlator: Option<bool>,
+
     /// Phase 52: Protected paths for DACL tripwire.
     ///
     /// Registry of paths that receive tripwire protection. Populated by
@@ -514,6 +520,17 @@ impl AgentConfig {
         }
     }
 
+    /// Returns `true` if the bypass correlator (ETW Kernel-File consumer) is enabled.
+    ///
+    /// When `enable_bypass_correlator` is explicitly set, that value is used.
+    /// When `None`, falls back to `enable_ntdll_patching` for backward
+    /// compatibility (Phase 53 / WR-02).
+    #[must_use]
+    pub fn bypass_correlator_enabled(&self) -> bool {
+        self.enable_bypass_correlator
+            .unwrap_or(self.enable_ntdll_patching.unwrap_or(false))
+    }
+
     /// Returns the resolved list of paths to watch.
     ///
     /// If `monitored_paths` is empty, returns all existing drive roots
@@ -669,6 +686,7 @@ mod tests {
             allowlist_entries: Vec::new(),
             allowlist_version: 0,
             enable_ntdll_patching: None,
+            enable_bypass_correlator: None,
             protected_paths: Vec::new(),
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
@@ -717,6 +735,7 @@ mod tests {
             allowlist_entries: Vec::new(),
             allowlist_version: 0,
             enable_ntdll_patching: None,
+            enable_bypass_correlator: None,
             protected_paths: Vec::new(),
         };
 
@@ -1177,6 +1196,62 @@ mod tests {
         let toml_str = "monitored_paths = ['C:\\Data\\'\n"; // missing closing quote/bracket
         let config = load_from_str(toml_str);
         assert_eq!(config, AgentConfig::default());
+    }
+
+    // --- Phase 53: bypass_correlator_enabled tests ---
+
+    #[test]
+    fn test_bypass_correlator_defaults_to_ntdll_patching() {
+        // When both are None, bypass_correlator_enabled returns false.
+        let config = AgentConfig {
+            enable_ntdll_patching: Some(false),
+            enable_bypass_correlator: None,
+            ..Default::default()
+        };
+        assert!(!config.bypass_correlator_enabled());
+
+        // When ntdll_patching is true and bypass_correlator is None, it defaults to true.
+        let config2 = AgentConfig {
+            enable_ntdll_patching: Some(true),
+            enable_bypass_correlator: None,
+            ..Default::default()
+        };
+        assert!(config2.bypass_correlator_enabled());
+    }
+
+    #[test]
+    fn test_bypass_correlator_explicitly_enabled() {
+        // Explicit Some(true) returns true even when ntdll_patching is false.
+        let config = AgentConfig {
+            enable_ntdll_patching: Some(false),
+            enable_bypass_correlator: Some(true),
+            ..Default::default()
+        };
+        assert!(config.bypass_correlator_enabled());
+    }
+
+    #[test]
+    fn test_bypass_correlator_explicitly_disabled() {
+        // Explicit Some(false) returns false even when ntdll_patching is true.
+        let config = AgentConfig {
+            enable_ntdll_patching: Some(true),
+            enable_bypass_correlator: Some(false),
+            ..Default::default()
+        };
+        assert!(!config.bypass_correlator_enabled());
+    }
+
+    #[test]
+    fn test_bypass_correlator_toml_roundtrip() {
+        let config = AgentConfig {
+            enable_bypass_correlator: Some(true),
+            ..Default::default()
+        };
+        let tmp_path = std::env::temp_dir().join("test_bypass_correlator_toml.toml");
+        config.save(&tmp_path).expect("save should succeed");
+        let loaded = AgentConfig::load(&tmp_path);
+        let _ = std::fs::remove_file(&tmp_path);
+        assert_eq!(loaded.enable_bypass_correlator, Some(true));
     }
 
     /// Helper: parse TOML from a string (for tests that need serde_ignored).
