@@ -1097,6 +1097,20 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_size_limit() {
+        let config = CorrelatorConfig {
+            batch_size: 5,
+            ..Default::default()
+        };
+        let correlator = BypassCorrelator::new(config);
+        // Verify batch_size is respected in config.
+        assert_eq!(correlator.config.batch_size, 5);
+        // The batch should be empty initially.
+        let batch = correlator.alert_batch.try_lock().unwrap();
+        assert!(batch.is_empty());
+    }
+
+    #[test]
     fn test_batch_retry_new_batch_id() {
         let alert = BypassAlert {
             reason: BypassReason::NoHookJournal,
