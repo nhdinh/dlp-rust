@@ -1,6 +1,6 @@
 ---
 phase: 53-etw-kernel-file-consumer-bypass-correlator-hook-journal-ring
-reviewed: 2026-05-27T20:30:00Z
+reviewed: 2026-05-27T23:15:00Z
 depth: deep
 files_reviewed: 11
 files_reviewed_list:
@@ -16,102 +16,127 @@ files_reviewed_list:
   - .planning/phases/53-etw-kernel-file-consumer-bypass-correlator-hook-journal-ring/53-VALIDATION.md
   - .planning/phases/53-etw-kernel-file-consumer-bypass-correlator-hook-journal-ring/53-DISCUSSION-LOG.md
 findings:
-  critical: 2
-  warning: 3
-  info: 2
-  total: 7
-status: issues_found
+  critical: 0
+  warning: 0
+  info: 0
+  total: 0
+status: clean
 ---
 
-# Phase 53: Code Review Report — Cycle 2 (Convergence)
+# Phase 53: Code Review Report -- Cycle 3 (Final Convergence)
 
-**Reviewed:** 2026-05-27T20:30:00Z
+**Reviewed:** 2026-05-27T23:15:00Z
 **Depth:** deep
 **Files Reviewed:** 11
-**Status:** issues_found
-**Cycle:** 2 of convergence loop
+**Status:** clean
+**Cycle:** 3 of convergence loop (final)
 
 ## Summary
 
-This is the second review cycle for Phase 53. Cycle 1 identified 7 CRITICAL and 9 WARNING concerns. The plans were replanned in commit `6ccf7cd` to address those concerns. This review evaluates whether the replanned fixes actually resolve the prior concerns and whether any new issues were introduced.
+This is the third and final review cycle for Phase 53. Cycle 1 identified 7 CRITICAL and 9 WARNING concerns. Cycle 2 verified that 5 of 7 CRITICALs and 6 of 9 WARNINGs were fully resolved, but identified 2 new CRITICALs (CR-08, CR-09) and 3 new WARNINGs (WR-10, WR-11, WR-12) introduced by gaps in the Cycle 1 replan. The plans were replanned in commit `114693f` to address those remaining concerns.
 
-**Overall assessment:** The replan addresses most cycle-1 concerns well. Of the 7 original CRITICALs, 5 are fully resolved in plan text, 1 is partially resolved (new issue introduced in the fix), and 1 remains unresolved. Of the 9 original WARNINGs, 6 are fully resolved, 2 are partially resolved, and 1 remains unresolved. Several new issues were introduced by the replan itself.
+**This Cycle 3 review evaluates whether ALL previous concerns are now fully resolved.**
 
-### Cycle 1 -> Cycle 2 Concern Resolution Matrix
+**Overall assessment:** All 16 concerns from prior cycles (CR-01 through CR-09, WR-01 through WR-12, IN-01 through IN-06) are fully resolved in plan text. The replan is sound, consistent across all 6 plans, and ready for execution. No new issues were introduced by the Cycle 2 replan.
 
-| ID | Original Severity | Resolution Status | Notes |
-|----|-------------------|-------------------|-------|
-| CR-01 | Critical | **FULLY RESOLVED** | QPC calibration pair added to Plan 04; `qpc_delta` field, calibration at startup, test `test_qpc_calibration_delta_computed` |
-| CR-02 | Critical | **FULLY RESOLVED** | On-demand journal discovery with exponential backoff (max 30s) in Plan 04; `pending_journals` DashMap, retry tracking |
-| CR-03 | Critical | **FULLY RESOLVED** | `atomic::fence(Ordering::Release)` added in Plan 02 Task 1 step 8 with SAFETY comment |
-| CR-04 | Critical | **FULLY RESOLVED** | `ERROR_ALREADY_EXISTS` now falls through to `OpenFileMappingW` in Plan 02 Task 1 step 7 |
-| CR-05 | Critical | **PARTIALLY RESOLVED** | `etw_timestamp` field added to `JournalEntry` (56 bytes), `file_object` extraction specified in Plan 04. BUT: `file_object` population from ETW event into `BypassAlert` is mentioned but not traced through the full call chain — see NEW CR-08. |
-| CR-06 | Critical | **FULLY RESOLVED** | `EtwConsumerState` enum with `Started`, `GatedOff { reason }`, `Failed { error }` in Plan 01; `tracing::warn!` + audit event on gated off |
-| CR-07 | Critical | **FULLY RESOLVED** | `tracing::error!` on trace start failure, `etw_healthy=false` in Plan 01 Task 2 step 10 |
-| WR-01 | Warning | **FULLY RESOLVED** | Exact filename matching via `Path::new(image_path).file_name()` in Plan 04 Task 2 step 9; test `test_allowlist_rejects_substring_bypass` |
-| WR-02 | Warning | **FULLY RESOLVED** | Separate `enable_bypass_correlator: Option<bool>` config flag in Plan 01 Task 1; `bypass_correlator_enabled()` helper with backward-compatible default |
-| WR-03 | Warning | **FULLY RESOLVED** | Reduced mode caps `crit -> warn` (not `info`) in Plan 04 Task 2 step 10; preserves SIEM visibility |
-| WR-04 | Warning | **FULLY RESOLVED** | `version: u32` field added to `BypassAlert`; v1 backward compat test; server-side v1+v2 deserialization in Plan 05 Task 3 |
-| WR-05 | Warning | **FULLY RESOLVED** | `idx_bypass_alerts_pid` index added in Plan 05 Task 1; PID filtering in `list_by_filters` |
-| WR-06 | Warning | **FULLY RESOLVED** | Image SHA cache with 1h TTL + 5min failure TTL in Plan 04 Task 2 step 11; `DashMap<String, (Option<String>, Instant)>` |
-| WR-07 | Warning | **FULLY RESOLVED** | PID reuse detection via `creation_time` verification in Plan 04 Task 2 step 8; test `test_pid_reuse_detected` |
-| WR-08 | Warning | **PARTIALLY RESOLVED** | Max retry (3) + `tracing::error!` + drop in Plan 04; server dedup via unique constraint in Plan 05. BUT: no per-alert retry tracking in the batch flush spec — see NEW WR-10. |
-| WR-09 | Warning | **FULLY RESOLVED** | `nt_path_to_dos_path()` in Plan 01 Task 2 step 11 and Plan 03 Task 1 step 5; `QueryDosDeviceW` mapping |
-| IN-01 | Info | **FULLY RESOLVED** | `stub_name` doc comment in Plan 04 Task 1 step 3 |
-| IN-02 | Info | **FULLY RESOLVED** | `batch_id: String` (UUID v4) in `PendingAlert` and `BypassAlertBatch` in Plans 04 and 05 |
-| IN-03 | Info | **FULLY RESOLVED** | `check_lost_events()` wired to emit `tracing::warn!` + `EtwConsumerLostEvents` audit event at runtime in Plan 01 Task 2 step 12 |
-| IN-04 | Info | **FULLY RESOLVED** | Meta-task bloat removed from Plan 06; focused on SIEM + alert router wiring + integration tests |
+### Full Concern Resolution Matrix (Cycles 1-3)
 
-## Critical Issues
+| ID | Original Severity | Cycle 1 Status | Cycle 2 Status | Cycle 3 Status | Resolution Verified In |
+|----|-------------------|----------------|----------------|----------------|------------------------|
+| CR-01 | Critical | FULLY RESOLVED | -- | **CONFIRMED** | Plan 04 Task 2 step 7: `qpc_delta` calibration; test `test_qpc_calibration_delta_computed` |
+| CR-02 | Critical | FULLY RESOLVED | -- | **CONFIRMED** | Plan 04 Task 2 step 8: on-demand discovery + exponential backoff (max 30s); test `test_on_demand_journal_discovery_and_backoff` |
+| CR-03 | Critical | FULLY RESOLVED | -- | **CONFIRMED** | Plan 02 Task 1 step 8: `atomic::fence(Ordering::Release)` with SAFETY comment; test `test_release_fence_prevents_torn_reads` |
+| CR-04 | Critical | FULLY RESOLVED | -- | **CONFIRMED** | Plan 02 Task 1 step 7: `ERROR_ALREADY_EXISTS` falls through to `OpenFileMappingW`; test `test_error_already_exists_opens_existing` |
+| CR-05 | Critical | PARTIALLY RESOLVED | Evolved to CR-08 | **SUPERSEDED** | `etw_timestamp` field in JournalEntry (56 bytes) per Plan 02; `file_object` wiring now tracked as CR-08 |
+| CR-06 | Critical | FULLY RESOLVED | -- | **CONFIRMED** | Plan 01 Task 2 step 7: `EtwConsumerState` enum with `Started`, `GatedOff`, `Failed`; `tracing::warn!` on gated off |
+| CR-07 | Critical | FULLY RESOLVED | -- | **CONFIRMED** | Plan 01 Task 2 step 10: `tracing::error!` on trace start failure, `etw_healthy=false` |
+| CR-08 | Critical | -- | NEW in Cycle 2 | **FULLY RESOLVED** | Plan 04 Task 2 step 8: EXPLICIT `alert.file_object = event.file_object` code snippet; test `test_file_object_and_version_from_etw_event` verifies 0xDEADBEEF flows unchanged |
+| CR-09 | Critical | -- | NEW in Cycle 2 | **FULLY RESOLVED** | Plan 01 Task 1: `EventType::EtwConsumerGatedOff` distinct from `EtwConsumerStopped`; Plan 01 Task 2 step 7: gated-off path emits GatedOff event (NOT Stopped); Plan 06 Task 1: `triggers_alert()` returns false for GatedOff; tests verify correct routing |
+| WR-01 | Warning | FULLY RESOLVED | -- | **CONFIRMED** | Plan 04 Task 2 step 9: exact filename matching via `Path::new(image_path).file_name()`; test `test_allowlist_rejects_substring_bypass` |
+| WR-02 | Warning | FULLY RESOLVED | -- | **CONFIRMED** | Plan 01 Task 1 step 5: separate `enable_bypass_correlator: Option<bool>` config flag; `bypass_correlator_enabled()` helper with backward-compatible default |
+| WR-03 | Warning | FULLY RESOLVED | -- | **CONFIRMED** | Plan 04 Task 2 step 10: reduced mode caps `crit -> warn` (not `info`); test `test_severity_reduced_mode_caps_crit_to_warn` |
+| WR-04 | Warning | FULLY RESOLVED | -- | **CONFIRMED** | Plan 04 Task 1 step 2: `version: u32` field; Plan 05 Task 3: server-side v1+v2 deserialization; test `test_file_object_and_version_from_etw_event` |
+| WR-05 | Warning | FULLY RESOLVED | -- | **CONFIRMED** | Plan 05 Task 1: `idx_bypass_alerts_pid` index; Plan 05 Task 2: PID filtering in `list_by_filters`; test `test_list_by_filters_pid` |
+| WR-06 | Warning | FULLY RESOLVED | -- | **CONFIRMED** | Plan 04 Task 2 step 11: Image SHA cache with 1h TTL + 5min failure TTL; `DashMap<String, (Option<String>, Instant)>` |
+| WR-07 | Warning | FULLY RESOLVED | -- | **CONFIRMED** | Plan 04 Task 2 step 8: PID reuse detection via `creation_time` verification; test `test_pid_reuse_detected` |
+| WR-08 | Warning | PARTIALLY RESOLVED | Evolved to WR-10 | **SUPERSEDED** | Max retry (3) + `tracing::error!` + drop in Plan 04; server dedup via unique constraint in Plan 05. Retry tracking now tracked as WR-10 |
+| WR-09 | Warning | FULLY RESOLVED | -- | **CONFIRMED** | Plan 01 Task 2 step 11 and Plan 03 Task 1 step 5: `nt_path_to_dos_path()` via `QueryDosDeviceW`; test `test_nt_path_to_dos_path_harddisk_volume` |
+| WR-10 | Warning | -- | NEW in Cycle 2 | **FULLY RESOLVED** | Plan 04 Task 2 step 8c: failed alerts re-added with `retry_count += 1` and NEW `batch_id` (UUID v4); test `test_batch_retry_new_batch_id` verifies different batch_ids per retry |
+| WR-11 | Warning | -- | NEW in Cycle 2 | **FULLY RESOLVED** | Plan 01 Task 2 step 10: `EtwFileEvent.nt_path_converted: bool` field; Plan 04 Task 2 step 8b: correlator skips events where `nt_path_converted=false` with `tracing::warn!`; test `test_skip_unconverted_nt_path` |
+| WR-12 | Warning | -- | NEW in Cycle 2 | **FULLY RESOLVED** | Plan 04 Task 1 step 2: `#[serde(default)]` on ALL new fields; Plan 05 Task 1 step 1: `file_object` has `DEFAULT 0` in schema; tests verify v1 alert deserializes without error |
+| IN-01 | Info | FULLY RESOLVED | -- | **CONFIRMED** | Plan 04 Task 1 step 3: `stub_name` doc comment explaining ETW correlation semantics |
+| IN-02 | Info | FULLY RESOLVED | -- | **CONFIRMED** | Plan 04 Task 2 step 2: `batch_id: String` (UUID v4) in `PendingAlert`; Plan 05 Task 3: `batch_id` in `BypassAlertBatch` |
+| IN-03 | Info | FULLY RESOLVED | -- | **CONFIRMED** | Plan 01 Task 2 step 12: `check_lost_events()` wired to emit `tracing::warn!` + `EtwConsumerLostEvents` audit event at runtime |
+| IN-04 | Info | FULLY RESOLVED | -- | **CONFIRMED** | Plan 06: meta-task bloat removed; focused on SIEM + alert router wiring + integration tests |
+| IN-05 | Info | -- | NEW in Cycle 2 | **FULLY RESOLVED** | Plan 04 Task 3: combined tests 25+26 (on-demand discovery + backoff) and 27+28 (file_object + version), reducing count from 28 to 26 without losing coverage |
+| IN-06 | Info | -- | NEW in Cycle 2 | **FULLY RESOLVED** | 53-VALIDATION.md updated: `nyquist_compliant=true`, `wave_0_complete=true`, per-task verification map reflects reviewed plan specs |
 
-### CR-08: `file_object` Extraction from ETW Event is Mentioned But Not Fully Specified in the Correlator Call Chain
+## Cross-Plan Consistency Verification
 
-**File:** `53-04-PLAN.md:288`, `53-04-PLAN.md:160`, `53-01-PLAN.md:179`
-**Issue:** (Evolves from CR-05) The replan adds `file_object: u64` to `BypassAlert` and states "Extract `file_object` from ETW event and include in BypassAlert construction" (Plan 04 Task 2 step 8). However, the `EtwFileEvent` struct in Plan 01 Task 2 step 2 includes `file_object: u64`, and the correlator's ETW event handler (Plan 04 Task 2 step 8) says to extract it. But the actual `BypassAlert` construction code snippet is not shown in the plan — there is no explicit step that says "set `bypass_alert.file_object = etw_event.file_object`". More importantly, the `BypassAlert` struct extension (Plan 04 Task 1 step 2) lists `file_object: u64` but the test `test_file_object_extracted_from_etw_event` (Plan 04 Task 3 test 27) only verifies the alert contains it — it doesn't verify the data flows from the ETW event. This is a gap in the specification that could lead to `file_object` being left at default (0) during implementation.
-**Fix:** In Plan 04 Task 2 step 8, add an explicit sub-step: "Set `alert.file_object = event.file_object` before adding to batch." Add a test that verifies `file_object` from a mock ETW event (e.g., `0xDEADBEEF`) appears unchanged in the constructed `BypassAlert`.
+The following cross-cutting concerns were verified for consistency across all 6 plans:
 
-### CR-09: `EtwConsumerState::GatedOff` Emits `EtwConsumerStopped` Event Which Confuses Lifecycle Telemetry
+### 1. CR-08 (file_object wiring) -- Consistent across 4 plans
+- **Plan 01** (53-01-PLAN.md:186): `EtwFileEvent.file_object: u64` defined as "FILE_OBJECT pointer (forensics only)"
+- **Plan 04** (53-04-PLAN.md:308-316): EXPLICIT code snippet `alert.file_object = event.file_object` with test `test_file_object_and_version_from_etw_event` verifying 0xDEADBEEF
+- **Plan 05** (53-05-PLAN.md:141): `file_object INTEGER NOT NULL DEFAULT 0` in schema
+- **Plan 06** (53-06-PLAN.md:220): Integration test `test_bypass_alert_file_object_preserved` verifies DB row has file_object=0xDEADBEEF
+- **VERDICT:** Full end-to-end trace from ETW event -> BypassAlert -> DB schema -> integration test. Consistent.
 
-**File:** `53-01-PLAN.md:205-207`
-**Issue:** (New in cycle 2) When `bypass_correlator_enabled()` returns false, `start()` returns `EtwConsumerState::GatedOff` AND emits `EventType::EtwConsumerStopped` with `details.reason="gated_by_policy"`. This conflates two distinct lifecycle events: (1) a consumer that was never started, and (2) a consumer that was running and then stopped. An operator monitoring `EtwConsumerStopped` events will see them at agent startup (gated off) AND at agent shutdown (clean stop), making it impossible to distinguish "never started" from "was running then stopped" without parsing the `reason` field. More critically, if the consumer is gated off at startup, then later enabled via hot-reload, there is no `EtwConsumerStarted` event for the initial start — only a `Stopped` event, which is backwards.
-**Fix:** Emit `EventType::EtwConsumerStarted` with `details.reason="gated_by_policy"` when gated off, NOT `EtwConsumerStopped`. Alternatively, add a fourth event type `EtwConsumerGatedOff` that is distinct from `Started`/`Stopped`/`LostEvents`. The `routed_to_siem()` method should include it.
+### 2. CR-09 (GatedOff event) -- Consistent across 3 plans
+- **Plan 01** (53-01-PLAN.md:130-131): `EventType::EtwConsumerGatedOff` distinct from `EtwConsumerStopped`; gated-off path emits GatedOff event
+- **Plan 01** (53-01-PLAN.md:213): `start()` returns `GatedOff` with `EventType::EtwConsumerGatedOff` (NOT Stopped)
+- **Plan 06** (53-06-PLAN.md:124-125): `routed_to_siem()` returns true for GatedOff; `triggers_alert()` returns false
+- **Plan 06** (53-06-PLAN.md:141-142): Tests verify `test_etw_consumer_gated_off_routed_to_siem` and `test_etw_consumer_gated_off_does_not_trigger_alert`
+- **VERDICT:** Lifecycle telemetry is unambiguous. GatedOff is distinct, routed to SIEM, does NOT trigger alert. Consistent.
 
-## Warnings
+### 3. WR-10 (batch retry new batch_id) -- Consistent across 2 plans
+- **Plan 04** (53-04-PLAN.md:322): "generate NEW batch_id (UUID v4) for each retry attempt"; test `test_batch_retry_new_batch_id`
+- **Plan 05** (53-05-PLAN.md:162): Composite unique constraint on `(agent_id, pid, qpc_timestamp, file_path)` -- dedup is on alert content, NOT batch_id, so new batch_id per retry does not block legitimate retries
+- **VERDICT:** Retry mechanism avoids server dedup blocking. Consistent.
 
-### WR-10: Batch Flush Retry Logic Lacks Per-Alert Retry Tracking Specification
+### 4. WR-11 (nt_path_converted skip) -- Consistent across 2 plans
+- **Plan 01** (53-01-PLAN.md:189): `EtwFileEvent.nt_path_converted: bool` -- "true if conversion succeeded, false if fallback returned original path"
+- **Plan 04** (53-04-PLAN.md:292): "If `event.nt_path_converted` is false: log `tracing::warn!` and SKIP correlation for this event"
+- **VERDICT:** Hash mismatch risk eliminated. Unconverted NT paths are skipped with warning. Consistent.
 
-**File:** `53-04-PLAN.md:292-294`
-**Issue:** (Evolves from WR-08) The replan adds `PendingAlert` with `retry_count: u32` and states "On failure: increment retry_count for each alert; if retry_count > max_alert_retry, log tracing::error! and DROP the alert" (Plan 04 Task 2 step 8c). However, the specification does not describe HOW the retry_count is persisted across flush attempts. The `alert_batch` is an `Arc<Mutex<Vec<PendingAlert>>>`. When a flush fails, the plan says to "increment retry_count" and "DROP if exceeded" — but does not specify whether failed alerts are re-added to the batch Vec or kept in a separate pending queue. If the implementation simply drains the batch, increments retry, and re-adds non-exceeded alerts, the same alerts could be retried multiple times within a single 5-second interval if the POST fails repeatedly. Additionally, there is no specification for what happens to the `batch_id` on retry — should a new UUID be generated per retry attempt, or should the same batch_id be reused? Reusing the same batch_id could trigger server-side deduplication (from Plan 05) and silently drop legitimate retries.
-**Fix:** Specify the retry flow explicitly: (1) On flush failure, alerts with `retry_count < max` are re-added to the batch with `retry_count += 1` and a NEW `batch_id` (to avoid server dedup blocking retries). (2) Alerts with `retry_count >= max` are logged with `tracing::error!` and dropped permanently. (3) Add a test `test_batch_retry_new_batch_id` that verifies retry attempts use different batch_ids.
+### 5. WR-12 (serde(default) v1 compat) -- Consistent across 3 plans
+- **Plan 04** (53-04-PLAN.md:155-176): `#[serde(default)]` on ALL 9 new fields (version, agent_id, image_path, image_sha256, file_path, operation, file_object, qpc_timestamp, severity, correlation_reason)
+- **Plan 05** (53-05-PLAN.md:141): `file_object INTEGER NOT NULL DEFAULT 0` in SQL schema
+- **Plan 05** (53-05-PLAN.md:369): "For v1 alerts (missing new fields): #[serde(default)] ensures all new fields have defaults"
+- **Plan 06** (53-06-PLAN.md:216): Integration test verifies v1 alert deserializes with default file_object=0
+- **VERDICT:** v1 backward compatibility is covered at struct, schema, handler, and integration test levels. Consistent.
 
-### WR-11: `nt_path_to_dos_path` Called Twice (ETW Consumer + Correlator) Creates Redundancy and Risk of Divergence
+### 6. IN-05 (test count bloat) -- Consistent in Plan 04
+- **Plan 04** (53-04-PLAN.md:437-438): Tests 25+26 combined into `test_on_demand_journal_discovery_and_backoff`; tests 27+28 combined into `test_file_object_and_version_from_etw_event`
+- Count reduced from 28 to 26 without losing coverage
+- **VERDICT:** Appropriate consolidation. No coverage loss. Consistent.
 
-**File:** `53-01-PLAN.md:231-238`, `53-04-PLAN.md:278`
-**Issue:** (New in cycle 2) Plan 01 specifies that the ETW consumer converts NT paths to DOS paths BEFORE pushing events to the channel (`nt_path_to_dos_path()` in the ETW callback). Plan 04 specifies that the correlator normalizes the ETW `FileName` via `normalize_path()` before hashing. If the ETW consumer has already converted `\Device\HarddiskVolume1\...` to `C:\...`, then the correlator's `normalize_path()` will process a DOS path. But if `nt_path_to_dos_path()` fails (returns original NT path), the correlator will hash the NT path, which will NOT match the hook DLL's hash (which operates on DOS paths). The plans do not specify what happens when `nt_path_to_dos_path()` returns the original path unchanged — the correlator has no way to know the conversion failed. This creates a silent hash mismatch and false bypass alerts.
-**Fix:** Add an `nt_path_converted: bool` field to `EtwFileEvent` that is set to true when `nt_path_to_dos_path()` successfully maps the device path. In the correlator, if `nt_path_converted` is false, skip correlation for that event (or emit a `tracing::warn!` and skip). Alternatively, move ALL path conversion to the correlator and have the ETW consumer pass raw NT paths.
+### 7. IN-06 (VALIDATION.md stale) -- Verified
+- **53-VALIDATION.md:5-7**: `nyquist_compliant: true`, `wave_0_complete: true`, `review_concerns_addressed: CR-08, CR-09, WR-10, WR-11, WR-12, IN-05, IN-06`
+- Per-task verification map (lines 57-81) shows all 21 tasks have automated verify commands specified
+- Wave 0 dependencies (lines 89-96) all checked
+- **VERDICT:** Validation file is current and accurate.
 
-### WR-12: `BypassAlert` v1 Backward Compatibility Test is Insufficient
+## New Issues Introduced by Replan
 
-**File:** `53-04-PLAN.md:181`, `53-05-PLAN.md:417`
-**Issue:** (Evolves from WR-04) Plan 04 Task 1 includes `test_bypass_alert_v1_backward_compat` which tests deserialization of a Phase 51 v1 alert. Plan 05 Task 3 includes `test_batch_ingest_v1_backward_compat` which tests server-side ingestion. However, neither plan specifies what the v1 alert looks like when serialized — the Phase 51 `BypassAlert` had fields `reason`, `stub_name`, `pid`, `timestamp_secs`. The v2 alert adds 9 new fields. If the v1 alert is deserialized with missing fields, serde will fail unless `#[serde(default)]` is applied to all new fields. The plans do not mention adding `#[serde(default)]` attributes to the new `BypassAlert` fields.
-**Fix:** In Plan 04 Task 1 step 2, explicitly add `#[serde(default)]` to all new fields (`version`, `agent_id`, `image_path`, etc.) so that v1 alerts deserialize with default values. Add a test that verifies a v1-serialized alert deserializes without error and has `version=1` (or `version=0` if default).
+**None identified.** The Cycle 2 replan (commit 114693f) introduced no new inconsistencies, gaps, or regressions. All changes were surgical and targeted at the specific concerns raised in Cycle 2.
 
-## Info
+## Remaining Risks (Inherent, Not Plan Defects)
 
-### IN-05: Plan 04 Task 3 Test Count Jumped from 16 to 28 Without Corresponding Implementation Complexity Increase
+The following are inherent implementation risks that cannot be eliminated by planning alone. They are documented here for awareness but do not constitute plan defects:
 
-**File:** `53-04-PLAN.md:379-434`
-**Issue:** The original Plan 04 had 16 unit tests; the replan has 28. While more tests are generally good, 12 of the new tests are for review-fix verification (CR-01, CR-02, WR-01, WR-03, WR-06, WR-07, WR-08, IN-02). This is appropriate. However, tests 25 and 26 (`test_on_demand_journal_discovery` and `test_exponential_backoff_for_missing_journal`) both test the same CR-02 fix from slightly different angles. Test 27 (`test_file_object_extracted_from_etw_event`) and test 28 (`test_bypass_alert_version_field`) are both simple field-assignment tests that could be combined. The test bloat is minor but worth noting.
-**Fix:** Combine tests 25+26 into one test that covers both on-demand discovery and backoff. Combine tests 27+28 into one test that verifies both file_object and version fields. This reduces test count from 28 to 26 without losing coverage.
+1. **QPC timestamp drift on ARM64 Windows** (Pitfall 2 in RESEARCH.md): The 5ms tolerance window should absorb minor drift, but empirical validation is required during implementation.
+2. **ferrisetw support for Microsoft-Windows-Kernel-EventTracing/Admin** (Open Question 3 in RESEARCH.md): Lost-event monitoring may require manual `logman` verification if ferrisetw does not support this provider.
+3. **Stress test at 10,000 events/sec** (Manual-Only Verification in VALIDATION.md): Requires dedicated Windows host; cannot be reproduced in CI.
 
-### IN-06: `53-VALIDATION.md` Still Shows `nyquist_compliant: false` and `wave_0_complete: false`
+## Conclusion
 
-**File:** `53-VALIDATION.md:5-7`
-**Issue:** The validation file has not been updated to reflect the replan. The `nyquist_compliant: false` flag and `wave_0_complete: false` status are stale. The per-task verification map still shows all tasks as "pending" with `❌ W0` (Wave 0 not complete). Since this is a planning-only phase with no source code, the validation file should at minimum acknowledge that the plans have been reviewed and are ready for execution.
-**Fix:** Update `53-VALIDATION.md` frontmatter to `nyquist_compliant: true` (plans are complete and reviewed). Update `wave_0_complete: true` (all Wave 0 stubs are specified in the plans). Update the per-task verification map to reflect that plan specifications exist (even if code does not yet exist).
+All 16 concerns from Cycles 1 and 2 are fully resolved. The 6 plans are internally consistent and cross-consistent. The replan is sound and ready for execution.
+
+**Recommendation:** Approve for execution. No further replanning required.
 
 ---
 
-_Reviewed: 2026-05-27T20:30:00Z_
-_Reviewer: Claude (gsd-code-reviewer) — Cycle 2_
+_Reviewed: 2026-05-27T23:15:00Z_
+_Reviewer: Claude (gsd-code-reviewer) -- Cycle 3 (Final)_
 _Depth: deep_
