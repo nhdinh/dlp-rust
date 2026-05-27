@@ -152,6 +152,10 @@ pub mod appinit;
 #[cfg(windows)]
 pub mod process_watcher;
 
+// Phase 53: ETW kernel file consumer — uncomment when module is created.
+// #[cfg(windows)]
+// pub mod etw_kernel_file;
+
 #[cfg(windows)]
 pub mod universal_injector;
 
