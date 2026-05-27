@@ -459,6 +459,42 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 FOREIGN KEY (entry_id) REFERENCES allowlist_entries(id)
             );
             CREATE INDEX IF NOT EXISTS idx_allowlist_audit_entry ON allowlist_audit_log(entry_id);
+
+            -- Phase 52 (Task 52-03): Protected paths registry for DACL tripwire.
+            -- Stores the single source of truth for which paths receive tripwire
+            -- protection. Paths may be auto-populated from confirmed T3/T4 labels
+            -- or manually added by dlp-admin.
+            --
+            -- CHECK constraints enforce valid source and tier values.
+            -- UNIQUE on path prevents duplicate entries.
+            -- label_id is a soft FK to labels(id) with ON DELETE SET NULL.
+            CREATE TABLE IF NOT EXISTS protected_paths (
+                id          TEXT PRIMARY KEY,
+                path        TEXT NOT NULL UNIQUE,
+                source      TEXT NOT NULL CHECK(source IN ('auto', 'manual')),
+                is_override INTEGER NOT NULL DEFAULT 0,
+                tier        TEXT NOT NULL CHECK(tier IN ('T3', 'T4')),
+                label_id    TEXT REFERENCES labels(id) ON DELETE SET NULL,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_protected_paths_path ON protected_paths(path);
+            CREATE INDEX IF NOT EXISTS idx_protected_paths_source ON protected_paths(source);
+            CREATE INDEX IF NOT EXISTS idx_protected_paths_tier ON protected_paths(tier);
+            CREATE INDEX IF NOT EXISTS idx_protected_paths_label ON protected_paths(label_id);
+
+            -- Phase 52 (Task 52-03): Canonical ACE snapshots per protected path.
+            -- Each protected path may have one canonical ACE row storing the
+            -- baseline SDDL string for tripwire comparison.
+            -- ON DELETE CASCADE removes the ACE when the parent path is deleted.
+            CREATE TABLE IF NOT EXISTS protected_path_aces (
+                id                TEXT PRIMARY KEY,
+                protected_path_id TEXT NOT NULL REFERENCES protected_paths(id) ON DELETE CASCADE,
+                sddl              TEXT NOT NULL,
+                created_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_protected_path_aces_path ON protected_path_aces(protected_path_id);
 ",
     )
     .context("failed to initialize database tables")?;
@@ -797,6 +833,14 @@ mod tests {
         assert!(tables.contains(&"ldap_config".to_string()));
         assert!(tables.contains(&"global_agent_config".to_string()));
         assert!(tables.contains(&"agent_config_overrides".to_string()));
+        assert!(
+            tables.contains(&"protected_paths".to_string()),
+            "protected_paths table must exist after init"
+        );
+        assert!(
+            tables.contains(&"protected_path_aces".to_string()),
+            "protected_path_aces table must exist after init"
+        );
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM siem_config", [], |r| r.get(0))
