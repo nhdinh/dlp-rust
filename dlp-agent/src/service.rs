@@ -575,8 +575,11 @@ fn apply_payload_to_config(
         // Compute additions and removals by comparing path strings.
         let old_paths: std::collections::HashSet<String> =
             cfg.protected_paths.iter().map(|p| p.path.clone()).collect();
-        let new_paths: std::collections::HashSet<String> =
-            payload.protected_paths.iter().map(|p| p.path.clone()).collect();
+        let new_paths: std::collections::HashSet<String> = payload
+            .protected_paths
+            .iter()
+            .map(|p| p.path.clone())
+            .collect();
 
         let additions: Vec<String> = new_paths.difference(&old_paths).cloned().collect();
         let removals: Vec<String> = old_paths.difference(&new_paths).cloned().collect();
@@ -598,7 +601,10 @@ fn apply_payload_to_config(
 
         // Log additions for observability (applied on next watcher init).
         if !additions.is_empty() {
-            tracing::info!(count = additions.len(), "new protected paths detected — will apply on next watcher init");
+            tracing::info!(
+                count = additions.len(),
+                "new protected paths detected — will apply on next watcher init"
+            );
         }
 
         cfg.protected_paths = payload.protected_paths.clone();
@@ -1647,9 +1653,9 @@ async fn init_dacl_watcher(
     }
 
     // Phase 52-07: Create staging layer for two-phase removal protocol.
-    let staging = match crate::dacl_staging::DaclStaging::new(
-        &std::path::PathBuf::from(r"C:\ProgramData\DLP\agent.db"),
-    ) {
+    let staging = match crate::dacl_staging::DaclStaging::new(&std::path::PathBuf::from(
+        r"C:\ProgramData\DLP\agent.db",
+    )) {
         Ok(s) => Arc::new(s),
         Err(e) => {
             warn!(error = %e, "failed to create DaclStaging — continuing without staging");
@@ -1717,12 +1723,7 @@ async fn init_dacl_watcher(
 
     // Phase 52-07: Spawn GC task for expired staging rows (5-minute TTL, 60s interval).
     let (_gc_shutdown_tx, gc_shutdown_rx) = tokio::sync::watch::channel(false);
-    let gc_handle = crate::dacl_staging::spawn_gc_task(
-        Arc::clone(&staging),
-        60,
-        5,
-        gc_shutdown_rx,
-    );
+    let gc_handle = crate::dacl_staging::spawn_gc_task(Arc::clone(&staging), 60, 5, gc_shutdown_rx);
 
     // Phase 52-07: Spawn removal application task (30s interval).
     let (_removal_shutdown_tx, removal_shutdown_rx) = tokio::sync::watch::channel(false);
@@ -1766,9 +1767,8 @@ async fn init_dacl_watcher_without_staging(
 
     let watcher = crate::dacl_repair_watcher::DaclWatcher::new();
 
-    let dlp_admin_sid: Option<String> = ad_client.and_then(|_client| {
-        std::env::var("DLP_ADMIN_SID").ok()
-    });
+    let dlp_admin_sid: Option<String> =
+        ad_client.and_then(|_client| std::env::var("DLP_ADMIN_SID").ok());
     watcher.set_dlp_admin_sid(dlp_admin_sid.clone());
 
     for path_str in &agent_config.monitored_paths {
@@ -1776,7 +1776,9 @@ async fn init_dacl_watcher_without_staging(
         if !path.exists() {
             continue;
         }
-        if let Ok((_count, snapshots)) = crate::dacl_tripwire::apply_tripwire_recursive(&path, dlp_admin_sid.as_deref()) {
+        if let Ok((_count, snapshots)) =
+            crate::dacl_tripwire::apply_tripwire_recursive(&path, dlp_admin_sid.as_deref())
+        {
             if let Some(snapshot) = snapshots.first() {
                 let _ = watcher.register(&path, snapshot.clone());
             }

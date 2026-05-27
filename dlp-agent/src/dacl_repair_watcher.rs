@@ -1375,4 +1375,92 @@ mod tests {
         assert_eq!(event.path, cloned.path);
         let _ = format!("{:?}", event);
     }
+
+    // --- Phase 52-07: Staging-aware tamper suppression tests ---
+
+    /// Test 15: set_staging stores the staging reference.
+    #[test]
+    fn test_set_staging() {
+        let watcher = DaclWatcher::new();
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        crate::dacl_staging::init_staging_table(&conn).expect("init table");
+        let staging = Arc::new(crate::dacl_staging::DaclStaging::from_connection(conn));
+
+        watcher.set_staging(Arc::clone(&staging));
+
+        // Verify staging is set by checking the internal RwLock.
+        let guard = watcher.staging.read();
+        assert!(guard.is_some(), "staging should be set");
+    }
+
+    /// Test 16: Staging row suppresses tamper alert for removal operation.
+    #[test]
+    fn test_staging_removal_suppresses_alert() {
+        let watcher = DaclWatcher::new();
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        crate::dacl_staging::init_staging_table(&conn).expect("init table");
+        let staging = Arc::new(crate::dacl_staging::DaclStaging::from_connection(conn));
+
+        let path = r"C:\test\staged_remove.txt";
+        staging.stage_removal(path).unwrap();
+
+        watcher.set_staging(Arc::clone(&staging));
+
+        // Verify the path is staged.
+        assert!(staging.is_staged(path).unwrap(), "path should be staged");
+
+        // Verify get_row returns the staged row.
+        let row = staging.get_row(path).unwrap();
+        assert!(row.is_some(), "row should exist");
+        let row = row.unwrap();
+        assert_eq!(row.operation, "remove");
+        assert!(row.applied_at.is_none());
+    }
+
+    /// Test 17: Unstaged path does NOT suppress tamper alert.
+    #[test]
+    fn test_unstaged_path_does_not_suppress() {
+        let watcher = DaclWatcher::new();
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        crate::dacl_staging::init_staging_table(&conn).expect("init table");
+        let staging = Arc::new(crate::dacl_staging::DaclStaging::from_connection(conn));
+
+        let path = r"C:\test\unstaged.txt";
+        // Do NOT stage this path.
+
+        watcher.set_staging(Arc::clone(&staging));
+
+        // Verify the path is NOT staged.
+        assert!(
+            !staging.is_staged(path).unwrap(),
+            "path should NOT be staged"
+        );
+    }
+
+    /// Test 18: Staging-aware watcher with applied removal row.
+    #[test]
+    fn test_staging_applied_removal_still_suppresses() {
+        let watcher = DaclWatcher::new();
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        crate::dacl_staging::init_staging_table(&conn).expect("init table");
+        let staging = Arc::new(crate::dacl_staging::DaclStaging::from_connection(conn));
+
+        let path = r"C:\test\applied_remove.txt";
+        staging.stage_removal(path).unwrap();
+        staging.mark_applied(path).unwrap();
+
+        watcher.set_staging(Arc::clone(&staging));
+
+        // Verify the path is still staged (row exists).
+        assert!(
+            staging.is_staged(path).unwrap(),
+            "path should still be staged"
+        );
+
+        // Verify is_staged_and_applied returns true.
+        assert!(
+            staging.is_staged_and_applied(path).unwrap(),
+            "path should be staged and applied"
+        );
+    }
 }

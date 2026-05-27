@@ -58,12 +58,22 @@ pub enum DaclStagingError {
     LockPoisoned(String),
 }
 
-/// Staging state machine representing the lifecycle of a staged operation.
+/// Staging State Machine for Protected Path Removals
 ///
-/// The state transitions are:
 /// ```text
-/// Staged -> WatcherSuppressed -> AclRemoved -> Applied -> (GC removes)
+/// STAGED -> WATCHER_SUPPRESSED -> ACL_REMOVED -> APPLIED -> GC
 /// ```
+///
+/// ## Crash Recovery per State
+///
+/// | State | Recovery |
+/// |-------|----------|
+/// | `STAGED` (applied_at IS NULL) | Re-run full sequence on next task interval |
+/// | `WATCHER_SUPPRESSED` (row exists, watcher registered) | Continue from ACL removal |
+/// | `ACL_REMOVED` (tripwire absent, watcher registered) | Mark applied, unregister |
+/// | `APPLIED` (applied_at set, row exists) | GC removes after TTL |
+///
+/// The per-path lock ensures atomic transitions between states.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StagingState {
     /// Row inserted, operation pending. Watcher has not yet been notified.
