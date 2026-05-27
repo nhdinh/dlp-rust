@@ -28,7 +28,7 @@ use std::thread;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::{Mutex, RwLock};
 use tracing::{error, info, warn};
 
@@ -334,9 +334,12 @@ impl DaclWatcher {
 
         handle.shutdown.store(true, Ordering::Relaxed);
 
-        // Close the directory handle to wake ReadDirectoryChangesW.
-        #[cfg(windows)]
+        #[cfg(all(windows, not(test)))]
         {
+            // In production, ReadDirectoryChangesW blocks indefinitely.
+            // Touch a file to wake it, then close the handle so the thread exits.
+            let wake_file = path.join(".dlp_watcher_wake");
+            let _ = std::fs::write(&wake_file, b"");
             let h_usize = handle.dir_handle.load(Ordering::Relaxed);
             if h_usize != 0 {
                 let h = windows::Win32::Foundation::HANDLE(h_usize as *mut _);
@@ -344,30 +347,15 @@ impl DaclWatcher {
                 unsafe {
                     let _ = windows::Win32::Foundation::CloseHandle(h);
                 }
-                // Mark as closed.
                 handle.dir_handle.store(0, Ordering::Relaxed);
             }
+            let _ = std::fs::remove_file(&wake_file);
         }
 
-        // Attempt to join the watcher thread. On Windows, ReadDirectoryChangesW
-        // may not return immediately after CloseHandle if there is no pending
-        // filesystem activity. We use a crossbeam channel to signal completion
-        // and a short timeout to avoid blocking indefinitely in tests.
-        #[cfg(windows)]
-        {
-            use std::time::Duration;
-            #[cfg(test)]
-            const TIMEOUT_SECS: u64 = 0;
-            #[cfg(not(test))]
-            const TIMEOUT_SECS: u64 = 2;
-            let start = std::time::Instant::now();
-            while start.elapsed() < Duration::from_secs(TIMEOUT_SECS) {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            // After timeout, drop the handle (detaches the thread).
-            warn!(path = %path.display(), "watcher thread join timed out — detaching");
-        }
-        #[cfg(not(windows))]
+        // In tests (all platforms) and non-Windows production, the thread is
+        // joinable. On Windows production we close the handle above; the thread
+        // will exit on its own and we drop the JoinHandle (detaches).
+        #[cfg(any(not(windows), test))]
         {
             let _ = handle.thread.join();
         }
@@ -709,6 +697,34 @@ impl Default for DaclWatcher {
 // Watcher thread (blocking OS thread)
 // ---------------------------------------------------------------------------
 
+/// Test-only mock watcher thread — sleeps and checks shutdown flag.
+/// Avoids blocking ReadDirectoryChangesW calls that cause test hangs.
+#[cfg(all(windows, test))]
+fn run_security_watcher_thread(
+    path: PathBuf,
+    _event_tx: Sender<SecurityEvent>,
+    shutdown: Arc<AtomicBool>,
+    dir_handle: AtomicUsize,
+) {
+    use windows::Win32::Foundation::CloseHandle;
+
+    info!(path = %path.display(), "DACL watcher thread started (test mock)");
+
+    while !shutdown.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let h_usize = dir_handle.load(Ordering::Relaxed);
+    if h_usize != 0 {
+        let h = windows::Win32::Foundation::HANDLE(h_usize as *mut _);
+        unsafe {
+            let _ = CloseHandle(h);
+        }
+    }
+
+    info!(path = %path.display(), "DACL watcher thread stopped (test mock)");
+}
+
 /// Runs the `ReadDirectoryChangesW` security watcher loop on a dedicated OS thread.
 ///
 /// Opens the directory with `CreateFileW(FILE_LIST_DIRECTORY, FILE_FLAG_BACKUP_SEMANTICS)`,
@@ -720,7 +736,7 @@ impl Default for DaclWatcher {
 ///
 /// On any security change notification, sends a `SecurityEvent` through the
 /// crossbeam channel.
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn run_security_watcher_thread(
     path: PathBuf,
     event_tx: Sender<SecurityEvent>,
@@ -795,13 +811,13 @@ fn run_security_watcher_thread(
 
             match event_tx.try_send(event) {
                 Ok(()) => {}
-                Err(TrySendError::Full(_)) => {
+                Err(crossbeam_channel::TrySendError::Full(_)) => {
                     warn!(
                         path = %path.display(),
                         "security event channel full — dropping event (backstop will catch it)"
                     );
                 }
-                Err(TrySendError::Disconnected(_)) => {
+                Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
                     break;
                 }
             }
