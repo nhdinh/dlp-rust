@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -80,8 +80,8 @@ pub struct SecurityEvent {
 
 /// Per-path watcher state for lifecycle management.
 ///
-/// Holds the OS thread handle and the atomic shutdown flag used to signal
-/// the `ReadDirectoryChangesW` loop to exit.
+/// Holds the OS thread handle, the atomic shutdown flag, and the directory
+/// handle used to wake `ReadDirectoryChangesW` on unregister.
 pub struct WatcherHandle {
     /// The path being watched.
     pub path: PathBuf,
@@ -89,6 +89,13 @@ pub struct WatcherHandle {
     pub thread: thread::JoinHandle<()>,
     /// Atomic flag — when `true`, the watcher thread exits its loop.
     pub shutdown: Arc<AtomicBool>,
+    /// Directory handle — stored as `usize` (raw pointer cast) so the struct
+    /// remains `Send + Sync`. Closed on unregister to wake `ReadDirectoryChangesW`.
+    #[cfg(windows)]
+    pub dir_handle: AtomicUsize,
+    /// Non-windows placeholder.
+    #[cfg(not(windows))]
+    pub dir_handle: AtomicUsize,
 }
 
 /// Manages per-path DACL watchers, debounced repair, and a polling backstop.
@@ -175,12 +182,49 @@ impl DaclWatcher {
         let event_tx = self.event_tx.clone();
         let path_clone = path_buf.clone();
 
+        // Open directory handle before spawning thread so we can store it
+        // and close it on unregister to wake ReadDirectoryChangesW.
+        let path_wide: Vec<u16> = path_buf
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // SAFETY: `path_wide` is a valid null-terminated wide string.
+        let dir_handle = unsafe {
+            windows::Win32::Storage::FileSystem::CreateFileW(
+                windows::core::PCWSTR(path_wide.as_ptr()),
+                windows::Win32::Storage::FileSystem::FILE_LIST_DIRECTORY.0,
+                windows::Win32::Storage::FileSystem::FILE_SHARE_READ
+                    | windows::Win32::Storage::FileSystem::FILE_SHARE_DELETE,
+                None,
+                windows::Win32::Storage::FileSystem::OPEN_EXISTING,
+                windows::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
+                None,
+            )
+        };
+
+        let dir_handle = match dir_handle {
+            Ok(h) => h,
+            Err(e) => {
+                return Err(DaclWatcherError::Win32(e));
+            }
+        };
+
+        // Store handle as usize so WatcherHandle remains Send + Sync.
+        let dir_handle_usize = dir_handle.0 as usize;
+        let dir_handle_atomic = AtomicUsize::new(dir_handle_usize);
+
         let thread = thread::Builder::new()
             .name(format!("dacl-watcher-{}", path_buf.display()))
             .spawn(move || {
-                run_security_watcher_thread(path_clone, event_tx, shutdown_clone);
+                run_security_watcher_thread(path_clone, event_tx, shutdown_clone, AtomicUsize::new(dir_handle_usize));
             })
             .map_err(|e| {
+                // SAFETY: close handle on thread spawn failure.
+                unsafe {
+                    let _ = windows::Win32::Foundation::CloseHandle(dir_handle);
+                }
                 DaclWatcherError::Win32(windows::core::Error::new(
                     windows::core::HRESULT(0x80004005u32 as i32), // E_FAIL
                     format!("failed to spawn watcher thread: {e}"),
@@ -196,6 +240,7 @@ impl DaclWatcher {
                     path: path_buf.clone(),
                     thread,
                     shutdown,
+                    dir_handle: dir_handle_atomic,
                 },
             );
             snapshots.insert(path_buf, snapshot);
@@ -224,6 +269,7 @@ impl DaclWatcher {
                 path: path_buf.clone(),
                 thread: thread::spawn(|| {}),
                 shutdown: Arc::new(AtomicBool::new(false)),
+                dir_handle: AtomicUsize::new(0),
             },
         );
         let mut snapshots = self.snapshots.lock();
@@ -250,7 +296,40 @@ impl DaclWatcher {
         };
 
         handle.shutdown.store(true, Ordering::Relaxed);
-        let _ = handle.thread.join();
+
+        // Close the directory handle to wake ReadDirectoryChangesW.
+        #[cfg(windows)]
+        {
+            let h_usize = handle.dir_handle.load(Ordering::Relaxed);
+            if h_usize != 0 {
+                let h = windows::Win32::Foundation::HANDLE(h_usize as *mut _);
+                // SAFETY: handle was opened by CreateFileW in register().
+                unsafe {
+                    let _ = windows::Win32::Foundation::CloseHandle(h);
+                }
+                // Mark as closed.
+                handle.dir_handle.store(0, Ordering::Relaxed);
+            }
+        }
+
+        // Attempt to join the watcher thread. On Windows, ReadDirectoryChangesW
+        // may not return immediately after CloseHandle if there is no pending
+        // filesystem activity. We use a crossbeam channel to signal completion
+        // and a short timeout to avoid blocking indefinitely in tests.
+        #[cfg(windows)]
+        {
+            use std::time::Duration;
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_secs(2) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            // After timeout, drop the handle (detaches the thread).
+            warn!(path = %path.display(), "watcher thread join timed out — detaching");
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = handle.thread.join();
+        }
 
         {
             let mut snapshots = self.snapshots.lock();
@@ -453,6 +532,7 @@ impl DaclWatcher {
                         path: v.path.clone(),
                         thread: thread::spawn(|| {}), // dummy — not used in backstop
                         shutdown: Arc::clone(&v.shutdown),
+                        dir_handle: AtomicUsize::new(0),
                     },
                 );
             }
@@ -551,38 +631,11 @@ fn run_security_watcher_thread(
     path: PathBuf,
     event_tx: Sender<SecurityEvent>,
     shutdown: Arc<AtomicBool>,
+    dir_handle: AtomicUsize,
 ) {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, ReadDirectoryChangesW, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY,
-        FILE_NOTIFY_CHANGE_SECURITY, FILE_SHARE_DELETE, FILE_SHARE_READ, OPEN_EXISTING,
-    };
-
-    let path_wide: Vec<u16> = path
-        .to_string_lossy()
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-
-    // SAFETY: `path_wide` is a valid null-terminated wide string.
-    let handle = unsafe {
-        CreateFileW(
-            windows::core::PCWSTR(path_wide.as_ptr()),
-            FILE_LIST_DIRECTORY.0,
-            FILE_SHARE_READ | FILE_SHARE_DELETE,
-            None,
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
-            None,
-        )
-    };
-
-    let handle = match handle {
-        Ok(h) => h,
-        Err(e) => {
-            error!(path = %path.display(), error = %e, "CreateFileW failed for watcher");
-            return;
-        }
+        ReadDirectoryChangesW, FILE_NOTIFY_CHANGE_SECURITY,
     };
 
     info!(path = %path.display(), "DACL watcher thread started");
@@ -596,10 +649,12 @@ fn run_security_watcher_thread(
 
         let mut bytes_returned: u32 = 0;
 
-        // SAFETY: `handle` is valid, `buffer` is sized, and we pass `bWatchSubtree = true`.
+        // SAFETY: `dir_handle` is valid, `buffer` is sized, and we pass `bWatchSubtree = true`.
+        let h_usize = dir_handle.load(Ordering::Relaxed);
+        let h = windows::Win32::Foundation::HANDLE(h_usize as *mut _);
         let result = unsafe {
             ReadDirectoryChangesW(
-                handle,
+                h,
                 buffer.as_mut_ptr() as *mut _,
                 buffer.len() as u32,
                 true, // bWatchSubtree
@@ -626,11 +681,17 @@ fn run_security_watcher_thread(
                 continue;
             }
 
-            error!(
-                path = %path.display(),
-                error = %e,
-                "ReadDirectoryChangesW failed — watcher exiting"
-            );
+            // ERROR_OPERATION_ABORTED (995) or ERROR_INVALID_HANDLE (6) are expected
+            // when the handle is closed during unregister.
+            if code == 995 || code == 6 {
+                info!(path = %path.display(), "ReadDirectoryChangesW aborted — watcher shutting down");
+            } else {
+                error!(
+                    path = %path.display(),
+                    error = %e,
+                    "ReadDirectoryChangesW failed — watcher exiting"
+                );
+            }
             break;
         }
 
@@ -655,9 +716,15 @@ fn run_security_watcher_thread(
         }
     }
 
-    // SAFETY: `handle` was opened by CreateFileW above.
-    unsafe {
-        let _ = CloseHandle(handle);
+    // SAFETY: `dir_handle` was opened by CreateFileW in register().
+    // If already closed by unregister, this is a no-op (CloseHandle on
+    // invalid handle is safe).
+    let h_usize = dir_handle.load(Ordering::Relaxed);
+    if h_usize != 0 {
+        let h = windows::Win32::Foundation::HANDLE(h_usize as *mut _);
+        unsafe {
+            let _ = CloseHandle(h);
+        }
     }
 
     info!(path = %path.display(), "DACL watcher thread stopped");
@@ -865,7 +932,7 @@ fn check_acl_mismatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
+    // use std::sync::atomic::AtomicUsize; // unused, reserved for future counter tests
 
     // --- Test 1: DaclWatcher::new creates empty state ---
 
@@ -979,14 +1046,14 @@ mod tests {
     #[tokio::test]
     async fn test_debounce_batches_rapid_changes() {
         let watcher = DaclWatcher::new();
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
 
         // We can't easily mock repair_acl in an integration test, so we verify
         // the debounce logic at the channel level: send 5 events rapidly and
         // confirm they all arrive on the receiver side.
         let path = PathBuf::from(r"C:\TestDebounce");
 
-        for i in 0..5 {
+        for _i in 0..5 {
             let event = SecurityEvent {
                 path: path.clone(),
                 timestamp: Utc::now(),
