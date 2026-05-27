@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Real-Time File Access Prevention
 status: completed
-last_updated: "2026-05-27T08:07:44.454Z"
-last_activity: 2026-05-27 -- Phase 52 Plan 06 complete (Admin API + Agent Config)
+last_updated: "2026-05-27T16:44:00.000Z"
+last_activity: 2026-05-27 -- Phase 52 Plan 05 complete (DPAPI Recovery + Final Integration); Phase 52 COMPLETE (7/7 plans)
 progress:
   total_phases: 14
   completed_phases: 7
   total_plans: 38
-  completed_plans: 36
+  completed_plans: 38
   percent: 50
 ---
 
@@ -26,9 +26,9 @@ progress:
 ## Current Position
 
 Phase: 52
-Plan: 02
+Plan: 07
 Status: Completed
-Last activity: 2026-05-27 -- Phase 52 Plan 02 complete (DACL Repair Watcher)
+Last activity: 2026-05-27 -- Phase 52 Plan 05 complete (DPAPI Recovery + Final Integration); Phase 52 COMPLETE (7/7 plans)
 
 ## Progress
 
@@ -110,6 +110,7 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 17. **2026-05-22: Phase 51 Plans 01-04 complete.** EDR detection (edr_detector.rs), thread suspend protocol (thread_suspender.rs), ntdll patcher core with retour (ntdll_patcher.rs), ntdll trampoline bodies (trampolines.rs), and background re-verification thread (background_thread.rs) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied.
 18. **2026-05-22: Phase 51 Plans 05-06 complete.** BypassAlert IPC types (dlp-common), enable_ntdll_patching config flag (dlp-agent), service startup SIEM emission, OnceLock lazy init integration in lib.rs, and chaos test fixture (1000 threads + 100 patch cycles) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied. Phase 51 COMPLETE.
 19. **2026-05-27: Phase 52 Plan 06 complete.** Admin API CRUD for protected paths with Windows API validation (GetFullPathNameW), agent config payload extension, and AppState wiring. 520 dlp-server tests pass, all dlp-agent tests pass, clippy clean. DACL-03 requirement satisfied.
+20. **2026-05-27: Phase 52 Plan 05 complete.** DPAPI recovery runbook (`docs/operations/dpapi-recovery.md`) with re-init-from-env-vars and restore-from-backup flows, PowerShell verification snippets, UAT checklist (7 positive + 6 negative cases). Audit wiring verified: `DaclTamperDetected` routes to SIEM with `triggers_alert=true`, `DaclTripwireTooLarge` routes with `triggers_alert=false`. Full workspace test suite passes (520 lib tests), clippy clean (-D warnings), cargo build clean. Beads issue `dlp-rust-aq4` closed. DACL-05 requirement satisfied. Phase 52 COMPLETE (all 7 plans).
 
 ## Blockers
 
@@ -261,5 +262,5 @@ Active surface to consume in v0.11.0 implementation:
 
 ## Operator Next Steps
 
-- Phase 52: Plans 01 (DACL Tripwire), 02 (Repair Watcher), and 04 (DACL Staging) complete. Plans 03 (Protected Paths DB) and 05 (DPAPI Recovery Doc) remain.
+- Phase 52: ALL 7 plans complete (DACL Tripwire, Repair Watcher, Protected Paths DB, Staging, DPAPI Recovery Doc, Admin API + Config Sync, Staged Update Integration). Phase 52 COMPLETE.
 - Start the next milestone with /gsd-new-milestone
