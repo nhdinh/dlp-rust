@@ -4,13 +4,13 @@ milestone: v0.11.0
 milestone_name: Real-Time File Access Prevention
 status: executing
 last_updated: "2026-05-27T04:45:00.000Z"
-last_activity: 2026-05-27 -- Phase 52 Plan 01 complete (DACL Tripwire Writer)
+last_activity: 2026-05-27 -- Phase 52 Plan 06 complete (Admin API + Agent Config)
 progress:
   total_phases: 14
   completed_phases: 7
   total_plans: 38
-  completed_plans: 34
-  percent: 52
+  completed_plans: 35
+  percent: 53
 ---
 
 # Project State
@@ -26,9 +26,9 @@ progress:
 ## Current Position
 
 Phase: 52
-Plan: 04
-Status: Ready to execute
-Last activity: 2026-05-27 -- Phase 52 Plan 04 complete (DACL Staging Data Layer)
+Plan: 06
+Status: Completed
+Last activity: 2026-05-27 -- Phase 52 Plan 06 complete (Admin API + Agent Config)
 
 ## Progress
 
@@ -109,6 +109,7 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 16. **2026-05-21: Phase 59 Plan 01 complete.** ResolvedTier enum added to dlp-server with strictness-aware folder inheritance. Tier::strictness_rank() and is_stricter_than() added to dlp-common. LabelCache upgraded to store full CacheEntry metadata. resolve_tier now returns ResolvedTier (not Result<Tier>) and implements D-07b strictest-tier-wins semantics. 18 new tests, 659 total passing, clippy clean.
 17. **2026-05-22: Phase 51 Plans 01-04 complete.** EDR detection (edr_detector.rs), thread suspend protocol (thread_suspender.rs), ntdll patcher core with retour (ntdll_patcher.rs), ntdll trampoline bodies (trampolines.rs), and background re-verification thread (background_thread.rs) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied.
 18. **2026-05-22: Phase 51 Plans 05-06 complete.** BypassAlert IPC types (dlp-common), enable_ntdll_patching config flag (dlp-agent), service startup SIEM emission, OnceLock lazy init integration in lib.rs, and chaos test fixture (1000 threads + 100 patch cycles) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied. Phase 51 COMPLETE.
+19. **2026-05-27: Phase 52 Plan 06 complete.** Admin API CRUD for protected paths with Windows API validation (GetFullPathNameW), agent config payload extension, and AppState wiring. 520 dlp-server tests pass, all dlp-agent tests pass, clippy clean. DACL-03 requirement satisfied.
 
 ## Blockers
 
