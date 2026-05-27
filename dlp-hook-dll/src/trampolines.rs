@@ -9,6 +9,15 @@
 //! `CopyFile2` is a COM-based API and does not have a traditional IAT entry
 //! in most processes. It is covered indirectly via the underlying
 //! `NtCreateFile` and `NtWriteFile` hooks.
+//!
+//! ## Journal Operation Mapping
+//!
+//! The hook journal records every file-I/O operation before returning the
+//! classification decision. Operation types:
+//! - `CreateFile*`, `NtCreateFile`, `NtOpenFile` -> op = 1 (Create)
+//! - `WriteFile*`, `NtWriteFile` -> op = 2 (Write)
+//! - `DeleteFile*`, `NtSetInformationFile(FileDispositionInformation)` -> op = 3 (Delete)
+//! - `MoveFileEx*`, `CopyFileEx*`, `ReplaceFile*`, `NtSetInformationFile(FileRenameInfo)` -> op = 4 (SetInfo)
 
 // Trampolines are inherently unsafe FFI boundaries; safety docs and transmute
 // are pre-existing patterns from Plan 48-02.
@@ -67,10 +76,16 @@ fn get_fail_state() -> &'static Arc<FailModeState> {
 ///
 /// Returns `Some(deny_return_value)` if the operation should be denied,
 /// `None` if it should proceed to the original function.
+///
+/// `handle_value` is the HANDLE from the API call (0 for path-based ops where
+/// the handle is not yet available). `journal_op` is the operation type for
+/// the hook journal (1=Create, 2=Write, 3=Delete, 4=SetInfo).
 fn classify_and_log_path(
     path: &str,
     action: &str,
     fn_name: &str,
+    handle_value: u64,
+    journal_op: u8,
 ) -> Option<crate::fail_closed::DenyReturn> {
     let path_hash = crate::hash_path(path);
 
@@ -300,6 +315,10 @@ fn classify_and_log_path(
     // through the measure closure.
     crate::perf_telemetry::record_latency(elapsed_qpc, is_cache_hit);
 
+    // Write to hook journal BEFORE returning the decision (per D-23).
+    // This ensures both allow and deny paths are journaled.
+    crate::hook_journal::journal_write_from_trampoline(handle_value, journal_op, path);
+
     decision
 }
 
@@ -326,17 +345,24 @@ fn is_write_action(action: &str) -> bool {
 ///
 /// Returns `Some(deny_return_value)` if the operation should be denied,
 /// `None` if it should proceed to the original function.
+///
+/// `journal_op` is the operation type for the hook journal (1=Create, 2=Write,
+/// 3=Delete, 4=SetInfo). `path` is the file path for journal correlation
+/// (may be empty for pure handle-based ops where the path is resolved
+/// server-side).
 fn classify_and_log_handle(
     handle_value: u64,
     action: &str,
     fn_name: &str,
+    journal_op: u8,
+    path: &str,
 ) -> Option<crate::fail_closed::DenyReturn> {
     let start = std::time::Instant::now();
 
     let decision = crate::classify_handle(handle_value, action, crate::DEFAULT_PIPE_NAME);
     let latency = start.elapsed();
 
-    match decision {
+    let result = match decision {
         Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
             let msg = format!(
                 "[dlp-hook] ALLOW {} handle={} latency={}us\0",
@@ -367,7 +393,12 @@ fn classify_and_log_handle(
             crate::debug_log(&msg);
             Some(crate::fail_closed::DenyReturn::BoolFalse)
         }
-    }
+    };
+
+    // Write to hook journal BEFORE returning the decision (per D-23).
+    crate::hook_journal::journal_write_from_trampoline(handle_value, journal_op, path);
+
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -395,7 +426,7 @@ pub unsafe extern "system" fn HookCreateFileW(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::pcwstr_to_string(lpfilename);
-                    if let Some(_deny) = classify_and_log_path(&path, "CREATE", "CreateFileW") {
+                    if let Some(_deny) = classify_and_log_path(&path, "CREATE", "CreateFileW", 0, 1) {
                         return crate::fail_closed!(InvalidHandleValue);
                     }
                     let original = crate::ORIGINAL_CREATE_FILE_W.unwrap_or_else(|| {
@@ -484,10 +515,12 @@ pub unsafe extern "system" fn HookNtCreateFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::extract_nt_path(objectattributes);
-                    if let Some(_deny) = classify_and_log_path(&path, "CREATE", "NtCreateFile") {
+                    if let Some(_deny) = classify_and_log_path(&path, "CREATE", "NtCreateFile", 0, 1) {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
-                    let Some(original) = (unsafe { crate::ORIGINAL_NT_CREATE_FILE.or_else(|| crate::resolve_nt_create_file()) }) else {
+                    let Some(original) = (unsafe {
+                        crate::ORIGINAL_NT_CREATE_FILE.or_else(|| crate::resolve_nt_create_file())
+                    }) else {
                         return crate::fail_closed!(StatusAccessDenied);
                     };
                     original(
@@ -505,7 +538,9 @@ pub unsafe extern "system" fn HookNtCreateFile(
                     )
                 },
                 || {
-                    let Some(original) = (unsafe { crate::ORIGINAL_NT_CREATE_FILE.or_else(|| crate::resolve_nt_create_file()) }) else {
+                    let Some(original) = (unsafe {
+                        crate::ORIGINAL_NT_CREATE_FILE.or_else(|| crate::resolve_nt_create_file())
+                    }) else {
                         return crate::fail_closed!(StatusAccessDenied);
                     };
                     original(
@@ -525,7 +560,9 @@ pub unsafe extern "system" fn HookNtCreateFile(
             )
         },
         || {
-            let Some(original) = (unsafe { crate::ORIGINAL_NT_CREATE_FILE.or_else(|| crate::resolve_nt_create_file()) }) else {
+            let Some(original) = (unsafe {
+                crate::ORIGINAL_NT_CREATE_FILE.or_else(|| crate::resolve_nt_create_file())
+            }) else {
                 return crate::fail_closed!(StatusAccessDenied);
             };
             original(
@@ -567,7 +604,7 @@ pub unsafe extern "system" fn HookWriteFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let handle_value = hfile.0 as u64;
-                    if let Some(_deny) = classify_and_log_handle(handle_value, "WRITE", "WriteFile")
+                    if let Some(_deny) = classify_and_log_handle(handle_value, "WRITE", "WriteFile", 2, "")
                     {
                         return crate::fail_closed!(BoolFalse);
                     }
@@ -646,7 +683,7 @@ pub unsafe extern "system" fn HookWriteFileEx(
                 || {
                     let handle_value = hfile.0 as u64;
                     if let Some(_deny) =
-                        classify_and_log_handle(handle_value, "WRITE_EX", "WriteFileEx")
+                        classify_and_log_handle(handle_value, "WRITE_EX", "WriteFileEx", 2, "")
                     {
                         return crate::fail_closed!(BoolFalse);
                     }
@@ -725,10 +762,10 @@ pub unsafe extern "system" fn HookMoveFileExW(
                     let src_path = crate::pcwstr_to_string(lpexistingfilename);
                     let dst_path = crate::pcwstr_to_string(lpnewfilename);
 
-                    if let Some(_deny) = classify_and_log_path(&src_path, "MOVE", "MoveFileExW") {
+                    if let Some(_deny) = classify_and_log_path(&src_path, "MOVE", "MoveFileExW", 0, 4) {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) = classify_and_log_path(&dst_path, "MOVE", "MoveFileExW") {
+                    if let Some(_deny) = classify_and_log_path(&dst_path, "MOVE", "MoveFileExW", 0, 4) {
                         return crate::fail_closed!(BoolFalse);
                     }
 
@@ -792,10 +829,10 @@ pub unsafe extern "system" fn HookCopyFileExW(
                     let src_path = crate::pcwstr_to_string(lpexistingfilename);
                     let dst_path = crate::pcwstr_to_string(lpnewfilename);
 
-                    if let Some(_deny) = classify_and_log_path(&src_path, "COPY", "CopyFileExW") {
+                    if let Some(_deny) = classify_and_log_path(&src_path, "COPY", "CopyFileExW", 0, 4) {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) = classify_and_log_path(&dst_path, "COPY", "CopyFileExW") {
+                    if let Some(_deny) = classify_and_log_path(&dst_path, "COPY", "CopyFileExW", 0, 4) {
                         return crate::fail_closed!(BoolFalse);
                     }
 
@@ -870,7 +907,7 @@ pub unsafe extern "system" fn HookDeleteFileW(lpfilename: PCWSTR) -> windows::co
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::pcwstr_to_string(lpfilename);
-                    if let Some(_deny) = classify_and_log_path(&path, "DELETE", "DeleteFileW") {
+                    if let Some(_deny) = classify_and_log_path(&path, "DELETE", "DeleteFileW", 0, 3) {
                         return crate::fail_closed!(BoolFalse);
                     }
                     let original = crate::ORIGINAL_DELETE_FILE_W.unwrap_or_else(|| {
@@ -934,19 +971,31 @@ pub unsafe extern "system" fn HookReplaceFileW(
                     let replacement_path = crate::pcwstr_to_string(lpreplacementfilename);
                     let backup_path = crate::pcwstr_to_string(lpbackupfilename);
 
-                    if let Some(_deny) =
-                        classify_and_log_path(&replaced_path, "REPLACE", "ReplaceFileW")
-                    {
+                    if let Some(_deny) = classify_and_log_path(
+                        &replaced_path,
+                        "REPLACE",
+                        "ReplaceFileW",
+                        0,
+                        4,
+                    ) {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) =
-                        classify_and_log_path(&replacement_path, "REPLACE", "ReplaceFileW")
-                    {
+                    if let Some(_deny) = classify_and_log_path(
+                        &replacement_path,
+                        "REPLACE",
+                        "ReplaceFileW",
+                        0,
+                        4,
+                    ) {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) =
-                        classify_and_log_path(&backup_path, "REPLACE", "ReplaceFileW")
-                    {
+                    if let Some(_deny) = classify_and_log_path(
+                        &backup_path,
+                        "REPLACE",
+                        "ReplaceFileW",
+                        0,
+                        4,
+                    ) {
                         return crate::fail_closed!(BoolFalse);
                     }
 
@@ -1061,6 +1110,8 @@ pub unsafe extern "system" fn HookSetFileInformationByHandle(
                         handle_value,
                         "SET_INFO",
                         "SetFileInformationByHandle",
+                        4,
+                        "",
                     ) {
                         return crate::fail_closed!(BoolFalse);
                     }
@@ -1128,7 +1179,7 @@ pub unsafe extern "system" fn HookNtOpenFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::extract_nt_path(objectattributes);
-                    if let Some(_deny) = classify_and_log_path(&path, "OPEN", "NtOpenFile") {
+                    if let Some(_deny) = classify_and_log_path(&path, "OPEN", "NtOpenFile", 0, 1) {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original = crate::ORIGINAL_NT_OPEN_FILE.unwrap_or_else(|| {
@@ -1212,8 +1263,13 @@ pub unsafe extern "system" fn HookNtWriteFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let handle_value = filehandle.0 as u64;
-                    if let Some(_deny) =
-                        classify_and_log_handle(handle_value, "NT_WRITE", "NtWriteFile")
+                    if let Some(_deny) = classify_and_log_handle(
+                        handle_value,
+                        "NT_WRITE",
+                        "NtWriteFile",
+                        2,
+                        "",
+                    )
                     {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
@@ -1303,9 +1359,13 @@ pub unsafe extern "system" fn HookNtSetInformationFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let handle_value = filehandle.0 as u64;
-                    if let Some(_deny) =
-                        classify_and_log_handle(handle_value, "NT_SET_INFO", "NtSetInformationFile")
-                    {
+                    if let Some(_deny) = classify_and_log_handle(
+                        handle_value,
+                        "NT_SET_INFO",
+                        "NtSetInformationFile",
+                        4,
+                        "",
+                    ) {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original = crate::ORIGINAL_NT_SET_INFORMATION_FILE.unwrap_or_else(|| {
@@ -1400,10 +1460,11 @@ pub unsafe extern "system" fn NtdllTrampolineNtCreateFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::extract_nt_path(objectattributes);
-                    if let Some(_deny) = classify_and_log_path(&path, "CREATE", "NtCreateFile") {
+                    if let Some(_deny) = classify_and_log_path(&path, "CREATE", "NtCreateFile", 0, 1) {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
-                    let original_ptr = crate::ntdll_patcher::get_original_trampoline("NtCreateFile");
+                    let original_ptr =
+                        crate::ntdll_patcher::get_original_trampoline("NtCreateFile");
                     if let Some(ptr) = original_ptr {
                         let original: crate::NtCreateFileFn = std::mem::transmute(ptr);
                         original(
@@ -1439,7 +1500,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtCreateFile(
                     }
                 },
                 || {
-                    let original_ptr = crate::ntdll_patcher::get_original_trampoline("NtCreateFile");
+                    let original_ptr =
+                        crate::ntdll_patcher::get_original_trampoline("NtCreateFile");
                     if let Some(ptr) = original_ptr {
                         let original: crate::NtCreateFileFn = std::mem::transmute(ptr);
                         original(
@@ -1522,7 +1584,7 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::extract_nt_path(objectattributes);
-                    if let Some(_deny) = classify_and_log_path(&path, "OPEN", "NtOpenFile") {
+                    if let Some(_deny) = classify_and_log_path(&path, "OPEN", "NtOpenFile", 0, 1) {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original_ptr = crate::ntdll_patcher::get_original_trampoline("NtOpenFile");
@@ -1534,7 +1596,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
                             *mut std::ffi::c_void,
                             u32,
                             u32,
-                        ) -> NTSTATUS = std::mem::transmute(ptr);
+                        )
+                            -> NTSTATUS = std::mem::transmute(ptr);
                         original(
                             filehandle,
                             desiredaccess,
@@ -1544,7 +1607,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
                             openoptions,
                         )
                     } else {
-                        let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile")) }) else {
+                        let Some(fallback) =
+                            (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile")) })
+                        else {
                             return crate::fail_closed!(StatusAccessDenied);
                         };
                         let original: unsafe extern "system" fn(
@@ -1554,7 +1619,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
                             *mut std::ffi::c_void,
                             u32,
                             u32,
-                        ) -> NTSTATUS = std::mem::transmute(fallback);
+                        )
+                            -> NTSTATUS = std::mem::transmute(fallback);
                         original(
                             filehandle,
                             desiredaccess,
@@ -1575,7 +1641,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
                             *mut std::ffi::c_void,
                             u32,
                             u32,
-                        ) -> NTSTATUS = std::mem::transmute(ptr);
+                        )
+                            -> NTSTATUS = std::mem::transmute(ptr);
                         original(
                             filehandle,
                             desiredaccess,
@@ -1585,7 +1652,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
                             openoptions,
                         )
                     } else {
-                        let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile")) }) else {
+                        let Some(fallback) =
+                            (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile")) })
+                        else {
                             return crate::fail_closed!(StatusAccessDenied);
                         };
                         let original: unsafe extern "system" fn(
@@ -1595,7 +1664,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
                             *mut std::ffi::c_void,
                             u32,
                             u32,
-                        ) -> NTSTATUS = std::mem::transmute(fallback);
+                        )
+                            -> NTSTATUS = std::mem::transmute(fallback);
                         original(
                             filehandle,
                             desiredaccess,
@@ -1609,7 +1679,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
             )
         },
         || {
-            let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile")) }) else {
+            let Some(fallback) =
+                (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtOpenFile")) })
+            else {
                 return crate::fail_closed!(StatusAccessDenied);
             };
             let original: unsafe extern "system" fn(
@@ -1660,8 +1732,13 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let handle_value = filehandle.0 as u64;
-                    if let Some(_deny) =
-                        classify_and_log_handle(handle_value, "NT_WRITE", "NtWriteFile")
+                    if let Some(_deny) = classify_and_log_handle(
+                        handle_value,
+                        "NT_WRITE",
+                        "NtWriteFile",
+                        2,
+                        "",
+                    )
                     {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
@@ -1677,7 +1754,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
                             u32,
                             *const i64,
                             *mut u32,
-                        ) -> NTSTATUS = std::mem::transmute(ptr);
+                        )
+                            -> NTSTATUS = std::mem::transmute(ptr);
                         original(
                             filehandle,
                             event,
@@ -1690,7 +1768,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
                             key,
                         )
                     } else {
-                        let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile")) }) else {
+                        let Some(fallback) = (unsafe {
+                            crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile"))
+                        }) else {
                             return crate::fail_closed!(StatusAccessDenied);
                         };
                         let original: unsafe extern "system" fn(
@@ -1703,7 +1783,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
                             u32,
                             *const i64,
                             *mut u32,
-                        ) -> NTSTATUS = std::mem::transmute(fallback);
+                        )
+                            -> NTSTATUS = std::mem::transmute(fallback);
                         original(
                             filehandle,
                             event,
@@ -1730,7 +1811,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
                             u32,
                             *const i64,
                             *mut u32,
-                        ) -> NTSTATUS = std::mem::transmute(ptr);
+                        )
+                            -> NTSTATUS = std::mem::transmute(ptr);
                         original(
                             filehandle,
                             event,
@@ -1743,7 +1825,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
                             key,
                         )
                     } else {
-                        let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile")) }) else {
+                        let Some(fallback) = (unsafe {
+                            crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile"))
+                        }) else {
                             return crate::fail_closed!(StatusAccessDenied);
                         };
                         let original: unsafe extern "system" fn(
@@ -1756,7 +1840,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
                             u32,
                             *const i64,
                             *mut u32,
-                        ) -> NTSTATUS = std::mem::transmute(fallback);
+                        )
+                            -> NTSTATUS = std::mem::transmute(fallback);
                         original(
                             filehandle,
                             event,
@@ -1773,7 +1858,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
             )
         },
         || {
-            let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile")) }) else {
+            let Some(fallback) =
+                (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtWriteFile")) })
+            else {
                 return crate::fail_closed!(StatusAccessDenied);
             };
             let original: unsafe extern "system" fn(
@@ -1830,6 +1917,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
                         handle_value,
                         "NT_SET_INFO",
                         "NtSetInformationFile",
+                        4,
+                        "",
                     ) {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
@@ -1842,7 +1931,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
                             *mut std::ffi::c_void,
                             u32,
                             u32,
-                        ) -> NTSTATUS = std::mem::transmute(ptr);
+                        )
+                            -> NTSTATUS = std::mem::transmute(ptr);
                         original(
                             filehandle,
                             iostatusblock,
@@ -1851,9 +1941,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
                             fileinformationclass,
                         )
                     } else {
-                        let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!(
-                            "NtSetInformationFile"
-                        )) }) else {
+                        let Some(fallback) = (unsafe {
+                            crate::resolve_ntdll_proc(windows::core::s!("NtSetInformationFile"))
+                        }) else {
                             return crate::fail_closed!(StatusAccessDenied);
                         };
                         let original: unsafe extern "system" fn(
@@ -1862,7 +1952,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
                             *mut std::ffi::c_void,
                             u32,
                             u32,
-                        ) -> NTSTATUS = std::mem::transmute(fallback);
+                        )
+                            -> NTSTATUS = std::mem::transmute(fallback);
                         original(
                             filehandle,
                             iostatusblock,
@@ -1882,7 +1973,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
                             *mut std::ffi::c_void,
                             u32,
                             u32,
-                        ) -> NTSTATUS = std::mem::transmute(ptr);
+                        )
+                            -> NTSTATUS = std::mem::transmute(ptr);
                         original(
                             filehandle,
                             iostatusblock,
@@ -1891,9 +1983,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
                             fileinformationclass,
                         )
                     } else {
-                        let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!(
-                            "NtSetInformationFile"
-                        )) }) else {
+                        let Some(fallback) = (unsafe {
+                            crate::resolve_ntdll_proc(windows::core::s!("NtSetInformationFile"))
+                        }) else {
                             return crate::fail_closed!(StatusAccessDenied);
                         };
                         let original: unsafe extern "system" fn(
@@ -1902,7 +1994,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
                             *mut std::ffi::c_void,
                             u32,
                             u32,
-                        ) -> NTSTATUS = std::mem::transmute(fallback);
+                        )
+                            -> NTSTATUS = std::mem::transmute(fallback);
                         original(
                             filehandle,
                             iostatusblock,
@@ -1915,7 +2008,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtSetInformationFile(
             )
         },
         || {
-            let Some(fallback) = (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtSetInformationFile")) }) else {
+            let Some(fallback) =
+                (unsafe { crate::resolve_ntdll_proc(windows::core::s!("NtSetInformationFile")) })
+            else {
                 return crate::fail_closed!(StatusAccessDenied);
             };
             let original: unsafe extern "system" fn(
