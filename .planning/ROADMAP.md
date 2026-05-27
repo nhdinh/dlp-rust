@@ -63,7 +63,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 49: Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback** — drive the wider hook surface into every non-allowlisted user process via ETW Kernel-Process and `CreateRemoteThread`. (completed 2026-05-19)
 - [x] **Phase 50: Shared-Memory Classification Cache + Fail-Mode State Machine** — give the hook DLL a survivable sub-50µs hot path and a tier-gated asymmetric fail policy. (completed 2026-05-20)
 - [x] **Phase 51: ntdll Syscall-Stub Trampolines + EDR Coexistence** — close the direct-syscall bypass behind a default-off feature flag with detect-before-patch EDR safety. (completed 2026-05-22)
-- [ ] **Phase 52: DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc** — kernel-enforced NTFS backstop for T3/T4 roots, plus the carried-forward DPAPI recovery runbook.
+- [x] **Phase 52: DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc** — kernel-enforced NTFS backstop for T3/T4 roots, plus the carried-forward DPAPI recovery runbook. (Plan 01 complete 2026-05-27)
 - [ ] **Phase 53: ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring** — turn hook-vs-ETW divergence into auditable BypassAlert events routed through SIEM and the alert router.
 - [ ] **Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens** — operator UX for the two new server surfaces.
 - [ ] **Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode** — safe-rollout mode every industry DLP requires before production deployment.
@@ -183,7 +183,7 @@ Plans:
 **Plans:** 7/7 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 
 **Wave 1** *(no dependencies)*
-- [x] `52-01-PLAN.md` — DACL Tripwire Writer: raw ACL construction, explicit canonical algorithm (DLP Deny first, SYSTEM/DLP-Admin Allows, preserved non-DLP ACEs, inherited), SDDL snapshot, 60 KB guard on ALL write paths, access-control proof matrix, fail-closed 10K limit
+- [x] `52-01-PLAN.md` — DACL Tripwire Writer: raw ACL construction, explicit canonical algorithm (DLP Deny first, SYSTEM/DLP-Admin Allows, preserved non-DLP ACEs, inherited), SDDL snapshot, 60 KB guard on ALL write paths, access-control proof matrix, fail-closed 10K limit *(completed 2026-05-27)*
 - [x] `52-03-PLAN.md` — Protected Paths Server-Side Schema: SQLite schema with UNIQUE path, repository with conflict-aware sync_from_labels (manual entries preserved, tier-upgraded on conflict)
 
 **Wave 2** *(blocked on Wave 1 completion)*
