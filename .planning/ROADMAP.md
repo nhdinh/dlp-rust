@@ -183,19 +183,23 @@ Plans:
 **Plans:** 7/7 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 
 **Wave 1** *(no dependencies)*
+
 - [x] `52-01-PLAN.md` — DACL Tripwire Writer: raw ACL construction, explicit canonical algorithm (DLP Deny first, SYSTEM/DLP-Admin Allows, preserved non-DLP ACEs, inherited), SDDL snapshot, 60 KB guard on ALL write paths, access-control proof matrix, fail-closed 10K limit *(completed 2026-05-27)*
 - [x] `52-03-PLAN.md` — Protected Paths Server-Side Schema: SQLite schema with UNIQUE path, repository with conflict-aware sync_from_labels (manual entries preserved, tier-upgraded on conflict) *(completed 2026-05-27)*
 
 **Wave 2** *(blocked on Wave 1 completion)*
+
 - [x] `52-02-PLAN.md` — DACL Repair Watcher: ReadDirectoryChangesW per-path with bWatchSubtree=true, crossbeam channel, debounced repair (500ms-2s), 60s polling backstop with FULL subtree walk, DaclTamperDetected audit with triggers_alert=true *(completed 2026-05-27)*
 - [x] `52-04-PLAN.md` — Two-Phase Staged Updates Data Layer: agent SQLite staging table, explicit StagingState enum (STAGED -> WATCHER_SUPPRESSED -> ACL_REMOVED -> APPLIED -> GC), per-path locking via DashMap<PathBuf, Mutex<()>>, adaptive GC *(completed 2026-05-27)*
 - [x] `52-06-PLAN.md` — Protected Paths Admin API + Config Sync: CRUD routes with Windows API path validation (GetFullPathNameW, rejects UNC/extended-length/volume GUID/8.3), AgentConfigPayload extension, AppState wiring *(completed 2026-05-27)*
 
 **Wave 3** *(blocked on Waves 1-2 completion)*
+
 - [x] `52-07-PLAN.md` — Staged Update Integration: config diff in apply_payload_to_config with per-path lock coordination, staging-aware tamper suppression with state machine crash recovery, removal application task, expired-staging tamper alert negative case *(completed 2026-05-27)*
 - [x] `52-05-PLAN.md` — DPAPI Recovery Doc + Final Integration: runbook verified against Phase 47 env vars/service names, negative UAT cases (expired staging alert, partial apply rejection, junction skip), full audit wiring verification, workspace test suite *(completed 2026-05-27)*
 
 **Cross-cutting constraints:**
+
 - All audit events (`DaclTripwireTooLarge`, `DaclTamperDetected`) wired through `routed_to_siem()` with correct `triggers_alert()` semantics in Plans 01 and 02 (not deferred)
 - Per-path locking (`DashMap<PathBuf, Mutex<()>>`) serializes all concurrent operations on the same path across Plans 04 and 07
 - Windows API canonicalization (`GetFullPathNameW`) replaces regex validation in Plans 01 and 06
@@ -216,20 +220,25 @@ Plans:
 **Plans:** 7/7 plans planned (revised 2026-05-28)
 
 **Wave 1** *(no dependencies)*
+
 - [ ] `53-01-PLAN.md` — ETW Kernel-File Consumer: ferrisetw 1.2.0 integration, 256KB x 200 buffers, CREATE/WRITE/DELETE_PATH parsing, System32/WinSxS filter, `EventType::EtwConsumerGatedOff` distinct from Stopped (CR-09), `EtwFileEvent.nt_path_converted` flag (WR-11), 19 unit tests
 - [ ] `53-02-PLAN.md` — Hook DLL Journal Ring Buffer: per-process `GlobalDlpHookJournal_<pid>` shared memory (64 KiB), 56-byte `JournalEntry` with seq/file_object/op/path_hash/ts_qpc, Release fence (CR-03), ERROR_ALREADY_EXISTS handling (CR-04)
 - [ ] `53-03-PLAN.md` — Shared Path Normalization in dlp-common: extracted `normalize_path` + `fnv1a_64` from classification_cache.rs, `nt_path_to_dos_path()` for ETW FileName conversion (WR-09), 21 unit tests, zero hash-mismatch risk between DLL and correlator
 
 **Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] `53-04-PLAN.md` — Bypass Correlator: on-demand journal discovery + exponential backoff, +/-5ms QPC tolerance, path-hash exact match, allowlist pre-filter (Defender/CrowdStrike), explicit `file_object` wiring from ETW event (CR-08), NEW `batch_id` per retry (WR-10), skip unconverted NT paths (WR-11), `#[serde(default)]` on all new fields (WR-12), 26 unit tests
 
 **Wave 3** *(blocked on Wave 2 completion)*
+
 - [x] `53-05-PLAN.md` — Server-Side Bypass Alert Storage: `bypass_alerts` SQLite schema with `file_object INTEGER NOT NULL DEFAULT 0` (WR-12), `POST /audit/bypass` batch ingest (max 100, JWT-validated agent_id), v1+v2 deserialization with `#[serde(default)]`, `GET /admin/bypass-alerts` paginated filtered, `POST /admin/bypass-alerts/:id/ack` idempotent, 14 integration tests *(completed 2026-05-28)*
 
 **Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] `53-06-PLAN.md` — SIEM + Alert Router Wiring: `BypassAlertDetected` routes through `routed_to_siem()` and `triggers_alert()`, `EtwConsumerGatedOff` routes to SIEM only (CR-09), crit severity triggers alert_router::send, warn/info routes to SIEM only, 8 end-to-end integration tests including file_object E2E (CR-08) and v1 backward compat (WR-12)
 
 **Cross-cutting constraints:**
+
 - CR-08: `file_object` explicitly wired from ETW event through correlator to DB to SIEM payload — verified by dedicated test with 0xDEADBEEF mock value
 - CR-09: `EtwConsumerGatedOff` is a distinct event type from `EtwConsumerStopped`; gated-off path emits GatedOff (not Stopped); re-enable emits Started (no backwards Stopped)
 - WR-10: Failed batch retry generates NEW `batch_id` (UUID v4) per attempt; server dedup never blocks legitimate retries
@@ -266,12 +275,23 @@ Plans:
 **Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 
 Plans:
+**Wave 1**
+
 - [ ] 55-01-PLAN.md — Core types: EnforcementMode enum, AuditEvent extension, SQLite migration, PolicyRepository CRUD
 - [ ] 55-02-PLAN.md — PolicyStore effective mode computation, admin API payload extension, alert router severity downgrade
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 55-03-PLAN.md — Agent config parsing, IPC handler effective mode, enriched audit event emission
 - [ ] 55-04-PLAN.md — DACL tripwire mode awareness: skip Deny ACE for Audit-mode policies
 - [ ] 55-05-PLAN.md — Alert router + SIEM mode awareness: downgrade Audit-mode alerts, SIEM unchanged
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 55-06-PLAN.md — Admin TUI Conditions Builder: enforcement_mode dropdown, form wiring, global override banner
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 55-07-PLAN.md — Integration tests: round-trip Audit/Block/AuditAndBlock through admin API
 
 ### Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)
