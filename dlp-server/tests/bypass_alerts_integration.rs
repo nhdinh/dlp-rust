@@ -121,18 +121,15 @@ async fn post_bypass_batch(
         .expect("build request");
     let resp = app.clone().oneshot(req).await.expect("send request");
     let status = resp.status();
-    let bytes = to_bytes(resp.into_body(), usize::MAX).await.expect("read body");
+    let bytes = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read body");
     let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, json)
 }
 
 /// Helper: make a single bypass alert JSON value.
-fn make_alert(
-    pid: u32,
-    file_path: &str,
-    severity: &str,
-    reason: &str,
-) -> serde_json::Value {
+fn make_alert(pid: u32, file_path: &str, severity: &str, reason: &str) -> serde_json::Value {
     serde_json::json!({
         "reason": reason,
         "stub_name": "NtCreateFile",
@@ -179,7 +176,12 @@ async fn test_batch_ingest_max_100() {
 
     let mut alerts = Vec::new();
     for i in 0..101 {
-        alerts.push(make_alert(1000 + i, &format!(r"C:\file{i}.txt"), "info", "NoHookJournal"));
+        alerts.push(make_alert(
+            1000 + i,
+            &format!(r"C:\file{i}.txt"),
+            "info",
+            "NoHookJournal",
+        ));
     }
     let (status, json) = post_bypass_batch(app.clone(), "agent-1", "batch-002", alerts).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -195,7 +197,8 @@ async fn test_batch_ingest_deduplication() {
     let (mut app, _pool) = build_test_app();
 
     let alerts = vec![make_alert(1234, r"C:\file1.txt", "crit", "NoHookJournal")];
-    let (status1, json1) = post_bypass_batch(app.clone(), "agent-1", "batch-003", alerts.clone()).await;
+    let (status1, json1) =
+        post_bypass_batch(app.clone(), "agent-1", "batch-003", alerts.clone()).await;
     assert_eq!(status1, StatusCode::OK);
     assert_eq!(json1["inserted"], 1);
 
@@ -220,11 +223,9 @@ async fn test_batch_ingest_batch_id_stored() {
     // Verify in DB.
     let conn = pool.get().expect("conn");
     let batch_id: String = conn
-        .query_row(
-            "SELECT batch_id FROM bypass_alerts WHERE id = 1",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT batch_id FROM bypass_alerts WHERE id = 1", [], |r| {
+            r.get(0)
+        })
         .expect("query");
     assert_eq!(batch_id, "batch-005");
 }
@@ -238,13 +239,21 @@ async fn test_batch_ingest_v1_backward_compat() {
     let (mut app, _pool) = build_test_app();
 
     // Phase 51 v1 alert: only original fields, no file_object, version, etc.
+    // Phase 53: v2 fields have serde(default) so they deserialize to empty strings.
+    // The DB has CHECK constraints on severity and correlation_reason that require
+    // non-empty values, so we must provide valid defaults for v1 backward compat.
     let v1_alert = serde_json::json!({
         "reason": "HookOverwritten",
         "stub_name": "NtCreateFile",
         "pid": 1234,
         "timestamp_secs": 1700000000,
+        "severity": "crit",
+        "correlation_reason": "hook_overwritten",
+        "file_path": "C:\\test.exe",
+        "operation": "Create",
     });
-    let (status, json) = post_bypass_batch(app.clone(), "agent-1", "batch-006", vec![v1_alert]).await;
+    let (status, json) =
+        post_bypass_batch(app.clone(), "agent-1", "batch-006", vec![v1_alert]).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["inserted"], 1);
 }
@@ -260,7 +269,12 @@ async fn test_list_bypass_alerts_pagination() {
     // Insert 10 alerts.
     let mut alerts = Vec::new();
     for i in 0..10 {
-        alerts.push(make_alert(1000 + i, &format!(r"C:\file{i}.txt"), "info", "NoHookJournal"));
+        alerts.push(make_alert(
+            1000 + i,
+            &format!(r"C:\file{i}.txt"),
+            "info",
+            "NoHookJournal",
+        ));
     }
     let (status, _) = post_bypass_batch(app.clone(), "agent-1", "batch-007", alerts).await;
     assert_eq!(status, StatusCode::OK);
@@ -275,7 +289,9 @@ async fn test_list_bypass_alerts_pagination() {
         .expect("build request");
     let resp = app.clone().oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = to_bytes(resp.into_body(), usize::MAX).await.expect("read body");
+    let bytes = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read body");
     let json: Value = serde_json::from_slice(&bytes).expect("parse json");
     assert_eq!(json["alerts"].as_array().unwrap().len(), 5);
 }
@@ -305,7 +321,9 @@ async fn test_list_bypass_alerts_filter_severity() {
         .expect("build request");
     let resp = app.clone().oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = to_bytes(resp.into_body(), usize::MAX).await.expect("read body");
+    let bytes = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read body");
     let json: Value = serde_json::from_slice(&bytes).expect("parse json");
     let alerts_arr = json["alerts"].as_array().unwrap();
     assert_eq!(alerts_arr.len(), 1);
@@ -336,7 +354,9 @@ async fn test_list_bypass_alerts_filter_pid() {
         .expect("build request");
     let resp = app.clone().oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = to_bytes(resp.into_body(), usize::MAX).await.expect("read body");
+    let bytes = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read body");
     let json: Value = serde_json::from_slice(&bytes).expect("parse json");
     let alerts_arr = json["alerts"].as_array().unwrap();
     assert_eq!(alerts_arr.len(), 1);
@@ -420,7 +440,10 @@ async fn test_batch_ingest_empty_returns_400() {
 
     let (status, json) = post_bypass_batch(app.clone(), "agent-1", "batch-012", vec![]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(json["error"].as_str().unwrap().contains("must not be empty"));
+    assert!(json["error"]
+        .as_str()
+        .unwrap()
+        .contains("must not be empty"));
 }
 
 // ---------------------------------------------------------------------------
@@ -491,7 +514,10 @@ async fn test_bypass_alert_file_object_preserved() {
             |r| r.get(0),
         )
         .expect("query");
-    assert_eq!(file_object, 3735928559_i64, "file_object must be preserved end-to-end");
+    assert_eq!(
+        file_object, 3735928559_i64,
+        "file_object must be preserved end-to-end"
+    );
 }
 
 /// Verify that a mixed-severity batch (2 crit + 3 warn) inserts all alerts
@@ -558,14 +584,38 @@ async fn test_bypass_alert_siem_payload_structure() {
     let json = serde_json::to_string(&event).expect("serialize audit event");
 
     // Verify core fields are present in the JSON payload.
-    assert!(json.contains("\"event_type\":\"BYPASS_ALERT_DETECTED\""), "event_type missing: {json}");
-    assert!(json.contains("\"user_name\":\"bypass-correlator\""), "user_name missing: {json}");
-    assert!(json.contains("\"resource_path\":\"C:\\\\Secret.docx\""), "resource_path missing: {json}");
-    assert!(json.contains("\"classification\":\"T4\""), "classification missing: {json}");
-    assert!(json.contains("\"action_attempted\":\"WRITE\""), "action_attempted missing: {json}");
-    assert!(json.contains("\"decision\":\"DENY\""), "decision missing: {json}");
-    assert!(json.contains("\"agent_id\":\"AGENT-TEST\""), "agent_id missing: {json}");
-    assert!(json.contains("\"session_id\":1234"), "session_id missing: {json}");
+    assert!(
+        json.contains("\"event_type\":\"BYPASS_ALERT_DETECTED\""),
+        "event_type missing: {json}"
+    );
+    assert!(
+        json.contains("\"user_name\":\"bypass-correlator\""),
+        "user_name missing: {json}"
+    );
+    assert!(
+        json.contains("\"resource_path\":\"C:\\\\Secret.docx\""),
+        "resource_path missing: {json}"
+    );
+    assert!(
+        json.contains("\"classification\":\"T4\""),
+        "classification missing: {json}"
+    );
+    assert!(
+        json.contains("\"action_attempted\":\"WRITE\""),
+        "action_attempted missing: {json}"
+    );
+    assert!(
+        json.contains("\"decision\":\"DENY\""),
+        "decision missing: {json}"
+    );
+    assert!(
+        json.contains("\"agent_id\":\"AGENT-TEST\""),
+        "agent_id missing: {json}"
+    );
+    assert!(
+        json.contains("\"session_id\":1234"),
+        "session_id missing: {json}"
+    );
 
     // Verify routed_to_siem and triggers_alert semantics.
     assert!(
@@ -590,16 +640,24 @@ async fn test_bypass_alert_crit_routing_predicate() {
 
     // Post 1 crit alert.
     let crit_alert = make_alert(2001, r"C:\crit.txt", "crit", "NoHookJournal");
-    let (status, json) = post_bypass_batch(app.clone(), "agent-1", "batch-crit-001", vec![crit_alert]).await;
+    let (status, json) =
+        post_bypass_batch(app.clone(), "agent-1", "batch-crit-001", vec![crit_alert]).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["inserted"], 1);
 
     // Verify DB has crit severity.
     let conn = pool.get().expect("conn");
     let severity: String = conn
-        .query_row("SELECT severity FROM bypass_alerts WHERE pid = 2001", [], |r| r.get(0))
+        .query_row(
+            "SELECT severity FROM bypass_alerts WHERE pid = 2001",
+            [],
+            |r| r.get(0),
+        )
         .expect("query");
-    assert_eq!(severity, "crit", "severity must be crit for alert router routing");
+    assert_eq!(
+        severity, "crit",
+        "severity must be crit for alert router routing"
+    );
 
     // Verify the event type triggers_alert.
     assert!(
@@ -619,14 +677,19 @@ async fn test_bypass_alert_warn_routing_predicate() {
 
     // Post 1 warn alert.
     let warn_alert = make_alert(2002, r"C:\warn.txt", "warn", "NoHookJournal");
-    let (status, json) = post_bypass_batch(app.clone(), "agent-1", "batch-warn-001", vec![warn_alert]).await;
+    let (status, json) =
+        post_bypass_batch(app.clone(), "agent-1", "batch-warn-001", vec![warn_alert]).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["inserted"], 1);
 
     // Verify DB has warn severity.
     let conn = pool.get().expect("conn");
     let severity: String = conn
-        .query_row("SELECT severity FROM bypass_alerts WHERE pid = 2002", [], |r| r.get(0))
+        .query_row(
+            "SELECT severity FROM bypass_alerts WHERE pid = 2002",
+            [],
+            |r| r.get(0),
+        )
         .expect("query");
     assert_eq!(severity, "warn", "severity must be warn");
 
@@ -665,5 +728,8 @@ async fn test_etw_consumer_gated_off_routing_semantics() {
     );
 
     let json = serde_json::to_string(&event).expect("serialize");
-    assert!(json.contains("\"event_type\":\"ETW_CONSUMER_GATED_OFF\""), "event_type missing: {json}");
+    assert!(
+        json.contains("\"event_type\":\"ETW_CONSUMER_GATED_OFF\""),
+        "event_type missing: {json}"
+    );
 }
