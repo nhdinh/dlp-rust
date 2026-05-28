@@ -78,6 +78,10 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::ApprovalList { .. } => handle_approval_list(app, key),
         Screen::ApprovalDetail { .. } => handle_approval_detail(app, key),
         Screen::ApprovalGrant { .. } => handle_approval_grant(app, key),
+        // Phase 54 screens — stubbed, implemented in downstream plans.
+        Screen::ProtectedPathList { .. } => {}
+        Screen::BypassAlertList { .. } => {}
+        Screen::BypassAlertDetail { .. } => {}
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -307,6 +311,13 @@ fn handle_text_input(app: &mut App, key: KeyEvent) {
                 | InputPurpose::AddDiskRegistryBusType { .. }
                 | InputPurpose::AddDiskRegistryEncryption { .. }
                 | InputPurpose::AddDiskRegistryModel { .. } => Screen::DevicesMenu { selected: 3 },
+                InputPurpose::AddProtectedPath => Screen::ProtectedPathList {
+                    paths: vec![],
+                    selected: 0,
+                    page: 0,
+                    page_size: 20,
+                    total: 0,
+                },
                 _ => Screen::PolicyMenu { selected: 0 },
             };
         }
@@ -533,6 +544,13 @@ fn on_text_confirmed(app: &mut App, value: &str, purpose: InputPurpose) {
                 StatusKind::Error,
             );
         }
+        // Phase 54 — stubbed, implemented in downstream plan.
+        InputPurpose::AddProtectedPath => {
+            app.set_status(
+                "AddProtectedPath not yet implemented",
+                StatusKind::Error,
+            );
+        }
     }
 }
 
@@ -660,6 +678,9 @@ fn on_confirm_yes(app: &mut App, purpose: &ConfirmPurpose) {
         ConfirmPurpose::DeleteLabel { id } => action_delete_label(app, id),
         ConfirmPurpose::ExpireLabel { id, .. } => action_expire_label(app, id),
         ConfirmPurpose::RevokeApproval { id } => action_revoke_approval(app, id),
+        ConfirmPurpose::DeleteProtectedPath { .. } => {
+            // Stub: implemented in downstream plan.
+        }
     }
 }
 
@@ -677,6 +698,16 @@ fn on_confirm_cancel(app: &mut App, purpose: &ConfirmPurpose) {
         ConfirmPurpose::RevokeApproval { .. } => {
             // Return to approval list after cancel
             action_load_approval_list(app, ApprovalFilter::All, 1);
+        }
+        ConfirmPurpose::DeleteProtectedPath { .. } => {
+            // Stub: return to protected path list on cancel.
+            app.screen = Screen::ProtectedPathList {
+                paths: vec![],
+                selected: 0,
+                page: 0,
+                page_size: 20,
+                total: 0,
+            };
         }
     }
 }

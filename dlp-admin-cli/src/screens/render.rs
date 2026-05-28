@@ -437,6 +437,12 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 *selected_field,
             );
         }
+        // Phase 54 screens — stubbed, rendered as empty in downstream plans.
+        Screen::ProtectedPathList { .. }
+        | Screen::BypassAlertList { .. }
+        | Screen::BypassAlertDetail { .. } => {
+            // Stub: draw nothing (blank screen) until render functions are added.
+        }
     }
 }
 
