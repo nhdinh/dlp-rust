@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Real-Time File Access Prevention
 status: completed
-last_updated: "2026-05-28T04:35:06.088Z"
-last_activity: 2026-05-28 -- Phase 54 Plan 04 executed (BypassAlertList screen with optimistic ack, severity filtering, pagination, detail popup; 184 dlp-admin-cli tests pass)
+last_updated: "2026-05-28T08:06:26.222Z"
+last_activity: 2026-05-28 -- Phase 54 Plan 06 executed (Integration verification: full workspace build zero warnings, 39 test suites pass, menu consistency fixed, cross-crate BypassAlert compatibility resolved; 188 dlp-admin-cli tests pass)
 progress:
   total_phases: 14
-  completed_phases: 8
-  total_plans: 50
-  completed_plans: 49
-  percent: 58
+  completed_phases: 9
+  total_plans: 51
+  completed_plans: 51
+  percent: 64
 ---
 
 # Project State
@@ -26,9 +26,9 @@ progress:
 ## Current Position
 
 Phase: 54
-Plan: 04
+Plan: 06
 Status: Completed
-Last activity: 2026-05-28 -- Phase 54 Plan 04 executed (BypassAlertList screen with optimistic ack, severity filtering, pagination, detail popup; 184 dlp-admin-cli tests pass)
+Last activity: 2026-05-28 -- Phase 54 Plan 06 executed (Integration verification: full workspace build zero warnings, 39 test suites pass, menu consistency fixed, cross-crate BypassAlert compatibility resolved; 188 dlp-admin-cli tests pass)
 
 ## Progress
 
@@ -115,6 +115,7 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 22. **2026-05-28: Phase 53 Plan 05 complete.** Server-side bypass alert storage: `bypass_alerts` SQLite table with CHECK constraints, 5 indexes (including pid per WR-05), composite unique constraint for dedup (WR-08). `BypassAlertsRepository` with list_by_filters, insert, insert_batch, ack_by_id, get_by_id — 15 unit tests. Three HTTP routes: POST /audit/bypass (agent JWT, max 100 alerts, v1+v2 deserialization), GET /admin/bypass-alerts (admin JWT, paginated filtered), POST /admin/bypass-alerts/{id}/ack (admin JWT, idempotent). 14 integration tests. SIEM relay for all alerts; alert router for crit severity. 542+ dlp-server lib tests pass, 14 integration tests pass, clippy clean (-D warnings), cargo build --workspace passes. ETW-04 requirement satisfied.
 23. **2026-05-28: Phase 53 Plan 06 complete.** SIEM + alert router wiring verification: 3 unit tests in `siem_connector.rs` (`test_relay_bypass_alert_detected`, `test_relay_etw_consumer_gated_off`, `test_relay_skips_non_siem_events`), 1 unit test in `alert_router.rs` (`test_send_alert_crit_severity`), 6 integration tests in `bypass_alerts_integration.rs` (file_object preservation CR-08, mixed severity DB state, SIEM payload structure, crit/warn routing predicates, EtwConsumerGatedOff semantics CR-09). 20 total integration tests pass. Full workspace lib tests pass. Clippy clean on workspace libs. ETW-05 requirement satisfied. Phase 53 COMPLETE (all 6 plans).
 24. **2026-05-28: Phase 54 Plan 04 complete.** BypassAlertList TUI screen: dispatch handler with optimistic ack (stable ID rollback, pending_ack_ids double-ack prevention), severity filter cycling (f), hide-acknowledged toggle (h), pagination (PgUp/PgDn), detail popup (Enter). Render function with severity badges (crit=Red+BOLD, warn=Yellow, info=Blue), relative time formatting, path truncation, human-friendly correlation reasons, acknowledged row dimming. 12 new unit tests (6 dispatch + 6 render). 184 dlp-admin-cli tests pass. Clippy clean (-D warnings). UX-02 requirement satisfied.
+25. **2026-05-28: Phase 54 Plan 06 complete.** Integration verification: full workspace build with zero warnings, all 39 test suites pass (lib + tests), clippy clean (-D warnings) across workspace, cargo fmt clean. Fixed SystemMenu consistency between dispatch.rs and render.rs (added missing "Syslog Config" item). Added `system_menu_item_count_and_order` test verifying 14 items and correct cycling. Fixed cross-crate BypassAlert struct compatibility in dlp-hook-dll (added v2 field defaults). Fixed v1 backward compat integration test (added required DB fields for CHECK constraints). 188 dlp-admin-cli tests pass. Phase 54 COMPLETE (all 6 plans).
 
 ## Blockers
 
