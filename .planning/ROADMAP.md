@@ -1,7 +1,7 @@
 ---
 milestone: v0.11.0
 milestone_name: Label Service + Workflow + Audit
-last_updated: 2026-05-27
+last_updated: 2026-05-28
 total_phases: 6
 v1_requirements: 26
 coverage: 26/26
@@ -64,8 +64,8 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 50: Shared-Memory Classification Cache + Fail-Mode State Machine** — give the hook DLL a survivable sub-50µs hot path and a tier-gated asymmetric fail policy. (completed 2026-05-20)
 - [x] **Phase 51: ntdll Syscall-Stub Trampolines + EDR Coexistence** — close the direct-syscall bypass behind a default-off feature flag with detect-before-patch EDR safety. (completed 2026-05-22)
 - [x] **Phase 52: DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc** — kernel-enforced NTFS backstop for T3/T4 roots, plus the carried-forward DPAPI recovery runbook. (completed 2026-05-27)
-- [ ] **Phase 53: ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring** — turn hook-vs-ETW divergence into auditable BypassAlert events routed through SIEM and the alert router.
-- [ ] **Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens** — operator UX for the two new server surfaces.
+- [x] **Phase 53: ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring** — turn hook-vs-ETW divergence into auditable BypassAlert events routed through SIEM and the alert router. (completed 2026-05-28)
+- [x] **Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens** — operator UX for the two new server surfaces. (completed 2026-05-28)
 - [ ] **Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode** — safe-rollout mode every industry DLP requires before production deployment.
 - [ ] **Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)** — fold SEED-004 in: device enumeration, two new ABAC attributes, admin TUI extension.
 - [ ] **Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT** — the milestone ship gate; per-vendor allowlist procedures, hash publishing, and real-Windows UAT (folds in former HARD-05).
@@ -248,7 +248,7 @@ Plans:
   3. Both screens follow the existing `screens/usb_enforcement.rs` and `screens/print_config.rs` pattern (mod/dispatch/render/client/app.rs extensions); navigation, focus, and Esc-back semantics match every other admin TUI screen.
   4. Eight new client methods (`list_protected_paths`, `create_protected_path`, `update_protected_path`, `delete_protected_path`, `list_bypass_alerts`, `ack_bypass_alert`, plus the two screens' navigation entry points) exist, are unit-tested, and surface server errors as user-readable toasts.
 
-**Plans:** 2/6 plans executed
+**Plans:** 6/6 plans executed
 **UI hint**: yes
 
 ### Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode
