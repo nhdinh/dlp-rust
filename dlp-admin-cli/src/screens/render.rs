@@ -15,6 +15,7 @@ use crate::app::{
     SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
     SIMULATE_NETWORK_LOCATION_OPTIONS, TIER_OPTIONS,
 };
+use crate::screens::protected_paths::{PROTECTED_PATH_LIST_EMPTY, PROTECTED_PATH_LIST_HINTS};
 use crate::screens::approvals::{
     APPROVAL_GRANT_HINTS, APPROVAL_LIST_EMPTY, APPROVAL_LIST_HINTS, EXPIRY_OPTIONS,
 };
@@ -113,6 +114,8 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                     "Print Config",
                     "Label Review Queue",
                     "Approval Management",
+                    "Protected Paths",
+                    "Bypass Alerts",
                     "Back",
                 ],
                 *selected,
@@ -437,10 +440,17 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 *selected_field,
             );
         }
-        // Phase 54 screens — stubbed, rendered as empty in downstream plans.
-        Screen::ProtectedPathList { .. }
-        | Screen::BypassAlertList { .. }
-        | Screen::BypassAlertDetail { .. } => {
+        Screen::ProtectedPathList {
+            paths,
+            selected,
+            page,
+            page_size,
+            total,
+        } => {
+            draw_protected_path_list(frame, area, paths, *selected, *page, *page_size, *total);
+        }
+        // Phase 54 screens — stubbed, rendered in downstream plans.
+        Screen::BypassAlertList { .. } | Screen::BypassAlertDetail { .. } => {
             // Stub: draw nothing (blank screen) until render functions are added.
         }
     }
@@ -3754,6 +3764,96 @@ fn draw_approval_grant(
     frame.render_widget(list, area);
 
     draw_hints(frame, area, APPROVAL_GRANT_HINTS);
+}
+
+/// Draws the Protected Path List screen as a scrollable table.
+///
+/// Columns: Source (badge), Path, Tier, Label ID.
+fn draw_protected_path_list(
+    frame: &mut Frame,
+    area: Rect,
+    paths: &[serde_json::Value],
+    selected: usize,
+    page: usize,
+    page_size: usize,
+    total: usize,
+) {
+    if paths.is_empty() {
+        let paragraph = Paragraph::new(PROTECTED_PATH_LIST_EMPTY)
+            .block(Block::default().title(" Protected Paths (0) ").borders(Borders::ALL))
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(paragraph, area);
+        draw_hints(frame, area, PROTECTED_PATH_LIST_HINTS);
+        return;
+    }
+
+    let total_pages = total.div_ceil(page_size).max(1);
+    let page_info = format!("Page {} of {} | {} per page", page + 1, total_pages, page_size);
+
+    let header = Row::new(vec!["Source", "Path", "Tier", "Label ID"])
+        .style(Style::default().add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = paths
+        .iter()
+        .map(|p| {
+            let source = p["source"].as_str().unwrap_or("-");
+            let source_badge = match source {
+                "auto" => ("[A]", Style::default().fg(Color::DarkGray)),
+                "manual" => ("[M]", Style::default().fg(Color::Cyan)),
+                _ => ("[?]", Style::default()),
+            };
+            let path = p["path"].as_str().unwrap_or("-");
+            let path_display = if path.len() > 40 {
+                format!("{}...", &path[..37])
+            } else {
+                path.to_string()
+            };
+            let tier = p["tier"].as_str().unwrap_or("-");
+            let tier_style = match tier {
+                "T3" => Style::default().fg(Color::Yellow),
+                "T4" => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                _ => Style::default(),
+            };
+            let label_id = p["label_id"].as_str().unwrap_or("-");
+
+            Row::new(vec![
+                Cell::from(source_badge.0.to_string()).style(source_badge.1),
+                Cell::from(path_display),
+                Cell::from(tier.to_string()).style(tier_style),
+                Cell::from(label_id.to_string()),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Length(8),      // Source badge [A]/[M]
+        Constraint::Percentage(45), // Path
+        Constraint::Percentage(10), // Tier
+        Constraint::Min(20),        // Label ID (remaining)
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .title(format!(" Protected Paths ({}) ", total))
+                .borders(Borders::ALL),
+        )
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(table, area, &mut state);
+
+    let hint_text = format!("{PROTECTED_PATH_LIST_HINTS}  |  {page_info}");
+    draw_hints(frame, area, &hint_text);
 }
 
 #[cfg(test)]
