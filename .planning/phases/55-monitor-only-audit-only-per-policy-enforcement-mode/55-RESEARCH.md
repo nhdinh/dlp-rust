@@ -530,22 +530,19 @@ pub const ENFORCEMENT_MODE_OPTIONS: [&str; 3] = ["Audit", "Block", "AuditAndBloc
 | A3 | `EvaluateResponse` can be extended with new fields without breaking existing agents | Code Examples | If wrong, need protocol versioning or backward-compat shim |
 | A4 | The DACL tripwire reads protected paths from agent config, not directly from policies | Common Pitfalls | If wrong, tripwire may need policy parsing logic |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Hook DLL protocol compatibility**
+1. **RESOLVED: Hook DLL protocol compatibility**
    - What we know: `HookResponse` currently has `decision`, `reason`, `cache_hint`, `cache_version`.
-   - What's unclear: Will adding fields to `EvaluateResponse` (server->agent HTTP) break older agents that don't expect them?
-   - Recommendation: Use `#[serde(default)]` on new `EvaluateResponse` fields. Old agents will ignore them. The server can send them unconditionally.
+   - Resolution: Use `#[serde(default)]` on new `EvaluateResponse` fields. Old agents will ignore them. The server can send them unconditionally. Implemented in Plan 55-01.
 
-2. **Agent config TOML backward compatibility**
+2. **RESOLVED: Agent config TOML backward compatibility**
    - What we know: `serde_ignored` is used to detect unknown keys without aborting.
-   - What's unclear: Will adding `[enforcement]` section cause warnings on every agent startup for older configs?
-   - Recommendation: Yes, a one-time warning is acceptable. The warning will stop once the server pushes the new config.
+   - Resolution: A one-time warning is acceptable. The warning will stop once the server pushes the new config. The agent defaults to `PerPolicy` when `[enforcement]` section is absent. Implemented in Plan 55-03.
 
-3. **Integration test scope**
+3. **RESOLVED: Integration test scope**
    - What we know: The CONTEXT.md specifies round-trip `Audit -> Block -> AuditAndBlock` via PUT.
-   - What's unclear: Should the integration test verify the actual file operation succeeds in Audit mode?
-   - Recommendation: Yes — the test should create a file in a monitored path with an Audit-mode DENY policy, verify the write succeeds, and verify the audit event has `would_have_denied = true`.
+   - Resolution: The integration test (Plan 55-07) verifies both the PUT round-trip AND the actual file operation succeeds in Audit mode with `would_have_denied = true` in the audit event.
 
 ## Environment Availability
 
