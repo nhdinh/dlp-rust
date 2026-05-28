@@ -8105,4 +8105,123 @@ mod protected_path_tests {
         handle_event(&mut app, crate::event::AppEvent::Key(key));
         assert!(matches!(app.screen, Screen::SystemMenu { selected: 10 }));
     }
+
+    #[test]
+    fn handle_bypass_alert_list_esc_returns_to_system_menu() {
+        let mut app = test_app();
+        app.screen = Screen::BypassAlertList {
+            alerts: vec![],
+            selected: 0,
+            filter: BypassAlertSeverityFilter::All,
+            hide_acknowledged: false,
+            page: 0,
+            page_size: 20,
+            total: 0,
+            pending_ack_ids: std::collections::HashSet::new(),
+        };
+        let key = KeyEvent::from(KeyCode::Esc);
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        assert!(matches!(app.screen, Screen::SystemMenu { selected: 11 }));
+    }
+
+    #[test]
+    fn handle_bypass_alert_list_enter_opens_detail() {
+        let mut app = test_app();
+        app.screen = Screen::BypassAlertList {
+            alerts: vec![serde_json::json!({"id": 1, "severity": "crit"})],
+            selected: 0,
+            filter: BypassAlertSeverityFilter::All,
+            hide_acknowledged: false,
+            page: 0,
+            page_size: 20,
+            total: 1,
+            pending_ack_ids: std::collections::HashSet::new(),
+        };
+        let key = KeyEvent::from(KeyCode::Enter);
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        assert!(matches!(app.screen, Screen::BypassAlertDetail { .. }));
+    }
+
+    #[test]
+    fn handle_bypass_alert_list_ack_prevents_double_ack() {
+        let mut app = test_app();
+        // Pre-populate pending_ack_ids to simulate an ack in flight
+        let mut pending = std::collections::HashSet::new();
+        pending.insert(1i64);
+        app.screen = Screen::BypassAlertList {
+            alerts: vec![serde_json::json!({
+                "id": 1,
+                "severity": "crit",
+                "acknowledged": false,
+            })],
+            selected: 0,
+            filter: BypassAlertSeverityFilter::All,
+            hide_acknowledged: false,
+            page: 0,
+            page_size: 20,
+            total: 1,
+            pending_ack_ids: pending,
+        };
+        // 'a' press on an alert already in pending_ack_ids should show "in progress"
+        let key = KeyEvent::from(KeyCode::Char('a'));
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        let (msg, kind) = app.status.as_ref().expect("status should be set");
+        assert_eq!(msg, "Ack in progress...");
+        assert_eq!(*kind, StatusKind::Info);
+    }
+
+    #[test]
+    fn handle_bypass_alert_list_ack_already_ack_shows_info() {
+        let mut app = test_app();
+        app.screen = Screen::BypassAlertList {
+            alerts: vec![serde_json::json!({
+                "id": 1,
+                "severity": "crit",
+                "acknowledged": true,
+            })],
+            selected: 0,
+            filter: BypassAlertSeverityFilter::All,
+            hide_acknowledged: false,
+            page: 0,
+            page_size: 20,
+            total: 1,
+            pending_ack_ids: std::collections::HashSet::new(),
+        };
+        let key = KeyEvent::from(KeyCode::Char('a'));
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        let (msg, kind) = app.status.as_ref().expect("status should be set");
+        assert_eq!(msg, "Alert already acknowledged");
+        assert_eq!(*kind, StatusKind::Info);
+    }
+
+    #[test]
+    fn handle_bypass_alert_detail_enter_attempts_reload() {
+        let mut app = test_app();
+        app.screen = Screen::BypassAlertDetail {
+            alert: serde_json::json!({"id": 1}),
+        };
+        let key = KeyEvent::from(KeyCode::Enter);
+        // The handler attempts to reload the list; in test mode (no server) this
+        // fails and sets an error status. The screen stays as BypassAlertDetail
+        // because action_load_bypass_alert_list fails before setting the screen.
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        // Verify the handler ran without panic and set an error status
+        let (msg, kind) = app.status.as_ref().expect("status should be set");
+        assert!(msg.contains("Error loading bypass alerts"), "expected error status, got: {msg}");
+        assert_eq!(*kind, StatusKind::Error);
+    }
+
+    #[test]
+    fn handle_bypass_alert_detail_esc_attempts_reload() {
+        let mut app = test_app();
+        app.screen = Screen::BypassAlertDetail {
+            alert: serde_json::json!({"id": 1}),
+        };
+        let key = KeyEvent::from(KeyCode::Esc);
+        // Same as Enter — attempts reload, fails in test mode, sets error status
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        let (msg, kind) = app.status.as_ref().expect("status should be set");
+        assert!(msg.contains("Error loading bypass alerts"), "expected error status, got: {msg}");
+        assert_eq!(*kind, StatusKind::Error);
+    }
 }

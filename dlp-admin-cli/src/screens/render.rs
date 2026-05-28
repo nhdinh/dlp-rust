@@ -4041,6 +4041,7 @@ fn format_relative_time(iso_timestamp: &str) -> String {
 }
 
 /// Renders the bypass alert list screen.
+#[allow(clippy::too_many_arguments)]
 ///
 /// Columns: Severity (colored badge), Time (relative), Image Path (truncated),
 /// File Path (truncated), Correlation Reason (human-friendly).
