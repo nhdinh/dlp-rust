@@ -1141,9 +1141,7 @@ pub enum Screen {
     },
     /// Bypass alert detail popup (read-only).
     /// Pattern: ApprovalDetail — full-screen read-only view.
-    BypassAlertDetail {
-        alert: serde_json::Value,
-    },
+    BypassAlertDetail { alert: serde_json::Value },
     /// Allowlist configuration screen.
     Allowlist {
         /// Screen state.
@@ -1273,10 +1271,22 @@ mod tests {
 
     #[test]
     fn bypass_alert_severity_filter_next_cycles() {
-        assert_eq!(BypassAlertSeverityFilter::All.next(), BypassAlertSeverityFilter::Crit);
-        assert_eq!(BypassAlertSeverityFilter::Crit.next(), BypassAlertSeverityFilter::Warn);
-        assert_eq!(BypassAlertSeverityFilter::Warn.next(), BypassAlertSeverityFilter::Info);
-        assert_eq!(BypassAlertSeverityFilter::Info.next(), BypassAlertSeverityFilter::All);
+        assert_eq!(
+            BypassAlertSeverityFilter::All.next(),
+            BypassAlertSeverityFilter::Crit
+        );
+        assert_eq!(
+            BypassAlertSeverityFilter::Crit.next(),
+            BypassAlertSeverityFilter::Warn
+        );
+        assert_eq!(
+            BypassAlertSeverityFilter::Warn.next(),
+            BypassAlertSeverityFilter::Info
+        );
+        assert_eq!(
+            BypassAlertSeverityFilter::Info.next(),
+            BypassAlertSeverityFilter::All
+        );
     }
 
     #[test]

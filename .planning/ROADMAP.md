@@ -248,7 +248,7 @@ Plans:
   3. Both screens follow the existing `screens/usb_enforcement.rs` and `screens/print_config.rs` pattern (mod/dispatch/render/client/app.rs extensions); navigation, focus, and Esc-back semantics match every other admin TUI screen.
   4. Eight new client methods (`list_protected_paths`, `create_protected_path`, `update_protected_path`, `delete_protected_path`, `list_bypass_alerts`, `ack_bypass_alert`, plus the two screens' navigation entry points) exist, are unit-tested, and surface server errors as user-readable toasts.
 
-**Plans:** 6/6 plans executed
+**Plans:** 4/6 plans executed
 **UI hint**: yes
 
 ### Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode
@@ -385,7 +385,7 @@ Plans:
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 6/6 | Complete    | 2026-05-22 |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 7/7 | Complete    | 2026-05-27 |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Complete    | 2026-05-28 |
-| 54. Admin TUI Protected Paths + Bypass Alerts Screens | 2/6 | In Progress|  |
+| 54. Admin TUI Protected Paths + Bypass Alerts Screens | 4/6 | In Progress|  |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 0/0 | Not started | - |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 0/0 | Not started | - |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 0/0 | Not started | - |
