@@ -4181,38 +4181,49 @@ fn draw_bypass_alert_list(
     draw_hints(frame, area, &hint_text);
 }
 
-/// Renders the bypass alert detail popup.
+/// Renders the bypass alert detail view.
 ///
-/// Shows all fields from the alert JSON: id, severity, correlation_reason,
-/// image_path, image_sha256, file_path, operation, timestamp, file_object,
-/// pid, acknowledged, created_at.
+/// Displays all 13 fields from BypassAlertRow in a read-only format.
+/// The `file_object` field is expected to be a non-negative kernel pointer;
+/// it is displayed as an unsigned hex value with 0x prefix.
 fn draw_bypass_alert_detail(
     frame: &mut Frame,
     area: Rect,
     alert: &serde_json::Value,
 ) {
     let id = alert["id"].as_i64().unwrap_or(0);
+    let agent_id = alert["agent_id"].as_str().unwrap_or("-");
     let severity = alert["severity"].as_str().unwrap_or("-");
+    let severity_label = match severity {
+        "crit" => "Critical",
+        "warn" => "Warning",
+        "info" => "Info",
+        _ => severity,
+    };
     let reason = alert["correlation_reason"].as_str().unwrap_or("-");
     let reason_display = match reason {
-        "no_hook_journal" | "NoHookJournal" => "No Hook Journal",
-        "op_mismatch" | "OpMismatch" => "Operation Mismatch",
-        "hook_overwritten" | "HookOverwritten" => "Hook Overwritten",
-        _ => reason,
+        "no_hook_journal" | "NoHookJournal" => "No Hook Journal".to_string(),
+        "op_mismatch" | "OpMismatch" => "Operation Mismatch".to_string(),
+        "hook_overwritten" | "HookOverwritten" => "Hook Overwritten".to_string(),
+        _ => format!("{} (raw: {})", reason, reason),
     };
     let image_path = alert["image_path"].as_str().unwrap_or("-");
-    let image_sha256 = alert["image_sha256"].as_str().unwrap_or("-");
-    let sha_display = if image_sha256.len() > 16 {
-        format!("{}...", &image_sha256[..16])
-    } else {
-        image_sha256.to_string()
+    let image_sha256 = alert["image_sha256"].as_str();
+    let sha_display = match image_sha256 {
+        Some(s) if s.len() > 16 => format!("{}...", &s[..16]),
+        Some(s) => s.to_string(),
+        None => "-".to_string(),
     };
     let file_path = alert["file_path"].as_str().unwrap_or("-");
     let operation = alert["operation"].as_str().unwrap_or("-");
-    let timestamp = alert["timestamp"].as_str().unwrap_or("-");
-    let file_object = alert["file_object"].as_str().unwrap_or("-");
+    let qpc_timestamp = alert["qpc_timestamp"].as_i64().unwrap_or(0);
+    // file_object is stored as i64 but represents a non-negative kernel pointer.
+    // Cast to u64 for correct hex formatting.
+    let file_object = alert["file_object"].as_i64().unwrap_or(0);
+    let file_object_display = format!("0x{:016X}", file_object as u64);
     let pid = alert["pid"].as_i64().unwrap_or(0);
     let acknowledged = alert["acknowledged"].as_bool().unwrap_or(false);
+    let ack_display = if acknowledged { "Yes" } else { "No" };
     let created_at = alert["created_at"].as_str().unwrap_or("-");
 
     let severity_style = match severity {
@@ -4222,18 +4233,25 @@ fn draw_bypass_alert_detail(
         _ => Style::default(),
     };
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![
             Span::styled("ID: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(format!("{id}")),
         ]),
         Line::from(vec![
-            Span::styled("Severity: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(severity.to_string(), severity_style),
+            Span::styled("Agent ID: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(agent_id.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("Reason: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(reason_display.to_string()),
+            Span::styled("Severity: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(severity_label.to_string(), severity_style),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Correlation Reason: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(reason_display),
         ]),
         Line::from(vec![
             Span::styled("Image Path: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -4243,6 +4261,14 @@ fn draw_bypass_alert_detail(
             Span::styled("Image SHA-256: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(sha_display),
         ]),
+    ];
+    if let Some(s) = image_sha256 {
+        lines.push(Line::from(vec![
+            Span::styled("                    ", Style::default()),
+            Span::raw(format!("Full SHA-256: {s}")),
+        ]));
+    }
+    lines.extend(vec![
         Line::from(vec![
             Span::styled("File Path: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(file_path.to_string()),
@@ -4252,12 +4278,12 @@ fn draw_bypass_alert_detail(
             Span::raw(operation.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("Timestamp: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(timestamp.to_string()),
+            Span::styled("QPC Timestamp: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(format!("{qpc_timestamp}")),
         ]),
         Line::from(vec![
             Span::styled("File Object: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(file_object.to_string()),
+            Span::raw(file_object_display),
         ]),
         Line::from(vec![
             Span::styled("PID: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -4265,13 +4291,13 @@ fn draw_bypass_alert_detail(
         ]),
         Line::from(vec![
             Span::styled("Acknowledged: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!("{acknowledged}")),
+            Span::raw(ack_display.to_string()),
         ]),
         Line::from(vec![
             Span::styled("Created At: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(created_at.to_string()),
         ]),
-    ];
+    ]);
 
     let paragraph = Paragraph::new(lines)
         .block(
@@ -4385,19 +4411,20 @@ mod bypass_alert_render_tests {
     }
 
     #[test]
-    fn draw_bypass_alert_detail_renders_fields() {
+    fn draw_bypass_alert_detail_renders_all_fields() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let alert = serde_json::json!({
             "id": 42,
+            "agent_id": "agent-001",
             "severity": "crit",
-            "correlation_reason": "HookOverwritten",
+            "correlation_reason": "no_hook_journal",
             "image_path": "C:\\\\Windows\\\\System32\\\\notepad.exe",
-            "image_sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            "image_sha256": "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
             "file_path": "C:\\\\Secret.doc",
             "operation": "WriteFile",
-            "timestamp": "2026-05-28T10:00:00Z",
-            "file_object": "0x00007FF6AABBCCDD",
+            "qpc_timestamp": 1234567890i64,
+            "file_object": 1407374883553283i64,
             "pid": 1234,
             "acknowledged": false,
             "created_at": "2026-05-28T10:00:00Z",
@@ -4409,20 +4436,121 @@ mod bypass_alert_render_tests {
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         let content: String = buf.content.iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("ID: 42"), "id missing: {content}");
-        assert!(content.contains("crit"), "severity missing: {content}");
+
+        assert!(content.contains("Bypass Alert Detail"), "title should be present");
+        assert!(content.contains("42"), "id should be present");
+        assert!(content.contains("agent-001"), "agent_id should be present");
+        assert!(content.contains("Critical"), "severity should be human-friendly");
+        assert!(content.contains("No Hook Journal"), "reason should be human-friendly");
+        assert!(content.contains("notepad.exe"), "image_path should be present");
+        assert!(content.contains("aabbccddeeff0011..."), "sha256 should be truncated");
+        assert!(content.contains("Secret.doc"), "file_path should be present");
+        assert!(content.contains("WriteFile"), "operation should be present");
+        assert!(content.contains("1234567890"), "qpc_timestamp should be present");
         assert!(
-            content.contains("Hook Overwritten"),
-            "reason missing: {content}"
+            content.contains("0x0005000000000003"),
+            "file_object should be hex formatted"
         );
+        assert!(content.contains("1234"), "pid should be present");
+        assert!(content.contains("No"), "acknowledged should show No");
         assert!(
-            content.contains("abcdef1234567890"),
-            "sha missing: {content}"
+            content.contains("2026-05-28T10:00:00Z"),
+            "created_at should be present"
         );
+        assert!(content.contains("[Enter/Esc] Back to list"), "hints should be present");
+    }
+
+    #[test]
+    fn draw_bypass_alert_detail_renders_unknown_correlation_reason_with_raw() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let alert = serde_json::json!({
+            "id": 99,
+            "agent_id": "agent-002",
+            "severity": "info",
+            "correlation_reason": "some_new_reason",
+            "image_path": "C:\\\\test.exe",
+            "file_path": "C:\\\\test.doc",
+            "operation": "Read",
+            "qpc_timestamp": 0,
+            "file_object": 0,
+            "pid": 0,
+            "acknowledged": true,
+            "created_at": "2026-05-28T10:00:00Z",
+        });
+        terminal
+            .draw(|frame| {
+                draw_bypass_alert_detail(frame, frame.area(), &alert);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+
         assert!(
-            content.contains("0x00007FF6AABBCCDD"),
-            "file_object missing: {content}"
+            content.contains("some_new_reason (raw: some_new_reason)"),
+            "unknown reason should show raw value"
         );
+        assert!(content.contains("Yes"), "acknowledged should show Yes");
+    }
+
+    #[test]
+    fn draw_bypass_alert_detail_handles_missing_sha256() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let alert = serde_json::json!({
+            "id": 1,
+            "agent_id": "agent-001",
+            "severity": "warn",
+            "correlation_reason": "op_mismatch",
+            "image_path": "C:\\\\test.exe",
+            "file_path": "C:\\\\test.doc",
+            "operation": "Write",
+            "qpc_timestamp": 0,
+            "file_object": 0,
+            "pid": 0,
+            "acknowledged": true,
+            "created_at": "2026-05-28T10:00:00Z",
+        });
+        terminal
+            .draw(|frame| {
+                draw_bypass_alert_detail(frame, frame.area(), &alert);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+
+        assert!(content.contains("-"), "missing sha256 should show dash");
+        assert!(content.contains("Yes"), "acknowledged should show Yes");
+        assert!(content.contains("Operation Mismatch"), "reason should be mapped");
+    }
+
+    #[test]
+    fn draw_bypass_alert_detail_severity_colors_applied() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let alert = serde_json::json!({
+            "id": 1,
+            "agent_id": "agent-001",
+            "severity": "crit",
+            "correlation_reason": "no_hook_journal",
+            "image_path": "C:\\\\test.exe",
+            "file_path": "C:\\\\test.doc",
+            "operation": "Write",
+            "qpc_timestamp": 0,
+            "file_object": 0,
+            "pid": 0,
+            "acknowledged": false,
+            "created_at": "2026-05-28T10:00:00Z",
+        });
+        terminal
+            .draw(|frame| {
+                draw_bypass_alert_detail(frame, frame.area(), &alert);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("Critical"), "severity label should be present");
     }
 
     #[test]
