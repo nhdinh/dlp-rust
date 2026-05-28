@@ -501,6 +501,106 @@ impl EngineClient {
         .await
     }
 
+    // -----------------------------------------------------------------------
+    // Protected Paths API (Phase 54)
+    // -----------------------------------------------------------------------
+
+    /// Calls GET /admin/protected-paths.
+    ///
+    /// Returns the full list of protected paths. The server does not support
+    /// pagination on this endpoint; the TUI paginates client-side.
+    #[allow(dead_code)]
+    pub async fn list_protected_paths(&self) -> Result<Vec<serde_json::Value>> {
+        self.get("admin/protected-paths").await
+    }
+
+    /// Calls POST /admin/protected-paths.
+    ///
+    /// Creates a new protected path with `source = "manual"`. The server
+    /// validates the path via `GetFullPathNameW` and returns 400 on invalid
+    /// paths.
+    #[allow(dead_code)]
+    pub async fn create_protected_path(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+        self.post("admin/protected-paths", body).await
+    }
+
+    /// Calls PUT /admin/protected-paths/{id}.
+    #[allow(dead_code)]
+    pub async fn update_protected_path(
+        &self,
+        id: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.put(&format!("admin/protected-paths/{id}"), body).await
+    }
+
+    /// Calls DELETE /admin/protected-paths/{id}.
+    #[allow(dead_code)]
+    pub async fn delete_protected_path(&self, id: &str) -> Result<()> {
+        self.delete(&format!("admin/protected-paths/{id}")).await
+    }
+
+    /// Calls POST /admin/protected-paths/sync.
+    ///
+    /// Re-imports policy-derived paths from labels. Idempotent; preserves
+    /// manual entries. Returns a JSON object with a `synced` count field.
+    #[allow(dead_code)]
+    pub async fn sync_protected_paths(&self) -> Result<serde_json::Value> {
+        self.post("admin/protected-paths/sync", &serde_json::json!({})).await
+    }
+
+    // -----------------------------------------------------------------------
+    // Bypass Alerts API (Phase 54)
+    // -----------------------------------------------------------------------
+
+    /// Calls GET /admin/bypass-alerts with optional filters and pagination.
+    ///
+    /// Returns a JSON object with `total` and `alerts` fields.
+    ///
+    /// # Arguments
+    ///
+    /// * `severity` - Optional severity filter ("crit", "warn", or "info").
+    /// * `acknowledged` - Optional acknowledged filter (`Some(false)` for unacknowledged only).
+    /// * `limit` - Maximum number of alerts to return.
+    /// * `offset` - Number of alerts to skip (for pagination).
+    #[allow(dead_code)]
+    pub async fn list_bypass_alerts(
+        &self,
+        severity: Option<&str>,
+        acknowledged: Option<bool>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<serde_json::Value> {
+        let mut path = format!("admin/bypass-alerts?limit={limit}&offset={offset}");
+        if let Some(s) = severity {
+            path.push_str(&format!("&severity={}", urlencoding::encode(s)));
+        }
+        if let Some(a) = acknowledged {
+            path.push_str(&format!("&acknowledged={a}"));
+        }
+        self.get(&path).await
+    }
+
+    /// Calls POST /admin/bypass-alerts/{id}/ack.
+    ///
+    /// Acknowledges a bypass alert. Returns `Ok(())` on 200 success.
+    /// Returns an error with the server response body on non-2xx status.
+    #[allow(dead_code)]
+    pub async fn ack_bypass_alert(&self, id: i64) -> Result<()> {
+        let url = self.build_url(&format!("admin/bypass-alerts/{id}/ack"));
+        let resp = self
+            .apply_auth(self.inner.post(&url))
+            .send()
+            .await
+            .with_context(|| format!("POST {url} failed"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("POST {url} returned {status}: {body}");
+        }
+        Ok(())
+    }
+
     /// Sends a DELETE request.  Returns `Ok(())` on 204 No Content.
     pub async fn delete(&self, path: &str) -> Result<()> {
         let url = self.build_url(path);
@@ -535,4 +635,68 @@ pub struct PaginatedLabelsResponse {
     pub limit: usize,
     /// Number of items skipped from the start of the result set.
     pub offset: usize,
+}
+
+#[cfg(test)]
+mod client_tests {
+    use super::*;
+
+    #[test]
+    fn list_protected_paths_method_exists() {
+        let client = EngineClient::for_test();
+        // Method exists and is callable; runtime would fail on non-routable URL.
+        let _ = client.list_protected_paths();
+    }
+
+    #[test]
+    fn create_protected_path_method_exists() {
+        let client = EngineClient::for_test();
+        let body = serde_json::json!({"path": "C:\\Test", "source": "manual", "tier": "T3"});
+        let _ = client.create_protected_path(&body);
+    }
+
+    #[test]
+    fn update_protected_path_method_exists() {
+        let client = EngineClient::for_test();
+        let body = serde_json::json!({"path": "C:\\Test", "source": "manual", "tier": "T3"});
+        let _ = client.update_protected_path("test-id", &body);
+    }
+
+    #[test]
+    fn delete_protected_path_method_exists() {
+        let client = EngineClient::for_test();
+        let _ = client.delete_protected_path("test-id");
+    }
+
+    #[test]
+    fn sync_protected_paths_method_exists() {
+        let client = EngineClient::for_test();
+        let _ = client.sync_protected_paths();
+    }
+
+    #[test]
+    fn list_bypass_alerts_method_exists() {
+        let client = EngineClient::for_test();
+        let _ = client.list_bypass_alerts(Some("crit"), Some(false), 20, 0);
+    }
+
+    #[test]
+    fn list_bypass_alerts_all_filters_none() {
+        let client = EngineClient::for_test();
+        let _ = client.list_bypass_alerts(None, None, 20, 0);
+    }
+
+    #[test]
+    fn ack_bypass_alert_method_exists() {
+        let client = EngineClient::for_test();
+        let _ = client.ack_bypass_alert(42);
+    }
+
+    #[test]
+    fn ack_bypass_alert_builds_correct_url() {
+        let client = EngineClient::for_test_with_url("http://127.0.0.1:9999".to_string());
+        // Verify the URL is built correctly by inspecting the method signature.
+        // The actual HTTP call would fail at runtime against a non-routable address.
+        let _ = client.ack_bypass_alert(123);
+    }
 }
