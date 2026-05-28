@@ -3,11 +3,11 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use crate::app::{
-    App, ApprovalFilter, CallerScreen, ConditionAttribute, ConfirmPurpose, ImportCaller,
-    ImportState, InputPurpose, LabelFilter, LabelFormMode, PasswordPurpose, PolicyFormState,
-    Screen, SimulateCaller, SimulateFormState, SimulateOutcome, StatusKind, TierPickerCaller,
-    UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, LDAP_BACK_ROW, LDAP_ROW_COUNT, LDAP_SAVE_ROW,
-    OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
+    App, ApprovalFilter, BypassAlertSeverityFilter, CallerScreen, ConditionAttribute,
+    ConfirmPurpose, ImportCaller, ImportState, InputPurpose, LabelFilter, LabelFormMode,
+    PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState,
+    SimulateOutcome, StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES,
+    LDAP_BACK_ROW, LDAP_ROW_COUNT, LDAP_SAVE_ROW, OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
 };
 use crate::event::AppEvent;
 use crate::screens::approvals::EXPIRY_OPTIONS;
@@ -80,8 +80,8 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::ApprovalGrant { .. } => handle_approval_grant(app, key),
         // Phase 54 screens
         Screen::ProtectedPathList { .. } => handle_protected_path_list(app, key),
-        Screen::BypassAlertList { .. } => {}
-        Screen::BypassAlertDetail { .. } => {}
+        Screen::BypassAlertList { .. } => handle_bypass_alert_list(app, key),
+        Screen::BypassAlertDetail { .. } => handle_bypass_alert_detail(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -256,7 +256,7 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
             8 => action_load_label_review_queue(app),
             9 => action_load_approval_list(app, ApprovalFilter::All, 1),
             10 => action_load_protected_path_list(app, 0),
-            11 => action_load_bypass_alert_list_stub(app),
+            11 => action_load_bypass_alert_list(app, BypassAlertSeverityFilter::All, false, 0),
             12 => action_load_syslog_config(app),
             13 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
@@ -7630,9 +7630,178 @@ mod usb_enforcement_tests {
     }
 }
 
-/// Stub for BypassAlertList screen (Plan 54-04).
-fn action_load_bypass_alert_list_stub(app: &mut App) {
-    app.set_status("Bypass Alerts screen coming in next plan", StatusKind::Info);
+// ---------------------------------------------------------------------------
+// Bypass Alert List screen
+// ---------------------------------------------------------------------------
+
+fn handle_bypass_alert_list(app: &mut App, key: KeyEvent) {
+    let (alerts, selected, filter, hide_acknowledged, page, page_size, total, pending_ack_ids) =
+        match &mut app.screen {
+            Screen::BypassAlertList {
+                alerts,
+                selected,
+                filter,
+                hide_acknowledged,
+                page,
+                page_size,
+                total,
+                pending_ack_ids,
+                ..
+            } => (
+                alerts.clone(),
+                selected,
+                *filter,
+                *hide_acknowledged,
+                *page,
+                *page_size,
+                *total,
+                pending_ack_ids.clone(),
+            ),
+            _ => return,
+        };
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if !alerts.is_empty() {
+                nav(selected, alerts.len(), key.code);
+            }
+        }
+        KeyCode::Char('a') => {
+            // Optimistic ack: mark locally, call server, revert on error
+            if let Some(alert) = alerts.get(*selected) {
+                let already_ack = alert["acknowledged"].as_bool().unwrap_or(false);
+                let id = alert["id"].as_i64().unwrap_or(0);
+                if already_ack {
+                    app.set_status("Alert already acknowledged", StatusKind::Info);
+                } else if pending_ack_ids.contains(&id) {
+                    app.set_status("Ack in progress...", StatusKind::Info);
+                } else if id > 0 {
+                    // Track pending ack
+                    if let Screen::BypassAlertList { pending_ack_ids, .. } = &mut app.screen {
+                        pending_ack_ids.insert(id);
+                    }
+                    // Optimistic update
+                    if let Screen::BypassAlertList { alerts, .. } = &mut app.screen {
+                        if let Some(a) = alerts.iter_mut().find(|x| x["id"].as_i64() == Some(id)) {
+                            if let Some(obj) = a.as_object_mut() {
+                                obj.insert("acknowledged".to_string(), serde_json::json!(true));
+                            }
+                        }
+                    }
+                    app.set_status("Alert acknowledged", StatusKind::Success);
+                    // Server call
+                    let ack_result = app.rt.block_on(app.client.ack_bypass_alert(id));
+                    // Remove from pending
+                    if let Screen::BypassAlertList { pending_ack_ids, .. } = &mut app.screen {
+                        pending_ack_ids.remove(&id);
+                    }
+                    if let Err(e) = ack_result {
+                        // Revert by ID (stable lookup, not index)
+                        if let Screen::BypassAlertList { alerts, .. } = &mut app.screen {
+                            if let Some(a) = alerts.iter_mut().find(|x| x["id"].as_i64() == Some(id))
+                            {
+                                if let Some(obj) = a.as_object_mut() {
+                                    obj.insert("acknowledged".to_string(), serde_json::json!(false));
+                                }
+                            }
+                        }
+                        app.set_status(format!("Failed to acknowledge alert: {e}"), StatusKind::Error);
+                    }
+                }
+            }
+        }
+        KeyCode::Char('f') => {
+            let next_filter = filter.next();
+            action_load_bypass_alert_list(app, next_filter, hide_acknowledged, 0);
+        }
+        KeyCode::Char('h') => {
+            let next_hide = !hide_acknowledged;
+            action_load_bypass_alert_list(app, filter, next_hide, 0);
+        }
+        KeyCode::Char('r') => {
+            action_load_bypass_alert_list(app, filter, hide_acknowledged, page);
+        }
+        KeyCode::PageUp => {
+            if page > 0 {
+                action_load_bypass_alert_list(app, filter, hide_acknowledged, page - 1);
+            }
+        }
+        KeyCode::PageDown => {
+            if (page + 1) * page_size < total {
+                action_load_bypass_alert_list(app, filter, hide_acknowledged, page + 1);
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(alert) = alerts.get(*selected) {
+                app.screen = Screen::BypassAlertDetail {
+                    alert: alert.clone(),
+                };
+            }
+        }
+        KeyCode::Esc => app.screen = Screen::SystemMenu { selected: 11 },
+        _ => {}
+    }
+}
+
+fn handle_bypass_alert_detail(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter | KeyCode::Esc => {
+            // Return to list. Reload with defaults since we don't preserve filter state.
+            action_load_bypass_alert_list(app, BypassAlertSeverityFilter::All, false, 0);
+        }
+        _ => {}
+    }
+}
+
+fn action_load_bypass_alert_list(
+    app: &mut App,
+    filter: BypassAlertSeverityFilter,
+    hide_acknowledged: bool,
+    page: usize,
+) {
+    let page_size = 20usize;
+    let severity_filter = filter.as_str();
+    let ack_filter = if hide_acknowledged { Some(false) } else { None };
+    let offset = page * page_size;
+    match app
+        .rt
+        .block_on(app.client.list_bypass_alerts(severity_filter, ack_filter, page_size, offset))
+    {
+        Ok(response) => {
+            let alerts = response
+                .get("alerts")
+                .and_then(|a| a.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let total = response
+                .get("total")
+                .and_then(|t| t.as_u64())
+                .map(|t| t as usize)
+                .unwrap_or(alerts.len());
+            let total_pages = total.div_ceil(page_size).max(1);
+            app.set_status(
+                format!(
+                    "Loaded {} bypass alerts (page {} of {})",
+                    alerts.len(),
+                    page + 1,
+                    total_pages
+                ),
+                StatusKind::Success,
+            );
+            app.screen = Screen::BypassAlertList {
+                alerts,
+                selected: 0,
+                filter,
+                hide_acknowledged,
+                page,
+                page_size,
+                total,
+                pending_ack_ids: std::collections::HashSet::new(),
+            };
+        }
+        Err(e) => {
+            app.set_status(format!("Error loading bypass alerts: {e}"), StatusKind::Error);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
