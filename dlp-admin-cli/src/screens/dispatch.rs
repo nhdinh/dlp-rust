@@ -8248,4 +8248,30 @@ mod protected_path_tests {
         );
         assert_eq!(*kind, StatusKind::Error);
     }
+
+    #[test]
+    fn system_menu_item_count_and_order() {
+        // Verifies SystemMenu has exactly 14 items and navigation cycles correctly.
+        // This test prevents silent menu drift when new items are added.
+        let mut app = test_app();
+        app.screen = Screen::SystemMenu { selected: 0 };
+
+        // Navigate through all items and verify count
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..14 {
+            if let Screen::SystemMenu { selected } = &app.screen {
+                seen.insert(*selected);
+            }
+            let key = KeyEvent::from(KeyCode::Down);
+            handle_event(&mut app, crate::event::AppEvent::Key(key));
+        }
+        assert_eq!(seen.len(), 14, "SystemMenu should have exactly 14 items");
+
+        // Verify cycling: after 14 downs, should be back at 0
+        let selected = match &app.screen {
+            Screen::SystemMenu { selected } => *selected,
+            _ => panic!("expected SystemMenu"),
+        };
+        assert_eq!(selected, 0, "nav with 14 items should cycle back to 0");
+    }
 }
