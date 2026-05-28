@@ -213,7 +213,7 @@ Plans:
   4. Allowlisted PIDs (AV/EDR, self, system-critical, PPL) are dropped pre-correlation; the bypass-alerts feed contains zero entries from Defender/CrowdStrike/SentinelOne in the soak-test fixture.
   5. `POST /audit/bypass` ingests agent-emitted bypass alerts; alerts route through `siem_connector::relay` and (when `severity >= ALERT`) `alert_router::send` with no new outbound transport added; `GET /admin/bypass-alerts?since=&severity=` and `POST /admin/bypass-alerts/:id/ack` round-trip cleanly.
 
-**Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
+**Plans:** 7/7 plans planned (revised 2026-05-28)
 
 **Wave 1** *(no dependencies)*
 - [ ] `53-01-PLAN.md` — ETW Kernel-File Consumer: ferrisetw 1.2.0 integration, 256KB x 200 buffers, CREATE/WRITE/DELETE_PATH parsing, System32/WinSxS filter, `EventType::EtwConsumerGatedOff` distinct from Stopped (CR-09), `EtwFileEvent.nt_path_converted` flag (WR-11), 19 unit tests
@@ -264,6 +264,15 @@ Plans:
   4. The Conditions Builder dropdown is exercised by an integration test that round-trips Audit → Block → AuditAndBlock through `PUT /admin/policies/:id` and verifies the agent sees each mode within one `policy_sync` cycle.
 
 **Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
+
+Plans:
+- [ ] 55-01-PLAN.md — Core types: EnforcementMode enum, AuditEvent extension, SQLite migration, PolicyRepository CRUD
+- [ ] 55-02-PLAN.md — PolicyStore effective mode computation, admin API payload extension, alert router severity downgrade
+- [ ] 55-03-PLAN.md — Agent config parsing, IPC handler effective mode, enriched audit event emission
+- [ ] 55-04-PLAN.md — DACL tripwire mode awareness: skip Deny ACE for Audit-mode policies
+- [ ] 55-05-PLAN.md — Alert router + SIEM mode awareness: downgrade Audit-mode alerts, SIEM unchanged
+- [ ] 55-06-PLAN.md — Admin TUI Conditions Builder: enforcement_mode dropdown, form wiring, global override banner
+- [ ] 55-07-PLAN.md — Integration tests: round-trip Audit/Block/AuditAndBlock through admin API
 
 ### Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)
 
