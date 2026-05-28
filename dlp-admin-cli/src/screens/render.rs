@@ -15,7 +15,6 @@ use crate::app::{
     SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
     SIMULATE_NETWORK_LOCATION_OPTIONS, TIER_OPTIONS,
 };
-use crate::screens::protected_paths::{PROTECTED_PATH_LIST_EMPTY, PROTECTED_PATH_LIST_HINTS};
 use crate::screens::approvals::{
     APPROVAL_GRANT_HINTS, APPROVAL_LIST_EMPTY, APPROVAL_LIST_HINTS, EXPIRY_OPTIONS,
 };
@@ -27,6 +26,7 @@ use crate::screens::dispatch::operators_for;
 use crate::screens::print_config::{
     is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_KEYS, PRINT_CONFIG_LABELS,
 };
+use crate::screens::protected_paths::{PROTECTED_PATH_LIST_EMPTY, PROTECTED_PATH_LIST_HINTS};
 use crate::screens::syslog_config::draw_syslog_config;
 use crate::screens::usb_enforcement::{
     USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_LABELS,
@@ -2711,8 +2711,17 @@ fn draw_label_list(
         String::new()
     };
 
-    let total_pages = if total == 0 { 1 } else { total.div_ceil(page_size) };
-    let page_info = format!("Page {} of {} | {} per page", page + 1, total_pages, page_size);
+    let total_pages = if total == 0 {
+        1
+    } else {
+        total.div_ceil(page_size)
+    };
+    let page_info = format!(
+        "Page {} of {} | {} per page",
+        page + 1,
+        total_pages,
+        page_size
+    );
 
     let header = Row::new(vec!["Path", "Type", "Tier", "State", "Owner"])
         .style(Style::default().add_modifier(Modifier::BOLD))
@@ -2803,8 +2812,17 @@ fn draw_label_review_queue(
         format!(" Data Owner Review Queue ({}) ", labels.len())
     };
 
-    let total_pages = if total == 0 { 1 } else { total.div_ceil(page_size) };
-    let page_info = format!("Page {} of {} | {} per page", page + 1, total_pages, page_size);
+    let total_pages = if total == 0 {
+        1
+    } else {
+        total.div_ceil(page_size)
+    };
+    let page_info = format!(
+        "Page {} of {} | {} per page",
+        page + 1,
+        total_pages,
+        page_size
+    );
 
     if labels.is_empty() {
         let paragraph = Paragraph::new(LABEL_REVIEW_EMPTY)
@@ -3780,7 +3798,11 @@ fn draw_protected_path_list(
 ) {
     if paths.is_empty() {
         let paragraph = Paragraph::new(PROTECTED_PATH_LIST_EMPTY)
-            .block(Block::default().title(" Protected Paths (0) ").borders(Borders::ALL))
+            .block(
+                Block::default()
+                    .title(" Protected Paths (0) ")
+                    .borders(Borders::ALL),
+            )
             .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(paragraph, area);
         draw_hints(frame, area, PROTECTED_PATH_LIST_HINTS);
@@ -3788,7 +3810,12 @@ fn draw_protected_path_list(
     }
 
     let total_pages = total.div_ceil(page_size).max(1);
-    let page_info = format!("Page {} of {} | {} per page", page + 1, total_pages, page_size);
+    let page_info = format!(
+        "Page {} of {} | {} per page",
+        page + 1,
+        total_pages,
+        page_size
+    );
 
     let header = Row::new(vec!["Source", "Path", "Tier", "Label ID"])
         .style(Style::default().add_modifier(Modifier::BOLD))
@@ -3854,6 +3881,118 @@ fn draw_protected_path_list(
 
     let hint_text = format!("{PROTECTED_PATH_LIST_HINTS}  |  {page_info}");
     draw_hints(frame, area, &hint_text);
+}
+
+#[cfg(test)]
+mod protected_path_render_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    #[test]
+    fn draw_protected_path_list_empty_renders() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_protected_path_list(frame, frame.area(), &[], 0, 0, 20, 0);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("No protected paths configured"));
+    }
+
+    #[test]
+    fn draw_protected_path_list_renders_source_badge() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let paths = vec![serde_json::json!({
+            "id": "1",
+            "path": "C:\\Test",
+            "source": "manual",
+            "tier": "T3",
+            "label_id": null
+        })];
+        terminal
+            .draw(|frame| {
+                draw_protected_path_list(frame, frame.area(), &paths, 0, 0, 20, 1);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("[M]"), "manual badge missing: {content}");
+        assert!(content.contains("C:\\Test"), "path missing: {content}");
+    }
+
+    #[test]
+    fn draw_protected_path_list_auto_badge_renders() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let paths = vec![serde_json::json!({
+            "id": "2",
+            "path": "C:\\AutoPath",
+            "source": "auto",
+            "tier": "T4",
+            "label_id": "label-1"
+        })];
+        terminal
+            .draw(|frame| {
+                draw_protected_path_list(frame, frame.area(), &paths, 0, 0, 20, 1);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("[A]"), "auto badge missing: {content}");
+        assert!(content.contains("label-1"), "label_id missing: {content}");
+    }
+
+    #[test]
+    fn draw_protected_path_list_truncates_long_path() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let long_path = "C:\\\\".to_string() + &"A".repeat(50);
+        let paths = vec![serde_json::json!({
+            "id": "3",
+            "path": long_path,
+            "source": "manual",
+            "tier": "T3",
+            "label_id": null
+        })];
+        terminal
+            .draw(|frame| {
+                draw_protected_path_list(frame, frame.area(), &paths, 0, 0, 20, 1);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        // Should contain truncated path with ... suffix
+        assert!(content.contains("..."), "truncation missing: {content}");
+    }
+
+    #[test]
+    fn draw_protected_path_list_shows_page_info() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let paths = vec![serde_json::json!({
+            "id": "1",
+            "path": "C:\\Test",
+            "source": "manual",
+            "tier": "T3",
+            "label_id": null
+        })];
+        terminal
+            .draw(|frame| {
+                draw_protected_path_list(frame, frame.area(), &paths, 0, 0, 20, 1);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("Page 1 of 1"),
+            "page info missing: {content}"
+        );
+    }
 }
 
 #[cfg(test)]
