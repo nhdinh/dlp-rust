@@ -620,22 +620,13 @@ fn draw_bypass_alert_list(
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Protected Paths server pagination:** Does `GET /admin/protected-paths` support `limit`/`offset` query params, or does it return the full list?
-   - What we know: `list_all()` in repository orders by `path ASC` with no limit.
-   - What's unclear: Whether the handler accepts pagination params.
-   - Recommendation: Check Phase 52 artifacts. If no pagination, fetch full list and paginate client-side (simpler). If pagination exists, follow the `LabelList` pattern.
+1. **RESOLVED: Protected Paths server pagination** — `GET /admin/protected-paths` returns the full list (no `limit`/`offset` support in the handler). Decision: fetch full list and paginate client-side. Rationale: the protected paths table is expected to be small (<1000 entries), and client-side pagination avoids server changes.
 
-2. **Bypass alert relative timestamp formatting:** Should the TUI compute "2m ago" client-side from `created_at`, or does the server provide it?
-   - What we know: `created_at` is ISO-8601 string.
-   - What's unclear: Whether to use a simple bucket approach ("<1m", "5m", "1h", "1d") or chrono's relative formatting.
-   - Recommendation: Use simple bucket approach to avoid adding new dependencies.
+2. **RESOLVED: Bypass alert relative timestamp formatting** — Use simple bucket approach computed client-side from `created_at` ISO-8601. Buckets: "<1m", "1m", "5m", "15m", "1h", "4h", "1d", ">7d". No new dependencies needed; `chrono` is already in the dependency tree.
 
-3. **Bypass alert detail popup — should it be a modal overlay or a full screen?**
-   - What we know: `ApprovalDetail` is a full screen that returns to the list on Enter/Esc.
-   - What's unclear: Whether BypassAlertDetail should follow the same pattern or use a modal overlay like `ConditionsBuilder`.
-   - Recommendation: Follow `ApprovalDetail` pattern (full screen) for consistency.
+3. **RESOLVED: Bypass alert detail popup** — Full screen (not modal overlay), following the `ApprovalDetail` pattern. Enter/Esc returns to the list. Rendered as a `Paragraph` inside a `Block` with all fields listed label-per-line.
 
 ---
 
