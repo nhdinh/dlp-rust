@@ -229,7 +229,10 @@ impl NtdllPatcher {
 
             // Defensive null check after GetProcAddress.
             if stub_addr.is_null() {
-                let msg = format!("[dlp-hook] ntdll patch: resolved null address for {} ", fn_name);
+                let msg = format!(
+                    "[dlp-hook] ntdll patch: resolved null address for {} ",
+                    fn_name
+                );
                 crate::debug_log(&msg);
                 continue;
             }
@@ -456,10 +459,7 @@ impl NtdllPatcher {
 
         self.stubs[name.index()] = StubPatchState::Overwritten;
 
-        let msg = format!(
-            "[dlp-hook] ntdll stub marked Overwritten: {}\0",
-            fn_name
-        );
+        let msg = format!("[dlp-hook] ntdll stub marked Overwritten: {}\0", fn_name);
         crate::debug_log(&msg);
 
         emit_bypass_alert(BypassReason::HookOverwritten, fn_name);
@@ -636,13 +636,20 @@ fn emit_bypass_alert(reason: BypassReason, stub_name: &str) {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
+        // Phase 53: v2 fields with serde(default) for backward compat.
+        version: 1,
+        agent_id: String::new(),
+        image_path: String::new(),
+        image_sha256: None,
+        file_path: String::new(),
+        operation: String::new(),
+        file_object: 0,
+        qpc_timestamp: 0,
+        severity: String::new(),
+        correlation_reason: String::new(),
     };
     if let Ok(payload) = bincode::serialize(&alert) {
-        let _ = crate::pipe_client::send_raw_request(
-            crate::DEFAULT_PIPE_NAME,
-            &payload,
-            50,
-        );
+        let _ = crate::pipe_client::send_raw_request(crate::DEFAULT_PIPE_NAME, &payload, 50);
     }
     // Also log locally
     let msg = format!(
@@ -867,7 +874,12 @@ mod tests {
 
         // All should be NotPatched since nothing was actually patched.
         for (name, integrity) in &results {
-            assert_eq!(*integrity, StubIntegrity::NotPatched, "{} should be NotPatched", name);
+            assert_eq!(
+                *integrity,
+                StubIntegrity::NotPatched,
+                "{} should be NotPatched",
+                name
+            );
         }
     }
 
