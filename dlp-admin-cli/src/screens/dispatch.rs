@@ -5,9 +5,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use crate::app::{
     App, ApprovalFilter, BypassAlertSeverityFilter, CallerScreen, ConditionAttribute,
     ConfirmPurpose, ImportCaller, ImportState, InputPurpose, LabelFilter, LabelFormMode,
-    PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState,
-    SimulateOutcome, StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES,
-    LDAP_BACK_ROW, LDAP_ROW_COUNT, LDAP_SAVE_ROW, OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
+    PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState, SimulateOutcome,
+    StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, LDAP_BACK_ROW,
+    LDAP_ROW_COUNT, LDAP_SAVE_ROW, OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
 };
 use crate::event::AppEvent;
 use crate::screens::approvals::EXPIRY_OPTIONS;
@@ -7676,7 +7676,10 @@ fn handle_bypass_alert_list(app: &mut App, key: KeyEvent) {
                     app.set_status("Ack in progress...", StatusKind::Info);
                 } else if id > 0 {
                     // Track pending ack
-                    if let Screen::BypassAlertList { pending_ack_ids, .. } = &mut app.screen {
+                    if let Screen::BypassAlertList {
+                        pending_ack_ids, ..
+                    } = &mut app.screen
+                    {
                         pending_ack_ids.insert(id);
                     }
                     // Optimistic update
@@ -7691,20 +7694,30 @@ fn handle_bypass_alert_list(app: &mut App, key: KeyEvent) {
                     // Server call
                     let ack_result = app.rt.block_on(app.client.ack_bypass_alert(id));
                     // Remove from pending
-                    if let Screen::BypassAlertList { pending_ack_ids, .. } = &mut app.screen {
+                    if let Screen::BypassAlertList {
+                        pending_ack_ids, ..
+                    } = &mut app.screen
+                    {
                         pending_ack_ids.remove(&id);
                     }
                     if let Err(e) = ack_result {
                         // Revert by ID (stable lookup, not index)
                         if let Screen::BypassAlertList { alerts, .. } = &mut app.screen {
-                            if let Some(a) = alerts.iter_mut().find(|x| x["id"].as_i64() == Some(id))
+                            if let Some(a) =
+                                alerts.iter_mut().find(|x| x["id"].as_i64() == Some(id))
                             {
                                 if let Some(obj) = a.as_object_mut() {
-                                    obj.insert("acknowledged".to_string(), serde_json::json!(false));
+                                    obj.insert(
+                                        "acknowledged".to_string(),
+                                        serde_json::json!(false),
+                                    );
                                 }
                             }
                         }
-                        app.set_status(format!("Failed to acknowledge alert: {e}"), StatusKind::Error);
+                        app.set_status(
+                            format!("Failed to acknowledge alert: {e}"),
+                            StatusKind::Error,
+                        );
                     }
                 }
             }
@@ -7762,10 +7775,12 @@ fn action_load_bypass_alert_list(
     let severity_filter = filter.as_str();
     let ack_filter = if hide_acknowledged { Some(false) } else { None };
     let offset = page * page_size;
-    match app
-        .rt
-        .block_on(app.client.list_bypass_alerts(severity_filter, ack_filter, page_size, offset))
-    {
+    match app.rt.block_on(app.client.list_bypass_alerts(
+        severity_filter,
+        ack_filter,
+        page_size,
+        offset,
+    )) {
         Ok(response) => {
             let alerts = response
                 .get("alerts")
@@ -7799,7 +7814,10 @@ fn action_load_bypass_alert_list(
             };
         }
         Err(e) => {
-            app.set_status(format!("Error loading bypass alerts: {e}"), StatusKind::Error);
+            app.set_status(
+                format!("Error loading bypass alerts: {e}"),
+                StatusKind::Error,
+            );
         }
     }
 }
@@ -8207,7 +8225,10 @@ mod protected_path_tests {
         handle_event(&mut app, crate::event::AppEvent::Key(key));
         // Verify the handler ran without panic and set an error status
         let (msg, kind) = app.status.as_ref().expect("status should be set");
-        assert!(msg.contains("Error loading bypass alerts"), "expected error status, got: {msg}");
+        assert!(
+            msg.contains("Error loading bypass alerts"),
+            "expected error status, got: {msg}"
+        );
         assert_eq!(*kind, StatusKind::Error);
     }
 
@@ -8221,7 +8242,10 @@ mod protected_path_tests {
         // Same as Enter — attempts reload, fails in test mode, sets error status
         handle_event(&mut app, crate::event::AppEvent::Key(key));
         let (msg, kind) = app.status.as_ref().expect("status should be set");
-        assert!(msg.contains("Error loading bypass alerts"), "expected error status, got: {msg}");
+        assert!(
+            msg.contains("Error loading bypass alerts"),
+            "expected error status, got: {msg}"
+        );
         assert_eq!(*kind, StatusKind::Error);
     }
 }

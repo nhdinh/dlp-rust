@@ -18,6 +18,9 @@ use crate::app::{
 use crate::screens::approvals::{
     APPROVAL_GRANT_HINTS, APPROVAL_LIST_EMPTY, APPROVAL_LIST_HINTS, EXPIRY_OPTIONS,
 };
+use crate::screens::bypass_alerts::{
+    BYPASS_ALERT_DETAIL_HINTS, BYPASS_ALERT_LIST_EMPTY, BYPASS_ALERT_LIST_HINTS,
+};
 use crate::screens::cloud_config::{
     CLOUD_CONFIG_BACK_ROW, CLOUD_CONFIG_KEYS, CLOUD_CONFIG_LABELS, CLOUD_CONFIG_SAVE_ROW,
 };
@@ -25,9 +28,6 @@ use crate::screens::dispatch::condition_display;
 use crate::screens::dispatch::operators_for;
 use crate::screens::print_config::{
     is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_KEYS, PRINT_CONFIG_LABELS,
-};
-use crate::screens::bypass_alerts::{
-    BYPASS_ALERT_DETAIL_HINTS, BYPASS_ALERT_LIST_EMPTY, BYPASS_ALERT_LIST_HINTS,
 };
 use crate::screens::protected_paths::{PROTECTED_PATH_LIST_EMPTY, PROTECTED_PATH_LIST_HINTS};
 use crate::screens::syslog_config::draw_syslog_config;
@@ -119,6 +119,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                     "Approval Management",
                     "Protected Paths",
                     "Bypass Alerts",
+                    "Syslog Config",
                     "Back",
                 ],
                 *selected,
@@ -463,7 +464,14 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             ..
         } => {
             draw_bypass_alert_list(
-                frame, area, alerts, *selected, *filter, *hide_acknowledged, *page, *page_size,
+                frame,
+                area,
+                alerts,
+                *selected,
+                *filter,
+                *hide_acknowledged,
+                *page,
+                *page_size,
                 *total,
             );
         }
@@ -4063,13 +4071,15 @@ fn draw_bypass_alert_list(
         } else {
             String::new()
         };
-        let ack_suffix = if hide_acknowledged { " [Hide Ack'd]" } else { "" };
+        let ack_suffix = if hide_acknowledged {
+            " [Hide Ack'd]"
+        } else {
+            ""
+        };
         let paragraph = Paragraph::new(BYPASS_ALERT_LIST_EMPTY)
             .block(
                 Block::default()
-                    .title(format!(
-                        " Bypass Alerts (0){filter_suffix}{ack_suffix} "
-                    ))
+                    .title(format!(" Bypass Alerts (0){filter_suffix}{ack_suffix} "))
                     .borders(Borders::ALL),
             )
             .alignment(ratatui::layout::Alignment::Center);
@@ -4083,7 +4093,11 @@ fn draw_bypass_alert_list(
     } else {
         String::new()
     };
-    let ack_suffix = if hide_acknowledged { " [Hide Ack'd]" } else { "" };
+    let ack_suffix = if hide_acknowledged {
+        " [Hide Ack'd]"
+    } else {
+        ""
+    };
 
     let total_pages = total.div_ceil(page_size).max(1);
     let page_info = format!("Page {} of {} ({} total)", page + 1, total_pages, total);
@@ -4148,11 +4162,11 @@ fn draw_bypass_alert_list(
         .collect();
 
     let widths = [
-        Constraint::Percentage(10),  // Severity
-        Constraint::Percentage(12),  // Time
-        Constraint::Percentage(28),  // Image Path
-        Constraint::Percentage(28),  // File Path
-        Constraint::Percentage(22),  // Reason
+        Constraint::Percentage(10), // Severity
+        Constraint::Percentage(12), // Time
+        Constraint::Percentage(28), // Image Path
+        Constraint::Percentage(28), // File Path
+        Constraint::Percentage(22), // Reason
     ];
 
     let table = Table::new(rows, widths)
@@ -4186,11 +4200,7 @@ fn draw_bypass_alert_list(
 /// Displays all 13 fields from BypassAlertRow in a read-only format.
 /// The `file_object` field is expected to be a non-negative kernel pointer;
 /// it is displayed as an unsigned hex value with 0x prefix.
-fn draw_bypass_alert_detail(
-    frame: &mut Frame,
-    area: Rect,
-    alert: &serde_json::Value,
-) {
+fn draw_bypass_alert_detail(frame: &mut Frame, area: Rect, alert: &serde_json::Value) {
     let id = alert["id"].as_i64().unwrap_or(0);
     let agent_id = alert["agent_id"].as_str().unwrap_or("-");
     let severity = alert["severity"].as_str().unwrap_or("-");
@@ -4254,11 +4264,17 @@ fn draw_bypass_alert_detail(
             Span::raw(reason_display),
         ]),
         Line::from(vec![
-            Span::styled("Image Path: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Image Path: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Span::raw(image_path.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("Image SHA-256: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Image SHA-256: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Span::raw(sha_display),
         ]),
     ];
@@ -4278,11 +4294,17 @@ fn draw_bypass_alert_detail(
             Span::raw(operation.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("QPC Timestamp: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "QPC Timestamp: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Span::raw(format!("{qpc_timestamp}")),
         ]),
         Line::from(vec![
-            Span::styled("File Object: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "File Object: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Span::raw(file_object_display),
         ]),
         Line::from(vec![
@@ -4290,11 +4312,17 @@ fn draw_bypass_alert_detail(
             Span::raw(format!("{pid}")),
         ]),
         Line::from(vec![
-            Span::styled("Acknowledged: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Acknowledged: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Span::raw(ack_display.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("Created At: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Created At: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Span::raw(created_at.to_string()),
         ]),
     ]);
@@ -4370,7 +4398,10 @@ mod bypass_alert_render_tests {
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         let content: String = buf.content.iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("crit"), "severity badge missing: {content}");
+        assert!(
+            content.contains("crit"),
+            "severity badge missing: {content}"
+        );
         assert!(
             content.contains("No Hook Journal"),
             "reason display missing: {content}"
@@ -4407,7 +4438,10 @@ mod bypass_alert_render_tests {
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         let content: String = buf.content.iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("warn"), "severity badge missing: {content}");
+        assert!(
+            content.contains("warn"),
+            "severity badge missing: {content}"
+        );
     }
 
     #[test]
@@ -4437,16 +4471,37 @@ mod bypass_alert_render_tests {
         let buf = terminal.backend().buffer().clone();
         let content: String = buf.content.iter().map(|c| c.symbol()).collect();
 
-        assert!(content.contains("Bypass Alert Detail"), "title should be present");
+        assert!(
+            content.contains("Bypass Alert Detail"),
+            "title should be present"
+        );
         assert!(content.contains("42"), "id should be present");
         assert!(content.contains("agent-001"), "agent_id should be present");
-        assert!(content.contains("Critical"), "severity should be human-friendly");
-        assert!(content.contains("No Hook Journal"), "reason should be human-friendly");
-        assert!(content.contains("notepad.exe"), "image_path should be present");
-        assert!(content.contains("aabbccddeeff0011..."), "sha256 should be truncated");
-        assert!(content.contains("Secret.doc"), "file_path should be present");
+        assert!(
+            content.contains("Critical"),
+            "severity should be human-friendly"
+        );
+        assert!(
+            content.contains("No Hook Journal"),
+            "reason should be human-friendly"
+        );
+        assert!(
+            content.contains("notepad.exe"),
+            "image_path should be present"
+        );
+        assert!(
+            content.contains("aabbccddeeff0011..."),
+            "sha256 should be truncated"
+        );
+        assert!(
+            content.contains("Secret.doc"),
+            "file_path should be present"
+        );
         assert!(content.contains("WriteFile"), "operation should be present");
-        assert!(content.contains("1234567890"), "qpc_timestamp should be present");
+        assert!(
+            content.contains("1234567890"),
+            "qpc_timestamp should be present"
+        );
         assert!(
             content.contains("0x0005000000000003"),
             "file_object should be hex formatted"
@@ -4457,7 +4512,10 @@ mod bypass_alert_render_tests {
             content.contains("2026-05-28T10:00:00Z"),
             "created_at should be present"
         );
-        assert!(content.contains("[Enter/Esc] Back to list"), "hints should be present");
+        assert!(
+            content.contains("[Enter/Esc] Back to list"),
+            "hints should be present"
+        );
     }
 
     #[test]
@@ -4521,7 +4579,10 @@ mod bypass_alert_render_tests {
 
         assert!(content.contains("-"), "missing sha256 should show dash");
         assert!(content.contains("Yes"), "acknowledged should show Yes");
-        assert!(content.contains("Operation Mismatch"), "reason should be mapped");
+        assert!(
+            content.contains("Operation Mismatch"),
+            "reason should be mapped"
+        );
     }
 
     #[test]
@@ -4550,7 +4611,10 @@ mod bypass_alert_render_tests {
         let buf = terminal.backend().buffer().clone();
 
         let content: String = buf.content.iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("Critical"), "severity label should be present");
+        assert!(
+            content.contains("Critical"),
+            "severity label should be present"
+        );
     }
 
     #[test]
@@ -4558,7 +4622,10 @@ mod bypass_alert_render_tests {
         use chrono::Utc;
         let now = Utc::now().to_rfc3339();
         let result = format_relative_time(&now);
-        assert_eq!(result, "<1m", "recent timestamp should show <1m: got {result}");
+        assert_eq!(
+            result, "<1m",
+            "recent timestamp should show <1m: got {result}"
+        );
     }
 
     #[test]
