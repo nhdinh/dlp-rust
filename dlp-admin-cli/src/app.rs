@@ -123,6 +123,9 @@ pub enum InputPurpose {
         bus_type: String,
         encryption_status: String,
     },
+    /// Prompts for a protected path to add (server validates with GetFullPathNameW).
+    #[allow(dead_code)]
+    AddProtectedPath,
 }
 
 /// What happens when the user confirms a yes/no dialog.
@@ -161,6 +164,11 @@ pub enum ConfirmPurpose {
     },
     /// Confirm revocation of an approval by ID.
     RevokeApproval {
+        id: String,
+    },
+    /// Confirm deletion of a protected path by ID.
+    #[allow(dead_code)]
+    DeleteProtectedPath {
         id: String,
     },
 }
@@ -474,6 +482,50 @@ impl ApprovalFilter {
             Self::Rejected => Some("rejected"),
             Self::Revoked => Some("revoked"),
             Self::Expired => Some("expired"),
+        }
+    }
+}
+
+/// Filter state for the BypassAlertList screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code)]
+pub enum BypassAlertSeverityFilter {
+    #[default]
+    All,
+    Crit,
+    Warn,
+    Info,
+}
+
+#[allow(dead_code)]
+impl BypassAlertSeverityFilter {
+    /// Cycles to the next filter state.
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::Crit,
+            Self::Crit => Self::Warn,
+            Self::Warn => Self::Info,
+            Self::Info => Self::All,
+        }
+    }
+
+    /// Returns the wire-format query parameter value, or None for "all".
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::All => None,
+            Self::Crit => Some("crit"),
+            Self::Warn => Some("warn"),
+            Self::Info => Some("info"),
+        }
+    }
+
+    /// Returns the human-readable display label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Crit => "Critical",
+            Self::Warn => "Warning",
+            Self::Info => "Info",
         }
     }
 }
@@ -1066,6 +1118,32 @@ pub enum Screen {
         /// Buffered input while editing.
         buffer: String,
     },
+    /// Protected path management list screen.
+    /// Pattern: LabelList — scrollable table with CRUD actions and sync.
+    ProtectedPathList {
+        paths: Vec<serde_json::Value>,
+        selected: usize,
+        page: usize,
+        page_size: usize,
+        total: usize,
+    },
+    /// Bypass alert triage list screen.
+    /// Pattern: ApprovalList — scrollable table with ack action and filters.
+    BypassAlertList {
+        alerts: Vec<serde_json::Value>,
+        selected: usize,
+        filter: BypassAlertSeverityFilter,
+        hide_acknowledged: bool,
+        page: usize,
+        page_size: usize,
+        total: usize,
+        pending_ack_ids: std::collections::HashSet<i64>,
+    },
+    /// Bypass alert detail popup (read-only).
+    /// Pattern: ApprovalDetail — full-screen read-only view.
+    BypassAlertDetail {
+        alert: serde_json::Value,
+    },
     /// Allowlist configuration screen.
     Allowlist {
         /// Screen state.
@@ -1191,6 +1269,65 @@ mod tests {
     fn test_policy_form_state_default_mode_is_all() {
         let form = PolicyFormState::default();
         assert_eq!(form.mode, PolicyMode::ALL);
+    }
+
+    #[test]
+    fn bypass_alert_severity_filter_next_cycles() {
+        assert_eq!(BypassAlertSeverityFilter::All.next(), BypassAlertSeverityFilter::Crit);
+        assert_eq!(BypassAlertSeverityFilter::Crit.next(), BypassAlertSeverityFilter::Warn);
+        assert_eq!(BypassAlertSeverityFilter::Warn.next(), BypassAlertSeverityFilter::Info);
+        assert_eq!(BypassAlertSeverityFilter::Info.next(), BypassAlertSeverityFilter::All);
+    }
+
+    #[test]
+    fn bypass_alert_severity_filter_as_str() {
+        assert_eq!(BypassAlertSeverityFilter::All.as_str(), None);
+        assert_eq!(BypassAlertSeverityFilter::Crit.as_str(), Some("crit"));
+        assert_eq!(BypassAlertSeverityFilter::Warn.as_str(), Some("warn"));
+        assert_eq!(BypassAlertSeverityFilter::Info.as_str(), Some("info"));
+    }
+
+    #[test]
+    fn bypass_alert_severity_filter_label() {
+        assert_eq!(BypassAlertSeverityFilter::All.label(), "All");
+        assert_eq!(BypassAlertSeverityFilter::Crit.label(), "Critical");
+        assert_eq!(BypassAlertSeverityFilter::Warn.label(), "Warning");
+        assert_eq!(BypassAlertSeverityFilter::Info.label(), "Info");
+    }
+
+    #[test]
+    fn screen_protected_path_list_constructible() {
+        let s = Screen::ProtectedPathList {
+            paths: vec![],
+            selected: 0,
+            page: 0,
+            page_size: 20,
+            total: 0,
+        };
+        assert!(matches!(s, Screen::ProtectedPathList { .. }));
+    }
+
+    #[test]
+    fn screen_bypass_alert_list_constructible() {
+        let s = Screen::BypassAlertList {
+            alerts: vec![],
+            selected: 0,
+            filter: BypassAlertSeverityFilter::All,
+            hide_acknowledged: false,
+            page: 0,
+            page_size: 20,
+            total: 0,
+            pending_ack_ids: std::collections::HashSet::new(),
+        };
+        assert!(matches!(s, Screen::BypassAlertList { .. }));
+    }
+
+    #[test]
+    fn screen_bypass_alert_detail_constructible() {
+        let s = Screen::BypassAlertDetail {
+            alert: serde_json::json!({}),
+        };
+        assert!(matches!(s, Screen::BypassAlertDetail { .. }));
     }
 }
 
