@@ -553,7 +553,10 @@ fn on_text_confirmed(app: &mut App, value: &str, purpose: InputPurpose) {
                     action_load_protected_path_list(app, 0);
                 }
                 Err(e) => {
-                    app.set_status(format!("Error adding protected path: {e}"), StatusKind::Error);
+                    app.set_status(
+                        format!("Error adding protected path: {e}"),
+                        StatusKind::Error,
+                    );
                     app.screen = Screen::SystemMenu { selected: 10 };
                 }
             }
@@ -5152,10 +5155,10 @@ fn action_load_label_list_paginated(
         Some(filter.label())
     };
     let offset = page * page_size;
-    match app
-        .rt
-        .block_on(app.client.list_labels(state_filter, None, page_size, offset))
-    {
+    match app.rt.block_on(
+        app.client
+            .list_labels(state_filter, None, page_size, offset),
+    ) {
         Ok(resp) => {
             let total = resp.total as usize;
             app.set_status(
@@ -7672,10 +7675,7 @@ fn handle_protected_path_list(app: &mut App, key: KeyEvent) {
                         purpose: ConfirmPurpose::DeleteProtectedPath { id },
                     };
                 } else {
-                    app.set_status(
-                        "Only manual entries can be deleted",
-                        StatusKind::Error,
-                    );
+                    app.set_status("Only manual entries can be deleted", StatusKind::Error);
                 }
             }
         }
@@ -7720,7 +7720,7 @@ fn action_load_protected_path_list(app: &mut App, page: usize) {
                 StatusKind::Success,
             );
             // Clamp selected to valid range after reload
-            let selected = if paths.is_empty() { 0 } else { 0 };
+            let selected = 0;
             app.screen = Screen::ProtectedPathList {
                 paths,
                 selected,
@@ -7789,5 +7789,151 @@ fn handle_allowlist(app: &mut App, key: KeyEvent) {
                 app.screen = Screen::SystemMenu { selected: 2 };
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Protected Path List tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod protected_path_tests {
+    use super::*;
+    use crate::app::{App, Screen, StatusKind};
+    use crate::client::EngineClient;
+
+    fn test_app() -> App {
+        let client = EngineClient::for_test();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        App::new(client, rt)
+    }
+
+    #[test]
+    fn handle_protected_path_list_esc_returns_to_system_menu() {
+        let mut app = test_app();
+        app.screen = Screen::ProtectedPathList {
+            paths: vec![],
+            selected: 0,
+            page: 0,
+            page_size: 20,
+            total: 0,
+        };
+        let key = KeyEvent::from(KeyCode::Esc);
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        assert!(matches!(app.screen, Screen::SystemMenu { selected: 10 }));
+    }
+
+    #[test]
+    fn handle_protected_path_list_a_opens_text_input() {
+        let mut app = test_app();
+        app.screen = Screen::ProtectedPathList {
+            paths: vec![],
+            selected: 0,
+            page: 0,
+            page_size: 20,
+            total: 0,
+        };
+        let key = KeyEvent::from(KeyCode::Char('a'));
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        assert!(matches!(app.screen, Screen::TextInput { .. }));
+    }
+
+    #[test]
+    fn handle_protected_path_list_d_on_auto_shows_error() {
+        let mut app = test_app();
+        app.screen = Screen::ProtectedPathList {
+            paths: vec![
+                serde_json::json!({"id": "1", "path": "C:\\Test", "source": "auto", "tier": "T3"}),
+            ],
+            selected: 0,
+            page: 0,
+            page_size: 20,
+            total: 1,
+        };
+        let key = KeyEvent::from(KeyCode::Char('d'));
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        // Should stay on ProtectedPathList with error status
+        assert!(matches!(app.screen, Screen::ProtectedPathList { .. }));
+        let (msg, kind) = app.status.as_ref().expect("status should be set");
+        assert_eq!(msg, "Only manual entries can be deleted");
+        assert_eq!(*kind, StatusKind::Error);
+    }
+
+    #[test]
+    fn handle_protected_path_list_d_on_manual_opens_confirm() {
+        let mut app = test_app();
+        app.screen = Screen::ProtectedPathList {
+            paths: vec![
+                serde_json::json!({"id": "1", "path": "C:\\Test", "source": "manual", "tier": "T3"}),
+            ],
+            selected: 0,
+            page: 0,
+            page_size: 20,
+            total: 1,
+        };
+        let key = KeyEvent::from(KeyCode::Char('d'));
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        assert!(matches!(app.screen, Screen::Confirm { .. }));
+    }
+
+    #[test]
+    fn handle_system_menu_has_14_items() {
+        let mut app = test_app();
+        app.screen = Screen::SystemMenu { selected: 0 };
+        // Down 14 times should cycle back to 0 (0->1->2->...->13->0)
+        for _ in 0..14 {
+            let key = KeyEvent::from(KeyCode::Down);
+            handle_event(&mut app, crate::event::AppEvent::Key(key));
+        }
+        let selected = match &app.screen {
+            Screen::SystemMenu { selected } => *selected,
+            _ => panic!("expected SystemMenu"),
+        };
+        assert_eq!(selected, 0, "nav with 14 items should cycle correctly");
+    }
+
+    #[test]
+    fn handle_system_menu_protected_paths_at_index_10() {
+        let mut app = test_app();
+        app.screen = Screen::SystemMenu { selected: 0 };
+        // Navigate to index 10
+        for _ in 0..10 {
+            let key = KeyEvent::from(KeyCode::Down);
+            handle_event(&mut app, crate::event::AppEvent::Key(key));
+        }
+        let selected = match &app.screen {
+            Screen::SystemMenu { selected } => *selected,
+            _ => panic!("expected SystemMenu"),
+        };
+        assert_eq!(selected, 10, "Protected Paths should be at index 10");
+    }
+
+    #[test]
+    fn handle_system_menu_bypass_alerts_at_index_11() {
+        let mut app = test_app();
+        app.screen = Screen::SystemMenu { selected: 0 };
+        // Navigate to index 11
+        for _ in 0..11 {
+            let key = KeyEvent::from(KeyCode::Down);
+            handle_event(&mut app, crate::event::AppEvent::Key(key));
+        }
+        let selected = match &app.screen {
+            Screen::SystemMenu { selected } => *selected,
+            _ => panic!("expected SystemMenu"),
+        };
+        assert_eq!(selected, 11, "Bypass Alerts should be at index 11");
+    }
+
+    #[test]
+    fn handle_text_input_esc_add_protected_path_routes_to_system_menu() {
+        let mut app = test_app();
+        app.screen = Screen::TextInput {
+            prompt: "Protected path".to_string(),
+            input: String::new(),
+            purpose: InputPurpose::AddProtectedPath,
+        };
+        let key = KeyEvent::from(KeyCode::Esc);
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        assert!(matches!(app.screen, Screen::SystemMenu { selected: 10 }));
     }
 }
