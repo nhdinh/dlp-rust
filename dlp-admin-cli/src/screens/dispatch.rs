@@ -78,8 +78,8 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::ApprovalList { .. } => handle_approval_list(app, key),
         Screen::ApprovalDetail { .. } => handle_approval_detail(app, key),
         Screen::ApprovalGrant { .. } => handle_approval_grant(app, key),
-        // Phase 54 screens — stubbed, implemented in downstream plans.
-        Screen::ProtectedPathList { .. } => {}
+        // Phase 54 screens
+        Screen::ProtectedPathList { .. } => handle_protected_path_list(app, key),
         Screen::BypassAlertList { .. } => {}
         Screen::BypassAlertDetail { .. } => {}
         // Read-only views: Enter or Esc goes back.
@@ -241,8 +241,9 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
         // Phase 43.05: expanded from 6 to 7 items — added "USB Enforcement" at index 5.
         // Phase 38.2: expanded from 7 to 9 items — added "Cloud Config" at index 6, "Print Config" at index 7.
         // Phase 59: expanded from 9 to 10 items — added "Label Review Queue" at index 8.
-        // Phase 62: expanded from 11 to 12 items — added "Syslog Config" at index 10.
-        KeyCode::Up | KeyCode::Down => nav(selected, 12, key.code),
+        // Phase 54: expanded from 12 to 14 items — added "Protected Paths" at 10,
+        // "Bypass Alerts" at 11.
+        KeyCode::Up | KeyCode::Down => nav(selected, 14, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
@@ -254,8 +255,10 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
             7 => action_load_print_config(app),
             8 => action_load_label_review_queue(app),
             9 => action_load_approval_list(app, ApprovalFilter::All, 1),
-            10 => action_load_syslog_config(app),
-            11 => app.screen = Screen::MainMenu { selected: 2 },
+            10 => action_load_protected_path_list(app, 0),
+            11 => action_load_bypass_alert_list_stub(app),
+            12 => action_load_syslog_config(app),
+            13 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
@@ -311,13 +314,7 @@ fn handle_text_input(app: &mut App, key: KeyEvent) {
                 | InputPurpose::AddDiskRegistryBusType { .. }
                 | InputPurpose::AddDiskRegistryEncryption { .. }
                 | InputPurpose::AddDiskRegistryModel { .. } => Screen::DevicesMenu { selected: 3 },
-                InputPurpose::AddProtectedPath => Screen::ProtectedPathList {
-                    paths: vec![],
-                    selected: 0,
-                    page: 0,
-                    page_size: 20,
-                    total: 0,
-                },
+                InputPurpose::AddProtectedPath => Screen::SystemMenu { selected: 10 },
                 _ => Screen::PolicyMenu { selected: 0 },
             };
         }
@@ -544,12 +541,22 @@ fn on_text_confirmed(app: &mut App, value: &str, purpose: InputPurpose) {
                 StatusKind::Error,
             );
         }
-        // Phase 54 — stubbed, implemented in downstream plan.
         InputPurpose::AddProtectedPath => {
-            app.set_status(
-                "AddProtectedPath not yet implemented",
-                StatusKind::Error,
-            );
+            let body = serde_json::json!({
+                "path": value,
+                "source": "manual",
+                "tier": "T3",
+            });
+            match app.rt.block_on(app.client.create_protected_path(&body)) {
+                Ok(_) => {
+                    app.set_status("Protected path added".to_string(), StatusKind::Success);
+                    action_load_protected_path_list(app, 0);
+                }
+                Err(e) => {
+                    app.set_status(format!("Error adding protected path: {e}"), StatusKind::Error);
+                    app.screen = Screen::SystemMenu { selected: 10 };
+                }
+            }
         }
     }
 }
@@ -678,9 +685,7 @@ fn on_confirm_yes(app: &mut App, purpose: &ConfirmPurpose) {
         ConfirmPurpose::DeleteLabel { id } => action_delete_label(app, id),
         ConfirmPurpose::ExpireLabel { id, .. } => action_expire_label(app, id),
         ConfirmPurpose::RevokeApproval { id } => action_revoke_approval(app, id),
-        ConfirmPurpose::DeleteProtectedPath { .. } => {
-            // Stub: implemented in downstream plan.
-        }
+        ConfirmPurpose::DeleteProtectedPath { id } => action_delete_protected_path(app, id),
     }
 }
 
@@ -700,14 +705,7 @@ fn on_confirm_cancel(app: &mut App, purpose: &ConfirmPurpose) {
             action_load_approval_list(app, ApprovalFilter::All, 1);
         }
         ConfirmPurpose::DeleteProtectedPath { .. } => {
-            // Stub: return to protected path list on cancel.
-            app.screen = Screen::ProtectedPathList {
-                paths: vec![],
-                selected: 0,
-                page: 0,
-                page_size: 20,
-                total: 0,
-            };
+            action_load_protected_path_list(app, 0);
         }
     }
 }
@@ -7626,6 +7624,153 @@ mod usb_enforcement_tests {
             }
             other => panic!("expected SystemMenu, got {other:?}"),
         }
+    }
+}
+
+/// Stub for BypassAlertList screen (Plan 54-04).
+fn action_load_bypass_alert_list_stub(app: &mut App) {
+    app.set_status("Bypass Alerts screen coming in next plan", StatusKind::Info);
+}
+
+// ---------------------------------------------------------------------------
+// Protected Path List screen
+// ---------------------------------------------------------------------------
+
+fn handle_protected_path_list(app: &mut App, key: KeyEvent) {
+    let (paths, selected, page, page_size, total) = match &mut app.screen {
+        Screen::ProtectedPathList {
+            paths,
+            selected,
+            page,
+            page_size,
+            total,
+        } => (paths.clone(), selected, *page, *page_size, *total),
+        _ => return,
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if !paths.is_empty() {
+                nav(selected, paths.len(), key.code);
+            }
+        }
+        KeyCode::Char('a') => {
+            app.screen = Screen::TextInput {
+                prompt: "Protected path (e.g., C:\\Sensitive)".to_string(),
+                input: String::new(),
+                purpose: InputPurpose::AddProtectedPath,
+            };
+        }
+        KeyCode::Char('d') => {
+            if let Some(path) = paths.get(*selected) {
+                let source = path["source"].as_str().unwrap_or("");
+                if source == "manual" {
+                    let id = path["id"].as_str().unwrap_or_default().to_string();
+                    let path_str = path["path"].as_str().unwrap_or("<unnamed>").to_string();
+                    app.screen = Screen::Confirm {
+                        message: format!("Delete protected path '{path_str}'?"),
+                        yes_selected: false,
+                        purpose: ConfirmPurpose::DeleteProtectedPath { id },
+                    };
+                } else {
+                    app.set_status(
+                        "Only manual entries can be deleted",
+                        StatusKind::Error,
+                    );
+                }
+            }
+        }
+        KeyCode::Char('s') => action_sync_protected_paths(app),
+        KeyCode::Char('r') => action_load_protected_path_list(app, page),
+        KeyCode::PageUp => {
+            if page > 0 {
+                action_load_protected_path_list(app, page - 1);
+            }
+        }
+        KeyCode::PageDown => {
+            if (page + 1) * page_size < total {
+                action_load_protected_path_list(app, page + 1);
+            }
+        }
+        KeyCode::Esc => app.screen = Screen::SystemMenu { selected: 10 },
+        _ => {}
+    }
+}
+
+fn action_load_protected_path_list(app: &mut App, page: usize) {
+    let page_size = 20usize;
+    match app.rt.block_on(app.client.list_protected_paths()) {
+        Ok(all_paths) => {
+            let total = all_paths.len();
+            // Client-side pagination: slice the full list
+            let start = page * page_size;
+            let end = (start + page_size).min(total);
+            let paths: Vec<serde_json::Value> = if start < total {
+                all_paths[start..end].to_vec()
+            } else {
+                vec![]
+            };
+            let total_pages = total.div_ceil(page_size).max(1);
+            app.set_status(
+                format!(
+                    "Loaded {} protected paths (page {} of {})",
+                    paths.len(),
+                    page + 1,
+                    total_pages
+                ),
+                StatusKind::Success,
+            );
+            // Clamp selected to valid range after reload
+            let selected = if paths.is_empty() { 0 } else { 0 };
+            app.screen = Screen::ProtectedPathList {
+                paths,
+                selected,
+                page,
+                page_size,
+                total,
+            };
+        }
+        Err(e) => app.set_status(
+            format!("Error loading protected paths: {e}"),
+            StatusKind::Error,
+        ),
+    }
+}
+
+fn action_sync_protected_paths(app: &mut App) {
+    match app.rt.block_on(app.client.sync_protected_paths()) {
+        Ok(response) => {
+            let synced = response.get("synced").and_then(|v| v.as_u64()).unwrap_or(0);
+            if synced > 0 {
+                app.set_status(
+                    format!("Synced {synced} policy-derived paths"),
+                    StatusKind::Success,
+                );
+            } else {
+                app.set_status(
+                    "No changes — all policy paths up to date".to_string(),
+                    StatusKind::Info,
+                );
+            }
+            // Refresh the list to show updated state
+            action_load_protected_path_list(app, 0);
+        }
+        Err(e) => app.set_status(
+            format!("Error syncing protected paths: {e}"),
+            StatusKind::Error,
+        ),
+    }
+}
+
+fn action_delete_protected_path(app: &mut App, id: &str) {
+    match app.rt.block_on(app.client.delete_protected_path(id)) {
+        Ok(()) => {
+            app.set_status("Protected path deleted".to_string(), StatusKind::Success);
+            action_load_protected_path_list(app, 0);
+        }
+        Err(e) => app.set_status(
+            format!("Error deleting protected path: {e}"),
+            StatusKind::Error,
+        ),
     }
 }
 
