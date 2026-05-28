@@ -37,7 +37,9 @@ mod tests {
     #[test]
     fn test_label_detail_non_recursive() {
         // If LabelDetail had a Screen-typed field, this would not compile.
-        let detail = crate::app::Screen::LabelDetail { label: serde_json::json!({}) };
+        let detail = crate::app::Screen::LabelDetail {
+            label: serde_json::json!({}),
+        };
         assert!(matches!(detail, crate::app::Screen::LabelDetail { .. }));
     }
 }

@@ -8,8 +8,7 @@ pub const PROTECTED_PATH_LIST_HINTS: &str =
     "[a] Add  [d] Delete  [s] Sync  [r] Refresh  [PgUp/PgDn] Page  [Esc] Back";
 /// Empty state message for ProtectedPathList.
 #[allow(dead_code)]
-pub const PROTECTED_PATH_LIST_EMPTY: &str =
-    "No protected paths configured. Press [a] to add one.";
+pub const PROTECTED_PATH_LIST_EMPTY: &str = "No protected paths configured. Press [a] to add one.";
 
 #[cfg(test)]
 mod tests {

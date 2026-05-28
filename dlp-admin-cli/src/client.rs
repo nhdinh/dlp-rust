@@ -520,7 +520,10 @@ impl EngineClient {
     /// validates the path via `GetFullPathNameW` and returns 400 on invalid
     /// paths.
     #[allow(dead_code)]
-    pub async fn create_protected_path(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn create_protected_path(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
         self.post("admin/protected-paths", body).await
     }
 
@@ -546,7 +549,8 @@ impl EngineClient {
     /// manual entries. Returns a JSON object with a `synced` count field.
     #[allow(dead_code)]
     pub async fn sync_protected_paths(&self) -> Result<serde_json::Value> {
-        self.post("admin/protected-paths/sync", &serde_json::json!({})).await
+        self.post("admin/protected-paths/sync", &serde_json::json!({}))
+            .await
     }
 
     // -----------------------------------------------------------------------
