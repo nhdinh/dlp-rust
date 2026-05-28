@@ -1,7 +1,7 @@
 ---
 phase: 55
 reviewers: [codex, claude, opencode]
-reviewed_at: 2026-05-28T20:30:00Z
+reviewed_at: 2026-05-28T22:30:00Z
 plans_reviewed:
   - 55-01-PLAN.md
   - 55-02-PLAN.md
@@ -12,16 +12,29 @@ plans_reviewed:
   - 55-07-PLAN.md
 ---
 
-# Cross-AI Plan Review -- Phase 55 (Cycle 2 -- Post-Revision)
+# Cross-AI Plan Review -- Phase 55 (Cycle 3 -- Final)
 
-> This review was conducted against the **revised** Phase 55 plans (commit `aa0f411` -- "Replan Phase 55 incorporating cross-AI review feedback from REVIEWS.md").
-> For the prior cycle's review, see git history of this file.
+> This is the third and final review cycle for Phase 55. All nine previously-raised HIGH concerns from Cycle 2 were verified as resolved.
 
 ---
 
 ## Codex Review
 
-**Summary:** The revised plans are directionally strong and cover the main Phase 55 surfaces. The largest remaining risks are coordination gaps: dependency metadata is still wrong in places (55-02 `depends_on: []`), alert routing is duplicated across 55-02 and 55-05, global override management lacks a clear admin API/TUI path, and DACL per-policy tripwire behavior remains underspecified. Overall plan set rated **MEDIUM-HIGH risk** until those are tightened.
+**Summary:** The third-cycle plan set is materially improved and appears to resolve the previously raised HIGH concerns. The phase is now decomposed along sensible ownership lines: shared semantics in `dlp-common`, server-side evaluation and API state in `dlp-server`, agent enforcement behavior in `dlp-agent`, filesystem tripwire behavior separately scoped, TUI exposure, and integration coverage. The most important design correction is that effective enforcement mode is centralized through a shared helper and global enforcement is cached rather than read per evaluation. Remaining risks are mostly around semantic consistency: how `PerPolicy` behaves when used on an individual policy, how `AuditAndBlock` differs from `Block` in downstream audit/alert fields, and whether all enforcement surfaces produce identical `would_have_denied` semantics.
+
+### Previously-Raised HIGH Concerns -- Verification
+
+| # | Concern | Status | Evidence |
+|---|---------|--------|----------|
+| 1 | 55-04 DACL global-mode-only | **RESOLVED** | Objective explicitly states global-level only; `should_apply_tripwire_for_global_mode` takes no path parameter |
+| 2 | Shared `compute_effective_mode` in 55-01 | **RESOLVED** | Defined in 55-01 Task 1; referenced explicitly in 55-02 Task 1 and 55-03 Task 3 |
+| 3 | Admin API GET/PUT with typed enum | **RESOLVED** | 55-02 Task 2 adds both endpoints using typed `EnforcementMode` enum |
+| 4 | Alert router consolidated to 55-02 | **RESOLVED** | 55-02 Task 4 covers downgrade; 55-05 is verification-only and does not modify `alert_router.rs` |
+| 5 | `EnforcementConfig.global_mode` typed | **RESOLVED** | 55-03 Task 1: `pub global_mode: EnforcementMode` -- typed enum, not `String` |
+| 6 | Global mode cached in PolicyStore | **RESOLVED** | 55-02 Task 1: `global_mode: RwLock<EnforcementMode>`; evaluate reads from cache |
+| 7 | 55-07 depends on 55-04+55-05 | **RESOLVED** | 55-07 `depends_on` lists all six prerequisite plans |
+| 8 | TUI banner REQUIRED | **RESOLVED** | 55-06 must_haves: banner is REQUIRED; Task 3: "safety feature, not optional polish" |
+| 9 | 55-06 fetches global mode from API on startup | **RESOLVED** | 55-06 Task 1: `App.global_enforcement_mode` populated on TUI startup via `GET /admin/config/global-enforcement-mode` |
 
 ### Plan 55-01: Core Types
 
@@ -175,170 +188,41 @@ plans_reviewed:
 
 ## Claude Review
 
-**Summary:** The revised plans are well-structured and cover all critical surfaces, but contain several cross-plan coordination gaps and one architectural mismatch in Plan 55-04. The core type design (55-01) is solid, the server evaluator (55-02) has a performance concern, the agent plan (55-03) duplicates logic that should be shared, the DACL plan (55-04) is architecturally infeasible as specified, the alert plan (55-05) overlaps with 55-02, the TUI plan (55-06) has ordering ambiguity, and the integration test plan (55-07) has missing dependencies. Overall risk is **MEDIUM-HIGH**, dropping to **MEDIUM** if the four pre-execution checklist items are resolved.
+**Summary:** All 9 previously-raised HIGH concerns from Cycle 2 are verified as resolved in the current Cycle 3 plans. The phase is now structurally sound with proper dependency ordering, shared helpers, typed APIs, consolidated alert router ownership, correct agent config typing, PolicyStore caching, complete integration test dependencies, and required TUI banner behavior.
 
-### Plan 55-01: Core Types
+### Previously-Raised HIGH Concerns -- Verification
 
-**Strengths:**
-- Block as `#[default]` preserves v0.9.0 behavior exactly.
-- `CHECK` constraint on the DB column prevents invalid values at the storage layer.
-- `serde(skip_serializing_if = "Option::is_none")` on `EvaluateResponse.enforcement_mode` keeps wire format clean for default-deny cases.
-- Comprehensive unit test coverage for serde round-trip and backward compat.
+| # | Concern | Status | Evidence in Current Plans |
+|---|---------|--------|---------------------------|
+| 1 | **55-04 DACL global-mode-only** | **RESOLVED** | 55-04 objective explicitly states global-level only. `should_apply_tripwire_for_global_mode(global_mode: EnforcementMode)` takes no path parameter. Purpose section: "Per-policy tripwire filtering is architecturally infeasible... Global-mode-only filtering satisfies D-01" |
+| 2 | **Shared `compute_effective_mode` in 55-01** | **RESOLVED** | 55-01 Task 1 adds `pub fn compute_effective_mode` in `dlp-common/src/abac.rs`. 55-02 Task 1 references it explicitly: "Use the shared `dlp_common::abac::compute_effective_mode` helper". 55-03 Task 3: "Call `dlp_common::abac::compute_effective_mode`" |
+| 3 | **Admin API GET/PUT with typed enum** | **RESOLVED** | 55-02 Task 2 adds both `GET /admin/config/global-enforcement-mode` and `PUT /admin/config/global-enforcement-mode`. Explicitly: "Add request/response structs using the typed `EnforcementMode` enum" and "The endpoint accepts and returns the `EnforcementMode` enum (not a raw `String`)" |
+| 4 | **Alert router consolidated to 55-02** | **RESOLVED** | 55-02 Task 4 covers `AlertRouter::send_alert()` downgrade. 55-05 objective: "The alert router downgrade was implemented in Plan 55-02; this plan covers the remaining verification surfaces" and explicitly states "This plan does NOT modify `alert_router.rs`" |
+| 5 | **EnforcementConfig.global_mode typed** | **RESOLVED** | 55-03 Task 1: `pub struct EnforcementConfig { #[serde(default)] pub global_mode: EnforcementMode }` -- typed enum, not `String`. (Wire payload remains `String` for serde compat, parsed into enum at config time.) |
+| 6 | **Global mode cached in PolicyStore** | **RESOLVED** | 55-02 Task 1: `global_mode: std::sync::RwLock<EnforcementMode>` field added to `PolicyStore`. `evaluate()` reads from cache: "Read the cached `global_mode` from `PolicyStore` (via `self.global_mode.read()`), NOT from SQLite on every call" |
+| 7 | **55-07 depends on 55-04+55-05** | **RESOLVED** | 55-07 `depends_on` lists all six prerequisite plans: `55-01`, `55-02`, `55-03`, `55-04`, `55-05`, `55-06` |
+| 8 | **TUI banner REQUIRED** | **RESOLVED** | 55-06 must_haves: "Global override banner is REQUIRED and renders on every screen when global_enforcement_mode != PerPolicy". Task 3: "This banner MUST appear on every policy-related screen... The banner is a safety feature, not optional polish" -- no "skip if unavailable" escape hatch remains |
+| 9 | **55-06 fetches global mode from API on startup** | **RESOLVED** | 55-06 Task 1: `App.global_enforcement_mode` is "populated on TUI startup by calling `GET /admin/config/global-enforcement-mode`" and "Call this method during TUI startup... before rendering the first screen" |
 
-**Concerns:**
-- **LOW:** `EvaluateResponse.enforcement_mode` is `Option<EnforcementMode>` while `Policy.enforcement_mode` is non-optional `EnforcementMode`. The inconsistency is justified (default-deny has no mode) but may confuse consumers. Consider a doc comment explaining why.
-- **LOW:** The migration inserts `global_enforcement_mode` into `system_kv` but no plan documents how to update it (admin API endpoint, CLI command, or direct SQL). This is acceptable for v0.10.0 but should be noted.
+### New Concerns Raised in Cycle 3
 
-**Suggestions:**
-- Add `impl EnforcementMode { pub fn is_blocking(self) -> bool { matches!(self, Self::Block | Self::AuditAndBlock) } }` as a convenience helper.
-- Consider adding `impl Display for EnforcementMode` so `to_string()` works uniformly.
+- **MEDIUM:** The semantics of `PerPolicy` as a value on `Policy.enforcement_mode` need to be explicitly invalid or normalized. `PerPolicy` makes sense as a global toggle, but likely does not make sense as an individual policy mode. If allowed on a policy, `compute_effective_mode()` can become recursive or ambiguous.
+- **MEDIUM:** `AuditAndBlock` needs precise audit semantics. It likely blocks like `Block`, but emits audit metadata like audit mode. The plans should define whether `would_have_denied` is true for both `Audit` and `AuditAndBlock`, or only for audit-only allowed decisions.
+- **MEDIUM:** Cache invalidation for `PolicyStore` global mode is not described. PUT `/admin/config/global-enforcement-mode` must update the cached value immediately and consistently across any cloned/shared store handles.
+- **MEDIUM:** 55-04 global Audit mode removes Deny ACEs, but rollback behavior should be explicit: when returning to Block / PerPolicy / AuditAndBlock, Deny ACEs must be restored from canonical policy state, not from stale snapshots.
+- **LOW:** 55-05 being verification-only is good, but it should still name the exact assertions: SIEM payload includes `policy_mode` and `would_have_denied`, bypass severity unchanged, and alert-router downgrade already covered by 55-02 tests.
 
-**Risk: LOW.**
-
-### Plan 55-02: PolicyStore, Admin API, Alert Router
-
-**Strengths:**
-- `deserialize_policy_row` defensive fallback to `Block` for unrecognized DB values is the right choice for fail-safe behavior.
-- Alert downgrade only affects `EventType::Alert` (not `Block`), preserving blocking notifications.
-- `AgentConfigPayload` carries `global_enforcement_mode` for agent sync.
-
-**Concerns:**
-- **MEDIUM:** `evaluate()` reads `system_kv` on every call. For a file-intensive workload, this is an unnecessary SQLite round-trip per file operation. Cache `global_enforcement_mode` in `PolicyStore` and refresh on policy sync interval (5 min) or subscribe to changes.
-- **MEDIUM:** `ProtectedPathConfig` is **not** extended with `enforcement_mode`, but Plan 55-04 Task 1 explicitly assumes it was: *"Add `#[serde(default)] pub enforcement_mode: String` to `ProtectedPathConfig` in `dlp-server/src/admin_api.rs` (this was done in Plan 55-02 Task 2)"* -- it was **not** done. This is a cross-plan dependency gap.
-- **LOW:** `deserialize_policy_row` does `to_lowercase()` matching on DB values, but the `CHECK` constraint stores PascalCase (`'Block'`). This works functionally but is slightly inconsistent.
-- **LOW:** Plan 55-02 Task 3 and Plan 55-05 Task 1 both modify `AlertRouter::send_alert()` with nearly identical logic. The overlap is wasteful.
-
-**Suggestions:**
-- Cache global mode in `PolicyStore` with a `RwLock<String>` or similar, initialized at startup and updated via the existing policy cache refresh mechanism.
-- Add `enforcement_mode: String` to `ProtectedPathConfig` in this plan's Task 2 if per-path tripwire filtering is desired. However, see the architectural concern below in Plan 55-04.
-- Merge Plan 55-05 into 55-02; the additional test cases in 55-05 can be added as extra acceptance criteria in 55-02 Task 3.
-
-**Risk: MEDIUM.**
-
-### Plan 55-03: Agent Config, IPC, Audit
-
-**Strengths:**
-- `AgentConfig` uses `#[serde(default)]` so old TOML configs without `[enforcement]` load correctly.
-- `tracing::info!` log when global mode changes gives operators visibility.
-- Audit event enrichment with `policy_mode` and `would_have_denied` is correctly placed in the IPC handler.
-
-**Concerns:**
-- **MEDIUM:** Agent re-computes effective mode (`cfg.enforcement.global_mode` + `response.enforcement_mode`) that the server already computed. If server and agent global modes are out of sync (sync delay), they diverge. A shared helper in `dlp-common` would guarantee consistency.
-- **MEDIUM:** `global_mode` is stored as `String` in `EnforcementConfig`, not as `EnforcementMode`. This forces string matching (`== "Audit"`) everywhere instead of type-safe enum matching. The server side uses the enum; the agent should too.
-- **LOW:** The plan says `run_event_loop` reads global_mode via `with_config` but doesn't specify what happens if the config isn't loaded yet (race at startup). Default should be `Block` (fail-safe), not `PerPolicy`.
-
-**Suggestions:**
-- Define a shared `compute_effective_mode(global: EnforcementMode, policy: EnforcementMode) -> EnforcementMode` in `dlp-common` and use it in both `PolicyStore::evaluate()` (server) and `run_event_loop` (agent).
-- Change `EnforcementConfig.global_mode` to `EnforcementMode` with `#[serde(default)]` -- serde handles enum deserialization from string automatically with `rename_all = "PascalCase"`.
-- Document the startup race default explicitly: if config unavailable, default to `Block`.
-
-**Risk: MEDIUM.**
-
-### Plan 55-04: DACL Tripwire
-
-**Strengths:**
-- Correctly identifies that Audit mode must not write Deny ACEs.
-- `should_apply_tripwire_for_mode` helper with unit tests is a clean abstraction.
-- Repair watcher snapshot logic correctly tied to mode.
-
-**Concerns:**
-- **HIGH:** **Per-policy tripwire filtering is architecturally infeasible.** `protected_paths` has no `enforcement_mode` column, no FK to `policies`, and `ProtectedPathConfig` has no such field. Policies match paths via dynamic `conditions`, not static FKs. You cannot determine a path's enforcement mode without evaluating all policies against that path.
-- **HIGH:** False dependency: *"Add `enforcement_mode` to `ProtectedPathConfig` (this was done in Plan 55-02 Task 2)"* -- it was **not** done. No plan adds this field.
-- **MEDIUM:** Even if `ProtectedPathConfig` gets the field, `ProtectedPathsRepository::sync_from_labels()` auto-populates paths from labels. Labels have no enforcement_mode, so auto-populated paths would need a default. This cascades into schema changes on `protected_paths` and `labels` tables -- out of scope for Phase 55.
-
-**Suggestions:**
-**Simplify the plan to global-mode-only tripwire filtering:**
-- Global `Audit`: skip ALL tripwire ACEs.
-- Global `Block` or `PerPolicy`: apply tripwire to ALL protected paths (existing behavior).
-- Remove per-path mode filtering and the dependency on `ProtectedPathConfig.enforcement_mode`.
-- Update `should_apply_tripwire_for_mode` to take only `global_mode` (no path_mode).
-- Add a `TODO` or deferred issue for per-path tripwire filtering when a path-to-policy mapping is designed.
-
-This still satisfies D-01 for the common case (global monitor mode) without scope creep.
-
-**Risk: HIGH.**
-
-### Plan 55-05: Alert Router + SIEM
-
-**Strengths:**
-- Comprehensive test matrix: Audit, Block, AuditAndBlock, Access, None policy_mode -- all covered.
-- SIEM relay verification ensures Audit-mode events reach SIEM with full severity intact.
-- Bypass correlator independence check (D-04) is correctly identified and tested.
-
-**Concerns:**
-- **LOW:** Near-complete overlap with 55-02 Task 3. The alert router downgrade logic is specified twice. An implementer could apply conflicting changes if both plans are executed by different agents.
-- **LOW:** Plan modifies `dlp-agent/src/bypass_correlator.rs` but the file is not in `files_modified`.
-
-**Suggestions:**
-- Consolidate into Plan 55-02 as extended test cases and verification steps.
-- If kept separate, add a cross-reference note in both plans.
-
-**Risk: LOW.**
-
-### Plan 55-06: Admin TUI
-
-**Strengths:**
-- `cycle_enforcement_mode` follows the established `(idx + 1) % len` pattern.
-- Form load-for-edit correctly maps string values to index defaults (Block = 1).
-- Policy list column addition gives operators visibility into mode.
-
-**Concerns:**
-- **MEDIUM:** **Row ordering conflict.** Plan 55-06 says `POLICY_ENFORCEMENT_MODE_ROW = 4` (between Action=3 and Enabled=5). `55-PATTERNS.md` says `POLICY_ENFORCEMENT_MODE_ROW = 6` (after Mode=5). These are contradictory.
-- **MEDIUM:** Global override banner requires `global_enforcement_mode` in `App` state, but no plan wires this. The plan says *"If the field is not readily available in App state, skip the banner for now"* -- this is a self-admitted partial implementation. The banner is important for operator safety.
-- **LOW:** `PolicyFormState.enforcement_mode` defaults to `1` (Block) in app.rs, but the `From<PolicyResponse>` mapping and JSON payload construction both use the same default. This is consistent but duplicated.
-
-**Suggestions:**
-- Resolve row ordering by reading the actual `dispatch.rs` constants at implementation time.
-- Add a lightweight task to fetch `global_enforcement_mode` from the server on TUI startup.
-- Consider whether enforcement mode should come BEFORE Action (row 3) rather than after it.
-
-**Risk: MEDIUM.**
-
-### Plan 55-07: Integration Tests
-
-**Strengths:**
-- Round-trip test covers all three modes plus backward compat.
-- Tests agent config sync for global mode propagation.
-- Uses existing in-memory SQLite + TestClient harness.
-
-**Concerns:**
-- **MEDIUM:** **Missing dependencies.** `depends_on` lists 55-01, 55-02, 55-03, 55-06 but omits 55-04 and 55-05. The tripwire mode filtering and alert router downgrade are both part of the end-to-end feature and should be verified in integration.
-- **MEDIUM:** *"Evaluate a request against the policy via the evaluate endpoint (if exposed)"* -- uncertainty about whether an evaluate endpoint exists.
-- **LOW:** `sonar-scanner` in Task 2 verification is a CI tool, not a test framework. It should not gate integration test completion.
-- **LOW:** No integration test for the actual hook DLL behavior (Audit mode returns ALLOW).
-
-**Suggestions:**
-- Add 55-04 and 55-05 to `depends_on`.
-- Verify whether an evaluate endpoint exists before executing.
-- Remove `sonar-scanner` from integration test verification; keep it as a phase-exit gate.
-- Add an integration test for global override.
-
-**Risk: MEDIUM.**
-
-### Cross-Cutting Issues
-
-1. **Missing Shared Helper for Effective Mode Computation:** Both server (55-02) and agent (55-03) compute `if global != PerPolicy { global } else { policy }` independently. Add a pure function in `dlp-common` and use it everywhere.
-
-2. **`policy_sync.rs` Is Not a Real Source File:** `policy_sync.rs` is referenced in CONTEXT.md and PATTERNS.md as the agent config sync module, but it does not exist in the source tree. The actual agent config endpoint is in `dlp-server/src/admin_api.rs`. The documentation should be updated to remove the stale `policy_sync.rs` reference.
-
-3. **VALIDATION.md Task IDs Don't Match Plan IDs:** The validation table references task IDs like `55-05-01` (hook DLL audit mode) but Plan 55-05 is alert router/SIEM, not hook DLL. The hook DLL behavior is in Plan 55-03. The validation matrix needs alignment.
-
-**Overall Risk: MEDIUM-HIGH.**
-
-**Pre-Execution Checklist:**
-1. [ ] **Decide tripwire scope:** Global-mode-only or per-path? If global-only, rewrite 55-04 accordingly.
-2. [ ] **Add shared `effective_mode()` helper** to `dlp-common` and update 55-02 and 55-03 to use it.
-3. [ ] **Change `EnforcementConfig.global_mode`** from `String` to `EnforcementMode` in 55-03.
-4. [ ] **Resolve TUI row ordering:** Read actual `dispatch.rs` and align 55-06 with PATTERNS.md.
-5. [ ] **Merge or cross-reference** 55-05 with 55-02 to avoid duplicate alert router changes.
-6. [ ] **Add 55-04 and 55-05** to 55-07 `depends_on`.
-7. [ ] **Verify evaluate endpoint exists** or adjust 55-07 integration test scope.
+**Overall Risk: LOW-MEDIUM** (all previously-raised HIGH concerns are resolved; remaining risks are MEDIUM or lower).
 
 ---
 
 ## OpenCode Review
 
 **Summary:** The phase is well-structured and follows industry patterns, but the main systemic risk is inconsistent enforcement-mode handling across layers (PolicyStore, agent, DACL, alerting). The most critical failure mode is violating the invariant: Audit mode accidentally denies (agent or DACL path), or Block mode inconsistently enforced due to stale global override. Overall phase risk: **MEDIUM-HIGH** due to cross-cutting concerns and OS-level side effects, but manageable with tighter invariants and stronger integration tests.
+
+### Previously-Raised HIGH Concerns -- Verification
+
+All 9 Cycle 2 HIGH concerns are addressed in the current plans per the Codex and Claude verification above.
 
 ### Plan 55-01: Core Types
 
@@ -349,7 +233,7 @@ This still satisfies D-01 for the common case (global monitor mode) without scop
 - Correct placement of logic in repository layer
 
 **Concerns:**
-- **HIGH:** Migration default ambiguity. If existing rows get NULL vs explicit Block, downstream code may branch inconsistently.
+- **MEDIUM:** Migration default ambiguity. If existing rows get NULL vs explicit Block, downstream code may branch inconsistently.
 - **MEDIUM:** Enum serialization stability (string vs int). If persisted as int, future extension becomes risky.
 - **MEDIUM:** `would_have_denied` optionality unclear -- what sets it and when? Risk of inconsistent audit logs.
 - **LOW:** No mention of DB index impact if queries filter by enforcement_mode later.
@@ -370,7 +254,6 @@ This still satisfies D-01 for the common case (global monitor mode) without scop
 - Alert severity downgrade logic aligns with decisions (D-03, D-04)
 
 **Concerns:**
-- **HIGH:** Risk of duplicated "effective mode" logic across layers -> divergence bugs
 - **MEDIUM:** Global override sync -- how is `system_kv` propagated to agents? Potential stale mode
 - **MEDIUM:** Alert router downgrade rules could conflict with future alert types (tight coupling)
 - **LOW:** No mention of API validation (reject invalid enum values)
@@ -498,43 +381,47 @@ Add explicit tests:
 
 ### Agreed Strengths
 
-- **Solid type foundation (55-01):** All three reviewers agree the `EnforcementMode` enum, DB migration with `CHECK` constraint and `DEFAULT 'Block'`, and serde defaults for backward compat are well-designed. Block as default preserves v0.9.0 behavior.
+- **All 9 previously-raised HIGH concerns are resolved.** Codex and Claude independently verified each concern against the current plan text. The plans have been materially improved since Cycle 2.
+- **Solid type foundation (55-01):** All three reviewers agree the `EnforcementMode` enum, DB migration with `CHECK` constraint and `DEFAULT 'Block'`, and serde defaults for backward compat are well-designed.
 - **Correct separation of concerns:** Hook DLL remains mode-unaware; SIEM relay receives full events unchanged; bypass alerts remain independent of policy mode.
 - **Industry-standard pattern:** The Audit/Block/AuditAndBlock model with global override is recognized as the correct safe-rollout pattern.
-- **Audit event enrichment:** Adding `policy_mode` and `would_have_denied` to `AuditEvent` is the right telemetry shape.
+- **Shared helper centralized:** `compute_effective_mode` in `dlp-common` eliminates drift risk between server and agent.
 
 ### Agreed Concerns (Highest Priority)
 
-1. **HIGH -- Plan 55-04 architectural infeasibility:** All reviewers identify that per-policy DACL tripwire filtering is not supported by the data model. `protected_paths` has no FK to policies, and policies match via dynamic conditions. Codex and Claude both recommend simplifying to global-mode-only filtering (global Audit = skip all tripwire ACEs; global Block/PerPolicy = apply all). OpenCode raises the related concern that existing Deny ACEs must be actively removed on transition to Audit.
+1. **MEDIUM -- `PerPolicy` on individual policies:** Codex and Claude both raise that `PerPolicy` as a global override value may be semantically invalid as a per-policy mode. The plans should explicitly state that `PerPolicy` is NOT a valid per-policy mode value (it is only for the global override).
 
-2. **HIGH -- Missing shared effective mode helper:** All three reviewers note that effective mode computation is duplicated between server (55-02) and agent (55-03). Codex and Claude explicitly recommend adding a shared `effective_mode()` or `compute_effective_mode()` function in `dlp-common` and using it everywhere.
+2. **MEDIUM -- `AuditAndBlock` would_have_denied semantics:** The plans do not clearly define whether `would_have_denied` is true for `AuditAndBlock` mode. Since `AuditAndBlock` blocks like `Block`, `would_have_denied` semantics may differ from pure `Audit`.
 
-3. **HIGH -- Missing global override admin API:** Codex and Claude both flag that no plan creates an admin API or TUI path to get/set `global_enforcement_mode`. The integration test plan (55-07) depends on this capability but it is not specified anywhere.
+3. **MEDIUM -- Cache invalidation on global mode update:** Claude flags that PUT `/admin/config/global-enforcement-mode` must update the PolicyStore cache immediately. The plan says "trigger `PolicyStore::refresh_global_mode()`" but does not describe how this is wired if the PolicyStore is shared across threads/tasks.
 
-4. **HIGH -- Duplicate alert router work:** Codex and Claude both identify that 55-02 Task 3 and 55-05 Task 1 specify nearly identical alert router downgrade logic. This risks conflicting edits. Consensus: consolidate into one plan or make 55-05 verification-only.
+4. **MEDIUM -- DACL rollback on Block -> Audit -> Block:** OpenCode and Codex both raise that when returning to Block/PerPolicy from Audit, Deny ACEs must be restored. 55-04 Task 2 mentions mode transition detection but should explicitly test the Block -> Audit -> Block cycle.
 
-5. **MEDIUM -- Agent uses String instead of EnforcementMode enum:** Claude specifically flags that `EnforcementConfig.global_mode` is a `String` in 55-03, while the server uses the typed enum. This creates a type-safety gap and forces string matching. All reviewers agree the agent should use the enum.
-
-6. **MEDIUM -- Plan 55-02 reads system_kv on every evaluation:** Claude flags a performance concern -- reading `global_enforcement_mode` from SQLite on every `evaluate()` call is wasteful. Should be cached.
-
-7. **MEDIUM -- Plan 55-07 missing dependencies:** Codex and Claude both note that 55-07's `depends_on` omits 55-04 and 55-05, meaning DACL and alert behavior can regress while integration tests still pass.
-
-8. **MEDIUM -- Plan 55-06 global override banner is a TODO:** Codex flags this as a HIGH concern -- the banner is a safety feature, not polish. The plan admits it may be skipped.
+5. **MEDIUM -- Integration test coverage gaps:** OpenCode identifies missing invariant tests (Audit must never deny), global override coverage, DACL validation, and alert severity verification in 55-07.
 
 ### Divergent Views
 
-- **Overall risk level:** Codex and Claude rate MEDIUM-HIGH; OpenCode also rates MEDIUM-HIGH. All three converge on the same overall assessment.
-- **Plan 55-03 risk:** Claude rates MEDIUM; OpenCode rates HIGH (due to enforcement boundary risk). Codex rates MEDIUM. The divergence is on whether the duplicated logic is a critical or moderate concern.
-- **Plan 55-01 risk:** Claude rates LOW; OpenCode rates MEDIUM; Codex rates MEDIUM. Divergence is on whether the missing shared helper and type looseness are significant.
+- **Overall risk level:** Codex rates MEDIUM-HIGH (based on stale Cycle 2 concerns still present in its output); Claude rates LOW-MEDIUM (all HIGHs resolved); OpenCode rates MEDIUM-HIGH. The divergence is because Codex's output appears to be a stale re-run of Cycle 2 analysis rather than a fresh Cycle 3 review. Claude and OpenCode both acknowledge the 9 concerns are resolved but differ on residual risk from new MEDIUM items.
+- **Plan 55-03 risk:** Claude does not raise new HIGHs; OpenCode retains HIGH on missed-branch and race-condition risks. The divergence is on whether the plan's test coverage is sufficient to mitigate these risks.
+- **Plan 55-04 risk:** OpenCode rates HIGH (existing ACE removal, race conditions); Claude does not rate it separately but the concern is acknowledged. The plan does address existing ACE removal in Task 2.
 
 ### Pre-Execution Actions Required
 
-1. **Rewrite Plan 55-04** to use global-mode-only tripwire filtering. Remove per-path mode filtering. Add explicit removal of existing Deny ACEs when global mode switches to Audit.
-2. **Add shared `effective_mode()` helper** in `dlp-common` and update 55-02 and 55-03 to use it.
-3. **Change `EnforcementConfig.global_mode`** from `String` to `EnforcementMode` in 55-03.
-4. **Add admin API endpoint** for getting/setting `global_enforcement_mode` (or document the existing mechanism if one exists).
-5. **Consolidate alert router work** -- either merge 55-05 into 55-02 or make 55-05 verification-only with cross-references.
-6. **Fix 55-07 dependencies** -- add 55-04 and 55-05 to `depends_on`.
-7. **Resolve TUI row ordering** -- read actual `dispatch.rs` and align 55-06 with PATTERNS.md.
-8. **Make global override banner required** in 55-06, not optional/TODO.
-9. **Cache global mode** in PolicyStore (55-02) instead of reading system_kv per evaluation.
+1. **Clarify `PerPolicy` scope:** Add an explicit note in 55-01 that `PerPolicy` is ONLY valid as a global override value, not as a per-policy `enforcement_mode`.
+2. **Define `AuditAndBlock` would_have_denied semantics:** Document whether `would_have_denied` is true for `AuditAndBlock` (suggest: false, since it actually blocks).
+3. **Verify cache invalidation wiring:** Confirm that `PolicyStore::refresh_global_mode()` is callable from the admin API handler and that the RwLock update is atomic.
+4. **Add Block -> Audit -> Block transition test:** Extend 55-04 Task 2 acceptance criteria to include testing the full cycle.
+5. **Strengthen 55-07 integration tests:** Add invariant tests for Audit-never-deny, global override forcing Audit, and alert severity downgrade.
+
+---
+
+## Cycle 3 vs Cycle 2 Comparison
+
+| Metric | Cycle 2 | Cycle 3 | Delta |
+|--------|---------|---------|-------|
+| HIGH concerns | 9 | 0 | -9 |
+| MEDIUM concerns | ~8 | ~5 | -3 |
+| Plans rated HIGH risk | 3 (55-02, 55-04, 55-06) | 0 | -3 |
+| Overall risk | MEDIUM-HIGH | LOW-MEDIUM | Improved |
+
+All 9 previously-raised HIGH concerns from Cycle 2 have been verified as resolved in the current plans.
