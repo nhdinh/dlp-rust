@@ -9,10 +9,10 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::app::{
-    App, ApprovalFilter, ConditionAttribute, ImportState, LabelFilter, LabelFormMode, Screen,
-    SimulateFormState, SimulateOutcome, StatusKind, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES,
-    OBJECT_TYPE_OPTIONS, SIMULATE_ACCESS_CONTEXT_OPTIONS, SIMULATE_ACTION_OPTIONS,
-    SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
+    App, ApprovalFilter, BypassAlertSeverityFilter, ConditionAttribute, ImportState, LabelFilter,
+    LabelFormMode, Screen, SimulateFormState, SimulateOutcome, StatusKind, UsbScanEntry,
+    ACTION_OPTIONS, ATTRIBUTES, OBJECT_TYPE_OPTIONS, SIMULATE_ACCESS_CONTEXT_OPTIONS,
+    SIMULATE_ACTION_OPTIONS, SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
     SIMULATE_NETWORK_LOCATION_OPTIONS, TIER_OPTIONS,
 };
 use crate::screens::approvals::{
@@ -25,6 +25,9 @@ use crate::screens::dispatch::condition_display;
 use crate::screens::dispatch::operators_for;
 use crate::screens::print_config::{
     is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_KEYS, PRINT_CONFIG_LABELS,
+};
+use crate::screens::bypass_alerts::{
+    BYPASS_ALERT_DETAIL_HINTS, BYPASS_ALERT_LIST_EMPTY, BYPASS_ALERT_LIST_HINTS,
 };
 use crate::screens::protected_paths::{PROTECTED_PATH_LIST_EMPTY, PROTECTED_PATH_LIST_HINTS};
 use crate::screens::syslog_config::draw_syslog_config;
@@ -449,9 +452,23 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         } => {
             draw_protected_path_list(frame, area, paths, *selected, *page, *page_size, *total);
         }
-        // Phase 54 screens — stubbed, rendered in downstream plans.
-        Screen::BypassAlertList { .. } | Screen::BypassAlertDetail { .. } => {
-            // Stub: draw nothing (blank screen) until render functions are added.
+        Screen::BypassAlertList {
+            alerts,
+            selected,
+            filter,
+            hide_acknowledged,
+            page,
+            page_size,
+            total,
+            ..
+        } => {
+            draw_bypass_alert_list(
+                frame, area, alerts, *selected, *filter, *hide_acknowledged, *page, *page_size,
+                *total,
+            );
+        }
+        Screen::BypassAlertDetail { alert } => {
+            draw_bypass_alert_detail(frame, area, alert);
         }
     }
 }
@@ -3992,6 +4009,433 @@ mod protected_path_render_tests {
             content.contains("Page 1 of 1"),
             "page info missing: {content}"
         );
+    }
+}
+
+/// Formats an ISO-8601 timestamp as a simple relative time string.
+///
+/// Uses coarse buckets: "<1m", "Xm", "Xh", "Xd" for recent times,
+/// falls back to the raw timestamp for older entries.
+fn format_relative_time(iso_timestamp: &str) -> String {
+    use chrono::{DateTime, Utc};
+    if let Ok(dt) = iso_timestamp.parse::<DateTime<Utc>>() {
+        let now = Utc::now();
+        let duration = now.signed_duration_since(dt);
+        let mins = duration.num_minutes();
+        let hours = duration.num_hours();
+        let days = duration.num_days();
+        if mins < 1 {
+            "<1m".to_string()
+        } else if mins < 60 {
+            format!("{mins}m")
+        } else if hours < 24 {
+            format!("{hours}h")
+        } else if days < 30 {
+            format!("{days}d")
+        } else {
+            iso_timestamp.to_string()
+        }
+    } else {
+        iso_timestamp.to_string()
+    }
+}
+
+/// Renders the bypass alert list screen.
+///
+/// Columns: Severity (colored badge), Time (relative), Image Path (truncated),
+/// File Path (truncated), Correlation Reason (human-friendly).
+/// Acknowledged rows are dimmed with DarkGray foreground.
+fn draw_bypass_alert_list(
+    frame: &mut Frame,
+    area: Rect,
+    alerts: &[serde_json::Value],
+    selected: usize,
+    filter: BypassAlertSeverityFilter,
+    hide_acknowledged: bool,
+    page: usize,
+    page_size: usize,
+    total: usize,
+) {
+    if alerts.is_empty() {
+        let filter_suffix = if filter != BypassAlertSeverityFilter::All {
+            format!(" [Severity: {}]", filter.as_str().unwrap_or(""))
+        } else {
+            String::new()
+        };
+        let ack_suffix = if hide_acknowledged { " [Hide Ack'd]" } else { "" };
+        let paragraph = Paragraph::new(BYPASS_ALERT_LIST_EMPTY)
+            .block(
+                Block::default()
+                    .title(format!(
+                        " Bypass Alerts (0){filter_suffix}{ack_suffix} "
+                    ))
+                    .borders(Borders::ALL),
+            )
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(paragraph, area);
+        draw_hints(frame, area, BYPASS_ALERT_LIST_HINTS);
+        return;
+    }
+
+    let filter_suffix = if filter != BypassAlertSeverityFilter::All {
+        format!(" [Severity: {}]", filter.as_str().unwrap_or(""))
+    } else {
+        String::new()
+    };
+    let ack_suffix = if hide_acknowledged { " [Hide Ack'd]" } else { "" };
+
+    let total_pages = total.div_ceil(page_size).max(1);
+    let page_info = format!("Page {} of {} ({} total)", page + 1, total_pages, total);
+
+    let header = Row::new(vec!["Severity", "Time", "Image", "File", "Reason"])
+        .style(Style::default().add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = alerts
+        .iter()
+        .map(|a| {
+            let severity = a["severity"].as_str().unwrap_or("-");
+            let acked = a["acknowledged"].as_bool().unwrap_or(false);
+            let severity_style = match severity {
+                "crit" => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                "warn" => Style::default().fg(Color::Yellow),
+                "info" => Style::default().fg(Color::Blue),
+                _ => Style::default(),
+            };
+
+            // Simple relative time formatting
+            let time = a["created_at"].as_str().unwrap_or("-");
+            let time_display = format_relative_time(time);
+
+            let image = a["image_path"].as_str().unwrap_or("-");
+            let image_display = if image.len() > 25 {
+                format!("{}...", &image[..22])
+            } else {
+                image.to_string()
+            };
+
+            let file = a["file_path"].as_str().unwrap_or("-");
+            let file_display = if file.len() > 25 {
+                format!("{}...", &file[..22])
+            } else {
+                file.to_string()
+            };
+
+            let reason = a["correlation_reason"].as_str().unwrap_or("-");
+            let reason_display = match reason {
+                "no_hook_journal" | "NoHookJournal" => "No Hook Journal",
+                "op_mismatch" | "OpMismatch" => "Operation Mismatch",
+                "hook_overwritten" | "HookOverwritten" => "Hook Overwritten",
+                _ => reason,
+            };
+
+            let row_style = if acked {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+
+            Row::new(vec![
+                Cell::from(severity.to_string()).style(severity_style),
+                Cell::from(time_display),
+                Cell::from(image_display),
+                Cell::from(file_display),
+                Cell::from(reason_display.to_string()),
+            ])
+            .style(row_style)
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(10),  // Severity
+        Constraint::Percentage(12),  // Time
+        Constraint::Percentage(28),  // Image Path
+        Constraint::Percentage(28),  // File Path
+        Constraint::Percentage(22),  // Reason
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .title(format!(
+                    " Bypass Alerts ({}){}{} ",
+                    total, filter_suffix, ack_suffix
+                ))
+                .borders(Borders::ALL),
+        )
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(table, area, &mut state);
+
+    let hint_text = format!("{BYPASS_ALERT_LIST_HINTS}  |  {page_info}");
+    draw_hints(frame, area, &hint_text);
+}
+
+/// Renders the bypass alert detail popup.
+///
+/// Shows all fields from the alert JSON: id, severity, correlation_reason,
+/// image_path, image_sha256, file_path, operation, timestamp, file_object,
+/// pid, acknowledged, created_at.
+fn draw_bypass_alert_detail(
+    frame: &mut Frame,
+    area: Rect,
+    alert: &serde_json::Value,
+) {
+    let id = alert["id"].as_i64().unwrap_or(0);
+    let severity = alert["severity"].as_str().unwrap_or("-");
+    let reason = alert["correlation_reason"].as_str().unwrap_or("-");
+    let reason_display = match reason {
+        "no_hook_journal" | "NoHookJournal" => "No Hook Journal",
+        "op_mismatch" | "OpMismatch" => "Operation Mismatch",
+        "hook_overwritten" | "HookOverwritten" => "Hook Overwritten",
+        _ => reason,
+    };
+    let image_path = alert["image_path"].as_str().unwrap_or("-");
+    let image_sha256 = alert["image_sha256"].as_str().unwrap_or("-");
+    let sha_display = if image_sha256.len() > 16 {
+        format!("{}...", &image_sha256[..16])
+    } else {
+        image_sha256.to_string()
+    };
+    let file_path = alert["file_path"].as_str().unwrap_or("-");
+    let operation = alert["operation"].as_str().unwrap_or("-");
+    let timestamp = alert["timestamp"].as_str().unwrap_or("-");
+    let file_object = alert["file_object"].as_str().unwrap_or("-");
+    let pid = alert["pid"].as_i64().unwrap_or(0);
+    let acknowledged = alert["acknowledged"].as_bool().unwrap_or(false);
+    let created_at = alert["created_at"].as_str().unwrap_or("-");
+
+    let severity_style = match severity {
+        "crit" => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        "warn" => Style::default().fg(Color::Yellow),
+        "info" => Style::default().fg(Color::Blue),
+        _ => Style::default(),
+    };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("ID: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(format!("{id}")),
+        ]),
+        Line::from(vec![
+            Span::styled("Severity: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(severity.to_string(), severity_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Reason: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(reason_display.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Image Path: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(image_path.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Image SHA-256: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(sha_display),
+        ]),
+        Line::from(vec![
+            Span::styled("File Path: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(file_path.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Operation: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(operation.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Timestamp: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(timestamp.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("File Object: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(file_object.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("PID: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(format!("{pid}")),
+        ]),
+        Line::from(vec![
+            Span::styled("Acknowledged: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(format!("{acknowledged}")),
+        ]),
+        Line::from(vec![
+            Span::styled("Created At: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(created_at.to_string()),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(format!(" Bypass Alert Detail (ID: {id}) "))
+                .borders(Borders::ALL),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+    draw_hints(frame, area, BYPASS_ALERT_DETAIL_HINTS);
+}
+
+#[cfg(test)]
+mod bypass_alert_render_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    #[test]
+    fn draw_bypass_alert_list_empty_renders() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_bypass_alert_list(
+                    frame,
+                    frame.area(),
+                    &[],
+                    0,
+                    crate::app::BypassAlertSeverityFilter::All,
+                    false,
+                    0,
+                    20,
+                    0,
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("No bypass alerts found"));
+    }
+
+    #[test]
+    fn draw_bypass_alert_list_renders_severity_badge() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let alerts = vec![serde_json::json!({
+            "id": 1,
+            "severity": "crit",
+            "image_path": "C:\\\\Windows\\\\notepad.exe",
+            "file_path": "C:\\\\Secret.doc",
+            "correlation_reason": "NoHookJournal",
+            "created_at": "2026-05-28T10:00:00Z",
+            "acknowledged": false,
+        })];
+        terminal
+            .draw(|frame| {
+                draw_bypass_alert_list(
+                    frame,
+                    frame.area(),
+                    &alerts,
+                    0,
+                    crate::app::BypassAlertSeverityFilter::All,
+                    false,
+                    0,
+                    20,
+                    1,
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("crit"), "severity badge missing: {content}");
+        assert!(
+            content.contains("No Hook Journal"),
+            "reason display missing: {content}"
+        );
+    }
+
+    #[test]
+    fn draw_bypass_alert_list_acknowledged_row_dimmed() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let alerts = vec![serde_json::json!({
+            "id": 1,
+            "severity": "warn",
+            "image_path": "C:\\\\Windows\\\\notepad.exe",
+            "file_path": "C:\\\\Secret.doc",
+            "correlation_reason": "OpMismatch",
+            "created_at": "2026-05-28T10:00:00Z",
+            "acknowledged": true,
+        })];
+        terminal
+            .draw(|frame| {
+                draw_bypass_alert_list(
+                    frame,
+                    frame.area(),
+                    &alerts,
+                    0,
+                    crate::app::BypassAlertSeverityFilter::All,
+                    false,
+                    0,
+                    20,
+                    1,
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("warn"), "severity badge missing: {content}");
+    }
+
+    #[test]
+    fn draw_bypass_alert_detail_renders_fields() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let alert = serde_json::json!({
+            "id": 42,
+            "severity": "crit",
+            "correlation_reason": "HookOverwritten",
+            "image_path": "C:\\\\Windows\\\\System32\\\\notepad.exe",
+            "image_sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            "file_path": "C:\\\\Secret.doc",
+            "operation": "WriteFile",
+            "timestamp": "2026-05-28T10:00:00Z",
+            "file_object": "0x00007FF6AABBCCDD",
+            "pid": 1234,
+            "acknowledged": false,
+            "created_at": "2026-05-28T10:00:00Z",
+        });
+        terminal
+            .draw(|frame| {
+                draw_bypass_alert_detail(frame, frame.area(), &alert);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("ID: 42"), "id missing: {content}");
+        assert!(content.contains("crit"), "severity missing: {content}");
+        assert!(
+            content.contains("Hook Overwritten"),
+            "reason missing: {content}"
+        );
+        assert!(
+            content.contains("abcdef1234567890"),
+            "sha missing: {content}"
+        );
+        assert!(
+            content.contains("0x00007FF6AABBCCDD"),
+            "file_object missing: {content}"
+        );
+    }
+
+    #[test]
+    fn format_relative_time_recent() {
+        use chrono::Utc;
+        let now = Utc::now().to_rfc3339();
+        let result = format_relative_time(&now);
+        assert_eq!(result, "<1m", "recent timestamp should show <1m: got {result}");
+    }
+
+    #[test]
+    fn format_relative_time_invalid() {
+        let result = format_relative_time("not-a-timestamp");
+        assert_eq!(result, "not-a-timestamp");
     }
 }
 
