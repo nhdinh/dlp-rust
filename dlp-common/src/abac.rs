@@ -6,6 +6,96 @@
 use crate::endpoint::AppIdentity;
 use serde::{Deserialize, Serialize};
 
+/// The class of a Windows volume for ABAC policy enforcement.
+///
+/// Used in `AbacContext` and `PolicyCondition` to enforce volume-class-aware
+/// policies (e.g., deny T3/T4 writes to USBRemovable or Optical drives).
+///
+/// ## Fail-Closed Invariant
+///
+/// When a path cannot be classified (WMI failure, unknown drive letter, etc.),
+/// the classification returns `None`, NOT `LocalNTFS`. A `None` volume class
+/// causes volume-class conditions in ABAC evaluation to evaluate to `false`,
+/// which for a DENY policy means the condition does not match. This is
+/// intentional fail-closed behavior: if we cannot confirm the volume class,
+/// we do not allow the operation to proceed under a volume-class policy.
+///
+/// NEVER use `VolumeClass::default()` as a fallback for unclassifiable paths.
+/// `Default` exists only for serde backward compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub enum VolumeClass {
+    /// Local fixed disk (NTFS).
+    #[default]
+    LocalNTFS,
+    /// USB removable storage.
+    USBRemovable,
+    /// SD card.
+    SDCard,
+    /// Optical drive (CD/DVD/Blu-ray).
+    Optical,
+    /// Virtual drive (VHD, VHDX, ISO mount, Daemon Tools).
+    Virtual,
+    /// Network share (mapped drive or UNC path).
+    NetworkShare,
+}
+
+impl std::fmt::Display for VolumeClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::LocalNTFS => "LocalNTFS",
+            Self::USBRemovable => "USBRemovable",
+            Self::SDCard => "SDCard",
+            Self::Optical => "Optical",
+            Self::Virtual => "Virtual",
+            Self::NetworkShare => "NetworkShare",
+        };
+        write!(f, "{s}")
+    }
+}
+
+/// Extract drive letter or detect UNC prefix from a Windows path and return
+/// the corresponding `VolumeClass`.
+///
+/// # Arguments
+///
+/// * `path` - A Windows filesystem path (e.g., `"C:\\file.txt"`,
+///   `"\\\\server\\share\\file.txt"`)
+/// * `lookup` - A function that takes a drive letter (`char`) and returns
+///   `Option<VolumeClass>`. This allows the caller to provide their own cache
+///   or query mechanism. The agent's `volume_class_map` is the authoritative
+///   source.
+///
+/// # Returns
+///
+/// * `Some(VolumeClass::NetworkShare)` for UNC paths (starts with `"\\\\"`)
+/// * `Some(class)` where `class` is returned by `lookup` for drive-letter paths
+/// * `None` for volume GUID paths (`"\\\\?\\Volume{...}"`) when lookup fails
+///   — FAIL-CLOSED
+/// * `None` if no drive letter and not a recognized path format — FAIL-CLOSED
+#[must_use]
+pub fn resolve_volume_class_from_path<F>(path: &str, lookup: F) -> Option<VolumeClass>
+where
+    F: FnOnce(char) -> Option<VolumeClass>,
+{
+    // Volume GUID path (\\?\Volume{...}) — check BEFORE UNC because it
+    // starts with "\\". FAIL-CLOSED: return None.
+    if path.starts_with("\\\\?\\Volume{") {
+        return None;
+    }
+    // UNC path -> NetworkShare
+    if path.starts_with("\\\\") {
+        return Some(VolumeClass::NetworkShare);
+    }
+    // Drive letter path (e.g., "C:\file.txt" or "C:/file.txt")
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        let letter = bytes[0].to_ascii_uppercase() as char;
+        return lookup(letter);
+    }
+    None
+}
+
 /// The action the user is attempting to perform on a resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[allow(non_camel_case_types)]
@@ -267,6 +357,20 @@ pub struct AbacContext {
     /// [`EvaluateRequest`] (Phase 59, D-09).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_path: Option<String>,
+    /// Volume class of the source path (if any).
+    ///
+    /// Populated by the hook DLL or server after path resolution.
+    /// `None` when the volume class cannot be determined — volume-class
+    /// conditions evaluate to `false` (fail-closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_volume_class: Option<VolumeClass>,
+    /// Volume class of the destination path (if any).
+    ///
+    /// Populated by the hook DLL or server after path resolution.
+    /// `None` when the volume class cannot be determined — volume-class
+    /// conditions evaluate to `false` (fail-closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_volume_class: Option<VolumeClass>,
 }
 
 /// The enforcement mode for a policy or global override.
@@ -425,6 +529,8 @@ impl From<EvaluateRequest> for AbacContext {
             source_origin: req.source_origin,
             destination_origin: req.destination_origin,
             resource_path,
+            source_volume_class: None,
+            destination_volume_class: None,
         }
     }
 }
@@ -510,6 +616,30 @@ pub enum PolicyCondition {
         op: String,
         /// The origin string to compare against (e.g., `"https://example.com"`).
         value: String,
+    },
+    /// Match by the source volume class.
+    ///
+    /// If `source_volume_class` is `None` on the [`AbacContext`], this condition
+    /// does NOT match (fails closed — no volume class means the condition cannot
+    /// be confirmed, per D-03).
+    SourceVolumeClass {
+        /// Comparison operator: `"eq"`, `"ne"`, or `"in"`.
+        #[serde(rename = "op")]
+        op: String,
+        /// The expected volume class.
+        value: VolumeClass,
+    },
+    /// Match by the destination volume class.
+    ///
+    /// If `destination_volume_class` is `None` on the [`AbacContext`], this
+    /// condition does NOT match (fails closed — no volume class means the
+    /// condition cannot be confirmed, per D-03).
+    DestinationVolumeClass {
+        /// Comparison operator: `"eq"`, `"ne"`, or `"in"`.
+        #[serde(rename = "op")]
+        op: String,
+        /// The expected volume class.
+        value: VolumeClass,
     },
 }
 
@@ -831,6 +961,159 @@ mod tests {
             let rt: Decision = serde_json::from_str(&json).unwrap();
             assert_eq!(decision, rt);
         }
+    }
+
+    // --- Phase 56: VolumeClass tests ---
+
+    #[test]
+    fn test_volume_class_serde_roundtrip() {
+        for class in [
+            VolumeClass::LocalNTFS,
+            VolumeClass::USBRemovable,
+            VolumeClass::SDCard,
+            VolumeClass::Optical,
+            VolumeClass::Virtual,
+            VolumeClass::NetworkShare,
+        ] {
+            let json = serde_json::to_string(&class).unwrap();
+            let rt: VolumeClass = serde_json::from_str(&json).unwrap();
+            assert_eq!(class, rt, "serde round-trip failed for {class:?}");
+        }
+    }
+
+    #[test]
+    fn test_volume_class_default_is_local_ntfs() {
+        let default: VolumeClass = Default::default();
+        assert_eq!(default, VolumeClass::LocalNTFS);
+    }
+
+    #[test]
+    fn test_volume_class_display() {
+        assert_eq!(format!("{}", VolumeClass::LocalNTFS), "LocalNTFS");
+        assert_eq!(format!("{}", VolumeClass::USBRemovable), "USBRemovable");
+        assert_eq!(format!("{}", VolumeClass::SDCard), "SDCard");
+        assert_eq!(format!("{}", VolumeClass::Optical), "Optical");
+        assert_eq!(format!("{}", VolumeClass::Virtual), "Virtual");
+        assert_eq!(format!("{}", VolumeClass::NetworkShare), "NetworkShare");
+    }
+
+    #[test]
+    fn test_resolve_unc_path() {
+        let result = resolve_volume_class_from_path(
+            "\\\\server\\share\\file.txt",
+            |_letter| None,
+        );
+        assert_eq!(result, Some(VolumeClass::NetworkShare));
+    }
+
+    #[test]
+    fn test_resolve_drive_letter() {
+        let result = resolve_volume_class_from_path("D:\\file.txt", |letter| {
+            assert_eq!(letter, 'D');
+            Some(VolumeClass::Optical)
+        });
+        assert_eq!(result, Some(VolumeClass::Optical));
+    }
+
+    #[test]
+    fn test_resolve_drive_letter_forward_slash() {
+        let result = resolve_volume_class_from_path("E:/file.txt", |letter| {
+            assert_eq!(letter, 'E');
+            Some(VolumeClass::USBRemovable)
+        });
+        assert_eq!(result, Some(VolumeClass::USBRemovable));
+    }
+
+    #[test]
+    fn test_resolve_volume_guid_fails_closed() {
+        let result = resolve_volume_class_from_path(
+            "\\\\?\\Volume{12345678-1234-1234-1234-123456789012}\\file.txt",
+            |_letter| Some(VolumeClass::LocalNTFS),
+        );
+        assert_eq!(result, None, "volume GUID path must fail-closed with None");
+    }
+
+    #[test]
+    fn test_resolve_unknown_path() {
+        let result = resolve_volume_class_from_path("unknown", |_letter| None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_drive_letter_lookup_returns_none() {
+        let result =
+            resolve_volume_class_from_path("Z:\\file.txt", |_letter| None);
+        assert_eq!(result, None);
+    }
+
+    // --- Phase 56: AbacContext + PolicyCondition volume class tests ---
+
+    #[test]
+    fn test_abac_context_deserialize_missing_volume_fields() {
+        let json = r#"{
+            "subject": {},
+            "resource": {},
+            "environment": {},
+            "action": "READ"
+        }"#;
+        let ctx: AbacContext = serde_json::from_str(json).unwrap();
+        assert!(ctx.source_volume_class.is_none());
+        assert!(ctx.destination_volume_class.is_none());
+    }
+
+    #[test]
+    fn test_policy_condition_serde_volume_class() {
+        let condition = PolicyCondition::SourceVolumeClass {
+            op: "eq".to_string(),
+            value: VolumeClass::Optical,
+        };
+        let json = serde_json::to_string(&condition).unwrap();
+        assert!(json.contains("\"attribute\":\"source_volume_class\""), "json: {json}");
+        assert!(json.contains("\"op\":\"eq\""), "json: {json}");
+        assert!(json.contains("\"value\":\"Optical\""), "json: {json}");
+        let rt: PolicyCondition = serde_json::from_str(&json).unwrap();
+        assert_eq!(condition, rt);
+
+        let condition2 = PolicyCondition::DestinationVolumeClass {
+            op: "ne".to_string(),
+            value: VolumeClass::USBRemovable,
+        };
+        let json2 = serde_json::to_string(&condition2).unwrap();
+        assert!(
+            json2.contains("\"attribute\":\"destination_volume_class\""),
+            "json2: {json2}"
+        );
+        let rt2: PolicyCondition = serde_json::from_str(&json2).unwrap();
+        assert_eq!(condition2, rt2);
+    }
+
+    #[test]
+    fn test_abac_context_round_trip_with_volume_class() {
+        let ctx = AbacContext {
+            source_volume_class: Some(VolumeClass::USBRemovable),
+            destination_volume_class: Some(VolumeClass::NetworkShare),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let rt: AbacContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.source_volume_class, Some(VolumeClass::USBRemovable));
+        assert_eq!(rt.destination_volume_class, Some(VolumeClass::NetworkShare));
+    }
+
+    #[test]
+    fn test_from_evaluate_request_sets_volume_class_none() {
+        let req = EvaluateRequest {
+            subject: Subject {
+                user_sid: "S-1-5-21-999".to_string(),
+                user_name: "alice".to_string(),
+                ..Default::default()
+            },
+            action: Action::COPY,
+            ..Default::default()
+        };
+        let ctx: AbacContext = req.into();
+        assert!(ctx.source_volume_class.is_none());
+        assert!(ctx.destination_volume_class.is_none());
     }
 
     #[test]
