@@ -415,7 +415,7 @@ Plans:
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 7/7 | Complete    | 2026-05-27 |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Complete    | 2026-05-28 |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
-| 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete   | 2026-05-29 |
+| 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 0/0 | Not started | - |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 0/0 | Not started | - |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
