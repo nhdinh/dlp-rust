@@ -469,6 +469,11 @@ impl BypassCorrelator {
     /// - OpMismatch -> "warn"
     /// - HookOverwritten -> "warn"
     /// - PatchRaced -> "info"
+    ///
+    /// Phase 55: Bypass alert severity is independent of policy enforcement mode.
+    /// A bypass indicates a real evasion (syscall bypass, hook unloaded, etc.)
+    /// and is not affected by whether the policy is in Audit, Block, or
+    /// AuditAndBlock mode.
     pub fn severity_for_alert(&self, reason: BypassReason, file_path: &str) -> String {
         let is_protected = self.is_protected_path(file_path);
 
@@ -1132,6 +1137,57 @@ mod tests {
         let old_batch_id = pending.batch_id.clone();
         pending.batch_id = uuid::Uuid::new_v4().to_string();
         assert_ne!(pending.batch_id, old_batch_id);
+    }
+
+    /// Phase 55 Task 2: Verify that bypass alert severity is independent
+    /// of policy enforcement mode.
+    ///
+    /// BypassAlert has no `policy_mode` field by design — a bypass indicates
+    /// a real evasion attempt and must alert at full mapped severity
+    /// regardless of whether the matched policy is in Audit, Block, or
+    /// AuditAndBlock mode.
+    #[test]
+    fn test_bypass_alert_severity_independent_of_policy_mode() {
+        let config = CorrelatorConfig::default();
+        let correlator = BypassCorrelator::new(config)
+            .with_protected_paths(vec![r"C:\Data".to_string()]);
+
+        // Severity for NoHookJournal on protected path is "crit" in normal mode.
+        let sev_protected =
+            correlator.severity_for_alert(BypassReason::NoHookJournal, r"C:\Data\secret.docx");
+        assert_eq!(sev_protected, "crit");
+
+        // Severity for NoHookJournal on non-protected path is "warn".
+        let sev_non_protected =
+            correlator.severity_for_alert(BypassReason::NoHookJournal, r"C:\Temp\file.txt");
+        assert_eq!(sev_non_protected, "warn");
+
+        // Severity for HookOverwritten is "crit".
+        let sev_hook_overwritten =
+            correlator.severity_for_alert(BypassReason::HookOverwritten, r"C:\Data\file.txt");
+        assert_eq!(sev_hook_overwritten, "crit");
+
+        // Verify that BypassAlert struct has no policy_mode field.
+        // This is a compile-time invariant: the struct definition in
+        // dlp_common::hook_ipc::BypassAlert does not include policy_mode.
+        let alert = BypassAlert {
+            reason: BypassReason::NoHookJournal,
+            stub_name: "etw_correlation".to_string(),
+            pid: 1234,
+            timestamp_secs: 1_700_000_000,
+            version: 2,
+            agent_id: "AGENT-TEST".to_string(),
+            image_path: r"C:\Test\app.exe".to_string(),
+            image_sha256: None,
+            file_path: r"C:\Data\file.txt".to_string(),
+            operation: "Create".to_string(),
+            file_object: 0,
+            qpc_timestamp: 0,
+            severity: sev_protected,
+            correlation_reason: "NoHookJournal on protected path".to_string(),
+        };
+        // The alert severity was computed without any policy_mode input.
+        assert_eq!(alert.severity, "crit");
     }
 
     // --- Image SHA cache tests ---
