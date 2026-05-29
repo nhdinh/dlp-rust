@@ -38,10 +38,10 @@ use crate::db::repositories::bypass_alerts::{
     BypassAlertFilter, BypassAlertInsertRow, BypassAlertRow, BypassAlertsRepository,
 };
 use crate::exception_store;
-use crate::policy_store::mode_str;
+use crate::policy_store::{mode_str, parse_enforcement_mode};
 use crate::rate_limiter::{self, default_config, policy_config};
 use crate::AppError;
-use dlp_common::abac::PolicyMode;
+use dlp_common::abac::{EnforcementMode, PolicyMode};
 use dlp_common::{
     DEFAULT_USB_BLOCKED_FAILURE_MODE, DEFAULT_USB_NONE_SERIAL_POLICY,
     DEFAULT_USB_STARTUP_RESOLUTION_MODE, USB_FAILURE_MODES, USB_NONE_SERIAL_POLICIES,
@@ -157,6 +157,9 @@ pub struct PolicyPayload {
     /// Boolean composition mode for the conditions list.
     #[serde(default)]
     pub mode: PolicyMode,
+    /// Per-policy enforcement mode (Audit, Block, AuditAndBlock).
+    #[serde(default)]
+    pub enforcement_mode: EnforcementMode,
 }
 
 /// Policy record returned by the API.
@@ -179,6 +182,9 @@ pub struct PolicyResponse {
     /// Boolean composition mode for the conditions list.
     #[serde(default)]
     pub mode: PolicyMode,
+    /// Per-policy enforcement mode (Audit, Block, AuditAndBlock).
+    #[serde(default)]
+    pub enforcement_mode: EnforcementMode,
     /// Monotonic version number.
     pub version: i64,
     /// ISO 8601 timestamp of last update.
@@ -1122,6 +1128,12 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
                 .delete(delete_policy)
                 .route_layer(policy_config()),
         )
+        .route(
+            "/admin/config/global-enforcement-mode",
+            get(get_global_enforcement_mode)
+                .put(update_global_enforcement_mode)
+                .route_layer(policy_config()),
+        )
         .route("/exceptions", get(exception_store::list_exceptions))
         .route("/exceptions/{id}", get(exception_store::get_exception))
         .route("/exceptions", post(exception_store::create_exception))
@@ -1316,6 +1328,7 @@ async fn list_policies(
                     action: r.action,
                     enabled: r.enabled != 0,
                     mode: mode_from_str(&r.mode),
+                    enforcement_mode: parse_enforcement_mode(&r.enforcement_mode),
                     version: r.version,
                     updated_at: r.updated_at,
                 }
@@ -1350,6 +1363,7 @@ async fn get_policy(
             action: r.action,
             enabled: r.enabled != 0,
             mode: mode_from_str(&r.mode),
+            enforcement_mode: parse_enforcement_mode(&r.enforcement_mode),
             version: r.version,
             updated_at: r.updated_at,
         })
@@ -1394,6 +1408,7 @@ async fn create_policy(
         action: payload.action.clone(),
         enabled: payload.enabled,
         mode: payload.mode,
+        enforcement_mode: payload.enforcement_mode,
         version: 1,
         updated_at: now.clone(),
     };
@@ -1413,7 +1428,10 @@ async fn create_policy(
             action: r.action.clone(),
             enabled: if r.enabled { 1 } else { 0 },
             mode: mode_str(r.mode).to_string(),
-            enforcement_mode: "Block".to_string(),
+            enforcement_mode: serde_json::to_string(&r.enforcement_mode)
+                .unwrap_or_default()
+                .trim_matches('"')
+                .to_string(),
             version: r.version,
             updated_at: r.updated_at.clone(),
         };
@@ -1500,6 +1518,7 @@ async fn update_policy(
     let payload_action = payload.action.clone();
     let payload_enabled = if payload.enabled { 1 } else { 0 };
     let payload_mode = payload.mode;
+    let payload_enforcement_mode = payload.enforcement_mode;
     let payload_conditions = payload.conditions.clone();
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
 
@@ -1515,7 +1534,9 @@ async fn update_policy(
             action: &payload_action,
             enabled: payload_enabled,
             mode: mode_str(payload_mode),
-            enforcement_mode: "Block",
+            enforcement_mode: serde_json::to_string(&payload_enforcement_mode)
+                .unwrap_or_default()
+                .trim_matches('"'),
             updated_at: &now,
             id: &id,
         };
@@ -1538,6 +1559,7 @@ async fn update_policy(
             action: payload_action,
             enabled: payload_enabled != 0,
             mode: payload_mode,
+            enforcement_mode: payload_enforcement_mode,
             version,
             updated_at: now,
         })
@@ -1639,6 +1661,99 @@ async fn delete_policy(
 
     tracing::info!(policy_id = %policy_id, "policy deleted");
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Global enforcement mode handlers
+// ---------------------------------------------------------------------------
+
+/// Response body for global enforcement mode endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalEnforcementModeResponse {
+    /// The current global enforcement mode.
+    pub mode: EnforcementMode,
+}
+
+/// Request body for updating global enforcement mode.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GlobalEnforcementModeRequest {
+    /// The new global enforcement mode.
+    pub mode: EnforcementMode,
+}
+
+/// `GET /admin/config/global-enforcement-mode` — read the current global mode.
+async fn get_global_enforcement_mode(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<GlobalEnforcementModeResponse>, AppError> {
+    let pool: Arc<db::Pool> = Arc::clone(&state.pool);
+    let mode = tokio::task::spawn_blocking(move || -> Result<EnforcementMode, AppError> {
+        let conn = pool.get().map_err(AppError::from)?;
+        let value = repositories::system_kv::get(&conn, "global_enforcement_mode")
+            .map_err(AppError::Database)?;
+        let mode_str = value.unwrap_or_else(|| "PerPolicy".to_string());
+        let mode = parse_enforcement_mode(&mode_str);
+        Ok(mode)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(GlobalEnforcementModeResponse { mode }))
+}
+
+/// `PUT /admin/config/global-enforcement-mode` — update the global mode.
+async fn update_global_enforcement_mode(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<Json<GlobalEnforcementModeResponse>, AppError> {
+    let username = AdminUsername::extract_from_headers(req.headers())?;
+    let payload: Json<GlobalEnforcementModeRequest> = Json::from_request(req, &state)
+        .await
+        .map_err(AppError::from)?;
+
+    let mode = payload.mode;
+    let mode_str = serde_json::to_string(&mode)
+        .unwrap_or_default()
+        .trim_matches('"')
+        .to_string();
+
+    let pool: Arc<db::Pool> = Arc::clone(&state.pool);
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let conn = pool.get().map_err(AppError::from)?;
+        repositories::system_kv::set(&conn, "global_enforcement_mode", &mode_str)
+            .map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    // Invalidate the policy cache so the next evaluation picks up the new global mode.
+    state.policy_store.invalidate();
+
+    // Emit admin audit event.
+    let audit_event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::AdminAction,
+        String::new(),
+        username,
+        "global_enforcement_mode".to_string(),
+        dlp_common::Classification::T3,
+        dlp_common::Action::PolicyUpdate,
+        dlp_common::Decision::ALLOW,
+        "server".to_string(),
+        0,
+    );
+    let pool: Arc<db::Pool> = Arc::clone(&state.pool);
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let mut conn = pool.get().map_err(AppError::from)?;
+        let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
+        audit_store::store_events_sync(&uow, &[audit_event])?;
+        uow.commit().map_err(AppError::Database)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    tracing::info!(mode = %mode_str, "global enforcement mode updated");
+    Ok(Json(GlobalEnforcementModeResponse { mode }))
 }
 
 // ---------------------------------------------------------------------------
