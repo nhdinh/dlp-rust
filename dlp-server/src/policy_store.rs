@@ -12,7 +12,8 @@
 use std::sync::Arc;
 
 use dlp_common::abac::{
-    AbacContext, AppField, Decision, EvaluateResponse, Policy, PolicyCondition, PolicyMode,
+    AbacContext, AppField, Decision, EnforcementMode, EvaluateResponse, Policy, PolicyCondition,
+    PolicyMode,
 };
 use dlp_common::Classification;
 use parking_lot::RwLock;
@@ -211,6 +212,8 @@ impl PolicyStore {
                     decision: policy.action,
                     matched_policy_id: Some(policy.id.clone()),
                     reason: format!("matched policy '{}'", policy.name),
+                    enforcement_mode: Some(policy.enforcement_mode),
+                    would_have_denied: policy.action.is_denied(),
                 };
             }
         }
@@ -249,6 +252,18 @@ impl PolicyStore {
     }
 }
 
+/// Parses an enforcement mode string into the `EnforcementMode` enum.
+///
+/// Defaults to `Block` for unrecognized values (fail-safe).
+fn parse_enforcement_mode(s: &str) -> EnforcementMode {
+    match s {
+        "Audit" => EnforcementMode::Audit,
+        "Block" => EnforcementMode::Block,
+        "AuditAndBlock" => EnforcementMode::AuditAndBlock,
+        _ => EnforcementMode::Block,
+    }
+}
+
 /// Deserializes a `PolicyRow` into a `Policy`.
 ///
 /// Handles the translation from DB `action` string (`"Allow"`, `"Deny"`, etc.)
@@ -283,6 +298,7 @@ fn deserialize_policy_row(
         action,
         enabled: row.enabled != 0,
         mode,
+        enforcement_mode: parse_enforcement_mode(&row.enforcement_mode),
         version: row.version as u64,
     })
 }
@@ -593,6 +609,7 @@ mod tests {
     #[test]
     fn test_disabled_policy_skipped() {
         let disabled = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "p1".to_string(),
             name: "disabled policy".to_string(),
             description: None,
@@ -816,6 +833,7 @@ mod tests {
     fn test_first_match_wins_priority_order() {
         // First policy (lower priority) matches, returns ALLOW
         let p1 = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "p1".to_string(),
             name: "low priority allow".to_string(),
             description: None,
@@ -830,6 +848,7 @@ mod tests {
             version: 1,
         };
         let p2 = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "p2".to_string(),
             name: "high priority deny".to_string(),
             description: None,
@@ -858,6 +877,7 @@ mod tests {
     fn test_classification_eq_match() {
         let store = PolicyStore {
             cache: RwLock::new(vec![Policy {
+                enforcement_mode: EnforcementMode::Block,
                 id: "p1".to_string(),
                 name: "p1".to_string(),
                 description: None,
@@ -882,6 +902,7 @@ mod tests {
     fn test_classification_eq_no_match() {
         let store = PolicyStore {
             cache: RwLock::new(vec![Policy {
+                enforcement_mode: EnforcementMode::Block,
                 id: "p1".to_string(),
                 name: "p1".to_string(),
                 description: None,
@@ -907,6 +928,7 @@ mod tests {
     fn test_classification_neq_match() {
         let store = PolicyStore {
             cache: RwLock::new(vec![Policy {
+                enforcement_mode: EnforcementMode::Block,
                 id: "p1".to_string(),
                 name: "p1".to_string(),
                 description: None,
@@ -934,6 +956,7 @@ mod tests {
     fn test_memberof_in_match() {
         let store = PolicyStore {
             cache: RwLock::new(vec![Policy {
+                enforcement_mode: EnforcementMode::Block,
                 id: "p1".to_string(),
                 name: "p1".to_string(),
                 description: None,
@@ -959,6 +982,7 @@ mod tests {
     fn test_memberof_in_no_match() {
         let store = PolicyStore {
             cache: RwLock::new(vec![Policy {
+                enforcement_mode: EnforcementMode::Block,
                 id: "p1".to_string(),
                 name: "p1".to_string(),
                 description: None,
@@ -985,6 +1009,7 @@ mod tests {
     fn test_memberof_not_in_match() {
         let store = PolicyStore {
             cache: RwLock::new(vec![Policy {
+                enforcement_mode: EnforcementMode::Block,
                 id: "p1".to_string(),
                 name: "p1".to_string(),
                 description: None,
@@ -1012,6 +1037,7 @@ mod tests {
     fn test_device_trust_match() {
         let store = PolicyStore {
             cache: RwLock::new(vec![Policy {
+                enforcement_mode: EnforcementMode::Block,
                 id: "p1".to_string(),
                 name: "p1".to_string(),
                 description: None,
@@ -1036,6 +1062,7 @@ mod tests {
     fn test_network_location_match() {
         let store = PolicyStore {
             cache: RwLock::new(vec![Policy {
+                enforcement_mode: EnforcementMode::Block,
                 id: "p1".to_string(),
                 name: "p1".to_string(),
                 description: None,
@@ -1059,6 +1086,7 @@ mod tests {
     fn test_access_context_match() {
         let store = PolicyStore {
             cache: RwLock::new(vec![Policy {
+                enforcement_mode: EnforcementMode::Block,
                 id: "p1".to_string(),
                 name: "p1".to_string(),
                 description: None,
@@ -1084,6 +1112,7 @@ mod tests {
     fn test_in_op_on_classification_is_false() {
         let store = PolicyStore {
             cache: RwLock::new(vec![Policy {
+                enforcement_mode: EnforcementMode::Block,
                 id: "p1".to_string(),
                 name: "p1".to_string(),
                 description: None,
@@ -1187,6 +1216,7 @@ mod tests {
     #[test]
     fn test_evaluate_all_mode_all_conditions_match() {
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "mode-all".to_string(),
             name: "mode all".to_string(),
             description: None,
@@ -1218,6 +1248,7 @@ mod tests {
     #[test]
     fn test_evaluate_all_mode_one_condition_misses() {
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "mode-all".to_string(),
             name: "mode all".to_string(),
             description: None,
@@ -1250,6 +1281,7 @@ mod tests {
     #[test]
     fn test_evaluate_any_mode_one_condition_matches() {
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "mode-any".to_string(),
             name: "mode any".to_string(),
             description: None,
@@ -1282,6 +1314,7 @@ mod tests {
     #[test]
     fn test_evaluate_any_mode_no_condition_matches() {
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "mode-any".to_string(),
             name: "mode any".to_string(),
             description: None,
@@ -1314,6 +1347,7 @@ mod tests {
     #[test]
     fn test_evaluate_none_mode_no_condition_matches() {
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "mode-none".to_string(),
             name: "mode none".to_string(),
             description: None,
@@ -1346,6 +1380,7 @@ mod tests {
     #[test]
     fn test_evaluate_none_mode_one_condition_matches() {
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "mode-none".to_string(),
             name: "mode none".to_string(),
             description: None,
@@ -1381,6 +1416,7 @@ mod tests {
     fn test_evaluate_empty_conditions_all_mode_matches() {
         // ALL + []: vacuous truth — matches unconditionally.
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "empty-all".to_string(),
             name: "empty all".to_string(),
             description: None,
@@ -1404,6 +1440,7 @@ mod tests {
     fn test_evaluate_empty_conditions_any_mode_does_not_match() {
         // ANY + []: zero conditions can ever be satisfied → never matches.
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "empty-any".to_string(),
             name: "empty any".to_string(),
             description: None,
@@ -1428,6 +1465,7 @@ mod tests {
     fn test_evaluate_empty_conditions_none_mode_matches() {
         // NONE + []: zero conditions are satisfied (vacuously true) → matches unconditionally.
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "empty-none".to_string(),
             name: "empty none".to_string(),
             description: None,
@@ -1496,6 +1534,7 @@ mod tests {
     /// Builds a single-condition `SourceApplication` policy.
     fn make_source_app_policy(field: AppField, op: &str, value: &str, action: Decision) -> Policy {
         Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "app-p1".to_string(),
             name: "app-p1".to_string(),
             description: None,
@@ -1515,6 +1554,7 @@ mod tests {
     /// Builds a single-condition `DestinationApplication` policy.
     fn make_dest_app_policy(field: AppField, op: &str, value: &str, action: Decision) -> Policy {
         Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "dest-p1".to_string(),
             name: "dest-p1".to_string(),
             description: None,
@@ -1736,6 +1776,7 @@ mod tests {
     fn test_evaluate_all_mode_source_app_and_classification_both_match() {
         use dlp_common::endpoint::AppTrustTier;
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "app-class-all".to_string(),
             name: "app + class ALL".to_string(),
             description: None,
@@ -1777,6 +1818,7 @@ mod tests {
     #[test]
     fn test_evaluate_all_mode_source_app_none_blocks_policy() {
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "app-class-all".to_string(),
             name: "app + class ALL".to_string(),
             description: None,
@@ -1815,6 +1857,7 @@ mod tests {
     #[test]
     fn test_evaluate_any_mode_source_app_none_classification_matches() {
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "app-class-any".to_string(),
             name: "app + class ANY".to_string(),
             description: None,
@@ -2138,6 +2181,7 @@ mod tests {
         ];
 
         let policy_v040 = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "v040-policy".to_string(),
             name: "v0.4.0 policy".to_string(),
             description: None,
@@ -2151,6 +2195,7 @@ mod tests {
         };
 
         let policy_explicit_all = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "explicit-all".to_string(),
             name: "explicit all".to_string(),
             description: None,
@@ -2200,6 +2245,7 @@ mod tests {
     /// Builds a single-condition `SourceOrigin` policy.
     fn make_source_origin_policy(op: &str, value: &str, action: Decision) -> Policy {
         Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "origin-p1".to_string(),
             name: "origin-p1".to_string(),
             description: None,
@@ -2218,6 +2264,7 @@ mod tests {
     /// Builds a single-condition `DestinationOrigin` policy.
     fn make_dest_origin_policy(op: &str, value: &str, action: Decision) -> Policy {
         Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "origin-p2".to_string(),
             name: "origin-p2".to_string(),
             description: None,
@@ -2373,6 +2420,7 @@ mod tests {
     #[test]
     fn test_evaluate_any_mode_source_origin_and_classification() {
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "origin-any".to_string(),
             name: "origin any".to_string(),
             description: None,
@@ -2406,6 +2454,7 @@ mod tests {
     #[test]
     fn test_evaluate_all_mode_source_origin_and_classification() {
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "origin-all".to_string(),
             name: "origin all".to_string(),
             description: None,
@@ -2439,6 +2488,7 @@ mod tests {
     #[test]
     fn test_evaluate_all_mode_source_origin_misses_classification_matches() {
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "origin-all".to_string(),
             name: "origin all".to_string(),
             description: None,
@@ -2649,6 +2699,7 @@ mod tests {
 
         // Create an ALLOW policy for T1
         let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
             id: "allow-t1".to_string(),
             name: "allow t1".to_string(),
             description: None,
@@ -2686,6 +2737,7 @@ mod tests {
         // Create multiple policies to ensure the flag is not re-read per policy
         let policies = vec![
             Policy {
+                enforcement_mode: EnforcementMode::Block,
                 id: "p1".to_string(),
                 name: "p1".to_string(),
                 description: None,
@@ -2700,6 +2752,7 @@ mod tests {
                 version: 1,
             },
             Policy {
+                enforcement_mode: EnforcementMode::Block,
                 id: "p2".to_string(),
                 name: "p2".to_string(),
                 description: None,
