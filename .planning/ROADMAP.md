@@ -306,7 +306,7 @@ Plans:
   3. The admin TUI Conditions Builder exposes `source_volume_class` and `destination_volume_class` as dropdowns with the six enum values; the existing USB/disk allowlist screens render SD/Optical/Virtual rows alongside USB without UI breakage.
   4. `WM_DEVICECHANGE` handlers cover virtual mounts (Daemon Tools, ISO mounting via Windows Explorer, VHD/VHDX mount) by registering `GUID_DEVINTERFACE_VOLUME` notification handlers for non-USB volume classes; the 500 ms deferred-processing pattern from v0.7.0 is preserved.
 
-**Plans:** 4/6 plans executed
+**Plans:** 5/6 plans executed
 **UI hint**: yes
 
 Plans:
@@ -433,7 +433,7 @@ Plans:
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Complete    | 2026-05-28 |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
-| 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 4/6 | In Progress|  |
+| 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 5/6 | In Progress|  |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 0/0 | Not started | - |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
