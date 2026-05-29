@@ -86,6 +86,8 @@ pub enum EventType {
     /// Phase 53: Bypass correlator detected a hook-vs-ETW divergence.
     /// Emitted when the correlator finds NoHookJournal or OpMismatch.
     BypassAlertDetected,
+    /// Phase 56: A volume arrived (USB, SD, optical, virtual, or network).
+    VolumeArrival,
 }
 
 impl EventType {
@@ -121,6 +123,7 @@ impl EventType {
                 | Self::EtwConsumerGatedOff
                 | Self::EtwConsumerLostEvents
                 | Self::BypassAlertDetected
+                | Self::VolumeArrival
         )
     }
 
@@ -282,6 +285,14 @@ pub struct AuditEvent {
     /// decision but the effective mode was Audit (monitor-only).
     #[serde(default)]
     pub would_have_denied: bool,
+    /// The volume class of the arrived volume (if any).
+    ///
+    /// Populated for [`EventType::VolumeArrival`] events to indicate
+    /// the class of the volume that arrived (USB, SD, optical, virtual,
+    /// or network share). `None` for other event types or when the
+    /// volume class could not be determined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_class: Option<crate::VolumeClass>,
 }
 
 impl AuditEvent {
@@ -343,6 +354,7 @@ impl AuditEvent {
             owner_user: None,
             policy_mode: None,
             would_have_denied: false,
+            volume_class: None,
         }
     }
 
@@ -528,6 +540,21 @@ impl AuditEvent {
     #[must_use]
     pub fn with_would_have_denied(mut self, would_have_denied: bool) -> Self {
         self.would_have_denied = would_have_denied;
+        self
+    }
+
+    /// Sets the volume class for a VolumeArrival event.
+    ///
+    /// # Arguments
+    ///
+    /// * `volume_class` — The [`crate::VolumeClass`] of the arrived volume.
+    ///
+    /// # Returns
+    ///
+    /// `self` with `volume_class` set.
+    #[must_use]
+    pub fn with_volume_class(mut self, volume_class: crate::VolumeClass) -> Self {
+        self.volume_class = Some(volume_class);
         self
     }
 }
@@ -1436,5 +1463,80 @@ mod tests {
             json.contains("\"would_have_denied\":false"),
             "would_have_denied false must be present: {json}"
         );
+    }
+
+    // --- Phase 56: VolumeArrival event type tests ---
+
+    #[test]
+    fn test_volume_arrival_routes_to_siem() {
+        assert!(EventType::VolumeArrival.routed_to_siem());
+    }
+
+    #[test]
+    fn test_volume_arrival_does_not_trigger_alert() {
+        assert!(!EventType::VolumeArrival.triggers_alert());
+    }
+
+    #[test]
+    fn test_audit_event_with_volume_class() {
+        use crate::VolumeClass;
+        let event = AuditEvent::new(
+            EventType::VolumeArrival,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            "E:\\".to_string(),
+            Classification::T1,
+            Action::READ,
+            Decision::ALLOW,
+            "AGENT-01".to_string(),
+            1,
+        )
+        .with_volume_class(VolumeClass::USBRemovable);
+
+        assert_eq!(event.volume_class, Some(VolumeClass::USBRemovable));
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"volume_class\""), "volume_class must be present: {json}");
+        assert!(json.contains("USBRemovable"), "USBRemovable value missing: {json}");
+    }
+
+    #[test]
+    fn test_skip_serializing_none_volume_class() {
+        let event = AuditEvent::new(
+            EventType::Access,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\File.txt".to_string(),
+            Classification::T2,
+            Action::READ,
+            Decision::ALLOW,
+            "AGENT-WS02-001".to_string(),
+            1,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            !json.contains("\"volume_class\""),
+            "None volume_class must be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn test_backward_compat_missing_volume_class() {
+        let legacy_json = r#"{
+            "timestamp": "2026-01-01T00:00:00Z",
+            "event_type": "VOLUME_ARRIVAL",
+            "user_sid": "S-1-5-21-1",
+            "user_name": "jsmith",
+            "resource_path": "E:\\",
+            "classification": "T1",
+            "action_attempted": "READ",
+            "decision": "ALLOW",
+            "agent_id": "AGENT-01",
+            "session_id": 1,
+            "override_granted": false,
+            "access_context": "local"
+        }"#;
+        let event: AuditEvent = serde_json::from_str(legacy_json)
+            .expect("legacy JSON without volume_class must deserialize");
+        assert!(event.volume_class.is_none());
     }
 }
