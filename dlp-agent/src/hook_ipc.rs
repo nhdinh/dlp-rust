@@ -471,6 +471,8 @@ mod tests {
                 cache_version: 0,
                 protocol_version: 1,
                 op: dlp_common::hook_ipc::HookOp::Read,
+                source_volume_class: None,
+                destination_volume_class: None,
             };
 
             let start = Instant::now();
@@ -534,6 +536,8 @@ mod tests {
             cache_version: 0,
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Read,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
         let resp = send_request(client, &req).expect("send empty path request");
         assert_eq!(resp.decision, Decision::ALLOW);
@@ -710,6 +714,8 @@ mod tests {
             cache_version: 0,
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Write,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
 
         // Serialisation itself should succeed.
@@ -754,6 +760,8 @@ mod tests {
             cache_version: 5, // stale
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Write,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
 
         let resp = handle_hook_request(req, &inner, &cache);
@@ -785,6 +793,8 @@ mod tests {
             cache_version: 42, // fresh
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Read,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
 
         let resp = handle_hook_request(req, &inner, &cache);
@@ -812,6 +822,8 @@ mod tests {
             cache_version: 0, // never seen cache
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Write,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
 
         let resp = handle_hook_request(req, &inner, &cache);

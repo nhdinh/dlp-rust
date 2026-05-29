@@ -117,13 +117,13 @@ pub struct HookRequest {
     ///
     /// Populated by the hook DLL via [`volume_class_cache::resolve_volume_class_from_path`].
     /// `None` when the volume class cannot be determined.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub source_volume_class: Option<VolumeClass>,
     /// Volume class of the destination path (if any).
     ///
     /// Populated by the hook DLL for copy/move operations.
     /// `None` for single-path operations or when undetermined.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub destination_volume_class: Option<VolumeClass>,
 }
 
@@ -338,6 +338,8 @@ mod tests {
             cache_version: 42,
             protocol_version: 1,
             op: HookOp::Write,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
         let envelope = IpcEnvelope::V1(IpcMessageV1 {
             payload: IpcPayloadV1::Request(req),
@@ -370,6 +372,8 @@ mod tests {
             cache_version: 7,
             protocol_version: 1,
             op: HookOp::Write,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
         let bytes = bincode::serialize(&req).unwrap();
         let round_trip: HookRequest = bincode::deserialize(&bytes).unwrap();

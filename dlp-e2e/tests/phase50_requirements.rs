@@ -87,6 +87,8 @@ fn hook_request_extended() {
         cache_version: 7,
         protocol_version: 1,
         op: HookOp::Write,
+        source_volume_class: None,
+        destination_volume_class: None,
     };
 
     assert_eq!(req.cache_version, 7);

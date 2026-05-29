@@ -1715,6 +1715,33 @@ fn extract_drive_letter(path: &str) -> Option<char> {
     }
 }
 
+/// Injects a volume class into the detector's cache for testing.
+///
+/// This helper allows tests to bypass WMI queries and directly populate
+/// the `volume_class_map` with a known classification. Used by integration
+/// tests to simulate drive classifications without requiring physical hardware.
+///
+/// # Arguments
+///
+/// * `letter` - Drive letter to inject (e.g., `'C'`, `'D'`).
+/// * `class` - The [`VolumeClass`] to associate with the drive letter.
+///
+/// # Example
+///
+/// ```
+/// let detector = VolumeDetector::new();
+/// detector.inject_volume_class_for_test('C', VolumeClass::LocalNTFS);
+/// detector.inject_volume_class_for_test('D', VolumeClass::Optical);
+/// ```
+#[cfg(test)]
+impl VolumeDetector {
+    pub fn inject_volume_class_for_test(&self, letter: char, class: VolumeClass) {
+        self.volume_class_map
+            .write()
+            .insert(letter.to_ascii_uppercase(), (class, Instant::now()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
