@@ -351,7 +351,10 @@ impl MutationContext {
             .unwrap_or(dlp_common::Classification::T3);
 
         let resource = if let (Some(ref old), Some(ref new)) = (&self.old_state, &self.new_state) {
-            format!("label:{} at {} ({} -> {})", self.label_id, self.path, old, new)
+            format!(
+                "label:{} at {} ({} -> {})",
+                self.label_id, self.path, old, new
+            )
         } else if let Some(ref new) = self.new_state {
             format!("label:{} at {} ({})", self.label_id, self.path, new)
         } else if let Some(ref old) = self.old_state {
@@ -1071,7 +1074,9 @@ mod tests {
         };
 
         let result: Result<(), AppError> = svc.with_mutation(ctx, |_uow| {
-            Err(AppError::BadRequest("simulated mutation failure".to_string()))
+            Err(AppError::BadRequest(
+                "simulated mutation failure".to_string(),
+            ))
         });
 
         assert!(result.is_err());

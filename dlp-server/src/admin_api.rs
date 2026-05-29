@@ -25,6 +25,9 @@ use crate::approval_api;
 use crate::audit_store;
 use crate::db;
 use crate::db::repositories;
+use crate::db::repositories::bypass_alerts::{
+    BypassAlertFilter, BypassAlertInsertRow, BypassAlertRow, BypassAlertsRepository,
+};
 use crate::db::repositories::labels::{LabelRepository, LabelRow, LabelUpsertRow};
 use crate::db::repositories::protected_paths::{ProtectedPathRow, ProtectedPathsRepository};
 use crate::db::repositories::{
@@ -33,9 +36,6 @@ use crate::db::repositories::{
     CredentialsRepository, DiskRegistryRepository, DiskRegistryRow, LdapConfigRepository,
     ManagedOriginRow, ManagedOriginsRepository, PolicyRepository, SiemConfigRepository,
     SyslogConfigRepository, SyslogConfigRow,
-};
-use crate::db::repositories::bypass_alerts::{
-    BypassAlertFilter, BypassAlertInsertRow, BypassAlertRow, BypassAlertsRepository,
 };
 use crate::exception_store;
 use crate::policy_store::{mode_str, parse_enforcement_mode};
@@ -5271,12 +5271,15 @@ async fn bypass_batch_ingest_handler(
     Json(batch): Json<BypassAlertBatch>,
 ) -> Result<Json<BypassAlertIngestResponse>, AppError> {
     if batch.alerts.is_empty() {
-        return Err(AppError::BadRequest("alert batch must not be empty".to_string()));
+        return Err(AppError::BadRequest(
+            "alert batch must not be empty".to_string(),
+        ));
     }
     if batch.alerts.len() > 100 {
-        return Err(AppError::BadRequest(
-            format!("batch exceeds maximum of 100 alerts (got {})", batch.alerts.len()),
-        ));
+        return Err(AppError::BadRequest(format!(
+            "batch exceeds maximum of 100 alerts (got {})",
+            batch.alerts.len()
+        )));
     }
 
     let now = Utc::now().to_rfc3339();
@@ -5305,18 +5308,17 @@ async fn bypass_batch_ingest_handler(
 
     let pool = Arc::clone(&state.pool);
     let rows_for_insert = insert_rows.clone();
-    let (inserted, skipped) = tokio::task::spawn_blocking(
-        move || -> Result<(usize, usize), AppError> {
+    let (inserted, skipped) =
+        tokio::task::spawn_blocking(move || -> Result<(usize, usize), AppError> {
             let mut conn = pool.get().map_err(AppError::from)?;
             let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
             let result = BypassAlertsRepository::insert_batch(&uow, &rows_for_insert)
                 .map_err(AppError::Database)?;
             uow.commit().map_err(AppError::Database)?;
             Ok(result)
-        },
-    )
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+        })
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     // Best-effort SIEM relay and alert routing for inserted alerts.
     // Fire-and-forget so HTTP response is not delayed.
@@ -5404,7 +5406,10 @@ async fn list_bypass_alerts_handler(
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     let total = rows.len();
-    Ok(Json(BypassAlertListResponse { total, alerts: rows }))
+    Ok(Json(BypassAlertListResponse {
+        total,
+        alerts: rows,
+    }))
 }
 
 /// `POST /admin/bypass-alerts/{id}/ack` — acknowledge a bypass alert.
@@ -5422,8 +5427,8 @@ async fn ack_bypass_alert_handler(
     let affected = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
-        let count = BypassAlertsRepository::ack_by_id(&uow, id, &ack_by)
-            .map_err(AppError::Database)?;
+        let count =
+            BypassAlertsRepository::ack_by_id(&uow, id, &ack_by).map_err(AppError::Database)?;
         uow.commit().map_err(AppError::Database)?;
         Ok(count)
     })

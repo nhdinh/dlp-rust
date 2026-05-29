@@ -156,9 +156,9 @@ async fn test_e2e_cache_hit_skips_engine() {
             decision: Decision::ALLOW,
             matched_policy_id: Some("pol-cached".to_string()),
             reason: "cached".to_string(),
-                enforcement_mode: None,
-                would_have_denied: false,
-},
+            enforcement_mode: None,
+            would_have_denied: false,
+        },
     );
 
     // Simulate a file read.
@@ -358,9 +358,9 @@ async fn evaluate_handler(
             decision: Decision::DENY,
             matched_policy_id: Some("pol-001".to_string()),
             reason: "T4 Deny All".to_string(),
-                enforcement_mode: None,
-                would_have_denied: false,
-});
+            enforcement_mode: None,
+            would_have_denied: false,
+        });
     }
 
     // pol-002: T3 + Unmanaged -> DENY
@@ -369,9 +369,9 @@ async fn evaluate_handler(
             decision: Decision::DENY,
             matched_policy_id: Some("pol-002".to_string()),
             reason: "T3 Unmanaged Block".to_string(),
-                enforcement_mode: None,
-                would_have_denied: false,
-});
+            enforcement_mode: None,
+            would_have_denied: false,
+        });
     }
 
     // pol-003: T2 -> AllowWithLog
@@ -380,9 +380,9 @@ async fn evaluate_handler(
             decision: Decision::AllowWithLog,
             matched_policy_id: Some("pol-003".to_string()),
             reason: "T2 Allow with Log".to_string(),
-                enforcement_mode: None,
-                would_have_denied: false,
-});
+            enforcement_mode: None,
+            would_have_denied: false,
+        });
     }
 
     // Default: ALLOW
@@ -390,9 +390,9 @@ async fn evaluate_handler(
         decision: Decision::ALLOW,
         matched_policy_id: None,
         reason: "default allow".to_string(),
-            enforcement_mode: None,
-            would_have_denied: false,
-})
+        enforcement_mode: None,
+        would_have_denied: false,
+    })
 }
 
 /// P2-T13: Agent's OfflineManager evaluates against a real Policy Engine.
@@ -709,9 +709,9 @@ async fn test_cache_ttl_expiry() {
             decision: Decision::ALLOW,
             matched_policy_id: None,
             reason: "test".into(),
-                enforcement_mode: None,
-                would_have_denied: false,
-},
+            enforcement_mode: None,
+            would_have_denied: false,
+        },
     );
     assert!(cache
         .get(r"C:\Restricted\secret.xlsx", "S-1-5-21-123")
@@ -743,9 +743,9 @@ async fn test_cache_configurable_ttl() {
             decision: Decision::ALLOW,
             matched_policy_id: None,
             reason: "test".into(),
-                enforcement_mode: None,
-                would_have_denied: false,
-},
+            enforcement_mode: None,
+            would_have_denied: false,
+        },
     );
     // Should still be present (300s TTL).
     assert!(cache.get("a", "b").is_some());
@@ -989,9 +989,9 @@ async fn test_offline_manager_cache_hit_when_offline() {
             decision: Decision::AllowWithLog,
             matched_policy_id: Some("cached".into()),
             reason: "cached".into(),
-                enforcement_mode: None,
-                would_have_denied: false,
-},
+            enforcement_mode: None,
+            would_have_denied: false,
+        },
     );
 
     let offline = OfflineManager::new(client, cache.clone(), None);
@@ -1051,9 +1051,9 @@ async fn test_concurrent_cache_access_stress() {
                         decision: Decision::ALLOW,
                         matched_policy_id: None,
                         reason: "stress".into(),
-                            enforcement_mode: None,
-                            would_have_denied: false,
-},
+                        enforcement_mode: None,
+                        would_have_denied: false,
+                    },
                 );
                 match cache.get(&path, "S-1-5-21-CONCURRENT") {
                     Some(_) => {}
@@ -1296,9 +1296,9 @@ async fn test_offline_manager_t4_cached_not_evaluated() {
             decision: Decision::DENY,
             matched_policy_id: Some("pol-001".into()),
             reason: "cached".into(),
-                enforcement_mode: None,
-                would_have_denied: false,
-},
+            enforcement_mode: None,
+            would_have_denied: false,
+        },
     );
 
     let manager = OfflineManager::new(client, cache, None);
@@ -1966,9 +1966,9 @@ async fn test_tc_11_copy_confidential_to_internal_blocked_alert() {
         decision: Decision::DenyWithAlert,
         matched_policy_id: Some("pol-tc11-downgrade".into()),
         reason: "T3 copy to T2 destination denied".into(),
-            enforcement_mode: None,
-            would_have_denied: false,
-};
+        enforcement_mode: None,
+        would_have_denied: false,
+    };
     let (addr, _h) = start_mock_engine_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -2061,9 +2061,9 @@ async fn test_tc_14_copy_confidential_to_usb_blocked_log() {
         decision: Decision::DENY,
         matched_policy_id: Some("pol-tc14-usb".into()),
         reason: "T3 copy to USB blocked".into(),
-            enforcement_mode: None,
-            would_have_denied: false,
-};
+        enforcement_mode: None,
+        would_have_denied: false,
+    };
     let (addr, _h) = start_mock_engine_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -2141,9 +2141,9 @@ async fn test_tc_21_email_credit_card_blocked_alert() {
         decision: Decision::DenyWithAlert,
         matched_policy_id: Some("pol-tc21-email".into()),
         reason: "T4 content in external email denied".into(),
-            enforcement_mode: None,
-            would_have_denied: false,
-};
+        enforcement_mode: None,
+        would_have_denied: false,
+    };
     let (addr, _h) = start_mock_engine_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -2212,9 +2212,9 @@ async fn test_tc_72_delete_restricted_secure_delete() {
         decision: Decision::DENY,
         matched_policy_id: Some("pol-tc72-secure-delete".into()),
         reason: "T4 delete triggers secure wipe".into(),
-            enforcement_mode: None,
-            would_have_denied: false,
-};
+        enforcement_mode: None,
+        would_have_denied: false,
+    };
     let (addr, _h) = start_mock_engine_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
     let dir = tempfile::tempdir().unwrap();

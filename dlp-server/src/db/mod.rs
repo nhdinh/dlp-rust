@@ -1850,7 +1850,9 @@ mod tests {
         let conn = pool.get().expect("acquire connection");
 
         let indexes: Vec<String> = conn
-            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='bypass_alerts'")
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='bypass_alerts'",
+            )
             .expect("prepare")
             .query_map([], |row| row.get::<_, String>(0))
             .expect("query")
@@ -1892,7 +1894,10 @@ mod tests {
              VALUES ('agent-1', 1234, 'C:\\app.exe', 'C:\\file.txt', 'Create', 1000, '2026-01-01T00:00:00Z', 'crit', 'no_hook_journal')",
             [],
         );
-        assert!(result.is_err(), "duplicate (agent_id, pid, qpc_timestamp, file_path) must fail UNIQUE constraint");
+        assert!(
+            result.is_err(),
+            "duplicate (agent_id, pid, qpc_timestamp, file_path) must fail UNIQUE constraint"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("UNIQUE constraint failed"),
@@ -1911,7 +1916,10 @@ mod tests {
              VALUES ('agent-1', 1234, 'C:\\app.exe', 'C:\\file.txt', 'Create', 1000, '2026-01-01T00:00:00Z', 'invalid', 'no_hook_journal')",
             [],
         );
-        assert!(result.is_err(), "invalid severity must fail CHECK constraint");
+        assert!(
+            result.is_err(),
+            "invalid severity must fail CHECK constraint"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("CHECK constraint failed"),
@@ -1930,7 +1938,10 @@ mod tests {
              VALUES ('agent-1', 1234, 'C:\\app.exe', 'C:\\file.txt', 'Create', 1000, '2026-01-01T00:00:00Z', 'crit', 'invalid_reason')",
             [],
         );
-        assert!(result.is_err(), "invalid correlation_reason must fail CHECK constraint");
+        assert!(
+            result.is_err(),
+            "invalid correlation_reason must fail CHECK constraint"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("CHECK constraint failed"),
@@ -1958,7 +1969,10 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("query file_object");
-        assert_eq!(file_object, 0, "file_object must default to 0 when not provided");
+        assert_eq!(
+            file_object, 0,
+            "file_object must default to 0 when not provided"
+        );
     }
 
     #[test]
@@ -1994,6 +2008,9 @@ mod tests {
             "UPDATE bypass_alerts SET ack_by = 'nonexistent-admin' WHERE id = 1",
             [],
         );
-        assert!(result.is_err(), "ack_by referencing nonexistent admin must fail FK constraint");
+        assert!(
+            result.is_err(),
+            "ack_by referencing nonexistent admin must fail FK constraint"
+        );
     }
 }

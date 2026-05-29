@@ -3068,7 +3068,11 @@ mod tests {
             global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let resp = store.evaluate(&make_request(Classification::T3), None, false);
-        assert_eq!(resp.decision, Decision::DENY, "AuditAndBlock mode must deny");
+        assert_eq!(
+            resp.decision,
+            Decision::DENY,
+            "AuditAndBlock mode must deny"
+        );
         assert!(!resp.would_have_denied, "would_have_denied must be false");
         assert_eq!(
             resp.enforcement_mode,
@@ -3101,7 +3105,11 @@ mod tests {
             global_mode: RwLock::new(EnforcementMode::Audit),
         };
         let resp = store.evaluate(&make_request(Classification::T3), None, false);
-        assert_eq!(resp.decision, Decision::ALLOW, "global Audit must override Block");
+        assert_eq!(
+            resp.decision,
+            Decision::ALLOW,
+            "global Audit must override Block"
+        );
         assert!(resp.would_have_denied, "would_have_denied must be true");
         assert_eq!(
             resp.enforcement_mode,
@@ -3134,7 +3142,11 @@ mod tests {
             global_mode: RwLock::new(EnforcementMode::Block),
         };
         let resp = store.evaluate(&make_request(Classification::T3), None, false);
-        assert_eq!(resp.decision, Decision::DENY, "global Block must override Audit");
+        assert_eq!(
+            resp.decision,
+            Decision::DENY,
+            "global Block must override Audit"
+        );
         assert!(!resp.would_have_denied, "would_have_denied must be false");
         assert_eq!(
             resp.enforcement_mode,
@@ -3168,7 +3180,11 @@ mod tests {
         };
         // No system_kv seed — the cached value is used directly.
         let resp = store.evaluate(&make_request(Classification::T3), None, false);
-        assert_eq!(resp.decision, Decision::ALLOW, "cached global Audit must apply");
+        assert_eq!(
+            resp.decision,
+            Decision::ALLOW,
+            "cached global Audit must apply"
+        );
         assert_eq!(
             resp.enforcement_mode,
             Some(EnforcementMode::Audit),

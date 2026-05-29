@@ -112,7 +112,6 @@ const CHANNEL_CAPACITY: usize = 1024;
 const ETW_BUFFER_SIZE_KB: u32 = 256;
 const ETW_BUFFER_COUNT: u32 = 200;
 
-
 impl EtwKernelFileConsumer {
     /// Creates a new consumer with a bounded channel.
     #[must_use]
@@ -255,13 +254,13 @@ fn run_etw_kernel_file_loop(
                         let timestamp: u64 = record.raw_timestamp() as u64; // 100-ns units
 
                         // WR-09: Convert NT device path to DOS path before filtering.
-                        let (converted_name, nt_converted) =
-                            if let Some(dos) = dlp_common::path_hash::nt_path_to_dos_path(&file_name)
-                            {
-                                (dos, true)
-                            } else {
-                                (file_name, false)
-                            };
+                        let (converted_name, nt_converted) = if let Some(dos) =
+                            dlp_common::path_hash::nt_path_to_dos_path(&file_name)
+                        {
+                            (dos, true)
+                        } else {
+                            (file_name, false)
+                        };
 
                         // Consumer-side System32/WinSxS filter on CONVERTED path.
                         if is_system32_or_winsxs(&converted_name) {

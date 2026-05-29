@@ -31,7 +31,10 @@ fn ntdll_patcher_smoke_test() {
     let states = patcher.stub_states();
     for (i, state) in states.iter().enumerate() {
         assert!(
-            matches!(state, dlp_hook_dll::ntdll_patcher::StubPatchState::Unpatched),
+            matches!(
+                state,
+                dlp_hook_dll::ntdll_patcher::StubPatchState::Unpatched
+            ),
             "Stub {} should start as Unpatched, got {:?}",
             i,
             state
@@ -105,9 +108,7 @@ fn ntdll_chaos_test() {
 
             while !stop_flag.load(Ordering::Relaxed) {
                 // Call NtCreateFile directly via ntdll.
-                let result = std::panic::catch_unwind(|| {
-                    syscall_ntcreatefile(&temp_path)
-                });
+                let result = std::panic::catch_unwind(|| syscall_ntcreatefile(&temp_path));
 
                 match result {
                     Ok(status) => {

@@ -10,6 +10,7 @@ pub mod alert_router_config;
 pub mod allowlist;
 pub mod approvals;
 pub mod audit_events;
+pub mod bypass_alerts;
 pub mod credentials;
 pub mod device_registry;
 pub mod disk_registry;
@@ -25,7 +26,6 @@ pub mod siem_config;
 pub mod syslog_config;
 pub mod syslog_queue;
 pub mod system_kv;
-pub mod bypass_alerts;
 
 pub use admin_users::AdminUserRepository;
 pub use agent_config::{AgentConfigOverrideRow, AgentConfigRepository, GlobalAgentConfigRow};
@@ -36,6 +36,9 @@ pub use allowlist::{
 };
 pub use approvals::{ApprovalRepository, ApprovalRow, ApprovalUpsertRow};
 pub use audit_events::{AuditEventRepository, AuditEventRow};
+pub use bypass_alerts::{
+    BypassAlertFilter, BypassAlertInsertRow, BypassAlertRow, BypassAlertsRepository,
+};
 pub use credentials::CredentialsRepository;
 pub use device_registry::{DeviceRegistryRepository, DeviceRegistryRow};
 pub use disk_registry::{DiskRegistryRepository, DiskRegistryRow};
@@ -49,6 +52,3 @@ pub use syslog_config::{
     validate_facility_code, validate_severity, SyslogConfigRepository, SyslogConfigRow,
 };
 pub use syslog_queue::{QueuedEvent, SyslogQueueRepository};
-pub use bypass_alerts::{
-    BypassAlertFilter, BypassAlertInsertRow, BypassAlertRow, BypassAlertsRepository,
-};

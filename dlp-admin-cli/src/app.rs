@@ -1415,7 +1415,10 @@ mod tests {
             enforcement_mode: EnforcementMode::Audit,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
-        assert!(json.contains("\"enforcement_mode\""), "json missing enforcement_mode key");
+        assert!(
+            json.contains("\"enforcement_mode\""),
+            "json missing enforcement_mode key"
+        );
         let round_trip: PolicyPayload = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(round_trip.enforcement_mode, EnforcementMode::Audit);
     }

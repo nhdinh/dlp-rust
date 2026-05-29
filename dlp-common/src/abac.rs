@@ -317,7 +317,10 @@ impl EnforcementMode {
 /// The effective mode: if `global_mode` is not `PerPolicy`, returns `global_mode`;
 /// otherwise returns `policy_mode`.
 #[must_use]
-pub fn compute_effective_mode(global_mode: EnforcementMode, policy_mode: EnforcementMode) -> EnforcementMode {
+pub fn compute_effective_mode(
+    global_mode: EnforcementMode,
+    policy_mode: EnforcementMode,
+) -> EnforcementMode {
     if global_mode != EnforcementMode::PerPolicy {
         global_mode
     } else {
@@ -792,8 +795,7 @@ mod tests {
         let effective = compute_effective_mode(EnforcementMode::PerPolicy, EnforcementMode::Audit);
         assert_eq!(effective, EnforcementMode::Audit);
 
-        let effective2 =
-            compute_effective_mode(EnforcementMode::PerPolicy, EnforcementMode::Block);
+        let effective2 = compute_effective_mode(EnforcementMode::PerPolicy, EnforcementMode::Block);
         assert_eq!(effective2, EnforcementMode::Block);
 
         let effective3 =

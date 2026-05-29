@@ -281,17 +281,16 @@ fn nt_path_to_dos_path_windows(stripped: &str) -> Option<String> {
 
     // Build device name: \Device\HarddiskVolumeN
     let device_name = format!("{}\\Device\\HarddiskVolume{}", prefix, volume_num);
-    let device_wide: Vec<u16> = device_name.encode_utf16().chain(std::iter::once(0)).collect();
+    let device_wide: Vec<u16> = device_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
 
     // QueryDosDeviceW: pass a large buffer to receive all mappings.
     // windows 0.62 returns u32 directly (0 on failure; call GetLastError).
     let mut buffer = vec![0u16; 1024];
-    let len = unsafe {
-        QueryDosDeviceW(
-            PCWSTR::from_raw(device_wide.as_ptr()),
-            Some(&mut buffer),
-        )
-    } as usize;
+    let len = unsafe { QueryDosDeviceW(PCWSTR::from_raw(device_wide.as_ptr()), Some(&mut buffer)) }
+        as usize;
 
     if len == 0 {
         return Some(stripped.to_string());
@@ -381,9 +380,7 @@ mod tests {
 
     #[test]
     fn test_normalize_rejects_volume_guid() {
-        assert!(
-            normalize_path(r"\\?\Volume{1234-1234-1234-1234-123456789abc}\file.txt").is_none()
-        );
+        assert!(normalize_path(r"\\?\Volume{1234-1234-1234-1234-123456789abc}\file.txt").is_none());
     }
 
     #[test]

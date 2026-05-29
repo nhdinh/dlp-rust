@@ -20,8 +20,8 @@
 
 use std::ffi::c_void;
 use windows::Wdk::System::SystemInformation::{NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS};
-use windows::Win32::System::Diagnostics::Debug::GetThreadContext;
 use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::Diagnostics::Debug::GetThreadContext;
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, GetCurrentThreadId, OpenThread, ResumeThread, SuspendThread,
     THREAD_QUERY_INFORMATION, THREAD_SUSPEND_RESUME,

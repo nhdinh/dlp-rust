@@ -426,7 +426,8 @@ pub unsafe extern "system" fn HookCreateFileW(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::pcwstr_to_string(lpfilename);
-                    if let Some(_deny) = classify_and_log_path(&path, "CREATE", "CreateFileW", 0, 1) {
+                    if let Some(_deny) = classify_and_log_path(&path, "CREATE", "CreateFileW", 0, 1)
+                    {
                         return crate::fail_closed!(InvalidHandleValue);
                     }
                     let original = crate::ORIGINAL_CREATE_FILE_W.unwrap_or_else(|| {
@@ -515,7 +516,9 @@ pub unsafe extern "system" fn HookNtCreateFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::extract_nt_path(objectattributes);
-                    if let Some(_deny) = classify_and_log_path(&path, "CREATE", "NtCreateFile", 0, 1) {
+                    if let Some(_deny) =
+                        classify_and_log_path(&path, "CREATE", "NtCreateFile", 0, 1)
+                    {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let Some(original) = (unsafe {
@@ -604,7 +607,8 @@ pub unsafe extern "system" fn HookWriteFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let handle_value = hfile.0 as u64;
-                    if let Some(_deny) = classify_and_log_handle(handle_value, "WRITE", "WriteFile", 2, "")
+                    if let Some(_deny) =
+                        classify_and_log_handle(handle_value, "WRITE", "WriteFile", 2, "")
                     {
                         return crate::fail_closed!(BoolFalse);
                     }
@@ -762,10 +766,14 @@ pub unsafe extern "system" fn HookMoveFileExW(
                     let src_path = crate::pcwstr_to_string(lpexistingfilename);
                     let dst_path = crate::pcwstr_to_string(lpnewfilename);
 
-                    if let Some(_deny) = classify_and_log_path(&src_path, "MOVE", "MoveFileExW", 0, 4) {
+                    if let Some(_deny) =
+                        classify_and_log_path(&src_path, "MOVE", "MoveFileExW", 0, 4)
+                    {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) = classify_and_log_path(&dst_path, "MOVE", "MoveFileExW", 0, 4) {
+                    if let Some(_deny) =
+                        classify_and_log_path(&dst_path, "MOVE", "MoveFileExW", 0, 4)
+                    {
                         return crate::fail_closed!(BoolFalse);
                     }
 
@@ -829,10 +837,14 @@ pub unsafe extern "system" fn HookCopyFileExW(
                     let src_path = crate::pcwstr_to_string(lpexistingfilename);
                     let dst_path = crate::pcwstr_to_string(lpnewfilename);
 
-                    if let Some(_deny) = classify_and_log_path(&src_path, "COPY", "CopyFileExW", 0, 4) {
+                    if let Some(_deny) =
+                        classify_and_log_path(&src_path, "COPY", "CopyFileExW", 0, 4)
+                    {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) = classify_and_log_path(&dst_path, "COPY", "CopyFileExW", 0, 4) {
+                    if let Some(_deny) =
+                        classify_and_log_path(&dst_path, "COPY", "CopyFileExW", 0, 4)
+                    {
                         return crate::fail_closed!(BoolFalse);
                     }
 
@@ -907,7 +919,8 @@ pub unsafe extern "system" fn HookDeleteFileW(lpfilename: PCWSTR) -> windows::co
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::pcwstr_to_string(lpfilename);
-                    if let Some(_deny) = classify_and_log_path(&path, "DELETE", "DeleteFileW", 0, 3) {
+                    if let Some(_deny) = classify_and_log_path(&path, "DELETE", "DeleteFileW", 0, 3)
+                    {
                         return crate::fail_closed!(BoolFalse);
                     }
                     let original = crate::ORIGINAL_DELETE_FILE_W.unwrap_or_else(|| {
@@ -971,31 +984,19 @@ pub unsafe extern "system" fn HookReplaceFileW(
                     let replacement_path = crate::pcwstr_to_string(lpreplacementfilename);
                     let backup_path = crate::pcwstr_to_string(lpbackupfilename);
 
-                    if let Some(_deny) = classify_and_log_path(
-                        &replaced_path,
-                        "REPLACE",
-                        "ReplaceFileW",
-                        0,
-                        4,
-                    ) {
+                    if let Some(_deny) =
+                        classify_and_log_path(&replaced_path, "REPLACE", "ReplaceFileW", 0, 4)
+                    {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) = classify_and_log_path(
-                        &replacement_path,
-                        "REPLACE",
-                        "ReplaceFileW",
-                        0,
-                        4,
-                    ) {
+                    if let Some(_deny) =
+                        classify_and_log_path(&replacement_path, "REPLACE", "ReplaceFileW", 0, 4)
+                    {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) = classify_and_log_path(
-                        &backup_path,
-                        "REPLACE",
-                        "ReplaceFileW",
-                        0,
-                        4,
-                    ) {
+                    if let Some(_deny) =
+                        classify_and_log_path(&backup_path, "REPLACE", "ReplaceFileW", 0, 4)
+                    {
                         return crate::fail_closed!(BoolFalse);
                     }
 
@@ -1263,13 +1264,8 @@ pub unsafe extern "system" fn HookNtWriteFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let handle_value = filehandle.0 as u64;
-                    if let Some(_deny) = classify_and_log_handle(
-                        handle_value,
-                        "NT_WRITE",
-                        "NtWriteFile",
-                        2,
-                        "",
-                    )
+                    if let Some(_deny) =
+                        classify_and_log_handle(handle_value, "NT_WRITE", "NtWriteFile", 2, "")
                     {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
@@ -1460,7 +1456,9 @@ pub unsafe extern "system" fn NtdllTrampolineNtCreateFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::extract_nt_path(objectattributes);
-                    if let Some(_deny) = classify_and_log_path(&path, "CREATE", "NtCreateFile", 0, 1) {
+                    if let Some(_deny) =
+                        classify_and_log_path(&path, "CREATE", "NtCreateFile", 0, 1)
+                    {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original_ptr =
@@ -1732,13 +1730,8 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let handle_value = filehandle.0 as u64;
-                    if let Some(_deny) = classify_and_log_handle(
-                        handle_value,
-                        "NT_WRITE",
-                        "NtWriteFile",
-                        2,
-                        "",
-                    )
+                    if let Some(_deny) =
+                        classify_and_log_handle(handle_value, "NT_WRITE", "NtWriteFile", 2, "")
                     {
                         return crate::fail_closed!(StatusAccessDenied);
                     }

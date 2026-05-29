@@ -210,11 +210,9 @@ impl JournalReader {
     /// Returns `None` if the journal does not exist or the header version is unexpected.
     #[cfg(windows)]
     pub fn new(pid: u32, creation_time: u64) -> Option<Self> {
-        use windows::Win32::Foundation::CloseHandle;
-        use windows::Win32::System::Memory::{
-            MapViewOfFile, OpenFileMappingW, FILE_MAP_READ,
-        };
         use windows::core::PCWSTR;
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Memory::{MapViewOfFile, OpenFileMappingW, FILE_MAP_READ};
 
         let name = format!("{}{}", JOURNAL_NAME_PREFIX, pid);
         let name_wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
@@ -266,9 +264,8 @@ impl JournalReader {
     ///
     /// Returns a Vec of entries copied out of shared memory.
     pub fn read_entries(&mut self) -> Vec<JournalEntry> {
-        let write_index = unsafe {
-            std::ptr::read_volatile(std::ptr::addr_of!((*self.header).write_index))
-        };
+        let write_index =
+            unsafe { std::ptr::read_volatile(std::ptr::addr_of!((*self.header).write_index)) };
 
         if write_index <= self.last_read_index {
             return Vec::new();
@@ -279,9 +276,7 @@ impl JournalReader {
 
         for i in 0..count {
             let idx = (self.last_read_index as usize + i) % ENTRY_CAPACITY;
-            let entry = unsafe {
-                std::ptr::read_volatile(self.entries.add(idx))
-            };
+            let entry = unsafe { std::ptr::read_volatile(self.entries.add(idx)) };
             result.push(entry);
         }
 
@@ -299,9 +294,13 @@ impl Drop for JournalReader {
     fn drop(&mut self) {
         #[cfg(windows)]
         unsafe {
-            let view = windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS { Value: self.header as _ };
+            let view = windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS {
+                Value: self.header as _,
+            };
             let _ = windows::Win32::System::Memory::UnmapViewOfFile(view);
-            let _ = windows::Win32::Foundation::CloseHandle(windows::Win32::Foundation::HANDLE(self.mapping_handle as _));
+            let _ = windows::Win32::Foundation::CloseHandle(windows::Win32::Foundation::HANDLE(
+                self.mapping_handle as _,
+            ));
         }
     }
 }
@@ -347,12 +346,11 @@ impl BypassCorrelator {
     pub fn new(config: CorrelatorConfig) -> Self {
         let (qpc_freq, qpc_delta) = Self::calibrate_qpc();
 
-        let agent_id = std::env::var("DLP_AGENT_ID")
-            .unwrap_or_else(|_| {
-                hostname::get()
-                    .map(|h| h.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| "AGENT-UNKNOWN".to_string())
-            });
+        let agent_id = std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| {
+            hostname::get()
+                .map(|h| h.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "AGENT-UNKNOWN".to_string())
+        });
 
         Self {
             config,
@@ -381,7 +379,9 @@ impl BypassCorrelator {
     /// - qpc_delta: offset to convert ETW 100ns timestamps to QPC space
     #[cfg(windows)]
     fn calibrate_qpc() -> (i64, i64) {
-        use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+        use windows::Win32::System::Performance::{
+            QueryPerformanceCounter, QueryPerformanceFrequency,
+        };
 
         let mut freq = 0i64;
         let mut qpc_now = 0i64;
@@ -437,9 +437,7 @@ impl BypassCorrelator {
         }
 
         // Emergency hardcoded filter: exact filename matching.
-        let file_name = Path::new(image_path)
-            .file_name()
-            .and_then(|n| n.to_str());
+        let file_name = Path::new(image_path).file_name().and_then(|n| n.to_str());
 
         if let Some(name) = file_name {
             let upper = name.to_ascii_uppercase();
@@ -497,7 +495,9 @@ impl BypassCorrelator {
     /// Checks if a file path is under a protected path.
     fn is_protected_path(&self, file_path: &str) -> bool {
         let upper = file_path.to_ascii_uppercase();
-        self.protected_paths.iter().any(|p| upper.starts_with(&p.to_ascii_uppercase()))
+        self.protected_paths
+            .iter()
+            .any(|p| upper.starts_with(&p.to_ascii_uppercase()))
     }
 
     /// Computes SHA-256 of an image file with caching (WR-06).
@@ -518,10 +518,13 @@ impl BypassCorrelator {
         }
 
         let path = image_path.to_string();
-        let result = tokio::task::spawn_blocking(move || Self::sha256_file_sync(&path)).await.ok()?;
+        let result = tokio::task::spawn_blocking(move || Self::sha256_file_sync(&path))
+            .await
+            .ok()?;
 
         // Store in cache.
-        self.image_sha_cache.insert(image_path.to_string(), (result.clone(), Instant::now()));
+        self.image_sha_cache
+            .insert(image_path.to_string(), (result.clone(), Instant::now()));
         result
     }
 
@@ -620,11 +623,13 @@ impl BypassCorrelator {
                 }
                 None => {
                     // Increment retry count and store with new timestamp.
-                    let new_retry = self.pending_journals
+                    let new_retry = self
+                        .pending_journals
                         .get(&event.pid)
                         .map(|p| p.1.saturating_add(1))
                         .unwrap_or(1);
-                    self.pending_journals.insert(event.pid, (Instant::now(), new_retry));
+                    self.pending_journals
+                        .insert(event.pid, (Instant::now(), new_retry));
                     // Emit NoHookJournal alert since we can't open the journal.
                     self.emit_alert(event, BypassReason::NoHookJournal).await;
                     return;
@@ -763,11 +768,7 @@ impl BypassCorrelator {
     ///
     /// Uses the local audit emitter to write to the JSONL log.
     /// Errors are logged but not propagated (best-effort).
-    async fn emit_audit_event(
-        &self,
-        _reason: BypassReason,
-        event: &EtwFileEvent,
-    ) {
+    async fn emit_audit_event(&self, _reason: BypassReason, event: &EtwFileEvent) {
         let event_type = dlp_common::audit::EventType::BypassAlertDetected;
         let agent_id = self.agent_id.clone();
 
@@ -828,12 +829,18 @@ impl BypassCorrelator {
         }
 
         // Build payload with batch_id from the first alert.
-        let batch_id = alerts.first().map(|a| a.batch_id.clone()).unwrap_or_default();
+        let batch_id = alerts
+            .first()
+            .map(|a| a.batch_id.clone())
+            .unwrap_or_default();
         let bypass_alerts: Vec<BypassAlert> = alerts.iter().map(|a| a.alert.clone()).collect();
 
         match server_client.post_bypass(&batch_id, &bypass_alerts).await {
             Ok(()) => {
-                info!(count = alerts.len(), batch_id, "bypass alerts flushed to server");
+                info!(
+                    count = alerts.len(),
+                    batch_id, "bypass alerts flushed to server"
+                );
             }
             Err(e) => {
                 warn!(error = %e, batch_id, "failed to flush bypass batch");
@@ -909,9 +916,8 @@ impl BypassCorrelator {
         // Task 3: Batch flush task.
         let flush_corr = Arc::clone(&correlator);
         let flush_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(
-                flush_corr.config.flush_interval_secs,
-            ));
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(flush_corr.config.flush_interval_secs));
             loop {
                 interval.tick().await;
                 flush_corr.flush_batch(&server_client).await;
@@ -996,17 +1002,18 @@ mod tests {
     #[test]
     fn test_severity_no_hook_journal_protected_path() {
         let config = CorrelatorConfig::default();
-        let correlator = BypassCorrelator::new(config)
-            .with_protected_paths(vec![r"C:\Data".to_string()]);
-        let sev = correlator.severity_for_alert(BypassReason::NoHookJournal, r"C:\Data\secret.docx");
+        let correlator =
+            BypassCorrelator::new(config).with_protected_paths(vec![r"C:\Data".to_string()]);
+        let sev =
+            correlator.severity_for_alert(BypassReason::NoHookJournal, r"C:\Data\secret.docx");
         assert_eq!(sev, "crit");
     }
 
     #[test]
     fn test_severity_no_hook_journal_non_protected() {
         let config = CorrelatorConfig::default();
-        let correlator = BypassCorrelator::new(config)
-            .with_protected_paths(vec![r"C:\Data".to_string()]);
+        let correlator =
+            BypassCorrelator::new(config).with_protected_paths(vec![r"C:\Data".to_string()]);
         let sev = correlator.severity_for_alert(BypassReason::NoHookJournal, r"C:\Temp\file.txt");
         assert_eq!(sev, "warn");
     }
@@ -1039,9 +1046,10 @@ mod tests {
     fn test_severity_reduced_mode_caps_crit_to_warn() {
         let mut config = CorrelatorConfig::default();
         config.reduced_mode = true;
-        let correlator = BypassCorrelator::new(config)
-            .with_protected_paths(vec![r"C:\Data".to_string()]);
-        let sev = correlator.severity_for_alert(BypassReason::NoHookJournal, r"C:\Data\secret.docx");
+        let correlator =
+            BypassCorrelator::new(config).with_protected_paths(vec![r"C:\Data".to_string()]);
+        let sev =
+            correlator.severity_for_alert(BypassReason::NoHookJournal, r"C:\Data\secret.docx");
         assert_eq!(sev, "warn");
     }
 
@@ -1149,8 +1157,8 @@ mod tests {
     #[test]
     fn test_bypass_alert_severity_independent_of_policy_mode() {
         let config = CorrelatorConfig::default();
-        let correlator = BypassCorrelator::new(config)
-            .with_protected_paths(vec![r"C:\Data".to_string()]);
+        let correlator =
+            BypassCorrelator::new(config).with_protected_paths(vec![r"C:\Data".to_string()]);
 
         // Severity for NoHookJournal on protected path is "crit" in normal mode.
         let sev_protected =
@@ -1198,7 +1206,9 @@ mod tests {
         let correlator = BypassCorrelator::new(config);
         let path = r"C:\Windows\System32\notepad.exe".to_string();
         let sha = Some("abc123".to_string());
-        correlator.image_sha_cache.insert(path.clone(), (sha.clone(), Instant::now()));
+        correlator
+            .image_sha_cache
+            .insert(path.clone(), (sha.clone(), Instant::now()));
 
         // Check cache directly.
         let cached = correlator.image_sha_cache.get(&path);
@@ -1213,7 +1223,9 @@ mod tests {
         let path = r"C:\Test\app.exe".to_string();
         // Insert with a timestamp far in the past.
         let old_time = Instant::now() - Duration::from_secs(config.image_sha_ttl_secs + 1);
-        correlator.image_sha_cache.insert(path.clone(), (Some("old".to_string()), old_time));
+        correlator
+            .image_sha_cache
+            .insert(path.clone(), (Some("old".to_string()), old_time));
 
         let cached = correlator.image_sha_cache.get(&path);
         assert!(cached.is_some());
@@ -1228,7 +1240,9 @@ mod tests {
         let correlator = BypassCorrelator::new(config);
         let path = r"C:\NonExistent\app.exe".to_string();
         // Cache a failure (None) with recent timestamp.
-        correlator.image_sha_cache.insert(path.clone(), (None, Instant::now()));
+        correlator
+            .image_sha_cache
+            .insert(path.clone(), (None, Instant::now()));
 
         let cached = correlator.image_sha_cache.get(&path);
         assert!(cached.is_some());

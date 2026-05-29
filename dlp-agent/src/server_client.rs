@@ -887,7 +887,10 @@ impl ServerClient {
             return Err(ServerClientError::ServerError { status, body });
         }
 
-        debug!(count = alerts.len(), batch_id, "bypass alerts posted to server");
+        debug!(
+            count = alerts.len(),
+            batch_id, "bypass alerts posted to server"
+        );
         Ok(())
     }
 }
@@ -1659,8 +1662,8 @@ mod tests {
             "offline_cache_enabled": false,
             "ldap_config": null
         }"#;
-        let payload: AgentConfigPayload =
-            serde_json::from_str(json).expect("deserialization must succeed without global_enforcement_mode");
+        let payload: AgentConfigPayload = serde_json::from_str(json)
+            .expect("deserialization must succeed without global_enforcement_mode");
         assert_eq!(
             payload.global_enforcement_mode, "PerPolicy",
             "global_enforcement_mode must default to 'PerPolicy'"

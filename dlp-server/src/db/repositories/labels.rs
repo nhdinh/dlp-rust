@@ -173,8 +173,10 @@ impl LabelRepository {
         }
         let limit_i64: Option<i64> = limit.map(|v| v as i64);
         let offset_i64: Option<i64> = offset.map(|v| v as i64);
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            str_params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        let mut params: Vec<&dyn rusqlite::ToSql> = str_params
+            .iter()
+            .map(|p| p as &dyn rusqlite::ToSql)
+            .collect();
         if let Some(ref lim) = limit_i64 {
             params.push(lim);
             if let Some(ref off) = offset_i64 {
@@ -247,8 +249,10 @@ impl LabelRepository {
         if let Some(d) = department {
             str_params.push(d);
         }
-        let params: Vec<&dyn rusqlite::ToSql> =
-            str_params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        let params: Vec<&dyn rusqlite::ToSql> = str_params
+            .iter()
+            .map(|p| p as &dyn rusqlite::ToSql)
+            .collect();
 
         conn.query_row(&sql, rusqlite::params_from_iter(params), |row| row.get(0))
     }
@@ -516,9 +520,16 @@ mod tests {
         assert_eq!(all.len(), 2);
 
         // List by state using list_by_filters
-        let temporary =
-            LabelRepository::list_by_filters(&pool, Some("temporary"), None, None, None, None, None)
-                .expect("list temporary");
+        let temporary = LabelRepository::list_by_filters(
+            &pool,
+            Some("temporary"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("list temporary");
         assert_eq!(temporary.len(), 1);
         assert_eq!(temporary[0].id, file_id);
 
@@ -538,11 +549,16 @@ mod tests {
             uow.commit().expect("commit");
         }
 
-        let confirmed =
-            LabelRepository::list_by_filters(
-                &pool, Some("confirmed"), None, None, None, None, None,
-            )
-            .expect("list confirmed");
+        let confirmed = LabelRepository::list_by_filters(
+            &pool,
+            Some("confirmed"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("list confirmed");
         assert_eq!(confirmed.len(), 2); // folder + confirmed file
 
         // Find parent label
@@ -641,26 +657,28 @@ mod tests {
 
         // Filter by department = IT
         let it_labels =
-            LabelRepository::list_by_filters(
-                &pool, None, None, None, Some("IT"), None, None,
-            )
-            .expect("list IT");
+            LabelRepository::list_by_filters(&pool, None, None, None, Some("IT"), None, None)
+                .expect("list IT");
         assert_eq!(it_labels.len(), 1);
         assert_eq!(it_labels[0].id, "label-it");
 
         // Filter by state = temporary AND department = HR
-        let hr_temp =
-            LabelRepository::list_by_filters(
-                &pool, Some("temporary"), None, None, Some("HR"), None, None,
-            )
-            .expect("list HR temporary");
+        let hr_temp = LabelRepository::list_by_filters(
+            &pool,
+            Some("temporary"),
+            None,
+            None,
+            Some("HR"),
+            None,
+            None,
+        )
+        .expect("list HR temporary");
         assert_eq!(hr_temp.len(), 1);
         assert_eq!(hr_temp[0].id, "label-hr");
 
         // No filter returns all 3
-        let all =
-            LabelRepository::list_by_filters(&pool, None, None, None, None, None, None)
-                .expect("list all");
+        let all = LabelRepository::list_by_filters(&pool, None, None, None, None, None, None)
+            .expect("list all");
         assert_eq!(all.len(), 3);
     }
 
@@ -766,22 +784,25 @@ mod tests {
         }
 
         // Page 1: limit 2, offset 0
-        let page1 = LabelRepository::list_by_filters(&pool, None, None, None, None, Some(2), Some(0))
-            .expect("page1");
+        let page1 =
+            LabelRepository::list_by_filters(&pool, None, None, None, None, Some(2), Some(0))
+                .expect("page1");
         assert_eq!(page1.len(), 2, "page1 should have 2 items");
         assert_eq!(page1[0].id, "label-1");
         assert_eq!(page1[1].id, "label-2");
 
         // Page 2: limit 2, offset 2
-        let page2 = LabelRepository::list_by_filters(&pool, None, None, None, None, Some(2), Some(2))
-            .expect("page2");
+        let page2 =
+            LabelRepository::list_by_filters(&pool, None, None, None, None, Some(2), Some(2))
+                .expect("page2");
         assert_eq!(page2.len(), 2, "page2 should have 2 items");
         assert_eq!(page2[0].id, "label-3");
         assert_eq!(page2[1].id, "label-4");
 
         // Page 3: limit 2, offset 4
-        let page3 = LabelRepository::list_by_filters(&pool, None, None, None, None, Some(2), Some(4))
-            .expect("page3");
+        let page3 =
+            LabelRepository::list_by_filters(&pool, None, None, None, None, Some(2), Some(4))
+                .expect("page3");
         assert_eq!(page3.len(), 1, "page3 should have 1 item");
         assert_eq!(page3[0].id, "label-5");
     }
@@ -855,13 +876,14 @@ mod tests {
         }
 
         // Count all
-        let all_count = LabelRepository::count_by_filters(&pool, None, None, None, None)
-            .expect("count all");
+        let all_count =
+            LabelRepository::count_by_filters(&pool, None, None, None, None).expect("count all");
         assert_eq!(all_count, 3);
 
         // Count by state
-        let temp_count = LabelRepository::count_by_filters(&pool, Some("temporary"), None, None, None)
-            .expect("count temporary");
+        let temp_count =
+            LabelRepository::count_by_filters(&pool, Some("temporary"), None, None, None)
+                .expect("count temporary");
         assert_eq!(temp_count, 2);
 
         // Count by tier
