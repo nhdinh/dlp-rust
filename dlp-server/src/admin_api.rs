@@ -469,6 +469,12 @@ pub struct AgentConfigPayload {
     /// Defaults to empty for backward compatibility with older server builds.
     #[serde(default)]
     pub protected_paths: Vec<ProtectedPathConfig>,
+    /// Phase 55: Global enforcement mode override.
+    ///
+    /// Sent from server to agent to control whether violations are blocked,
+    /// logged only, or both. Defaults to "PerPolicy" for backward compatibility.
+    #[serde(default = "default_global_enforcement_mode")]
+    pub global_enforcement_mode: String,
 }
 
 fn default_usb_blocked_failure_mode() -> String {
@@ -488,6 +494,9 @@ fn default_print_unclassifiable_action() -> String {
 }
 fn default_print_max_pages() -> usize {
     100
+}
+fn default_global_enforcement_mode() -> String {
+    "PerPolicy".to_string()
 }
 
 impl Default for AgentConfigPayload {
@@ -509,6 +518,7 @@ impl Default for AgentConfigPayload {
             allowlist_entries: Vec::new(),
             allowlist_version: 0,
             protected_paths: Vec::new(),
+            global_enforcement_mode: default_global_enforcement_mode(),
         }
     }
 }
@@ -2412,6 +2422,7 @@ async fn get_agent_config_for_agent(
                 allowlist_entries,
                 allowlist_version,
                 protected_paths: Vec::new(),
+                global_enforcement_mode: default_global_enforcement_mode(),
             },
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // Fall back to global default.
@@ -2434,6 +2445,7 @@ async fn get_agent_config_for_agent(
                     allowlist_entries,
                     allowlist_version,
                     protected_paths: Vec::new(),
+                    global_enforcement_mode: default_global_enforcement_mode(),
                 }
             }
             Err(e) => return Err(AppError::Database(e)),
@@ -2453,6 +2465,17 @@ async fn get_agent_config_for_agent(
             })
             .collect();
         payload.protected_paths = protected_paths;
+
+        // Phase 55: Populate global_enforcement_mode from system_kv.
+        let global_mode = pool
+            .get()
+            .ok()
+            .and_then(|conn| {
+                crate::db::repositories::system_kv::get(&conn, "global_enforcement_mode").ok()
+            })
+            .flatten()
+            .unwrap_or_else(|| "PerPolicy".to_string());
+        payload.global_enforcement_mode = global_mode;
 
         Ok(payload)
     })
@@ -2583,6 +2606,7 @@ async fn get_global_agent_config_handler(
         allowlist_entries: Vec::new(),
         allowlist_version: 0,
         protected_paths: Vec::new(),
+        global_enforcement_mode: default_global_enforcement_mode(),
     }))
 }
 
@@ -2714,6 +2738,7 @@ async fn get_agent_config_override_handler(
         allowlist_entries: Vec::new(),
         allowlist_version: 0,
         protected_paths: Vec::new(),
+        global_enforcement_mode: default_global_enforcement_mode(),
     }))
 }
 
