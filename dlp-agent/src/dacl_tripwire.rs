@@ -220,6 +220,8 @@ pub fn build_deny_authusers_dacl(_denied_mask: u32) -> Result<Vec<u8>, DaclTripw
 ///
 /// * `path` — The NTFS path to build the canonical descriptor for.
 /// * `dlp_admin_sid` — Optional SID string for the DLP-Admin AD group.
+/// * `include_deny_ace` — Whether to include the DLP Deny ACE for Authenticated
+///   Users. When `false` (Audit global mode), the Deny ACE is omitted.
 ///
 /// # Returns
 ///
@@ -234,6 +236,7 @@ pub fn build_deny_authusers_dacl(_denied_mask: u32) -> Result<Vec<u8>, DaclTripw
 pub fn build_canonical_security_descriptor(
     path: &Path,
     dlp_admin_sid: Option<&str>,
+    include_deny_ace: bool,
 ) -> Result<(Vec<u8>, CanonicalAclSnapshot), DaclTripwireError> {
     let path_str = path.to_string_lossy();
     let path_wide: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
@@ -331,9 +334,11 @@ pub fn build_canonical_security_descriptor(
         canonical_sddl.push_str(&format!("(A;;FA;;;{})", sid));
     }
 
-    // 3. DLP Deny ACE for Authenticated Users
+    // 3. DLP Deny ACE for Authenticated Users (only when include_deny_ace is true)
     // Mask: FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER = 0x00170116
-    canonical_sddl.push_str(&format!("(D;;0x{:08X};;;S-1-5-11)", DENIED_MASK));
+    if include_deny_ace {
+        canonical_sddl.push_str(&format!("(D;;0x{:08X};;;S-1-5-11)", DENIED_MASK));
+    }
 
     // Parse existing SDDL to extract non-DLP explicit ACEs and inherited ACEs.
     // SDDL format: D:(ace1)(ace2)... where inherited ACEs have 'ID' or 'IO' flags.
@@ -438,6 +443,7 @@ pub fn build_canonical_security_descriptor(
 pub fn build_canonical_security_descriptor(
     path: &Path,
     _dlp_admin_sid: Option<&str>,
+    _include_deny_ace: bool,
 ) -> Result<(Vec<u8>, CanonicalAclSnapshot), DaclTripwireError> {
     let snapshot = CanonicalAclSnapshot {
         sddl: String::new(),
@@ -600,7 +606,7 @@ pub fn apply_tripwire_to_path(
 ) -> Result<CanonicalAclSnapshot, DaclTripwireError> {
     validate_path(path)?;
 
-    let (raw_sd, snapshot) = build_canonical_security_descriptor(path, dlp_admin_sid)?;
+    let (raw_sd, snapshot) = build_canonical_security_descriptor(path, dlp_admin_sid, true)?;
 
     let path_str = path.to_string_lossy();
     let path_wide: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
@@ -723,6 +729,71 @@ pub fn remove_tripwire_from_path(
     _original_snapshot: &CanonicalAclSnapshot,
 ) -> Result<(), DaclTripwireError> {
     Ok(())
+}
+
+/// Removes the DLP Deny ACE from a path by rebuilding the canonical ACL without it.
+///
+/// This is used when switching to Audit global mode: the canonical descriptor is
+/// rebuilt without the DLP Deny ACE and applied via `SetFileSecurityW`.
+///
+/// # Arguments
+///
+/// * `path` — The path to remove the Deny ACE from.
+/// * `dlp_admin_sid` — Optional SID string for the DLP-Admin AD group.
+///
+/// # Returns
+///
+/// The [`CanonicalAclSnapshot`] representing the applied ACL state (without Deny ACE).
+///
+/// # Errors
+///
+/// Returns `DaclTripwireError::AclTooLarge` if the ACL exceeds 60 KB.
+/// Returns `DaclTripwireError::Win32` on API failure.
+#[cfg(windows)]
+pub fn remove_tripwire_by_rebuilding_without_deny(
+    path: &Path,
+    dlp_admin_sid: Option<&str>,
+) -> Result<CanonicalAclSnapshot, DaclTripwireError> {
+    validate_path(path)?;
+
+    let (raw_sd, snapshot) = build_canonical_security_descriptor(path, dlp_admin_sid, false)?;
+
+    let path_str = path.to_string_lossy();
+    let path_wide: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
+    let path_pcwstr = windows::core::PCWSTR(path_wide.as_ptr());
+
+    // Apply the security descriptor atomically.
+    // SAFETY: `raw_sd` contains a valid security descriptor. `path_pcwstr` is a
+    // valid null-terminated wide string.
+    let ok = unsafe {
+        SetFileSecurityW(
+            path_pcwstr,
+            DACL_SECURITY_INFORMATION,
+            PSECURITY_DESCRIPTOR(raw_sd.as_ptr() as *mut _),
+        )
+    };
+
+    if ok.ok().is_err() {
+        return Err(DaclTripwireError::Win32(windows::core::Error::from_thread()));
+    }
+
+    info!(path = %path_str, "DACL tripwire Deny ACE removed");
+    Ok(snapshot)
+}
+
+/// Non-Windows stub: validates path and returns a placeholder snapshot.
+#[cfg(not(windows))]
+pub fn remove_tripwire_by_rebuilding_without_deny(
+    path: &Path,
+    _dlp_admin_sid: Option<&str>,
+) -> Result<CanonicalAclSnapshot, DaclTripwireError> {
+    validate_path(path)?;
+    let snapshot = CanonicalAclSnapshot {
+        sddl: String::new(),
+        created_at: Utc::now(),
+        path: path.to_path_buf(),
+    };
+    Ok(snapshot)
 }
 
 /// Applies the DLP tripwire recursively to all files and directories under a root path.
@@ -854,7 +925,7 @@ pub fn verify_access_control_matrix(path: &Path) -> Result<AccessControlMatrix, 
     // On Windows, we query the effective access using AuthzAccessCheck or
     // GetEffectiveRightsFromAclW. For simplicity in this implementation,
     // we verify by checking the canonical SDDL structure.
-    let (_raw_sd, snapshot) = build_canonical_security_descriptor(path, None)?;
+    let (_raw_sd, snapshot) = build_canonical_security_descriptor(path, None, true)?;
 
     let sddl = &snapshot.sddl;
 
@@ -989,7 +1060,7 @@ mod tests {
         let test_path = temp_dir.join("dlp_tripwire_test_guard.txt");
         let _ = std::fs::write(&test_path, "test");
 
-        let result = build_canonical_security_descriptor(&test_path, None);
+        let result = build_canonical_security_descriptor(&test_path, None, true);
         // Clean up.
         let _ = std::fs::remove_file(&test_path);
 
@@ -1062,7 +1133,7 @@ mod tests {
         let test_path = temp_dir.join("dlp_tripwire_test_roundtrip.txt");
         let _ = std::fs::write(&test_path, "test");
 
-        let result = build_canonical_security_descriptor(&test_path, Some("S-1-5-32-544"));
+        let result = build_canonical_security_descriptor(&test_path, Some("S-1-5-32-544"), true);
         let _ = std::fs::remove_file(&test_path);
 
         match result {
@@ -1112,7 +1183,7 @@ mod tests {
         let test_path = temp_dir.join("dlp_tripwire_test_order.txt");
         let _ = std::fs::write(&test_path, "test");
 
-        let result = build_canonical_security_descriptor(&test_path, None);
+        let result = build_canonical_security_descriptor(&test_path, None, true);
         let _ = std::fs::remove_file(&test_path);
 
         match result {
@@ -1144,7 +1215,7 @@ mod tests {
         let test_path = temp_dir.join("dlp_tripwire_test_preserve.txt");
         let _ = std::fs::write(&test_path, "test");
 
-        let result = build_canonical_security_descriptor(&test_path, None);
+        let result = build_canonical_security_descriptor(&test_path, None, true);
         let _ = std::fs::remove_file(&test_path);
 
         match result {
@@ -1171,7 +1242,7 @@ mod tests {
         let test_path = temp_dir.join("dlp_tripwire_test_system_order.txt");
         let _ = std::fs::write(&test_path, "test");
 
-        let result = build_canonical_security_descriptor(&test_path, None);
+        let result = build_canonical_security_descriptor(&test_path, None, true);
         let _ = std::fs::remove_file(&test_path);
 
         match result {
@@ -1458,7 +1529,7 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let test_path = temp_dir.join("dlp_tripwire_test_nonwin.txt");
 
-        let (_, snapshot) = build_canonical_security_descriptor(&test_path, None).unwrap();
+        let (_, snapshot) = build_canonical_security_descriptor(&test_path, None, true).unwrap();
         assert!(snapshot.sddl.is_empty());
 
         let result = apply_tripwire_to_path(&test_path, None);

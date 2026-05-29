@@ -1770,40 +1770,83 @@ async fn init_dacl_watcher(
     });
     watcher.set_dlp_admin_sid(dlp_admin_sid.clone());
 
-    // Apply tripwire and register watcher for each monitored path.
-    for path_str in &agent_config.monitored_paths {
-        let path = std::path::PathBuf::from(path_str);
-        if !path.exists() {
-            warn!(path = %path.display(), "monitored path does not exist — skipping");
-            continue;
-        }
+    // Phase 55: read global enforcement mode to decide apply vs remove.
+    let global_mode = agent_config.enforcement.global_mode;
+    let should_apply =
+        crate::dacl_tripwire::should_apply_tripwire_for_global_mode(global_mode);
 
-        match crate::dacl_tripwire::apply_tripwire_recursive(&path, dlp_admin_sid.as_deref()) {
-            Ok((count, snapshots)) => {
-                info!(
-                    path = %path.display(),
-                    count,
-                    "DACL tripwire applied recursively"
-                );
-                // Register the watcher with the root snapshot (first in list).
-                if let Some(snapshot) = snapshots.first() {
-                    if let Err(e) = watcher.register(&path, snapshot.clone()) {
+    if should_apply {
+        // Block / PerPolicy / AuditAndBlock: apply tripwire to all protected paths.
+        for path_str in &agent_config.monitored_paths {
+            let path = std::path::PathBuf::from(path_str);
+            if !path.exists() {
+                warn!(path = %path.display(), "monitored path does not exist — skipping");
+                continue;
+            }
+
+            match crate::dacl_tripwire::apply_tripwire_recursive(&path, dlp_admin_sid.as_deref()) {
+                Ok((count, snapshots)) => {
+                    info!(
+                        path = %path.display(),
+                        count,
+                        "DACL tripwire applied recursively"
+                    );
+                    // Register the watcher with the root snapshot (first in list).
+                    if let Some(snapshot) = snapshots.first() {
+                        if let Err(e) = watcher.register(&path, snapshot.clone()) {
+                            warn!(
+                                path = %path.display(),
+                                error = %e,
+                                "failed to register DACL watcher"
+                            );
+                        } else {
+                            info!(path = %path.display(), "DACL watcher registered");
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "failed to apply DACL tripwire — watcher not registered"
+                    );
+                }
+            }
+        }
+    } else {
+        // Audit mode: remove all existing Deny ACEs from protected paths.
+        info!(
+            global_mode = ?global_mode,
+            "global mode is Audit — removing all tripwire Deny ACEs"
+        );
+        for path_str in &agent_config.monitored_paths {
+            let path = std::path::PathBuf::from(path_str);
+            if !path.exists() {
+                continue;
+            }
+            // Rebuild canonical ACL without Deny ACE and apply it.
+            match crate::dacl_tripwire::remove_tripwire_by_rebuilding_without_deny(
+                &path, dlp_admin_sid.as_deref(),
+            ) {
+                Ok(snapshot) => {
+                    info!(path = %path.display(), "DACL tripwire Deny ACE removed for Audit mode");
+                    // Register watcher with the no-deny snapshot so repair
+                    // watcher does not re-add the Deny ACE.
+                    if let Err(e) = watcher.register(&path, snapshot) {
                         warn!(
                             path = %path.display(),
                             error = %e,
-                            "failed to register DACL watcher"
+                            "failed to register DACL watcher (Audit mode)"
                         );
-                    } else {
-                        info!(path = %path.display(), "DACL watcher registered");
                     }
                 }
-            }
-            Err(e) => {
-                warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "failed to apply DACL tripwire — watcher not registered"
-                );
+                Err(e) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "failed to remove tripwire Deny ACE in Audit mode"
+                    );
+                }
             }
         }
     }
@@ -1865,16 +1908,36 @@ async fn init_dacl_watcher_without_staging(
         ad_client.and_then(|_client| std::env::var("DLP_ADMIN_SID").ok());
     watcher.set_dlp_admin_sid(dlp_admin_sid.clone());
 
-    for path_str in &agent_config.monitored_paths {
-        let path = std::path::PathBuf::from(path_str);
-        if !path.exists() {
-            continue;
+    // Phase 55: respect global enforcement mode.
+    let global_mode = agent_config.enforcement.global_mode;
+    let should_apply =
+        crate::dacl_tripwire::should_apply_tripwire_for_global_mode(global_mode);
+
+    if should_apply {
+        for path_str in &agent_config.monitored_paths {
+            let path = std::path::PathBuf::from(path_str);
+            if !path.exists() {
+                continue;
+            }
+            if let Ok((_count, snapshots)) =
+                crate::dacl_tripwire::apply_tripwire_recursive(&path, dlp_admin_sid.as_deref())
+            {
+                if let Some(snapshot) = snapshots.first() {
+                    let _ = watcher.register(&path, snapshot.clone());
+                }
+            }
         }
-        if let Ok((_count, snapshots)) =
-            crate::dacl_tripwire::apply_tripwire_recursive(&path, dlp_admin_sid.as_deref())
-        {
-            if let Some(snapshot) = snapshots.first() {
-                let _ = watcher.register(&path, snapshot.clone());
+    } else {
+        // Audit mode: register watcher with no-deny snapshots.
+        for path_str in &agent_config.monitored_paths {
+            let path = std::path::PathBuf::from(path_str);
+            if !path.exists() {
+                continue;
+            }
+            if let Ok((_raw_sd, snapshot)) = crate::dacl_tripwire::build_canonical_security_descriptor(
+                &path, dlp_admin_sid.as_deref(), false,
+            ) {
+                let _ = watcher.register(&path, snapshot);
             }
         }
     }
@@ -4034,6 +4097,41 @@ mod tests {
         // Invalid mode defaults to Block and still counts as a change
         assert!(changed_fields.contains(&"global_enforcement_mode"));
         assert_eq!(cfg.enforcement.global_mode, dlp_common::abac::EnforcementMode::Block);
+    }
+
+    // --- Phase 55-04: init_dacl_watcher global mode tests ---
+
+    /// Test that `should_apply_tripwire_for_global_mode` returns false for Audit.
+    #[test]
+    fn test_service_startup_audit_mode_skips_tripwire() {
+        // Verify the helper directly — the actual init_dacl_watcher uses it.
+        assert!(!crate::dacl_tripwire::should_apply_tripwire_for_global_mode(
+            dlp_common::abac::EnforcementMode::Audit
+        ));
+    }
+
+    /// Test that `should_apply_tripwire_for_global_mode` returns true for Block.
+    #[test]
+    fn test_service_startup_block_mode_applies_tripwire() {
+        assert!(crate::dacl_tripwire::should_apply_tripwire_for_global_mode(
+            dlp_common::abac::EnforcementMode::Block
+        ));
+    }
+
+    /// Test that `should_apply_tripwire_for_global_mode` returns true for PerPolicy.
+    #[test]
+    fn test_service_startup_perpolicy_mode_applies_tripwire() {
+        assert!(crate::dacl_tripwire::should_apply_tripwire_for_global_mode(
+            dlp_common::abac::EnforcementMode::PerPolicy
+        ));
+    }
+
+    /// Test that `should_apply_tripwire_for_global_mode` returns true for AuditAndBlock.
+    #[test]
+    fn test_service_startup_auditandblock_mode_applies_tripwire() {
+        assert!(crate::dacl_tripwire::should_apply_tripwire_for_global_mode(
+            dlp_common::abac::EnforcementMode::AuditAndBlock
+        ));
     }
 }
 
