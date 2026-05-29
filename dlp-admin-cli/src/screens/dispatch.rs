@@ -1208,23 +1208,25 @@ const ALERT_BACK_ROW: usize = 12;
 /// Total number of rows in the Alert config form (10 editable + Save + Test + Back).
 const ALERT_ROW_COUNT: usize = 13;
 
-/// Row indices for the PolicyCreate/PolicyEdit form (Phase 19: 9 rows).
+/// Row indices for the PolicyCreate/PolicyEdit form (Phase 55: 10 rows).
 const POLICY_NAME_ROW: usize = 0;
 const POLICY_DESC_ROW: usize = 1;
 const POLICY_PRIORITY_ROW: usize = 2;
 const POLICY_ACTION_ROW: usize = 3;
+/// Row index of the Enforcement Mode picker (Audit / Block / AuditAndBlock).
+const POLICY_ENFORCEMENT_MODE_ROW: usize = 4;
 /// Row index of the Enabled toggle.
-const POLICY_ENABLED_ROW: usize = 4;
+const POLICY_ENABLED_ROW: usize = 5;
 /// Row index of the Mode cycler (ALL / ANY / NONE), cycles on Enter or Space.
-const POLICY_MODE_ROW: usize = 5;
+const POLICY_MODE_ROW: usize = 6;
 /// Row index of the [Add Conditions] action row.
-const POLICY_ADD_CONDITIONS_ROW: usize = 6;
+const POLICY_ADD_CONDITIONS_ROW: usize = 7;
 /// Row index of the Conditions summary display row.
-const POLICY_CONDITIONS_DISPLAY_ROW: usize = 7;
+const POLICY_CONDITIONS_DISPLAY_ROW: usize = 8;
 /// Row index of the [Save] / [Submit] action row.
-const POLICY_SAVE_ROW: usize = 8;
-/// Total rows in the PolicyCreate/PolicyEdit form (0..=8).
-const POLICY_ROW_COUNT: usize = 9;
+const POLICY_SAVE_ROW: usize = 9;
+/// Total rows in the PolicyCreate/PolicyEdit form (0..=9).
+const POLICY_ROW_COUNT: usize = 10;
 
 /// Cycles a `PolicyMode` to the next variant: ALL -> ANY -> NONE -> ALL.
 ///
@@ -1245,6 +1247,14 @@ fn cycle_mode(mode: dlp_common::abac::PolicyMode) -> dlp_common::abac::PolicyMod
         PolicyMode::ANY => PolicyMode::NONE,
         PolicyMode::NONE => PolicyMode::ALL,
     }
+}
+
+/// Cycles the enforcement mode index: 0 -> 1 -> 2 -> 0.
+///
+/// Matches the action cycler pattern. `ENFORCEMENT_MODE_OPTIONS` has 3
+/// elements (Audit, Block, AuditAndBlock).
+fn cycle_enforcement_mode(idx: usize) -> usize {
+    (idx + 1) % crate::app::ENFORCEMENT_MODE_OPTIONS.len()
 }
 
 /// Returns `true` if the row index is a bool (toggle) field.
@@ -2291,6 +2301,11 @@ fn policy_create_nav_enter(app: &mut App, selected: usize) {
                 form.enabled = !form.enabled;
             }
         }
+        POLICY_ENFORCEMENT_MODE_ROW => {
+            if let Screen::PolicyCreate { form, .. } = &mut app.screen {
+                form.enforcement_mode = cycle_enforcement_mode(form.enforcement_mode);
+            }
+        }
         POLICY_MODE_ROW => {
             if let Screen::PolicyCreate { form, .. } = &mut app.screen {
                 form.mode = cycle_mode(form.mode);
@@ -2316,6 +2331,11 @@ fn handle_policy_create_nav(app: &mut App, key: KeyEvent, selected: usize) {
             }
         }
         KeyCode::Enter => policy_create_nav_enter(app, selected),
+        KeyCode::Char(' ') if selected == POLICY_ENFORCEMENT_MODE_ROW => {
+            if let Screen::PolicyCreate { form, .. } = &mut app.screen {
+                form.enforcement_mode = cycle_enforcement_mode(form.enforcement_mode);
+            }
+        }
         KeyCode::Char(' ') if selected == POLICY_MODE_ROW => {
             if let Screen::PolicyCreate { form, .. } = &mut app.screen {
                 form.mode = cycle_mode(form.mode);
@@ -2423,6 +2443,7 @@ fn action_submit_policy(app: &mut App, form: PolicyFormState) {
         "action": action_str,
         "enabled": form.enabled,
         "mode": policy_mode_to_wire(form.mode),
+        "enforcement_mode": crate::app::ENFORCEMENT_MODE_OPTIONS[form.enforcement_mode],
     });
 
     match app.rt.block_on(
@@ -2653,6 +2674,11 @@ fn policy_edit_nav_enter(app: &mut App, selected: usize) {
                 form.enabled = !form.enabled;
             }
         }
+        POLICY_ENFORCEMENT_MODE_ROW => {
+            if let Screen::PolicyEdit { form, .. } = &mut app.screen {
+                form.enforcement_mode = cycle_enforcement_mode(form.enforcement_mode);
+            }
+        }
         POLICY_MODE_ROW => {
             if let Screen::PolicyEdit { form, .. } = &mut app.screen {
                 form.mode = cycle_mode(form.mode);
@@ -2678,6 +2704,11 @@ fn handle_policy_edit_nav(app: &mut App, key: KeyEvent, selected: usize) {
             }
         }
         KeyCode::Enter => policy_edit_nav_enter(app, selected),
+        KeyCode::Char(' ') if selected == POLICY_ENFORCEMENT_MODE_ROW => {
+            if let Screen::PolicyEdit { form, .. } = &mut app.screen {
+                form.enforcement_mode = cycle_enforcement_mode(form.enforcement_mode);
+            }
+        }
         KeyCode::Char(' ') if selected == POLICY_MODE_ROW => {
             if let Screen::PolicyEdit { form, .. } = &mut app.screen {
                 form.mode = cycle_mode(form.mode);
@@ -2747,6 +2778,7 @@ fn action_submit_policy_update(app: &mut App, id: &str, form: PolicyFormState) {
         "action": action_str,
         "enabled": form.enabled,
         "mode": policy_mode_to_wire(form.mode),
+        "enforcement_mode": crate::app::ENFORCEMENT_MODE_OPTIONS[form.enforcement_mode],
     });
 
     match app.rt.block_on(
@@ -8279,5 +8311,48 @@ mod protected_path_tests {
             _ => panic!("expected SystemMenu"),
         };
         assert_eq!(selected, 0, "nav with 14 items should cycle back to 0");
+    }
+
+    #[test]
+    fn test_cycle_enforcement_mode() {
+        assert_eq!(cycle_enforcement_mode(0), 1);
+        assert_eq!(cycle_enforcement_mode(1), 2);
+        assert_eq!(cycle_enforcement_mode(2), 0);
+    }
+
+    #[test]
+    fn test_submit_policy_payload_includes_enforcement_mode() {
+        use crate::app::PolicyFormState;
+        let form = PolicyFormState {
+            name: "Test".into(),
+            description: "".into(),
+            priority: "1".into(),
+            action: 0,
+            enabled: true,
+            conditions: vec![],
+            id: "".into(),
+            mode: dlp_common::abac::PolicyMode::ALL,
+            enforcement_mode: 2, // AuditAndBlock
+        };
+        let payload = serde_json::json!({
+            "id": "test-id",
+            "name": form.name.trim(),
+            "description": serde_json::Value::Null,
+            "priority": 1u32,
+            "conditions": serde_json::json!([]),
+            "action": crate::app::ACTION_OPTIONS[form.action],
+            "enabled": form.enabled,
+            "mode": "ALL",
+            "enforcement_mode": crate::app::ENFORCEMENT_MODE_OPTIONS[form.enforcement_mode],
+        });
+        let json = serde_json::to_string(&payload).expect("serialize");
+        assert!(
+            json.contains("\"enforcement_mode\""),
+            "payload missing enforcement_mode key: {json}"
+        );
+        assert!(
+            json.contains("AuditAndBlock"),
+            "payload missing AuditAndBlock value: {json}"
+        );
     }
 }
