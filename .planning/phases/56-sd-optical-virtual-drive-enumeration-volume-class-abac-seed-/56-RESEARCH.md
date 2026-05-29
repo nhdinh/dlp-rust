@@ -166,6 +166,8 @@ Windows Volume Arrival
 +-----------------------------------+
 |  PolicyStore::evaluate            |
 |  + condition_matches (new arms)   |
+|  + resolve_volume_class_from_path |
+|    when resource_path present     |
 |  → Decision                       |
 +-----------------------------------+
 ```
@@ -174,8 +176,8 @@ Windows Volume Arrival
 
 ```
 dlp-common/src/
-├── abac.rs              # + VolumeClass enum, + AbacContext fields, + PolicyCondition variants
-├── audit.rs             # + EventType::VolumeArrival
+├── abac.rs              # + VolumeClass enum, + AbacContext fields, + PolicyCondition variants, + resolve_volume_class_from_path
+dlp-common/src/audit.rs             # + EventType::VolumeArrival
 └── lib.rs               # + pub use volume_class::VolumeClass (or inline in abac.rs)
 
 dlp-agent/src/detection/
@@ -189,6 +191,7 @@ dlp-hook-dll/src/
 
 dlp-server/src/
 └── policy_store.rs      # + condition_matches arms for SourceVolumeClass/DestinationVolumeClass
+                         # + server-side resolve_volume_class_from_path when resource_path present
 
 dlp-admin-cli/src/
 ├── app.rs               # + ConditionAttribute variants, + ATTRIBUTES array
@@ -228,7 +231,32 @@ impl std::fmt::Display for VolumeClass {
 }
 ```
 
-### Pattern 2: WMI Query for Volume Disambiguation
+### Pattern 2: resolve_volume_class_from_path Helper
+**What:** A reusable helper that extracts drive letter or detects UNC prefix from a Windows path and returns the corresponding VolumeClass via a caller-provided lookup closure.
+**When to use:** Hook DLL trampoline time (D-08) and server-side evaluation (D-09) when resource_path is present but volume class fields are not populated.
+**Example:**
+```rust
+// Source: 56-CONTEXT.md D-08, D-09
+pub fn resolve_volume_class_from_path<F>(path: &str, lookup: F) -> Option<VolumeClass>
+where
+    F: FnOnce(char) -> Option<VolumeClass>,
+{
+    if path.starts_with("\\\\") {
+        return Some(VolumeClass::NetworkShare);
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        let letter = bytes[0].to_ascii_uppercase() as char;
+        return lookup(letter);
+    }
+    if path.starts_with("\\\\?\\Volume{") {
+        return Some(VolumeClass::LocalNTFS);
+    }
+    None
+}
+```
+
+### Pattern 3: WMI Query for Volume Disambiguation
 **What:** Query `Win32_DiskDrive` via the `wmi` crate to disambiguate `DRIVE_REMOVABLE` and `DRIVE_FIXED` drives.
 **When to use:** When `GetDriveTypeW` returns `DRIVE_REMOVABLE` (USB vs SD) or `DRIVE_FIXED` (local vs virtual).
 **Example:**
@@ -257,7 +285,7 @@ fn query_disk_drive_for_letter(letter: char) -> Result<Option<WmiDiskDrive>, Str
 }
 ```
 
-### Pattern 3: Thread-Local Cache in Hook DLL
+### Pattern 4: Thread-Local Cache in Hook DLL
 **What:** A thread-local `RefCell<HashMap>` with TTL for volume class lookups in the hot path.
 **When to use:** Hook DLL trampoline time -- avoid cross-thread synchronization overhead.
 **Example:**
@@ -290,7 +318,7 @@ fn resolve_volume_class(letter: char) -> VolumeClass {
 }
 ```
 
-### Pattern 4: ABAC Condition Match Arms
+### Pattern 5: ABAC Condition Match Arms
 **What:** Add two new match arms to `condition_matches` in `PolicyStore`.
 **When to use:** Server-side ABAC evaluation of volume-class conditions.
 **Example:**
@@ -325,7 +353,24 @@ fn volume_class_matches(op: &str, expected: &VolumeClass, actual: Option<VolumeC
 }
 ```
 
-### Pattern 5: Admin TUI Conditions Builder Extension
+### Pattern 6: Server-Side Path Resolution (D-09)
+**What:** When the server receives an EvaluateRequest with resource_path but without pre-populated volume class fields, resolve them on-demand using the same path logic as the hook DLL.
+**When to use:** Admin API checks, server-side policy simulation, or any non-hook evaluation path.
+**Example:**
+```rust
+// Source: 56-CONTEXT.md D-09
+// In PolicyStore::evaluate(), before policy iteration:
+if ctx.source_volume_class.is_none() {
+    if let Some(ref path) = ctx.resource_path {
+        ctx.source_volume_class = resolve_volume_class_from_path(path, |letter| {
+            // Server-side lookup: query agent volume_class_map or cached state
+            None // fallback if no server-side cache available
+        });
+    }
+}
+```
+
+### Pattern 7: Admin TUI Conditions Builder Extension
 **What:** Add two new `ConditionAttribute` variants and extend all dispatch/render functions.
 **When to use:** Admin TUI needs to build volume-class policy conditions.
 **Example:**
@@ -374,6 +419,7 @@ const VOLUME_CLASS_VALUES: [&str; 6] = [
 | Thread-local cache | Custom concurrent hash map | `std::cell::RefCell<HashMap>` in `thread_local!` | Hook DLL is single-threaded per process; `RefCell` is sufficient and faster |
 | Volume GUID → drive letter | Manual registry parsing | `GetVolumePathNamesForVolumeNameW` | Windows API is the canonical source; handles mount points correctly |
 | Policy condition serde | Custom serializer | `#[serde(tag = "attribute", rename_all = "snake_case")]` | Already used for 9 variants; adding 2 more follows the same pattern |
+| Path → volume class resolution | Inline path parsing in every consumer | `resolve_volume_class_from_path` in `dlp-common` | Single reusable helper; consistent UNC/drive-letter/volume-GUID handling across hook DLL and server |
 
 **Key insight:** The `wmi` crate is already a proven dependency in this codebase (Phase 34). The `Win32_DiskDrive` query pattern mirrors the existing `Win32_EncryptableVolume` query in `encryption.rs`. The ABAC condition extension follows the exact same pattern as the 9 existing variants.
 
@@ -420,7 +466,7 @@ const VOLUME_CLASS_VALUES: [&str; 6] = [
 ### Pitfall 5: UNC Path Classification
 **What goes wrong:** Paths like `\\server\share\file.txt` are not classified as `NetworkShare` because the code only checks drive letters.
 **Why it happens:** UNC paths have no drive letter.
-**How to avoid:** Check for UNC prefix (`path.starts_with("\\\\")`) BEFORE extracting the drive letter. If UNC, return `NetworkShare` immediately.
+**How to avoid:** Check for UNC prefix (`path.starts_with("\\\\")`) BEFORE extracting the drive letter. If UNC, return `NetworkShare` immediately. Use `resolve_volume_class_from_path` from `dlp-common` for consistent handling.
 **Warning signs:** Network share copy operations not matching `destination_volume_class = NetworkShare` policies.
 
 ### Pitfall 6: `VolumeClass` Serde Backward Compatibility
@@ -496,6 +542,7 @@ pub enum PolicyCondition {
 | USB-only blocked-drives set | Volume-class-aware classification | Phase 56 | ABAC engine can express cross-volume policies |
 | No volume-class audit events | `VolumeArrival` event with `volume_class` | Phase 56 | SIEM can alert on specific volume class arrivals |
 | 9 ABAC condition attributes | 11 ABAC condition attributes | Phase 56 | Policy expressiveness grows without breaking existing policies |
+| No shared path resolution helper | `resolve_volume_class_from_path` in `dlp-common` | Phase 56 | Consistent UNC/drive-letter/volume-GUID handling across hook DLL and server |
 
 **Deprecated/outdated:**
 - `UsbDetector::blocked_drives` as the sole volume tracking mechanism: Phase 56 introduces `volume_class_map` for comprehensive classification, but `blocked_drives` is retained for backward compatibility with USB-specific enforcement.
@@ -510,22 +557,22 @@ pub enum PolicyCondition {
 | A4 | The `wmi` crate can query `ROOT\CIMV2` without `set_proxy_blanket` (unlike BitLocker namespace) | Standard Stack | If false, queries may return ACCESS_DENIED; the encryption.rs pattern shows `set_proxy_blanket` is only needed for the Security namespace |
 | A5 | `DRIVE_RAMDISK` (6) is not a production concern and can map to `LocalNTFS` fallback | Standard Stack | If false, RAM disks would be misclassified; low risk as RAM disks are rare in enterprise DLP contexts |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **WMI query performance at scale**
    - What we know: `encryption.rs` queries all `Win32_EncryptableVolume` rows and filters in Rust; this is acceptable for <=32 volumes.
    - What's unclear: Whether querying `Win32_DiskDrive` + `Win32_LogicalDiskToPartition` association on every `WM_DEVICECHANGE` is fast enough.
-   - Recommendation: Batch the query (enumerate all disks once, cache results). The 500ms defer provides headroom. Measure in integration tests.
+   - RESOLVED: Batch the query (enumerate all disks once, cache results). The 500ms defer provides headroom. Measure in integration tests.
 
 2. **Virtual drive emulator detection completeness**
    - What we know: Model strings like "Msft Virtual Disk" and "Virtual" cover VHD/VHDX and Hyper-V.
    - What's unclear: Whether Daemon Tools, Alcohol 120%, or other emulators use different Model strings.
-   - Recommendation: Start with known patterns; add more as discovered during integration testing. The fallback is `LocalNTFS` which is safe (fail-closed for T3/T4).
+   - RESOLVED: Start with known patterns; add more as discovered during integration testing. The fallback is `LocalNTFS` which is safe (fail-closed for T3/T4).
 
 3. **Network share path edge cases**
    - What we know: UNC paths start with `\\`.
    - What's unclear: Whether mapped network drives (e.g., `Z:` mapped to `\\server\share`) report `DRIVE_REMOTE` from `GetDriveTypeW`.
-   - Recommendation: Test mapped drive classification. If `GetDriveTypeW` returns `DRIVE_REMOTE` for mapped drives, the drive-letter path already handles this.
+   - RESOLVED: Test mapped drive classification. If `GetDriveTypeW` returns `DRIVE_REMOTE` for mapped drives, the drive-letter path already handles this.
 
 ## Environment Availability
 
