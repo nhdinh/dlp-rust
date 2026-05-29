@@ -126,7 +126,13 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
             );
         }
         Screen::PolicyList { policies, selected } => {
-            draw_policy_list(frame, area, policies, *selected);
+            draw_policy_list(
+                frame,
+                area,
+                policies,
+                *selected,
+                app.global_enforcement_mode.as_deref(),
+            );
         }
         Screen::PolicyDetail { policy } => {
             draw_json_detail(frame, area, "Policy Detail", policy);
@@ -256,6 +262,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 *editing,
                 buffer,
                 validation_error.as_deref(),
+                app.global_enforcement_mode.as_deref(),
             );
         }
         Screen::PolicyEdit {
@@ -275,6 +282,7 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
                 *editing,
                 buffer,
                 validation_error.as_deref(),
+                app.global_enforcement_mode.as_deref(),
             );
         }
         Screen::PolicySimulate {
@@ -1047,12 +1055,13 @@ fn is_alert_numeric(index: usize) -> bool {
     matches!(index, 1) // smtp_port
 }
 
-/// Display labels for each row in the PolicyCreate/PolicyEdit form (9 rows, indices 0-8).
-const POLICY_FIELD_LABELS: [&str; 9] = [
+/// Display labels for each row in the PolicyCreate/PolicyEdit form (10 rows, indices 0-9).
+const POLICY_FIELD_LABELS: [&str; 10] = [
     "Name",
     "Description",
     "Priority",
     "Action",
+    "Enforcement Mode",
     "Enabled",
     "Mode",
     "[Add Conditions]",
@@ -1339,6 +1348,18 @@ fn format_policy_mode_field(label: &str, form: &crate::app::PolicyFormState) -> 
     Line::from(format!("{label}:              {mode_label}"))
 }
 
+/// Formats the enforcement mode field line.
+///
+/// Displays the current enforcement mode (Audit / Block / AuditAndBlock)
+/// from `ENFORCEMENT_MODE_OPTIONS` indexed by `form.enforcement_mode`.
+fn format_enforcement_mode_field(
+    label: &str,
+    form: &crate::app::PolicyFormState,
+) -> Line<'static> {
+    let mode_label = crate::app::ENFORCEMENT_MODE_OPTIONS[form.enforcement_mode];
+    Line::from(format!("{label}:              {mode_label}"))
+}
+
 /// Formats the policy conditions summary field line.
 fn format_policy_conditions_field(
     label: &str,
@@ -1409,6 +1430,33 @@ fn render_validation_error(frame: &mut Frame, area: Rect, validation_error: Opti
     }
 }
 
+/// Renders a global override banner when a non-PerPolicy mode is active.
+///
+/// This is a safety feature: when the admin has set a global enforcement mode
+/// override (Audit, Block, or AuditAndBlock), a yellow banner is displayed at
+/// the top of every policy-related screen to prevent accidental misconfiguration.
+fn render_global_override_banner(frame: &mut Frame, area: Rect, global_mode: Option<&str>) {
+    let mode = match global_mode {
+        Some(m) if m != "PerPolicy" => m,
+        _ => return,
+    };
+    let banner = Line::from(vec![
+        Span::styled(
+            "Global override active: ",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(mode, Style::default().fg(Color::Yellow)),
+    ]);
+    let banner_area = Rect {
+        x: area.x + 2,
+        y: area.y + 1,
+        width: area.width.saturating_sub(4),
+        height: 1,
+    };
+    let para = Paragraph::new(banner);
+    frame.render_widget(para, banner_area);
+}
+
 /// Draws the Policy Create multi-field form.
 ///
 /// # Arguments
@@ -1416,10 +1464,12 @@ fn render_validation_error(frame: &mut Frame, area: Rect, validation_error: Opti
 /// * `frame` - ratatui frame
 /// * `area` - screen area allocated to the form
 /// * `form` - current form state (fields + conditions)
-/// * `selected` - index of the highlighted row (0..=7)
+/// * `selected` - index of the highlighted row (0..=9)
 /// * `editing` - true when a text field is in edit mode
 /// * `buffer` - text input buffer (only meaningful when `editing` is true)
 /// * `validation_error` - inline error shown below Submit row, or None
+/// * `global_mode` - global enforcement mode override, if active
+#[allow(clippy::too_many_arguments)]
 fn draw_policy_create(
     frame: &mut Frame,
     area: Rect,
@@ -1428,6 +1478,7 @@ fn draw_policy_create(
     editing: bool,
     buffer: &str,
     validation_error: Option<&str>,
+    global_mode: Option<&str>,
 ) {
     let mut items: Vec<ListItem> = Vec::with_capacity(POLICY_FIELD_LABELS.len());
 
@@ -1437,11 +1488,12 @@ fn draw_policy_create(
             1 => format_policy_description_field(label, form, selected, editing, buffer),
             2 => format_policy_priority_field(label, form, selected, editing, buffer),
             3 => format_policy_action_field(label, form),
-            4 => format_policy_enabled_field(label, form),
-            5 => format_policy_mode_field(label, form),
-            6 => Line::from(format!("  {label}")),
-            7 => format_policy_conditions_field(label, form),
-            8 => Line::from(format!("  {label}")),
+            4 => format_enforcement_mode_field(label, form),
+            5 => format_policy_enabled_field(label, form),
+            6 => format_policy_mode_field(label, form),
+            7 => Line::from(format!("  {label}")),
+            8 => format_policy_conditions_field(label, form),
+            9 => Line::from(format!("  {label}")),
             _ => Line::from(""),
         };
         items.push(ListItem::new(line));
@@ -1467,6 +1519,7 @@ fn draw_policy_create(
 
     render_mode_advisory(frame, area, form, validation_error);
     render_validation_error(frame, area, validation_error);
+    render_global_override_banner(frame, area, global_mode);
 
     let hints = if editing {
         "Type to edit | Enter: commit | Esc: cancel"
@@ -1491,6 +1544,7 @@ fn draw_policy_create(
 /// * `editing` - true when a text field is in edit mode
 /// * `buffer` - text input buffer (only meaningful when `editing` is true)
 /// * `validation_error` - inline error shown below Save row, or None
+/// * `global_mode` - global enforcement mode override, if active
 #[allow(clippy::too_many_arguments)]
 fn draw_policy_edit(
     frame: &mut Frame,
@@ -1501,6 +1555,7 @@ fn draw_policy_edit(
     editing: bool,
     buffer: &str,
     validation_error: Option<&str>,
+    global_mode: Option<&str>,
 ) {
     let mut items: Vec<ListItem> = Vec::with_capacity(POLICY_FIELD_LABELS.len());
 
@@ -1510,11 +1565,12 @@ fn draw_policy_edit(
             1 => format_policy_description_field(label, form, selected, editing, buffer),
             2 => format_policy_priority_field(label, form, selected, editing, buffer),
             3 => format_policy_action_field(label, form),
-            4 => format_policy_enabled_field(label, form),
-            5 => format_policy_mode_field(label, form),
-            6 => Line::from(format!("  {label}")),
-            7 => format_policy_conditions_field(label, form),
-            8 => Line::from("  [Save]"),
+            4 => format_enforcement_mode_field(label, form),
+            5 => format_policy_enabled_field(label, form),
+            6 => format_policy_mode_field(label, form),
+            7 => Line::from(format!("  {label}")),
+            8 => format_policy_conditions_field(label, form),
+            9 => Line::from("  [Save]"),
             _ => Line::from(""),
         };
         items.push(ListItem::new(line));
@@ -1540,6 +1596,7 @@ fn draw_policy_edit(
 
     render_mode_advisory(frame, area, form, validation_error);
     render_validation_error(frame, area, validation_error);
+    render_global_override_banner(frame, area, global_mode);
 
     let hints = if editing {
         "Type to edit | Enter: commit | Esc: cancel"
@@ -1638,15 +1695,23 @@ fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, yes_selected: bool
 }
 
 /// Draws a scrollable policy table.
+///
+/// # Arguments
+///
+/// * `global_mode` - global enforcement mode override; when active, appends
+///   " (global)" to each row's mode display and renders a banner.
 fn draw_policy_list(
     frame: &mut Frame,
     area: Rect,
     policies: &[serde_json::Value],
     selected: usize,
+    global_mode: Option<&str>,
 ) {
-    let header = Row::new(vec!["Priority", "Name", "Action", "Enabled"])
+    let header = Row::new(vec!["Priority", "Name", "Action", "Enabled", "Mode"])
         .style(Style::default().add_modifier(Modifier::BOLD))
         .bottom_margin(1);
+
+    let global_active = global_mode.is_some_and(|m| m != "PerPolicy");
 
     let rows: Vec<Row> = policies
         .iter()
@@ -1661,20 +1726,29 @@ fn draw_policy_list(
             } else {
                 "No"
             };
+            let mut mode = p["enforcement_mode"]
+                .as_str()
+                .unwrap_or("Block")
+                .to_string();
+            if global_active {
+                mode.push_str(" (global)");
+            }
             Row::new(vec![
                 priority.to_string(),
                 p["name"].as_str().unwrap_or("-").to_string(),
                 action.to_string(),
                 enabled.to_string(),
+                mode,
             ])
         })
         .collect();
 
     let widths = [
-        Constraint::Percentage(15), // Priority
-        Constraint::Percentage(45), // Name
-        Constraint::Percentage(20), // Action
-        Constraint::Percentage(20), // Enabled
+        Constraint::Percentage(12), // Priority
+        Constraint::Percentage(38), // Name
+        Constraint::Percentage(15), // Action
+        Constraint::Percentage(12), // Enabled
+        Constraint::Percentage(23), // Mode
     ];
 
     let table = Table::new(rows, widths)
@@ -1695,6 +1769,8 @@ fn draw_policy_list(
     let mut state = ratatui::widgets::TableState::default();
     state.select(Some(selected));
     frame.render_stateful_widget(table, area, &mut state);
+
+    render_global_override_banner(frame, area, global_mode);
 
     draw_hints(
         frame,
@@ -4703,5 +4779,127 @@ mod disk_registry_render_tests {
         assert!(s.contains("encrypted"), "row encryption missing: {s}");
         assert!(s.contains("a: Add"), "add hint missing: {s}");
         assert!(s.contains("d: Delete"), "delete hint missing: {s}");
+    }
+
+    #[test]
+    fn test_format_enforcement_mode_field() {
+        use crate::app::PolicyFormState;
+        let mut form = PolicyFormState::default();
+
+        form.enforcement_mode = 0;
+        let line = format_enforcement_mode_field("Enforcement Mode", &form);
+        let s: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        assert!(s.contains("Audit"), "expected Audit, got: {s}");
+
+        form.enforcement_mode = 1;
+        let line = format_enforcement_mode_field("Enforcement Mode", &form);
+        let s: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        assert!(s.contains("Block"), "expected Block, got: {s}");
+
+        form.enforcement_mode = 2;
+        let line = format_enforcement_mode_field("Enforcement Mode", &form);
+        let s: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        assert!(s.contains("AuditAndBlock"), "expected AuditAndBlock, got: {s}");
+    }
+
+    #[test]
+    fn test_policy_list_includes_mode_column() {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20))
+            .expect("terminal");
+        let policies = vec![serde_json::json!({
+            "id": "p1",
+            "name": "Test",
+            "priority": 1,
+            "action": "DENY",
+            "enabled": true,
+            "enforcement_mode": "Audit"
+        })];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_policy_list(frame, area, &policies, 0, None);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(s.contains("Mode"), "header Mode missing: {s}");
+        assert!(s.contains("Audit"), "row Audit missing: {s}");
+    }
+
+    #[test]
+    fn test_global_override_banner_renders_when_active() {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20))
+            .expect("terminal");
+        let policies = vec![serde_json::json!({
+            "id": "p1",
+            "name": "Test",
+            "priority": 1,
+            "action": "DENY",
+            "enabled": true,
+            "enforcement_mode": "Block"
+        })];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_policy_list(frame, area, &policies, 0, Some("Audit"));
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("Global override active"),
+            "banner missing: {s}"
+        );
+        assert!(s.contains("Audit"), "banner mode missing: {s}");
+        assert!(s.contains("(global)"), "row global suffix missing: {s}");
+    }
+
+    #[test]
+    fn test_global_override_banner_hidden_when_perpolicy() {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20))
+            .expect("terminal");
+        let policies = vec![serde_json::json!({
+            "id": "p1",
+            "name": "Test",
+            "priority": 1,
+            "action": "DENY",
+            "enabled": true,
+            "enforcement_mode": "Block"
+        })];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_policy_list(frame, area, &policies, 0, Some("PerPolicy"));
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            !s.contains("Global override active"),
+            "banner should be hidden: {s}"
+        );
+        assert!(!s.contains("(global)"), "global suffix should be hidden: {s}");
+    }
+
+    #[test]
+    fn test_global_override_banner_hidden_when_none() {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20))
+            .expect("terminal");
+        let policies = vec![serde_json::json!({
+            "id": "p1",
+            "name": "Test",
+            "priority": 1,
+            "action": "DENY",
+            "enabled": true,
+            "enforcement_mode": "Block"
+        })];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_policy_list(frame, area, &policies, 0, None);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            !s.contains("Global override active"),
+            "banner should be hidden when None: {s}"
+        );
     }
 }
