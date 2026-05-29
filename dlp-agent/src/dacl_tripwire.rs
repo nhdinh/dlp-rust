@@ -1518,6 +1518,67 @@ mod tests {
         assert!(should_apply_tripwire_for_global_mode(EnforcementMode::AuditAndBlock));
     }
 
+    // --- Phase 55-04: build_canonical_security_descriptor include_deny_ace tests ---
+
+    #[test]
+    #[cfg(windows)]
+    fn test_canonical_descriptor_with_deny_includes_authusers_deny() {
+        let temp_dir = std::env::temp_dir();
+        let test_path = temp_dir.join("dlp_tripwire_test_with_deny.txt");
+        let _ = std::fs::write(&test_path, "test");
+
+        let result = build_canonical_security_descriptor(&test_path, None, true);
+        let _ = std::fs::remove_file(&test_path);
+
+        match result {
+            Ok((_, snapshot)) => {
+                // SDDL should contain the DLP Deny ACE for Authenticated Users.
+                assert!(
+                    snapshot.sddl.contains("S-1-5-11"),
+                    "with_deny=true should include S-1-5-11"
+                );
+                assert!(
+                    snapshot.sddl.contains("(D;"),
+                    "with_deny=true should include Deny ACE"
+                );
+            }
+            Err(DaclTripwireError::Win32(e)) => {
+                println!("Win32 error (acceptable in CI): {}", e);
+            }
+            Err(e) => panic!("Unexpected error: {}", e),
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_canonical_descriptor_without_deny_excludes_authusers_deny() {
+        let temp_dir = std::env::temp_dir();
+        let test_path = temp_dir.join("dlp_tripwire_test_without_deny.txt");
+        let _ = std::fs::write(&test_path, "test");
+
+        let result = build_canonical_security_descriptor(&test_path, None, false);
+        let _ = std::fs::remove_file(&test_path);
+
+        match result {
+            Ok((_, snapshot)) => {
+                // SDDL should NOT contain the DLP Deny ACE for Authenticated Users.
+                assert!(
+                    !snapshot.sddl.contains("S-1-5-11"),
+                    "with_deny=false should exclude S-1-5-11"
+                );
+                // Should still have SYSTEM Allow.
+                assert!(
+                    snapshot.sddl.contains("S-1-5-18"),
+                    "with_deny=false should still include SYSTEM Allow"
+                );
+            }
+            Err(DaclTripwireError::Win32(e)) => {
+                println!("Win32 error (acceptable in CI): {}", e);
+            }
+            Err(e) => panic!("Unexpected error: {}", e),
+        }
+    }
+
     // --- Non-Windows tests for cross-platform compilation ---
 
     #[test]
