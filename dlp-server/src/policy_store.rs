@@ -12,8 +12,8 @@
 use std::sync::Arc;
 
 use dlp_common::abac::{
-    AbacContext, AppField, Decision, EnforcementMode, EvaluateResponse, Policy, PolicyCondition,
-    PolicyMode,
+    compute_effective_mode, AbacContext, AppField, Decision, EnforcementMode, EvaluateResponse,
+    Policy, PolicyCondition, PolicyMode,
 };
 use dlp_common::Classification;
 use parking_lot::RwLock;
@@ -42,6 +42,9 @@ pub(crate) const fn mode_str(mode: PolicyMode) -> &'static str {
 pub struct PolicyStore {
     cache: RwLock<Vec<Policy>>,
     pool: Arc<Pool>,
+    /// Cached global enforcement mode read from `system_kv`.
+    /// Refreshed alongside the policy cache on `refresh()` / `invalidate()`.
+    global_mode: RwLock<EnforcementMode>,
 }
 
 impl PolicyStore {
@@ -60,10 +63,13 @@ impl PolicyStore {
         let policies = Self::load_from_db(&pool)
             .map_err(|e| PolicyEngineError::PolicyNotFound(e.to_string()))?;
         info!(count = policies.len(), "policy store loaded");
-        Ok(Self {
+        let store = Self {
             cache: RwLock::new(policies),
             pool,
-        })
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
+        };
+        store.refresh_global_mode();
+        Ok(store)
     }
 
     /// Re-reads all enabled policies from the database and replaces the cache.
@@ -81,6 +87,7 @@ impl PolicyStore {
                 error!(error = %e, "policy store refresh failed — using stale cache");
             }
         }
+        self.refresh_global_mode();
     }
 
     /// Immediately invalidates the cache and reloads from the database.
@@ -98,6 +105,32 @@ impl PolicyStore {
                 warn!(error = %e, "policy store invalidation failed — keeping stale cache");
             }
         }
+        self.refresh_global_mode();
+    }
+
+    /// Reads `global_enforcement_mode` from `system_kv` and updates the cached value.
+    ///
+    /// Defaults to `PerPolicy` if the key is missing or the value is unrecognized.
+    /// Called automatically by `refresh()`, `invalidate()`, and `new()`.
+    pub fn refresh_global_mode(&self) {
+        let mode = match self.pool.get() {
+            Ok(conn) => {
+                match crate::db::repositories::system_kv::get(&conn, "global_enforcement_mode") {
+                    Ok(Some(value)) => parse_enforcement_mode(&value),
+                    Ok(None) => EnforcementMode::PerPolicy,
+                    Err(e) => {
+                        warn!(error = %e, "failed to read global_enforcement_mode from system_kv");
+                        EnforcementMode::PerPolicy
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to acquire pool connection for global_enforcement_mode refresh");
+                EnforcementMode::PerPolicy
+            }
+        };
+        *self.global_mode.write() = mode;
+        info!(mode = ?mode, "global_enforcement_mode refreshed");
     }
 
     /// Evaluates `ctx` against the cached policy set.
@@ -188,6 +221,7 @@ impl PolicyStore {
         // (uses the request's classification for backward compatibility).
 
         let cache = self.cache.read();
+        let global_mode = *self.global_mode.read();
 
         for policy in cache.iter() {
             if !policy.enabled {
@@ -208,12 +242,34 @@ impl PolicyStore {
                     .any(|c| condition_matches(c, ctx, &resource)),
             };
             if conditions_match {
+                let effective_mode = compute_effective_mode(global_mode, policy.enforcement_mode);
+                let (decision, would_have_denied) = match effective_mode {
+                    EnforcementMode::Audit => {
+                        if policy.action.is_denied() {
+                            (Decision::ALLOW, true)
+                        } else {
+                            (policy.action, false)
+                        }
+                    }
+                    EnforcementMode::Block | EnforcementMode::AuditAndBlock => {
+                        (policy.action, false)
+                    }
+                    EnforcementMode::PerPolicy => {
+                        // PerPolicy should never be the effective mode — it means
+                        // both global and policy were PerPolicy, which is invalid.
+                        // Fail-safe: treat as Block.
+                        (policy.action, false)
+                    }
+                };
                 return EvaluateResponse {
-                    decision: policy.action,
+                    decision,
                     matched_policy_id: Some(policy.id.clone()),
-                    reason: format!("matched policy '{}'", policy.name),
-                    enforcement_mode: Some(policy.enforcement_mode),
-                    would_have_denied: policy.action.is_denied(),
+                    reason: format!(
+                        "matched policy '{}' (effective mode: {:?})",
+                        policy.name, effective_mode
+                    ),
+                    enforcement_mode: Some(effective_mode),
+                    would_have_denied,
                 };
             }
         }
@@ -255,12 +311,16 @@ impl PolicyStore {
 /// Parses an enforcement mode string into the `EnforcementMode` enum.
 ///
 /// Defaults to `Block` for unrecognized values (fail-safe).
-fn parse_enforcement_mode(s: &str) -> EnforcementMode {
+pub fn parse_enforcement_mode(s: &str) -> EnforcementMode {
     match s {
         "Audit" => EnforcementMode::Audit,
         "Block" => EnforcementMode::Block,
         "AuditAndBlock" => EnforcementMode::AuditAndBlock,
-        _ => EnforcementMode::Block,
+        "PerPolicy" => EnforcementMode::PerPolicy,
+        _ => {
+            warn!(value = %s, "unrecognized enforcement_mode value, defaulting to Block");
+            EnforcementMode::Block
+        }
     }
 }
 
@@ -575,6 +635,7 @@ mod tests {
         PolicyStore {
             cache: RwLock::new(Vec::new()),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         }
     }
 
@@ -626,6 +687,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![disabled]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let resp = store.evaluate(&make_request(Classification::T3), None, false);
         // Disabled policy should be skipped → falls through to default-deny (T3)
@@ -865,6 +927,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![p1, p2]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let resp = store.evaluate(&make_request(Classification::T3), None, false);
         assert_eq!(resp.decision, Decision::ALLOW);
@@ -892,6 +955,7 @@ mod tests {
                 version: 1,
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let resp = store.evaluate(&make_request(Classification::T3), None, false);
         assert_eq!(resp.decision, Decision::DENY);
@@ -917,6 +981,7 @@ mod tests {
                 version: 1,
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // T1 request does NOT match T3 policy → default-allow (T1)
         let resp = store.evaluate(&make_request(Classification::T1), None, false);
@@ -943,6 +1008,7 @@ mod tests {
                 version: 1,
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // T1 is not T4 → policy matches
         let resp = store.evaluate(&make_request(Classification::T1), None, false);
@@ -971,6 +1037,7 @@ mod tests {
                 version: 1,
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let request = make_request(Classification::T3);
         let resp = store.evaluate(&request, None, false);
@@ -997,6 +1064,7 @@ mod tests {
                 version: 1,
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let request = make_request(Classification::T3);
         let resp = store.evaluate(&request, None, false);
@@ -1024,6 +1092,7 @@ mod tests {
                 version: 1,
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // Subject groups do NOT include S-1-5-21-512 → policy matches
         let request = make_request(Classification::T2);
@@ -1052,6 +1121,7 @@ mod tests {
                 version: 1,
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let resp = store.evaluate(&make_request(Classification::T2), None, false);
         assert_eq!(resp.decision, Decision::ALLOW);
@@ -1077,6 +1147,7 @@ mod tests {
                 version: 1,
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let resp = store.evaluate(&make_request(Classification::T3), None, false);
         assert_eq!(resp.decision, Decision::DENY);
@@ -1101,6 +1172,7 @@ mod tests {
                 version: 1,
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let resp = store.evaluate(&make_request(Classification::T3), None, false);
         assert_eq!(resp.decision, Decision::DENY);
@@ -1127,6 +1199,7 @@ mod tests {
                 version: 1,
             }]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let resp = store.evaluate(&make_request(Classification::T3), None, false);
         // "in" on Classification is not applicable → policy does not match → default-deny (T3)
@@ -1239,6 +1312,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let resp = store.evaluate(&make_request(Classification::T3), None, false);
         assert_eq!(resp.decision, Decision::DENY);
@@ -1271,6 +1345,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // T1 + Managed → Classification misses → falls through to default-allow (T1)
         let resp = store.evaluate(&make_request(Classification::T1), None, false);
@@ -1304,6 +1379,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // T1 + Managed → Classification misses but DeviceTrust matches → policy hits
         let resp = store.evaluate(&make_request(Classification::T1), None, false);
@@ -1337,6 +1413,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // T1 + Managed (subject default) → neither condition matches → default-allow (T1)
         let resp = store.evaluate(&make_request(Classification::T1), None, false);
@@ -1370,6 +1447,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // T1 + Managed (subject) → neither condition matches → policy hits
         let resp = store.evaluate(&make_request(Classification::T1), None, false);
@@ -1403,6 +1481,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // T3 + Managed → Classification matches → policy misses → default-deny (T3)
         let resp = store.evaluate(&make_request(Classification::T3), None, false);
@@ -1430,6 +1509,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let resp = store.evaluate(&make_request(Classification::T1), None, false);
         assert_eq!(resp.decision, Decision::DENY);
@@ -1454,6 +1534,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // Falls through to default-deny (T4)
         let resp = store.evaluate(&make_request(Classification::T4), None, false);
@@ -1479,6 +1560,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let resp = store.evaluate(&make_request(Classification::T1), None, false);
         assert_eq!(resp.decision, Decision::ALLOW);
@@ -1800,6 +1882,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // Both match: publisher == "Contoso" AND classification == T3
         let ctx = make_ctx_with_source_app(
@@ -1842,6 +1925,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // source_application is None → SourceApplication condition fails closed →
         // ALL mode means policy does NOT fire → falls through to default-deny (T3)
@@ -1881,6 +1965,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // source_application is None → SourceApplication fails closed (false).
         // But Classification == T3 matches → ANY mode fires → DENY via policy match.
@@ -1900,6 +1985,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let ctx = make_ctx_with_source_app(
             Classification::T2,
@@ -1920,6 +2006,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let ctx = make_ctx_with_dest_app(
             Classification::T2,
@@ -2212,10 +2299,12 @@ mod tests {
         let store_v040 = PolicyStore {
             cache: RwLock::new(vec![policy_v040]),
             pool: Arc::clone(&pool),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let store_explicit = PolicyStore {
             cache: RwLock::new(vec![policy_explicit_all]),
             pool: Arc::clone(&pool),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
 
         let req = make_request(Classification::T3);
@@ -2352,6 +2441,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let ctx = make_ctx_with_origin(Classification::T3, Some("https://sharepoint.com"), None);
         let resp = store.evaluate(&ctx, None, false);
@@ -2365,6 +2455,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let ctx = make_ctx_with_origin(Classification::T2, Some("https://example.com"), None);
         let resp = store.evaluate(&ctx, None, false);
@@ -2379,6 +2470,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let ctx = make_ctx_with_origin(
             Classification::T3,
@@ -2396,6 +2488,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let ctx = make_ctx_with_origin(Classification::T3, None, Some("https://example.com"));
         let resp = store.evaluate(&ctx, None, false);
@@ -2409,6 +2502,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         let ctx = make_ctx_with_origin(Classification::T3, None, None);
         let resp = store.evaluate(&ctx, None, false);
@@ -2443,6 +2537,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // SourceOrigin misses (wrong origin) but Classification matches -> ANY fires
         let ctx = make_ctx_with_origin(Classification::T3, Some("https://example.com"), None);
@@ -2477,6 +2572,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // Both match: origin == sharepoint AND classification == T3
         let ctx = make_ctx_with_origin(Classification::T3, Some("https://sharepoint.com"), None);
@@ -2511,6 +2607,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
         // SourceOrigin misses (wrong origin) but Classification matches -> ALL does NOT fire
         let ctx = make_ctx_with_origin(Classification::T3, Some("https://example.com"), None);
@@ -2716,6 +2813,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(vec![policy]),
             pool: Arc::clone(&pool),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
 
         // Unlabeled resource -> UnclassifiedBlocked -> T4 -> policy doesn't match -> default-deny
@@ -2770,6 +2868,7 @@ mod tests {
         let store = PolicyStore {
             cache: RwLock::new(policies),
             pool: Arc::clone(&pool),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
         };
 
         // Unlabeled path -> UnclassifiedBlocked -> T4 -> no policy matches -> default-deny
@@ -2875,6 +2974,206 @@ mod tests {
         let ctx = make_ctx_with_path(r"C:\Data\file.txt", Classification::T1);
         let resp = store.evaluate(&ctx, Some(&label_svc), false);
         assert_eq!(resp.decision, Decision::ALLOW); // T1 default-allow
+    }
+
+    // ---- Effective enforcement mode tests (Phase 55-02) ----
+
+    /// Audit mode: policy with DENY action returns ALLOW + would_have_denied=true.
+    #[test]
+    fn test_evaluate_audit_mode_allows_but_would_have_denied() {
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::Audit,
+            id: "audit-deny".to_string(),
+            name: "audit deny".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::Classification {
+                op: "eq".to_string(),
+                value: Classification::T3,
+            }],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
+        };
+        let resp = store.evaluate(&make_request(Classification::T3), None, false);
+        assert_eq!(resp.decision, Decision::ALLOW, "Audit mode must allow");
+        assert!(resp.would_have_denied, "would_have_denied must be true");
+        assert_eq!(
+            resp.enforcement_mode,
+            Some(EnforcementMode::Audit),
+            "enforcement_mode must be Audit"
+        );
+    }
+
+    /// Block mode: policy with DENY action returns DENY + would_have_denied=false.
+    #[test]
+    fn test_evaluate_block_mode_denies() {
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
+            id: "block-deny".to_string(),
+            name: "block deny".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::Classification {
+                op: "eq".to_string(),
+                value: Classification::T3,
+            }],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
+        };
+        let resp = store.evaluate(&make_request(Classification::T3), None, false);
+        assert_eq!(resp.decision, Decision::DENY, "Block mode must deny");
+        assert!(!resp.would_have_denied, "would_have_denied must be false");
+        assert_eq!(
+            resp.enforcement_mode,
+            Some(EnforcementMode::Block),
+            "enforcement_mode must be Block"
+        );
+    }
+
+    /// AuditAndBlock mode: policy with DENY action returns DENY + would_have_denied=false.
+    #[test]
+    fn test_evaluate_auditandblock_mode_denies() {
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::AuditAndBlock,
+            id: "ab-deny".to_string(),
+            name: "auditandblock deny".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::Classification {
+                op: "eq".to_string(),
+                value: Classification::T3,
+            }],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
+        };
+        let resp = store.evaluate(&make_request(Classification::T3), None, false);
+        assert_eq!(resp.decision, Decision::DENY, "AuditAndBlock mode must deny");
+        assert!(!resp.would_have_denied, "would_have_denied must be false");
+        assert_eq!(
+            resp.enforcement_mode,
+            Some(EnforcementMode::AuditAndBlock),
+            "enforcement_mode must be AuditAndBlock"
+        );
+    }
+
+    /// Global override Audit: forces Audit even for Block policy.
+    #[test]
+    fn test_evaluate_global_override_audit() {
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
+            id: "block-policy".to_string(),
+            name: "block policy".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::Classification {
+                op: "eq".to_string(),
+                value: Classification::T3,
+            }],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::Audit),
+        };
+        let resp = store.evaluate(&make_request(Classification::T3), None, false);
+        assert_eq!(resp.decision, Decision::ALLOW, "global Audit must override Block");
+        assert!(resp.would_have_denied, "would_have_denied must be true");
+        assert_eq!(
+            resp.enforcement_mode,
+            Some(EnforcementMode::Audit),
+            "effective mode must be Audit"
+        );
+    }
+
+    /// Global override Block: forces Block even for Audit policy.
+    #[test]
+    fn test_evaluate_global_override_block() {
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::Audit,
+            id: "audit-policy".to_string(),
+            name: "audit policy".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::Classification {
+                op: "eq".to_string(),
+                value: Classification::T3,
+            }],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::Block),
+        };
+        let resp = store.evaluate(&make_request(Classification::T3), None, false);
+        assert_eq!(resp.decision, Decision::DENY, "global Block must override Audit");
+        assert!(!resp.would_have_denied, "would_have_denied must be false");
+        assert_eq!(
+            resp.enforcement_mode,
+            Some(EnforcementMode::Block),
+            "effective mode must be Block"
+        );
+    }
+
+    /// Verify evaluate() reads from the cached global_mode, not system_kv directly.
+    #[test]
+    fn test_evaluate_uses_cached_global_mode() {
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
+            id: "cached-test".to_string(),
+            name: "cached test".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::Classification {
+                op: "eq".to_string(),
+                value: Classification::T3,
+            }],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::Audit),
+        };
+        // No system_kv seed — the cached value is used directly.
+        let resp = store.evaluate(&make_request(Classification::T3), None, false);
+        assert_eq!(resp.decision, Decision::ALLOW, "cached global Audit must apply");
+        assert_eq!(
+            resp.enforcement_mode,
+            Some(EnforcementMode::Audit),
+            "effective mode from cache"
+        );
     }
 
     /// When label_aware_enabled=true and exact label exists: use label tier.
