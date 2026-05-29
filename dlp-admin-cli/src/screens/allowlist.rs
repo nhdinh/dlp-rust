@@ -217,7 +217,12 @@ pub fn draw_allowlist_screen(frame: &mut Frame, screen: &AllowlistScreen, area: 
                 .unwrap_or_default();
             ListItem::new(format!(
                 "{} {} | {} | {} | {}{}",
-                status, entry.match_type, entry.value, entry.category, entry.description, volume_badge
+                status,
+                entry.match_type,
+                entry.value,
+                entry.category,
+                entry.description,
+                volume_badge
             ))
             .style(style)
         })
