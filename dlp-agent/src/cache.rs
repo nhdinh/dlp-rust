@@ -179,12 +179,16 @@ pub fn fail_closed_response(classification: Classification) -> EvaluateResponse 
             decision: Decision::DENY,
             matched_policy_id: None,
             reason: "Fail-closed: no cached decision for sensitive resource".to_string(),
+            enforcement_mode: None,
+            would_have_denied: true,
         }
     } else {
         EvaluateResponse {
             decision: Decision::ALLOW,
             matched_policy_id: None,
             reason: "Cache miss: default allow for non-sensitive resource".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
         }
     }
 }
@@ -199,6 +203,8 @@ mod tests {
             decision,
             matched_policy_id: None,
             reason: "test".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
         }
     }
 

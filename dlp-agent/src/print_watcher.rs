@@ -462,6 +462,8 @@ mod tests {
             decision: Decision::ALLOW,
             matched_policy_id: None,
             reason: "test".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
         };
         assert_eq!(
             decision_from_response(resp, &job, &config),
@@ -484,6 +486,8 @@ mod tests {
             decision: Decision::DENY,
             matched_policy_id: None,
             reason: "test".to_string(),
+            enforcement_mode: None,
+            would_have_denied: true,
         };
         assert_eq!(
             decision_from_response(resp, &job, &config),
@@ -506,6 +510,8 @@ mod tests {
             decision: Decision::DenyWithAlert,
             matched_policy_id: None,
             reason: "test".to_string(),
+            enforcement_mode: None,
+            would_have_denied: true,
         };
         assert_eq!(
             decision_from_response(resp, &job, &config),
@@ -528,6 +534,8 @@ mod tests {
             decision: Decision::DENY,
             matched_policy_id: None,
             reason: "test".to_string(),
+            enforcement_mode: None,
+            would_have_denied: true,
         };
         assert_eq!(
             decision_from_response(resp, &job, &config),

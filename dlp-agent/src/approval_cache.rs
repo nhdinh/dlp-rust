@@ -197,6 +197,8 @@ impl ApprovalCache {
             decision: Decision::ALLOW,
             matched_policy_id: Some(format!("approval:{}", entry.claims.jti)),
             reason: "approved via override token".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
         })
     }
 

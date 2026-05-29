@@ -49,6 +49,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use dlp_common::abac::EnforcementMode;
 use dlp_common::DiskIdentity;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -76,6 +77,37 @@ pub const LDAP_CACHE_TTL_MAX_SECS: u64 = 3_600;
 pub const POLL_INTERVAL_MIN_SECS: u64 = 5;
 /// Default poll interval when not specified (OP-03).
 pub const POLL_INTERVAL_DEFAULT_SECS: u64 = 30;
+
+/// Phase 55: Enforcement mode configuration.
+///
+/// Loaded from the `[enforcement]` section of `agent-config.toml`.
+/// Controls whether the agent enforces blocking, audit-only, or both.
+///
+/// # Example
+///
+/// ```toml
+/// [enforcement]
+/// global_mode = "PerPolicy"   # "Audit", "Block", "AuditAndBlock", or "PerPolicy"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EnforcementConfig {
+    /// Global enforcement mode override.
+    ///
+    /// When `Audit`: violations are logged but not blocked.
+    /// When `Block`: violations are blocked (default).
+    /// When `AuditAndBlock`: both log and block.
+    /// When `PerPolicy`: defer to each policy's individual mode.
+    #[serde(default)]
+    pub global_mode: EnforcementMode,
+}
+
+impl Default for EnforcementConfig {
+    fn default() -> Self {
+        Self {
+            global_mode: EnforcementMode::PerPolicy,
+        }
+    }
+}
 
 /// Phase 34 BitLocker re-check cadence (D-11).
 ///
@@ -284,6 +316,13 @@ pub struct AgentConfig {
     /// server config push. Defaults to empty for backward compatibility.
     #[serde(default)]
     pub protected_paths: Vec<crate::server_client::ProtectedPathConfig>,
+
+    /// Phase 55: Enforcement mode configuration.
+    ///
+    /// Controls the global enforcement mode override. Populated by server
+    /// config push. Defaults to `PerPolicy` for backward compatibility.
+    #[serde(default)]
+    pub enforcement: EnforcementConfig,
 }
 
 impl AgentConfig {
@@ -688,6 +727,7 @@ mod tests {
             enable_ntdll_patching: None,
             enable_bypass_correlator: None,
             protected_paths: Vec::new(),
+            enforcement: EnforcementConfig::default(),
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
         };
@@ -737,6 +777,7 @@ mod tests {
             enable_ntdll_patching: None,
             enable_bypass_correlator: None,
             protected_paths: Vec::new(),
+            enforcement: EnforcementConfig::default(),
         };
 
         let tmp_path = std::env::temp_dir().join("test_agent_config_save_server_url.toml");
@@ -1252,6 +1293,63 @@ mod tests {
         let loaded = AgentConfig::load(&tmp_path);
         let _ = std::fs::remove_file(&tmp_path);
         assert_eq!(loaded.enable_bypass_correlator, Some(true));
+    }
+
+    // --- Phase 55: Enforcement mode config tests ---
+
+    #[test]
+    fn test_agent_config_enforcement_section_default() {
+        // Config without [enforcement] section must default to PerPolicy.
+        let toml_str = "monitored_paths = ['C:\\Data\\']\n";
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(config.enforcement.global_mode, EnforcementMode::PerPolicy);
+    }
+
+    #[test]
+    fn test_agent_config_enforcement_section_parsed() {
+        // Config with [enforcement] global_mode = "Audit" must parse correctly.
+        let toml_str = r#"
+            monitored_paths = ['C:\Data\']
+            [enforcement]
+            global_mode = "Audit"
+        "#;
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(config.enforcement.global_mode, EnforcementMode::Audit);
+    }
+
+    #[test]
+    fn test_agent_config_enforcement_section_block() {
+        let toml_str = r#"
+            [enforcement]
+            global_mode = "Block"
+        "#;
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(config.enforcement.global_mode, EnforcementMode::Block);
+    }
+
+    #[test]
+    fn test_agent_config_enforcement_section_audit_and_block() {
+        let toml_str = r#"
+            [enforcement]
+            global_mode = "AuditAndBlock"
+        "#;
+        let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(config.enforcement.global_mode, EnforcementMode::AuditAndBlock);
+    }
+
+    #[test]
+    fn test_agent_config_enforcement_toml_roundtrip() {
+        let config = AgentConfig {
+            enforcement: EnforcementConfig {
+                global_mode: EnforcementMode::Audit,
+            },
+            ..Default::default()
+        };
+        let tmp_path = std::env::temp_dir().join("test_enforcement_toml_roundtrip.toml");
+        config.save(&tmp_path).expect("save should succeed");
+        let loaded = AgentConfig::load(&tmp_path);
+        let _ = std::fs::remove_file(&tmp_path);
+        assert_eq!(loaded.enforcement.global_mode, EnforcementMode::Audit);
     }
 
     /// Helper: parse TOML from a string (for tests that need serde_ignored).
