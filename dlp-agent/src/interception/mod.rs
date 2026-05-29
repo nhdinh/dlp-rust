@@ -33,6 +33,7 @@ use dlp_common::{
     AccessContext, AgentInfo, AuditAccessContext, AuditEvent, Decision, Environment,
     EvaluateRequest, EventType, Resource, Subject, UsbTrustTier,
 };
+// EnforcementMode is used via dlp_common::abac::EnforcementMode at call sites
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -405,20 +406,34 @@ pub async fn run_event_loop(
         // ── Evaluate against Policy Engine ────────────────────────────────
         let response = offline.evaluate(&request).await;
 
-        // ── Determine event type and decision ─────────────────────────────
+        // ── Compute effective enforcement mode (Phase 55) ─────────────────
+        // Read global mode from config; default to Block if config unavailable (fail-safe).
+        let global_mode = crate::service::with_config(|cfg| cfg.enforcement.global_mode)
+            .unwrap_or(dlp_common::abac::EnforcementMode::Block);
+
+        let policy_mode = response.enforcement_mode.unwrap_or(dlp_common::abac::EnforcementMode::Block);
+        let effective_mode = dlp_common::abac::compute_effective_mode(global_mode, policy_mode);
+
+        // ── Determine final decision based on effective mode ──────────────
+        // Audit mode: always ALLOW the physical operation, but record what would have happened.
+        let final_decision = if effective_mode.is_audit() {
+            Decision::ALLOW
+        } else {
+            response.decision
+        };
+
         let response_reason = response.reason.clone();
         let response_policy_id = response.matched_policy_id.clone();
-        let decision = response.decision;
+        let is_denied = final_decision.is_denied();
 
-        let event_type = match decision {
+        // Event type reflects the physical operation outcome, not the policy intent.
+        let event_type = match final_decision {
             Decision::ALLOW | Decision::AllowWithLog => EventType::Access,
             Decision::DENY => EventType::Block,
             Decision::DenyWithAlert => EventType::Alert,
         };
 
-        let is_denied = decision.is_denied();
-
-        // ── Emit audit event ───────────────────────────────────────────────
+        // ── Emit enriched audit event ──────────────────────────────────────
         let policy_id_str = response_policy_id.unwrap_or_default();
         let mut audit_event = AuditEvent::new(
             event_type,
@@ -427,12 +442,14 @@ pub async fn run_event_loop(
             path.clone(),
             classification,
             abac_action,
-            decision,
+            final_decision,
             ctx.agent_id.clone(),
             ctx.session_id,
         )
         .with_access_context(AuditAccessContext::Local)
-        .with_policy(policy_id_str.clone(), response_reason.clone());
+        .with_policy(policy_id_str.clone(), response_reason.clone())
+        .with_policy_mode(format!("{:?}", effective_mode))
+        .with_would_have_denied(response.would_have_denied);
 
         // AUDIT-04 (Phase 42): Enrich with app identity from the initiating process.
         crate::audit_emitter::enrich_audit_with_app_identity(&mut audit_event, pid);
@@ -473,3 +490,33 @@ fn fnv1a_hex(s: &str) -> String {
 }
 
 pub use policy_mapper::PolicyMapper;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dlp_common::abac::{EnforcementMode, compute_effective_mode};
+
+    #[test]
+    fn test_compute_effective_mode_audit_overrides_block() {
+        let effective = compute_effective_mode(EnforcementMode::Audit, EnforcementMode::Block);
+        assert_eq!(effective, EnforcementMode::Audit);
+    }
+
+    #[test]
+    fn test_compute_effective_mode_block_overrides_audit() {
+        let effective = compute_effective_mode(EnforcementMode::Block, EnforcementMode::Audit);
+        assert_eq!(effective, EnforcementMode::Block);
+    }
+
+    #[test]
+    fn test_compute_effective_mode_perpolicy_defersto_policy() {
+        let effective = compute_effective_mode(EnforcementMode::PerPolicy, EnforcementMode::Audit);
+        assert_eq!(effective, EnforcementMode::Audit);
+    }
+
+    #[test]
+    fn test_compute_effective_mode_perpolicy_defersto_block() {
+        let effective = compute_effective_mode(EnforcementMode::PerPolicy, EnforcementMode::Block);
+        assert_eq!(effective, EnforcementMode::Block);
+    }
+}
