@@ -114,7 +114,9 @@ async fn test_cache_bulk_eviction() {
                 decision: Decision::ALLOW,
                 matched_policy_id: None,
                 reason: "bulk".into(),
-            },
+                    enforcement_mode: None,
+                    would_have_denied: false,
+},
         );
     }
     assert_eq!(cache.len(), 100);

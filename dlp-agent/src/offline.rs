@@ -369,6 +369,8 @@ mod tests {
             decision,
             matched_policy_id: None,
             reason: "test".to_string(),
+            enforcement_mode: None,
+            would_have_denied: decision.is_denied(),
         }
     }
 

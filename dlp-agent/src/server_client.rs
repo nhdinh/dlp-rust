@@ -248,6 +248,13 @@ pub struct AgentConfigPayload {
     /// Defaults to empty for backward compatibility with older server builds.
     #[serde(default)]
     pub protected_paths: Vec<ProtectedPathConfig>,
+
+    /// Phase 55: Global enforcement mode override.
+    ///
+    /// Sent from server to agent to control whether violations are blocked,
+    /// logged only, or both. Defaults to "PerPolicy" for backward compatibility.
+    #[serde(default = "default_global_enforcement_mode")]
+    pub global_enforcement_mode: String,
 }
 
 fn default_usb_blocked_failure_mode() -> String {
@@ -276,6 +283,10 @@ fn default_print_unclassifiable_action() -> String {
 
 fn default_print_max_pages() -> usize {
     100
+}
+
+fn default_global_enforcement_mode() -> String {
+    "PerPolicy".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1276,6 +1287,7 @@ mod tests {
             allowlist_entries: vec![],
             allowlist_version: 0,
             protected_paths: vec![],
+            global_enforcement_mode: "PerPolicy".to_string(),
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -1311,6 +1323,7 @@ mod tests {
             allowlist_entries: vec![],
             allowlist_version: 0,
             protected_paths: vec![],
+            global_enforcement_mode: "PerPolicy".to_string(),
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -1393,6 +1406,7 @@ mod tests {
             allowlist_entries: vec![],
             allowlist_version: 0,
             protected_paths: vec![],
+            global_enforcement_mode: "PerPolicy".to_string(),
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
@@ -1625,11 +1639,62 @@ mod tests {
             allowlist_entries: vec![],
             allowlist_version: 0,
             protected_paths: vec![],
+            global_enforcement_mode: "PerPolicy".to_string(),
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt.usb_blocked_failure_mode, "Hard error");
         assert_eq!(rt.usb_startup_resolution_mode, "Volume GUID resolution");
         assert_eq!(rt.usb_none_serial_policy, "Allow unregistered");
+    }
+
+    /// Verify that JSON missing the `global_enforcement_mode` field deserializes
+    /// to the expected default value (backward compatibility with older servers).
+    #[test]
+    fn test_agent_config_payload_global_enforcement_mode_default_when_missing() {
+        let json = r#"{
+            "monitored_paths": [],
+            "excluded_paths": [],
+            "heartbeat_interval_secs": 30,
+            "offline_cache_enabled": false,
+            "ldap_config": null
+        }"#;
+        let payload: AgentConfigPayload =
+            serde_json::from_str(json).expect("deserialization must succeed without global_enforcement_mode");
+        assert_eq!(
+            payload.global_enforcement_mode, "PerPolicy",
+            "global_enforcement_mode must default to 'PerPolicy'"
+        );
+    }
+
+    /// Verify that a payload with custom global_enforcement_mode survives a
+    /// serialize/deserialize roundtrip with all fields intact.
+    #[test]
+    fn test_agent_config_payload_global_enforcement_mode_roundtrip() {
+        let payload = AgentConfigPayload {
+            monitored_paths: vec![],
+            excluded_paths: vec![],
+            heartbeat_interval_secs: 30,
+            offline_cache_enabled: false,
+            ldap_config: None,
+            disk_allowlist: vec![],
+            usb_blocked_failure_mode: "Warning only".to_string(),
+            usb_startup_resolution_mode: "VID/PID/serial fallback".to_string(),
+            usb_none_serial_policy: "Always Blocked".to_string(),
+            cloud_hook_enabled: false,
+            wfp_filter_enabled: false,
+            hook_classification_timeout_ms: 5000,
+            print_enabled: false,
+            print_xps_timeout_ms: 5000,
+            print_unclassifiable_action: "Block".to_string(),
+            print_max_pages: 100,
+            allowlist_entries: vec![],
+            allowlist_version: 0,
+            protected_paths: vec![],
+            global_enforcement_mode: "Audit".to_string(),
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(rt.global_enforcement_mode, "Audit");
     }
 }

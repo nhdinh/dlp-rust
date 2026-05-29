@@ -516,12 +516,16 @@ mod tests {
                 decision: dlp_common::abac::Decision::DENY,
                 matched_policy_id: Some("mock-origin-policy".to_string()),
                 reason: "mock: managed origin blocked".to_string(),
+                enforcement_mode: None,
+                would_have_denied: false,
             }
         } else {
             dlp_common::abac::EvaluateResponse {
                 decision: dlp_common::abac::Decision::ALLOW,
                 matched_policy_id: None,
                 reason: "mock: allowed".to_string(),
+                enforcement_mode: None,
+                would_have_denied: false,
             }
         }
     }
@@ -534,6 +538,8 @@ mod tests {
             decision: dlp_common::abac::Decision::ALLOW,
             matched_policy_id: None,
             reason: "mock: always allow".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
         }
     }
 
@@ -545,6 +551,8 @@ mod tests {
             decision: dlp_common::abac::Decision::DENY,
             matched_policy_id: Some("mock-deny-all".to_string()),
             reason: "mock: always deny".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
         }
     }
 
