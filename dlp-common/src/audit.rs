@@ -272,6 +272,16 @@ pub struct AuditEvent {
     /// `None` when the decision used a machine-wide entry or default-deny.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_user: Option<String>,
+    /// The enforcement mode of the matched policy at the time of the event
+    /// (Phase 55, MODE-01). `None` when no policy matched or the event
+    /// predates enforcement-mode tracking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_mode: Option<String>,
+    /// Whether the policy would have denied if it were in Block mode
+    /// (Phase 55, MODE-01). `true` when a policy matched with a DENY
+    /// decision but the effective mode was Audit (monitor-only).
+    #[serde(default)]
+    pub would_have_denied: bool,
 }
 
 impl AuditEvent {
@@ -331,6 +341,8 @@ impl AuditEvent {
             blocked_disk: None,
             owner_sid: None,
             owner_user: None,
+            policy_mode: None,
+            would_have_denied: false,
         }
     }
 
@@ -483,6 +495,39 @@ impl AuditEvent {
     pub fn with_owner(mut self, owner_sid: Option<String>, owner_user: Option<String>) -> Self {
         self.owner_sid = owner_sid;
         self.owner_user = owner_user;
+        self
+    }
+
+    /// Sets the enforcement mode of the matched policy.
+    ///
+    /// # Arguments
+    ///
+    /// * `mode` — The policy enforcement mode string (e.g., "Audit", "Block",
+    ///   "AuditAndBlock").
+    ///
+    /// # Returns
+    ///
+    /// `self` with `policy_mode` set to `Some(mode)`.
+    #[must_use]
+    pub fn with_policy_mode(mut self, mode: String) -> Self {
+        self.policy_mode = Some(mode);
+        self
+    }
+
+    /// Sets the `would_have_denied` flag indicating whether the policy
+    /// would have blocked if it were in Block mode.
+    ///
+    /// # Arguments
+    ///
+    /// * `would_have_denied` — `true` when a policy matched with a DENY
+    ///   decision but the effective mode was Audit (monitor-only).
+    ///
+    /// # Returns
+    ///
+    /// `self` with `would_have_denied` set.
+    #[must_use]
+    pub fn with_would_have_denied(mut self, would_have_denied: bool) -> Self {
+        self.would_have_denied = would_have_denied;
         self
     }
 }
@@ -1303,5 +1348,81 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let rt: AuditEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(rt.event_type, EventType::BypassAlertDetected);
+    }
+
+    // --- Phase 55: AuditEvent policy_mode and would_have_denied tests ---
+
+    #[test]
+    fn test_audit_event_policy_mode_serde() {
+        let event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\x.txt".to_string(),
+            Classification::T3,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-01".to_string(),
+            1,
+        )
+        .with_policy_mode("Audit".to_string())
+        .with_would_have_denied(true);
+
+        assert_eq!(event.policy_mode, Some("Audit".to_string()));
+        assert!(event.would_have_denied);
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"policy_mode\""), "policy_mode must be present: {json}");
+        assert!(json.contains("Audit"), "Audit value must be present: {json}");
+        assert!(json.contains("\"would_have_denied\":true"), "would_have_denied must be true: {json}");
+
+        let rt: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.policy_mode, Some("Audit".to_string()));
+        assert!(rt.would_have_denied);
+    }
+
+    #[test]
+    fn test_audit_event_backward_compat_missing_policy_mode() {
+        // Legacy JSON without policy_mode and would_have_denied must deserialize
+        // successfully with defaults.
+        let legacy = r#"{
+            "timestamp": "2026-01-01T00:00:00Z",
+            "event_type": "BLOCK",
+            "user_sid": "S-1-5-21-1",
+            "user_name": "jsmith",
+            "resource_path": "C:\\Data\\x.txt",
+            "classification": "T3",
+            "action_attempted": "READ",
+            "decision": "DENY",
+            "agent_id": "AGENT-01",
+            "session_id": 1,
+            "override_granted": false,
+            "access_context": "local"
+        }"#;
+        let event: AuditEvent = serde_json::from_str(legacy).unwrap();
+        assert!(event.policy_mode.is_none());
+        assert!(!event.would_have_denied);
+    }
+
+    #[test]
+    fn test_skip_serializing_none_policy_mode() {
+        let event = AuditEvent::new(
+            EventType::Access,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\File.txt".to_string(),
+            Classification::T2,
+            Action::READ,
+            Decision::ALLOW,
+            "AGENT-WS02-001".to_string(),
+            1,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            !json.contains("\"policy_mode\""),
+            "None policy_mode must be omitted: {json}"
+        );
+        // would_have_denied defaults to false and is not optional, so it IS serialized
+        assert!(json.contains("\"would_have_denied\":false"), "would_have_denied false must be present: {json}");
     }
 }
