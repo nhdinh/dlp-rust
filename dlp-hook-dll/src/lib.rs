@@ -44,7 +44,7 @@ use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
 
 use dlp_common::hook_ipc::HandleHookRequest;
-use dlp_common::{Decision, HookRequest};
+use dlp_common::{Decision, HookRequest, VolumeClass};
 
 mod allowlist;
 mod background_thread;
@@ -675,14 +675,27 @@ pub extern "system" fn UnhookAll() {
 // ---------------------------------------------------------------------------
 
 /// Sends a classification request to the agent via named pipe.
+///
+/// # Arguments
+///
+/// * `path` - The file path being accessed.
+/// * `action` - The action being performed (e.g., "CREATE", "WRITE").
+/// * `pipe_name` - The named pipe to communicate with.
+/// * `source_volume_class` - Volume class of the source path (if known).
+/// * `destination_volume_class` - Volume class of the destination path
+///   (for copy/move operations).
 pub(crate) fn classify_path(
     path: &str,
     action: &str,
     pipe_name: &str,
+    source_volume_class: Option<VolumeClass>,
+    destination_volume_class: Option<VolumeClass>,
 ) -> Result<Decision, pipe_client::PipeError> {
     let req = HookRequest {
         path: path.to_string(),
         action: action.to_string(),
+        source_volume_class,
+        destination_volume_class,
         ..Default::default()
     };
     let resp = pipe_client::send_request(
@@ -934,7 +947,7 @@ mod tests {
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
 
-        let result = classify_path(r"C:\secret.txt", "CREATE", pipe_name);
+        let result = classify_path(r"C:\secret.txt", "CREATE", pipe_name, None, None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Decision::DENY);
     }
@@ -951,7 +964,7 @@ mod tests {
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
 
-        let result = classify_path(r"C:\public.txt", "CREATE", pipe_name);
+        let result = classify_path(r"C:\public.txt", "CREATE", pipe_name, None, None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Decision::ALLOW);
     }

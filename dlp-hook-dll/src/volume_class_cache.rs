@@ -26,7 +26,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use dlp_common::hook_ipc::{IpcEnvelope, IpcMessageV1, IpcPayloadV1, VolumeClassQuery, VolumeClassResponse};
+use dlp_common::hook_ipc::{IpcEnvelope, IpcMessageV1, IpcPayloadV1, VolumeClassQuery};
 use dlp_common::VolumeClass;
 
 /// TTL for cached volume class entries.
@@ -35,13 +35,13 @@ use dlp_common::VolumeClass;
 /// creates stale classification window".
 const VOLUME_CLASS_TTL: Duration = Duration::from_secs(10);
 
-/// Thread-local cache of drive letter -> (VolumeClass, insertion Instant).
-///
-/// Each thread maintains its own cache, eliminating Mutex/RwLock overhead
-/// in the hot path. The cache is small (one entry per mounted drive) and
-/// expires quickly (10s).
+// Thread-local cache of drive letter -> (VolumeClass, insertion Instant).
+// Each thread maintains its own cache, eliminating Mutex/RwLock overhead
+// in the hot path. The cache is small (one entry per mounted drive) and
+// expires quickly (10s).
+// Exposed for test pre-warming; normal callers use `resolve_volume_class`.
 thread_local! {
-    static VOLUME_CLASS_CACHE: RefCell<HashMap<char, (VolumeClass, Instant)>> =
+    pub(crate) static VOLUME_CLASS_CACHE: RefCell<HashMap<char, (VolumeClass, Instant)>> =
         RefCell::new(HashMap::new());
 }
 
@@ -158,7 +158,9 @@ pub fn invalidate_cache_for_letter(letter: char) {
 ///
 /// Returns `None` on ANY error — never defaults to `LocalNTFS`.
 fn query_volume_class_from_agent(letter: char) -> Option<VolumeClass> {
-    let query = VolumeClassQuery { drive_letter: letter };
+    let query = VolumeClassQuery {
+        drive_letter: letter,
+    };
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
         payload: IpcPayloadV1::VolumeClassQuery(query),
     });
@@ -211,7 +213,9 @@ mod tests {
     fn test_resolve_drive_letter() {
         // Pre-warm the cache with a known value by directly inserting.
         VOLUME_CLASS_CACHE.with(|cache| {
-            cache.borrow_mut().insert('D', (VolumeClass::Optical, Instant::now()));
+            cache
+                .borrow_mut()
+                .insert('D', (VolumeClass::Optical, Instant::now()));
         });
 
         let result = resolve_volume_class_from_path("D:\\docs\\file.txt");
@@ -223,7 +227,9 @@ mod tests {
         // Insert an entry with an old Instant (simulating expiration).
         let old_instant = Instant::now() - Duration::from_secs(20);
         VOLUME_CLASS_CACHE.with(|cache| {
-            cache.borrow_mut().insert('E', (VolumeClass::USBRemovable, old_instant));
+            cache
+                .borrow_mut()
+                .insert('E', (VolumeClass::USBRemovable, old_instant));
         });
 
         // The entry is expired, so resolve_volume_class should re-query.
@@ -294,7 +300,9 @@ mod tests {
     fn test_case_insensitive_letter() {
         // Insert uppercase, query lowercase.
         VOLUME_CLASS_CACHE.with(|cache| {
-            cache.borrow_mut().insert('F', (VolumeClass::Virtual, Instant::now()));
+            cache
+                .borrow_mut()
+                .insert('F', (VolumeClass::Virtual, Instant::now()));
         });
 
         let result = resolve_volume_class('f');
@@ -304,7 +312,9 @@ mod tests {
     #[test]
     fn test_invalidate_case_insensitive() {
         VOLUME_CLASS_CACHE.with(|cache| {
-            cache.borrow_mut().insert('G', (VolumeClass::SDCard, Instant::now()));
+            cache
+                .borrow_mut()
+                .insert('G', (VolumeClass::SDCard, Instant::now()));
         });
 
         invalidate_cache_for_letter('g');
