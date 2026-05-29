@@ -33,6 +33,7 @@ use parking_lot::{Mutex, RwLock};
 use tracing::{error, info, warn};
 
 use crate::dacl_tripwire::{apply_tripwire_to_path, CanonicalAclSnapshot};
+use dlp_common::abac::EnforcementMode;
 
 /// Capacity of the crossbeam channel between watcher threads and the repair task.
 const CHANNEL_CAPACITY: usize = 1024;
@@ -856,16 +857,19 @@ fn run_security_watcher_thread(
 // Repair logic
 // ---------------------------------------------------------------------------
 
-/// Repairs the ACL at `path` by re-applying the canonical tripwire.
+/// Repairs the ACL at `path` by re-applying the canonical descriptor.
 ///
-/// Calls `apply_tripwire_to_path` to restore the canonical ACL. On success,
-/// logs info. On failure, logs error and emits a `DaclTamperDetected` audit
-/// event with `triggers_alert = true`.
+/// Phase 55: Reads the global enforcement mode to decide whether the repaired
+/// ACL should include the DLP Deny ACE. In Audit mode, the Deny ACE is omitted.
+/// In Block / PerPolicy / AuditAndBlock modes, the Deny ACE is included.
+///
+/// On success, logs info. On failure, logs error and emits a
+/// `DaclTamperDetected` audit event with `triggers_alert = true`.
 ///
 /// # Arguments
 ///
 /// * `path` — The path to repair.
-/// * `snapshot` — The canonical snapshot to restore.
+/// * `snapshot` — The canonical snapshot to restore (used for reference).
 /// * `dlp_admin_sid` — Optional DLP-Admin SID for the tripwire.
 /// * `event` — The security event that triggered this repair (for audit context).
 fn repair_acl(
@@ -874,10 +878,24 @@ fn repair_acl(
     dlp_admin_sid: Option<&str>,
     event: &SecurityEvent,
 ) {
-    match apply_tripwire_to_path(path, dlp_admin_sid) {
+    // Phase 55: read global mode to decide whether to include Deny ACE.
+    let global_mode = crate::service::with_config(|cfg| cfg.enforcement.global_mode)
+        .unwrap_or(EnforcementMode::Block); // fail-safe default
+    let should_apply_deny =
+        crate::dacl_tripwire::should_apply_tripwire_for_global_mode(global_mode);
+
+    let repair_result = if should_apply_deny {
+        apply_tripwire_to_path(path, dlp_admin_sid)
+    } else {
+        // Audit mode: rebuild without Deny ACE and apply.
+        crate::dacl_tripwire::remove_tripwire_by_rebuilding_without_deny(path, dlp_admin_sid)
+    };
+
+    match repair_result {
         Ok(new_snapshot) => {
             info!(
                 path = %path.display(),
+                global_mode = ?global_mode,
                 "DACL repaired successfully after tamper detection"
             );
             // Update the stored snapshot to the newly applied one.
@@ -888,6 +906,7 @@ fn repair_acl(
             error!(
                 path = %path.display(),
                 error = %e,
+                global_mode = ?global_mode,
                 "DACL repair failed — out-of-band tampering may persist"
             );
 
