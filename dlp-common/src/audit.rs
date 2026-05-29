@@ -1495,8 +1495,14 @@ mod tests {
 
         assert_eq!(event.volume_class, Some(VolumeClass::USBRemovable));
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"volume_class\""), "volume_class must be present: {json}");
-        assert!(json.contains("USBRemovable"), "USBRemovable value missing: {json}");
+        assert!(
+            json.contains("\"volume_class\""),
+            "volume_class must be present: {json}"
+        );
+        assert!(
+            json.contains("USBRemovable"),
+            "USBRemovable value missing: {json}"
+        );
     }
 
     #[test]
