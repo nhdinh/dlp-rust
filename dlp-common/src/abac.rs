@@ -999,10 +999,7 @@ mod tests {
 
     #[test]
     fn test_resolve_unc_path() {
-        let result = resolve_volume_class_from_path(
-            "\\\\server\\share\\file.txt",
-            |_letter| None,
-        );
+        let result = resolve_volume_class_from_path("\\\\server\\share\\file.txt", |_letter| None);
         assert_eq!(result, Some(VolumeClass::NetworkShare));
     }
 
@@ -1041,8 +1038,7 @@ mod tests {
 
     #[test]
     fn test_resolve_drive_letter_lookup_returns_none() {
-        let result =
-            resolve_volume_class_from_path("Z:\\file.txt", |_letter| None);
+        let result = resolve_volume_class_from_path("Z:\\file.txt", |_letter| None);
         assert_eq!(result, None);
     }
 
@@ -1068,7 +1064,10 @@ mod tests {
             value: VolumeClass::Optical,
         };
         let json = serde_json::to_string(&condition).unwrap();
-        assert!(json.contains("\"attribute\":\"source_volume_class\""), "json: {json}");
+        assert!(
+            json.contains("\"attribute\":\"source_volume_class\""),
+            "json: {json}"
+        );
         assert!(json.contains("\"op\":\"eq\""), "json: {json}");
         assert!(json.contains("\"value\":\"Optical\""), "json: {json}");
         let rt: PolicyCondition = serde_json::from_str(&json).unwrap();

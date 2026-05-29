@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use dlp_common::abac::{
     compute_effective_mode, AbacContext, AppField, Decision, EnforcementMode, EvaluateResponse,
-    Policy, PolicyCondition, PolicyMode,
+    Policy, PolicyCondition, PolicyMode, VolumeClass,
 };
 use dlp_common::Classification;
 use parking_lot::RwLock;
@@ -408,6 +408,12 @@ fn condition_matches(
         PolicyCondition::DestinationOrigin { op, value } => {
             origin_matches(op, value, ctx.destination_origin.as_deref())
         }
+        PolicyCondition::SourceVolumeClass { op, value } => {
+            volume_class_matches(op, value, ctx.source_volume_class)
+        }
+        PolicyCondition::DestinationVolumeClass { op, value } => {
+            volume_class_matches(op, value, ctx.destination_volume_class)
+        }
     }
 }
 
@@ -537,6 +543,35 @@ fn app_identity_matches(
                 .contains(value),
             _ => false,
         },
+    }
+}
+
+/// Evaluates a volume-class condition against an optional actual value.
+///
+/// Returns `false` (fails closed) if the actual volume class is `None` — a
+/// missing volume class cannot satisfy a volume-class-based condition
+/// (per D-03 and the VolumeClass FAIL-CLOSED INVARIANT).
+///
+/// Supported operators:
+/// - `"eq"` — exact match on VolumeClass
+/// - `"ne"` — inverse exact match on VolumeClass
+/// - `"in"` — single-value semantics (treats as eq); the TUI builds multiple
+///   conditions for multi-value checks, not a single condition with a list
+///
+/// # Arguments
+///
+/// * `op` - Operator string: `"eq"`, `"ne"`, or `"in"`
+/// * `expected` - The policy-authored volume class to compare against
+/// * `actual` - The resolved volume class from the evaluation context, or `None`
+fn volume_class_matches(op: &str, expected: &VolumeClass, actual: Option<VolumeClass>) -> bool {
+    let Some(actual) = actual else {
+        return false; // fails closed: no volume class means condition cannot be confirmed
+    };
+    match op {
+        "eq" => actual == *expected,
+        "ne" => actual != *expected,
+        "in" => actual == *expected, // single-value semantics; multi-value via multiple conditions
+        _ => false,                  // unknown operator fails closed
     }
 }
 
@@ -3280,5 +3315,361 @@ mod tests {
         let ctx = make_ctx_with_path(r"C:\Unknown\file.txt", Classification::T1);
         let resp = store.evaluate(&ctx, Some(&label_svc), true);
         assert_eq!(resp.decision, Decision::DENY); // Fallback -> T4 default-deny
+    }
+
+    // ---- VolumeClass condition tests (Phase 56 Plan 04) ----
+
+    /// `volume_class_matches` helper: eq matches when actual equals expected.
+    #[test]
+    fn test_volume_class_eq_matches() {
+        assert!(volume_class_matches(
+            "eq",
+            &VolumeClass::Optical,
+            Some(VolumeClass::Optical)
+        ));
+    }
+
+    /// `volume_class_matches` helper: eq does NOT match when actual differs.
+    #[test]
+    fn test_volume_class_eq_no_match() {
+        assert!(!volume_class_matches(
+            "eq",
+            &VolumeClass::Optical,
+            Some(VolumeClass::USBRemovable)
+        ));
+    }
+
+    /// `volume_class_matches` helper: ne matches when actual differs from expected.
+    #[test]
+    fn test_volume_class_ne_matches() {
+        assert!(volume_class_matches(
+            "ne",
+            &VolumeClass::Optical,
+            Some(VolumeClass::USBRemovable)
+        ));
+    }
+
+    /// `volume_class_matches` helper: None actual fails closed (returns false).
+    #[test]
+    fn test_volume_class_none_fails_closed() {
+        assert!(!volume_class_matches("eq", &VolumeClass::Optical, None));
+        assert!(!volume_class_matches("ne", &VolumeClass::Optical, None));
+        assert!(!volume_class_matches("in", &VolumeClass::Optical, None));
+    }
+
+    /// `volume_class_matches` helper: "in" operator uses single-value semantics (eq).
+    #[test]
+    fn test_volume_class_in_matches() {
+        assert!(volume_class_matches(
+            "in",
+            &VolumeClass::NetworkShare,
+            Some(VolumeClass::NetworkShare)
+        ));
+    }
+
+    /// `volume_class_matches` helper: unknown operator fails closed.
+    #[test]
+    fn test_volume_class_unknown_op_fails_closed() {
+        assert!(!volume_class_matches(
+            "gt",
+            &VolumeClass::LocalNTFS,
+            Some(VolumeClass::LocalNTFS)
+        ));
+    }
+
+    /// DestinationVolumeClass condition evaluates correctly through condition_matches.
+    #[test]
+    fn test_destination_volume_class_evaluates() {
+        let mut ctx = make_request(Classification::T3);
+        ctx.destination_volume_class = Some(VolumeClass::Virtual);
+        let condition = PolicyCondition::DestinationVolumeClass {
+            op: "eq".to_string(),
+            value: VolumeClass::Virtual,
+        };
+        assert!(condition_matches(&condition, &ctx, &ctx.resource));
+    }
+
+    /// Server does NOT resolve paths locally — trusts agent-provided context.
+    /// If source_volume_class is None, the condition fails closed even with a
+    /// resource_path that would resolve to LocalNTFS.
+    #[test]
+    fn test_server_does_not_resolve_paths() {
+        let mut ctx = make_request(Classification::T3);
+        ctx.resource_path = Some(r"C:\test.txt".to_string());
+        // source_volume_class is intentionally None — server trusts agent context
+        ctx.source_volume_class = None;
+        let condition = PolicyCondition::SourceVolumeClass {
+            op: "eq".to_string(),
+            value: VolumeClass::LocalNTFS,
+        };
+        assert!(!condition_matches(&condition, &ctx, &ctx.resource));
+    }
+
+    // -- End-to-end evaluate() with volume-class policies --
+
+    /// Builds an AbacContext with the given classification and volume class fields.
+    fn make_ctx_with_volume_class(
+        classification: Classification,
+        source_volume_class: Option<VolumeClass>,
+        destination_volume_class: Option<VolumeClass>,
+    ) -> AbacContext {
+        let mut ctx = make_request(classification);
+        ctx.source_volume_class = source_volume_class;
+        ctx.destination_volume_class = destination_volume_class;
+        ctx
+    }
+
+    /// DENY policy: T4 + LocalNTFS source + Optical destination + COPY action.
+    /// All conditions match → policy fires → DENY.
+    #[test]
+    fn test_evaluate_deny_localntfs_t4_to_optical() {
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
+            id: "vol-deny-001".to_string(),
+            name: "DENY LocalNTFS T4 to Optical".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T4,
+                },
+                PolicyCondition::SourceVolumeClass {
+                    op: "eq".to_string(),
+                    value: VolumeClass::LocalNTFS,
+                },
+                PolicyCondition::DestinationVolumeClass {
+                    op: "eq".to_string(),
+                    value: VolumeClass::Optical,
+                },
+                PolicyCondition::AccessContext {
+                    op: "eq".to_string(),
+                    value: AccessContext::Local,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
+        };
+        let ctx = make_ctx_with_volume_class(
+            Classification::T4,
+            Some(VolumeClass::LocalNTFS),
+            Some(VolumeClass::Optical),
+        );
+        let resp = store.evaluate(&ctx, None, false);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("vol-deny-001"));
+    }
+
+    /// Same policy but destination is LocalNTFS instead of Optical →
+    /// DestinationVolumeClass condition does NOT match → policy does NOT fire →
+    /// falls through to default-deny (T4).
+    #[test]
+    fn test_evaluate_localntfs_destination_no_match() {
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
+            id: "vol-deny-001".to_string(),
+            name: "DENY LocalNTFS T4 to Optical".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T4,
+                },
+                PolicyCondition::SourceVolumeClass {
+                    op: "eq".to_string(),
+                    value: VolumeClass::LocalNTFS,
+                },
+                PolicyCondition::DestinationVolumeClass {
+                    op: "eq".to_string(),
+                    value: VolumeClass::Optical,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
+        };
+        let ctx = make_ctx_with_volume_class(
+            Classification::T4,
+            Some(VolumeClass::LocalNTFS),
+            Some(VolumeClass::LocalNTFS),
+        );
+        let resp = store.evaluate(&ctx, None, false);
+        // No policy matched, T4 → default-deny
+        assert_eq!(resp.decision, Decision::DENY);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    /// Same policy but source_volume_class is None →
+    /// SourceVolumeClass condition fails closed → policy does NOT fire →
+    /// falls through to default-deny (T4).
+    #[test]
+    fn test_evaluate_none_source_volume_class_fails_closed() {
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
+            id: "vol-deny-001".to_string(),
+            name: "DENY LocalNTFS T4 to Optical".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T4,
+                },
+                PolicyCondition::SourceVolumeClass {
+                    op: "eq".to_string(),
+                    value: VolumeClass::LocalNTFS,
+                },
+                PolicyCondition::DestinationVolumeClass {
+                    op: "eq".to_string(),
+                    value: VolumeClass::Optical,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
+        };
+        let ctx = make_ctx_with_volume_class(Classification::T4, None, Some(VolumeClass::Optical));
+        let resp = store.evaluate(&ctx, None, false);
+        // None source_volume_class + SourceVolumeClass condition → no match → default-deny (T4)
+        assert_eq!(resp.decision, Decision::DENY);
+        assert!(resp.matched_policy_id.is_none());
+    }
+
+    /// Volume-class policy with Audit mode: would_have_denied=true when conditions match.
+    #[test]
+    fn test_evaluate_volume_class_audit_mode() {
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::Audit,
+            id: "vol-audit-001".to_string(),
+            name: "AUDIT LocalNTFS T4 to Optical".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T4,
+                },
+                PolicyCondition::SourceVolumeClass {
+                    op: "eq".to_string(),
+                    value: VolumeClass::LocalNTFS,
+                },
+                PolicyCondition::DestinationVolumeClass {
+                    op: "eq".to_string(),
+                    value: VolumeClass::Optical,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
+        };
+        let ctx = make_ctx_with_volume_class(
+            Classification::T4,
+            Some(VolumeClass::LocalNTFS),
+            Some(VolumeClass::Optical),
+        );
+        let resp = store.evaluate(&ctx, None, false);
+        assert_eq!(resp.decision, Decision::ALLOW);
+        assert!(resp.would_have_denied);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("vol-audit-001"));
+    }
+
+    /// Volume-class condition with "ne" operator: matches when actual differs.
+    #[test]
+    fn test_evaluate_volume_class_ne_operator() {
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
+            id: "vol-ne-001".to_string(),
+            name: "DENY T3 NOT from LocalNTFS".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+                PolicyCondition::SourceVolumeClass {
+                    op: "ne".to_string(),
+                    value: VolumeClass::LocalNTFS,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
+        };
+        // USBRemovable != LocalNTFS → condition matches → DENY
+        let ctx =
+            make_ctx_with_volume_class(Classification::T3, Some(VolumeClass::USBRemovable), None);
+        let resp = store.evaluate(&ctx, None, false);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("vol-ne-001"));
+    }
+
+    /// Volume-class condition with "in" operator: single-value semantics.
+    #[test]
+    fn test_evaluate_volume_class_in_operator() {
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
+            id: "vol-in-001".to_string(),
+            name: "DENY T3 to NetworkShare".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![
+                PolicyCondition::Classification {
+                    op: "eq".to_string(),
+                    value: Classification::T3,
+                },
+                PolicyCondition::DestinationVolumeClass {
+                    op: "in".to_string(),
+                    value: VolumeClass::NetworkShare,
+                },
+            ],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
+        };
+        // "in" with single value = eq → NetworkShare matches → DENY
+        let ctx =
+            make_ctx_with_volume_class(Classification::T3, None, Some(VolumeClass::NetworkShare));
+        let resp = store.evaluate(&ctx, None, false);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.matched_policy_id.as_deref(), Some("vol-in-001"));
     }
 }

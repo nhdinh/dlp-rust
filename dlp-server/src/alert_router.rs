@@ -368,6 +368,7 @@ impl AlertRouter {
             destination_origin: None,
             policy_mode: None,
             would_have_denied: false,
+            volume_class: None,
         };
         self.send_alert(&event).await
     }
@@ -787,6 +788,7 @@ mod tests {
             blocked_disk: None,
             policy_mode: None,
             would_have_denied: false,
+            volume_class: None,
         };
 
         let cfg = WebhookConfig {
@@ -869,6 +871,7 @@ mod tests {
             blocked_disk: None,
             policy_mode: None,
             would_have_denied: false,
+            volume_class: None,
         };
 
         let err = router
@@ -942,6 +945,7 @@ mod tests {
             blocked_disk: None,
             policy_mode: None,
             would_have_denied: false,
+            volume_class: None,
         };
 
         // Default config has both SMTP and webhook disabled — send_alert
@@ -999,6 +1003,7 @@ mod tests {
             blocked_disk: None,
             policy_mode: Some("Audit".to_string()),
             would_have_denied: true,
+            volume_class: None,
         };
 
         // Normal (blocking) event: would_have_denied=false.
@@ -1035,6 +1040,7 @@ mod tests {
             blocked_disk: None,
             policy_mode: Some("Block".to_string()),
             would_have_denied: false,
+            volume_class: None,
         };
 
         let cfg = SmtpConfig {
