@@ -21,6 +21,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use dlp_common::abac::PolicyMode;
+use dlp_common::EnforcementMode;
 use dlp_server::admin_api::{admin_router, PolicyPayload};
 use dlp_server::admin_auth::{set_jwt_secret, Claims};
 use dlp_server::{alert_router, db, policy_store, siem_connector, AppState};
@@ -197,6 +198,7 @@ async fn test_mode_all_matches_when_all_conditions_hit() {
         action: "DENY".to_string(),
         enabled: true,
         mode: PolicyMode::ALL,
+        enforcement_mode: EnforcementMode::PerPolicy,
     };
 
     let resp = app
@@ -247,6 +249,7 @@ async fn test_mode_any_matches_when_one_condition_hits() {
         action: "DENY".to_string(),
         enabled: true,
         mode: PolicyMode::ANY,
+        enforcement_mode: EnforcementMode::PerPolicy,
     };
 
     let resp = app
@@ -297,6 +300,7 @@ async fn test_mode_none_matches_when_no_conditions_hit() {
         action: "DENY".to_string(),
         enabled: true,
         mode: PolicyMode::NONE,
+        enforcement_mode: EnforcementMode::PerPolicy,
     };
 
     let resp = app
@@ -339,6 +343,7 @@ fn test_policy_payload_roundtrip_preserves_all_three_modes() {
             action: "DENY".into(),
             enabled: true,
             mode: PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::PerPolicy,
         },
         PolicyPayload {
             id: "p2".into(),
@@ -349,6 +354,7 @@ fn test_policy_payload_roundtrip_preserves_all_three_modes() {
             action: "DENY".into(),
             enabled: true,
             mode: PolicyMode::ANY,
+            enforcement_mode: EnforcementMode::PerPolicy,
         },
         PolicyPayload {
             id: "p3".into(),
@@ -359,6 +365,7 @@ fn test_policy_payload_roundtrip_preserves_all_three_modes() {
             action: "DENY".into(),
             enabled: true,
             mode: PolicyMode::NONE,
+            enforcement_mode: EnforcementMode::PerPolicy,
         },
     ];
 

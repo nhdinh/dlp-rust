@@ -17,6 +17,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use dlp_common::abac::PolicyMode;
+use dlp_common::EnforcementMode;
 use dlp_server::admin_api::{admin_router, PolicyPayload};
 use dlp_server::admin_auth::{set_jwt_secret, Claims};
 use dlp_server::{alert_router, db, policy_store, siem_connector, AppState};
@@ -189,6 +190,7 @@ async fn test_policy_create_emits_admin_audit_event() {
         action: "DENY".to_string(),
         enabled: true,
         mode: PolicyMode::ALL,
+        enforcement_mode: EnforcementMode::PerPolicy,
     };
     let body = serde_json::to_vec(&payload).expect("serialise payload");
 
@@ -256,6 +258,7 @@ async fn test_policy_update_emits_admin_audit_event() {
         action: "DENY".to_string(),
         enabled: true,
         mode: PolicyMode::ALL,
+        enforcement_mode: EnforcementMode::PerPolicy,
     };
     let body = serde_json::to_vec(&payload).expect("serialise payload");
 
