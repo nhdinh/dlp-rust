@@ -32,6 +32,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use dlp_common::abac::EnforcementMode;
 use tracing::{error, info, warn};
 
 #[cfg(windows)]
@@ -64,6 +65,24 @@ const MAX_RECURSIVE_FILES: usize = 10_000;
 /// - `WRITE_DAC` (0x00040000) — modify DACL
 /// - `WRITE_OWNER` (0x00080000) — change owner
 const DENIED_MASK: u32 = FILE_GENERIC_WRITE.0 | 0x00010000 | WRITE_DAC.0 | WRITE_OWNER.0;
+
+/// Determines whether the DLP Deny ACE tripwire should be applied based on
+/// the global enforcement mode.
+///
+/// This is intentionally global-mode-only. Per-policy tripwire filtering is
+/// architecturally infeasible because `protected_paths` has no foreign key to
+/// policies; policies match via dynamic conditions at evaluation time.
+///
+/// # Returns
+///
+/// - `false` when `global_mode` is `EnforcementMode::Audit` (monitor-only:
+///   skip all Deny ACEs).
+/// - `true` for `Block`, `AuditAndBlock`, and `PerPolicy` (apply Deny ACEs
+///   to all protected paths).
+#[must_use]
+pub fn should_apply_tripwire_for_global_mode(global_mode: EnforcementMode) -> bool {
+    global_mode != EnforcementMode::Audit
+}
 
 /// Error type for DACL tripwire operations.
 #[derive(Debug, thiserror::Error)]
@@ -1404,6 +1423,28 @@ mod tests {
             }
             Err(e) => panic!("Unexpected error: {}", e),
         }
+    }
+
+    // --- Phase 55: global mode tripwire helper tests ---
+
+    #[test]
+    fn test_should_apply_tripwire_audit_mode_returns_false() {
+        assert!(!should_apply_tripwire_for_global_mode(EnforcementMode::Audit));
+    }
+
+    #[test]
+    fn test_should_apply_tripwire_block_mode_returns_true() {
+        assert!(should_apply_tripwire_for_global_mode(EnforcementMode::Block));
+    }
+
+    #[test]
+    fn test_should_apply_tripwire_perpolicy_returns_true() {
+        assert!(should_apply_tripwire_for_global_mode(EnforcementMode::PerPolicy));
+    }
+
+    #[test]
+    fn test_should_apply_tripwire_auditandblock_returns_true() {
+        assert!(should_apply_tripwire_for_global_mode(EnforcementMode::AuditAndBlock));
     }
 
     // --- Non-Windows tests for cross-platform compilation ---
