@@ -190,7 +190,7 @@ async fn test_policy_create_emits_admin_audit_event() {
         action: "DENY".to_string(),
         enabled: true,
         mode: PolicyMode::ALL,
-        enforcement_mode: EnforcementMode::PerPolicy,
+        enforcement_mode: EnforcementMode::Block,
     };
     let body = serde_json::to_vec(&payload).expect("serialise payload");
 
@@ -258,7 +258,7 @@ async fn test_policy_update_emits_admin_audit_event() {
         action: "DENY".to_string(),
         enabled: true,
         mode: PolicyMode::ALL,
-        enforcement_mode: EnforcementMode::PerPolicy,
+        enforcement_mode: EnforcementMode::Block,
     };
     let body = serde_json::to_vec(&payload).expect("serialise payload");
 
