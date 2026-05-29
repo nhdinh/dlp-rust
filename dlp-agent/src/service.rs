@@ -884,7 +884,7 @@ struct RunLoopContext {
         std::thread::JoinHandle<()>,
     )>,
     /// Shared reference to the USB detector (for shutdown ACL restore / re-enable).
-    detector_arc: Arc<crate::detection::UsbDetector>,
+    detector_arc: Arc<crate::detection::VolumeDetector>,
     /// Optional hook injector (M017/S01). `None` when `cloud_hook_enabled` is false.
     #[allow(dead_code)]
     hook_injector: Option<crate::hook_injector::HookInjector>,
@@ -1162,7 +1162,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
     // SAFETY: detector_arc is stored in the RunLoopContext which outlives the
     // service main loop. The static reference is only used during the lifetime
     // of the service process.
-    let detector_static: &'static crate::detection::UsbDetector =
+    let detector_static: &'static crate::detection::VolumeDetector =
         unsafe { std::mem::transmute(detector_arc.as_ref()) };
     crate::detection::usb::set_drive_detector(detector_static);
 
@@ -1644,10 +1644,10 @@ async fn init_server_client(
 }
 
 /// Initialises the global USB detector, scans existing drives, and reconciles identities.
-async fn init_usb_detector() -> Arc<crate::detection::UsbDetector> {
+async fn init_usb_detector() -> Arc<crate::detection::VolumeDetector> {
     use std::sync::OnceLock;
-    static USB_DETECTOR: OnceLock<Arc<crate::detection::UsbDetector>> = OnceLock::new();
-    let detector = USB_DETECTOR.get_or_init(|| Arc::new(crate::detection::UsbDetector::new()));
+    static USB_DETECTOR: OnceLock<Arc<crate::detection::VolumeDetector>> = OnceLock::new();
+    let detector = USB_DETECTOR.get_or_init(|| Arc::new(crate::detection::VolumeDetector::new()));
     detector.scan_existing_drives();
     detector.scan_existing_usb_identities();
     Arc::clone(detector)
@@ -3118,7 +3118,7 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
 
 /// Restores volume ACLs for all tracked USB drives on shutdown.
 #[cfg(windows)]
-fn restore_usb_volume_acls(detector: &Arc<crate::detection::UsbDetector>) {
+fn restore_usb_volume_acls(detector: &Arc<crate::detection::VolumeDetector>) {
     let Some(controller) = crate::detection::usb::get_device_controller() else {
         return;
     };
@@ -3138,7 +3138,7 @@ fn restore_usb_volume_acls(detector: &Arc<crate::detection::UsbDetector>) {
 
 /// Re-enables PnP-disabled USB devices on shutdown.
 #[cfg(windows)]
-fn reenable_usb_devices(detector: &Arc<crate::detection::UsbDetector>) {
+fn reenable_usb_devices(detector: &Arc<crate::detection::VolumeDetector>) {
     let Some(controller) = crate::detection::usb::get_device_controller() else {
         return;
     };

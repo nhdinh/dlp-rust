@@ -1,6 +1,6 @@
 //! USB enforcement layer (USB-03, USB-04).
 //!
-//! [`UsbEnforcer`] bridges the Phase 23 drive-letter map ([`UsbDetector`])
+//! [`UsbEnforcer`] bridges the Phase 23 drive-letter map ([`VolumeDetector`])
 //! and the Phase 24 trust-tier cache ([`DeviceRegistryCache`]) to enforce
 //! USB device trust tiers at file I/O time.
 //!
@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use dlp_common::{Decision, DeviceIdentity, UsbTrustTier};
 use parking_lot::Mutex;
 
-use crate::detection::UsbDetector;
+use crate::detection::VolumeDetector;
 use crate::device_registry::DeviceRegistryCache;
 use crate::interception::FileAction;
 
@@ -69,7 +69,7 @@ pub struct UsbBlockResult {
 /// Held behind `Arc` so it can be shared between the event loop and future
 /// USB notification handlers without cloning the underlying caches.
 pub struct UsbEnforcer {
-    detector: Arc<UsbDetector>,
+    detector: Arc<VolumeDetector>,
     registry: Arc<DeviceRegistryCache>,
     /// Per-drive-letter timestamp of the last toast broadcast.
     /// Used to enforce the 30-second cooldown (D-02).
@@ -83,7 +83,7 @@ impl UsbEnforcer {
     ///
     /// * `detector` - Shared USB detector holding the drive-letter → [`DeviceIdentity`] map.
     /// * `registry` - Shared device registry cache holding VID/PID/serial → [`UsbTrustTier`].
-    pub fn new(detector: Arc<UsbDetector>, registry: Arc<DeviceRegistryCache>) -> Self {
+    pub fn new(detector: Arc<VolumeDetector>, registry: Arc<DeviceRegistryCache>) -> Self {
         Self {
             detector,
             registry,
@@ -279,8 +279,8 @@ mod tests {
     use dlp_common::DeviceIdentity;
     use parking_lot::RwLock;
 
-    /// Builds a UsbDetector with specific drive-letter to DeviceIdentity mappings.
-    fn make_detector(entries: Vec<(char, &str, &str, &str)>) -> Arc<UsbDetector> {
+    /// Builds a VolumeDetector with specific drive-letter to DeviceIdentity mappings.
+    fn make_detector(entries: Vec<(char, &str, &str, &str)>) -> Arc<VolumeDetector> {
         let mut map = HashMap::new();
         let mut blocked = HashSet::new();
         for (drive, vid, pid, serial) in entries {
@@ -295,7 +295,7 @@ mod tests {
             );
             blocked.insert(drive);
         }
-        Arc::new(UsbDetector {
+        Arc::new(VolumeDetector {
             blocked_drives: RwLock::new(blocked),
             device_identities: RwLock::new(map),
             ..Default::default()
@@ -499,7 +499,7 @@ mod tests {
         // captures the drive letter but not the VID/PID/serial).
         let mut blocked = HashSet::new();
         blocked.insert('E');
-        let detector = Arc::new(UsbDetector {
+        let detector = Arc::new(VolumeDetector {
             blocked_drives: RwLock::new(blocked),
             device_identities: RwLock::new(HashMap::new()),
             ..Default::default()
@@ -532,7 +532,7 @@ mod tests {
     /// (empty strings) as a defence-in-depth fallback.
     #[test]
     fn test_blocked_drive_without_identity_returns_blocked() {
-        let detector = Arc::new(UsbDetector {
+        let detector = Arc::new(VolumeDetector {
             blocked_drives: RwLock::new(HashSet::from(['E'])),
             device_identities: RwLock::new(HashMap::new()),
             ..Default::default()
@@ -593,7 +593,7 @@ mod tests {
         );
         blocked.insert('E');
         blocked.insert('F');
-        let detector = Arc::new(UsbDetector {
+        let detector = Arc::new(VolumeDetector {
             blocked_drives: RwLock::new(blocked),
             device_identities: RwLock::new(map),
             ..Default::default()
@@ -678,7 +678,7 @@ mod tests {
     /// have structured data.
     #[test]
     fn test_known_usb_without_identity_block_result_fields() {
-        let detector = Arc::new(UsbDetector {
+        let detector = Arc::new(VolumeDetector {
             blocked_drives: RwLock::new(HashSet::from(['E'])),
             device_identities: RwLock::new(HashMap::new()),
             ..Default::default()
