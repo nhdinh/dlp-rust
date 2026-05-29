@@ -206,6 +206,18 @@ fn run_tui(
 ) -> Result<()> {
     let mut app = app::App::new(client, rt);
 
+    // Fetch global enforcement mode before first render.
+    // This is a safety feature: if the admin has set a global override,
+    // the TUI must show a banner on every policy screen.
+    match app.rt.block_on(app.client.get_global_enforcement_mode()) {
+        Ok(mode) => app.global_enforcement_mode = Some(mode),
+        Err(e) => {
+            tracing::warn!("Failed to fetch global enforcement mode: {e}");
+            // Leave as None; the banner will not render, which is safe
+            // (the server still enforces the mode, we just don't show the banner).
+        }
+    }
+
     loop {
         terminal.draw(|frame| screens::draw(&app, frame))?;
 
