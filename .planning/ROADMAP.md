@@ -272,12 +272,12 @@ Plans:
   3. A policy in `AuditAndBlock` mode produces both an audit event and a DENY return; the audit event records `policy_mode = AuditAndBlock` so post-deployment review can distinguish it from pure-`Block`.
   4. The Conditions Builder dropdown is exercised by an integration test that round-trips Audit → Block → AuditAndBlock through `PUT /admin/policies/:id` and verifies the agent sees each mode within one `policy_sync` cycle.
 
-**Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
+**Plans:** 1/7 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 55-01-PLAN.md — Core types: EnforcementMode enum, AuditEvent extension, SQLite migration, PolicyRepository CRUD
+- [x] 55-01-PLAN.md — Core types: EnforcementMode enum, AuditEvent extension, SQLite migration, PolicyRepository CRUD
 - [ ] 55-02-PLAN.md — PolicyStore effective mode computation, admin API payload extension, alert router severity downgrade
 
 **Wave 2** *(blocked on Wave 1 completion)*
@@ -415,7 +415,7 @@ Plans:
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 7/7 | Complete    | 2026-05-27 |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Complete    | 2026-05-28 |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
-| 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 0/0 | Not started | - |
+| 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 1/7 | In Progress|  |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 0/0 | Not started | - |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 0/0 | Not started | - |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
