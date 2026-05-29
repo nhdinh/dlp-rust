@@ -514,6 +514,17 @@ const ACCESS_CONTEXT_VALUES: [&str; 2] = ["Local", "Smb"];
 /// Index 0 = "trusted", 1 = "untrusted", 2 = "unknown" — matches build_condition mapping.
 const TRUST_TIER_VALUES: [&str; 3] = ["trusted", "untrusted", "unknown"];
 
+/// Step 3 value labels for VolumeClass (volume class conditions, per D-56).
+/// Index order matches build_volume_class_condition mapping.
+const VOLUME_CLASS_VALUES: [&str; 6] = [
+    "LocalNTFS",
+    "USBRemovable",
+    "SDCard",
+    "Optical",
+    "Virtual",
+    "NetworkShare",
+];
+
 /// AppField sub-picker labels (Step 1.5, per D-12).
 /// Index 0 = Publisher, 1 = ImagePath, 2 = TrustTier — matches APP_FIELD_LABELS in dispatch.rs.
 const APP_FIELD_LABELS: [&str; 3] = ["publisher", "image_path", "trust_tier"];
@@ -655,6 +666,11 @@ fn picker_items(
                 ConditionAttribute::SourceOrigin | ConditionAttribute::DestinationOrigin => {
                     vec![] // text input, not a list picker
                 }
+                ConditionAttribute::SourceVolumeClass
+                | ConditionAttribute::DestinationVolumeClass => VOLUME_CLASS_VALUES
+                    .iter()
+                    .map(|v| ListItem::new(v.to_string()))
+                    .collect(),
             }
         }
         _ => vec![],

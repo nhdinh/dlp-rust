@@ -3154,6 +3154,12 @@ pub(crate) fn operators_for(
             // Origin URL conditions support equality, inequality, and substring matching.
             &[("eq", true), ("ne", true), ("contains", true)]
         }
+        ConditionAttribute::SourceVolumeClass | ConditionAttribute::DestinationVolumeClass => {
+            // Volume class conditions support eq/ne/in for consistency with picker-based
+            // attributes. Semantically a drive has one volume class; multi-select in the
+            // TUI builds multiple eq conditions, not a single in condition.
+            &[("eq", true), ("ne", true), ("in", true)]
+        }
     }
 }
 
@@ -3184,6 +3190,7 @@ fn value_count_for(attr: ConditionAttribute, field: Option<dlp_common::abac::App
             }
         }
         ConditionAttribute::SourceOrigin | ConditionAttribute::DestinationOrigin => 0, // text input
+        ConditionAttribute::SourceVolumeClass | ConditionAttribute::DestinationVolumeClass => 6, // 6 volume classes
     }
 }
 
@@ -3393,6 +3400,12 @@ fn build_condition(
         ConditionAttribute::SourceOrigin | ConditionAttribute::DestinationOrigin => {
             build_origin_condition(attr, op, buffer)
         }
+        ConditionAttribute::SourceVolumeClass => {
+            build_volume_class_condition(op, picker_selected, true)
+        }
+        ConditionAttribute::DestinationVolumeClass => {
+            build_volume_class_condition(op, picker_selected, false)
+        }
     }
 }
 
@@ -3450,6 +3463,41 @@ fn access_context_to_idx(value: &dlp_common::abac::AccessContext) -> usize {
     match value {
         dlp_common::abac::AccessContext::Local => 0,
         dlp_common::abac::AccessContext::Smb => 1,
+    }
+}
+
+/// Maps a VolumeClass value to its picker index.
+fn volume_class_to_idx(value: &dlp_common::abac::VolumeClass) -> usize {
+    match value {
+        dlp_common::abac::VolumeClass::LocalNTFS => 0,
+        dlp_common::abac::VolumeClass::USBRemovable => 1,
+        dlp_common::abac::VolumeClass::SDCard => 2,
+        dlp_common::abac::VolumeClass::Optical => 3,
+        dlp_common::abac::VolumeClass::Virtual => 4,
+        dlp_common::abac::VolumeClass::NetworkShare => 5,
+    }
+}
+
+/// Builds a PolicyCondition for volume class attributes.
+fn build_volume_class_condition(
+    op: String,
+    picker_selected: usize,
+    is_source: bool,
+) -> Option<dlp_common::abac::PolicyCondition> {
+    use dlp_common::abac::VolumeClass;
+    let value = match picker_selected {
+        0 => VolumeClass::LocalNTFS,
+        1 => VolumeClass::USBRemovable,
+        2 => VolumeClass::SDCard,
+        3 => VolumeClass::Optical,
+        4 => VolumeClass::Virtual,
+        5 => VolumeClass::NetworkShare,
+        _ => return None,
+    };
+    if is_source {
+        Some(dlp_common::abac::PolicyCondition::SourceVolumeClass { op, value })
+    } else {
+        Some(dlp_common::abac::PolicyCondition::DestinationVolumeClass { op, value })
     }
 }
 
@@ -3557,6 +3605,18 @@ fn condition_to_prefill(
             0,
             value.clone(),
         ),
+        PolicyCondition::SourceVolumeClass { op, value } => (
+            ConditionAttribute::SourceVolumeClass,
+            op.clone(),
+            volume_class_to_idx(value),
+            String::new(),
+        ),
+        PolicyCondition::DestinationVolumeClass { op, value } => (
+            ConditionAttribute::DestinationVolumeClass,
+            op.clone(),
+            volume_class_to_idx(value),
+            String::new(),
+        ),
     }
 }
 
@@ -3587,6 +3647,12 @@ pub fn condition_display(cond: &dlp_common::abac::PolicyCondition) -> String {
         }
         PolicyCondition::DestinationOrigin { op, value } => {
             format!("DestinationOrigin {op} {value}")
+        }
+        PolicyCondition::SourceVolumeClass { op, value } => {
+            format!("SourceVolumeClass {op} {value}")
+        }
+        PolicyCondition::DestinationVolumeClass { op, value } => {
+            format!("DestinationVolumeClass {op} {value}")
         }
     }
 }
