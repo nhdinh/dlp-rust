@@ -610,6 +610,32 @@ fn apply_payload_to_config(
         cfg.protected_paths = payload.protected_paths.clone();
     }
 
+    // Phase 55: apply server-pushed global enforcement mode.
+    let payload_mode = payload.global_enforcement_mode.as_str();
+    let parsed_mode = match payload_mode {
+        "Audit" => dlp_common::abac::EnforcementMode::Audit,
+        "Block" => dlp_common::abac::EnforcementMode::Block,
+        "AuditAndBlock" => dlp_common::abac::EnforcementMode::AuditAndBlock,
+        "PerPolicy" => dlp_common::abac::EnforcementMode::PerPolicy,
+        other => {
+            tracing::warn!(
+                mode = %other,
+                "server sent invalid global_enforcement_mode — defaulting to Block"
+            );
+            dlp_common::abac::EnforcementMode::Block
+        }
+    };
+    if cfg.enforcement.global_mode != parsed_mode {
+        let old_mode = cfg.enforcement.global_mode;
+        cfg.enforcement.global_mode = parsed_mode;
+        tracing::info!(
+            old_mode = ?old_mode,
+            new_mode = ?parsed_mode,
+            "global_enforcement_mode changed"
+        );
+        changed_fields.push("global_enforcement_mode");
+    }
+
     (changed_fields, disk_merge_data)
 }
 
@@ -3090,12 +3116,16 @@ fn chrome_policy_evaluator(
             decision: Decision::DENY,
             matched_policy_id: Some("managed-origins".to_string()),
             reason: "Source origin is in managed-origins list".to_string(),
+            enforcement_mode: None,
+            would_have_denied: true,
         }
     } else {
         EvaluateResponse {
             decision: Decision::ALLOW,
             matched_policy_id: None,
             reason: "Source origin is not managed".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
         }
     }
 }
@@ -3373,6 +3403,7 @@ mod tests {
             allowlist_entries: vec![],
             allowlist_version: 0,
             protected_paths: vec![],
+            global_enforcement_mode: "PerPolicy".to_string(),
         }
     }
 
@@ -3941,6 +3972,68 @@ mod tests {
             "protected_paths must be in changed_fields when paths are added"
         );
         assert_eq!(cfg.protected_paths.len(), 2);
+    }
+
+    // --- Phase 55: global_enforcement_mode apply tests ---
+
+    #[test]
+    fn test_apply_payload_updates_global_enforcement_mode() {
+        let mut cfg = AgentConfig {
+            enforcement: crate::config::EnforcementConfig {
+                global_mode: dlp_common::abac::EnforcementMode::PerPolicy,
+            },
+            ..Default::default()
+        };
+
+        let mut payload = make_payload(vec![]);
+        payload.global_enforcement_mode = "Audit".to_string();
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            changed_fields.contains(&"global_enforcement_mode"),
+            "global_enforcement_mode must be in changed_fields"
+        );
+        assert_eq!(cfg.enforcement.global_mode, dlp_common::abac::EnforcementMode::Audit);
+    }
+
+    #[test]
+    fn test_apply_payload_global_enforcement_mode_no_change() {
+        let mut cfg = AgentConfig {
+            enforcement: crate::config::EnforcementConfig {
+                global_mode: dlp_common::abac::EnforcementMode::Block,
+            },
+            ..Default::default()
+        };
+
+        let mut payload = make_payload(vec![]);
+        payload.global_enforcement_mode = "Block".to_string();
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        assert!(
+            !changed_fields.contains(&"global_enforcement_mode"),
+            "global_enforcement_mode must NOT be in changed_fields when unchanged"
+        );
+    }
+
+    #[test]
+    fn test_apply_payload_global_enforcement_mode_invalid_defaults_block() {
+        let mut cfg = AgentConfig {
+            enforcement: crate::config::EnforcementConfig {
+                global_mode: dlp_common::abac::EnforcementMode::PerPolicy,
+            },
+            ..Default::default()
+        };
+
+        let mut payload = make_payload(vec![]);
+        payload.global_enforcement_mode = "InvalidMode".to_string();
+
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+
+        // Invalid mode defaults to Block and still counts as a change
+        assert!(changed_fields.contains(&"global_enforcement_mode"));
+        assert_eq!(cfg.enforcement.global_mode, dlp_common::abac::EnforcementMode::Block);
     }
 }
 
