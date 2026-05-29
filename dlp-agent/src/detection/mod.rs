@@ -28,4 +28,4 @@ pub use encryption::{
     EncryptionError,
 };
 pub use network_share::{NetworkShareDetector, SmbMonitor, SmbShareEvent};
-pub use usb::UsbDetector;
+pub use usb::VolumeDetector;

@@ -232,9 +232,9 @@ async fn test_e2e_offline_fallback_allow_t1() {
 
 #[tokio::test]
 async fn test_e2e_usb_block_t3() {
-    use dlp_agent::detection::UsbDetector;
+    use dlp_agent::detection::VolumeDetector;
 
-    let detector = UsbDetector::new();
+    let detector = VolumeDetector::new();
     // Simulate USB drive F: plugged in by calling on_drive_arrival.
     // Since F: may not be a physical removable drive on this machine,
     // we verify the detection logic using the should_block_write path check.
@@ -798,8 +798,8 @@ async fn test_offline_manager_transition() {
 
 #[tokio::test]
 async fn test_usb_all_tiers() {
-    use dlp_agent::detection::UsbDetector;
-    let detector = UsbDetector::new();
+    use dlp_agent::detection::VolumeDetector;
+    let detector = VolumeDetector::new();
     // Simulate F: as USB.
     detector.on_drive_arrival('F');
     // F: may not be removable on this machine, so insert directly for the test.
@@ -809,7 +809,7 @@ async fn test_usb_all_tiers() {
 
     // If F was added (hardware check passed), verify all tiers.
     // Otherwise, test with a manually blocked drive via the public API.
-    // The UsbDetector doesn't expose blocked_drives directly from integration
+    // The VolumeDetector doesn't expose blocked_drives directly from integration
     // tests, so we rely on the unit tests for full tier coverage.
     // Instead, verify the classification-based logic:
     assert!(!detector.should_block_write(r"C:\Data\file.txt", Classification::T4));
@@ -818,8 +818,8 @@ async fn test_usb_all_tiers() {
 
 #[tokio::test]
 async fn test_usb_lifecycle() {
-    use dlp_agent::detection::UsbDetector;
-    let detector = UsbDetector::new();
+    use dlp_agent::detection::VolumeDetector;
+    let detector = VolumeDetector::new();
     assert!(detector.blocked_drive_letters().is_empty());
 
     // on_drive_arrival/removal are hardware-dependent, so we verify the
@@ -2041,16 +2041,16 @@ async fn test_tc_11_copy_confidential_to_internal_blocked_alert() {
 ///
 /// Verifies:
 /// 1. File on F:\ (blocked USB drive) → T3 classification
-/// 2. UsbDetector::should_block_write(F:\, T3) → true (drive in blocked set)
+/// 2. VolumeDetector::should_block_write(F:\, T3) → true (drive in blocked set)
 /// 3. Engine returns DENY
 /// 4. AuditEvent with EventType::Block is emitted
 #[tokio::test]
 async fn test_tc_14_copy_confidential_to_usb_blocked_log() {
     use dlp_agent::audit_emitter::AuditEmitter;
-    use dlp_agent::detection::UsbDetector;
+    use dlp_agent::detection::VolumeDetector;
     use dlp_agent::engine_client::EngineClient;
 
-    let detector = UsbDetector::new();
+    let detector = VolumeDetector::new();
     // Seed F: as a blocked USB drive for CI (GetDriveTypeW unavailable in tests).
     detector.blocked_drives.write().insert('F');
 

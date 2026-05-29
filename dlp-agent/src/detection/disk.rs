@@ -41,7 +41,7 @@ use tracing::{debug, error, info, warn};
 ///
 /// Updated by the async enumeration task and read by Phase 36 enforcement.
 /// All fields are `pub` so enforcement can read them without accessor methods
-/// (matches the [`UsbDetector`] pattern).
+/// (matches the [`VolumeDetector`] pattern).
 #[derive(Debug)]
 pub struct DiskEnumerator {
     /// All discovered fixed disks from the last successful enumeration.
@@ -155,7 +155,7 @@ unsafe impl Send for DiskEnumerator {}
 unsafe impl Sync for DiskEnumerator {}
 
 // ---------------------------------------------------------------------------
-// Global static (following UsbDetector pattern)
+// Global static (following VolumeDetector pattern)
 // ---------------------------------------------------------------------------
 
 /// Global `DiskEnumerator` reference, set once during service startup.

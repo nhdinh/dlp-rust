@@ -1443,26 +1443,26 @@ mod network_share_edge_cases {
 // ─────────────────────────────────────────────────────────────────────────────
 
 mod usb_tier_coverage {
-    use dlp_agent::detection::UsbDetector;
+    use dlp_agent::detection::VolumeDetector;
     use dlp_common::Classification;
 
     #[test]
     fn test_usb_t1_not_blocked() {
-        let detector = UsbDetector::new();
+        let detector = VolumeDetector::new();
         // T1 (Public) is never blocked even on a USB drive.
         assert!(!detector.should_block_write(r"E:\public_readme.txt", Classification::T1));
     }
 
     #[test]
     fn test_usb_t2_not_blocked() {
-        let detector = UsbDetector::new();
+        let detector = VolumeDetector::new();
         // T2 is not blocked by USB policy.
         assert!(!detector.should_block_write(r"E:\internal_report.xlsx", Classification::T2));
     }
 
     #[test]
     fn test_usb_t3_blocked() {
-        let detector = UsbDetector::new();
+        let detector = VolumeDetector::new();
         // T3 is blocked when USB drive is in blocked set.
         // Since we can't add drives via the public API without real hardware,
         // this test verifies the classification-based blocking logic:
@@ -1472,14 +1472,14 @@ mod usb_tier_coverage {
 
     #[test]
     fn test_usb_t4_blocked() {
-        let detector = UsbDetector::new();
+        let detector = VolumeDetector::new();
         // T4 on C: is not blocked by USB detector (C: is not a USB).
         assert!(!detector.should_block_write(r"C:\restricted\secret.xlsx", Classification::T4));
     }
 
     #[test]
     fn test_usb_blocked_drive_letters_initially_empty() {
-        let detector = UsbDetector::new();
+        let detector = VolumeDetector::new();
         assert!(detector.blocked_drive_letters().is_empty());
     }
 }
@@ -1882,12 +1882,12 @@ mod clipboard_classifier_patterns {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// USB detection (dlp_agent::detection::UsbDetector)
+// USB detection (dlp_agent::detection::VolumeDetector)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(windows)]
 mod usb_detection_tests {
-    use dlp_agent::detection::UsbDetector;
+    use dlp_agent::detection::VolumeDetector;
     use dlp_common::Classification;
 
     /// Newly-constructed detector reports an empty blocked set and denies
@@ -1895,7 +1895,7 @@ mod usb_detection_tests {
     /// arrival has been observed.
     #[test]
     fn test_new_usb_detector_is_empty() {
-        let detector = UsbDetector::new();
+        let detector = VolumeDetector::new();
         assert!(detector.blocked_drive_letters().is_empty());
         assert!(!detector.is_path_on_blocked_drive(r"E:\secret.docx"));
         assert!(!detector.should_block_write(r"E:\secret.docx", Classification::T4));
@@ -1908,7 +1908,7 @@ mod usb_detection_tests {
     /// is a valid ASCII uppercase character.
     #[test]
     fn test_scan_existing_drives_returns_well_formed_set() {
-        let detector = UsbDetector::new();
+        let detector = VolumeDetector::new();
         detector.scan_existing_drives();
         for letter in detector.blocked_drive_letters() {
             assert!(
@@ -1923,7 +1923,7 @@ mod usb_detection_tests {
     /// blocked set on any realistic Windows host (C: is DRIVE_FIXED == 3).
     #[test]
     fn test_on_drive_arrival_system_drive_not_blocked() {
-        let detector = UsbDetector::new();
+        let detector = VolumeDetector::new();
         detector.on_drive_arrival('C');
         assert!(!detector.is_path_on_blocked_drive(r"C:\Users\test\file.txt"));
     }
@@ -1935,7 +1935,7 @@ mod usb_detection_tests {
     /// removal-on-empty case and assert it is a no-op.
     #[test]
     fn test_on_drive_removal_is_idempotent() {
-        let detector = UsbDetector::new();
+        let detector = VolumeDetector::new();
         detector.on_drive_removal('Z');
         detector.on_drive_removal('Z'); // double-remove must not panic
         assert!(!detector.is_path_on_blocked_drive(r"Z:\anything"));
@@ -1947,7 +1947,7 @@ mod usb_detection_tests {
     /// short-circuit at the `should_block_write` level: T1/T2 always false.
     #[test]
     fn test_should_block_write_non_sensitive_never_blocked() {
-        let detector = UsbDetector::new();
+        let detector = VolumeDetector::new();
         assert!(!detector.should_block_write(r"Z:\public.txt", Classification::T1));
         assert!(!detector.should_block_write(r"Z:\internal.doc", Classification::T2));
     }
@@ -1958,7 +1958,7 @@ mod usb_detection_tests {
     /// public API.
     #[test]
     fn test_is_path_on_blocked_drive_rejects_non_drive_paths() {
-        let detector = UsbDetector::new();
+        let detector = VolumeDetector::new();
         assert!(!detector.is_path_on_blocked_drive(r"\\server\share\file.txt"));
         assert!(!detector.is_path_on_blocked_drive("relative/path"));
         assert!(!detector.is_path_on_blocked_drive(""));
@@ -2393,7 +2393,7 @@ mod file_ops_tc {
     #[test]
     #[cfg(windows)]
     fn test_tc_14_copy_confidential_to_usb_blocked_log() {
-        use dlp_agent::detection::UsbDetector;
+        use dlp_agent::detection::VolumeDetector;
 
         let cls = PolicyMapper::provisional_classification(r"C:\Confidential\report.pdf");
         assert_eq!(cls, Classification::T3);
@@ -2401,7 +2401,7 @@ mod file_ops_tc {
         // On a non-USB path, should_block_write returns false — classification
         // is T3 (sensitive) but the destination is not a blocked USB drive.
         // TC-14 E2E in integration.rs covers the full pipeline with seeded blocked drive.
-        let detector = UsbDetector::new();
+        let detector = VolumeDetector::new();
         assert!(!detector.should_block_write(r"C:\Confidential\report.pdf", Classification::T3));
     }
 
