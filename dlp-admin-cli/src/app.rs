@@ -293,7 +293,7 @@ pub struct UsbScanEntry {
 /// Holds form fields and the accumulated conditions list.
 /// Using a single struct avoids borrow-split when the conditions
 /// builder modal writes into the conditions list.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PolicyFormState {
     /// Policy name (required).
     pub name: String,
@@ -313,6 +313,25 @@ pub struct PolicyFormState {
     /// Boolean composition mode (ALL / ANY / NONE). Defaults to ALL via
     /// `PolicyMode::default()`. In-memory UI state only — never serialized.
     pub mode: dlp_common::abac::PolicyMode,
+    /// Index into ENFORCEMENT_MODE_OPTIONS (Audit/Block/AuditAndBlock).
+    /// Default is 1 (Block). Serialized as PascalCase string on the wire.
+    pub enforcement_mode: usize,
+}
+
+impl Default for PolicyFormState {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: String::new(),
+            priority: String::new(),
+            action: 0,
+            enabled: false,
+            conditions: Vec::new(),
+            id: String::new(),
+            mode: dlp_common::abac::PolicyMode::default(),
+            enforcement_mode: 1, // Block is the safe default
+        }
+    }
 }
 
 /// Fixed action options for the policy create / edit form.
@@ -321,6 +340,12 @@ pub struct PolicyFormState {
 /// in the POST body; the server's `deserialize_policy_row` accepts them
 /// case-insensitively.
 pub const ACTION_OPTIONS: [&str; 4] = ["ALLOW", "DENY", "AllowWithLog", "DenyWithAlert"];
+
+/// Enforcement mode options for the policy create / edit form.
+///
+/// Indices match `PolicyFormState.enforcement_mode`. The wire strings are sent
+/// verbatim in the POST/PUT body; the server stores them as PascalCase.
+pub const ENFORCEMENT_MODE_OPTIONS: [&str; 3] = ["Audit", "Block", "AuditAndBlock"];
 
 /// Object type picker options for label creation.
 pub const OBJECT_TYPE_OPTIONS: [&str; 3] = ["file", "folder", "archive"];
@@ -572,6 +597,10 @@ pub struct PolicyResponse {
     /// on legacy v0.4.0 exports that omit the field.
     #[serde(default)]
     pub mode: dlp_common::abac::PolicyMode,
+    /// Per-policy enforcement mode (Audit / Block / AuditAndBlock).
+    /// Defaults to Block on legacy exports that omit the field.
+    #[serde(default)]
+    pub enforcement_mode: dlp_common::abac::EnforcementMode,
 }
 
 /// Payload for `POST /admin/policies` and `PUT /admin/policies/{id}`.
@@ -590,6 +619,10 @@ pub struct PolicyPayload {
     /// Boolean composition mode for the conditions list.
     #[serde(default)]
     pub mode: dlp_common::abac::PolicyMode,
+    /// Per-policy enforcement mode (Audit / Block / AuditAndBlock).
+    /// Defaults to Block on legacy exports that omit the field.
+    #[serde(default)]
+    pub enforcement_mode: dlp_common::abac::EnforcementMode,
 }
 
 impl From<PolicyResponse> for PolicyPayload {
@@ -603,6 +636,7 @@ impl From<PolicyResponse> for PolicyPayload {
             action: r.action,
             enabled: r.enabled,
             mode: r.mode,
+            enforcement_mode: r.enforcement_mode,
         }
     }
 }
@@ -1165,10 +1199,21 @@ pub struct App {
     pub should_quit: bool,
     /// Status bar message shown at the bottom of the screen.
     pub status: Option<(String, StatusKind)>,
+    /// Global enforcement mode override fetched from the admin API on startup.
+    /// `None` if the fetch failed or the server returned an error.
+    /// `Some("PerPolicy")` means no global override is active.
+    /// Any other value ("Audit", "Block", "AuditAndBlock") means a global
+    /// override is active and the TUI must show a banner on every policy screen.
+    pub global_enforcement_mode: Option<String>,
 }
 
 impl App {
     /// Creates a new `App` starting at the main menu.
+    ///
+    /// Note: `global_enforcement_mode` is NOT populated here because `App::new`
+    /// is synchronous. The caller (run_tui) must fetch the global mode
+    /// asynchronously and set `app.global_enforcement_mode` before the first
+    /// render frame.
     pub fn new(client: EngineClient, rt: tokio::runtime::Runtime) -> Self {
         Self {
             client,
@@ -1176,6 +1221,7 @@ impl App {
             screen: Screen::MainMenu { selected: 0 },
             should_quit: false,
             status: None,
+            global_enforcement_mode: None,
         }
     }
 
@@ -1222,6 +1268,7 @@ mod tests {
                 action: "DENY".into(),
                 enabled: true,
                 mode,
+                enforcement_mode: dlp_common::abac::EnforcementMode::Block,
             };
             let json = serde_json::to_string(&payload).expect("serialize");
             let expected = match mode {
@@ -1258,6 +1305,7 @@ mod tests {
             version: 0,
             updated_at: String::new(),
             mode: PolicyMode::NONE,
+            enforcement_mode: dlp_common::abac::EnforcementMode::Block,
         };
         let payload: PolicyPayload = resp.into();
         assert_eq!(payload.mode, PolicyMode::NONE);
@@ -1339,6 +1387,38 @@ mod tests {
         };
         assert!(matches!(s, Screen::BypassAlertDetail { .. }));
     }
+
+    #[test]
+    fn test_policy_form_state_default_enforcement_mode_is_block() {
+        let form = PolicyFormState::default();
+        assert_eq!(form.enforcement_mode, 1);
+    }
+
+    #[test]
+    fn test_enforcement_mode_options_length() {
+        assert_eq!(ENFORCEMENT_MODE_OPTIONS.len(), 3);
+    }
+
+    #[test]
+    fn test_policy_payload_enforcement_mode_serde() {
+        use dlp_common::abac::EnforcementMode;
+
+        let payload = PolicyPayload {
+            id: "p".into(),
+            name: "n".into(),
+            description: None,
+            priority: 1,
+            conditions: serde_json::json!([]),
+            action: "DENY".into(),
+            enabled: true,
+            mode: dlp_common::abac::PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::Audit,
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        assert!(json.contains("\"enforcement_mode\""), "json missing enforcement_mode key");
+        let round_trip: PolicyPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round_trip.enforcement_mode, EnforcementMode::Audit);
+    }
 }
 
 #[cfg(test)]
@@ -1358,6 +1438,7 @@ mod import_export_tests {
             version: 42,
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             mode: dlp_common::abac::PolicyMode::ALL,
+            enforcement_mode: dlp_common::abac::EnforcementMode::Block,
         };
 
         let payload: PolicyPayload = response.into();
@@ -1428,6 +1509,7 @@ mod import_export_tests {
             action: "AllowWithLog".to_string(),
             enabled: true,
             mode: dlp_common::abac::PolicyMode::ALL,
+            enforcement_mode: dlp_common::abac::EnforcementMode::Block,
         };
 
         let json = serde_json::to_value(&payload).expect("must serialize");

@@ -332,6 +332,24 @@ impl EngineClient {
         Ok(())
     }
 
+    /// Calls GET /admin/config/global-enforcement-mode.
+    ///
+    /// Returns the current global enforcement mode as a string
+    /// ("Audit", "Block", "AuditAndBlock", or "PerPolicy").
+    /// Returns an error if the request fails or the response cannot be parsed.
+    pub async fn get_global_enforcement_mode(&self) -> Result<String> {
+        #[derive(serde::Deserialize)]
+        struct ModeResp {
+            mode: dlp_common::abac::EnforcementMode,
+        }
+        let resp: ModeResp = self.get("admin/config/global-enforcement-mode").await?;
+        // EnforcementMode serializes as PascalCase via serde(rename_all).
+        let mode_str = serde_json::to_string(&resp.mode)
+            .context("failed to serialize enforcement mode")?;
+        // Strip surrounding quotes from the JSON string.
+        Ok(mode_str.trim_matches('"').to_string())
+    }
+
     /// Calls `POST /admin/maintenance/exit`. Idempotent.
     pub async fn maintenance_exit(&self) -> Result<()> {
         let url = self.build_url("admin/maintenance/exit");

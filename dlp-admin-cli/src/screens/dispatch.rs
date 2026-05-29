@@ -2496,6 +2496,12 @@ fn action_load_policy_for_edit(app: &mut App, id: &str, _name: &str) {
                     Some("NONE") => PolicyMode::NONE,
                     _ => PolicyMode::ALL,
                 },
+                enforcement_mode: match policy["enforcement_mode"].as_str() {
+                    Some("Audit") => 0,
+                    Some("Block") => 1,
+                    Some("AuditAndBlock") => 2,
+                    _ => 1,
+                },
                 id: id.to_string(),
             };
 
