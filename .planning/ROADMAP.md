@@ -1,7 +1,7 @@
 ---
 milestone: v0.11.0
 milestone_name: Label Service + Workflow + Audit
-last_updated: 2026-05-28
+last_updated: 2026-05-29
 total_phases: 6
 v1_requirements: 26
 coverage: 26/26
@@ -309,6 +309,23 @@ Plans:
 **Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 **UI hint**: yes
 
+Plans:
+
+**Wave 1** *(no dependencies)*
+
+- [ ] `56-01-PLAN.md` — VolumeClass enum + AbacContext extension + PolicyCondition variants + VolumeArrival audit event in dlp-common
+- [ ] `56-02-PLAN.md` — Agent-side volume classification (GetDriveTypeW + WMI hybrid) + VolumeArrival emission + volume_class_map
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] `56-03-PLAN.md` — Hook DLL thread-local volume-class cache (30s TTL) + trampoline integration for path-based and copy/move ops
+- [ ] `56-04-PLAN.md` — Server-side ABAC evaluation: PolicyStore match arms for SourceVolumeClass/DestinationVolumeClass + integration test
+- [ ] `56-05-PLAN.md` — Admin TUI Conditions Builder: SourceVolumeClass/DestinationVolumeClass dropdowns + allowlist volume class badges
+
+**Wave 3** *(blocked on Waves 1-2 completion)*
+
+- [ ] `56-06-PLAN.md` — End-to-end integration test: DENY LocalNTFS T4 to Optical policy + full workspace verification
+
 ### Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT
 
 **Goal**: An operator can deploy v0.10.0 to a real Windows fleet alongside any of the top 6 EDRs without false-positive quarantine, and the milestone passes a UAT smoke test on a real Windows 11 host with real cloud clients, real printers, and real removable media. **This phase is the milestone ship gate.**
@@ -416,7 +433,7 @@ Plans:
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Complete    | 2026-05-28 |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
-| 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 0/0 | Not started | - |
+| 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 0/6 | Planned | - |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 0/0 | Not started | - |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
@@ -465,4 +482,4 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 
 ---
 
-*Last updated: 2026-05-27 — Phase 52 + 53 planning revised (13 plans, 7 waves total).*
+*Last updated: 2026-05-29 — Phase 56 plans created (6 plans, 3 waves).*
