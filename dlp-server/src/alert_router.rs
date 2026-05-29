@@ -366,6 +366,8 @@ impl AlertRouter {
             owner_user: None,
             source_origin: None,
             destination_origin: None,
+            policy_mode: None,
+            would_have_denied: false,
         };
         self.send_alert(&event).await
     }
@@ -774,6 +776,8 @@ mod tests {
             destination_origin: None,
             discovered_disks: None,
             blocked_disk: None,
+            policy_mode: None,
+            would_have_denied: false,
         };
 
         let cfg = WebhookConfig {
@@ -854,6 +858,8 @@ mod tests {
             destination_origin: None,
             discovered_disks: None,
             blocked_disk: None,
+            policy_mode: None,
+            would_have_denied: false,
         };
 
         let err = router
@@ -925,6 +931,8 @@ mod tests {
             destination_origin: None,
             discovered_disks: None,
             blocked_disk: None,
+            policy_mode: None,
+            would_have_denied: false,
         };
 
         // Default config has both SMTP and webhook disabled — send_alert

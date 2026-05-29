@@ -806,6 +806,21 @@ pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
         "labels",
     )?;
 
+    // Phase 55: enforcement_mode column on policies table.
+    run_alter(
+        conn,
+        "ALTER TABLE policies ADD COLUMN enforcement_mode TEXT NOT NULL DEFAULT 'Block' CHECK(enforcement_mode IN ('Audit', 'Block', 'AuditAndBlock'))",
+        "enforcement_mode",
+        "policies",
+    )?;
+
+    // Phase 55: global_enforcement_mode system_kv entry (default PerPolicy).
+    conn.execute(
+        "INSERT OR IGNORE INTO system_kv (key, value) VALUES ('global_enforcement_mode', 'PerPolicy')",
+        [],
+    )
+    .context("seed global_enforcement_mode system_kv")?;
+
     Ok(())
 }
 

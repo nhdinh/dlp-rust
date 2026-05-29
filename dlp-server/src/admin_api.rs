@@ -1413,6 +1413,7 @@ async fn create_policy(
             action: r.action.clone(),
             enabled: if r.enabled { 1 } else { 0 },
             mode: mode_str(r.mode).to_string(),
+            enforcement_mode: "Block".to_string(),
             version: r.version,
             updated_at: r.updated_at.clone(),
         };
@@ -1514,6 +1515,7 @@ async fn update_policy(
             action: &payload_action,
             enabled: payload_enabled,
             mode: mode_str(payload_mode),
+            enforcement_mode: "Block",
             updated_at: &now,
             id: &id,
         };
