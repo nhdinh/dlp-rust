@@ -5492,7 +5492,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
             version: 1,
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         };
@@ -6389,7 +6389,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         };
         let req = Request::builder()
             .method("POST")
@@ -6436,7 +6436,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         };
         let post_req = Request::builder()
             .method("POST")
@@ -6492,7 +6492,7 @@ mod tests {
             action: "DENY".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         };
         let body = serde_json::to_string(&payload).expect("serialize");
 
@@ -6551,7 +6551,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         };
         let req = Request::builder()
             .method("POST")
@@ -6573,7 +6573,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         };
         let req = Request::builder()
             .method("POST")
@@ -6605,7 +6605,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         };
         let post_req = Request::builder()
             .method("POST")
@@ -6627,7 +6627,7 @@ mod tests {
             action: "DENY".to_string(),
             enabled: false,
             mode: PolicyMode::ALL,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         };
         let put_req = Request::builder()
             .method("PUT")
@@ -6671,7 +6671,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         };
         let req = Request::builder()
             .method("PUT")
@@ -6703,7 +6703,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         };
         let post_req = Request::builder()
             .method("POST")
@@ -6755,7 +6755,7 @@ mod tests {
                 action: "ALLOW".to_string(),
                 enabled: true,
                 mode: PolicyMode::ALL,
-                enforcement_mode: EnforcementMode::PerPolicy,
+                enforcement_mode: EnforcementMode::Block,
             };
             let req = Request::builder()
                 .method("POST")
@@ -7067,7 +7067,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         };
         let req = Request::builder()
             .method("POST")
@@ -8305,7 +8305,7 @@ mod tests {
             action: "Deny".to_string(),
             enabled: true,
             mode: PolicyMode::ANY,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         assert!(
@@ -8345,7 +8345,7 @@ mod tests {
             action: "Allow".to_string(),
             enabled: true,
             mode: PolicyMode::NONE,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         assert!(

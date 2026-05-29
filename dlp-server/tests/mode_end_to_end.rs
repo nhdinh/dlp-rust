@@ -198,7 +198,7 @@ async fn test_mode_all_matches_when_all_conditions_hit() {
         action: "DENY".to_string(),
         enabled: true,
         mode: PolicyMode::ALL,
-        enforcement_mode: EnforcementMode::PerPolicy,
+        enforcement_mode: EnforcementMode::Block,
     };
 
     let resp = app
@@ -249,7 +249,7 @@ async fn test_mode_any_matches_when_one_condition_hits() {
         action: "DENY".to_string(),
         enabled: true,
         mode: PolicyMode::ANY,
-        enforcement_mode: EnforcementMode::PerPolicy,
+        enforcement_mode: EnforcementMode::Block,
     };
 
     let resp = app
@@ -300,7 +300,7 @@ async fn test_mode_none_matches_when_no_conditions_hit() {
         action: "DENY".to_string(),
         enabled: true,
         mode: PolicyMode::NONE,
-        enforcement_mode: EnforcementMode::PerPolicy,
+        enforcement_mode: EnforcementMode::Block,
     };
 
     let resp = app
@@ -343,7 +343,7 @@ fn test_policy_payload_roundtrip_preserves_all_three_modes() {
             action: "DENY".into(),
             enabled: true,
             mode: PolicyMode::ALL,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         },
         PolicyPayload {
             id: "p2".into(),
@@ -354,7 +354,7 @@ fn test_policy_payload_roundtrip_preserves_all_three_modes() {
             action: "DENY".into(),
             enabled: true,
             mode: PolicyMode::ANY,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         },
         PolicyPayload {
             id: "p3".into(),
@@ -365,7 +365,7 @@ fn test_policy_payload_roundtrip_preserves_all_three_modes() {
             action: "DENY".into(),
             enabled: true,
             mode: PolicyMode::NONE,
-            enforcement_mode: EnforcementMode::PerPolicy,
+            enforcement_mode: EnforcementMode::Block,
         },
     ];
 
