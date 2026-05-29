@@ -1526,6 +1526,10 @@ async fn update_policy(
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = db::UnitOfWork::new(&mut conn).map_err(AppError::Database)?;
 
+        let enforcement_mode_str = serde_json::to_string(&payload_enforcement_mode)
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string();
         let row = repositories::PolicyUpdateRow {
             name: &payload_name,
             description: payload_desc.as_deref(),
@@ -1534,9 +1538,7 @@ async fn update_policy(
             action: &payload_action,
             enabled: payload_enabled,
             mode: mode_str(payload_mode),
-            enforcement_mode: serde_json::to_string(&payload_enforcement_mode)
-                .unwrap_or_default()
-                .trim_matches('"'),
+            enforcement_mode: &enforcement_mode_str,
             updated_at: &now,
             id: &id,
         };
@@ -1717,9 +1719,10 @@ async fn update_global_enforcement_mode(
         .to_string();
 
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
+    let mode_str_for_spawn = mode_str.clone();
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let conn = pool.get().map_err(AppError::from)?;
-        repositories::system_kv::set(&conn, "global_enforcement_mode", &mode_str)
+        repositories::system_kv::set(&conn, "global_enforcement_mode", &mode_str_for_spawn)
             .map_err(AppError::Database)?;
         Ok(())
     })
@@ -5489,6 +5492,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::PerPolicy,
             version: 1,
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         };
@@ -6385,6 +6389,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::PerPolicy,
         };
         let req = Request::builder()
             .method("POST")
@@ -6431,6 +6436,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::PerPolicy,
         };
         let post_req = Request::builder()
             .method("POST")
@@ -6486,6 +6492,7 @@ mod tests {
             action: "DENY".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::PerPolicy,
         };
         let body = serde_json::to_string(&payload).expect("serialize");
 
@@ -6544,6 +6551,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::PerPolicy,
         };
         let req = Request::builder()
             .method("POST")
@@ -6565,6 +6573,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::PerPolicy,
         };
         let req = Request::builder()
             .method("POST")
@@ -6596,6 +6605,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::PerPolicy,
         };
         let post_req = Request::builder()
             .method("POST")
@@ -6617,6 +6627,7 @@ mod tests {
             action: "DENY".to_string(),
             enabled: false,
             mode: PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::PerPolicy,
         };
         let put_req = Request::builder()
             .method("PUT")
@@ -6660,6 +6671,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::PerPolicy,
         };
         let req = Request::builder()
             .method("PUT")
@@ -6691,6 +6703,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::PerPolicy,
         };
         let post_req = Request::builder()
             .method("POST")
@@ -6742,6 +6755,7 @@ mod tests {
                 action: "ALLOW".to_string(),
                 enabled: true,
                 mode: PolicyMode::ALL,
+                enforcement_mode: EnforcementMode::PerPolicy,
             };
             let req = Request::builder()
                 .method("POST")
@@ -7053,6 +7067,7 @@ mod tests {
             action: "ALLOW".to_string(),
             enabled: true,
             mode: PolicyMode::ALL,
+            enforcement_mode: EnforcementMode::PerPolicy,
         };
         let req = Request::builder()
             .method("POST")
@@ -8290,6 +8305,7 @@ mod tests {
             action: "Deny".to_string(),
             enabled: true,
             mode: PolicyMode::ANY,
+            enforcement_mode: EnforcementMode::PerPolicy,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         assert!(
@@ -8329,6 +8345,7 @@ mod tests {
             action: "Allow".to_string(),
             enabled: true,
             mode: PolicyMode::NONE,
+            enforcement_mode: EnforcementMode::PerPolicy,
         };
         let json = serde_json::to_string(&payload).expect("serialize");
         assert!(
