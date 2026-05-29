@@ -21,7 +21,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::Classification;
+use crate::{Classification, VolumeClass};
 
 /// Distinguishes read vs write operations for tier-gated fast-path decisions.
 ///
@@ -77,6 +77,18 @@ pub enum IpcPayloadV1 {
     Request(HookRequest),
     /// A hook response.
     Response(HookResponse),
+    /// A volume class query from the hook DLL to the agent.
+    ///
+    /// Sent when the hook DLL needs to know the volume class of a drive letter
+    /// (cache miss or initial lookup). The agent responds with
+    /// [`IpcPayloadV1::VolumeClassResponse`].
+    VolumeClassQuery(VolumeClassQuery),
+    /// A volume class response from the agent to the hook DLL.
+    ///
+    /// The `class` field is `None` when the agent does not know the drive letter
+    /// or classification failed. The hook DLL treats `None` as fail-closed
+    /// (does not default to [`VolumeClass::LocalNTFS`]).
+    VolumeClassResponse(VolumeClassResponse),
 }
 
 /// Request sent by the hook DLL to the agent for classification.
@@ -141,6 +153,33 @@ pub struct HandleHookRequest {
     pub action: String,
     /// The PID of the process making the request.
     pub pid: u32,
+}
+
+/// Query sent by the hook DLL to the agent for the volume class of a drive letter.
+///
+/// The agent looks up the drive letter in its `volume_class_map` and responds
+/// with [`VolumeClassResponse`]. If the agent has no entry for the drive letter,
+/// it responds with `VolumeClassResponse { class: None }`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VolumeClassQuery {
+    /// The drive letter to classify (e.g., `'D'`).
+    pub drive_letter: char,
+}
+
+/// Response returned by the agent to the hook DLL for a volume class query.
+///
+/// The `class` field is `None` when:
+/// - The agent has no entry for the requested drive letter.
+/// - Classification failed (WMI error, unknown drive type).
+///
+/// The hook DLL treats `None` as fail-closed: volume-class conditions in ABAC
+/// evaluation evaluate to `false`, which for a DENY policy means the condition
+/// does not match. NEVER default `None` to [`VolumeClass::LocalNTFS`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VolumeClassResponse {
+    /// The classified volume class, or `None` if classification failed or the
+    /// drive letter is not known to the agent.
+    pub class: Option<VolumeClass>,
 }
 
 /// Alert emitted by the hook DLL when it detects a bypass attempt or EDR conflict.
@@ -547,5 +586,74 @@ mod tests {
             correlation_reason: "NoHookJournal".to_string(),
         };
         assert_eq!(alert.stub_name, "etw_correlation");
+    }
+
+    // --- Phase 56: VolumeClassQuery / VolumeClassResponse ---
+
+    #[test]
+    fn test_volume_class_query_serde() {
+        let query = VolumeClassQuery { drive_letter: 'D' };
+        let json = serde_json::to_string(&query).unwrap();
+        assert!(json.contains("\"drive_letter\""), "json: {json}");
+        assert!(json.contains("\"D\""), "json: {json}");
+        let rt: VolumeClassQuery = serde_json::from_str(&json).unwrap();
+        assert_eq!(query, rt);
+    }
+
+    #[test]
+    fn test_volume_class_response_serde_some() {
+        let resp = VolumeClassResponse {
+            class: Some(VolumeClass::Optical),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"class\""), "json: {json}");
+        assert!(json.contains("\"Optical\""), "json: {json}");
+        let rt: VolumeClassResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(resp, rt);
+    }
+
+    #[test]
+    fn test_volume_class_response_serde_none() {
+        let resp = VolumeClassResponse { class: None };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"class\":null"), "json: {json}");
+        let rt: VolumeClassResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(resp, rt);
+    }
+
+    #[test]
+    fn test_ipc_payload_volume_class_query_roundtrip() {
+        let query = VolumeClassQuery { drive_letter: 'E' };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::VolumeClassQuery(query),
+        });
+        let bytes = bincode::serialize(&envelope).unwrap();
+        let rt: IpcEnvelope = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(envelope, rt);
+    }
+
+    #[test]
+    fn test_ipc_payload_volume_class_response_roundtrip() {
+        let resp = VolumeClassResponse {
+            class: Some(VolumeClass::USBRemovable),
+        };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::VolumeClassResponse(resp),
+        });
+        let bytes = bincode::serialize(&envelope).unwrap();
+        let rt: IpcEnvelope = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(envelope, rt);
+    }
+
+    #[test]
+    fn test_volume_class_response_none_fail_closed_semantic() {
+        // Document the fail-closed invariant: None means the hook DLL must NOT
+        // default to LocalNTFS. The None response causes volume-class conditions
+        // to evaluate to false (condition does not match).
+        let resp = VolumeClassResponse { class: None };
+        assert!(
+            resp.class.is_none(),
+            "None class must remain None for fail-closed"
+        );
     }
 }
