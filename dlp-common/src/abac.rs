@@ -269,6 +269,62 @@ pub struct AbacContext {
     pub resource_path: Option<String>,
 }
 
+/// The enforcement mode for a policy or global override.
+///
+/// - `Audit`: log violations but do not block.
+/// - `Block`: enforce blocking (default).
+/// - `AuditAndBlock`: both log and block.
+/// - `PerPolicy`: global override value meaning "defer to per-policy mode".
+///   `PerPolicy` is NOT a valid per-policy mode; it is only used as the
+///   global override default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub enum EnforcementMode {
+    /// Log violations but do not block.
+    Audit,
+    /// Enforce blocking (default).
+    #[default]
+    Block,
+    /// Both log and block.
+    AuditAndBlock,
+    /// Global override: defer to per-policy mode.
+    PerPolicy,
+}
+
+impl EnforcementMode {
+    /// Returns `true` if this mode includes blocking behavior.
+    #[must_use]
+    pub fn is_blocking(self) -> bool {
+        matches!(self, Self::Block | Self::AuditAndBlock)
+    }
+
+    /// Returns `true` if this mode is audit-only.
+    #[must_use]
+    pub fn is_audit(self) -> bool {
+        matches!(self, Self::Audit)
+    }
+}
+
+/// Compute the effective enforcement mode given a global override and a per-policy mode.
+///
+/// # Arguments
+///
+/// * `global_mode` — The global override (`Audit`, `Block`, `AuditAndBlock`, or `PerPolicy`).
+/// * `policy_mode` — The per-policy enforcement mode.
+///
+/// # Returns
+///
+/// The effective mode: if `global_mode` is not `PerPolicy`, returns `global_mode`;
+/// otherwise returns `policy_mode`.
+#[must_use]
+pub fn compute_effective_mode(global_mode: EnforcementMode, policy_mode: EnforcementMode) -> EnforcementMode {
+    if global_mode != EnforcementMode::PerPolicy {
+        global_mode
+    } else {
+        policy_mode
+    }
+}
+
 /// A complete ABAC evaluation response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluateResponse {
@@ -278,6 +334,12 @@ pub struct EvaluateResponse {
     pub matched_policy_id: Option<String>,
     /// A human-readable reason string for the decision.
     pub reason: String,
+    /// The enforcement mode that was active when this decision was made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enforcement_mode: Option<EnforcementMode>,
+    /// Whether the policy would have denied if it were in Block mode.
+    #[serde(default)]
+    pub would_have_denied: bool,
 }
 
 impl EvaluateResponse {
@@ -287,6 +349,8 @@ impl EvaluateResponse {
             decision: Decision::DENY,
             matched_policy_id: None,
             reason: "No matching policy; default deny".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
         }
     }
 
@@ -298,6 +362,8 @@ impl EvaluateResponse {
             decision: Decision::ALLOW,
             matched_policy_id: None,
             reason: "No matching policy; default allow".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
         }
     }
 }
@@ -480,6 +546,9 @@ pub struct Policy {
     /// Boolean composition mode for the conditions list.
     #[serde(default)]
     pub mode: PolicyMode,
+    /// Enforcement mode for this policy: Audit, Block, or AuditAndBlock.
+    #[serde(default)]
+    pub enforcement_mode: EnforcementMode,
     /// Monotonically increasing version number.
     pub version: u64,
 }
@@ -670,6 +739,82 @@ mod tests {
         let resp = EvaluateResponse::default_deny();
         assert!(resp.decision.is_denied());
         assert!(resp.matched_policy_id.is_none());
+    }
+
+    // --- Phase 55: EnforcementMode tests ---
+
+    #[test]
+    fn test_enforcement_mode_serde_roundtrip() {
+        for mode in [
+            EnforcementMode::Audit,
+            EnforcementMode::Block,
+            EnforcementMode::AuditAndBlock,
+            EnforcementMode::PerPolicy,
+        ] {
+            let json = serde_json::to_string(&mode).unwrap();
+            let rt: EnforcementMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(mode, rt, "serde round-trip failed for {mode:?}");
+        }
+    }
+
+    #[test]
+    fn test_enforcement_mode_default_is_block() {
+        // Absent key deserializes to Block (the Default impl).
+        let json = r#"{"id":"p1","name":"test","priority":1,"conditions":[],"action":"ALLOW","enabled":true,"version":1}"#;
+        let parsed: Policy = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.enforcement_mode, EnforcementMode::Block);
+    }
+
+    #[test]
+    fn test_evaluate_response_backward_compat() {
+        // JSON without the new fields deserializes with defaults.
+        let old_json = r#"{"decision":"DENY","reason":"test"}"#;
+        let resp: EvaluateResponse = serde_json::from_str(old_json).unwrap();
+        assert_eq!(resp.decision, Decision::DENY);
+        assert!(resp.enforcement_mode.is_none());
+        assert!(!resp.would_have_denied);
+    }
+
+    #[test]
+    fn test_compute_effective_mode_global_override() {
+        // Global Audit forces Audit even for Block policy.
+        let effective = compute_effective_mode(EnforcementMode::Audit, EnforcementMode::Block);
+        assert_eq!(effective, EnforcementMode::Audit);
+
+        // Global Block forces Block even for Audit policy.
+        let effective2 = compute_effective_mode(EnforcementMode::Block, EnforcementMode::Audit);
+        assert_eq!(effective2, EnforcementMode::Block);
+    }
+
+    #[test]
+    fn test_compute_effective_mode_perpolicy() {
+        // PerPolicy returns the policy mode.
+        let effective = compute_effective_mode(EnforcementMode::PerPolicy, EnforcementMode::Audit);
+        assert_eq!(effective, EnforcementMode::Audit);
+
+        let effective2 =
+            compute_effective_mode(EnforcementMode::PerPolicy, EnforcementMode::Block);
+        assert_eq!(effective2, EnforcementMode::Block);
+
+        let effective3 =
+            compute_effective_mode(EnforcementMode::PerPolicy, EnforcementMode::AuditAndBlock);
+        assert_eq!(effective3, EnforcementMode::AuditAndBlock);
+    }
+
+    #[test]
+    fn test_enforcement_mode_is_blocking() {
+        assert!(!EnforcementMode::Audit.is_blocking());
+        assert!(EnforcementMode::Block.is_blocking());
+        assert!(EnforcementMode::AuditAndBlock.is_blocking());
+        assert!(!EnforcementMode::PerPolicy.is_blocking());
+    }
+
+    #[test]
+    fn test_enforcement_mode_is_audit() {
+        assert!(EnforcementMode::Audit.is_audit());
+        assert!(!EnforcementMode::Block.is_audit());
+        assert!(!EnforcementMode::AuditAndBlock.is_audit());
+        assert!(!EnforcementMode::PerPolicy.is_audit());
     }
 
     #[test]
