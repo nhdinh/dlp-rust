@@ -54,6 +54,8 @@ pub struct AllowlistEntryUi {
     pub priority: i64,
     /// Enabled flag.
     pub enabled: bool,
+    /// Volume class badge (SD/Optical/Virtual etc).
+    pub volume_class: Option<String>,
 }
 
 /// Interaction modes for the allowlist screen.
@@ -208,9 +210,14 @@ pub fn draw_allowlist_screen(frame: &mut Frame, screen: &AllowlistScreen, area: 
                 Style::default()
             };
             let status = if entry.enabled { "[+]" } else { "[-]" };
+            let volume_badge = entry
+                .volume_class
+                .as_ref()
+                .map(|v| format!(" | [{}]", v))
+                .unwrap_or_default();
             ListItem::new(format!(
-                "{} {} | {} | {} | {}",
-                status, entry.match_type, entry.value, entry.category, entry.description
+                "{} {} | {} | {} | {}{}",
+                status, entry.match_type, entry.value, entry.category, entry.description, volume_badge
             ))
             .style(style)
         })
@@ -295,6 +302,7 @@ mod tests {
                     category: "operator_defined".to_string(),
                     priority: 10,
                     enabled: true,
+                    volume_class: None,
                 },
                 AllowlistEntryUi {
                     id: "2".to_string(),
@@ -304,6 +312,7 @@ mod tests {
                     category: "avedr".to_string(),
                     priority: 5,
                     enabled: true,
+                    volume_class: None,
                 },
             ],
             selected: 0,
@@ -336,6 +345,7 @@ mod tests {
                 category: "operator_defined".to_string(),
                 priority: 10,
                 enabled: true,
+                volume_class: None,
             }],
             selected: 0,
             mode: AllowlistMode::List,

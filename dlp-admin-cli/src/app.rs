@@ -188,11 +188,16 @@ pub enum PasswordPurpose {
 // Conditions builder supporting types
 // ---------------------------------------------------------------------------
 
-/// The nine ABAC condition attributes available in the conditions builder.
+/// The eleven ABAC condition attributes available in the conditions builder.
 ///
 /// Used across Step 1 display, Step 2 operator lookup, Step 3 value-picker
 /// branching, and `PolicyCondition` construction. A dedicated enum avoids
 /// repeated string comparisons and enables exhaustive matching.
+///
+/// Volume class attributes use the `in` operator for consistency with other
+/// picker-based attributes, but semantically a drive can only have one volume
+/// class at a time. Multi-select in the TUI builds multiple `eq` conditions,
+/// not a single `in` condition with a list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConditionAttribute {
     /// Data classification tier (T1-T4).
@@ -213,10 +218,14 @@ pub enum ConditionAttribute {
     SourceOrigin,
     /// Destination origin URL for browser clipboard events.
     DestinationOrigin,
+    /// Source volume class (LocalNTFS, USBRemovable, SDCard, Optical, Virtual, NetworkShare).
+    SourceVolumeClass,
+    /// Destination volume class (LocalNTFS, USBRemovable, SDCard, Optical, Virtual, NetworkShare).
+    DestinationVolumeClass,
 }
 
 /// All condition attributes in display order (Step 1 list).
-pub const ATTRIBUTES: [ConditionAttribute; 9] = [
+pub const ATTRIBUTES: [ConditionAttribute; 11] = [
     ConditionAttribute::Classification,
     ConditionAttribute::MemberOf,
     ConditionAttribute::DeviceTrust,
@@ -226,6 +235,8 @@ pub const ATTRIBUTES: [ConditionAttribute; 9] = [
     ConditionAttribute::DestinationApplication,
     ConditionAttribute::SourceOrigin,
     ConditionAttribute::DestinationOrigin,
+    ConditionAttribute::SourceVolumeClass,
+    ConditionAttribute::DestinationVolumeClass,
 ];
 
 impl ConditionAttribute {
@@ -244,6 +255,8 @@ impl ConditionAttribute {
             Self::DestinationApplication => "DestinationApplication",
             Self::SourceOrigin => "SourceOrigin",
             Self::DestinationOrigin => "DestinationOrigin",
+            Self::SourceVolumeClass => "Source Volume Class",
+            Self::DestinationVolumeClass => "Destination Volume Class",
         }
     }
 }
