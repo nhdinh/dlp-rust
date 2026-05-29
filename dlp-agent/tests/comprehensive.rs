@@ -628,9 +628,9 @@ async fn test_engine_success_allow() {
         decision: Decision::ALLOW,
         matched_policy_id: Some("pol-001".into()),
         reason: "T2 allowed".into(),
-            enforcement_mode: None,
-            would_have_denied: false,
-};
+        enforcement_mode: None,
+        would_have_denied: false,
+    };
     let (addr, _h) = start_engine_with_json_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
 
@@ -649,9 +649,9 @@ async fn test_engine_success_deny() {
         decision: Decision::DENY,
         matched_policy_id: Some("pol-001".into()),
         reason: "T4 blocked".into(),
-            enforcement_mode: None,
-            would_have_denied: false,
-};
+        enforcement_mode: None,
+        would_have_denied: false,
+    };
     let (addr, _h) = start_engine_with_json_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
 
@@ -674,9 +674,9 @@ async fn test_offline_manager_cache_hit_second_request() {
         decision: Decision::ALLOW,
         matched_policy_id: Some("pol-001".into()),
         reason: "ok".into(),
-            enforcement_mode: None,
-            would_have_denied: false,
-};
+        enforcement_mode: None,
+        would_have_denied: false,
+    };
     let (addr, _h) = start_engine_with_json_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
     let cache = Arc::new(dlp_agent::cache::Cache::new());
@@ -1260,9 +1260,9 @@ mod cache_edge_cases {
             decision,
             matched_policy_id: None,
             reason: "test".into(),
-                enforcement_mode: None,
-                would_have_denied: false,
-}
+            enforcement_mode: None,
+            would_have_denied: false,
+        }
     }
 
     #[test]
@@ -2857,9 +2857,9 @@ mod print_tc {
             decision: Decision::ALLOW,
             matched_policy_id: None,
             reason: "no policy restricts T2 print".to_string(),
-                enforcement_mode: None,
-                would_have_denied: false,
-};
+            enforcement_mode: None,
+            would_have_denied: false,
+        };
         assert_eq!(simulated_response.decision, Decision::ALLOW);
     }
 
@@ -2891,9 +2891,9 @@ mod print_tc {
             decision: Decision::DenyWithAlert,
             matched_policy_id: Some("policy-print-t3-require-auth".to_string()),
             reason: "T3 content requires authentication to print".to_string(),
-                enforcement_mode: None,
-                would_have_denied: false,
-};
+            enforcement_mode: None,
+            would_have_denied: false,
+        };
         assert_eq!(simulated_response.decision, Decision::DenyWithAlert);
 
         // Build the audit event that the watcher would emit on DenyWithAlert.
@@ -2949,9 +2949,9 @@ mod print_tc {
             decision: Decision::DENY,
             matched_policy_id: Some("policy-print-t4-block".to_string()),
             reason: "T4 content is never allowed to print".to_string(),
-                enforcement_mode: None,
-                would_have_denied: false,
-};
+            enforcement_mode: None,
+            would_have_denied: false,
+        };
         assert_eq!(simulated_response.decision, Decision::DENY);
 
         // Verify: cancel_job would be called (job status is 0 = spooling, not printing).

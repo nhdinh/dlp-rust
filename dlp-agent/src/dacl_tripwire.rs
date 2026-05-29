@@ -1500,22 +1500,30 @@ mod tests {
 
     #[test]
     fn test_should_apply_tripwire_audit_mode_returns_false() {
-        assert!(!should_apply_tripwire_for_global_mode(EnforcementMode::Audit));
+        assert!(!should_apply_tripwire_for_global_mode(
+            EnforcementMode::Audit
+        ));
     }
 
     #[test]
     fn test_should_apply_tripwire_block_mode_returns_true() {
-        assert!(should_apply_tripwire_for_global_mode(EnforcementMode::Block));
+        assert!(should_apply_tripwire_for_global_mode(
+            EnforcementMode::Block
+        ));
     }
 
     #[test]
     fn test_should_apply_tripwire_perpolicy_returns_true() {
-        assert!(should_apply_tripwire_for_global_mode(EnforcementMode::PerPolicy));
+        assert!(should_apply_tripwire_for_global_mode(
+            EnforcementMode::PerPolicy
+        ));
     }
 
     #[test]
     fn test_should_apply_tripwire_auditandblock_returns_true() {
-        assert!(should_apply_tripwire_for_global_mode(EnforcementMode::AuditAndBlock));
+        assert!(should_apply_tripwire_for_global_mode(
+            EnforcementMode::AuditAndBlock
+        ));
     }
 
     // --- Phase 55-04: build_canonical_security_descriptor include_deny_ace tests ---

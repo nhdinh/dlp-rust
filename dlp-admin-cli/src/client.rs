@@ -344,8 +344,8 @@ impl EngineClient {
         }
         let resp: ModeResp = self.get("admin/config/global-enforcement-mode").await?;
         // EnforcementMode serializes as PascalCase via serde(rename_all).
-        let mode_str = serde_json::to_string(&resp.mode)
-            .context("failed to serialize enforcement mode")?;
+        let mode_str =
+            serde_json::to_string(&resp.mode).context("failed to serialize enforcement mode")?;
         // Strip surrounding quotes from the JSON string.
         Ok(mode_str.trim_matches('"').to_string())
     }

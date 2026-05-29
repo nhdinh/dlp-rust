@@ -142,8 +142,8 @@ impl HookJournal {
         // Attempt to create the mapping first.
         let mapping_handle = CreateFileMappingW(
             INVALID_HANDLE_VALUE,
-            None,              // default security descriptor (per D-01)
-            PAGE_READWRITE,    // producer needs write access
+            None,           // default security descriptor (per D-01)
+            PAGE_READWRITE, // producer needs write access
             0,
             JOURNAL_SIZE as u32,
             name_pcwstr,
@@ -154,11 +154,7 @@ impl HookJournal {
             Err(e) => {
                 // If the mapping already exists, open it instead (CR-04 fix).
                 if e.code() == windows::core::HRESULT::from_win32(ERROR_ALREADY_EXISTS.0) {
-                    let open_result = OpenFileMappingW(
-                        FILE_MAP_ALL_ACCESS.0,
-                        false,
-                        name_pcwstr,
-                    );
+                    let open_result = OpenFileMappingW(FILE_MAP_ALL_ACCESS.0, false, name_pcwstr);
                     match open_result {
                         Ok(h) => (h, false),
                         Err(_) => {
@@ -246,18 +242,25 @@ pub fn journal_write(handle_value: u64, op: u8, path: &str, ts_qpc: u64, etw_tim
     // SAFETY: SPSC ring buffer. The header and entries pointers are valid
     // for the lifetime of the process (shared memory mapping).
     unsafe {
-        let write_index = std::ptr::read_volatile(std::ptr::addr_of!((*journal.header).write_index));
+        let write_index =
+            std::ptr::read_volatile(std::ptr::addr_of!((*journal.header).write_index));
         let slot = write_index as usize % journal.capacity;
         let entry_ptr = journal.entries.add(slot);
 
         let seq = journal.next_seq;
 
         std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).seq), seq);
-        std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).handle_value), handle_value);
+        std::ptr::write_volatile(
+            std::ptr::addr_of_mut!((*entry_ptr).handle_value),
+            handle_value,
+        );
         std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).op), op);
         std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).path_hash), path_hash);
         std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).ts_qpc), ts_qpc);
-        std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).etw_timestamp), etw_timestamp);
+        std::ptr::write_volatile(
+            std::ptr::addr_of_mut!((*entry_ptr).etw_timestamp),
+            etw_timestamp,
+        );
 
         // CR-03 fix: Release fence prevents CPU-level reordering on ARM64.
         // All entry fields are published before the write_index bump.
@@ -276,7 +279,10 @@ pub fn journal_write(handle_value: u64, op: u8, path: &str, ts_qpc: u64, etw_tim
     // We use a raw pointer write to avoid &mut self.
     let journal_ptr = journal as *const HookJournal as *mut HookJournal;
     unsafe {
-        std::ptr::write_volatile(std::ptr::addr_of_mut!((*journal_ptr).next_seq), journal.next_seq + 1);
+        std::ptr::write_volatile(
+            std::ptr::addr_of_mut!((*journal_ptr).next_seq),
+            journal.next_seq + 1,
+        );
     }
 }
 
@@ -449,16 +455,26 @@ mod tests {
 
                 // Write capacity + 1 entries to force a wrap.
                 for i in 0..=capacity {
-                    let write_index = std::ptr::read_volatile(std::ptr::addr_of!((*header_ptr).write_index));
+                    let write_index =
+                        std::ptr::read_volatile(std::ptr::addr_of!((*header_ptr).write_index));
                     let slot = write_index as usize % capacity;
                     let entry_ptr = entries_ptr.add(slot);
 
-                    std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).seq), (i + 1) as u64);
-                    std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).handle_value), i as u64);
+                    std::ptr::write_volatile(
+                        std::ptr::addr_of_mut!((*entry_ptr).seq),
+                        (i + 1) as u64,
+                    );
+                    std::ptr::write_volatile(
+                        std::ptr::addr_of_mut!((*entry_ptr).handle_value),
+                        i as u64,
+                    );
                     std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).op), 1u8);
                     std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).path_hash), 0u64);
                     std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).ts_qpc), i as u64);
-                    std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).etw_timestamp), 0u64);
+                    std::ptr::write_volatile(
+                        std::ptr::addr_of_mut!((*entry_ptr).etw_timestamp),
+                        0u64,
+                    );
 
                     fence(Ordering::Release);
 
@@ -536,11 +552,17 @@ mod tests {
                     let seq = journal.next_seq;
 
                     std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).seq), seq);
-                    std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).handle_value), 0u64);
+                    std::ptr::write_volatile(
+                        std::ptr::addr_of_mut!((*entry_ptr).handle_value),
+                        0u64,
+                    );
                     std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).op), 1u8);
                     std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).path_hash), 0u64);
                     std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).ts_qpc), 0u64);
-                    std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).etw_timestamp), 0u64);
+                    std::ptr::write_volatile(
+                        std::ptr::addr_of_mut!((*entry_ptr).etw_timestamp),
+                        0u64,
+                    );
 
                     fence(Ordering::Release);
 
@@ -902,13 +924,14 @@ mod tests {
                 let (handle2, opened) = match handle2 {
                     Ok(h) => (h, true),
                     Err(e) => {
-                        if e.code()
-                            == windows::core::HRESULT::from_win32(ERROR_ALREADY_EXISTS.0)
-                        {
-                            let open_result = OpenFileMappingW(FILE_MAP_ALL_ACCESS.0, false, name_pcwstr);
+                        if e.code() == windows::core::HRESULT::from_win32(ERROR_ALREADY_EXISTS.0) {
+                            let open_result =
+                                OpenFileMappingW(FILE_MAP_ALL_ACCESS.0, false, name_pcwstr);
                             match open_result {
                                 Ok(h) => (h, false),
-                                Err(_) => panic!("OpenFileMappingW failed after ERROR_ALREADY_EXISTS"),
+                                Err(_) => {
+                                    panic!("OpenFileMappingW failed after ERROR_ALREADY_EXISTS")
+                                }
                             }
                         } else {
                             panic!("unexpected error from second CreateFileMappingW");
@@ -985,13 +1008,19 @@ mod tests {
                 let entry_ptr = entries_ptr.add(slot);
 
                 std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).seq), 12345u64);
-                std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).handle_value), 0xABCDu64);
+                std::ptr::write_volatile(
+                    std::ptr::addr_of_mut!((*entry_ptr).handle_value),
+                    0xABCDu64,
+                );
                 std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).op), 3u8);
                 std::ptr::write_volatile(
                     std::ptr::addr_of_mut!((*entry_ptr).path_hash),
                     0xDEAD_BEEF_CAFE_BABEu64,
                 );
-                std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).ts_qpc), 9876543210u64);
+                std::ptr::write_volatile(
+                    std::ptr::addr_of_mut!((*entry_ptr).ts_qpc),
+                    9876543210u64,
+                );
                 std::ptr::write_volatile(
                     std::ptr::addr_of_mut!((*entry_ptr).etw_timestamp),
                     1111111111u64,

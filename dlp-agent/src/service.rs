@@ -1463,42 +1463,44 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
     }
 
     // Start bypass correlator if ETW consumer started successfully.
-    let (correlator_shutdown_tx, correlator_handle) =
-        if matches!(etw_consumer_state, crate::etw_kernel_file::EtwConsumerState::Started) {
-            if let (Some(process_watcher), Some(sc)) =
-                (process_watcher_opt.as_ref(), server_client.as_ref())
-            {
-                let reduced_mode = !agent_config.bypass_correlator_enabled();
-                let correlator = crate::bypass_correlator::BypassCorrelator::new(
-                    crate::bypass_correlator::CorrelatorConfig {
-                        reduced_mode,
-                        ..Default::default()
-                    },
-                )
-                .with_protected_paths(agent_config.monitored_paths.clone());
+    let (correlator_shutdown_tx, correlator_handle) = if matches!(
+        etw_consumer_state,
+        crate::etw_kernel_file::EtwConsumerState::Started
+    ) {
+        if let (Some(process_watcher), Some(sc)) =
+            (process_watcher_opt.as_ref(), server_client.as_ref())
+        {
+            let reduced_mode = !agent_config.bypass_correlator_enabled();
+            let correlator = crate::bypass_correlator::BypassCorrelator::new(
+                crate::bypass_correlator::CorrelatorConfig {
+                    reduced_mode,
+                    ..Default::default()
+                },
+            )
+            .with_protected_paths(agent_config.monitored_paths.clone());
 
-                let etw_rx = etw_consumer.receiver().clone();
-                let process_rx = process_watcher.receiver().clone();
-                let sc = sc.clone();
+            let etw_rx = etw_consumer.receiver().clone();
+            let process_rx = process_watcher.receiver().clone();
+            let sc = sc.clone();
 
-                let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-                let handle = tokio::spawn(async move {
-                    tokio::select! {
-                        _ = correlator.run(etw_rx, process_rx, sc) => {},
-                        _ = shutdown_rx.changed() => {
-                            info!("bypass correlator shutting down");
-                        }
+            let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+            let handle = tokio::spawn(async move {
+                tokio::select! {
+                    _ = correlator.run(etw_rx, process_rx, sc) => {},
+                    _ = shutdown_rx.changed() => {
+                        info!("bypass correlator shutting down");
                     }
-                });
-                (Some(shutdown_tx), Some(handle))
-            } else {
-                warn!("process watcher or server client unavailable — skipping bypass correlator");
-                (None, None)
-            }
+                }
+            });
+            (Some(shutdown_tx), Some(handle))
         } else {
-            warn!("ETW consumer not started — bypass correlator disabled");
+            warn!("process watcher or server client unavailable — skipping bypass correlator");
             (None, None)
-        };
+        }
+    } else {
+        warn!("ETW consumer not started — bypass correlator disabled");
+        (None, None)
+    };
 
     // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
     let (enc_shutdown_tx, enc_handle) = spawn_encryption_task(audit_ctx.clone(), recheck_interval);
@@ -1772,8 +1774,7 @@ async fn init_dacl_watcher(
 
     // Phase 55: read global enforcement mode to decide apply vs remove.
     let global_mode = agent_config.enforcement.global_mode;
-    let should_apply =
-        crate::dacl_tripwire::should_apply_tripwire_for_global_mode(global_mode);
+    let should_apply = crate::dacl_tripwire::should_apply_tripwire_for_global_mode(global_mode);
 
     if should_apply {
         // Block / PerPolicy / AuditAndBlock: apply tripwire to all protected paths.
@@ -1826,7 +1827,8 @@ async fn init_dacl_watcher(
             }
             // Rebuild canonical ACL without Deny ACE and apply it.
             match crate::dacl_tripwire::remove_tripwire_by_rebuilding_without_deny(
-                &path, dlp_admin_sid.as_deref(),
+                &path,
+                dlp_admin_sid.as_deref(),
             ) {
                 Ok(snapshot) => {
                     info!(path = %path.display(), "DACL tripwire Deny ACE removed for Audit mode");
@@ -1910,8 +1912,7 @@ async fn init_dacl_watcher_without_staging(
 
     // Phase 55: respect global enforcement mode.
     let global_mode = agent_config.enforcement.global_mode;
-    let should_apply =
-        crate::dacl_tripwire::should_apply_tripwire_for_global_mode(global_mode);
+    let should_apply = crate::dacl_tripwire::should_apply_tripwire_for_global_mode(global_mode);
 
     if should_apply {
         for path_str in &agent_config.monitored_paths {
@@ -1934,9 +1935,13 @@ async fn init_dacl_watcher_without_staging(
             if !path.exists() {
                 continue;
             }
-            if let Ok((_raw_sd, snapshot)) = crate::dacl_tripwire::build_canonical_security_descriptor(
-                &path, dlp_admin_sid.as_deref(), false,
-            ) {
+            if let Ok((_raw_sd, snapshot)) =
+                crate::dacl_tripwire::build_canonical_security_descriptor(
+                    &path,
+                    dlp_admin_sid.as_deref(),
+                    false,
+                )
+            {
                 let _ = watcher.register(&path, snapshot);
             }
         }
@@ -4057,7 +4062,10 @@ mod tests {
             changed_fields.contains(&"global_enforcement_mode"),
             "global_enforcement_mode must be in changed_fields"
         );
-        assert_eq!(cfg.enforcement.global_mode, dlp_common::abac::EnforcementMode::Audit);
+        assert_eq!(
+            cfg.enforcement.global_mode,
+            dlp_common::abac::EnforcementMode::Audit
+        );
     }
 
     #[test]
@@ -4096,7 +4104,10 @@ mod tests {
 
         // Invalid mode defaults to Block and still counts as a change
         assert!(changed_fields.contains(&"global_enforcement_mode"));
-        assert_eq!(cfg.enforcement.global_mode, dlp_common::abac::EnforcementMode::Block);
+        assert_eq!(
+            cfg.enforcement.global_mode,
+            dlp_common::abac::EnforcementMode::Block
+        );
     }
 
     // --- Phase 55-04: init_dacl_watcher global mode tests ---
@@ -4105,9 +4116,11 @@ mod tests {
     #[test]
     fn test_service_startup_audit_mode_skips_tripwire() {
         // Verify the helper directly — the actual init_dacl_watcher uses it.
-        assert!(!crate::dacl_tripwire::should_apply_tripwire_for_global_mode(
-            dlp_common::abac::EnforcementMode::Audit
-        ));
+        assert!(
+            !crate::dacl_tripwire::should_apply_tripwire_for_global_mode(
+                dlp_common::abac::EnforcementMode::Audit
+            )
+        );
     }
 
     /// Test that `should_apply_tripwire_for_global_mode` returns true for Block.

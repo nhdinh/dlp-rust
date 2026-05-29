@@ -1352,10 +1352,7 @@ fn format_policy_mode_field(label: &str, form: &crate::app::PolicyFormState) -> 
 ///
 /// Displays the current enforcement mode (Audit / Block / AuditAndBlock)
 /// from `ENFORCEMENT_MODE_OPTIONS` indexed by `form.enforcement_mode`.
-fn format_enforcement_mode_field(
-    label: &str,
-    form: &crate::app::PolicyFormState,
-) -> Line<'static> {
+fn format_enforcement_mode_field(label: &str, form: &crate::app::PolicyFormState) -> Line<'static> {
     let mode_label = crate::app::ENFORCEMENT_MODE_OPTIONS[form.enforcement_mode];
     Line::from(format!("{label}:              {mode_label}"))
 }
@@ -1443,7 +1440,9 @@ fn render_global_override_banner(frame: &mut Frame, area: Rect, global_mode: Opt
     let banner = Line::from(vec![
         Span::styled(
             "Global override active: ",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(mode, Style::default().fg(Color::Yellow)),
     ]);
@@ -4799,13 +4798,16 @@ mod disk_registry_render_tests {
         form.enforcement_mode = 2;
         let line = format_enforcement_mode_field("Enforcement Mode", &form);
         let s: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
-        assert!(s.contains("AuditAndBlock"), "expected AuditAndBlock, got: {s}");
+        assert!(
+            s.contains("AuditAndBlock"),
+            "expected AuditAndBlock, got: {s}"
+        );
     }
 
     #[test]
     fn test_policy_list_includes_mode_column() {
-        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20))
-            .expect("terminal");
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).expect("terminal");
         let policies = vec![serde_json::json!({
             "id": "p1",
             "name": "Test",
@@ -4827,8 +4829,8 @@ mod disk_registry_render_tests {
 
     #[test]
     fn test_global_override_banner_renders_when_active() {
-        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20))
-            .expect("terminal");
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).expect("terminal");
         let policies = vec![serde_json::json!({
             "id": "p1",
             "name": "Test",
@@ -4844,18 +4846,15 @@ mod disk_registry_render_tests {
         .expect("draw");
         let buf = term.backend().buffer().clone();
         let s: String = buf.content().iter().map(|c| c.symbol()).collect();
-        assert!(
-            s.contains("Global override active"),
-            "banner missing: {s}"
-        );
+        assert!(s.contains("Global override active"), "banner missing: {s}");
         assert!(s.contains("Audit"), "banner mode missing: {s}");
         assert!(s.contains("(global)"), "row global suffix missing: {s}");
     }
 
     #[test]
     fn test_global_override_banner_hidden_when_perpolicy() {
-        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20))
-            .expect("terminal");
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).expect("terminal");
         let policies = vec![serde_json::json!({
             "id": "p1",
             "name": "Test",
@@ -4875,13 +4874,16 @@ mod disk_registry_render_tests {
             !s.contains("Global override active"),
             "banner should be hidden: {s}"
         );
-        assert!(!s.contains("(global)"), "global suffix should be hidden: {s}");
+        assert!(
+            !s.contains("(global)"),
+            "global suffix should be hidden: {s}"
+        );
     }
 
     #[test]
     fn test_global_override_banner_hidden_when_none() {
-        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20))
-            .expect("terminal");
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).expect("terminal");
         let policies = vec![serde_json::json!({
             "id": "p1",
             "name": "Test",

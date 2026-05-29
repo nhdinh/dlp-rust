@@ -144,7 +144,11 @@ async fn test_enforcement_mode_round_trip() {
         .body(Body::from(body))
         .expect("build request");
     let resp = app.clone().oneshot(req).await.expect("oneshot create");
-    assert_eq!(resp.status(), StatusCode::CREATED, "create should return 201");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "create should return 201"
+    );
     let json = read_body_as_json(resp).await;
     assert_eq!(
         json["enforcement_mode"], "Audit",
@@ -213,8 +217,16 @@ async fn test_enforcement_mode_round_trip() {
         .uri("/agent-config/test-agent-01")
         .body(Body::empty())
         .expect("build request");
-    let resp = app.clone().oneshot(req).await.expect("oneshot agent config");
-    assert_eq!(resp.status(), StatusCode::OK, "agent config should return 200");
+    let resp = app
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("oneshot agent config");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "agent config should return 200"
+    );
     let json = read_body_as_json(resp).await;
     assert_eq!(
         json["global_enforcement_mode"], "PerPolicy",
@@ -308,7 +320,10 @@ async fn test_global_enforcement_mode_admin_api() {
     let resp = app.clone().oneshot(req).await.expect("oneshot get");
     assert_eq!(resp.status(), StatusCode::OK, "get should return 200");
     let json = read_body_as_json(resp).await;
-    assert_eq!(json["mode"], "Audit", "get should return Audit after update");
+    assert_eq!(
+        json["mode"], "Audit",
+        "get should return Audit after update"
+    );
 
     // Step 4: PUT with invalid mode returns 400.
     let body = serde_json::json!({ "mode": "InvalidMode" });
@@ -358,7 +373,11 @@ async fn test_global_override_forces_audit_mode() {
         .body(Body::from(body))
         .expect("build request");
     let resp = app.clone().oneshot(req).await.expect("oneshot create");
-    assert_eq!(resp.status(), StatusCode::CREATED, "create should return 201");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "create should return 201"
+    );
 
     // Set global mode to Audit.
     let body = serde_json::json!({ "mode": "Audit" });
@@ -421,7 +440,11 @@ async fn test_global_override_forces_audit_mode() {
         .body(Body::empty())
         .expect("build request");
     let resp = app.oneshot(req).await.expect("oneshot agent config");
-    assert_eq!(resp.status(), StatusCode::OK, "agent config should return 200");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "agent config should return 200"
+    );
     let json = read_body_as_json(resp).await;
     assert_eq!(
         json["global_enforcement_mode"], "Audit",

@@ -1334,7 +1334,10 @@ mod tests {
             global_mode = "AuditAndBlock"
         "#;
         let config: AgentConfig = toml::from_str(toml_str).expect("deserialize");
-        assert_eq!(config.enforcement.global_mode, EnforcementMode::AuditAndBlock);
+        assert_eq!(
+            config.enforcement.global_mode,
+            EnforcementMode::AuditAndBlock
+        );
     }
 
     #[test]

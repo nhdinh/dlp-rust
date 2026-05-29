@@ -277,9 +277,7 @@ mod app_state_tests {
             protected_paths: Arc::new(
                 crate::db::repositories::protected_paths::ProtectedPathsRepository,
             ),
-            bypass_alerts: Arc::new(
-                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
-            ),
+            bypass_alerts: Arc::new(crate::db::repositories::bypass_alerts::BypassAlertsRepository),
         }
     }
 

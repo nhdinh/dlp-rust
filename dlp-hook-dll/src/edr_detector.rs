@@ -28,7 +28,9 @@
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HMODULE};
-use windows::Win32::System::ProcessStatus::{EnumProcessModules, GetModuleFileNameExW, GetModuleInformation, MODULEINFO};
+use windows::Win32::System::ProcessStatus::{
+    EnumProcessModules, GetModuleFileNameExW, GetModuleInformation, MODULEINFO,
+};
 use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, OpenProcess};
 
 // ---------------------------------------------------------------------------

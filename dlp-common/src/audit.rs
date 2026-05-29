@@ -1372,9 +1372,18 @@ mod tests {
         assert!(event.would_have_denied);
 
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"policy_mode\""), "policy_mode must be present: {json}");
-        assert!(json.contains("Audit"), "Audit value must be present: {json}");
-        assert!(json.contains("\"would_have_denied\":true"), "would_have_denied must be true: {json}");
+        assert!(
+            json.contains("\"policy_mode\""),
+            "policy_mode must be present: {json}"
+        );
+        assert!(
+            json.contains("Audit"),
+            "Audit value must be present: {json}"
+        );
+        assert!(
+            json.contains("\"would_have_denied\":true"),
+            "would_have_denied must be true: {json}"
+        );
 
         let rt: AuditEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(rt.policy_mode, Some("Audit".to_string()));
@@ -1423,6 +1432,9 @@ mod tests {
             "None policy_mode must be omitted: {json}"
         );
         // would_have_denied defaults to false and is not optional, so it IS serialized
-        assert!(json.contains("\"would_have_denied\":false"), "would_have_denied false must be present: {json}");
+        assert!(
+            json.contains("\"would_have_denied\":false"),
+            "would_have_denied false must be present: {json}"
+        );
     }
 }

@@ -261,8 +261,7 @@ impl SyslogQueueRepository {
 
         // Set lease on claimed rows.
         if !claimed_ids.is_empty() {
-            let placeholders: Vec<String> =
-                claimed_ids.iter().map(|_| "?".to_string()).collect();
+            let placeholders: Vec<String> = claimed_ids.iter().map(|_| "?".to_string()).collect();
             let sql = format!(
                 "UPDATE syslog_queue SET leased_until = ?1 WHERE id IN ({})",
                 placeholders.join(",")
@@ -281,8 +280,7 @@ impl SyslogQueueRepository {
         if claimed_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders: Vec<String> =
-            claimed_ids.iter().map(|_| "?".to_string()).collect();
+        let placeholders: Vec<String> = claimed_ids.iter().map(|_| "?".to_string()).collect();
         let sql = format!(
             "SELECT id, event_json_encrypted, event_json_nonce, retry_count, last_error \
              FROM syslog_queue \
@@ -302,15 +300,11 @@ impl SyslogQueueRepository {
                 let mut nonce = [0u8; NONCE_LEN];
                 nonce.copy_from_slice(&nonce_bytes);
                 let envelope = Envelope::new(ENVELOPE_VERSION_V1, nonce, ciphertext)
-                    .map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!("envelope: {e}"))
-                    })?;
+                    .map_err(|e| rusqlite::Error::InvalidParameterName(format!("envelope: {e}")))?;
                 let aad = aad_for("syslog_queue", "event_json");
                 let plaintext = crypto
                     .decrypt(&envelope, &aad)
-                    .map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!("decrypt: {e}"))
-                    })?;
+                    .map_err(|e| rusqlite::Error::InvalidParameterName(format!("decrypt: {e}")))?;
                 let event_json = plaintext.expose_secret().to_string();
                 Ok(QueuedEvent {
                     id,

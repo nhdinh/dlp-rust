@@ -409,7 +409,10 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("global_enforcement_mode system_kv row must exist");
-        assert_eq!(value, "PerPolicy", "default global_enforcement_mode must be PerPolicy");
+        assert_eq!(
+            value, "PerPolicy",
+            "default global_enforcement_mode must be PerPolicy"
+        );
     }
 
     #[test]
@@ -434,7 +437,10 @@ mod tests {
              VALUES ('p-bad', 'Test', 1, '[]', 'Allow', 1, 'ALL', 'InvalidMode', 1, '2026-01-01T00:00:00Z')",
             [],
         );
-        assert!(result.is_err(), "invalid enforcement_mode must fail CHECK constraint");
+        assert!(
+            result.is_err(),
+            "invalid enforcement_mode must fail CHECK constraint"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("CHECK constraint failed"),

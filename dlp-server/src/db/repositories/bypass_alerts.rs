@@ -122,10 +122,9 @@ impl BypassAlertsRepository {
         if let Some(ref sev_list) = filter.severity {
             if !sev_list.is_empty() {
                 param_count += 1;
-                let placeholders: Vec<String> =
-                    (param_count..param_count + sev_list.len())
-                        .map(|i| format!("?{i}"))
-                        .collect();
+                let placeholders: Vec<String> = (param_count..param_count + sev_list.len())
+                    .map(|i| format!("?{i}"))
+                    .collect();
                 sql.push_str(&format!(" AND severity IN ({})", placeholders.join(", ")));
                 param_count += sev_list.len() - 1;
             }
@@ -241,11 +240,7 @@ impl BypassAlertsRepository {
     /// Acknowledges a bypass alert by ID.
     ///
     /// Returns the number of rows affected (0 if ID not found).
-    pub fn ack_by_id(
-        uow: &UnitOfWork<'_>,
-        id: i64,
-        ack_by: &str,
-    ) -> rusqlite::Result<usize> {
+    pub fn ack_by_id(uow: &UnitOfWork<'_>, id: i64, ack_by: &str) -> rusqlite::Result<usize> {
         uow.tx.execute(
             "UPDATE bypass_alerts \
              SET ack_by = ?1, ack_at = datetime('now') \
@@ -322,7 +317,12 @@ mod tests {
         .expect("insert admin user");
     }
 
-    fn make_insert_row(agent_id: &str, pid: i32, qpc: i64, file_path: &str) -> BypassAlertInsertRow {
+    fn make_insert_row(
+        agent_id: &str,
+        pid: i32,
+        qpc: i64,
+        file_path: &str,
+    ) -> BypassAlertInsertRow {
         BypassAlertInsertRow {
             agent_id: agent_id.to_string(),
             pid,
@@ -539,7 +539,8 @@ mod tests {
 
             let mut rows = Vec::new();
             for i in 1..=10 {
-                let mut row = make_insert_row("agent-1", 1000 + i, i as i64, &format!(r"C:\file{i}.txt"));
+                let mut row =
+                    make_insert_row("agent-1", 1000 + i, i as i64, &format!(r"C:\file{i}.txt"));
                 row.created_at = format!("2026-05-28T{:02}:00:00Z", i);
                 rows.push(row);
             }
@@ -573,7 +574,8 @@ mod tests {
 
             let mut rows = Vec::new();
             for i in 1..=10 {
-                let row = make_insert_row("agent-1", 1000 + i, i as i64, &format!(r"C:\file{i}.txt"));
+                let row =
+                    make_insert_row("agent-1", 1000 + i, i as i64, &format!(r"C:\file{i}.txt"));
                 rows.push(row);
             }
             BypassAlertsRepository::insert_batch(&uow, &rows).expect("insert batch");
@@ -585,7 +587,11 @@ mod tests {
             ..Default::default()
         };
         let results = BypassAlertsRepository::list_by_filters(&pool, &filter).expect("list");
-        assert_eq!(results.len(), 10, "all 10 rows returned even with limit=1000");
+        assert_eq!(
+            results.len(),
+            10,
+            "all 10 rows returned even with limit=1000"
+        );
         // Note: with only 10 rows, cap doesn't visibly limit. Test verifies no error.
     }
 
@@ -639,8 +645,8 @@ mod tests {
         {
             let mut conn = pool.get().expect("acquire connection");
             let uow = UnitOfWork::new(&mut conn).expect("create uow");
-            let affected = BypassAlertsRepository::ack_by_id(
-                &uow, id, "admin-1").expect("second ack");
+            let affected =
+                BypassAlertsRepository::ack_by_id(&uow, id, "admin-1").expect("second ack");
             assert_eq!(affected, 1, "ack must affect 1 row even when already acked");
             uow.commit().expect("commit");
         }
@@ -653,7 +659,8 @@ mod tests {
         insert_admin_user(&mut conn, "admin-1");
         let uow = UnitOfWork::new(&mut conn).expect("create uow");
 
-        let affected = BypassAlertsRepository::ack_by_id(&uow, 9999, "admin-1").expect("ack missing");
+        let affected =
+            BypassAlertsRepository::ack_by_id(&uow, 9999, "admin-1").expect("ack missing");
         assert_eq!(affected, 0, "ack on non-existent ID must return 0");
         // No commit needed — no changes made.
     }

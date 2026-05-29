@@ -411,7 +411,9 @@ pub async fn run_event_loop(
         let global_mode = crate::service::with_config(|cfg| cfg.enforcement.global_mode)
             .unwrap_or(dlp_common::abac::EnforcementMode::Block);
 
-        let policy_mode = response.enforcement_mode.unwrap_or(dlp_common::abac::EnforcementMode::Block);
+        let policy_mode = response
+            .enforcement_mode
+            .unwrap_or(dlp_common::abac::EnforcementMode::Block);
         let effective_mode = dlp_common::abac::compute_effective_mode(global_mode, policy_mode);
 
         // ── Determine final decision based on effective mode ──────────────
@@ -494,7 +496,7 @@ pub use policy_mapper::PolicyMapper;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dlp_common::abac::{EnforcementMode, compute_effective_mode};
+    use dlp_common::abac::{compute_effective_mode, EnforcementMode};
 
     #[test]
     fn test_compute_effective_mode_audit_overrides_block() {
