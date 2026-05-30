@@ -58,6 +58,18 @@ Phase 57 is the **v0.10.0 milestone ship gate**. It delivers the operational doc
 - **D-16:** `RELEASE_NOTES.md` at repo root follows a structured format per release: Release Date → Summary → Binaries (table with filename, SHA-256, SHA-512) → Breaking Changes → Migration Notes → Known Issues → Deployment Guide Link.
 - **D-17:** Release notes are manually authored, not auto-generated from git log. The author (release engineer) writes human-readable summaries of changes, not commit lists.
 
+### Placeholder and Evidence Policy
+- **D-18:** Placeholder policy: Screenshot placeholders are acceptable as `[Screenshot: ...]` only if noted "to be added during UAT execution"; hashes must be replaced with actual release artifact hashes before ship. No unresolved `[TO BE FILLED]` text may remain in any shipped artifact.
+- **D-19:** Artifact provenance: RELEASE_NOTES.md must include build ID (CI run or manual build identifier), commit SHA, and pipeline reference for traceability.
+- **D-20:** Screenshot policy: Screenshots must be sourced from lab/test environments only. Each screenshot must include a "last verified" date and EDR version. Text-only procedures are acceptable for untested vendors; no fake screenshots.
+- **D-21:** WDSI detection name: Use `Trojan:Win32/Wacatac.B!ml` as an example only. Operators must record their actual detection name from the Defender console.
+- **D-22:** UAT evidence requirements: Each scenario must capture: Windows version/build, hardware specs, EDR product/version, cloud client versions, printer/share details, test account, policy bundle/version, binary hashes, timestamped tester sign-off.
+- **D-23:** CRIT-04 benchmark protocol: Warm-up run, 3 measured runs, median calculation, baseline without hooks, test with hooks, exact overhead formula `((with - baseline) / baseline) * 100`, no-ship threshold >25%.
+- **D-24:** Canonical ownership: Plan 57-04 is the sole owner of Secure Boot, PPL, DACL tripwire, SeSystemProfilePrivilege, and reboot documentation. Plan 57-01 references 57-04 for detailed content.
+- **D-25:** Rollback procedure: Deployment guide must document service stop, MSI uninstall, DACL restoration via `icacls /reset`, and optional ProgramData cleanup.
+- **D-26:** Ship decision severity tiers: Blocking (prevents ship), Major (degraded but workaround exists), Minor (cosmetic). Ship requires 0 Blocking failures.
+- **D-27:** Approval authority: Ship decision requires sign-off from both engineering lead and QA lead.
+
 ### Claude's Discretion
 - The deployment guide should include a "Quick Start" checklist at the top for experienced operators (5-10 bullets) before diving into the detailed per-vendor sections.
 - Include PowerShell one-liners for common verification tasks (e.g., `Get-Process | Where-Object {$_.Modules -match "dlp_hook_dll"}` to verify injection).
