@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
 status: executing
-last_updated: "2026-05-30T10:12:52.360Z"
+last_updated: "2026-05-30T14:00:00.000Z"
 last_activity: 2026-05-30
 progress:
   total_phases: 14
   completed_phases: 11
   total_plans: 69
-  completed_plans: 64
+  completed_plans: 65
   percent: 79
 ---
 
@@ -26,7 +26,7 @@ progress:
 ## Current Position
 
 Phase: 57 (operational-deployment-guide-av-edr-allowlist-uat) — EXECUTING
-Plan: 3 of 6
+Plan: 4 of 6
 Status: Ready to execute
 Last activity: 2026-05-30
 
@@ -117,14 +117,38 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 24. **2026-05-28: Phase 54 Plan 04 complete.** BypassAlertList TUI screen: dispatch handler with optimistic ack (stable ID rollback, pending_ack_ids double-ack prevention), severity filter cycling (f), hide-acknowledged toggle (h), pagination (PgUp/PgDn), detail popup (Enter). Render function with severity badges (crit=Red+BOLD, warn=Yellow, info=Blue), relative time formatting, path truncation, human-friendly correlation reasons, acknowledged row dimming. 12 new unit tests (6 dispatch + 6 render). 184 dlp-admin-cli tests pass. Clippy clean (-D warnings). UX-02 requirement satisfied.
 25. **2026-05-28: Phase 54 Plan 06 complete.** Integration verification: full workspace build with zero warnings, all 39 test suites pass (lib + tests), clippy clean (-D warnings) across workspace, cargo fmt clean. Fixed SystemMenu consistency between dispatch.rs and render.rs (added missing "Syslog Config" item). Added `system_menu_item_count_and_order` test verifying 14 items and correct cycling. Fixed cross-crate BypassAlert struct compatibility in dlp-hook-dll (added v2 field defaults). Fixed v1 backward compat integration test (added required DB fields for CHECK constraints). 188 dlp-admin-cli tests pass. Phase 54 COMPLETE (all 6 plans).
 26. **2026-05-29: Phase 56 complete (all 6 plans).** Volume-class ABAC end-to-end integration tests: 5 passing mock-based tests + 1 hardware-dependent `#[ignore]` test in `dlp-server/tests/volume_class_integration.rs`. Added `inject_volume_class_for_test` helper to `VolumeDetector`. Fixed bincode compatibility by removing `skip_serializing_if` from volume class fields (caused `UnexpectedEof` on deserialize). Fixed all cross-crate `HookRequest` test initializers. Full workspace compiles, clippy clean, fmt clean. DRIVE-01..04 requirements satisfied. Phase 56 COMPLETE.
+27. **2026-05-30: Phase 57 Plans 01-04 complete.** Deployment guide (`docs/operations/deployment-guide.md`) with per-vendor AV/EDR allowlist procedures for 6 vendors (Defender, CrowdStrike, SentinelOne, Carbon Black, Sophos, Trend Micro). RELEASE_NOTES.md with SHA-256/SHA-512 hash tables, artifact provenance, signing certificate info, WDSI submission flow, and signtool verification commands. v0.10.0 UAT test plan (`.planning/milestones/v0.10.0-UAT.md`) with 36 scenarios across 10 categories. Deployment reality documentation (57-04) covering Secure Boot, PPL coverage gaps, DACL tripwire backstop, privilege preservation, and reboot requirements. OPS-01, OPS-02, OPS-03 requirements satisfied. OPS-04 (UAT execution) PENDING manual execution on physical Windows 11 host.
+28. **2026-05-30: Phase 57 Plans 05-06 complete.** Final integration verification: standardized DLL naming convention (`dlp_hook_dll.dll` with underscore, not hyphen) across all documentation. Added code block language tags to deployment guide for syntax highlighting. Phase 57 status: IN PROGRESS (4 of 6 plans complete). Ship/no-ship decision PENDING UAT results. See `57-VERIFICATION.md` for detailed status.
 
 ## Blockers
 
-None.
+**Phase 57 — UAT Execution Required (Manual)**
+
+- OPS-04 requirement (UAT execution on physical Windows 11 host) is pending manual execution.
+- UAT must be run by operator on physical hardware with real cloud clients, real printers, and real USB/SD/optical/virtual drives.
+- CRIT-04 benchmark gate (<= 25% wall-clock overhead) must be verified during UAT.
+- See `.planning/phases/57-operational-deployment-guide-av-edr-allowlist-uat/57-VERIFICATION.md` for full status.
 
 ## Next Action
 
-### Immediate: Continue v0.11.0
+### Immediate: Complete Phase 57 UAT
+
+Phase 57 is IN PROGRESS (4 of 6 plans complete). Remaining work:
+
+1. **Manual UAT execution** on physical Windows 11 host (OPS-04)
+   - Run all 36 scenarios from `.planning/milestones/v0.10.0-UAT.md`
+   - Verify CRIT-04 benchmark gate (<= 25% overhead)
+   - Record results in UAT document
+
+2. **After UAT completes:**
+   - Analyze results and make ship/no-ship decision
+   - Update deployment guide with any UAT-discovered corrections
+   - Create final VERIFICATION.md with PASS/FAIL determination
+   - Update STATE.md and ROADMAP.md with Phase 57 completion
+
+3. **Phase 58** (Differentiators Bundle) can proceed in parallel with UAT execution if resources allow.
+
+### v0.11.0 Active Phases (Post-v0.10.0 Ship)
 
 ```
 /gsd-autonomous --from 60
