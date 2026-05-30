@@ -478,19 +478,205 @@ above.
 
 ## 4. Secure Boot & PPL Considerations
 
-<!-- Detailed content: See Plan 57-04 for Secure Boot, PPL, DACL tripwire, privilege, and reboot documentation -->
+### 4.1 Secure Boot Impact on Injection
 
-**Placeholder:** This section is reserved for Secure Boot, Protected Process
-Light (PPL), DACL tripwire, `SeSystemProfilePrivilege`, and reboot requirement
-documentation. Detailed content is owned by Plan 57-04 (per D-24).
+When Secure Boot is enabled, Windows ignores the `AppInit_DLLs` registry key.
+The agent detects this condition at startup via `is_secure_boot_enabled()` and
+emits a `SecureBootBlocksAppInit` audit event (logged at WARN level). The
+primary injection mechanism automatically falls back to the ETW Process Watcher
++ `CreateRemoteThread` path.
 
-Key points to be documented in 57-04:
+Injection coverage is functionally identical between the two mechanisms; only
+the delivery path changes:
 
-- Secure Boot disables AppInit_DLLs; the agent falls back to ntdll patching.
-- PPL-protected processes (lsass, MsMpEng, EDR self-processes) cannot be hooked;
-  DACL tripwire provides a backstop.
-- `SeSystemProfilePrivilege` must be preserved across agent upgrades.
-- Reboot is required after install for AppInit_DLLs / hook activation.
+| Mechanism | Secure Boot OFF | Secure Boot ON |
+|-----------|-----------------|----------------|
+| AppInit_DLLs | Active (process loads DLL at startup) | Ignored by Windows |
+| ETW + CreateRemoteThread | Available fallback | Primary path |
+
+**Verification steps for Secure Boot hosts:**
+
+1. Check Secure Boot status:
+   ```powershell
+   Confirm-SecureBootUEFI
+   ```
+   Expected: `True`
+
+2. Within 30 seconds of agent start, verify the `SecureBootBlocksAppInit`
+   event appears in the agent log:
+   ```powershell
+   Select-String -Path "C:\ProgramData\DLP\logs\dlp-agent.log" `
+     -Pattern "SecureBootBlocksAppInit" -SimpleMatch
+   ```
+
+3. Verify processes still receive the hook DLL via Process Hacker or:
+   ```powershell
+   Get-Process | Where-Object {
+     $_.Modules -match "dlp_hook_dll"
+   } | Select-Object Name, Id
+   ```
+
+**No action required.** Operators do NOT need to disable Secure Boot. The
+fallback mechanism is automatic and transparent.
+
+### 4.2 CreateRemoteThread EDR Compatibility
+
+Some EDR products may block or alert on `CreateRemoteThread` calls. The agent's
+usage is targeted (specific PID, known DLL path from `C:\Program Files\DLP\`)
+and should not trigger generic injection alerts on most EDRs.
+
+If an EDR does block `CreateRemoteThread`:
+
+1. Add an additional exclusion for the agent service account
+   (`NT SERVICE\DlpAgent`) in the EDR console.
+2. Operator-visible signal: check the agent log for
+   `CreateRemoteThread failed` messages.
+3. Check the EDR console for injection-blocking alerts correlated with agent
+   startup time.
+
+### 4.3 PPL Coverage Gap
+
+Protected Process Light (PPL) processes CANNOT be injected via
+`CreateRemoteThread`. This is a Windows security feature, not a DLP limitation.
+
+Affected processes include:
+
+| Process | Protection Level | Why Skipped |
+|---------|-----------------|-------------|
+| `lsass.exe` | WinTcb / PPL | Critical system security process |
+| `services.exe` | WinTcb | Service control manager |
+| `csrss.exe` | WinTcb | Client-server runtime |
+| `smss.exe` | WinTcb | Session manager |
+| `wininit.exe` | WinTcb | Windows startup |
+| `MsMpEng.exe` | AntiMalware PPL | Microsoft Defender self-protection |
+| EDR self-processes | AntiMalware PPL | Vendor-specific protection |
+
+There may be timing windows where a process starts before PPL is applied. The
+agent handles this via the allowlist refresh interval (periodic re-scan).
+
+### 4.4 DACL Tripwire as Backstop
+
+For T3/T4 paths, the DACL tripwire provides kernel-enforced protection EVEN
+when the hook cannot inject into a process.
+
+- If a PPL-protected process (e.g., Defender scanning a T4 file) attempts to
+  write or delete a protected path, NTFS returns `ERROR_ACCESS_DENIED`.
+- The tripwire is defense-in-depth: the hook catches most processes; the DACL
+  catches the rest.
+- The two-phase staged update mechanism ensures that operator-initiated removal
+  via the admin TUI does NOT trigger a tamper alert.
+
+**Coverage summary:**
+
+```
+Process Type          | Injection Coverage | Backstop
+----------------------|--------------------|------------------
+Normal user process   | Yes (hook DLL)     | DACL (T3/T4 only)
+System process        | Yes (if not PPL)   | DACL (T3/T4 only)
+PPL-protected process | No                 | DACL (T3/T4 only)
+Allowlisted process   | Skipped            | DACL (T3/T4 only)
+```
+
+**Operator-visible signal:** If a PPL-protected process attempts to access a
+T4 path, the access is denied silently (no alert). This is expected behavior.
+
+### 4.5 Coverage Equivalence
+
+The ETW Kernel-Process + `CreateRemoteThread` fallback has functionally
+identical coverage to `AppInit_DLLs`, with the following caveats:
+
+| Factor | AppInit_DLLs | ETW + CreateRemoteThread |
+|--------|--------------|--------------------------|
+| Timing | DLL loads at process startup | ETW observes creation, injects shortly after |
+| Typical gap | 0 ms | < 100 ms |
+| Privilege | None (Windows loader) | Requires appropriate privileges |
+| PPL exclusions | Skipped by OS loader | Skipped by allowlist matcher |
+
+The agent runs as a service with sufficient rights for `CreateRemoteThread`.
+
+### 4.6 SeSystemProfilePrivilege
+
+`SeSystemProfilePrivilege` is required for:
+
+- ETW Kernel-File consumer (Phase 53)
+- ETW Kernel-Process watcher (Phase 49)
+
+**Assignment methods:**
+
+**a) Group Policy (recommended for domain-joined hosts):**
+
+Computer Configuration -> Windows Settings -> Security Settings ->
+Local Policies -> User Rights Assignment -> "Profile system performance" ->
+Add `NT SERVICE\DlpAgent`
+
+**b) Command line (requires Windows Server 2003 Resource Kit Tools):**
+
+```batch
+ntrights.exe +r SeSystemProfilePrivilege -u "NT SERVICE\DlpAgent"
+```
+
+**c) PowerShell (copy-pasteable):**
+
+```powershell
+$privilege = "SeSystemProfilePrivilege"
+$account = "NT SERVICE\DlpAgent"
+$tempFile = [System.IO.Path]::GetTempFileName()
+secedit /export /cfg $tempFile /quiet
+$content = Get-Content $tempFile
+$content = $content -replace "^($privilege.*)$", "`$1,$account"
+$content | Set-Content $tempFile
+secedit /configure /db $env:TEMP\secedit.sdb /cfg $tempFile `
+  /areas USER_RIGHTS /quiet
+Remove-Item $tempFile
+```
+
+**Verification:**
+
+```powershell
+# Run as the agent service account
+whoami /priv | Select-String "SeSystemProfilePrivilege"
+```
+
+Expected: `SeSystemProfilePrivilege` shown as **Enabled**.
+
+**Privilege persistence:** The MSI installer preserves the service account
+(`NT SERVICE\DlpAgent`) across upgrades, so the privilege assignment survives
+agent updates.
+
+**Domain policy refresh:** If a domain GPO overrides local user rights, the
+privilege may be removed. For domain-joined hosts, assign the privilege via
+domain GPO to ensure persistence.
+
+### 4.7 Post-Install Reboot Requirement
+
+Reboot requirements are mechanism-qualified:
+
+| Scenario | Secure Boot OFF | Secure Boot ON |
+|----------|-----------------|----------------|
+| First install | Reboot REQUIRED for AppInit_DLLs hook activation | Reboot RECOMMENDED for clean ETW provider registration |
+| Service restart | Not required (hot reload) | Not required (hot reload) |
+| MSI upgrade | Reboot REQUIRED (DLLs may be memory-mapped) | Reboot REQUIRED (DLLs may be memory-mapped) |
+| Config change | Not required | Not required |
+
+**Rationale:**
+
+- **AppInit_DLLs active:** New processes must be started AFTER the registry key
+  is written to load the hook DLL. Existing processes are not retroactively
+  injected.
+- **ETW fallback:** The ETW session is registered at service start; new
+  processes are observed immediately. A reboot ensures no stale ETW state from
+  a previous installation.
+- **MSI upgrade:** The installer stops the service and replaces files, but
+  memory-mapped DLLs may persist until reboot.
+
+### 4.8 Upgrade Path
+
+1. MSI upgrade stops the `DlpAgent` service automatically.
+2. Installer replaces executables and DLLs in `C:\Program Files\DLP\`.
+3. Service account (`NT SERVICE\DlpAgent`) and privileges are preserved.
+4. Configuration (`C:\ProgramData\DLP\config\`) and SQLite database
+   (`C:\ProgramData\DLP\db\`) are preserved.
+5. **Reboot is required** after MSI upgrade (see table above).
 
 ---
 
