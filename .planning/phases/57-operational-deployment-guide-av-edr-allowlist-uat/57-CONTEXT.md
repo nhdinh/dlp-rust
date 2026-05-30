@@ -36,10 +36,10 @@ Phase 57 is the **v0.10.0 milestone ship gate**. It delivers the operational doc
 ### AV/EDR Vendor Coverage
 - **D-03:** Cover the top 6 vendors explicitly: Microsoft Defender for Endpoint, CrowdStrike Falcon, SentinelOne, Carbon Black (VMware), Sophos Intercept X, Trend Micro Apex One. Each gets its own subsection with console screenshots and step-by-step procedures.
 - **D-04:** Provide an extensible template at the end of the vendor section for adding new vendors. Template includes placeholder headings matching the 6 covered vendors' structure. This future-proofs the guide without expanding scope now.
-- **D-05:** Allowlist procedures cover BOTH path-based exclusions (for the installation directory `C:\Program Files\DLP\`) AND hash-based exclusions (for `dlp-agent.exe`, `dlp-hook-dll.dll`, `dlp-user-ui.exe`). Hash exclusions use the SHA-256 published in RELEASE_NOTES.md.
+- **D-05:** Allowlist procedures cover BOTH path-based exclusions (for the installation directory `C:\Program Files\DLP\`) AND hash-based exclusions (for `dlp-agent.exe`, `dlp_hook_dll.dll`, `dlp-user-ui.exe`). Hash exclusions use the SHA-256 published in RELEASE_NOTES.md.
 
 ### Hash Publishing and Signing Verification
-- **D-06:** SHA-256 and SHA-512 hashes for every release binary (`dlp-agent.exe`, `dlp-server.exe`, `dlp-admin-cli.exe`, `dlp-user-ui.exe`, `dlp-hook-dll.dll`, `dlp-hook-dll-x86.dll`) are published in `RELEASE_NOTES.md` under each release heading.
+- **D-06:** SHA-256 and SHA-512 hashes for every release binary (`dlp-agent.exe`, `dlp-server.exe`, `dlp-admin-cli.exe`, `dlp-user-ui.exe`, `dlp_hook_dll.dll`, `dlp_hook_dll_x86.dll`) are published in `RELEASE_NOTES.md` under each release heading.
 - **D-07:** Microsoft WDSI (Windows Defender SmartScreen Intelligence) binary submission flow is documented as a manual operator step, not automated. The guide includes the direct URL (`https://www.microsoft.com/en-us/wdsi/filesubmission`) and expected turnaround time (24-72 hours).
 - **D-08:** `signtool verify /pa dlp-agent.exe` is the documented verification command for Authenticode timestamp validation. The guide explains what "/pa" means (use default Authenticode policy) and what a clean output looks like.
 
@@ -119,7 +119,7 @@ Phase 57 is the **v0.10.0 milestone ship gate**. It delivers the operational doc
 
 ### Established Patterns
 - **Documentation style** — `dpapi-recovery.md` uses: prerequisites list, numbered steps, PowerShell snippets, verification commands, UAT checklist. Deployment guide follows this exactly.
-- **Release artifact naming** — `dlp-agent.exe`, `dlp-server.exe`, `dlp-admin-cli.exe`, `dlp-user-ui.exe`, `dlp-hook-dll.dll`, `dlp-hook-dll-x86.dll`. Consistent naming across installer, CI, and documentation.
+- **Release artifact naming** — `dlp-agent.exe`, `dlp-server.exe`, `dlp-admin-cli.exe`, `dlp-user-ui.exe`, `dlp_hook_dll.dll`, `dlp_hook_dll_x86.dll`. Consistent naming across installer, CI, and documentation.
 - **AV/EDR allowlist patterns** — Phase 49's allowlist module (`dlp-agent/src/allowlist.rs`) documents the process categories that are skipped. Deployment guide maps these to vendor-specific exclusion procedures.
 
 ### Integration Points
@@ -128,7 +128,7 @@ Phase 57 is the **v0.10.0 milestone ship gate**. It delivers the operational doc
 - `.planning/milestones/v0.10.0-UAT.md` — New UAT results document.
 - `dlp-agent/src/allowlist.rs` — Reference for AV/EDR process categories that need allowlisting.
 - `dlp-agent/src/service.rs` — Reference for AppInit_DLLs behavior, Secure Boot detection, `siem.appinit_dlls_disabled` event.
-- `dlp-hook-dll/src/background_thread.rs` — Reference for self-health counters (DIFF-04 deferred, but relevant for troubleshooting section).
+- `dlp_hook_dll/src/background_thread.rs` — Reference for self-health counters (DIFF-04 deferred, but relevant for troubleshooting section).
 </code_context>
 
 <specifics>

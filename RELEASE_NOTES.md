@@ -25,8 +25,8 @@ $binaries = @(
   "dlp-server.exe",
   "dlp-admin-cli.exe",
   "dlp-user-ui.exe",
-  "dlp-hook-dll.dll",
-  "dlp-hook-dll-x86.dll"
+  "dlp_hook_dll.dll",
+  "dlp_hook_dll_x86.dll"
 )
 
 foreach ($binary in $binaries) {
@@ -49,8 +49,8 @@ $binaries = @(
   "dlp-server.exe",
   "dlp-admin-cli.exe",
   "dlp-user-ui.exe",
-  "dlp-hook-dll.dll",
-  "dlp-hook-dll-x86.dll"
+  "dlp_hook_dll.dll",
+  "dlp_hook_dll_x86.dll"
 )
 
 $releaseNotes = Get-Content .\RELEASE_NOTES.md -Raw
@@ -205,8 +205,8 @@ bypass detection.
 | dlp-server.exe | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
 | dlp-admin-cli.exe | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
 | dlp-user-ui.exe | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
-| dlp-hook-dll.dll | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
-| dlp-hook-dll-x86.dll | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
+| dlp_hook_dll.dll | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
+| dlp_hook_dll_x86.dll | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
 
 ### Breaking Changes
 

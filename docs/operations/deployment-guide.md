@@ -1,7 +1,7 @@
 # DLP Agent Deployment Guide
 
 **Version:** v0.10.0
-**Applies to:** dlp-agent, dlp-hook-dll, dlp-user-ui, dlp-admin-cli, dlp-server
+**Applies to:** dlp-agent, dlp_hook_dll, dlp-user-ui, dlp-admin-cli, dlp-server
 
 ## Quick Start for Experienced Operators
 
@@ -49,7 +49,7 @@ signtool verify /pa C:\DLP-Install\dlp-agent-v0.10.0-x64.msi
 
 Expected output includes:
 
-```
+```text
 Successfully verified: C:\DLP-Install\dlp-agent-v0.10.0-x64.msi
 ```
 
@@ -97,7 +97,7 @@ exclusions BEFORE starting the agent service.
 Allowlist approach per D-05:
 
 - **Path exclusion:** `C:\Program Files\DLP\`
-- **Hash exclusions:** SHA-256 hashes for `dlp-agent.exe`, `dlp-hook-dll.dll`,
+- **Hash exclusions:** SHA-256 hashes for `dlp-agent.exe`, `dlp_hook_dll.dll`,
   and `dlp-user-ui.exe` (published in RELEASE_NOTES.md).
 
 > **Last verified date placeholder:** All vendor sections below show a
@@ -108,7 +108,7 @@ Allowlist approach per D-05:
 
 **Expected detection behavior:**
 
-Defender may flag `dlp-hook-dll.dll` as `Trojan:Win32/Wacatac.B!ml` (example
+Defender may flag `dlp_hook_dll.dll` as `Trojan:Win32/Wacatac.B!ml` (example
 only; record your actual detection name). The agent's ntdll patching and
 AppInit_DLLs registration trigger behavior-based detections.
 
@@ -120,7 +120,7 @@ AppInit_DLLs registration trigger behavior-based detections.
 4. Add a **Folder** exclusion: `C:\Program Files\DLP\`.
 5. Add **File** exclusions for each binary using the SHA-256 hash from RELEASE_NOTES.md:
    - `dlp-agent.exe`
-   - `dlp-hook-dll.dll`
+   - `dlp_hook_dll.dll`
    - `dlp-user-ui.exe`
 
 [ Screenshot: Windows Security app -> Virus & threat protection -> Exclusions ]
@@ -128,7 +128,7 @@ AppInit_DLLs registration trigger behavior-based detections.
 
 **Group Policy path (enterprise deployment):**
 
-```
+```text
 Computer Configuration > Administrative Templates > Windows Components > Microsoft Defender Antivirus > Exclusions
 ```
 
@@ -159,7 +159,7 @@ Expected: `C:\Program Files\DLP\` listed.
 If Defender continues to block after exclusion, submit the binary to Microsoft
 WDSI for reputation update:
 
-```
+```text
 https://www.microsoft.com/en-us/wdsi/filesubmission
 ```
 
@@ -205,10 +205,10 @@ unknown DLL loads (AppInit_DLLs). Detections appear under **Endpoint Security** 
 
 **Hash exclusion example (SHA-256):**
 
-```
+```text
 Hash type: SHA256
 Hash value: A1B2C3D4E5F6... (64 chars, from RELEASE_NOTES.md)
-Applies to: dlp-agent.exe, dlp-hook-dll.dll, dlp-user-ui.exe
+Applies to: dlp-agent.exe, dlp_hook_dll.dll, dlp-user-ui.exe
 ```
 
 **Verification command:**
@@ -233,7 +233,7 @@ If Falcon quarantines the DLL before exclusion is applied, restore it from
 
 **Expected detection behavior:**
 
-SentinelOne may block `dlp-hook-dll.dll` as suspicious due to global injection
+SentinelOne may block `dlp_hook_dll.dll` as suspicious due to global injection
 behavior. The recommended approach is **certificate hash exclusion** (NOT file
 hash), because file hashes change per release but the code-signing certificate
 remains consistent.
@@ -252,7 +252,7 @@ remains consistent.
 
 **Certificate hash exclusion:**
 
-```
+```text
 Exclusion type: Certificate Hash
 Thumbprint: AB CD EF 12 34 56 ... (40 chars, from RELEASE_NOTES.md)
 Applies to: All binaries signed with this certificate
@@ -285,7 +285,7 @@ exclusions, which must be updated on every release.
 
 **Expected detection behavior:**
 
-Carbon Black may assign a low reputation score to `dlp-hook-dll.dll` due to
+Carbon Black may assign a low reputation score to `dlp_hook_dll.dll` due to
 unknown publisher or suspicious behavior. This triggers blocking in restrictive
 policies.
 
@@ -298,14 +298,14 @@ policies.
 5. Click **Add Reputation Override**.
 6. Select **Override type: SHA-256 Hash**.
 7. Enter the SHA-256 hash from RELEASE_NOTES.md and set reputation to **Known Good**.
-8. Repeat for each binary: `dlp-agent.exe`, `dlp-hook-dll.dll`, `dlp-user-ui.exe`.
+8. Repeat for each binary: `dlp-agent.exe`, `dlp_hook_dll.dll`, `dlp-user-ui.exe`.
 
 [ Screenshot: Carbon Black console -> Enforce -> Policies -> Reputation Overrides ]
 *(To be added during UAT execution)*
 
 **Reputation override example:**
 
-```
+```text
 Override type: SHA-256 Hash
 Hash: A1B2C3D4E5F6... (64 chars, from RELEASE_NOTES.md)
 Reputation: Known Good
@@ -346,7 +346,7 @@ AppInit_DLLs.
 3. Select the policy applied to DLP hosts.
 4. Under **Exclusions**, add:
    - **Path exclusion:** `C:\Program Files\DLP\`
-   - **File exclusions:** `dlp-agent.exe`, `dlp-hook-dll.dll`, `dlp-user-ui.exe`
+   - **File exclusions:** `dlp-agent.exe`, `dlp_hook_dll.dll`, `dlp-user-ui.exe`
 5. **Disable tamper protection temporarily** during initial install (re-enable after):
    - Sophos Central > **Settings** > **Tamper Protection** > **Disable**
    - Or use the local tamper-protection password if configured.
@@ -356,10 +356,10 @@ AppInit_DLLs.
 
 **Hash exclusion example (SHA-256):**
 
-```
+```text
 Exclusion type: File hash (SHA-256)
 Hash: A1B2C3D4E5F6... (from RELEASE_NOTES.md)
-Files: dlp-agent.exe, dlp-hook-dll.dll, dlp-user-ui.exe
+Files: dlp-agent.exe, dlp_hook_dll.dll, dlp-user-ui.exe
 ```
 
 **Verification command:**
@@ -397,7 +397,7 @@ local exclusions take effect. The agent may be blocked as "untested" or
 3. Create a new exception list (or edit the DLP host policy).
 4. Add **Scan Exclusions**:
    - **Folder:** `C:\Program Files\DLP\`
-   - **Files:** `dlp-agent.exe`, `dlp-hook-dll.dll`, `dlp-user-ui.exe`
+   - **Files:** `dlp-agent.exe`, `dlp_hook_dll.dll`, `dlp-user-ui.exe`
 5. Under **Scan Method**, ensure the policy uses **Conventional Scan** (not Smart
    Scan) for the DLP path, OR add hash-based exceptions to the Smart Scan
    approved list.
@@ -407,7 +407,7 @@ local exclusions take effect. The agent may be blocked as "untested" or
 
 **Hash exclusion example (SHA-256):**
 
-```
+```text
 Exception type: File hash
 Hash algorithm: SHA-256
 Hash value: A1B2C3D4E5F6... (from RELEASE_NOTES.md)
@@ -457,7 +457,7 @@ above.
 
 **Hash exclusion example (SHA-256):**
 
-```
+```text
 [Exclusion type and values]
 ```
 
@@ -472,7 +472,6 @@ above.
 [Common issue and resolution.]
 
 **[Last verified: YYYY-MM-DD]**
-```
 
 ---
 
@@ -568,7 +567,7 @@ when the hook cannot inject into a process.
 
 **Coverage summary:**
 
-```
+```text
 Process Type          | Injection Coverage | Backstop
 ----------------------|--------------------|------------------
 Normal user process   | Yes (hook DLL)     | DACL (T3/T4 only)
