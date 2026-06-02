@@ -139,7 +139,6 @@ impl DiagnosticAggregator {
     ) -> (Vec<DiagnosticSnapshot>, usize) {
         let all = self.get_snapshots(filter);
         let total = all.len();
-        let end = (offset + limit).min(total);
         let paginated = all.into_iter().skip(offset).take(limit).collect();
         (paginated, total)
     }
