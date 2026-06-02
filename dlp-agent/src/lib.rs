@@ -134,6 +134,8 @@ pub mod share_link_enforcer;
 
 pub mod approval_cache;
 
+pub mod diagnostic_aggregator;
+
 #[cfg(windows)]
 pub mod classification_cache;
 
