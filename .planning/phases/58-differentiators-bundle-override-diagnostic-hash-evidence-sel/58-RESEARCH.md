@@ -534,16 +534,22 @@ if let Some(deny) = classify_and_log_handle(handle_value, "WRITE", "WriteFile", 
 | A4 | The Phase 61 approval workflow endpoints (`POST /admin/approvals`, `GET /agent/approvals`) are stable and reusable | Phase Requirements | LOW — These are shipped and tested in Phase 61 |
 | A5 | Computing SHA-256 of 100MB on a dedicated thread pool adds < 5ms latency | Performance | MEDIUM — Actual latency depends on CPU; the 100MB cap and thread pool should keep it under 5ms on modern hardware |
 
-## Open Questions (RESOLVED)
+## Open Questions
 
 1. **Should diagnostic snapshots include the full ABAC policy conditions or just the matched policy ID?**
-   - RESOLVED: Include `matched_policy_id` only; the TUI fetches policy details via a separate API call if needed. This keeps snapshot size bounded.
+   - What we know: D-07 specifies `matched_policy_id` and `enforcement_mode` only.
+   - What's unclear: Whether operators need the full policy name/conditions for triage.
+   - Recommendation: Include `matched_policy_id` only; the TUI can fetch policy details via a separate API call if needed. This keeps snapshot size bounded.
 
 2. **How should the hash computation thread pool handle process exit?**
-   - RESOLVED: Allow completions — hash computation is bounded by 100MB and completes quickly. No cancellation complexity added.
+   - What we know: The hook DLL is unloaded when the process exits. Rayon threads are daemon threads.
+   - What's unclear: Whether pending hash computations should be cancelled or allowed to complete.
+   - Recommendation: Allow completions — hash computation is bounded by 100MB and should complete quickly. Do not add cancellation complexity.
 
 3. **Should the self-health dashboard show per-process or per-host aggregation?**
-   - RESOLVED: Per-host only for v0.10.0. Per-process breakdown is deferred to v0.11.0 fleet management.
+   - What we know: D-18 specifies per-host counters. D-23 says the dashboard is read-only.
+   - What's unclear: Whether operators need per-process breakdown for debugging.
+   - Recommendation: Per-host only for v0.10.0. Per-process breakdown is deferred to v0.11.0 fleet management.
 
 ## Environment Availability
 
