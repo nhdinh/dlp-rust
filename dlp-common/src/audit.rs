@@ -1614,9 +1614,18 @@ mod tests {
         assert_eq!(event.hash_skipped, Some(false));
 
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"content_sha256\""), "content_sha256 must be present: {json}");
-        assert!(json.contains("\"hash_truncated\""), "hash_truncated must be present: {json}");
-        assert!(json.contains("\"hash_skipped\""), "hash_skipped must be present: {json}");
+        assert!(
+            json.contains("\"content_sha256\""),
+            "content_sha256 must be present: {json}"
+        );
+        assert!(
+            json.contains("\"hash_truncated\""),
+            "hash_truncated must be present: {json}"
+        );
+        assert!(
+            json.contains("\"hash_skipped\""),
+            "hash_skipped must be present: {json}"
+        );
     }
 
     #[test]
