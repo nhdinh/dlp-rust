@@ -692,7 +692,7 @@ pub(crate) fn classify_path(
     pipe_name: &str,
     source_volume_class: Option<VolumeClass>,
     destination_volume_class: Option<VolumeClass>,
-) -> Result<Decision, pipe_client::PipeError> {
+) -> Result<dlp_common::HookResponse, pipe_client::PipeError> {
     let req = HookRequest {
         path: path.to_string(),
         action: action.to_string(),
@@ -700,10 +700,9 @@ pub(crate) fn classify_path(
         destination_volume_class,
         ..Default::default()
     };
-    let resp = pipe_client::send_request(
+    pipe_client::send_request(
         pipe_name, &req, 50, // 50 ms timeout per task spec
-    )?;
-    Ok(resp.decision)
+    )
 }
 
 /// Sends a handle-based classification request to the agent via named pipe.
@@ -719,7 +718,7 @@ pub(crate) fn classify_handle(
     handle_value: u64,
     action: &str,
     pipe_name: &str,
-) -> Result<Decision, pipe_client::PipeError> {
+) -> Result<dlp_common::HookResponse, pipe_client::PipeError> {
     let req = HandleHookRequest {
         handle_value,
         action: action.to_string(),
@@ -734,7 +733,7 @@ pub(crate) fn classify_handle(
         Ok(r) => r,
         Err(_) => return Err(pipe_client::PipeError::Malformed),
     };
-    Ok(resp.decision)
+    Ok(resp)
 }
 
 // ---------------------------------------------------------------------------
@@ -954,7 +953,7 @@ mod tests {
 
         let result = classify_path(r"C:\secret.txt", "CREATE", pipe_name, None, None);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Decision::DENY);
+        assert_eq!(result.unwrap().decision, Decision::DENY);
     }
 
     #[test]
@@ -972,7 +971,7 @@ mod tests {
 
         let result = classify_path(r"C:\public.txt", "CREATE", pipe_name, None, None);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Decision::ALLOW);
+        assert_eq!(result.unwrap().decision, Decision::ALLOW);
     }
 
     #[test]
