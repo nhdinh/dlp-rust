@@ -1272,6 +1272,8 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
                 .put(update_protected_path_handler)
                 .delete(delete_protected_path_handler),
         )
+        // Phase 58: Diagnostics admin API
+        .route("/admin/diagnostics", get(list_diagnostics_handler))
         // Phase 53: Bypass alerts admin API
         .route("/admin/bypass-alerts", get(list_bypass_alerts_handler))
         .route(
@@ -5373,6 +5375,72 @@ async fn bypass_batch_ingest_handler(
     Ok(Json(BypassAlertIngestResponse { inserted, skipped }))
 }
 
+// ---------------------------------------------------------------------------
+// Diagnostics (Phase 58)
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /admin/diagnostics`.
+#[derive(Debug, Deserialize)]
+struct DiagnosticQuery {
+    /// Only include snapshots captured after this ISO-8601 timestamp.
+    since: Option<chrono::DateTime<chrono::Utc>>,
+    /// Filter by user SID.
+    user_sid: Option<String>,
+    /// Filter by matched policy ID.
+    policy_id: Option<String>,
+    /// Maximum number of snapshots to return (capped at 1000).
+    #[serde(default = "default_diagnostic_limit")]
+    limit: usize,
+    /// Number of snapshots to skip.
+    #[serde(default)]
+    offset: usize,
+}
+
+fn default_diagnostic_limit() -> usize {
+    100
+}
+
+/// Response payload for `GET /admin/diagnostics`.
+#[derive(Debug, Serialize, Deserialize)]
+struct DiagnosticListResponse {
+    /// Total number of snapshots matching the filter (before pagination).
+    total: usize,
+    /// Paginated list of diagnostic snapshots.
+    snapshots: Vec<dlp_common::hook_ipc::DiagnosticSnapshot>,
+}
+
+/// `GET /admin/diagnostics` — list diagnostic snapshots with optional filters.
+///
+/// Requires admin JWT. Returns an empty list when `diagnostic_store` is not
+/// configured (standalone server mode).
+async fn list_diagnostics_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<DiagnosticQuery>,
+) -> Result<Json<DiagnosticListResponse>, AppError> {
+    let limit = q.limit.min(1000);
+
+    match &state.diagnostic_store {
+        Some(store) => {
+            let filter = crate::diagnostic_store::DiagnosticFilter {
+                since: q.since,
+                user_sid: q.user_sid,
+                policy_id: q.policy_id,
+            };
+            let store = Arc::clone(store);
+            let (snapshots, total) = tokio::task::spawn_blocking(move || {
+                store.get_snapshots_paginated(&filter, limit, q.offset)
+            })
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?;
+            Ok(Json(DiagnosticListResponse { total, snapshots }))
+        }
+        None => Ok(Json(DiagnosticListResponse {
+            total: 0,
+            snapshots: vec![],
+        })),
+    }
+}
+
 /// `GET /admin/bypass-alerts` — list bypass alerts with optional filters.
 ///
 /// Supports filtering by since, severity, acknowledged, agent_id, pid,
@@ -5702,6 +5770,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         admin_router(state)
     }
@@ -5784,6 +5853,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         let app = admin_router(state);
 
@@ -5857,6 +5927,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         let app = admin_router(state);
 
@@ -5984,6 +6055,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         let app = admin_router(state);
 
@@ -6154,6 +6226,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         let app = admin_router(state);
 
@@ -6406,6 +6479,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -7340,6 +7414,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         let app = admin_router(state);
 
@@ -7497,6 +7572,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -7600,6 +7676,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -8044,6 +8121,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         let app = admin_router(state);
 
@@ -8140,6 +8218,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         let app = admin_router(state);
 
@@ -8236,6 +8315,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         let app = admin_router(state);
 
@@ -8938,6 +9018,7 @@ mod tests {
             bypass_alerts: std::sync::Arc::new(
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         })
     }
 
@@ -9358,6 +9439,7 @@ mod tests {
                 bypass_alerts: std::sync::Arc::new(
                     crate::db::repositories::bypass_alerts::BypassAlertsRepository,
                 ),
+                diagnostic_store: None,
             });
             // Minimal router with just the disk-registry delete route for isolation.
             axum::Router::new()
@@ -9438,6 +9520,7 @@ mod tests {
                 bypass_alerts: std::sync::Arc::new(
                     crate::db::repositories::bypass_alerts::BypassAlertsRepository,
                 ),
+                diagnostic_store: None,
             });
             axum::Router::new()
                 .route(
@@ -9788,6 +9871,7 @@ mod tests {
                 bypass_alerts: std::sync::Arc::new(
                     crate::db::repositories::bypass_alerts::BypassAlertsRepository,
                 ),
+                diagnostic_store: None,
             });
             axum::Router::new()
                 .route(
@@ -12058,5 +12142,274 @@ mod tests {
         assert_eq!(payload.protected_paths.len(), 1);
         assert_eq!(payload.protected_paths[0].path, r"C:\AgentTest");
         assert_eq!(payload.protected_paths[0].tier, "T3");
+    }
+
+    // ------------------------------------------------------------------
+    // Diagnostics endpoint tests (Phase 58-04)
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_list_diagnostics_requires_auth() {
+        // Unauthenticated GET to /admin/diagnostics returns 401.
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let app = spawn_admin_app();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/diagnostics")
+            .body(Body::empty())
+            .expect("build request");
+
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_list_diagnostics_empty_when_no_store() {
+        // When diagnostic_store is None, the endpoint returns an empty list.
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/diagnostics")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build request");
+
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let payload: DiagnosticListResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(payload.total, 0);
+        assert!(payload.snapshots.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_diagnostics_with_data() {
+        // When diagnostic_store is populated, the endpoint returns snapshots.
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use dlp_common::hook_ipc::{ClassificationSource, DiagnosticSnapshot};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
+        );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
+        let syslog = crate::syslog_connector::SyslogConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+
+        // Create a diagnostic store with test data.
+        let diag_store = Arc::new(crate::diagnostic_store::DiagnosticSnapshotStore::new());
+        let snap = DiagnosticSnapshot {
+            hook_function: "WriteFile".to_string(),
+            classification_source: ClassificationSource::CacheHit,
+            classification_age_ms: 42,
+            abac_subject: "S-1-5-21-1".to_string(),
+            abac_resource: r"C:\Data\file.txt".to_string(),
+            abac_action: "WRITE".to_string(),
+            abac_environment: "local".to_string(),
+            matched_policy_id: Some("pol-001".to_string()),
+            enforcement_mode: Some("Block".to_string()),
+            decision_latency_us: 150,
+            timestamp_qpc: 1000,
+            user_sid: "S-1-5-21-1".to_string(),
+        };
+        diag_store.ingest("AGENT-01", 1234, vec![snap]);
+
+        let state = Arc::new(AppState {
+            pool: Arc::clone(&pool),
+            crypto: std::sync::Arc::clone(&crypto),
+            policy_store,
+            siem,
+            alert,
+            ad: None,
+            label_service,
+            approval_token_service,
+            syslog,
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
+            diagnostic_store: Some(Arc::clone(&diag_store)),
+        });
+        let app = admin_router(state);
+        let token = mint_admin_jwt();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/diagnostics")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build request");
+
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let payload: DiagnosticListResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(payload.total, 1);
+        assert_eq!(payload.snapshots.len(), 1);
+        assert_eq!(payload.snapshots[0].user_sid, "S-1-5-21-1");
+        assert_eq!(payload.snapshots[0].matched_policy_id, Some("pol-001".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_diagnostics_pagination_and_filtering() {
+        // Test limit, offset, and user_sid filter query parameters.
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use dlp_common::hook_ipc::{ClassificationSource, DiagnosticSnapshot};
+        use tower::ServiceExt;
+
+        crate::admin_auth::set_jwt_secret(TEST_JWT_SECRET.to_string());
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db");
+        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
+        let crypto = std::sync::Arc::new(crate::crypto::SecretCrypto::from_kek(
+            [0x77; 32],
+            crate::crypto::ENVELOPE_VERSION_V1,
+        ));
+        crate::secrets_migration::migrate_secrets_to_encrypted(&pool, &crypto, None)
+            .expect("Phase 47 migration");
+        let siem = crate::siem_connector::SiemConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let alert = crate::alert_router::AlertRouter::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+        let policy_store = Arc::new(
+            crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("policy store"),
+        );
+        let label_service = Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool)));
+        let approval_token_crypto = crate::crypto::SecretCrypto::from_kek([0x77; 32], 1);
+        let approval_token_conn = pool.get().expect("pool");
+        let approval_token_service = Arc::new(
+            crate::approval_token::ApprovalTokenService::new(
+                &approval_token_crypto,
+                &approval_token_conn,
+            )
+            .expect("approval token service"),
+        );
+        let syslog = crate::syslog_connector::SyslogConnector::new(
+            std::sync::Arc::clone(&pool),
+            std::sync::Arc::clone(&crypto),
+        );
+
+        let diag_store = Arc::new(crate::diagnostic_store::DiagnosticSnapshotStore::new());
+        for i in 0..5 {
+            let snap = DiagnosticSnapshot {
+                hook_function: "WriteFile".to_string(),
+                classification_source: ClassificationSource::CacheHit,
+                classification_age_ms: 42,
+                abac_subject: if i % 2 == 0 { "S-1-5-21-A".to_string() } else { "S-1-5-21-B".to_string() },
+                abac_resource: r"C:\Data\file.txt".to_string(),
+                abac_action: "WRITE".to_string(),
+                abac_environment: "local".to_string(),
+                matched_policy_id: Some(format!("pol-{i:03}")),
+                enforcement_mode: Some("Block".to_string()),
+                decision_latency_us: 150,
+                timestamp_qpc: i as u64 * 1000,
+                user_sid: if i % 2 == 0 { "S-1-5-21-A".to_string() } else { "S-1-5-21-B".to_string() },
+            };
+            diag_store.ingest("AGENT-01", 100, vec![snap]);
+        }
+
+        let state = Arc::new(AppState {
+            pool: Arc::clone(&pool),
+            crypto: std::sync::Arc::clone(&crypto),
+            policy_store,
+            siem,
+            alert,
+            ad: None,
+            label_service,
+            approval_token_service,
+            syslog,
+            label_aware_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            protected_paths: std::sync::Arc::new(
+                crate::db::repositories::protected_paths::ProtectedPathsRepository,
+            ),
+            bypass_alerts: std::sync::Arc::new(
+                crate::db::repositories::bypass_alerts::BypassAlertsRepository,
+            ),
+            diagnostic_store: Some(Arc::clone(&diag_store)),
+        });
+        let app = admin_router(state);
+        let token = mint_admin_jwt();
+
+        // Test limit=2, offset=1.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/diagnostics?limit=2&offset=1")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build request");
+
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let payload: DiagnosticListResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(payload.total, 5);
+        assert_eq!(payload.snapshots.len(), 2);
+
+        // Test user_sid filter.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/diagnostics?user_sid=S-1-5-21-A")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build request");
+
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let payload: DiagnosticListResponse = serde_json::from_slice(&body).expect("parse");
+        assert_eq!(payload.total, 3); // indices 0, 2, 4
+        assert!(payload.snapshots.iter().all(|s| s.user_sid == "S-1-5-21-A"));
     }
 }

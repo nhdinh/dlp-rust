@@ -69,6 +69,7 @@ fn test_app() -> axum::Router {
         bypass_alerts: std::sync::Arc::new(
             dlp_server::db::repositories::bypass_alerts::BypassAlertsRepository,
         ),
+        diagnostic_store: None,
     });
     admin_router(state)
 }

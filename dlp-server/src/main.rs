@@ -294,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
         label_aware_enabled: Arc::clone(&label_aware_enabled),
         protected_paths: Arc::new(db::repositories::protected_paths::ProtectedPathsRepository),
         bypass_alerts: Arc::new(db::repositories::bypass_alerts::BypassAlertsRepository),
+        diagnostic_store: None,
     });
 
     // Start the background heartbeat sweeper (marks agents offline

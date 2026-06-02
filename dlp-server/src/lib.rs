@@ -12,6 +12,7 @@ pub mod approval_token;
 pub mod audit_store;
 pub mod crypto;
 pub mod db;
+pub mod diagnostic_store;
 pub mod exception_store;
 pub mod label_service;
 pub mod observability;
@@ -74,6 +75,9 @@ pub struct AppState {
     pub protected_paths: Arc<db::repositories::protected_paths::ProtectedPathsRepository>,
     /// Phase 53: Bypass alerts repository for admin API and agent ingest.
     pub bypass_alerts: Arc<db::repositories::bypass_alerts::BypassAlertsRepository>,
+    /// Phase 58: Optional diagnostic snapshot store for admin diagnostics API.
+    /// Populated when server runs bundled with agent (test mode).
+    pub diagnostic_store: Option<Arc<diagnostic_store::DiagnosticSnapshotStore>>,
 }
 
 impl AppState {
@@ -116,6 +120,14 @@ impl std::fmt::Debug for AppState {
             )
             .field("protected_paths", &"ProtectedPathsRepository(...)")
             .field("bypass_alerts", &"BypassAlertsRepository(...)")
+            .field(
+                "diagnostic_store",
+                &if self.diagnostic_store.is_some() {
+                    "Some(DiagnosticSnapshotStore)"
+                } else {
+                    "None"
+                },
+            )
             .finish()
     }
 }
@@ -278,6 +290,7 @@ mod app_state_tests {
                 crate::db::repositories::protected_paths::ProtectedPathsRepository,
             ),
             bypass_alerts: Arc::new(crate::db::repositories::bypass_alerts::BypassAlertsRepository),
+            diagnostic_store: None,
         }
     }
 
