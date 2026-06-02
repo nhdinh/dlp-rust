@@ -78,6 +78,7 @@ pub fn store_events_sync(uow: &UnitOfWork<'_>, events: &[AuditEvent]) -> Result<
                 session_id: event.session_id as i64,
                 access_context: serde_json::to_string(&event.access_context)?,
                 correlation_id: event.correlation_id.clone(),
+                content_sha256: event.content_sha256.clone(),
             })
         })
         .collect::<Result<Vec<_>, serde_json::Error>>()?;
@@ -182,6 +183,7 @@ pub async fn ingest_events(
                         .unwrap_or_default()
                         .to_string(),
                     correlation_id: event.correlation_id.clone(),
+                    content_sha256: event.content_sha256.clone(),
                 })
             })
             .collect::<Result<Vec<_>, serde_json::Error>>()
@@ -384,5 +386,68 @@ mod tests {
         assert_eq!(event_type, "\"ADMIN_ACTION\"");
         assert_eq!(action, "\"PolicyCreate\"");
         assert_eq!(resource_path, "policy:test-policy");
+    }
+
+    #[test]
+    fn test_store_events_sync_content_sha256() {
+        use crate::db;
+        let pool = db::new_pool(":memory:").expect("build pool");
+        let event = dlp_common::AuditEvent::new(
+            dlp_common::EventType::Access,
+            "S-1-5-21-1".to_string(),
+            "testuser".to_string(),
+            r"C:\Data\secret.doc".to_string(),
+            dlp_common::Classification::T4,
+            dlp_common::Action::READ,
+            dlp_common::Decision::DenyWithAlert,
+            "agent-01".to_string(),
+            42,
+        )
+        .with_content_hash("abc123def456".to_string(), false, false);
+
+        let mut conn = pool.get().expect("acquire connection");
+        let uow = db::UnitOfWork::new(&mut conn).expect("begin transaction");
+        store_events_sync(&uow, &[event]).expect("store event");
+        uow.commit().expect("commit");
+
+        let (content_sha256,): (Option<String>,) = conn
+            .query_row(
+                "SELECT content_sha256 FROM audit_events",
+                [],
+                |row: &rusqlite::Row| Ok((row.get(0)?,)),
+            )
+            .expect("query audit_events");
+        assert_eq!(content_sha256, Some("abc123def456".to_string()));
+    }
+
+    #[test]
+    fn test_store_events_sync_null_content_sha256() {
+        use crate::db;
+        let pool = db::new_pool(":memory:").expect("build pool");
+        let event = dlp_common::AuditEvent::new(
+            dlp_common::EventType::Access,
+            "S-1-5-21-1".to_string(),
+            "testuser".to_string(),
+            r"C:\Data\secret.doc".to_string(),
+            dlp_common::Classification::T4,
+            dlp_common::Action::READ,
+            dlp_common::Decision::DenyWithAlert,
+            "agent-01".to_string(),
+            42,
+        );
+
+        let mut conn = pool.get().expect("acquire connection");
+        let uow = db::UnitOfWork::new(&mut conn).expect("begin transaction");
+        store_events_sync(&uow, &[event]).expect("store event");
+        uow.commit().expect("commit");
+
+        let (content_sha256,): (Option<String>,) = conn
+            .query_row(
+                "SELECT content_sha256 FROM audit_events",
+                [],
+                |row: &rusqlite::Row| Ok((row.get(0)?,)),
+            )
+            .expect("query audit_events");
+        assert!(content_sha256.is_none());
     }
 }
