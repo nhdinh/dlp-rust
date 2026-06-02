@@ -963,6 +963,26 @@ struct RunLoopContext {
     correlator_shutdown: Option<tokio::sync::watch::Sender<bool>>,
     /// Phase 53: Handle for the bypass correlator task.
     correlator_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 58: Diagnostic snapshot aggregator for hook DLL diagnostics.
+    #[allow(dead_code)]
+    diagnostic_aggregator: Arc<crate::diagnostic_aggregator::DiagnosticAggregator>,
+    /// Phase 58: Health snapshot aggregator for hook DLL health monitoring.
+    #[allow(dead_code)]
+    health_aggregator: Arc<crate::health_aggregator::HealthAggregator>,
+    /// Phase 58: Handle for the hook IPC server thread.
+    hook_ipc_handle: Option<std::thread::JoinHandle<()>>,
+    /// Phase 58: Shutdown signal for the diagnostic snapshot periodic push task.
+    #[allow(dead_code)]
+    diagnostic_push_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Phase 58: Handle for the diagnostic snapshot periodic push task.
+    #[allow(dead_code)]
+    diagnostic_push_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 58: Shutdown signal for the health snapshot periodic push task.
+    #[allow(dead_code)]
+    health_push_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Phase 58: Handle for the health snapshot periodic push task.
+    #[allow(dead_code)]
+    health_push_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// The main service run loop.
@@ -1502,6 +1522,61 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         (None, None)
     };
 
+    // ── Phase 58: Diagnostic and Health Aggregators ────────────────────────
+    let diagnostic_aggregator = Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new());
+    let health_aggregator = Arc::new(crate::health_aggregator::HealthAggregator::new());
+    info!("diagnostic and health aggregators initialised");
+
+    // ── Phase 58: Hook IPC Server (named pipe for hook DLL communication) ──
+    // The server runs on a dedicated std::thread because ConnectNamedPipeW blocks.
+    let hook_ipc_diag = Arc::clone(&diagnostic_aggregator);
+    let hook_ipc_health = Arc::clone(&health_aggregator);
+    let hook_ipc_handle = std::thread::Builder::new()
+        .name("hook-ipc".into())
+        .spawn(move || {
+            let diag_handler: crate::hook_ipc::DiagnosticsHandler = Arc::new(
+                move |req: dlp_common::hook_ipc::PullDiagnosticsRequest| {
+                    let filter = crate::diagnostic_aggregator::DiagnosticFilter::default();
+                    let (snapshots, _total) = hook_ipc_diag.get_snapshots_paginated(
+                        &filter,
+                        req.max_entries.min(1000),
+                        0,
+                    );
+                    dlp_common::hook_ipc::DiagnosticsResponse { snapshots }
+                },
+            );
+            let health_handler: crate::hook_ipc::HealthHandler = Arc::new(
+                move |_req: dlp_common::hook_ipc::PullHealthRequest| {
+                    let snapshot = hook_ipc_health
+                        .get_current_status()
+                        .map(|(_, s)| s)
+                        .unwrap_or_default();
+                    dlp_common::hook_ipc::HealthResponse { snapshot }
+                },
+            );
+            let server = crate::hook_ipc::HookIpcServer::new(
+                crate::hook_ipc::DEFAULT_PIPE_NAME,
+                Arc::new(|_req| {
+                    // Stub handler — full ABAC evaluation wired in Phase 58-05.
+                    dlp_common::HookResponse {
+                        decision: dlp_common::Decision::ALLOW,
+                        reason: "stub".to_string(),
+                        cache_hint: None,
+                        cache_version: 0,
+                    }
+                }),
+            )
+            .with_diagnostics_handler(diag_handler)
+            .with_health_handler(health_handler);
+            if let Err(e) = server.run() {
+                error!(error = %e, "Hook IPC server exited with error");
+            }
+        })
+        .ok();
+    if hook_ipc_handle.is_some() {
+        info!("Hook IPC server started on {}", crate::hook_ipc::DEFAULT_PIPE_NAME);
+    }
+
     // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
     let (enc_shutdown_tx, enc_handle) = spawn_encryption_task(audit_ctx.clone(), recheck_interval);
 
@@ -1583,6 +1658,20 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         correlator_shutdown: correlator_shutdown_tx,
         // Phase 53: Bypass correlator task handle.
         correlator_handle,
+        // Phase 58: Diagnostic snapshot aggregator.
+        diagnostic_aggregator,
+        // Phase 58: Health snapshot aggregator.
+        health_aggregator,
+        // Phase 58: Hook IPC server thread handle.
+        hook_ipc_handle,
+        // Phase 58: Diagnostic push task shutdown signal (reserved for future server push).
+        diagnostic_push_shutdown: None,
+        // Phase 58: Diagnostic push task handle (reserved for future server push).
+        diagnostic_push_handle: None,
+        // Phase 58: Health push task shutdown signal (reserved for future server push).
+        health_push_shutdown: None,
+        // Phase 58: Health push task handle (reserved for future server push).
+        health_push_handle: None,
     }
 }
 
@@ -3108,6 +3197,45 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
         consumer.stop();
     }
     crate::password_stop::debug_log("run_loop: bypass correlator stopped");
+
+    // Phase 58: Stop hook IPC server thread.
+    // The HookIpcServer::run() loop exits when the pipe handle is closed.
+    // We disconnect the pipe by closing the handle from another thread.
+    if let Some(handle) = ctx.hook_ipc_handle {
+        crate::password_stop::debug_log("run_loop: stopping hook IPC server");
+        // Force-close the named pipe to unblock ConnectNamedPipeW.
+        // SAFETY: The pipe name is constant; we open a client handle and close it
+        // to trigger disconnection. This is best-effort — the thread may already
+        // be shutting down.
+        #[cfg(windows)]
+        unsafe {
+            use windows::Win32::Storage::FileSystem::{
+                CreateFileW, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE, OPEN_EXISTING,
+            };
+            use windows::Win32::Foundation::CloseHandle;
+            use windows::core::PCWSTR;
+            let name_wide: Vec<u16> = crate::hook_ipc::DEFAULT_PIPE_NAME
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            if let Ok(client) = CreateFileW(
+                PCWSTR::from_raw(name_wide.as_ptr()),
+                FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+                FILE_SHARE_NONE,
+                None,
+                OPEN_EXISTING,
+                windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
+                None,
+            ) {
+                if !client.is_invalid() {
+                    let _ = CloseHandle(client);
+                }
+            }
+        }
+        let _ = handle.join();
+        crate::password_stop::debug_log("run_loop: hook IPC server stopped");
+        info!("hook IPC server stopped");
+    }
 
     crate::password_stop::debug_log("run_loop: shutdown complete");
     info!(
