@@ -93,10 +93,7 @@ pub fn drain_snapshots(limit: usize) -> Vec<DiagnosticSnapshot> {
         // If now_qpc is 0 (QPC failed), skip expiry check to avoid evicting everything.
         // Also skip if timestamp_qpc is 0 (uninitialized).
         let age = now_qpc.saturating_sub(snapshot.timestamp_qpc);
-        if now_qpc > 0
-            && snapshot.timestamp_qpc > 0
-            && age > ENTRY_EXPIRY_QPC_TICKS
-        {
+        if now_qpc > 0 && snapshot.timestamp_qpc > 0 && age > ENTRY_EXPIRY_QPC_TICKS {
             continue;
         }
 
@@ -261,7 +258,11 @@ mod tests {
         // (our guard prevents eviction when QPC values are in an unexpected range).
         // For a robust test, we verify the ring contains both entries and
         // that drain_snapshots does not panic.
-        assert_eq!(drained.len(), 2, "both entries should be present on this platform");
+        assert_eq!(
+            drained.len(),
+            2,
+            "both entries should be present on this platform"
+        );
 
         // Clean up.
         let _ = drain_snapshots(1000);
