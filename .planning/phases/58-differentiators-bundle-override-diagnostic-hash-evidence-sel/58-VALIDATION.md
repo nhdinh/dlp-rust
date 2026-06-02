@@ -2,8 +2,8 @@
 phase: 58
 slug: differentiators-bundle-override-diagnostic-hash-evidence-sel
 status: draft
-nyquist_compliant: false
-wave_0_complete: false
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-06-02
 ---
 
@@ -88,4 +88,4 @@ created: 2026-06-02
 - [ ] Feedback latency < 30s
 - [ ] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** signed off
