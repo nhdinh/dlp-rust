@@ -983,6 +983,9 @@ struct RunLoopContext {
     /// Phase 58: Handle for the health snapshot periodic push task.
     #[allow(dead_code)]
     health_push_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 58-06: Handle for the override request processing task (DIFF-01).
+    #[allow(dead_code)]
+    override_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// The main service run loop.
@@ -1527,10 +1530,74 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
     let health_aggregator = Arc::new(crate::health_aggregator::HealthAggregator::new());
     info!("diagnostic and health aggregators initialised");
 
+    // ── Phase 58-06: Override request channel (DIFF-01) ────────────────────
+    // The HookIpcServer runs on a dedicated std::thread without a tokio runtime.
+    // Override requests need async server submission, so we use a channel to
+    // forward them to a tokio task that handles the async work.
+    let (override_tx, mut override_rx) = tokio::sync::mpsc::channel::<
+        dlp_common::hook_ipc::OverrideRequest,
+    >(100);
+    let override_server_client = server_client.clone();
+    let override_handle = tokio::spawn(async move {
+        while let Some(req) = override_rx.recv().await {
+            let request_id = format!("ovr-{}", uuid::Uuid::new_v4());
+            info!(
+                request_id = %request_id,
+                resource_path = %req.resource_path,
+                "Override request received from hook DLL"
+            );
+
+            // Forward to UI via Pipe 1.
+            let ui_msg = crate::ipc::messages::Pipe1AgentMsg::OverrideRequest {
+                request_id: request_id.clone(),
+                reason: format!("Blocked: {}", req.resource_path),
+                classification: "T3".to_string(),
+                resource_path: req.resource_path.clone(),
+            };
+            if let Err(e) = crate::ipc::pipe1::send_to_ui(0, &ui_msg) {
+                warn!(error = %e, "Failed to send OverrideRequest to UI");
+            }
+
+            // Submit to server via async HTTP call.
+            if let Some(ref sc) = override_server_client {
+                let approval_req = dlp_common::approval::ApprovalRequest {
+                    requester_sid: req.requester_sid.clone(),
+                    data_object_id: req.data_object_id.clone(),
+                    allowed_action: req.action.clone(),
+                    destination_scope: req.destination_scope.clone(),
+                    justification: req.justification.clone(),
+                    device_fingerprint: None,
+                };
+                match sc.submit_approval_request(&approval_req).await {
+                    Ok(server_request_id) => {
+                        info!(
+                            request_id = %request_id,
+                            server_request_id = %server_request_id,
+                            "Approval request submitted to server"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            request_id = %request_id,
+                            error = %e,
+                            "Failed to submit approval request to server"
+                        );
+                    }
+                }
+            } else {
+                warn!(
+                    request_id = %request_id,
+                    "No server client available — approval request not submitted"
+                );
+            }
+        }
+    });
+
     // ── Phase 58: Hook IPC Server (named pipe for hook DLL communication) ──
     // The server runs on a dedicated std::thread because ConnectNamedPipeW blocks.
     let hook_ipc_diag = Arc::clone(&diagnostic_aggregator);
     let hook_ipc_health = Arc::clone(&health_aggregator);
+    let hook_ipc_override_tx = override_tx.clone();
     let hook_ipc_handle = std::thread::Builder::new()
         .name("hook-ipc".into())
         .spawn(move || {
@@ -1554,6 +1621,13 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
                     dlp_common::hook_ipc::HealthResponse { snapshot }
                 },
             );
+            let override_handler: crate::hook_ipc::OverrideHandler = Arc::new(
+                move |req: dlp_common::hook_ipc::OverrideRequest| {
+                    if let Err(e) = hook_ipc_override_tx.try_send(req) {
+                        warn!(error = %e, "Override channel full — dropping request");
+                    }
+                },
+            );
             let server = crate::hook_ipc::HookIpcServer::new(
                 crate::hook_ipc::DEFAULT_PIPE_NAME,
                 Arc::new(|_req| {
@@ -1568,7 +1642,8 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
                 }),
             )
             .with_diagnostics_handler(diag_handler)
-            .with_health_handler(health_handler);
+            .with_health_handler(health_handler)
+            .with_override_handler(override_handler);
             if let Err(e) = server.run() {
                 error!(error = %e, "Hook IPC server exited with error");
             }
@@ -1673,6 +1748,8 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         health_push_shutdown: None,
         // Phase 58: Health push task handle (reserved for future server push).
         health_push_handle: None,
+        // Phase 58-06: Override request processing task (DIFF-01).
+        override_handle: Some(override_handle),
     }
 }
 
