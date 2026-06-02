@@ -32,7 +32,10 @@ use windows::Win32::System::Pipes::{
     PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 
-use dlp_common::hook_ipc::CacheHint;
+use dlp_common::hook_ipc::{
+    CacheHint, DiagnosticsResponse, HealthResponse, IpcEnvelope, IpcMessageV1, IpcPayloadV1,
+    PullDiagnosticsRequest, PullHealthRequest,
+};
 use dlp_common::{Classification, HookRequest, HookResponse};
 
 use crate::ipc::frame::{read_frame, write_frame};
@@ -52,6 +55,17 @@ const PIPE_TIMEOUT_MS: u32 = 5_000;
 
 /// Handler type for processing hook requests.
 pub type HookHandler = Arc<dyn Fn(HookRequest) -> HookResponse + Send + Sync + 'static>;
+
+/// Handler type for processing diagnostic pull requests.
+pub type DiagnosticsHandler =
+    Arc<dyn Fn(PullDiagnosticsRequest) -> DiagnosticsResponse + Send + Sync + 'static>;
+
+/// Handler type for processing health pull requests.
+pub type HealthHandler =
+    Arc<dyn Fn(PullHealthRequest) -> HealthResponse + Send + Sync + 'static>;
+
+/// Handler type for processing override requests.
+pub type OverrideHandler = Arc<dyn Fn(dlp_common::hook_ipc::OverrideRequest) + Send + Sync + 'static>;
 
 /// Classification cache accessor for the hook IPC handler.
 ///
@@ -79,6 +93,9 @@ impl CacheAccessor for crate::classification_cache::ClassificationCache {
 pub struct HookIpcServer {
     pipe_name: String,
     handler: HookHandler,
+    diagnostics_handler: Option<DiagnosticsHandler>,
+    health_handler: Option<HealthHandler>,
+    override_handler: Option<OverrideHandler>,
 }
 
 impl HookIpcServer {
@@ -90,6 +107,9 @@ impl HookIpcServer {
         Self {
             pipe_name: pipe_name.into(),
             handler,
+            diagnostics_handler: None,
+            health_handler: None,
+            override_handler: None,
         }
     }
 
@@ -115,7 +135,28 @@ impl HookIpcServer {
         Self {
             pipe_name: pipe_name.into(),
             handler,
+            diagnostics_handler: None,
+            health_handler: None,
+            override_handler: None,
         }
+    }
+
+    /// Sets the diagnostics handler for `PullDiagnostics` requests.
+    pub fn with_diagnostics_handler(mut self, handler: DiagnosticsHandler) -> Self {
+        self.diagnostics_handler = Some(handler);
+        self
+    }
+
+    /// Sets the health handler for `PullHealth` requests.
+    pub fn with_health_handler(mut self, handler: HealthHandler) -> Self {
+        self.health_handler = Some(handler);
+        self
+    }
+
+    /// Sets the override handler for `RequestOverride` messages.
+    pub fn with_override_handler(mut self, handler: OverrideHandler) -> Self {
+        self.override_handler = Some(handler);
+        self
     }
 
     /// Runs the blocking accept loop on the current thread.
@@ -135,7 +176,15 @@ impl HookIpcServer {
         let rt = tokio::runtime::Handle::try_current().ok();
         let pipe = create_pipe(&self.pipe_name)?;
         on_ready();
-        accept_loop(pipe, self.pipe_name, self.handler, rt)
+        accept_loop(
+            pipe,
+            self.pipe_name,
+            self.handler,
+            self.diagnostics_handler,
+            self.health_handler,
+            self.override_handler,
+            rt,
+        )
     }
 }
 
@@ -172,6 +221,9 @@ fn accept_loop(
     first_pipe: HANDLE,
     pipe_name: String,
     handler: HookHandler,
+    diagnostics_handler: Option<DiagnosticsHandler>,
+    health_handler: Option<HealthHandler>,
+    override_handler: Option<OverrideHandler>,
     rt: Option<tokio::runtime::Handle>,
 ) -> Result<()> {
     let mut pipe = first_pipe;
@@ -196,18 +248,26 @@ fn accept_loop(
 
         match rt {
             Some(ref _h) => {
-                // Synchronous handling (same as no-runtime path).  In a
-                // future integration the handler may internally spawn Tokio
-                // tasks for async classification; the accept loop itself
-                // stays synchronous because Win32 pipe APIs are blocking.
-                if let Err(e) = handle_connection(pipe, &handler) {
+                if let Err(e) = handle_connection(
+                    pipe,
+                    &handler,
+                    diagnostics_handler.as_ref(),
+                    health_handler.as_ref(),
+                    override_handler.as_ref(),
+                ) {
                     warn!(error = %e, "Hook IPC: connection handler error");
                 }
                 let _ = unsafe { DisconnectNamedPipe(pipe) };
                 let _ = unsafe { CloseHandle(pipe) };
             }
             None => {
-                if let Err(e) = handle_connection(pipe, &handler) {
+                if let Err(e) = handle_connection(
+                    pipe,
+                    &handler,
+                    diagnostics_handler.as_ref(),
+                    health_handler.as_ref(),
+                    override_handler.as_ref(),
+                ) {
                     warn!(error = %e, "Hook IPC: connection handler error");
                 }
                 let _ = unsafe { DisconnectNamedPipe(pipe) };
@@ -219,7 +279,13 @@ fn accept_loop(
     }
 }
 
-fn handle_connection(pipe: HANDLE, handler: &HookHandler) -> Result<()> {
+fn handle_connection(
+    pipe: HANDLE,
+    handler: &HookHandler,
+    diagnostics_handler: Option<&DiagnosticsHandler>,
+    health_handler: Option<&HealthHandler>,
+    override_handler: Option<&OverrideHandler>,
+) -> Result<()> {
     loop {
         let frame = match read_frame(pipe) {
             Ok(f) => f,
@@ -229,6 +295,61 @@ fn handle_connection(pipe: HANDLE, handler: &HookHandler) -> Result<()> {
             }
         };
 
+        // Try the new envelope protocol first (Phase 58).
+        if let Ok(envelope) = bincode::deserialize::<IpcEnvelope>(&frame) {
+            if let IpcEnvelope::V1(msg) = envelope {
+                let response_payload = match msg.payload {
+                    IpcPayloadV1::Request(req) => {
+                        debug!(path = %req.path, action = %req.action, "Hook IPC: classifying");
+                        let response = handler(req);
+                        debug!(decision = ?response.decision, "Hook IPC: classification complete");
+                        IpcPayloadV1::Response(response)
+                    }
+                    IpcPayloadV1::RequestOverride(req) => {
+                        debug!(resource_path = %req.resource_path, "Hook IPC: override request");
+                        if let Some(ref oh) = override_handler {
+                            oh(req);
+                        } else {
+                            warn!("Hook IPC: override request received but no handler configured");
+                        }
+                        // Override is fire-and-forget; respond with empty OK.
+                        IpcPayloadV1::Response(HookResponse {
+                            decision: dlp_common::Decision::ALLOW,
+                            reason: "override request forwarded".to_string(),
+                            cache_hint: None,
+                            cache_version: 0,
+                        })
+                    }
+                    IpcPayloadV1::PullDiagnostics(req) => {
+                        debug!(max_entries = req.max_entries, "Hook IPC: pull diagnostics");
+                        let response = diagnostics_handler.map(|dh| dh(req)).unwrap_or_default();
+                        IpcPayloadV1::DiagnosticsResponse(response)
+                    }
+                    IpcPayloadV1::PullHealth(req) => {
+                        debug!("Hook IPC: pull health");
+                        let response = health_handler.map(|hh| hh(req)).unwrap_or_default();
+                        IpcPayloadV1::HealthResponse(response)
+                    }
+                    // Agent-to-DLL responses should not arrive on the server.
+                    other => {
+                        warn!(payload = ?other, "Hook IPC: unexpected payload from DLL");
+                        continue;
+                    }
+                };
+
+                let response_envelope = IpcEnvelope::V1(IpcMessageV1 {
+                    payload: response_payload,
+                });
+                let payload = bincode::serialize(&response_envelope).context("serialize envelope response")?;
+                if let Err(e) = write_frame(pipe, &payload) {
+                    warn!(error = %e, "Hook IPC: write response failed — disconnecting");
+                    break;
+                }
+                continue;
+            }
+        }
+
+        // Fall back to legacy raw HookRequest (pre-Phase 58 DLLs).
         let request: HookRequest = match bincode::deserialize(&frame) {
             Ok(r) => r,
             Err(e) => {
@@ -237,9 +358,9 @@ fn handle_connection(pipe: HANDLE, handler: &HookHandler) -> Result<()> {
             }
         };
 
-        debug!(path = %request.path, action = %request.action, "Hook IPC: classifying");
+        debug!(path = %request.path, action = %request.action, "Hook IPC: classifying (legacy)");
         let response = handler(request);
-        debug!(decision = ?response.decision, "Hook IPC: classification complete");
+        debug!(decision = ?response.decision, "Hook IPC: classification complete (legacy)");
 
         let payload = bincode::serialize(&response).context("serialize response")?;
         if let Err(e) = write_frame(pipe, &payload) {
