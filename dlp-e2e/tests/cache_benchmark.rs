@@ -435,6 +435,7 @@ fn hook_response_cache_version_validation() {
             ttl_secs: 60,
         }),
         cache_version: 42,
+        approval_override: None,
     };
 
     assert_eq!(resp.cache_version, 42);

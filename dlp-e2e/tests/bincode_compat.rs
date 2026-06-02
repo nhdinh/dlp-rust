@@ -104,6 +104,7 @@ fn new_response_roundtrips() {
             ttl_secs: 30,
         }),
         cache_version: 99,
+        approval_override: None,
     };
 
     let bytes = bincode::serialize(&resp).unwrap();
