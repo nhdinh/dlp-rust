@@ -82,6 +82,10 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::ProtectedPathList { .. } => handle_protected_path_list(app, key),
         Screen::BypassAlertList { .. } => handle_bypass_alert_list(app, key),
         Screen::BypassAlertDetail { .. } => handle_bypass_alert_detail(app, key),
+        // Phase 58 screens
+        Screen::DiagnosticList { .. } => handle_diagnostic_list(app, key),
+        Screen::DiagnosticDetail { .. } => handle_diagnostic_detail(app, key),
+        Screen::SelfHealthDashboard { .. } => handle_self_health_dashboard(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -243,7 +247,9 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
         // Phase 59: expanded from 9 to 10 items — added "Label Review Queue" at index 8.
         // Phase 54: expanded from 12 to 14 items — added "Protected Paths" at 10,
         // "Bypass Alerts" at 11.
-        KeyCode::Up | KeyCode::Down => nav(selected, 14, key.code),
+        // Phase 58: expanded from 14 to 16 items — added "Diagnostic Events" at 12,
+        // "Self-Health" at 13.
+        KeyCode::Up | KeyCode::Down => nav(selected, 16, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
@@ -257,8 +263,10 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
             9 => action_load_approval_list(app, ApprovalFilter::All, 1),
             10 => action_load_protected_path_list(app, 0),
             11 => action_load_bypass_alert_list(app, BypassAlertSeverityFilter::All, false, 0),
-            12 => action_load_syslog_config(app),
-            13 => app.screen = Screen::MainMenu { selected: 2 },
+            12 => action_load_diagnostic_list(app, crate::app::DiagnosticSeverityFilter::All, 0),
+            13 => action_load_health_dashboard(app),
+            14 => action_load_syslog_config(app),
+            15 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
@@ -7927,6 +7935,153 @@ fn action_load_bypass_alert_list(
 }
 
 // ---------------------------------------------------------------------------
+// Diagnostic List screen (Phase 58)
+// ---------------------------------------------------------------------------
+
+fn handle_diagnostic_list(app: &mut App, key: KeyEvent) {
+    let (events, selected, filter, page, page_size, total) = match &mut app.screen {
+        Screen::DiagnosticList {
+            events,
+            selected,
+            filter,
+            page,
+            page_size,
+            total,
+        } => (events.clone(), selected, *filter, *page, *page_size, *total),
+        _ => return,
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if !events.is_empty() {
+                nav(selected, events.len(), key.code);
+            }
+        }
+        KeyCode::Char('f') => {
+            let next_filter = filter.next();
+            action_load_diagnostic_list(app, next_filter, 0);
+        }
+        KeyCode::Char('h') => {
+            // Hide acknowledged toggle - not applicable for diagnostics but kept for consistency
+            action_load_diagnostic_list(app, filter, 0);
+        }
+        KeyCode::Char('r') => {
+            action_load_diagnostic_list(app, filter, page);
+        }
+        KeyCode::PageUp => {
+            if page > 0 {
+                action_load_diagnostic_list(app, filter, page - 1);
+            }
+        }
+        KeyCode::PageDown => {
+            if (page + 1) * page_size < total {
+                action_load_diagnostic_list(app, filter, page + 1);
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(event) = events.get(*selected) {
+                app.screen = Screen::DiagnosticDetail {
+                    event: event.clone(),
+                };
+            }
+        }
+        KeyCode::Esc => app.screen = Screen::SystemMenu { selected: 12 },
+        _ => {}
+    }
+}
+
+fn handle_diagnostic_detail(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter | KeyCode::Esc => {
+            action_load_diagnostic_list(app, crate::app::DiagnosticSeverityFilter::All, 0);
+        }
+        _ => {}
+    }
+}
+
+fn action_load_diagnostic_list(
+    app: &mut App,
+    filter: crate::app::DiagnosticSeverityFilter,
+    page: usize,
+) {
+    let page_size = 20usize;
+    let _severity_filter = filter.as_str();
+    let offset = page * page_size;
+    match app.rt.block_on(
+        app.client
+            .list_diagnostics(None, None, None, page_size, offset),
+    ) {
+        Ok(response) => {
+            let events = response
+                .get("events")
+                .and_then(|e| e.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let total = response
+                .get("total")
+                .and_then(|t| t.as_u64())
+                .map(|t| t as usize)
+                .unwrap_or(events.len());
+            let total_pages = total.div_ceil(page_size).max(1);
+            app.set_status(
+                format!(
+                    "Loaded {} diagnostic events (page {} of {})",
+                    events.len(),
+                    page + 1,
+                    total_pages
+                ),
+                StatusKind::Success,
+            );
+            app.screen = Screen::DiagnosticList {
+                events,
+                selected: 0,
+                filter,
+                page,
+                page_size,
+                total,
+            };
+        }
+        Err(e) => {
+            app.set_status(format!("Error loading diagnostics: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Self-Health Dashboard screen (Phase 58)
+// ---------------------------------------------------------------------------
+
+fn handle_self_health_dashboard(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('r') => action_load_health_dashboard(app),
+        KeyCode::Esc => app.screen = Screen::SystemMenu { selected: 13 },
+        _ => {}
+    }
+}
+
+fn action_load_health_dashboard(app: &mut App) {
+    match app.rt.block_on(app.client.get_self_health()) {
+        Ok(response) => {
+            let snapshot = response.get("snapshot").cloned();
+            let history = response
+                .get("history")
+                .and_then(|h| h.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let now = chrono::Utc::now().to_rfc3339();
+            app.set_status("Health data refreshed".to_string(), StatusKind::Success);
+            app.screen = Screen::SelfHealthDashboard {
+                snapshot,
+                history,
+                last_refresh: Some(now),
+            };
+        }
+        Err(e) => {
+            app.set_status(format!("Error loading health data: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Protected Path List screen
 // ---------------------------------------------------------------------------
 
@@ -8168,11 +8323,11 @@ mod protected_path_tests {
     }
 
     #[test]
-    fn handle_system_menu_has_14_items() {
+    fn handle_system_menu_has_16_items() {
         let mut app = test_app();
         app.screen = Screen::SystemMenu { selected: 0 };
-        // Down 14 times should cycle back to 0 (0->1->2->...->13->0)
-        for _ in 0..14 {
+        // Down 16 times should cycle back to 0 (0->1->2->...->15->0)
+        for _ in 0..16 {
             let key = KeyEvent::from(KeyCode::Down);
             handle_event(&mut app, crate::event::AppEvent::Key(key));
         }
@@ -8180,7 +8335,7 @@ mod protected_path_tests {
             Screen::SystemMenu { selected } => *selected,
             _ => panic!("expected SystemMenu"),
         };
-        assert_eq!(selected, 0, "nav with 14 items should cycle correctly");
+        assert_eq!(selected, 0, "nav with 16 items should cycle correctly");
     }
 
     #[test]
@@ -8362,21 +8517,21 @@ mod protected_path_tests {
 
         // Navigate through all items and verify count
         let mut seen = std::collections::HashSet::new();
-        for _ in 0..14 {
+        for _ in 0..16 {
             if let Screen::SystemMenu { selected } = &app.screen {
                 seen.insert(*selected);
             }
             let key = KeyEvent::from(KeyCode::Down);
             handle_event(&mut app, crate::event::AppEvent::Key(key));
         }
-        assert_eq!(seen.len(), 14, "SystemMenu should have exactly 14 items");
+        assert_eq!(seen.len(), 16, "SystemMenu should have exactly 16 items");
 
-        // Verify cycling: after 14 downs, should be back at 0
+        // Verify cycling: after 16 downs, should be back at 0
         let selected = match &app.screen {
             Screen::SystemMenu { selected } => *selected,
             _ => panic!("expected SystemMenu"),
         };
-        assert_eq!(selected, 0, "nav with 14 items should cycle back to 0");
+        assert_eq!(selected, 0, "nav with 16 items should cycle back to 0");
     }
 
     #[test]

@@ -24,12 +24,16 @@ use crate::screens::bypass_alerts::{
 use crate::screens::cloud_config::{
     CLOUD_CONFIG_BACK_ROW, CLOUD_CONFIG_KEYS, CLOUD_CONFIG_LABELS, CLOUD_CONFIG_SAVE_ROW,
 };
+use crate::screens::diagnostic_list::{
+    DIAGNOSTIC_DETAIL_HINTS, DIAGNOSTIC_LIST_EMPTY, DIAGNOSTIC_LIST_HINTS,
+};
 use crate::screens::dispatch::condition_display;
 use crate::screens::dispatch::operators_for;
 use crate::screens::print_config::{
     is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_KEYS, PRINT_CONFIG_LABELS,
 };
 use crate::screens::protected_paths::{PROTECTED_PATH_LIST_EMPTY, PROTECTED_PATH_LIST_HINTS};
+use crate::screens::self_health_dashboard::SELF_HEALTH_HINTS;
 use crate::screens::syslog_config::draw_syslog_config;
 use crate::screens::usb_enforcement::{
     USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_LABELS,
@@ -485,6 +489,34 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         }
         Screen::BypassAlertDetail { alert } => {
             draw_bypass_alert_detail(frame, area, alert);
+        }
+        Screen::DiagnosticList {
+            events,
+            selected,
+            filter,
+            page,
+            page_size,
+            total,
+        } => {
+            draw_diagnostic_list(
+                frame, area, events, *selected, *filter, *page, *page_size, *total,
+            );
+        }
+        Screen::DiagnosticDetail { event } => {
+            draw_diagnostic_detail(frame, area, event);
+        }
+        Screen::SelfHealthDashboard {
+            snapshot,
+            history,
+            last_refresh,
+        } => {
+            draw_self_health_dashboard(
+                frame,
+                area,
+                snapshot.as_ref(),
+                history,
+                last_refresh.as_deref(),
+            );
         }
     }
 }
@@ -4427,6 +4459,531 @@ fn draw_bypass_alert_detail(frame: &mut Frame, area: Rect, alert: &serde_json::V
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
     draw_hints(frame, area, BYPASS_ALERT_DETAIL_HINTS);
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic List screen (Phase 58)
+// ---------------------------------------------------------------------------
+
+/// Renders the diagnostic event list screen.
+#[allow(clippy::too_many_arguments)]
+fn draw_diagnostic_list(
+    frame: &mut Frame,
+    area: Rect,
+    events: &[serde_json::Value],
+    selected: usize,
+    filter: crate::app::DiagnosticSeverityFilter,
+    page: usize,
+    page_size: usize,
+    total: usize,
+) {
+    if events.is_empty() {
+        let filter_suffix = if filter != crate::app::DiagnosticSeverityFilter::All {
+            format!(" [Severity: {}]", filter.as_str().unwrap_or(""))
+        } else {
+            String::new()
+        };
+        let paragraph = Paragraph::new(DIAGNOSTIC_LIST_EMPTY)
+            .block(
+                Block::default()
+                    .title(format!(" Diagnostic Events (0){filter_suffix} "))
+                    .borders(Borders::ALL),
+            )
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(paragraph, area);
+        draw_hints(frame, area, DIAGNOSTIC_LIST_HINTS);
+        return;
+    }
+
+    let filter_suffix = if filter != crate::app::DiagnosticSeverityFilter::All {
+        format!(" [Severity: {}]", filter.as_str().unwrap_or(""))
+    } else {
+        String::new()
+    };
+
+    let total_pages = total.div_ceil(page_size).max(1);
+    let page_info = format!("Page {} of {} ({} total)", page + 1, total_pages, total);
+
+    let header = Row::new(vec![
+        "Severity", "Time", "User", "Path", "Tier", "Policy", "Latency",
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD))
+    .bottom_margin(1);
+
+    let rows: Vec<Row> = events
+        .iter()
+        .map(|e| {
+            let severity = e["severity"].as_str().unwrap_or("info");
+            let severity_style = match severity {
+                "crit" => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                "warn" => Style::default().fg(Color::Yellow),
+                "info" => Style::default().fg(Color::Blue),
+                _ => Style::default(),
+            };
+
+            let time = e["timestamp"].as_str().unwrap_or("-");
+            let time_display = format_relative_time(time);
+
+            let user = e["user_sid"].as_str().unwrap_or("-");
+            let user_display = if user.len() > 15 {
+                format!("...{}", &user[user.len() - 12..])
+            } else {
+                user.to_string()
+            };
+
+            let path = e["path"].as_str().unwrap_or("-");
+            let path_display = if path.len() > 25 {
+                format!("{}...", &path[..22])
+            } else {
+                path.to_string()
+            };
+
+            let tier = e["classification"].as_str().unwrap_or("-");
+
+            let policy = e["policy_id"].as_str().unwrap_or("-");
+            let policy_display = if policy.len() > 15 {
+                format!("{}...", &policy[..14])
+            } else {
+                policy.to_string()
+            };
+
+            let latency = e["decision_latency_us"].as_u64().unwrap_or(0);
+            let latency_display = format!("{latency} us");
+
+            Row::new(vec![
+                Cell::from(severity.to_string()).style(severity_style),
+                Cell::from(time_display),
+                Cell::from(user_display),
+                Cell::from(path_display),
+                Cell::from(tier.to_string()),
+                Cell::from(policy_display),
+                Cell::from(latency_display),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(10), // Severity
+        Constraint::Percentage(12), // Time
+        Constraint::Percentage(15), // User
+        Constraint::Percentage(25), // Path
+        Constraint::Percentage(8),  // Tier
+        Constraint::Percentage(15), // Policy
+        Constraint::Percentage(15), // Latency
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .title(format!(" Diagnostic Events ({}){filter_suffix} ", total))
+                .borders(Borders::ALL),
+        )
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(table, area, &mut state);
+
+    let hint_text = format!("{DIAGNOSTIC_LIST_HINTS}  |  {page_info}");
+    draw_hints(frame, area, &hint_text);
+}
+
+/// Renders the diagnostic event detail popup.
+fn draw_diagnostic_detail(frame: &mut Frame, area: Rect, event: &serde_json::Value) {
+    let id = event["id"].as_i64().unwrap_or(0);
+    let time = event["timestamp"].as_str().unwrap_or("-");
+    let user_sid = event["user_sid"].as_str().unwrap_or("-");
+    let path = event["path"].as_str().unwrap_or("-");
+    let tier = event["classification"].as_str().unwrap_or("-");
+    let policy_id = event["policy_id"].as_str().unwrap_or("-");
+    let enforcement_mode = event["enforcement_mode"].as_str().unwrap_or("-");
+    let latency = event["decision_latency_us"].as_u64().unwrap_or(0);
+    let classification_source = event["classification_source"].as_str().unwrap_or("-");
+    let cache_age_ms = event["cache_age_ms"].as_u64();
+    let source_display = match classification_source {
+        "CacheHit" | "cache_hit" => {
+            if let Some(age) = cache_age_ms {
+                format!("CacheHit (age: {age} ms)")
+            } else {
+                "CacheHit".to_string()
+            }
+        }
+        "CacheMiss" | "cache_miss" => "CacheMiss".to_string(),
+        "Pipe" | "pipe" => "Pipe".to_string(),
+        _ => classification_source.to_string(),
+    };
+
+    let subject = event["subject"].as_str().unwrap_or("-");
+    let action = event["action"].as_str().unwrap_or("-");
+    let environment = event["environment"].as_str().unwrap_or("-");
+    let hook = event["hook"].as_str().unwrap_or("-");
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Time: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(time.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("User SID: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(user_sid.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Path: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(path.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Classification Tier: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(tier.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Matched Policy: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{policy_id} ({enforcement_mode})")),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Decision Latency: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{latency} us")),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Classification Source: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(source_display),
+        ]),
+        Line::raw(""),
+        Line::styled(
+            "-- ABAC Context --",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::from(vec![
+            Span::styled("Subject: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(subject.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Resource: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(path.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Action: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(action.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Environment: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(environment.to_string()),
+        ]),
+        Line::raw(""),
+        Line::styled(
+            "-- Hook Function --",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::from(vec![
+            Span::styled("Hook: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(hook.to_string()),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(format!(" Diagnostic Detail (ID: {id}) "))
+                .borders(Borders::ALL),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+    draw_hints(frame, area, DIAGNOSTIC_DETAIL_HINTS);
+}
+
+/// Renders the self-health dashboard screen.
+fn draw_self_health_dashboard(
+    frame: &mut Frame,
+    area: Rect,
+    snapshot: Option<&serde_json::Value>,
+    history: &[serde_json::Value],
+    last_refresh: Option<&str>,
+) {
+    // Terminal size check
+    if area.width < 80 || area.height < 20 {
+        let warning = Paragraph::new("Terminal too small. Please resize to at least 80x20.")
+            .alignment(ratatui::layout::Alignment::Center)
+            .style(Style::default().fg(Color::Yellow));
+        frame.render_widget(warning, area);
+        draw_hints(frame, area, SELF_HEALTH_HINTS);
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(area);
+
+    let main_area = chunks[0];
+
+    let panels = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(main_area);
+
+    let left_panel = panels[0];
+    let right_panel = panels[1];
+
+    // Extract values from snapshot
+    let overall_status = snapshot
+        .and_then(|s| s["overall_status"].as_str())
+        .unwrap_or("unknown");
+    let injected_pids = snapshot
+        .and_then(|s| s["injected_pids"].as_u64())
+        .unwrap_or(0);
+    let patched_modules = snapshot
+        .and_then(|s| s["patched_modules"].as_u64())
+        .unwrap_or(0);
+    let pipe_round_trips = snapshot
+        .and_then(|s| s["pipe_round_trips_60s"].as_u64())
+        .unwrap_or(0);
+    let cache_hit_rate = snapshot
+        .and_then(|s| s["cache_hit_rate_60s"].as_f64())
+        .unwrap_or(0.0);
+    let fail_state = snapshot
+        .and_then(|s| s["fail_state"].as_str())
+        .unwrap_or("Unknown");
+
+    // Status badge colors
+    let (badge_bg, badge_text) = match overall_status.to_lowercase().as_str() {
+        "healthy" => (Color::Green, "HEALTHY"),
+        "degraded" => (Color::Yellow, "DEGRADED"),
+        "critical" => (Color::Red, "CRITICAL"),
+        _ => (Color::DarkGray, "UNKNOWN"),
+    };
+
+    // Left panel: Current Status
+    let status_lines = vec![
+        Line::styled(
+            "-- Current Status --",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Overall: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                badge_text,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(badge_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(
+                "Injected PIDs:     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{injected_pids}")),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Patched Modules:   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{patched_modules}")),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Pipe Round-Trips:  ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{pipe_round_trips}")),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Cache Hit Rate:    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{:.0}%", cache_hit_rate * 100.0)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Fail State:        ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(fail_state.to_string()),
+        ]),
+    ];
+
+    if let Some(ts) = last_refresh {
+        let refresh_line = Line::from(vec![
+            Span::styled(
+                "Last Refresh:      ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(ts.to_string()),
+        ]);
+        // We can't easily append to a vec inside the render; just render separately
+        let left_paragraph = Paragraph::new(status_lines);
+        let refresh_para = Paragraph::new(vec![Line::raw(""), refresh_line]);
+        let left_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(2)])
+            .split(left_panel);
+        frame.render_widget(left_paragraph, left_chunks[0]);
+        frame.render_widget(refresh_para, left_chunks[1]);
+    } else {
+        let left_paragraph = Paragraph::new(status_lines);
+        frame.render_widget(left_paragraph, left_panel);
+    }
+
+    // Right panel: 5-Min Trends
+    let mut trend_lines = vec![
+        Line::styled(
+            "-- 5-Min Trends --",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+    ];
+
+    if history.is_empty() {
+        trend_lines.push(Line::styled(
+            "No trend data available. Poll begins on first agent connection.",
+            Style::default().fg(Color::DarkGray),
+        ));
+        let right_paragraph = Paragraph::new(trend_lines);
+        frame.render_widget(right_paragraph, right_panel);
+    } else {
+        // Cache hit rate sparkline data
+        let cache_data: Vec<u64> = history
+            .iter()
+            .map(|h| {
+                h["cache_hit_rate_60s"]
+                    .as_f64()
+                    .unwrap_or(0.0)
+                    .mul_add(100.0, 0.0) as u64
+            })
+            .collect();
+        let last_cache = cache_data.last().copied().unwrap_or(0);
+        let _cache_color = if last_cache >= 80 {
+            Color::Green
+        } else if last_cache >= 60 {
+            Color::Yellow
+        } else {
+            Color::Red
+        };
+
+        trend_lines.push(Line::styled(
+            "Cache Hit Rate",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        let right_paragraph = Paragraph::new(trend_lines.clone());
+        frame.render_widget(right_paragraph, right_panel);
+
+        // Use a simple text-based sparkline representation since we need to compile
+        let spark_text = if cache_data.len() >= 2 {
+            let mut bars = String::new();
+            for (i, &v) in cache_data.iter().enumerate() {
+                let bar = match v {
+                    0..=20 => "_",
+                    21..=40 => "-",
+                    41..=60 => "=",
+                    61..=80 => "+",
+                    _ => "#",
+                };
+                bars.push_str(bar);
+                if i < cache_data.len() - 1 {
+                    bars.push(' ');
+                }
+            }
+            bars
+        } else {
+            format!("{}", cache_data.first().copied().unwrap_or(0))
+        };
+
+        let pipe_data: Vec<u64> = history
+            .iter()
+            .map(|h| h["pipe_round_trips_60s"].as_u64().unwrap_or(0))
+            .collect();
+        let last_pipe = pipe_data.last().copied().unwrap_or(0);
+        let pipe_color = if last_pipe > 0 && overall_status == "healthy" {
+            Color::Green
+        } else if last_pipe > 0 && overall_status == "degraded" {
+            Color::Yellow
+        } else {
+            Color::Red
+        };
+
+        let pipe_max = pipe_data.iter().copied().max().unwrap_or(1).max(1);
+        let pipe_mid = pipe_max / 2;
+
+        let mut all_trend_lines = trend_lines;
+        all_trend_lines.push(Line::raw(spark_text));
+        all_trend_lines.push(Line::from(vec![
+            Span::raw("0%"),
+            Span::raw(format!(
+                "{:>width$}",
+                "50%",
+                width = (cache_data.len() * 2).max(10)
+            )),
+            Span::raw("100%"),
+        ]));
+        all_trend_lines.push(Line::raw(""));
+        all_trend_lines.push(Line::styled(
+            "Pipe Round-Trips / 60s",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+
+        let pipe_spark = if pipe_data.len() >= 2 {
+            let mut bars = String::new();
+            for (i, &v) in pipe_data.iter().enumerate() {
+                let pct = if pipe_max > 0 { v * 100 / pipe_max } else { 0 };
+                let bar = match pct {
+                    0..=20 => "_",
+                    21..=40 => "-",
+                    41..=60 => "=",
+                    61..=80 => "+",
+                    _ => "#",
+                };
+                bars.push_str(bar);
+                if i < pipe_data.len() - 1 {
+                    bars.push(' ');
+                }
+            }
+            bars
+        } else {
+            format!("{}", pipe_data.first().copied().unwrap_or(0))
+        };
+
+        all_trend_lines.push(Line::styled(pipe_spark, Style::default().fg(pipe_color)));
+        all_trend_lines.push(Line::from(vec![
+            Span::raw("0"),
+            Span::raw(format!(
+                "{:>width$}",
+                pipe_mid.to_string(),
+                width = (pipe_data.len() * 2).max(10)
+            )),
+            Span::raw(format!("{pipe_max}")),
+        ]));
+
+        let right_paragraph = Paragraph::new(all_trend_lines);
+        frame.render_widget(right_paragraph, right_panel);
+    }
+
+    draw_hints(frame, area, SELF_HEALTH_HINTS);
 }
 
 #[cfg(test)]
