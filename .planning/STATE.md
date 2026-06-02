@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
 status: executing
-last_updated: "2026-06-02T08:14:57.891Z"
-last_activity: 2026-06-02 -- Phase 58 planning complete
+last_updated: "2026-06-02T21:45:00.000Z"
+last_activity: 2026-06-02 -- Phase 58 execution complete (all 6 plans)
 progress:
-  total_phases: 15
-  completed_phases: 12
-  total_plans: 75
-  completed_plans: 69
-  percent: 80
+  total_phases: 32
+  completed_phases: 25
+  total_plans: 127
+  completed_plans: 113
+  percent: 78
 ---
 
 # Project State
@@ -25,10 +25,13 @@ progress:
 
 ## Current Position
 
-Phase: 57 (operational-deployment-guide-av-edr-allowlist-uat) — EXECUTING
-Plan: 4 of 6
-Status: Ready to execute
-Last activity: 2026-06-02 -- Phase 58 planning complete
+Phase: 58 (differentiators-bundle-override-diagnostic-hash-evidence-sel) — COMPLETE
+Plan: 6 of 6
+Status: All plans executed, tests passing
+Last activity: 2026-06-02 -- Phase 58 execution complete (all 6 plans)
+
+Phase: 57 (operational-deployment-guide-av-edr-allowlist-uat) — IN PROGRESS
+Plan: 4 of 6 complete (UAT execution pending manual verification)
 
 ## Progress
 
@@ -119,6 +122,7 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 26. **2026-05-29: Phase 56 complete (all 6 plans).** Volume-class ABAC end-to-end integration tests: 5 passing mock-based tests + 1 hardware-dependent `#[ignore]` test in `dlp-server/tests/volume_class_integration.rs`. Added `inject_volume_class_for_test` helper to `VolumeDetector`. Fixed bincode compatibility by removing `skip_serializing_if` from volume class fields (caused `UnexpectedEof` on deserialize). Fixed all cross-crate `HookRequest` test initializers. Full workspace compiles, clippy clean, fmt clean. DRIVE-01..04 requirements satisfied. Phase 56 COMPLETE.
 27. **2026-05-30: Phase 57 Plans 01-04 complete.** Deployment guide (`docs/operations/deployment-guide.md`) with per-vendor AV/EDR allowlist procedures for 6 vendors (Defender, CrowdStrike, SentinelOne, Carbon Black, Sophos, Trend Micro). RELEASE_NOTES.md with SHA-256/SHA-512 hash tables, artifact provenance, signing certificate info, WDSI submission flow, and signtool verification commands. v0.10.0 UAT test plan (`.planning/milestones/v0.10.0-UAT.md`) with 36 scenarios across 10 categories. Deployment reality documentation (57-04) covering Secure Boot, PPL coverage gaps, DACL tripwire backstop, privilege preservation, and reboot requirements. OPS-01, OPS-02, OPS-03 requirements satisfied. OPS-04 (UAT execution) PENDING manual execution on physical Windows 11 host.
 28. **2026-05-30: Phase 57 Plans 05-06 complete.** Final integration verification: standardized DLL naming convention (`dlp_hook_dll.dll` with underscore, not hyphen) across all documentation. Added code block language tags to deployment guide for syntax highlighting. Phase 57 status: IN PROGRESS (4 of 6 plans complete). Ship/no-ship decision PENDING UAT results. See `57-VERIFICATION.md` for detailed status.
+29. **2026-06-02: Phase 58 complete (all 6 plans).** Differentiators Bundle — override flow, diagnostics, health, hash evidence, admin TUI screens. Key deliverables: IpcPayloadV2 versioned envelope, DiagnosticSnapshot with 18 fields, content_hasher with 100MB/1GB boundaries, diagnostic_ring (1000-entry lock-free buffer), DecisionContext in all 12 trampolines, injected_pids/patched_modules counters, DiagnosticAggregator with 5-min history scanning, connected_pipes registry, concurrent pipe polling with JoinSet, server CachedDiagnostics with rate limiting, GET /admin/diagnostics + /admin/health endpoints, AuditEvent INSERT to SQLite, admin TUI Diagnostic List + Self-Health Dashboard screens, HookResponse.approval_override with TTL enforcement, 30s deduplication with strengthened key. Full workspace: 2158+ tests pass, clippy clean (-D warnings), cargo fmt clean. DIFF-01..04 requirements satisfied. Phase 58 COMPLETE.
 
 ## Blockers
 
