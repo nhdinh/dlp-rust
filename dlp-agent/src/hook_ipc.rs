@@ -61,11 +61,11 @@ pub type DiagnosticsHandler =
     Arc<dyn Fn(PullDiagnosticsRequest) -> DiagnosticsResponse + Send + Sync + 'static>;
 
 /// Handler type for processing health pull requests.
-pub type HealthHandler =
-    Arc<dyn Fn(PullHealthRequest) -> HealthResponse + Send + Sync + 'static>;
+pub type HealthHandler = Arc<dyn Fn(PullHealthRequest) -> HealthResponse + Send + Sync + 'static>;
 
 /// Handler type for processing override requests.
-pub type OverrideHandler = Arc<dyn Fn(dlp_common::hook_ipc::OverrideRequest) + Send + Sync + 'static>;
+pub type OverrideHandler =
+    Arc<dyn Fn(dlp_common::hook_ipc::OverrideRequest) + Send + Sync + 'static>;
 
 /// Classification cache accessor for the hook IPC handler.
 ///
@@ -297,56 +297,58 @@ fn handle_connection(
 
         // Try the new envelope protocol first (Phase 58).
         if let Ok(envelope) = bincode::deserialize::<IpcEnvelope>(&frame) {
-            if let IpcEnvelope::V1(msg) = envelope {
-                let response_payload = match msg.payload {
-                    IpcPayloadV1::Request(req) => {
-                        debug!(path = %req.path, action = %req.action, "Hook IPC: classifying");
-                        let response = handler(req);
-                        debug!(decision = ?response.decision, "Hook IPC: classification complete");
-                        IpcPayloadV1::Response(response)
-                    }
-                    IpcPayloadV1::RequestOverride(req) => {
-                        debug!(resource_path = %req.resource_path, "Hook IPC: override request");
-                        if let Some(ref oh) = override_handler {
-                            oh(req);
-                        } else {
-                            warn!("Hook IPC: override request received but no handler configured");
-                        }
-                        // Override is fire-and-forget; respond with empty OK.
-                        IpcPayloadV1::Response(HookResponse {
-                            decision: dlp_common::Decision::ALLOW,
-                            reason: "override request forwarded".to_string(),
-                            cache_hint: None,
-                            cache_version: 0,
-                        })
-                    }
-                    IpcPayloadV1::PullDiagnostics(req) => {
-                        debug!(max_entries = req.max_entries, "Hook IPC: pull diagnostics");
-                        let response = diagnostics_handler.map(|dh| dh(req)).unwrap_or_default();
-                        IpcPayloadV1::DiagnosticsResponse(response)
-                    }
-                    IpcPayloadV1::PullHealth(req) => {
-                        debug!("Hook IPC: pull health");
-                        let response = health_handler.map(|hh| hh(req)).unwrap_or_default();
-                        IpcPayloadV1::HealthResponse(response)
-                    }
-                    // Agent-to-DLL responses should not arrive on the server.
-                    other => {
-                        warn!(payload = ?other, "Hook IPC: unexpected payload from DLL");
-                        continue;
-                    }
-                };
-
-                let response_envelope = IpcEnvelope::V1(IpcMessageV1 {
-                    payload: response_payload,
-                });
-                let payload = bincode::serialize(&response_envelope).context("serialize envelope response")?;
-                if let Err(e) = write_frame(pipe, &payload) {
-                    warn!(error = %e, "Hook IPC: write response failed — disconnecting");
-                    break;
+            // IpcEnvelope only has V1 variant, so let-destructure is sufficient.
+            let IpcEnvelope::V1(msg) = envelope;
+            let response_payload = match msg.payload {
+                IpcPayloadV1::Request(req) => {
+                    debug!(path = %req.path, action = %req.action, "Hook IPC: classifying");
+                    let response = handler(req);
+                    debug!(decision = ?response.decision, "Hook IPC: classification complete");
+                    IpcPayloadV1::Response(response)
                 }
-                continue;
+                IpcPayloadV1::RequestOverride(req) => {
+                    debug!(resource_path = %req.resource_path, "Hook IPC: override request");
+                    if let Some(oh) = override_handler {
+                        oh(req);
+                    } else {
+                        warn!("Hook IPC: override request received but no handler configured");
+                    }
+                    // Override is fire-and-forget; respond with empty OK.
+                    IpcPayloadV1::Response(HookResponse {
+                        decision: dlp_common::Decision::ALLOW,
+                        reason: "override request forwarded".to_string(),
+                        cache_hint: None,
+                        cache_version: 0,
+                        approval_override: None,
+                    })
+                }
+                IpcPayloadV1::PullDiagnostics(req) => {
+                    debug!(max_entries = req.max_entries, "Hook IPC: pull diagnostics");
+                    let response = diagnostics_handler.map(|dh| dh(req)).unwrap_or_default();
+                    IpcPayloadV1::DiagnosticsResponse(response)
+                }
+                IpcPayloadV1::PullHealth(req) => {
+                    debug!("Hook IPC: pull health");
+                    let response = health_handler.map(|hh| hh(req)).unwrap_or_default();
+                    IpcPayloadV1::HealthResponse(response)
+                }
+                // Agent-to-DLL responses should not arrive on the server.
+                other => {
+                    warn!(payload = ?other, "Hook IPC: unexpected payload from DLL");
+                    continue;
+                }
+            };
+
+            let response_envelope = IpcEnvelope::V1(IpcMessageV1 {
+                payload: response_payload,
+            });
+            let payload =
+                bincode::serialize(&response_envelope).context("serialize envelope response")?;
+            if let Err(e) = write_frame(pipe, &payload) {
+                warn!(error = %e, "Hook IPC: write response failed — disconnecting");
+                break;
             }
+            continue;
         }
 
         // Fall back to legacy raw HookRequest (pre-Phase 58 DLLs).
@@ -571,6 +573,7 @@ mod tests {
             reason: format!("blocked: {}", req.path),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -646,6 +649,7 @@ mod tests {
             },
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -677,6 +681,7 @@ mod tests {
             reason: "never reached".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -745,6 +750,7 @@ mod tests {
             reason: "should not reach".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -822,6 +828,7 @@ mod tests {
             reason: "ok".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -871,6 +878,7 @@ mod tests {
             reason: "ok".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 42 });
@@ -904,6 +912,7 @@ mod tests {
             reason: "ok".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 42 });
@@ -933,6 +942,7 @@ mod tests {
             reason: "blocked".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 7 });

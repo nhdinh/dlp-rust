@@ -1563,6 +1563,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
                         reason: "stub".to_string(),
                         cache_hint: None,
                         cache_version: 0,
+                        approval_override: None,
                     }
                 }),
             )

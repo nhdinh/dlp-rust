@@ -899,6 +899,7 @@ mod tests {
             reason: format!("blocked: {}", req.path),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
@@ -922,6 +923,7 @@ mod tests {
             reason: "allowed".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
@@ -945,6 +947,7 @@ mod tests {
             reason: "denied".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
@@ -962,6 +965,7 @@ mod tests {
             reason: "allowed".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));

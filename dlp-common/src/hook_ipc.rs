@@ -173,6 +173,13 @@ pub struct HookResponse {
     /// The DLL compares this against its last seen version to detect stale cache.
     #[serde(default)]
     pub cache_version: u64,
+    /// Whether the decision was overridden by an approval token (DIFF-01).
+    ///
+    /// When `true`, the agent checked the ApprovalCache after ABAC returned DENY
+    /// and found a valid override. The hook DLL should allow the operation and
+    /// emit an audit event with `override_granted=true`.
+    #[serde(default)]
+    pub approval_override: Option<bool>,
 }
 
 /// Request sent by the hook DLL to the agent for handle-based classification.
@@ -561,6 +568,7 @@ mod tests {
         assert_eq!(deserialized.reason, "ok");
         assert!(deserialized.cache_hint.is_none());
         assert_eq!(deserialized.cache_version, 0);
+        assert_eq!(deserialized.approval_override, None);
     }
 
     #[test]
@@ -574,9 +582,25 @@ mod tests {
                 ttl_secs: 30,
             }),
             cache_version: 99,
+            approval_override: Some(false),
         };
         let bytes = bincode::serialize(&resp).unwrap();
         let round_trip: HookResponse = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(resp, round_trip);
+    }
+
+    #[test]
+    fn response_with_approval_override_roundtrips() {
+        let resp = HookResponse {
+            decision: Decision::ALLOW,
+            reason: "approved via override token".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+            approval_override: Some(true),
+        };
+        let bytes = bincode::serialize(&resp).unwrap();
+        let round_trip: HookResponse = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(round_trip.approval_override, Some(true));
         assert_eq!(resp, round_trip);
     }
 
