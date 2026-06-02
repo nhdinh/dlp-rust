@@ -561,6 +561,43 @@ impl EngineClient {
         self.delete(&format!("admin/protected-paths/{id}")).await
     }
 
+    // -----------------------------------------------------------------------
+    // Diagnostics API (Phase 58)
+    // -----------------------------------------------------------------------
+
+    /// Calls GET /admin/diagnostics with optional filters and pagination.
+    ///
+    /// Returns a JSON object with `total` and `events` fields.
+    #[allow(dead_code)]
+    pub async fn list_diagnostics(
+        &self,
+        since: Option<&str>,
+        user_sid: Option<&str>,
+        policy_id: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<serde_json::Value> {
+        let mut path = format!("admin/diagnostics?limit={limit}&offset={offset}");
+        if let Some(s) = since {
+            path.push_str(&format!("&since={}", urlencoding::encode(s)));
+        }
+        if let Some(u) = user_sid {
+            path.push_str(&format!("&user_sid={}", urlencoding::encode(u)));
+        }
+        if let Some(p) = policy_id {
+            path.push_str(&format!("&policy_id={}", urlencoding::encode(p)));
+        }
+        self.get(&path).await
+    }
+
+    /// Calls GET /admin/health to fetch self-health snapshot and history.
+    ///
+    /// Returns a JSON object with `snapshot` and `history` fields.
+    #[allow(dead_code)]
+    pub async fn get_self_health(&self) -> Result<serde_json::Value> {
+        self.get("admin/health").await
+    }
+
     /// Calls POST /admin/protected-paths/sync.
     ///
     /// Re-imports policy-derived paths from labels. Idempotent; preserves
