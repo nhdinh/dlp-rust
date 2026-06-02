@@ -193,13 +193,30 @@ fn classify_and_log_path(
                     source_volume_class,
                     destination_volume_class,
                 ) {
-                    Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
+                    Ok(ref resp)
+                        if resp.decision == crate::Decision::ALLOW
+                            || resp.decision == crate::Decision::AllowWithLog =>
+                    {
                         fail_state.record_pipe_success(cache_version);
                         let msg = format!("[dlp-hook] ALLOW {} hash={:016x}\0", fn_name, path_hash);
                         crate::debug_log(&msg);
                         None
                     }
-                    Ok(crate::Decision::DENY) | Ok(crate::Decision::DenyWithAlert) => {
+                    Ok(ref resp)
+                        if (resp.decision == crate::Decision::DENY
+                            || resp.decision == crate::Decision::DenyWithAlert)
+                            && resp.approval_override == Some(true) =>
+                    {
+                        // DIFF-01: Approval override granted — allow the operation.
+                        fail_state.record_pipe_success(cache_version);
+                        let msg = format!(
+                            "[dlp-hook] ALLOW(override) {} hash={:016x}\0",
+                            fn_name, path_hash
+                        );
+                        crate::debug_log(&msg);
+                        None
+                    }
+                    Ok(_) => {
                         fail_state.record_pipe_success(cache_version);
                         let msg = format!("[dlp-hook] DENY {} hash={:016x}\0", fn_name, path_hash);
                         crate::debug_log(&msg);
@@ -239,11 +256,23 @@ fn classify_and_log_path(
                         source_volume_class,
                         destination_volume_class,
                     ) {
-                        Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
+                        Ok(ref resp)
+                            if resp.decision == crate::Decision::ALLOW
+                                || resp.decision == crate::Decision::AllowWithLog =>
+                        {
                             fail_state.record_pipe_success(cache_version);
                             None
                         }
-                        Ok(crate::Decision::DENY) | Ok(crate::Decision::DenyWithAlert) => {
+                        Ok(ref resp)
+                            if (resp.decision == crate::Decision::DENY
+                                || resp.decision == crate::Decision::DenyWithAlert)
+                                && resp.approval_override == Some(true) =>
+                        {
+                            // DIFF-01: Approval override granted.
+                            fail_state.record_pipe_success(cache_version);
+                            None
+                        }
+                        Ok(_) => {
                             fail_state.record_pipe_success(cache_version);
                             Some(crate::fail_closed::DenyReturn::BoolFalse)
                         }
@@ -302,11 +331,23 @@ fn classify_and_log_path(
                     source_volume_class,
                     destination_volume_class,
                 ) {
-                    Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
+                    Ok(ref resp)
+                        if resp.decision == crate::Decision::ALLOW
+                            || resp.decision == crate::Decision::AllowWithLog =>
+                    {
                         fail_state.record_pipe_success(cache_version);
                         None
                     }
-                    Ok(crate::Decision::DENY) | Ok(crate::Decision::DenyWithAlert) => {
+                    Ok(ref resp)
+                        if (resp.decision == crate::Decision::DENY
+                            || resp.decision == crate::Decision::DenyWithAlert)
+                            && resp.approval_override == Some(true) =>
+                    {
+                        // DIFF-01: Approval override granted.
+                        fail_state.record_pipe_success(cache_version);
+                        None
+                    }
+                    Ok(_) => {
                         fail_state.record_pipe_success(cache_version);
                         Some(crate::fail_closed::DenyReturn::BoolFalse)
                     }
@@ -389,11 +430,14 @@ fn classify_and_log_handle(
 ) -> Option<crate::fail_closed::DenyReturn> {
     let start = std::time::Instant::now();
 
-    let decision = crate::classify_handle(handle_value, action, crate::DEFAULT_PIPE_NAME);
+    let response = crate::classify_handle(handle_value, action, crate::DEFAULT_PIPE_NAME);
     let latency = start.elapsed();
 
-    let result = match decision {
-        Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
+    let result = match response {
+        Ok(ref resp)
+            if resp.decision == crate::Decision::ALLOW
+                || resp.decision == crate::Decision::AllowWithLog =>
+        {
             let msg = format!(
                 "[dlp-hook] ALLOW {} handle={} latency={}us\0",
                 fn_name,
@@ -403,7 +447,20 @@ fn classify_and_log_handle(
             crate::debug_log(&msg);
             None
         }
-        Ok(d) if d.is_denied() => {
+        Ok(ref resp)
+            if resp.decision.is_denied() && resp.approval_override == Some(true) =>
+        {
+            // DIFF-01: Approval override granted — allow the operation.
+            let msg = format!(
+                "[dlp-hook] ALLOW(override) {} handle={} latency={}us\0",
+                fn_name,
+                handle_value,
+                latency.as_micros()
+            );
+            crate::debug_log(&msg);
+            None
+        }
+        Ok(ref resp) if resp.decision.is_denied() => {
             let msg = format!(
                 "[dlp-hook] DENY {} handle={} latency={}us\0",
                 fn_name,

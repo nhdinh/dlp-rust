@@ -1598,6 +1598,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
     let hook_ipc_diag = Arc::clone(&diagnostic_aggregator);
     let hook_ipc_health = Arc::clone(&health_aggregator);
     let hook_ipc_override_tx = override_tx.clone();
+    let hook_ipc_approval_cache = Arc::clone(&approval_cache);
     let hook_ipc_handle = std::thread::Builder::new()
         .name("hook-ipc".into())
         .spawn(move || {
@@ -1628,10 +1629,28 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
                     }
                 },
             );
+            let approval_cache_for_handler = Arc::clone(&hook_ipc_approval_cache);
             let server = crate::hook_ipc::HookIpcServer::new(
                 crate::hook_ipc::DEFAULT_PIPE_NAME,
-                Arc::new(|_req| {
+                Arc::new(move |req| {
                     // Stub handler — full ABAC evaluation wired in Phase 58-05.
+                    // For now, check ApprovalCache for override (DIFF-01).
+                    let cache_key = dlp_common::approval::ApprovalCacheKey::new(
+                        "S-1-5-18", // SYSTEM SID placeholder — real SID from process token in full impl
+                        &req.path,
+                        &req.action,
+                        None,
+                    );
+                    if let Some(eval_resp) = approval_cache_for_handler.check(&cache_key, None) {
+                        info!(path = %req.path, "Approval cache hit — granting override");
+                        return dlp_common::HookResponse {
+                            decision: eval_resp.decision,
+                            reason: eval_resp.reason,
+                            cache_hint: None,
+                            cache_version: 0,
+                            approval_override: Some(true),
+                        };
+                    }
                     dlp_common::HookResponse {
                         decision: dlp_common::Decision::ALLOW,
                         reason: "stub".to_string(),
