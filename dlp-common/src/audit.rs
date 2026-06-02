@@ -293,6 +293,23 @@ pub struct AuditEvent {
     /// volume class could not be determined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume_class: Option<crate::VolumeClass>,
+    /// SHA-256 hex digest of the file content being written.
+    ///
+    /// Populated for blocked write operations when content hashing is enabled.
+    /// `None` when hashing is disabled, the buffer was empty, or computation failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_sha256: Option<String>,
+    /// Whether the content hash was truncated due to the 100MB cap.
+    ///
+    /// `true` when the buffer exceeded `HASH_CAP_BYTES` and only the first
+    /// 100MB were hashed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash_truncated: Option<bool>,
+    /// Whether content hashing was skipped due to thread pool saturation.
+    ///
+    /// `true` when the hash computation thread pool was unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash_skipped: Option<bool>,
 }
 
 impl AuditEvent {
@@ -355,6 +372,9 @@ impl AuditEvent {
             policy_mode: None,
             would_have_denied: false,
             volume_class: None,
+            content_sha256: None,
+            hash_truncated: None,
+            hash_skipped: None,
         }
     }
 
@@ -555,6 +575,25 @@ impl AuditEvent {
     #[must_use]
     pub fn with_volume_class(mut self, volume_class: crate::VolumeClass) -> Self {
         self.volume_class = Some(volume_class);
+        self
+    }
+
+    /// Sets the content hash fields for a blocked write operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` — The SHA-256 hex digest of the content.
+    /// * `truncated` — Whether the hash was truncated due to the 100MB cap.
+    /// * `skipped` — Whether hashing was skipped due to thread pool saturation.
+    ///
+    /// # Returns
+    ///
+    /// `self` with content hash fields set.
+    #[must_use]
+    pub fn with_content_hash(mut self, hash: String, truncated: bool, skipped: bool) -> Self {
+        self.content_sha256 = Some(hash);
+        self.hash_truncated = Some(truncated);
+        self.hash_skipped = Some(skipped);
         self
     }
 }
@@ -1544,5 +1583,90 @@ mod tests {
         let event: AuditEvent = serde_json::from_str(legacy_json)
             .expect("legacy JSON without volume_class must deserialize");
         assert!(event.volume_class.is_none());
+    }
+
+    // --- Phase 58: Content hash fields ---
+
+    #[test]
+    fn test_audit_event_with_content_hash() {
+        let event = AuditEvent::new(
+            EventType::Block,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\secret.docx".to_string(),
+            Classification::T3,
+            Action::WRITE,
+            Decision::DENY,
+            "AGENT-01".to_string(),
+            1,
+        )
+        .with_content_hash(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            false,
+            false,
+        );
+
+        assert_eq!(
+            event.content_sha256,
+            Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string())
+        );
+        assert_eq!(event.hash_truncated, Some(false));
+        assert_eq!(event.hash_skipped, Some(false));
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"content_sha256\""), "content_sha256 must be present: {json}");
+        assert!(json.contains("\"hash_truncated\""), "hash_truncated must be present: {json}");
+        assert!(json.contains("\"hash_skipped\""), "hash_skipped must be present: {json}");
+    }
+
+    #[test]
+    fn test_skip_serializing_none_content_hash() {
+        let event = AuditEvent::new(
+            EventType::Access,
+            "S-1-5-21-123".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\File.txt".to_string(),
+            Classification::T2,
+            Action::READ,
+            Decision::ALLOW,
+            "AGENT-WS02-001".to_string(),
+            1,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            !json.contains("\"content_sha256\""),
+            "None content_sha256 must be omitted: {json}"
+        );
+        assert!(
+            !json.contains("\"hash_truncated\""),
+            "None hash_truncated must be omitted: {json}"
+        );
+        assert!(
+            !json.contains("\"hash_skipped\""),
+            "None hash_skipped must be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn test_backward_compat_missing_content_hash() {
+        // Legacy JSON without content hash fields must deserialize successfully.
+        let legacy = r#"{
+            "timestamp": "2026-01-01T00:00:00Z",
+            "event_type": "BLOCK",
+            "user_sid": "S-1-5-21-1",
+            "user_name": "jsmith",
+            "resource_path": "C:\\Data\\x.txt",
+            "classification": "T3",
+            "action_attempted": "READ",
+            "decision": "DENY",
+            "agent_id": "AGENT-01",
+            "session_id": 1,
+            "override_granted": false,
+            "access_context": "local"
+        }"#;
+        let event: AuditEvent = serde_json::from_str(legacy).unwrap();
+        assert!(event.content_sha256.is_none());
+        assert!(event.hash_truncated.is_none());
+        assert!(event.hash_skipped.is_none());
     }
 }
