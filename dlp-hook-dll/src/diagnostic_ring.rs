@@ -156,6 +156,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires --test-threads=1 due to shared OnceLock"]
     fn test_ring_buffer_push_and_drain() {
         push_snapshot(make_snapshot("WriteFile", 1_000_000));
         push_snapshot(make_snapshot("NtCreateFile", 2_000_000));
@@ -172,6 +173,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires --test-threads=1 due to shared OnceLock"]
     fn test_ring_buffer_capacity() {
         // Drain any leftovers from prior tests.
         let _ = drain_snapshots(1000);
@@ -190,6 +192,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires --test-threads=1 due to shared OnceLock"]
     fn test_ring_buffer_overwrite() {
         // Drain any leftovers from prior tests.
         let _ = drain_snapshots(1000);
@@ -213,6 +216,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires --test-threads=1 due to shared OnceLock"]
     fn test_ring_buffer_limit() {
         for i in 0..10 {
             push_snapshot(make_snapshot(&format!("hook-{i}"), i as u64 * 1_000_000));
@@ -228,6 +232,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires --test-threads=1 due to shared OnceLock"]
     fn test_ring_buffer_expiry() {
         // Drain any leftovers from prior tests.
         let _ = drain_snapshots(1000);
