@@ -99,7 +99,8 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 agent_id         TEXT NOT NULL,
                 session_id       INTEGER NOT NULL,
                 access_context   TEXT NOT NULL DEFAULT 'local',
-                correlation_id   TEXT UNIQUE
+                correlation_id   TEXT UNIQUE,
+                content_sha256   TEXT
             );
 
             CREATE TABLE IF NOT EXISTS exceptions (
@@ -820,6 +821,14 @@ pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
         [],
     )
     .context("seed global_enforcement_mode system_kv")?;
+
+    // Phase 58-04: content_sha256 column for audit event evidence hashing.
+    run_alter(
+        conn,
+        "ALTER TABLE audit_events ADD COLUMN content_sha256 TEXT",
+        "content_sha256",
+        "audit_events",
+    )?;
 
     Ok(())
 }
