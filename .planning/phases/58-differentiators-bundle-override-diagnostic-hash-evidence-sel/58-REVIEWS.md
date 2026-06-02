@@ -1,7 +1,7 @@
 ---
 phase: 58
 reviewers: [claude, opencode]
-reviewed_at: 2026-06-02T16:20:00Z
+reviewed_at: 2026-06-02T20:00:00Z
 plans_reviewed:
   - 58-01-PLAN.md
   - 58-02-PLAN.md
@@ -17,245 +17,427 @@ plans_reviewed:
 
 Codex CLI (gpt-5.3-codex) could not be invoked due to account restrictions:
 "The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account."
+Tried fallback models (o4-mini, gpt-4o, gpt-4o-mini, gpt-4.1) — all rejected with same error.
 
 ---
 
-## Claude Review
+## Claude Review (Claude Code CLI, v2.1.143)
 
-Now I have a comprehensive understanding of both the plans and the actual codebase. Let me provide my review.
+### Plan 58-01: Foundational Hook DLL Modules
 
----
+**Summary:** This plan establishes the core infrastructure for versioned IPC, lock-free diagnostic capture, and async content hashing in the hook DLL. The versioned envelope pattern (IpcPayloadV2/HookResponseV2) is correctly designed for backward compatibility, and the choice of crossbeam::queue::ArrayQueue aligns with the lock-free requirement. However, there are critical discrepancies between the plan and locked decisions in CONTEXT.md, and the ArrayQueue semantics don't match the stated "best-effort overwrite" behavior.
 
-# Phase 58 Execution Plans — Cross-Plan Review
+**Strengths:**
+- Versioned envelope with fallback deserialization prevents cross-architecture IPC breakage (addresses Pitfall 2).
+- `OnceLock` lazy initialization from trampoline avoids DllMain deadlock (addresses Pitfall 1).
+- Bounded channel (16) for hash queue with skip-on-full provides backpressure.
+- Separate sync path for small buffers (<=64KB) avoids thread-pool overhead for trivial cases.
+- Wall-clock timestamps enable cross-process sorting.
 
-## Summary
+**Concerns:**
+- **HIGH:** ArrayQueue capacity is 64, but D-07 mandates **1000 entries per DLL**. At 18 fields per snapshot, 64 entries is far too small for high-frequency operations and contradicts the locked decision. Either switch to `crossbeam::queue::SegQueue` (unbounded, but D-07 wants bounded) or increase ArrayQueue to 1000. The plan also says "best-effort overwrite" — ArrayQueue::push returns Err when full; it does NOT overwrite. To overwrite oldest, you'd need a custom ring buffer or pop+push loop.
+- **HIGH:** 100MB cap is stated as safety boundary, but Pitfall 3 mentions "1GB absolute maximum" as a defense against buffer overread. The plan only mentions the 100MB cap with no fallback for the 100MB–1GB range. Clarify: skip hash entirely above 100MB, or stream-hash up to 1GB?
+- **MEDIUM:** `clear_expired_snapshots` with SystemTime on ArrayQueue is problematic — ArrayQueue doesn't support arbitrary removal. The plan says "1-hour lazy eviction" in D-07 but doesn't explain how to evict from a ring buffer. A ring buffer naturally overwrites old entries; explicit eviction may not be needed if capacity is 1000 and overwrite is the policy. Reconcile this design.
+- **MEDIUM:** `compute_hash_async` waits up to 50ms oneshot — what happens if the background thread panics? The OnceLock makes recovery impossible without DLL reload. Add a watchdog or `std::thread::JoinHandle` health check.
+- **LOW:** No mention of `bincode` config (e.g., `bincode::DefaultOptions` vs legacy) for IpcPayloadV2 serialization. Ensure both sides use the same config.
 
-The six plans present a logically ordered build sequence from hook DLL foundation (58-01) through trampoline integration (58-02), agent aggregation (58-03), server API (58-04), TUI screens (58-05), and override flow (58-06). The internal module design within each plan is sound and follows established patterns. However, **critical architectural gaps exist at system boundaries**: bincode IPC compatibility is unaddressed across all plans that extend `IpcPayloadV1` or `HookResponse`, the server cannot access the agent's in-memory `DiagnosticAggregator` in production, no IPC mechanism exists to trigger a modal dialog in `dlp-user-ui` from the agent, and the health threshold computation in 58-03 violates D-21 by using a single snapshot instead of history. These are not implementation details—they are design flaws that will block integration.
+**Suggestions:**
+- Increase ArrayQueue capacity to 1000 to match D-07, and use a pop-then-push loop for overwrite semantics (or document that ArrayQueue::push failure = drop).
+- Clarify the 100MB vs 1GB boundary: skip if >100MB, stream-hash if <=1GB, reject/abort if >1GB.
+- Use `std::sync::atomic::AtomicU64` for monotonic sequence numbers in DiagnosticSnapshot to make ordering deterministic even with identical timestamps.
+- Add a `IpcPayloadV2::len()` sanity check before deserialization to detect pipe corruption.
 
----
-
-## Plan 58-01: Foundational Hook DLL Modules
-
-### Strengths
-- Correct dependency ordering (pure hook DLL internals first, no cross-crate churn).
-- `OnceLock` lazy initialization from trampoline call (not `DllMain`) follows established patterns and avoids Pitfall 1 from RESEARCH.md.
-- `#[serde(default)]` on all new IPC struct fields for JSON backward compatibility.
-- Small/large buffer split (64KB threshold) for SHA-256 computation is pragmatic.
-- Comprehensive unit test coverage for both modules.
-
-### Concerns
-- **HIGH — Bincode IPC compatibility:** Adding 5 new variants to `IpcPayloadV1` breaks bincode deserialization when an old agent talks to a new hook DLL (or vice versa). RESEARCH.md Pitfall 2 explicitly warns: "Bincode requires exact layout match." `#[serde(default)]` only helps JSON. The plan mentions versioned envelopes but does not actually use one—the new variants are appended directly to the existing enum.
-- **MEDIUM — ArrayQueue overwrite semantics:** The plan says "if ring.is_full(), pop one entry first, then push" but `ArrayQueue::len()` is approximate in MPMC and there's a race between `pop()` and `push()`. For a best-effort diagnostic ring this is acceptable, but the plan should acknowledge the relaxed semantics rather than claiming exact oldest-overwrite behavior.
-- **MEDIUM — QPC-based expiry:** `ENTRY_EXPIRY_QPC_TICKS = 36_000_000_000_000` assumes a fixed QPC frequency (~10MHz). QPC frequency varies by hardware (typically 10MHz on modern systems but can differ). Using raw QPC ticks for 1-hour expiry is fragile; wall-clock time (`Instant` or `SystemTime`) would be more robust.
-- **LOW — `hash_skipped` semantics:** The plan says return `(None, false, true)` if pool creation fails, but `OnceLock::get_or_init` panics on failure. The `hash_skipped` flag can only trigger on pool saturation (rayon `install` blocking), not initialization failure.
-
-### Suggestions
-- Use a new protocol version (`IpcPayloadV2`) or wrap new variants in a versioned envelope. Do not append to `IpcPayloadV1` without a version bump.
-- Replace QPC expiry with `SystemTime::now()` stored in `DiagnosticSnapshot` and compare against `Duration::from_secs(3600)`.
-- Document that `ArrayQueue` overwrite is best-effort under contention.
+**Risk Assessment:** MEDIUM — the ArrayQueue capacity and overwrite semantics are fundamental errors that will cause diagnostic loss. Fixing these is straightforward but must happen before 58-02.
 
 ---
 
-## Plan 58-02: Trampoline Integration
+### Plan 58-02: Trampoline Integration
 
-### Strengths
-- Health counter emission reuses existing `EMIT_INTERVAL` (1000 calls) per R-02—no new hot-path emission path.
-- Correctly limits SHA-256 computation to `WriteFile`/`WriteFileEx` DENY paths per D-12.
-- Diagnostic snapshot push on DENY for all trampolines (not just WriteFile) follows D-07.
+**Summary:** This plan wires the diagnostic and hash infrastructure into all 12 trampolines and refactors the decision path to return a rich DecisionContext. Removing the approval cache from the hook DLL and making the agent authoritative simplifies consistency but adds IPC latency on every DENY. The plan correctly limits hash computation to WriteFile/WriteFileEx on DENY.
 
-### Concerns
-- **HIGH — `classify_and_log_handle` return type:** The current signature returns `Option<DenyReturn>`. The plan requires populating `DiagnosticSnapshot` with `classification_source`, `classification_age_ms`, `matched_policy_id`, `enforcement_mode`, and `decision_latency_us`—none of which are available from the current return value. The plan says "populate from classification context" but does not specify **how** to extract this context. Changing the return type is a breaking change across all 12 trampolines and the plan does not account for this refactor scope.
-- **HIGH — `RequestOverride` pipe send:** The plan calls `crate::pipe_client::send_message(...)` and `crate::pipe_client::send_override_request(...)`. The codebase exploration shows `pipe_client.rs` exists but these specific functions may not. The plan does not verify the pipe client API or describe how `send_message` handles fire-and-forget semantics without blocking the hooked thread.
-- **MEDIUM — `injected_pids` and `patched_modules` counters:** These are required by D-18 but the plan states they should be incremented "at injection time" and "when ntdll stubs are patched"—neither of which is in this plan's `files_modified`. This is scope leakage; these increments need explicit tasks in this plan or a prerequisite plan.
-- **MEDIUM — WriteFileEx OVERLAPPED hash timing:** D-17 says "compute hash synchronously in the trampoline before returning." For async I/O, the application may reuse the buffer after `WriteFileEx` returns. Computing the hash before calling the original `WriteFileEx` is safe but adds latency to the async path. The plan should note this tradeoff.
+**Strengths:**
+- Refactoring `classify_and_log_handle` to return DecisionContext consolidates 9 fields into one struct, reducing parameter bloat.
+- Hash computation strictly limited to DENY on WriteFile/WriteFileEx per D-12 (avoids Pitfall 1).
+- Counter placement (injected_pids at injection, patched_modules at patch) is logically correct.
+- Documenting WriteFileEx hash latency tradeoff shows awareness of the async boundary.
 
-### Suggestions
-- Refactor `classify_and_log_handle` to return a `DecisionContext` struct (or use a thread-local context) containing all fields needed for the diagnostic snapshot. This is a significant refactor that should be its own sub-task.
-- Verify the `pipe_client` API before implementation; add a `send_fire_and_forget` helper if needed.
-- Add explicit sub-tasks for incrementing `injected_pids` in `lib.rs` (or injection entry point) and `patched_modules` in the ntdll patcher module.
+**Concerns:**
+- **HIGH:** Removing approval cache from hook DLL means **every DENY incurs a full IPC round-trip** even when no override is pending. If the agent is down or slow, this adds latency to every blocked operation. The original architecture likely had the cache in-hook to fast-path DENY. The plan should quantify acceptable latency (D-01 mentions TTL-bounded approval but doesn't discuss hot-path performance). Consider keeping a negative-cache in hook DLL: "no override pending" cached for 5-10s.
+- **HIGH:** The plan says "Push DiagnosticSnapshot on DENY for all 12 trampolines" — but what about ABAC AUDIT mode (not DENY)? D-07 says severity derived from enforcement_mode: `deny->critical, audit->warning, allow->info`. If we only push on DENY, we lose audit->warning and allow->info snapshots. D-02 requires "full decision tree per blocked event" — blocked implies DENY, but diagnostic value exists for audit events too. Clarify whether snapshots are DENY-only or all modes.
+- **MEDIUM:** DecisionContext includes `pipe_round_trips_60s` and `cache_hit_rate_60s` — where do these values come from? The hook DLL doesn't have a 60-second window unless there's a counter aggregator. These should be computed by the agent (Plan 58-03), not returned by `classify_and_log_handle`. This creates a dependency on health counter state that may not exist at the decision point.
+- **MEDIUM:** If `compute_hash_async` times out or channel is full, the DiagnosticSnapshot should still be pushed with `hash_skipped=true`. The plan says "Other 10 trampolines: content_hash=None, hash_skipped=false" — for WriteFile/WriteFileEx that fail to hash, what are the field values? Be explicit.
+- **LOW:** `injected_pids` as AtomicU32 will overflow after 4 billion injections. Use saturating increment.
 
----
+**Suggestions:**
+- Add a "fast DENY" path: hook DLL sends request, agent returns immediately with approval_override=false if no override exists, minimizing latency for the common case.
+- Clarify whether DiagnosticSnapshot pushes on AUDIT/ALLOW modes too, or if the severity field is only populated for DENY. If DENY-only, document that decision.
+- Move `pipe_round_trips_60s` and `cache_hit_rate_60s` out of DecisionContext — these are agent-computed aggregates, not per-decision fields. The snapshot can store the instantaneous counters and let the agent compute rates.
+- Add `hash_error: Option<String>` field to DiagnosticSnapshot for forensic traceability when hashing fails.
 
-## Plan 58-03: Agent-Side Aggregation
-
-### Strengths
-- `DashMap` for lock-free per-DLL storage follows the `ApprovalCache` pattern exactly.
-- Health status enum maps cleanly to D-21 thresholds.
-- Alert emission on transitions follows D-22 with consecutive-degraded counting.
-
-### Concerns
-- **HIGH — Health threshold uses single snapshot, not history:** D-21 defines `Healthy` as "cache_hit_rate >= 80% AND fail_state == Healthy AND pipe_round_trips > 0 in last 5 min." The `ingest_snapshot` method computes status from the **current snapshot only**—it never checks whether `pipe_round_trips_60s > 0` has held for the last 5 minutes. The `history` field stores 12 snapshots (12 minutes) but is never scanned for the 5-minute trend. This is a direct violation of D-21.
-- **HIGH — Agent cannot call `alert_router::send`:** The `alert_router` lives in `dlp-server`. The agent crate does not (and should not) depend on the server crate. The plan's `emit_health_audit_event` calls `alert_router::send` directly, which is architecturally impossible. The agent should emit an `AuditEvent` (via the existing audit pipeline) and let the server route alerts.
-- **HIGH — PullDiagnostics/PullHealth directionality is backwards:** D-09 says "The agent polls each connected hook DLL... via the existing named pipe (`HookMessage::PullDiagnostics`)." This means the **agent sends** `PullDiagnostics` **to** the hook DLL, and the hook DLL responds with `DiagnosticsResponse`. The plan's `interception/mod.rs` task describes these as if the hook DLL sends them to the agent: "Add arm for HookMessage::PullDiagnostics(request)... respond with aggregated data." This is backwards—the agent initiates the poll.
-- **MEDIUM — Diagnostic key collision on PID reuse:** The key format `"{pid}_{agent_id}"` will collide when a process restarts and gets the same PID. Old diagnostic entries from the previous process will be mixed with new ones. Use a process start timestamp or GUID.
-- **MEDIUM — Sorting by QPC across agents:** `get_snapshots` sorts by `timestamp_qpc` descending, but QPC is machine-specific and not comparable across different endpoints. Sorting should use wall-clock time.
-
-### Suggestions
-- Compute the `pipe_round_trips > 0 in last 5 min` condition by scanning the last 5 entries in `history` (or a separate 5-minute rolling window).
-- Replace `alert_router::send` with audit event emission through the existing agent audit pipeline.
-- Clarify that `PullDiagnostics` and `PullHealth` are **agent-initiated** polls sent TO hook DLLs; the interception handler needs a registry of active pipes to poll, not match arms for receiving these messages.
-- Use `(pid, process_start_time)` as the diagnostic key, or evict entries when a PID disconnects.
+**Risk Assessment:** MEDIUM — removing the in-hook approval cache changes the hot-path latency profile significantly. This needs benchmarking or a negative-cache fallback.
 
 ---
 
-## Plan 58-04: Server API and Schema
+### Plan 58-03: Agent-Side Aggregation
 
-### Strengths
-- Handler pattern (`Query<T>` + `spawn_blocking`) follows `list_bypass_alerts_handler` exactly.
-- Route registration under `protected_routes` ensures JWT auth.
-- Agent service startup wiring is clear.
+**Summary:** This plan builds the agent's DiagnosticAggregator with PID-reuse-safe keying, health threshold scanning, and connected pipe registry for polling DLLs. It bridges hook DLL diagnostics to server-push. The design is mostly sound but has timing discrepancies with locked decisions and underspecified health transition logic.
 
-### Concerns
-- **HIGH — Server cannot read agent's in-memory `DiagnosticAggregator`:** The plan adds `AppState.diagnostic_aggregator` as an `Option<Arc<DiagnosticAggregator>>`. This only works when server and agent run in the same process (test mode). In production, they are separate processes. The plan includes a "KNOWN LIMITATION" note but **no actual solution**. Plan 58-05's TUI screen depends on this endpoint working in production.
-- **MEDIUM — Missing health endpoint:** Plan 58-05 calls `GET /admin/health` (or `admin/health`) via `client.get_self_health()`, but this plan does not define such an endpoint. Only `/admin/diagnostics` is defined.
-- **MEDIUM — No connected-pipe registry for polling:** The agent needs to track which hook DLL pipes are currently connected to send `PullDiagnostics` and `PullHealth` messages. The existing event loop processes messages as they arrive but does not maintain a `HashMap<pid, PipeHandle>` for outbound polling. The plan does not address this.
-- **LOW — Missing specific INSERT/SELECT locations:** The plan says "update the audit event insertion code" but does not identify the specific repository function or file where `AuditEvent` is persisted to SQLite.
+**Strengths:**
+- PID + process_start_time keying correctly addresses PID reuse (a real problem on Windows).
+- DashMap for concurrent per-DLL state is appropriate.
+- AuditEvent emission on health transitions integrates with existing audit infrastructure instead of creating a parallel alert path.
+- Batched diagnostic_ingest (every 60s or 100 entries) is efficient.
 
-### Suggestions
-- Add an `POST /agent/diagnostics` endpoint (or reuse the audit ingest channel) for the agent to **push** aggregated diagnostic snapshots to the server periodically. The server stores them in-memory or in a short-lived cache. This supports standalone server deployments.
-- Add `GET /admin/health` to serve the current health snapshot from the server's cached data.
-- Add a `connected_pipes: Arc<DashMap<u32, PipeHandle>>` to the agent's event loop state for outbound polling.
+**Concerns:**
+- **HIGH:** Polling frequency mismatch. D-07 says "polled every 30s via named pipe" for diagnostics. Plan says `poll_all_diagnostics every 60s` and `poll_all_health every 60s (staggered 30s)`. This means diagnostics are polled at 60s, not 30s. The locked decision says 30s — which takes precedence? Similarly, D-18 says health counters polled every 60s, which matches for health but not diagnostics.
+- **HIGH:** Health threshold logic "scanning last 5 entries: cache_hit_rate >= 0.80, fail_state == 'healthy', pipe_round_trips_60s > 0 across all 5" is brittle. If a process just started and has 1 entry, the scan fails the "all 5" check and marks Critical? The plan should specify minimum sample size (e.g., require 3+ entries). Also, `pipe_round_trips_60s > 0` means "had at least one IPC call in the last 60s" — but if the process is idle (no file operations), this will falsely show Degraded.
+- **MEDIUM:** `GetNamedPipeClientProcessId` requires Windows Vista+ and specific handle rights. The plan doesn't mention error handling if this call fails (e.g., pipe already closed). What happens to the connected_pipes registry entry?
+- **MEDIUM:** `poll_all_diagnostics` and `poll_all_health` are both every 60s. With many injected processes (e.g., 500 PIDs), sequential polling could take significant time. The plan doesn't mention concurrency for polling. Use `tokio::task::spawn` or `rayon` for parallel pipe I/O.
+- **LOW:** The plan says "Emit AuditEvent on health transitions instead of calling alert_router" — but the success criteria says "auto-alert on degradation". If alert_router is the alerting path and audit events are just logging, alerts may be missed. Verify that alert_router consumes audit events, or add an explicit alert emission path.
 
----
+**Suggestions:**
+- Change `poll_all_diagnostics` to 30s to match D-07, or update CONTEXT.md if 60s is intentional.
+- Define health thresholds with minimum sample size: require N>=3 entries, and `pipe_round_trips_60s > 0` should be `>= 0` (idle processes are healthy, not degraded). Use "no pipe_round_trips in 300s" for disconnected detection.
+- Use `tokio::task::JoinSet` for concurrent pipe polling to avoid head-of-line blocking.
+- Add a "last_seen" timestamp per pipe and evict pipes not seen in 5 minutes to prevent registry bloat from crashed processes.
 
-## Plan 58-05: Admin TUI Screens
-
-### Strengths
-- Follows the established four-file pattern (constants, dispatch, render, client) rigorously.
-- `DiagnosticSeverityFilter` clones `BypassAlertSeverityFilter` exactly.
-- UI-SPEC.md is well-referenced and detailed.
-
-### Concerns
-- **MEDIUM — `severity` field does not exist on `DiagnosticSnapshot`:** The `draw_diagnostic_list` function extracts `event["severity"]` and the filter cycles through Crit/Warn/Info, but `DiagnosticSnapshot` (defined in 58-01) has no `severity` field. This data must be derived from `matched_policy_id`/`enforcement_mode` or added to the struct. The UI spec invents this field without updating the data model.
-- **MEDIUM — Health endpoint mismatch:** The `get_self_health` client method calls `"admin/health"` but Plan 58-04 does not define this endpoint.
-- **MEDIUM — QPC timestamp can't show relative time:** The table time column shows "2m ago" but `DiagnosticSnapshot` only has `timestamp_qpc` (QPC ticks). Converting QPC to relative time requires the QPC frequency and a baseline, which the TUI doesn't have. Need a wall-clock timestamp field.
-- **LOW — SystemMenu render list not explicitly updated:** The plan says "Shift Syslog Config from 12 to 14, Back from 13 to 15" but the render.rs SystemMenu list is a separate concern from dispatch.rs. Both must be updated and kept in sync.
-
-### Suggestions
-- Add `severity: String` to `DiagnosticSnapshot` (derive from enforcement_mode or matched policy tier) or remove severity filtering from the TUI.
-- Add `timestamp: DateTime<Utc>` to `DiagnosticSnapshot` for wall-clock display.
-- Ensure both `dispatch.rs` AND `render.rs` SystemMenu lists are updated and verified by a unit test.
+**Risk Assessment:** MEDIUM — timing mismatch and brittle health logic could cause false-positive degradation alerts or missed diagnostics.
 
 ---
 
-## Plan 58-06: Override Flow Integration
+### Plan 58-04: Server API and Schema
 
-### Strengths
-- Extensive reuse of Phase 61 infrastructure (`ApprovalCache`, `ApprovalCacheKey`, JWT verification).
-- Correct fire-and-forget semantics: hook DLL returns DENY immediately, user retries after approval.
-- `approval_override` field in `HookResponse` is the right integration point (avoids a second pipe round-trip).
+**Summary:** This plan adds server-side caching for diagnostics and health with agent-push ingestion and admin read endpoints. The in-memory cache design respects D-07's no-disk-persistence rule for diagnostics. However, the plan is underspecified on authentication, data retention boundaries, and the audit event integration.
 
-### Concerns
-- **HIGH — Bincode compatibility for `HookResponse` extension:** Adding `approval_override: Option<bool>` to `HookResponse` has the same bincode compatibility problem as 58-01. Old hook DLLs deserializing a response from a new agent will fail with `UnexpectedEof`. This breaks the existing installed base.
-- **HIGH — No IPC mechanism to trigger modal dialog in `dlp-user-ui`:** The plan says "forward to dlp-user-ui via existing IPC mechanism." The existing agent->UI IPC (`Pipe1AgentMsg::BlockNotify`, `Pipe2AgentMsg::Toast`) sends notifications/toasts. A modal dialog requiring text input (`show_override_dialog()`) needs a new IPC message type. The plan does not design this message.
-- **HIGH — `dlp-user-ui` may not have server network access:** The plan says dlp-user-ui submits to `POST /admin/approvals`, but the user UI process runs in the user session and may not have the server's TLS certificates or network route. The agent (SYSTEM service) is the natural proxy. The flow should be: user UI submits justification back to agent -> agent POSTs to server.
-- **MEDIUM — Approval override check should be in agent's evaluate path, not hook DLL:** The plan in 58-02 describes `check_approval_cache` in the hook DLL, but the hook DLL cannot access the agent's `ApprovalCache` (it's in a different process). The correct flow is: hook DLL sends normal classify request -> agent evaluates ABAC -> if DENY, agent checks `ApprovalCache` -> if valid override, agent returns `HookResponse` with `approval_override=true`. Plan 58-06 gets this right, but 58-02 contradicts it.
+**Strengths:**
+- In-memory DashMap cache avoids disk persistence for raw diagnostic snapshots (compliant with D-07).
+- Background pruning task prevents unbounded memory growth.
+- Filtering by agent_id, pid, limit is practical for operators.
+- Agent-push model reduces server complexity (no need for server to poll agents).
 
-### Suggestions
-- Bump the IPC protocol version for `HookResponse` changes, or add `approval_override` to a new response variant.
-- Design a new `Pipe2AgentMsg::ShowOverrideDialog { requester_sid, resource_path, action }` message from agent to user UI.
-- Have dlp-user-ui submit the justification back to the agent via a new user-ui -> agent IPC message, then agent forwards to the server.
+**Concerns:**
+- **HIGH:** "Identify and document AuditEvent INSERT location in audit_repository.rs" is a research/documentation task, not implementation. If Plan 58-03 emits AuditEvent for health transitions, the server needs to actually INSERT them. This task should be "Add AuditEvent INSERT in audit_repository.rs for health_transition and diagnostic_ingest events" with the actual SQL/bindings.
+- **HIGH:** No mention of authentication/authorization on POST /agent/diagnostics. Agent-to-server push must be authenticated (mTLS, JWT, or API key). Without this, any process can flood the server with fake diagnostics.
+- **MEDIUM:** Cache max_age is 300s (5 minutes), but agent push frequency is 60s (or 30s per D-07). This means cache always has fresh data, but what about agents that go offline? The 300s stale threshold seems fine, but admin TUI should show "agent offline" when last_updated > 300s.
+- **MEDIUM:** No rate limiting on POST /agent/diagnostics. A misbehaving agent (or compromised one) could push thousands of snapshots per second and exhaust server memory before the 60s prune task runs. Add per-agent rate limiting.
+- **LOW:** GET /admin/diagnostics filtering by policy_id is mentioned in "Claude's discretion" but not in the plan's endpoint spec. Add it or remove the discretion note.
 
----
+**Suggestions:**
+- Replace the documentation task with actual implementation: add `insert_health_transition_event()` and `insert_diagnostic_ingest_event()` methods to audit_repository.rs.
+- Require Bearer token or mTLS on POST /agent/diagnostics. Reuse existing agent auth mechanism.
+- Add per-agent rate limiting: max 1000 snapshots per push, max 1 push per 30s.
+- Include `agent_hostname` in the cached key alongside `agent_id` for multi-host clarity.
+- Add `GET /admin/diagnostics/{snapshot_id}` for fetching a single snapshot's full decision tree (needed for D-02 detail view).
 
-## Cross-Cutting Issues
-
-| Issue | Affected Plans | Severity | Mitigation |
-|-------|-------------|----------|------------|
-| Bincode IPC compatibility | 58-01, 58-06 | HIGH | Bump protocol version or use versioned envelope for all new fields/variants |
-| Server can't read agent memory | 58-04, 58-05 | HIGH | Agent pushes diagnostics to server; server caches them |
-| No UI modal IPC mechanism | 58-06 | HIGH | Design new agent->UI IPC message for modal dialog trigger |
-| Health threshold uses wrong data | 58-03 | HIGH | Scan 5-minute history window, not single snapshot |
-| `classify_and_log_handle` return type | 58-02 | HIGH | Refactor to return `DecisionContext` struct |
-| Missing health endpoint | 58-04, 58-05 | MEDIUM | Add `GET /admin/health` to server API |
-| `severity` field missing from snapshot | 58-01, 58-05 | MEDIUM | Add to `DiagnosticSnapshot` or remove from TUI |
-| PID reuse in diagnostic keys | 58-03 | MEDIUM | Include process start time in key |
+**Risk Assessment:** MEDIUM — missing auth on agent push is a security gap. The documentation-only task for audit events is insufficient.
 
 ---
 
-## Risk Assessment: **HIGH**
+### Plan 58-05: Admin TUI Screens
 
-The plans are well-structured at the module level and follow established patterns, but four **blocking architectural issues** prevent confident execution:
+**Summary:** This plan builds the operator-facing Diagnostic List and Self-Health Dashboard screens in the admin TUI. The designs use ratatui idiomatically (tables, sparklines, color-coding) and include a unit test for menu order. However, the Diagnostic List screen may not fully satisfy D-02's requirement for a "full decision tree."
 
-1. **Bincode compatibility** breaks across process boundaries for all new IPC types. Without a protocol version strategy, deploying these changes will cause pipe deserialization failures between old and new components.
-2. **Cross-process data access** (server reading agent's `DiagnosticAggregator`) is impossible in the current architecture. The TUI screens depend on an endpoint that cannot exist as designed.
-3. **Missing UI IPC** for modal dialog triggering means DIFF-01 cannot be implemented without designing a new message channel, which is not scoped in any plan.
-4. **Health threshold bug** (58-03) means the Self-Health Dashboard will show incorrect status and miss degradation transitions.
+**Strengths:**
+- SeverityFilter with cycle method follows existing TUI interaction patterns.
+- Relative time display from timestamp_utc is operator-friendly.
+- Sparkline widget for 12-reading health history is a nice visual differentiator.
+- Color-coding by severity/status leverages ratatui well.
+- Unit test for menu order prevents regression.
 
-**Recommendation:** Revise 58-01 to use a new IPC protocol version, revise 58-03 to scan history for thresholds and emit audit events instead of calling alert_router, revise 58-04 to define an agent-push model for diagnostics and add the health endpoint, and revise 58-06 to design the agent->UI modal IPC message. Only then should execution begin.
+**Concerns:**
+- **HIGH:** D-02 requires "full decision tree per blocked event — hook fired, classification source + age, ABAC subject/resource/action/environment, matched policy ID + mode, decision latency in microseconds." The plan's Diagnostic List table only shows: Time, PID, Source, Policy, Mode, Severity, Latency. It omits: hook name, classification age, ABAC subject, ABAC resource, ABAC action, ABAC environment. This is a **partial implementation of D-02**. Either add these columns, make them toggleable, or add a detail popup (press Enter to expand).
+- **MEDIUM:** The plan doesn't mention how the TUI handles empty states (no diagnostics, no agents). A blank screen is poor UX. Add empty-state messages.
+- **MEDIUM:** Self-Health Dashboard shows "Sparkline" but doesn't define the metric being sparklined. Is it cache_hit_rate? pipe_round_trips? fail_state transitions? The plan should specify.
+- **LOW:** SystemMenu positions 13/14 — what if the menu exceeds screen height? Does ratatui scroll? Verify the existing menu widget handles this.
+
+**Suggestions:**
+- Add a detail view modal (activated by Enter on a diagnostic row) showing all 18 DiagnosticSnapshot fields. This satisfies D-02 without cluttering the list view.
+- Add "classification age" and "ABAC subject (user_sid)" to the main table if space permits.
+- Define sparkline metric: use `cache_hit_rate` as primary trend, with color indicating threshold breaches.
+- Add empty-state widgets: "No diagnostic snapshots received. Ensure agents are running and policies are active."
+
+**Risk Assessment:** LOW — the missing detail view is the main gap. Easy to fix.
 
 ---
 
-## OpenCode Review
+### Plan 58-06: Override Flow Integration
 
-[0m
-> build · gpt-5.3-chat-latest
-[0m
+**Summary:** This plan wires the end-to-end override flow from hook DLL DENY through agent, user UI, server, and back. The versioned HookResponseV2 is consistent with IpcPayloadV2, and the 30-second deduplication prevents dialog spam. However, the plan is vague on the admin approval side and contradicts the requirements endpoint path.
+
+**Strengths:**
+- HookResponseV2 versioned envelope mirrors IpcPayloadV2 pattern — consistent design.
+- 30-second deduplication by (resource_path, action) prevents user UI spam.
+- Agent-side ApprovalCache check means hook DLL stays simple (no cache logic).
+- User UI modal with min 10 char justification enforces meaningful requests.
+
+**Concerns:**
+- **HIGH:** Requirements say "justification round-trips through POST /admin/overrides" but the plan says "POST /admin/approvals". If Phase 61 already has `/admin/approvals`, this is fine — but verify which endpoint exists. If it's `/admin/approvals`, update the requirements doc. If it's `/admin/overrides`, fix the plan. Inconsistency here will break integration.
+- **HIGH:** The plan says "admin grants TTL-bounded approval via admin TUI" but the plan itself doesn't include any admin TUI changes for granting approvals. D-01 says "reuses Phase 61 approval infrastructure entirely (no new SQLite schema, no new JWT signing, no new TUI screen)" — but if Phase 61's approval UI doesn't have a screen for this specific flow, where does the admin grant approval? The plan is completely missing the admin TUI side. Is there an existing approval screen that handles this? If yes, document it. If no, this is a gap.
+- **HIGH:** What happens when the override JWT/token expires while the user is mid-operation? The plan mentions `override_expiry` in HookResponseV2 but doesn't describe the TTL enforcement. Does the hook DLL check expiry on every subsequent call? The agent? Clarify the enforcement boundary.
+- **MEDIUM:** `Pipe2AgentMsg::ShowOverrideDialog` and `UserUiToAgentMsg::OverrideJustification` — these cross-process IPC messages need serialization. Are they using the existing named pipe protocol? The plan doesn't mention the wire format. Use the same versioned envelope as IpcPayloadV2.
+- **MEDIUM:** The deduplication DashMap keyed by (resource_path, action) with String keys will allocate on every DENY even when dedup is cold. Use `(Arc<str>, Action)` or a hash of the path to avoid allocation.
+- **LOW:** What if the user clicks "Cancel" on the override dialog? The plan mentions `OverrideCancelled` and `OverrideDialogClosed` but doesn't say what the agent does with these messages. Presumably nothing (user must retry), but document it.
+
+**Suggestions:**
+- Verify and document the exact server endpoint: `/admin/overrides` or `/admin/approvals`. Add to the plan.
+- Document the existing Phase 61 admin TUI screen used for approval, or add a task to 58-05 for the approval grant UI if it doesn't exist.
+- Add TTL enforcement: hook DLL checks `override_expiry > now()` before honoring. If expired, re-query agent.
+- Use a hashed key for deduplication (e.g., `FxHash64(resource_path) ^ action.as_u64()`) to avoid String allocation.
+- Define the full state machine: DENY -> ShowDialog -> JustificationSent -> Waiting -> ApprovalReceived/Expired/Denied.
+
+**Risk Assessment:** HIGH — the missing admin approval UI and endpoint ambiguity are blockers. The TTL enforcement is underspecified.
+
+---
+
+## OpenCode Review (gpt-5.3-chat-latest)
+
+### Plan 58-01: Foundational Hook DLL Modules
+
+**Summary:** Strong foundational plan with correct attention to IPC versioning, lock-free structures, and avoiding DllMain hazards. The design aligns well with constraints, but there are a few correctness and backpressure edge cases around the ring buffer and hashing pipeline that could cause silent data loss or inconsistent behavior under load.
+
+**Strengths:**
+- Correct use of versioned IPC (`IpcPayloadV2`) without breaking V1 compatibility
+- Avoids DllMain initialization pitfalls via `OnceLock`
+- Lock-free `ArrayQueue` aligns with high-frequency hook context
+- Bounded async hashing with fallback avoids unbounded resource usage
+- Explicit cap (100MB) and async offload prevent hook thread blocking
+- Wall-clock timestamps enable cross-process ordering
+
+**Concerns:**
+- **HIGH:** `ArrayQueue` "best-effort overwrite" is not natively supported; naive implementation risks dropping newest or oldest inconsistently
+- **HIGH:** Hash channel saturation silently drops hashes -> forensic gap (no signal that hash was skipped due to pressure)
+- **MEDIUM:** 50ms wait on oneshot could still stall hook thread under contention
+- **MEDIUM:** Sorting snapshots on read may become expensive if called frequently (N log N per poll)
+- **MEDIUM:** `SystemTime` for expiry is not monotonic; clock skew can break eviction logic
+- **LOW:** No explicit schema/version field inside `DiagnosticSnapshot` itself (future evolution risk)
+
+**Suggestions:**
+- Implement explicit overwrite policy: `pop()` oldest before `push()` when full
+- Add `hash_skipped_reason` enum (TooLarge, ChannelFull, Timeout) to preserve forensic integrity
+- Reduce blocking wait to near-zero or make fully fire-and-forget for large buffers
+- Maintain insertion order and avoid full sort; use monotonic sequence ID instead
+- Use `Instant` for TTL tracking, keep `SystemTime` only for display
+- Add `version: u8` inside `DiagnosticSnapshot`
+
+**Risk Assessment:** MEDIUM — Core design is sound, but silent data loss (hash skipping, ring buffer overwrite ambiguity) directly impacts forensic guarantees.
+
+---
+
+### Plan 58-02: Trampoline Integration
+
+**Summary:** Good integration plan that cleanly centralizes decision context and limits hashing to DENY paths. However, it introduces coupling and a potentially risky removal of approval logic from the hook layer without fully validating latency and fallback behavior.
+
+**Strengths:**
+- Clear separation via `DecisionContext`
+- Correctly restricts hashing to DENY for performance
+- Consistent diagnostic capture across all trampolines
+- Atomic counters for health metrics are lightweight and safe
+- Avoids UI reentrancy issues by not embedding override logic in hook
+
+**Concerns:**
+- **HIGH:** Removing approval cache check from hook may introduce latency regressions (extra IPC roundtrip on every DENY)
+- **HIGH:** No fallback if agent is unreachable -> DENY always, even if override exists
+- **MEDIUM:** DecisionContext includes rolling metrics (60s rates) — unclear if hook can compute accurately without shared state
+- **MEDIUM:** WriteFileEx async semantics vs hash timing not fully resolved (possible mismatch between event and hash)
+- **LOW:** No explicit handling for partial writes or multiple WriteFile calls per logical operation
+
+**Suggestions:**
+- Keep a minimal fast-path override cache in hook (read-only, TTL-based) to avoid IPC latency
+- Define behavior when agent pipe is unavailable (fail-open vs fail-closed — likely fail-closed but must be explicit)
+- Clarify how rolling metrics are computed (shared atomic window vs snapshot)
+- For WriteFileEx, document whether hash reflects buffer at call time or completion
+- Consider correlating multi-chunk writes via handle/file ID
+
+**Risk Assessment:** MEDIUM-HIGH — The override flow dependency shift to agent introduces latency and availability risks that could impact core enforcement UX.
+
+---
+
+### Plan 58-03: Agent-Side Aggregation
+
+**Summary:** Well-structured aggregation layer with good attention to PID reuse and health computation. The design is mostly solid, but some logic around health evaluation and polling scalability could lead to misleading signals or performance issues at scale.
+
+**Strengths:**
+- PID + start_time key is correct for reuse protection
+- Bounded history (VecDeque) prevents memory growth
+- Health evaluation rules are explicit and deterministic
+- Agent-initiated polling avoids DLL push complexity
+- AuditEvent-based emission aligns with existing pipeline
+
+**Concerns:**
+- **HIGH:** Health rule "pipe_round_trips_60s > 0 across all 5" may mark idle systems as degraded incorrectly
+- **MEDIUM:** Polling every 60s for all pipes may not scale with many injected processes
+- **MEDIUM:** No backpressure handling if agent cannot ingest fast enough
+- **MEDIUM:** Diagnostic batching (100 entries / 60s) may delay visibility for critical events
+- **LOW:** DashMap<(pid, start_time)> growth not explicitly bounded if processes churn rapidly
+
+**Suggestions:**
+- Adjust health rules to distinguish "idle healthy" vs "degraded"
+- Add jitter or adaptive polling (skip inactive pipes)
+- Introduce max entries per PID with eviction policy
+- Allow immediate flush for critical severity events
+- Track ingestion lag metric to detect backlog buildup
+
+**Risk Assessment:** MEDIUM — Mostly correct, but health semantics and scaling behavior could produce noisy or misleading operational signals.
+
+---
+
+### Plan 58-04: Server API and Schema
+
+**Summary:** Clean, minimal server-side design that avoids persistence and keeps diagnostics ephemeral as intended. The main risks are around memory pressure, multi-agent scaling, and lack of pagination/limits.
+
+**Strengths:**
+- In-memory cache aligns with "no persistence" requirement
+- Clear separation of ingestion (`POST /agent/diagnostics`) and query APIs
+- TTL-based pruning prevents unbounded growth
+- DashMap provides concurrency safety
+
+**Concerns:**
+- **HIGH:** No hard cap on stored diagnostics per agent -> potential memory blowup under high event rate
+- **MEDIUM:** GET endpoints lack pagination/limit enforcement -> large responses possible
+- **MEDIUM:** No authentication/authorization detail for admin endpoints (assumed but not specified)
+- **LOW:** Prune interval (60s) may allow short bursts to exceed memory expectations
+
+**Suggestions:**
+- Add per-agent cap (e.g., max 5k snapshots) with FIFO eviction
+- Enforce query limits (default + max)
+- Ensure admin endpoints require proper RBAC scope
+- Track memory usage metrics for cache
+
+**Risk Assessment:** MEDIUM — Functionally correct but needs bounding mechanisms to avoid memory and response-size issues.
+
+---
+
+### Plan 58-05: Admin TUI Screens
+
+**Summary:** Straightforward UI plan with good alignment to backend APIs. Low technical risk, but some usability and performance considerations are under-specified.
+
+**Strengths:**
+- Clear mapping of backend data to UI tables
+- Severity filtering and color coding improve usability
+- Sparkline visualization adds value for health trends
+- Menu synchronization test prevents navigation drift
+
+**Concerns:**
+- **MEDIUM:** No pagination or virtualized rendering -> large datasets may degrade TUI performance
+- **LOW:** Relative time display depends on clock sync across systems
+- **LOW:** No mention of refresh cadence or manual vs auto-refresh
+
+**Suggestions:**
+- Add pagination or limit (e.g., top N entries)
+- Implement periodic refresh with configurable interval
+- Allow drill-down into full decision tree (not just summary row)
+- Cache last response to avoid flicker
+
+**Risk Assessment:** LOW — Mostly presentation layer; risks are UX/performance, not correctness.
+
+---
+
+### Plan 58-06: Override Flow Integration
+
+**Summary:** Complex but well-structured flow that correctly reuses existing approval infrastructure. The main risks are around race conditions, deduplication correctness, and security boundaries for override tokens.
+
+**Strengths:**
+- Reuses existing approval system (avoids duplication)
+- Versioned HookResponse maintains backward compatibility
+- Clear separation: hook -> agent -> UI -> server
+- Deduplication reduces spam
+- TTL-bound override aligns with security model
+
+**Concerns:**
+- **HIGH:** Race condition between DENY event and override approval (user retries before cache updated)
+- **HIGH:** Dedup key (resource_path, action) may be too coarse — collisions across users/processes
+- **MEDIUM:** No explicit validation of justification content beyond length
+- **MEDIUM:** Override token propagation path not fully specified (how bound to subject/resource?)
+- **MEDIUM:** 30s dedup window may suppress legitimate rapid retries
+- **LOW:** No explicit audit trail linkage between request and approval
+
+**Suggestions:**
+- Include user_sid and process_id in dedup key
+- Define retry semantics clearly (UI prompt vs silent retry)
+- Bind override token to (user, resource, action, TTL) cryptographically
+- Add correlation_id for full audit chain (deny -> request -> approval -> allow)
+- Consider exponential backoff instead of fixed dedup window
+
+**Risk Assessment:** MEDIUM-HIGH — Core flow is correct, but race conditions and token binding are critical to both UX and security.
 
 ---
 
 ## Consensus Summary
 
 ### Agreed Strengths
-- Clean dependency ordering (foundation → hook DLL → agent → server → TUI → override)
+- Clean dependency ordering (foundation -> hook DLL -> agent -> server -> TUI -> override)
 - Strong reuse of existing Phase 48-61 infrastructure
 - Good separation of concerns across the six plans
 - Health counter emission reuses existing telemetry cadence
 - Override flow correctly reuses Phase 61 approval infrastructure
 - TUI screens follow established four-file pattern consistently
+- Versioned IPC envelope pattern (IpcPayloadV2, HookResponseV2) prevents bincode breakage
+- Lock-free ArrayQueue and DashMap choices align with performance requirements
+- Wall-clock timestamps (timestamp_utc) correctly address cross-process sorting
 
 ### Agreed Concerns (both reviewers flagged)
 
-**HIGH — Bincode IPC compatibility when adding new enum variants**
-- Both reviewers identified that adding variants to `IpcPayloadV1` without a versioned envelope risks breaking bincode deserialization with old agents.
-- Consensus: Bump to `IpcPayloadV2` or introduce a versioned envelope before adding variants.
+**HIGH — ArrayQueue capacity mismatch (64 vs 1000 per D-07)**
+- Both reviewers identified that the plan specifies capacity 64 but D-07 mandates 1000 entries per DLL.
+- Consensus: Increase to 1000 and implement pop-then-push overwrite semantics explicitly.
 
-**HIGH — Blocking hash computation on hooked thread**
-- Both reviewers noted that `rayon::ThreadPool::install()` blocks the calling thread until a worker is available.
-- The research specifies non-blocking fallback on saturation (`hash_skipped: true`), but the current design cannot achieve this with `install()`.
-- Consensus: Replace with a bounded channel + timeout or `ThreadPool::spawn` + timeout mechanism.
+**HIGH — Hash channel saturation silently drops forensic evidence**
+- Both reviewers flagged that when the bounded channel (16) is full, hashes are skipped with no audit trail of why.
+- Consensus: Add `hash_skipped_reason` enum (TooLarge, ChannelFull, Timeout) to DiagnosticSnapshot.
 
-**HIGH — Server/agent memory-sharing assumption for diagnostics**
-- Both reviewers identified that `DiagnosticAggregator` in `AppState` is architecturally broken for production (server and agent are separate processes).
-- Consensus: Implement agent-side HTTP endpoint (`GET /agent/diagnostics`) and have TUI or server proxy call it.
+**HIGH — Polling frequency mismatch (30s vs 60s)**
+- D-07 says diagnostics polled every 30s; Plan 58-03 says 60s.
+- Consensus: Standardize on 30s for diagnostics or revise the locked decision in CONTEXT.md.
 
-**HIGH — Approval override incompatible with shared-memory cache fast path**
-- Both reviewers flagged that `HookResponse.approval_override` cannot be checked when the hook DLL uses the shared-memory cache (Phase 50) without a pipe round-trip.
-- Consensus: Either always do a lightweight pipe check on DENY, or scope override check to pipe-based decisions only, or mirror approval cache to shared memory.
+**HIGH — Health threshold logic marks idle processes as degraded**
+- `pipe_round_trips_60s > 0 across all 5` entries means idle processes (no file operations) show Degraded.
+- Consensus: Distinguish "idle healthy" from "degraded"; use minimum sample size (N>=3); consider "no round trips in 300s" for disconnected detection.
 
-**HIGH — Classification context plumbing underspecified**
-- Both reviewers noted that `classify_and_log_handle()` returns `Option<DenyReturn>` which does not expose classification source, cache age, or ABAC context needed for diagnostic snapshots.
-- Consensus: Refactor return type to a richer struct before Plan 58-02 executes.
+**HIGH — Unauthenticated POST /agent/diagnostics endpoint**
+- Plan 58-04 lacks authentication on the agent push endpoint.
+- Consensus: Require existing agent JWT auth or mTLS.
 
-**MEDIUM — Override request sent on every DENY without throttling**
-- Both reviewers flagged that repeated blocked operations will spam the pipe and create multiple pending approval requests.
-- Consensus: Add per-operation deduplication window (e.g., 30-second cooldown per `(path, action)` tuple).
+**HIGH — Override endpoint ambiguity (/admin/overrides vs /admin/approvals)**
+- Requirements say POST /admin/overrides; Plan 58-06 says POST /admin/approvals (Phase 61 endpoint).
+- Consensus: Verify which endpoint exists and document the correct path.
 
-**MEDIUM — Agent-to-user-session IPC mechanism unspecified**
-- Both reviewers noted that crossing the SYSTEM → user session boundary requires explicit mechanism verification.
-- Consensus: Verify existing IPC supports cross-session communication or document the mechanism.
+**HIGH — Missing admin approval UI for override flow**
+- Plan 58-06 does not specify which admin TUI screen grants approvals.
+- Consensus: Document the existing Phase 61 ApprovalList screen or add UI task if missing.
 
-**MEDIUM — `alert_router::send` called from `dlp-agent` (cross-crate violation)**
-- Both reviewers identified that `alert_router` lives in `dlp-server`, not `dlp-agent`.
-- Consensus: Emit audit event from agent and let server's ingestion pipeline trigger alerts.
+**MEDIUM — DecisionContext includes agent-computed rolling metrics**
+- `pipe_round_trips_60s` and `cache_hit_rate_60s` in DecisionContext are aggregates the hook DLL cannot compute.
+- Consensus: Move these out of DecisionContext; store instantaneous counters and let agent compute rates.
 
-**MEDIUM — QPC tick constant for expiry is machine-dependent**
-- Both reviewers flagged that `36_000_000_000_000` assumes 10 MHz QPC frequency, which varies by hardware.
-- Consensus: Use `QueryPerformanceFrequency` at runtime or switch to `GetTickCount64` / `std::time::Instant`.
+**MEDIUM — Diagnostic List table omits full decision tree fields**
+- D-02 requires hook name, classification age, ABAC subject/resource/action/environment; the table only shows summary columns.
+- Consensus: Add detail popup (Enter key) showing all 18 DiagnosticSnapshot fields.
+
+**MEDIUM — Deduplication key too coarse**
+- (resource_path, action) dedup key collides across users and processes.
+- Consensus: Include user_sid and process_id in dedup key.
+
+**MEDIUM — No rate limiting on agent push**
+- A compromised agent could exhaust server memory.
+- Consensus: Add per-agent rate limiting (max snapshots per push, max push frequency).
+
+**LOW — Missing empty states in TUI screens**
+- Both reviewers noted lack of empty-state handling.
+- Consensus: Add empty-state messages for no diagnostics / no agents.
 
 ### Divergent Views
-- **Hash latency tolerance**: OpenCode suggests reducing cap to 8MB for synchronous path; Claude accepts 100MB cap with documented latency expectation (~3-8ms on modern hardware).
-- **Diagnostic sorting**: OpenCode suggests maintaining insertion order; Claude recommends adding wall-clock `timestamp_utc` field for cross-process sorting.
-- **Override flow authority**: OpenCode suggests hook DLL should NOT independently check approval cache (agent is authoritative); Claude focuses on the shared-memory cache incompatibility rather than authority.
+- **ArrayQueue overwrite semantics**: OpenCode suggests explicit pop-before-push; Claude notes ArrayQueue::len() is approximate in MPMC and recommends documenting best-effort semantics rather than claiming exact behavior.
+- **Hash wait timeout**: OpenCode suggests reducing to near-zero or fire-and-forget; Claude accepts 50ms as bounded but asks about background thread panic recovery.
+- **Approval cache in hook DLL**: OpenCode suggests keeping a minimal fast-path negative cache in hook; Claude focuses on quantifying latency impact of removing it entirely.
+- **Health idle detection**: OpenCode suggests adaptive polling; Claude suggests changing the threshold from `> 0` to `>= 0` for idle processes.
 
 ---
 
 ## Action Items for Plan Revision
 
-1. **Plan 58-01**: Add `IpcPayloadV2` or versioned envelope; replace `rayon::install` with non-blocking hash submit; fix QPC expiry constant; verify `hex` crate dependency.
-2. **Plan 58-02**: Refactor `classify_and_log_handle` return type; add `RequestOverride` throttling; document `WriteFileEx` buffer validity.
-3. **Plan 58-03**: Fix `DiagnosticAggregator` DashMap race; remove `alert_router::send` from agent; make override flow fully async.
-4. **Plan 58-04**: Replace shared `AppState` with agent HTTP endpoint for diagnostics; clarify health endpoint ownership.
-5. **Plan 58-05**: Pre-parse API responses; clarify history population for sparklines; define severity filter mapping.
-6. **Plan 58-06**: Resolve `HookResponse.approval_override` vs shared-memory cache incompatibility; verify cross-session IPC; fix empty justification flow.
-
+1. **Plan 58-01**: Increase ArrayQueue capacity to 1000; add `hash_skipped_reason` enum; fix QPC expiry constant; add `version: u8` to DiagnosticSnapshot; document best-effort overwrite semantics.
+2. **Plan 58-02**: Refactor `classify_and_log_handle` return type to DecisionContext; move rolling metrics out of DecisionContext; add negative-cache consideration for hook DLL; document WriteFileEx buffer validity.
+3. **Plan 58-03**: Fix polling frequency to 30s for diagnostics; adjust health thresholds for idle processes; add concurrent pipe polling; add per-pipe last_seen eviction.
+4. **Plan 58-04**: Add auth to POST /agent/diagnostics; implement actual AuditEvent INSERT functions; add per-agent rate limiting; add GET /admin/health endpoint.
+5. **Plan 58-05**: Add detail popup for full decision tree; add empty-state widgets; define sparkline metric; ensure both dispatch.rs and render.rs SystemMenu lists stay synchronized.
+6. **Plan 58-06**: Verify and document correct server endpoint; document existing admin approval UI; add TTL enforcement in hook/agent; strengthen dedup key; define full override state machine.
