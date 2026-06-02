@@ -163,18 +163,20 @@ fn envelope_v1_roundtrip() {
 #[test]
 fn golden_fixture_stability() {
     // Golden fixture: HookRequest { path="C:\\fixture.txt", action="READ",
-    // cache_version=0, protocol_version=1, op=HookOp::Read }
+    // cache_version=0, protocol_version=1, op=HookOp::Read,
+    // source_volume_class=None, destination_volume_class=None }
     //
-    // Generated once with: bincode::serialize(&req).unwrap()
-    //
-    // If this test fails, update the fixture AND document the breaking change.
+    // Generated with: bincode::serialize(&req).unwrap()
+    // Total: 49 bytes
     const GOLDEN_REQUEST: &[u8] = &[
         14, 0, 0, 0, 0, 0, 0, 0, // path: len=14 (u64 little-endian)
         67, 58, 92, 102, 105, 120, 116, 117, 114, 101, 46, 116, 120, 116, // "C:\fixture.txt"
         4, 0, 0, 0, 0, 0, 0, 0, // action: len=4 (u64 little-endian)
         82, 69, 65, 68, // "READ"
         0, 0, 0, 0, 0, 0, 0, 0, // cache_version: 0 (u64)
-        1, 0, 0, 0, 0, // protocol_version: 1 (u8 serialized as 5 bytes by bincode)
+        1, 0, 0, 0, 0, // protocol_version (u8=1) + op (u32=0 for Read)
+        0, // source_volume_class: None (Option u8 discriminant=0)
+        0, // destination_volume_class: None (Option u8 discriminant=0)
     ];
 
     let deserialized: HookRequest = bincode::deserialize(GOLDEN_REQUEST).unwrap();
