@@ -28,15 +28,13 @@ use dlp_common::abac::PolicyMode;
 /// Routes an event to the handler for the current screen.
 pub fn handle_event(app: &mut App, event: AppEvent) {
     let key = match event {
-        AppEvent::Key(k) => {
+        AppEvent::Key(k)
             // In headless test mode (TestBackend) KeyEventKind is not set to
             // Press, so accept all kinds.  In production (CrosstermBackend)
             // only Press events are meaningful.
-            if cfg!(test) || k.kind == KeyEventKind::Press {
-                k
-            } else {
-                return;
-            }
+            if cfg!(test) || k.kind == KeyEventKind::Press =>
+        {
+            k
         }
         _ => return,
     };
@@ -5735,19 +5733,19 @@ fn handle_approval_grant(app: &mut App, key: KeyEvent) {
             // Cancel and return to list
             action_load_approval_list(app, ApprovalFilter::All, 1);
         }
-        KeyCode::Char(c) => {
+        KeyCode::Char(c)
+            if is_t4 && *selected_field == 1 =>
+        {
             // Text input for signature field
-            if is_t4 && *selected_field == 1 {
-                if let Screen::ApprovalGrant { signature_hex, .. } = &mut app.screen {
-                    signature_hex.push(c);
-                }
+            if let Screen::ApprovalGrant { signature_hex, .. } = &mut app.screen {
+                signature_hex.push(c);
             }
         }
-        KeyCode::Backspace => {
-            if is_t4 && *selected_field == 1 {
-                if let Screen::ApprovalGrant { signature_hex, .. } = &mut app.screen {
-                    signature_hex.pop();
-                }
+        KeyCode::Backspace
+            if is_t4 && *selected_field == 1 =>
+        {
+            if let Screen::ApprovalGrant { signature_hex, .. } = &mut app.screen {
+                signature_hex.pop();
             }
         }
         _ => {}
