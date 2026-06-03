@@ -8576,4 +8576,209 @@ mod protected_path_tests {
             "payload missing AuditAndBlock value: {json}"
         );
     }
+
+    // ---------------------------------------------------------------------------
+    // Phase 28-02: App-identity (SourceApplication / DestinationApplication) tests.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn operators_for_source_app_publisher_has_eq_ne_contains() {
+        use dlp_common::abac::AppField;
+        let ops = operators_for(ConditionAttribute::SourceApplication, Some(AppField::Publisher));
+        assert_eq!(ops.len(), 3);
+        let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+        assert!(wire.contains(&"eq"));
+        assert!(wire.contains(&"ne"));
+        assert!(wire.contains(&"contains"));
+    }
+
+    #[test]
+    fn operators_for_source_app_trust_tier_has_eq_ne() {
+        use dlp_common::abac::AppField;
+        let ops = operators_for(ConditionAttribute::SourceApplication, Some(AppField::TrustTier));
+        assert_eq!(ops.len(), 2);
+        let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+        assert!(wire.contains(&"eq"));
+        assert!(wire.contains(&"ne"));
+        assert!(!wire.contains(&"contains"));
+    }
+
+    #[test]
+    fn operators_for_dest_app_imagepath_has_eq_ne_contains() {
+        use dlp_common::abac::AppField;
+        let ops = operators_for(ConditionAttribute::DestinationApplication, Some(AppField::ImagePath));
+        assert_eq!(ops.len(), 3);
+        let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+        assert!(wire.contains(&"eq"));
+        assert!(wire.contains(&"ne"));
+        assert!(wire.contains(&"contains"));
+    }
+
+    #[test]
+    fn operators_for_app_none_returns_conservative_eq_ne() {
+        let ops = operators_for(ConditionAttribute::SourceApplication, None);
+        assert_eq!(ops.len(), 2);
+        let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+        assert!(wire.contains(&"eq"));
+        assert!(wire.contains(&"ne"));
+    }
+
+    #[test]
+    fn value_count_for_source_app_trust_tier_is_3() {
+        use dlp_common::abac::AppField;
+        assert_eq!(
+            value_count_for(ConditionAttribute::SourceApplication, Some(AppField::TrustTier)),
+            3
+        );
+    }
+
+    #[test]
+    fn value_count_for_source_app_publisher_is_0() {
+        use dlp_common::abac::AppField;
+        assert_eq!(
+            value_count_for(ConditionAttribute::SourceApplication, Some(AppField::Publisher)),
+            0
+        );
+    }
+
+    #[test]
+    fn value_count_for_dest_app_none_is_0() {
+        assert_eq!(
+            value_count_for(ConditionAttribute::DestinationApplication, None),
+            0
+        );
+    }
+
+    #[test]
+    fn build_condition_source_app_trust_tier_eq() {
+        use dlp_common::abac::AppField;
+        let cond = build_condition(
+            ConditionAttribute::SourceApplication,
+            "eq",
+            0,
+            "",
+            Some(AppField::TrustTier),
+        );
+        assert!(cond.is_some());
+        let json = serde_json::to_string(&cond.unwrap()).expect("serialize");
+        assert!(json.contains("\"attribute\":\"source_application\""));
+        assert!(json.contains("\"op\":\"eq\""));
+        assert!(json.contains("\"value\":\"trusted\""));
+    }
+
+    #[test]
+    fn build_condition_dest_app_publisher_ne() {
+        use dlp_common::abac::AppField;
+        let cond = build_condition(
+            ConditionAttribute::DestinationApplication,
+            "ne",
+            0,
+            "Microsoft Corporation",
+            Some(AppField::Publisher),
+        );
+        assert!(cond.is_some());
+        let json = serde_json::to_string(&cond.unwrap()).expect("serialize");
+        assert!(json.contains("\"attribute\":\"destination_application\""));
+        assert!(json.contains("\"op\":\"ne\""));
+        assert!(json.contains("\"value\":\"Microsoft Corporation\""));
+    }
+
+    #[test]
+    fn build_condition_source_app_empty_buffer_returns_none() {
+        use dlp_common::abac::AppField;
+        let cond = build_condition(
+            ConditionAttribute::SourceApplication,
+            "eq",
+            0,
+            "  ",
+            Some(AppField::ImagePath),
+        );
+        assert!(cond.is_none());
+    }
+
+    #[test]
+    fn build_condition_source_app_none_field_returns_none() {
+        // T-28-02-01: fail-closed when AppField is not resolved.
+        let cond = build_condition(
+            ConditionAttribute::SourceApplication,
+            "eq",
+            0,
+            "",
+            None,
+        );
+        assert!(cond.is_none());
+    }
+
+    #[test]
+    fn build_condition_dest_app_none_field_returns_none() {
+        let cond = build_condition(
+            ConditionAttribute::DestinationApplication,
+            "eq",
+            0,
+            "",
+            None,
+        );
+        assert!(cond.is_none());
+    }
+
+    #[test]
+    fn condition_to_prefill_source_app_trust_tier_roundtrip() {
+        use dlp_common::abac::{AppField, PolicyCondition};
+        let original = PolicyCondition::SourceApplication {
+            field: AppField::TrustTier,
+            op: "eq".to_string(),
+            value: "trusted".to_string(),
+        };
+        let (attr, op_str, picker_idx, buf) = condition_to_prefill(&original);
+        assert_eq!(attr, ConditionAttribute::SourceApplication);
+        assert_eq!(op_str, "eq");
+        assert_eq!(picker_idx, 0);
+        assert_eq!(buf, "");
+
+        let rebuilt = build_condition(attr, &op_str, picker_idx, &buf, Some(AppField::TrustTier))
+            .expect("roundtrip must produce a valid condition");
+        assert_eq!(&rebuilt, &original);
+    }
+
+    #[test]
+    fn condition_to_prefill_dest_app_publisher_roundtrip() {
+        use dlp_common::abac::{AppField, PolicyCondition};
+        let original = PolicyCondition::DestinationApplication {
+            field: AppField::Publisher,
+            op: "contains".to_string(),
+            value: "Microsoft".to_string(),
+        };
+        let (attr, op_str, picker_idx, buf) = condition_to_prefill(&original);
+        assert_eq!(attr, ConditionAttribute::DestinationApplication);
+        assert_eq!(op_str, "contains");
+        assert_eq!(picker_idx, 0);
+        assert_eq!(buf, "Microsoft");
+
+        let rebuilt = build_condition(attr, &op_str, picker_idx, &buf, Some(AppField::Publisher))
+            .expect("roundtrip must produce a valid condition");
+        assert_eq!(&rebuilt, &original);
+    }
+
+    #[test]
+    fn condition_to_prefill_source_app_imagepath_roundtrip() {
+        use dlp_common::abac::{AppField, PolicyCondition};
+        let original = PolicyCondition::SourceApplication {
+            field: AppField::ImagePath,
+            op: "eq".to_string(),
+            value: "C:\\\\Program Files\\\\App\\\\app.exe".to_string(),
+        };
+        let (attr, op_str, picker_idx, buf) = condition_to_prefill(&original);
+        assert_eq!(attr, ConditionAttribute::SourceApplication);
+        assert_eq!(op_str, "eq");
+        assert_eq!(picker_idx, 0);
+        assert_eq!(buf, "C:\\\\Program Files\\\\App\\\\app.exe");
+
+        let rebuilt = build_condition(attr, &op_str, picker_idx, &buf, Some(AppField::ImagePath))
+            .expect("roundtrip must produce a valid condition");
+        assert_eq!(&rebuilt, &original);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 28-04: ManagedOriginList render tests.
+    // ---------------------------------------------------------------------------
 }
