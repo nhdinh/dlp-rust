@@ -5733,17 +5733,13 @@ fn handle_approval_grant(app: &mut App, key: KeyEvent) {
             // Cancel and return to list
             action_load_approval_list(app, ApprovalFilter::All, 1);
         }
-        KeyCode::Char(c)
-            if is_t4 && *selected_field == 1 =>
-        {
+        KeyCode::Char(c) if is_t4 && *selected_field == 1 => {
             // Text input for signature field
             if let Screen::ApprovalGrant { signature_hex, .. } = &mut app.screen {
                 signature_hex.push(c);
             }
         }
-        KeyCode::Backspace
-            if is_t4 && *selected_field == 1 =>
-        {
+        KeyCode::Backspace if is_t4 && *selected_field == 1 => {
             if let Screen::ApprovalGrant { signature_hex, .. } = &mut app.screen {
                 signature_hex.pop();
             }
