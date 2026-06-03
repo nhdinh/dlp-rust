@@ -5478,3 +5478,84 @@ mod disk_registry_render_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod managed_origin_render_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use serde_json::json;
+
+    #[test]
+    fn draw_managed_origin_list_empty_shows_message() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_managed_origin_list(frame, area, &[], 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("Managed Origins (0)"),
+            "empty title missing: {s}"
+        );
+        assert!(
+            s.contains("No managed origins configured."),
+            "empty message missing: {s}"
+        );
+        assert!(s.contains("a: Add"), "add hint missing: {s}");
+        assert!(s.contains("d: Delete"), "delete hint missing: {s}");
+        assert!(s.contains("Esc: Back"), "esc hint missing: {s}");
+    }
+
+    #[test]
+    fn draw_managed_origin_list_renders_origins() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let origins = vec![
+            json!({"id": "uuid-1", "origin": "https://dropbox.com/*"}),
+            json!({"id": "uuid-2", "origin": "https://onedrive.live.com/*"}),
+        ];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_managed_origin_list(frame, area, &origins, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("Managed Origins (2)"),
+            "title count missing: {s}"
+        );
+        assert!(
+            s.contains("https://dropbox.com/*"),
+            "first origin missing: {s}"
+        );
+        assert!(
+            s.contains("https://onedrive.live.com/*"),
+            "second origin missing: {s}"
+        );
+    }
+
+    #[test]
+    fn draw_managed_origin_list_selects_highlighted() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let origins = vec![
+            json!({"id": "uuid-1", "origin": "https://a.com/*"}),
+            json!({"id": "uuid-2", "origin": "https://b.com/*"}),
+        ];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_managed_origin_list(frame, area, &origins, 1);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        // The second item should be selected; both origins should still render.
+        assert!(s.contains("https://a.com/*"), "first origin missing: {s}");
+        assert!(s.contains("https://b.com/*"), "second origin missing: {s}");
+    }
+}
