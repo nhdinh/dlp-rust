@@ -331,11 +331,11 @@ pub unsafe fn get_thread_rip(thread_handle: HANDLE) -> Result<usize, PatchError>
     #[cfg(target_arch = "x86")]
     {
         use windows::Win32::System::Diagnostics::Debug::{
-            WOW64_CONTEXT, WOW64_CONTEXT_CONTROL, WOW64_CONTEXT_FLAGS,
+            CONTEXT, CONTEXT_CONTROL_X86, CONTEXT_FLAGS,
         };
 
-        let mut ctx = WOW64_CONTEXT {
-            ContextFlags: WOW64_CONTEXT_FLAGS(WOW64_CONTEXT_CONTROL.0),
+        let mut ctx = CONTEXT {
+            ContextFlags: CONTEXT_FLAGS(CONTEXT_CONTROL_X86.0),
             ..Default::default()
         };
 
