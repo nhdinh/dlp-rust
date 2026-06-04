@@ -106,11 +106,21 @@ fn open_conditions_builder(app: &mut App) {
     for _ in 0..7 {
         inject(app, down);
     }
+    // Verify we landed on [Add Conditions] (row 7) before pressing Enter.
+    assert!(
+        matches!(
+            &app.screen,
+            Screen::PolicyCreate { selected: 7, .. }
+        ),
+        "expected PolicyCreate selected=7, got {:?}",
+        app.screen
+    );
     inject(app, enter);
 
     assert!(
         matches!(app.screen, Screen::ConditionsBuilder { step: 1, .. }),
-        "expected ConditionsBuilder at step 1 after opening from PolicyCreate"
+        "expected ConditionsBuilder at step 1, got {:?}",
+        app.screen
     );
 }
 
