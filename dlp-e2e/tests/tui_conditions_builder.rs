@@ -74,7 +74,7 @@ fn type_text(app: &mut App, text: &str) {
 /// On entry, the app is at MainMenu.  This helper:
 /// 1. Navigates to PolicyMenu (Down, Enter).
 /// 2. Navigates to Create Policy (Down x2, Enter).
-/// 3. Navigates to row 5 ([Add Conditions]) and presses Enter.
+/// 3. Navigates to row 7 ([Add Conditions]) and presses Enter.
 ///
 /// After return, `app.screen` is `Screen::ConditionsBuilder { step: 1, .. }`.
 fn open_conditions_builder(app: &mut App) {
@@ -108,10 +108,7 @@ fn open_conditions_builder(app: &mut App) {
     }
     // Verify we landed on [Add Conditions] (row 7) before pressing Enter.
     assert!(
-        matches!(
-            &app.screen,
-            Screen::PolicyCreate { selected: 7, .. }
-        ),
+        matches!(&app.screen, Screen::PolicyCreate { selected: 7, .. }),
         "expected PolicyCreate selected=7, got {:?}",
         app.screen
     );
