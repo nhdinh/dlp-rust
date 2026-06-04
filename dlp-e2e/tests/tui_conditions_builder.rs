@@ -99,10 +99,11 @@ fn open_conditions_builder(app: &mut App) {
         "expected PolicyCreate after Down x2 + Enter"
     );
 
-    // Navigate to row 6 ([Add Conditions]) and open ConditionsBuilder.
-    // PolicyCreate rows: 0=Name, 1=Desc, 2=Priority, 3=Action, 4=Enabled, 5=Mode, 6=Add Conditions.
-    // We start at selected:0. Down x6 reaches row 6.
-    for _ in 0..6 {
+    // Navigate to row 7 ([Add Conditions]) and open ConditionsBuilder.
+    // PolicyCreate rows: 0=Name, 1=Desc, 2=Priority, 3=Action, 4=Enforcement Mode,
+    //                   5=Enabled, 6=Mode, 7=[Add Conditions], 8=Conditions, 9=[Submit].
+    // We start at selected:0. Down x7 reaches row 7.
+    for _ in 0..7 {
         inject(app, down);
     }
     inject(app, enter);
