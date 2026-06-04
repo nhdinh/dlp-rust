@@ -1369,8 +1369,11 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn test_remove_tripwire_restores_acl() {
-        let temp_dir = std::env::temp_dir();
-        let test_path = temp_dir.join("dlp_tripwire_test_remove.txt");
+        // Use current dir instead of temp_dir to avoid 8.3 short names
+        // (e.g. RUNNER~1) which are rejected by path validation.
+        let test_path = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("dlp_tripwire_test_remove.txt");
         let _ = std::fs::write(&test_path, "test");
 
         // Apply tripwire.

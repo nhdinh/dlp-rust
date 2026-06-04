@@ -1219,15 +1219,24 @@ mod tests {
     #[test]
     fn test_image_sha_cache_ttl_expired() {
         let config = CorrelatorConfig::default();
-        let correlator = BypassCorrelator::new(config);
+        let _correlator = BypassCorrelator::new(config);
         let path = r"C:\Test\app.exe".to_string();
         // Insert with a timestamp far in the past.
-        let old_time = Instant::now() - Duration::from_secs(config.image_sha_ttl_secs + 1);
-        correlator
+        let old_time = match Instant::now()
+            .checked_sub(Duration::from_secs(config.image_sha_ttl_secs + 1))
+        {
+            Some(t) => t,
+            None => {
+                // On some CI runners the Instant epoch is too recent for
+                // subtraction to succeed; skip this assertion.
+                return;
+            }
+        };
+        _correlator
             .image_sha_cache
             .insert(path.clone(), (Some("old".to_string()), old_time));
 
-        let cached = correlator.image_sha_cache.get(&path);
+        let cached = _correlator.image_sha_cache.get(&path);
         assert!(cached.is_some());
         // The entry exists but is expired — the compute method would recompute.
         let age = cached.unwrap().1.elapsed();
