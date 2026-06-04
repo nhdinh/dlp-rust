@@ -154,7 +154,7 @@ fn make_alert(pid: u32, file_path: &str, severity: &str, reason: &str) -> serde_
 
 #[tokio::test]
 async fn test_batch_ingest_success() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     let alerts = vec![
         make_alert(1234, r"C:\file1.txt", "crit", "NoHookJournal"),
@@ -172,7 +172,7 @@ async fn test_batch_ingest_success() {
 
 #[tokio::test]
 async fn test_batch_ingest_max_100() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     let mut alerts = Vec::new();
     for i in 0..101 {
@@ -194,7 +194,7 @@ async fn test_batch_ingest_max_100() {
 
 #[tokio::test]
 async fn test_batch_ingest_deduplication() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     let alerts = vec![make_alert(1234, r"C:\file1.txt", "crit", "NoHookJournal")];
     let (status1, json1) =
@@ -214,7 +214,7 @@ async fn test_batch_ingest_deduplication() {
 
 #[tokio::test]
 async fn test_batch_ingest_batch_id_stored() {
-    let (mut app, pool) = build_test_app();
+    let (app, pool) = build_test_app();
 
     let alerts = vec![make_alert(1234, r"C:\file1.txt", "crit", "NoHookJournal")];
     let (status, _) = post_bypass_batch(app.clone(), "agent-1", "batch-005", alerts).await;
@@ -236,7 +236,7 @@ async fn test_batch_ingest_batch_id_stored() {
 
 #[tokio::test]
 async fn test_batch_ingest_v1_backward_compat() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     // Phase 51 v1 alert: only original fields, no file_object, version, etc.
     // Phase 53: v2 fields have serde(default) so they deserialize to empty strings.
@@ -264,7 +264,7 @@ async fn test_batch_ingest_v1_backward_compat() {
 
 #[tokio::test]
 async fn test_list_bypass_alerts_pagination() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     // Insert 10 alerts.
     let mut alerts = Vec::new();
@@ -302,7 +302,7 @@ async fn test_list_bypass_alerts_pagination() {
 
 #[tokio::test]
 async fn test_list_bypass_alerts_filter_severity() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     let alerts = vec![
         make_alert(1234, r"C:\file1.txt", "crit", "NoHookJournal"),
@@ -336,7 +336,7 @@ async fn test_list_bypass_alerts_filter_severity() {
 
 #[tokio::test]
 async fn test_list_bypass_alerts_filter_pid() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     let alerts = vec![
         make_alert(1234, r"C:\file1.txt", "crit", "NoHookJournal"),
@@ -369,7 +369,7 @@ async fn test_list_bypass_alerts_filter_pid() {
 
 #[tokio::test]
 async fn test_ack_bypass_alert() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     let alerts = vec![make_alert(1234, r"C:\file1.txt", "crit", "NoHookJournal")];
     let (status, _) = post_bypass_batch(app.clone(), "agent-1", "batch-010", alerts).await;
@@ -392,7 +392,7 @@ async fn test_ack_bypass_alert() {
 
 #[tokio::test]
 async fn test_ack_bypass_alert_idempotent() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     let alerts = vec![make_alert(1234, r"C:\file1.txt", "crit", "NoHookJournal")];
     let (status, _) = post_bypass_batch(app.clone(), "agent-1", "batch-011", alerts).await;
@@ -417,7 +417,7 @@ async fn test_ack_bypass_alert_idempotent() {
 
 #[tokio::test]
 async fn test_ack_bypass_alert_not_found() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     let jwt = mint_jwt();
     let req = Request::builder()
@@ -436,7 +436,7 @@ async fn test_ack_bypass_alert_not_found() {
 
 #[tokio::test]
 async fn test_batch_ingest_empty_returns_400() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     let (status, json) = post_bypass_batch(app.clone(), "agent-1", "batch-012", vec![]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -452,7 +452,7 @@ async fn test_batch_ingest_empty_returns_400() {
 
 #[tokio::test]
 async fn test_list_bypass_alerts_requires_auth() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     let req = Request::builder()
         .method(Method::GET)
@@ -465,7 +465,7 @@ async fn test_list_bypass_alerts_requires_auth() {
 
 #[tokio::test]
 async fn test_ack_bypass_alert_requires_auth() {
-    let (mut app, _pool) = build_test_app();
+    let (app, _pool) = build_test_app();
 
     let req = Request::builder()
         .method(Method::POST)

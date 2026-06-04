@@ -1268,7 +1268,7 @@ mod tests {
     #[test]
     fn test_on_demand_journal_discovery_and_backoff() {
         let config = CorrelatorConfig::default();
-        let correlator = BypassCorrelator::new(config);
+        let _correlator = BypassCorrelator::new(config);
         // Verify backoff calculation.
         assert_eq!(BypassCorrelator::backoff_secs(0), 1);
         assert_eq!(BypassCorrelator::backoff_secs(1), 2);
@@ -1357,7 +1357,7 @@ mod tests {
     fn test_batch_retry_exceeded_drops_alert() {
         let mut config = CorrelatorConfig::default();
         config.max_alert_retry = 3;
-        let correlator = BypassCorrelator::new(config);
+        let _correlator = BypassCorrelator::new(config);
 
         let alert = BypassAlert {
             reason: BypassReason::NoHookJournal,

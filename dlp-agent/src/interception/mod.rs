@@ -495,7 +495,6 @@ pub use policy_mapper::PolicyMapper;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use dlp_common::abac::{compute_effective_mode, EnforcementMode};
 
     #[test]

@@ -400,10 +400,9 @@ mod tests {
             unsafe {
                 if let Ok(handle) = OpenFileMappingW(FILE_MAP_READ.0, false, name_pcwstr) {
                     let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, JOURNAL_SIZE);
-                    if let MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr } = view {
-                        if !ptr.is_null() {
-                            let _ = UnmapViewOfFile(view);
-                        }
+                    let ptr = view.Value;
+                    if !ptr.is_null() {
+                        let _ = UnmapViewOfFile(view);
                     }
                     let _ = CloseHandle(handle);
                 }
@@ -446,7 +445,7 @@ mod tests {
                 std::ptr::write_volatile(std::ptr::addr_of_mut!((*header_ptr).write_index), 0u32);
 
                 let capacity = ENTRY_CAPACITY;
-                let journal = HookJournal {
+                let _journal = HookJournal {
                     header: header_ptr,
                     entries: entries_ptr,
                     capacity,
@@ -622,7 +621,7 @@ mod tests {
                 std::ptr::write_volatile(std::ptr::addr_of_mut!((*header_ptr).write_index), 0u32);
 
                 let capacity = ENTRY_CAPACITY;
-                let journal = HookJournal {
+                let _journal = HookJournal {
                     header: header_ptr,
                     entries: entries_ptr,
                     capacity,
@@ -698,7 +697,7 @@ mod tests {
                 std::ptr::write_volatile(std::ptr::addr_of_mut!((*header_ptr).write_index), 0u32);
 
                 let capacity = ENTRY_CAPACITY;
-                let journal = HookJournal {
+                let _journal = HookJournal {
                     header: header_ptr,
                     entries: entries_ptr,
                     capacity,
@@ -767,7 +766,7 @@ mod tests {
                 std::ptr::write_volatile(std::ptr::addr_of_mut!((*header_ptr).write_index), 0u32);
 
                 let capacity = ENTRY_CAPACITY;
-                let journal = HookJournal {
+                let _journal = HookJournal {
                     header: header_ptr,
                     entries: entries_ptr,
                     capacity,
@@ -838,7 +837,7 @@ mod tests {
                 std::ptr::write_volatile(std::ptr::addr_of_mut!((*header_ptr).write_index), 0u32);
 
                 let capacity = ENTRY_CAPACITY;
-                let journal = HookJournal {
+                let _journal = HookJournal {
                     header: header_ptr,
                     entries: entries_ptr,
                     capacity,
@@ -921,7 +920,7 @@ mod tests {
                     name_pcwstr,
                 );
 
-                let (handle2, opened) = match handle2 {
+                let (handle2, _opened) = match handle2 {
                     Ok(h) => (h, true),
                     Err(e) => {
                         if e.code() == windows::core::HRESULT::from_win32(ERROR_ALREADY_EXISTS.0) {
@@ -994,7 +993,7 @@ mod tests {
                 std::ptr::write_volatile(std::ptr::addr_of_mut!((*header_ptr).write_index), 0u32);
 
                 let capacity = ENTRY_CAPACITY;
-                let journal = HookJournal {
+                let _journal = HookJournal {
                     header: header_ptr,
                     entries: entries_ptr,
                     capacity,

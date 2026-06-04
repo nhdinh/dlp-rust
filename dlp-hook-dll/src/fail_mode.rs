@@ -1076,7 +1076,7 @@ mod tests {
 
     #[test]
     fn cache_stale_transition() {
-        let state = FailModeState::new();
+        let _state = FailModeState::new();
 
         // Simulate cache older than T4 budget causing transition.
         // This is tested via is_cache_stale; the state machine checks
