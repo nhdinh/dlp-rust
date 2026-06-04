@@ -1222,16 +1222,15 @@ mod tests {
         let _correlator = BypassCorrelator::new(config);
         let path = r"C:\Test\app.exe".to_string();
         // Insert with a timestamp far in the past.
-        let old_time = match Instant::now()
-            .checked_sub(Duration::from_secs(config.image_sha_ttl_secs + 1))
-        {
-            Some(t) => t,
-            None => {
-                // On some CI runners the Instant epoch is too recent for
-                // subtraction to succeed; skip this assertion.
-                return;
-            }
-        };
+        let old_time =
+            match Instant::now().checked_sub(Duration::from_secs(config.image_sha_ttl_secs + 1)) {
+                Some(t) => t,
+                None => {
+                    // On some CI runners the Instant epoch is too recent for
+                    // subtraction to succeed; skip this assertion.
+                    return;
+                }
+            };
         _correlator
             .image_sha_cache
             .insert(path.clone(), (Some("old".to_string()), old_time));
