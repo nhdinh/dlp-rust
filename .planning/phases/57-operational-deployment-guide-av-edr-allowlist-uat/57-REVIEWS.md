@@ -1,7 +1,7 @@
 ---
 phase: 57
-reviewers: [claude, opencode]
-reviewed_at: 2026-06-05T10:15:00Z
+reviewers: [opencode, claude]
+reviewed_at: 2026-06-05T10:55:00Z
 plans_reviewed:
   - 57-01-PLAN.md
   - 57-02-PLAN.md
@@ -11,84 +11,274 @@ plans_reviewed:
   - 57-06-PLAN.md
 ---
 
-# Cross-AI Plan Review -- Phase 57 (Cycle 2)
+# Cross-AI Plan Review -- Phase 57 (Cycle 3)
 
-## Claude Review
+## Codex Review
+
+**Status:** Codex CLI (v0.130.0) is installed but all available models fail with
+`invalid_request_error: model is not supported when using Codex with a ChatGPT account`.
+Models attempted: gpt-5.3-codex (default), gpt-4o, gpt-4o-mini, gpt-4.1, gpt-4.1-mini,
+gpt-4.5-preview, gpt-4o-latest, gpt-3.5-turbo. No Codex review could be produced.
+
+---
+
+## OpenCode Review
+
+### Plan 57-01 -- Deployment Guide Foundation
+
+**Summary**
+Establishes structure and placeholders for deployment, AV/EDR allowlisting, and UAT sections.
+
+**Strengths**
+- Clean separation of concerns (deployment vs allowlisting vs validation)
+- Placeholder-driven approach reduces blocking between teams
+- Sets consistent structure for downstream plans
+
+**Concerns**
+- **MEDIUM:** Placeholders risk lingering into final deliverable if not tracked
+- **LOW:** No explicit ownership or completion criteria per section
+
+**Suggestions**
+- Add a "definition of done" per placeholder (what evidence is required)
+- Include owner + status fields inline to prevent drift
+- Add versioning header tied to product build / hash
+
+**Risk Assessment:** Low overall risk. Main failure mode is incomplete sections slipping through without enforcement.
+
+---
+
+### Plan 57-02 -- Defender + CrowdStrike
+
+**Summary**
+Covers Microsoft Defender (SKU detection, ASR, IOC) and CrowdStrike (ML exclusions, API scopes, region endpoints, propagation timing).
+
+**Strengths**
+- Defender SKU detection fix addresses a real deployment pitfall
+- ASR + IOC guidance is actionable and layered (policy + indicator)
+- CrowdStrike API scope clarity reduces integration failures
+- Region endpoint + propagation timing (40-min warning) is practical
+
+**Concerns**
+- **HIGH:** Defender ASR guidance may still be ambiguous across E5 vs Business Premium edge cases (policy precedence conflicts)
+- **MEDIUM:** CrowdStrike propagation window documented, but no mitigation for urgent unblock scenarios
+- **LOW:** No explicit rollback steps if exclusion causes unintended exposure
+
+**Suggestions**
+- Add explicit ASR conflict resolution matrix (local vs Intune vs GPO precedence)
+- Include "emergency allow" path for CrowdStrike (manual console override vs API)
+- Add verification commands/log locations for both platforms
+- Include rollback procedure with timing expectations
+
+**Risk Assessment:** Medium risk. Defender policy conflicts remain the biggest operational hazard.
+
+---
+
+### Plan 57-03 -- SentinelOne, Carbon Black, Sophos, Trend Micro
+
+**Summary**
+Documents vendor-specific allowlisting constraints and flows.
+
+**Strengths**
+- Captures critical vendor limitations (e.g., Sophos path-only, Trend PE-only)
+- SentinelOne version constraint (S-25.1.1+) is precise and actionable
+- Carbon Black pilot flow reduces blast radius
+- Realistic, vendor-aligned guidance instead of generic abstraction
+
+**Concerns**
+- **HIGH:** Path-only (Sophos) and PE-only (Trend) create security gaps if not explicitly risk-framed
+- **MEDIUM:** SentinelOne version dependency may block customers on older agents without fallback
+- **MEDIUM:** Carbon Black pilot flow lacks explicit promotion criteria to production
+- **LOW:** Inconsistent terminology across vendors (exclusion vs allowlist vs exception)
+
+**Suggestions**
+- Add "security tradeoff" callouts for weaker controls (path-only / PE-only)
+- Provide fallback strategy for SentinelOne < S-25.1.1
+- Define exit criteria for Carbon Black pilot (e.g., 0 detections over N runs)
+- Normalize terminology with a glossary section
+
+**Risk Assessment:** Medium-High risk due to uneven security guarantees across vendors.
+
+---
+
+### Plan 57-04 -- RELEASE_NOTES Population
+
+**Summary**
+Adds operational commands and verification steps (hashing, signtool, WDSI submission).
+
+**Strengths**
+- Includes concrete commands (hash, signature verification)
+- WDSI submission guidance adds escalation path
+- Improves reproducibility and auditability
+
+**Concerns**
+- **MEDIUM:** Commands may vary across environments (PowerShell versions, SDK availability)
+- **LOW:** No expected output examples for verification steps
+
+**Suggestions**
+- Add sample outputs for `signtool verify` and hash commands
+- Include fallback tools (e.g., `Get-FileHash` vs certutil)
+- Add note on timestamping and certificate chain validation
+
+**Risk Assessment:** Low risk. Mostly operational polish; unlikely to cause systemic issues.
+
+---
+
+### Plan 57-05 -- UAT Scripts
+
+**Summary**
+Defines six UAT scenarios covering key behaviors and bypass attempts.
+
+**Strengths**
+- Good coverage of real-world behaviors (CloudSync, PrintBlock, ETW, DLL hooks)
+- ETW retry (3-attempt bypass) shows adversarial thinking
+- Benchmark test introduces measurable gating (25%)
+- Baseline-first approach avoids false positives
+
+**Concerns**
+- **HIGH:** Some tests (HookDll, EtwNtdll) may be flagged as malicious tooling by EDR itself, skewing results
+- **MEDIUM:** Benchmark gating (25%) lacks justification or calibration guidance
+- **MEDIUM:** No clear pass/fail criteria beyond execution success
+- **LOW:** Environmental dependencies not fully specified (admin rights, OS version)
+
+**Suggestions**
+- Add "expected detection vs allowed behavior" per test
+- Document safe execution context (lab vs production, required exclusions)
+- Justify or parameterize the 25% benchmark threshold
+- Include logging locations to confirm outcomes
+
+**Risk Assessment:** Medium-High risk. Misinterpretation of results or tool self-detection could invalidate UAT.
+
+---
+
+### Plan 57-06 -- UAT Results Template
+
+**Summary**
+Provides structured template for recording results across 30+ test cases with optional grouping and sign-off.
+
+**Strengths**
+- Comprehensive coverage (30+ cases)
+- Optional Volume Class grouping adds scalability
+- Explicit sign-off table supports governance
+- Encourages consistent reporting across environments
+
+**Concerns**
+- **MEDIUM:** Template may become too heavy for smaller deployments
+- **LOW:** Optional sections (Volume Class) could create inconsistency across reports
+- **LOW:** No enforcement of evidence attachment (logs, screenshots)
+
+**Suggestions**
+- Add "minimum required fields" vs optional fields
+- Require evidence links for each failed or exception case
+- Include summary dashboard (pass rate, blockers, risks)
+- Add version/build metadata to tie results to artifacts
+
+**Risk Assessment:** Low-Medium risk. Main issue is usability and consistency, not correctness.
+
+---
+
+### OpenCode: Overall Assessment
+
+**Summary:** Cycle 3 shows strong maturation. Cycle 2 fixes addressed meaningful operational gaps (policy detection, API scopes, ETW retry, pilot flow). The plans are now close to deployable quality.
+
+**Key Strengths Across Plans**
+- Vendor-specific realism instead of generic guidance
+- Inclusion of operational timing and propagation nuances
+- UAT coverage includes adversarial scenarios
+- Clear separation between deployment, configuration, and validation
+
+**Key Risks Across Plans**
+- Policy conflicts (especially Defender ASR)
+- Inconsistent security strength across vendors
+- UAT interpretation ambiguity
+- Lack of enforced completion/evidence standards
+
+**Top Recommendations (Cross-Cutting)**
+1. Add explicit pass/fail criteria + evidence requirements everywhere
+2. Introduce rollback procedures for every vendor configuration
+3. Standardize terminology and glossary across all plans
+4. Add a "known limitations & risk acceptance" section per vendor
+5. Ensure every timing-dependent step has verification guidance
+
+**Overall Risk Level:** Medium. Technically solid, but operational ambiguity and vendor inconsistencies are the main remaining risks before production readiness.
+
+---
+
+## Claude Review (Executing AI)
 
 ### Plan 01 (57-01): Master Deployment Guide Foundation
 
-**Summary:** A well-structured foundational plan that correctly establishes the document scaffold, pre-flight checks, architecture reality documentation, and RELEASE_NOTES.md template. The addition of explicit HTML comment placeholder markers directly addresses the cycle 1 concern about deterministic replacement. The plan correctly educates operators about system limitations before they encounter vendor-specific procedures.
+**Summary:** A well-structured foundational plan with all cycle 2 fixes applied. The placeholder strategy, pre-flight checks, and architecture reality documentation are comprehensive. The document structure correctly educates operators before they encounter vendor-specific procedures.
 
 **Strengths:**
-- Explicit `<!-- PLACEHOLDER: ...-START/END -->` markers enable deterministic content replacement by downstream plans
-- Verification strengthened from generic header counting to grepping for 10 expected section titles
-- Architecture Reality Check honestly documents Secure Boot inertness, PPL gaps, DACL backstop, and privilege requirements
+- Explicit HTML comment placeholders enable deterministic content replacement
+- Verification strengthened with greps for 10 expected section titles
+- Architecture Reality Check honestly documents Secure Boot inertness, PPL gaps, DACL backstop
 - Pre-flight checks include exact PowerShell commands with expected outputs
 - Cross-references to DEPLOYMENT.md, OPERATIONAL.md, and dpapi-recovery.md are bidirectional
 
 **Concerns:**
-- **MEDIUM:** Interface file existence checks are still mentioned in `must_haves` but no actual fallback behavior is documented in the task actions. If dpapi-recovery.md or DEPLOYMENT.md were renamed, the deployment guide would contain broken links.
-- **LOW:** The `Confirm-SecureBootUEFI` command fails on legacy BIOS systems (non-UEFI). The plan mentions this command but doesn't document what the operator should do if the cmdlet throws an exception rather than returning `$false`.
+- **LOW:** The `Confirm-SecureBootUEFI` command fails on legacy BIOS systems. The plan mentions this command but does not document what the operator should do if the cmdlet throws an exception.
+- **LOW:** Interface file existence checks are mentioned in `must_haves` but no actual fallback behavior is documented in task actions.
 
 **Suggestions:**
-- Add explicit fallback text in the References section: "If any cross-referenced document has been moved, check `docs/` for the latest location."
 - Document the BIOS vs UEFI fallback: "If `Confirm-SecureBootUEFI` throws 'Cmdlet not supported on this platform,' the system uses legacy BIOS. Secure Boot is not applicable; AppInit_DLLs may be active."
+- Add explicit fallback text in the References section for broken cross-references.
 
-**Risk Assessment:** LOW-MEDIUM. The placeholder strategy and verification improvements resolve the primary cycle 1 concerns. Remaining risks are edge-case handling.
+**Risk Assessment:** LOW. Remaining risks are edge-case handling only.
 
 ---
 
 ### Plan 02 (57-02): Microsoft Defender + CrowdStrike Allowlist
 
-**Summary:** Well-researched vendor documentation with all cycle 1 fixes applied. The FalconPy example is now correctly labeled as Python with a PowerShell `Invoke-RestMethod` alternative. ASR rule guidance and Defender module prerequisites are included. The plan replaces content between explicit placeholder markers, eliminating the append-ordering ambiguity.
+**Summary:** All cycle 2 fixes are correctly applied. The FalconPy example is labeled as Python with a PowerShell Invoke-RestMethod alternative. ASR rule guidance, Defender module prerequisites, SKU detection, and CrowdStrike API scopes/endpoints are all included.
 
 **Strengths:**
-- FalconPy correctly labeled as Python; PowerShell alternative provided via `Invoke-RestMethod`
-- Defender PowerShell module prerequisite explicitly noted for Windows Server
-- ASR rule guidance addresses a real deployment foot-gun that hash indicators alone don't prevent
+- FalconPy correctly labeled as Python; PowerShell alternative provided
+- Defender SKU detection (Get-MpComputerStatus + MDE onboarding registry) included
+- ASR rule guidance addresses a real deployment foot-gun
 - 40-minute CrowdStrike propagation warning is prominently displayed
-- Consistent vendor format (Console URL, Required Role, Propagation Time, Methods, Verification)
+- INSERT-REMAINING-VENDORS-AFTER-HERE marker enables deterministic Plan 03 insertion
+- Consistent vendor format across both sections
 
 **Concerns:**
-- **MEDIUM:** The `New-MpThreatIntelIndicator` PowerShell example uses `$hash = "SHA256_HASH_FROM_RELEASE_NOTES"` as a placeholder, but the plan doesn't specify how the operator obtains this hash at deployment time. If RELEASE_NOTES.md only contains placeholder text (Plan 04 populates commands, not actual hashes), the operator can't complete this step without generating the hash themselves.
-- **LOW:** The ASR rule guidance mentions "Block Office applications from injecting code into other processes" but doesn't reference a specific ASR rule GUID (e.g., `d4f940ab-401b-4efc-aadc-ad5f3c50688a`). Operators navigating the Defender console may find the rule by different names across tenants.
+- **LOW:** The `New-MpThreatIntelIndicator` PowerShell example uses a placeholder hash string. The plan cross-references RELEASE_NOTES.md but the actual hash generation command is in Plan 04. A brief inline note would help.
+- **LOW:** ASR rule guidance mentions rule names but does not reference specific ASR rule GUIDs (e.g., `d4f940ab-401b-4efc-aadc-ad5f3c50688a`).
 
 **Suggestions:**
-- Cross-reference the hash generation command from Plan 04: "Generate the SHA-256 hash using the PowerShell command documented in RELEASE_NOTES.md."
-- Add ASR rule GUID for precision: "ASR Rule: d4f940ab-401b-4efc-aadc-ad5f3c50688a (Block Office applications from injecting code into other processes)."
+- Add brief inline note: "Generate the SHA-256 hash using the PowerShell command documented in RELEASE_NOTES.md (Plan 04)."
+- Add ASR rule GUID for precision if space permits.
 
-**Risk Assessment:** LOW-MEDIUM. Cycle 1 fixes are thorough. The hash availability concern is minor since operators can generate hashes independently.
+**Risk Assessment:** LOW. Cycle 2 fixes are thorough and complete.
 
 ---
 
 ### Plan 03 (57-03): SentinelOne + Carbon Black + Sophos + Trend Micro
 
-**Summary:** Comprehensive coverage of the remaining four vendors with the critical cycle 1 race condition fixed (`depends_on: [57-01, 57-02]`). The honest documentation of Sophos's hash limitation and Trend Micro's PE-only restriction is exactly what operators need. Registry and service detection robustness improvements are applied.
+**Summary:** Comprehensive coverage with the critical cycle 2 insertion marker fix. The honest documentation of vendor limitations and the Carbon Black pilot flow are exactly what operators need. Registry and service detection robustness improvements are applied.
 
 **Strengths:**
-- Race condition resolved: Plan 03 now serializes after Plan 02
+- INSERT-REMAINING-VENDORS-AFTER-HERE marker enables deterministic insertion
 - SentinelOne registry check probes both native and WoW6432Node paths
 - Carbon Black console URL uses `[REGION]` placeholder without typo
+- Carbon Black pilot endpoint flow is explicitly documented
 - Trend Micro service detection uses `Get-Service | Where-Object` wildcard pattern
 - Sophos explicitly states "does NOT support hash-based allowlisting"
 
 **Concerns:**
-- **MEDIUM:** Plan 02 replaces content between `EDR-VENDORS-START/END` markers with Microsoft+CrowdStrike content. Plan 03 says "Append... immediately after the CrowdStrike section (between the EDR-VENDORS placeholder markers)." The insertion mechanism is not precisely specified -- an automated executor must find the exact end of the CrowdStrike section within the replaced content and insert before the `EDR-VENDORS-END` marker. This requires parsing markdown section boundaries, which is error-prone. A simpler approach would have Plan 03 also replace the entire marker content with all 6 vendors, or use sub-markers per vendor pair.
-- **MEDIUM:** Carbon Black's "file must be known" requirement is documented, but the workaround ("Deploy to a test endpoint first without reputation blocking") creates a chicken-and-egg problem: the operator needs to install DLP to make the file known, but can't install DLP without the exclusion. The plan should clarify that this means deploying to a pilot endpoint with a temporary path exclusion first.
-- **LOW:** The SentinelOne verification command outputs version information via `Write-Host` but doesn't programmatically validate that the version is >= 25.1.1. An operator running this manually needs to visually compare versions.
+- **MEDIUM:** Carbon Black's "file must be known" workaround requires deploying to a pilot endpoint with a temporary path exclusion first. The plan documents this but the verification command does not confirm the file has been observed before attempting hash approval.
+- **LOW:** The SentinelOne verification command outputs version information but does not programmatically validate that the version is >= 25.1.1.
 
 **Suggestions:**
-- Use sub-placeholders within the EDR-VENDORS section (e.g., `<!-- AFTER-CROWDSTRIKE -->`) for deterministic insertion, OR have Plan 03 replace the entire EDR-VENDORS content with all 4 vendors and rely on Plans 02+03 running sequentially.
-- Clarify Carbon Black workaround: "Deploy DLP to a single pilot endpoint with a temporary path exclusion (`C:\Program Files\DLP\*`), let Carbon Black observe the file, then add the hash to the Approved List."
 - Add a version comparison to the SentinelOne verification: `[version]$version -ge [version]"25.1.1"`.
+- Clarify Carbon Black verification: add a note that the pilot endpoint must show the file in the console's "Observed Files" list before hash approval.
 
-**Risk Assessment:** MEDIUM. The insertion precision concern is the main remaining risk. The dependency fix resolves the race condition, but the append semantics introduce a new fragility.
+**Risk Assessment:** LOW-MEDIUM. The insertion marker fix resolves the primary cycle 2 concern. Remaining issues are minor.
 
 ---
 
 ### Plan 04 (57-04): RELEASE_NOTES.md Hashes + WDSI + Authenticode
 
-**Summary:** Solid supply chain integrity documentation with all cycle 1 fixes applied. The plan now clearly states it populates commands and templates only, not actual hash values. The WDSI email gateway warning and certificate renewal impact are included. Multi-signature output is documented as expected.
+**Summary:** All cycle 2 fixes applied. The plan clearly states it populates commands and templates only, not actual hash values. The WDSI email gateway warning and certificate renewal impact are included.
 
 **Strengths:**
 - Explicitly states "This plan populates COMMANDS and TEMPLATES only. Actual hash values are generated at release time."
@@ -98,90 +288,85 @@ plans_reviewed:
 - Reproducible PowerShell hash generation loop for all 6 binaries
 
 **Concerns:**
-- **MEDIUM:** The hash generation command lists `dlp_hook_dll_x86.dll` as the x86 binary, but `.github/workflows/release.yml` (referenced in Plan 01 interfaces) lists the x86 binary as `dlp_hook_dll.dll (x86)`. The naming convention should be verified against the actual build pipeline to avoid mismatch.
-- **LOW:** The WDSI submission notes "Expected turnaround: 24-48 hours typical" but doesn't address what the operator should do if the release is time-sensitive and WDSI hasn't responded. A contingency note would be valuable.
-- **LOW:** `signtool verify /pa` uses the default Authenticode policy, which may not include the organization's private root CA if it's not in the machine trust store. The plan documents the error message but doesn't provide the `certutil` command to install the root CA (this is only in the deployment-guide.md section, not RELEASE_NOTES.md).
+- **LOW:** The hash generation command lists `dlp_hook_dll_x86.dll` as the x86 binary. The naming convention should be verified against the actual build pipeline (release.yml) to avoid mismatch.
+- **LOW:** The WDSI submission notes "Expected turnaround: 24-48 hours typical" but does not address what the operator should do if the release is time-sensitive and WDSI has not responded.
 
 **Suggestions:**
-- Verify binary naming: confirm whether the x86 hook DLL is `dlp_hook_dll_x86.dll` or `dlp_hook.dll` (x86) in the actual build output.
-- Add WDSI contingency: "If WDSI response exceeds 72 hours, consider deploying with path-based Defender exclusions as a temporary measure and removing the indicator after WDSI approval."
-- Include the `certutil` root CA installation command in RELEASE_NOTES.md for self-containment.
+- Verify binary naming: confirm whether the x86 hook DLL is `dlp_hook_dll_x86.dll` or `dlp_hook_dll.dll` (x86) in the actual build output.
+- Add WDSI contingency: "If WDSI response exceeds 72 hours, consider deploying with path-based Defender exclusions as a temporary measure."
 
-**Risk Assessment:** LOW. Cycle 1 fixes are comprehensive. The binary naming concern is minor and easily verified.
+**Risk Assessment:** LOW. Cycle 2 fixes are comprehensive.
 
 ---
 
-### Plan 05 (57-05): UAT PowerShell Scripts (REVISED)
+### Plan 05 (57-05): UAT PowerShell Scripts (6 focused scripts)
 
-**Summary:** Excellent structural improvement from cycle 1. The overloaded ActiveBlocking script is now split into 6 focused scripts, each with a single responsibility. Custom binary dependencies are eliminated: ETW bypass uses suspend/resume, and ntdll testing verifies behavior rather than implementation details. The benchmark script gracefully handles missing Rust/cargo and runs baseline measurements first.
+**Summary:** Excellent structural improvement. All cycle 2 fixes are correctly applied: Office launch timing uses FindWindow/MainWindowHandle, ETW bypass has 3-retry logic, MonitorMode explicitly requires policy restoration in finally block, benchmark runs baseline-first.
 
 **Strengths:**
 - 6 focused scripts each test a single capability area -- much more maintainable
-- ETW bypass test uses suspend/resume instead of a custom bypass binary
+- ETW bypass test uses suspend/resume with 3-retry logic instead of custom binary
 - ntdll test verifies behavior (STATUS_ACCESS_DENIED) not implementation (JMP trampolines)
 - Benchmark checks for `cargo` presence and skips gracefully with WARN
 - CloudSync warns about clipboard destruction before testing
-- Benchmark design: all baseline measurements first, then all hooked measurements -- reduces cache and warmup effects
-- All scripts follow the proven Uat-UsbBlock.ps1 pattern
+- Benchmark design: all baseline measurements first, then all hooked measurements
+- MonitorMode task explicitly requires finally block to restore original policy mode
+- Office launch timing uses FindWindow / MainWindowHandle, NOT WaitForInputIdle
 
 **Concerns:**
-- **MEDIUM:** Uat-EtwNtdll.ps1's suspend/resume approach for bypass detection is timing-sensitive. The description says "suspend it before hook injection, perform the write, then resume and check alerts." On a fast system, the ETW watcher may inject the hook before the test script can suspend the process. The plan doesn't specify retry logic or a timeout for this race condition.
-- **MEDIUM:** Uat-Benchmark.ps1's `Measure-OfficeLaunch` description says "Measure from process start to main window visible" but the implementation notes say "Use .NET ProcessStartInfo and WaitForInputIdle." These are contradictory -- `WaitForInputIdle` returns when the process's message loop starts, which is *before* the window is visible (especially for Click-to-Run Office). This was flagged in cycle 1 and is not fixed.
-- **MEDIUM:** Uat-EtwNtdll.ps1's `Test-MonitorMode` creates a temporary policy change. If the script crashes between setting Audit mode and restoring Block mode, the system could remain in Audit mode (a security degradation). The plan mentions "Cleanup in finally block (restores policies)" which is correct, but the task description should explicitly state this requirement.
-- **LOW:** Uat-HookDll.ps1's `Test-StartupSweepCoverage` claims to verify "all running non-allowlisted user processes" have the hook DLL, but the sweep may miss processes that started before the agent or processes that exit before enumeration completes. The test could produce false failures on busy systems.
+- **MEDIUM:** Uat-EtwNtdll.ps1's suspend/resume approach for bypass detection is timing-sensitive. The 3-retry logic mitigates this but the retry interval and process count are not specified.
+- **MEDIUM:** Uat-HookDll.ps1's `Test-StartupSweepCoverage` claims to verify "all running non-allowlisted user processes" have the hook DLL, but the sweep may miss processes that started before the agent or exit before enumeration. The test could produce false failures on busy systems.
+- **LOW:** Uat-Benchmark.ps1's `Measure-OfficeLaunch` uses FindWindow/MainWindowHandle but does not specify a timeout for window visibility detection. A hung Office process could block the benchmark indefinitely.
 
 **Suggestions:**
-- Add retry logic to ETW bypass test: "If the bypass alert is not detected within 5 seconds, retry up to 3 times with a new process before marking FAIL."
-- Fix Office launch timing: use `Win32::FindWindow` or `Get-Process | Where-Object { $_.MainWindowHandle -ne 0 }` to detect actual window visibility, not just message loop readiness.
-- Explicitly state in the MonitorMode task: "The finally block MUST restore the original policy mode regardless of test result."
-- Add a tolerance to StartupSweepCoverage: "Consider the test PASS if >= 90% of eligible processes have the hook DLL, rather than requiring 100%."
+- Specify retry interval in ETW bypass test: "Wait 2 seconds between retries."
+- Add a tolerance to StartupSweepCoverage: "Consider the test PASS if >= 90% of eligible processes have the hook DLL."
+- Add a timeout to Office launch measurement: "If the window is not visible within 60 seconds, mark the test as FAIL and kill the process."
 
-**Risk Assessment:** LOW-MEDIUM. The script split and elimination of custom binaries dramatically reduces risk. Timing concerns in ETW and Office launch are manageable with minor adjustments.
+**Risk Assessment:** LOW-MEDIUM. The script split and elimination of custom binaries dramatically reduces risk. Timing concerns are manageable with minor adjustments.
 
 ---
 
 ### Plan 06 (57-06): UAT Results Template + Deployment Guide Update
 
-**Summary:** Well-structured closing plan that creates a comprehensive test matrix template and integrates it into the deployment guide. All cycle 1 fixes are applied: Group 6 (Volume Class) is marked OPTIONAL, the Actual column format guide is provided, benchmark preconditions reference the script, and the three-role sign-off table provides accountability. The plan correctly has `autonomous: false` requiring human verification.
+**Summary:** Well-structured closing plan with all cycle 2 fixes applied. Group 6 (Volume Class) is marked OPTIONAL, prerequisites are visually separated into Required vs Optional, benchmark preconditions reference the script, and the three-role sign-off table provides accountability.
 
 **Strengths:**
-- 30+ test cases with consistent TC-ID format across all capability areas
-- Group 6 (Volume Class) explicitly marked OPTIONAL with pass criteria clarifying skipped optional tests don't block completion
+- 30+ test cases with consistent TC-ID format
+- Group 6 (Volume Class) explicitly marked OPTIONAL with pass criteria clarifying skipped optional tests do not block completion
+- Prerequisites checklist visually separated into "Required for UAT Completion" and "Required Only for Optional Tests"
 - Actual column format guide: "paste error code, output snippet, or 'As expected'"
 - CRIT-04 benchmark gate documented with exact 25% threshold and pass/fail criteria
 - Benchmark preconditions reference the script rather than duplicating
 - Sign-off table with Tester, QA Lead, Release Manager roles
-- Human checkpoint for final verification
+- Human checkpoint for final verification (`autonomous: false`)
 
 **Concerns:**
-- **MEDIUM:** The UAT pass criteria say "All automated scripts exit with code 0" but scripts like Uat-Benchmark.ps1 may skip workloads (e.g., no Rust/cargo, no Office) and still exit 0. The criteria should distinguish between "exit 0 with all tests PASS" vs "exit 0 with some tests skipped." A skipped benchmark workload due to missing software should be WARN, not PASS.
-- **MEDIUM:** The Prerequisites Checklist includes "Physical SD card available (optional)" and "Optical drive available (optional)" but the UAT pass criteria say optional tests don't block completion. However, the prerequisites checklist doesn't distinguish between "required for UAT" and "required only for optional tests." An operator might be confused about whether they need to source an SD card to complete UAT.
-- **LOW:** Plan 06 creates `.planning/milestones/v0.10.0-UAT.md` but doesn't ensure the `.planning/milestones/` directory exists. The executor should create parent directories if needed.
-- **LOW:** The test matrix references specific error codes (`ERROR_ACCESS_DENIED`, `ERROR_WRITE_PROTECT`, `STATUS_ACCESS_DENIED`) in Expected results, but the Actual column format guide doesn't explicitly encourage recording the observed error code. Adding "For denied operations: record the exact HRESULT, NTSTATUS, or Win32 error code" would improve traceability.
+- **MEDIUM:** The UAT pass criteria say "All automated scripts exit with code 0" but scripts like Uat-Benchmark.ps1 may skip workloads and still exit 0. The criteria should distinguish between "exit 0 with all tests PASS" vs "exit 0 with some tests skipped."
+- **LOW:** Plan 06 creates `.planning/milestones/v0.10.0-UAT.md` but does not ensure the `.planning/milestones/` directory exists.
+- **LOW:** The test matrix references specific error codes in Expected results, but the Actual column format guide does not explicitly encourage recording the observed error code.
 
 **Suggestions:**
-- Split prerequisites checklist into "Required for UAT completion" and "Required only for optional tests" sections.
-- Add to Actual column format guide: "For denied operations: record the exact HRESULT, NTSTATUS, or Win32 error code (e.g., 0x80070005 for ERROR_ACCESS_DENIED)."
-- Ensure directory creation: `mkdir -p .planning/milestones/` before writing the file.
 - Clarify exit code semantics: "Scripts must exit 0 AND produce no FAIL-level results. WARN-level results (e.g., skipped workloads) are acceptable for optional tests but must be documented."
+- Ensure directory creation: `mkdir -p .planning/milestones/` before writing the file.
+- Add to Actual column format guide: "For denied operations: record the exact HRESULT, NTSTATUS, or Win32 error code (e.g., 0x80070005 for ERROR_ACCESS_DENIED)."
 
-**Risk Assessment:** LOW. The template is comprehensive and well-structured. Remaining concerns are cosmetic or organizational.
+**Risk Assessment:** LOW. The template is comprehensive and well-structured. Remaining concerns are cosmetic.
 
 ---
 
 ### Claude: Dependency and Ordering Analysis
 
-| Plan | Wave | depends_on | File Target | Concern |
-|------|------|-----------|-------------|---------|
+| Plan | Wave | depends_on | File Target | Status |
+|------|------|-----------|-------------|--------|
 | 57-01 | 1 | [] | deployment-guide.md, RELEASE_NOTES.md | Foundation -- correct |
 | 57-02 | 2 | [57-01] | deployment-guide.md (EDR-VENDORS markers) | Replace between markers -- correct |
-| 57-03 | 2 | [57-01, 57-02] | deployment-guide.md (append after CrowdStrike) | **Insertion precision** -- see below |
+| 57-03 | 2 | [57-01, 57-02] | deployment-guide.md (after INSERT-REMAINING-VENDORS-AFTER-HERE) | Deterministic insertion -- correct |
 | 57-04 | 2 | [57-01] | RELEASE_NOTES.md, deployment-guide.md (HASH-PUBLISHING markers) | Replace between markers -- correct |
 | 57-05 | 3 | [57-01, 57-02, 57-03, 57-04] | 6 new script files | Independent files -- correct |
 | 57-06 | 3 | [57-01..57-05] | v0.10.0-UAT.md, deployment-guide.md (UAT-MATRIX markers) | Replace between markers -- correct |
 
-**Plan 03 Insertion Precision Issue:**
-Plan 02 replaces the content between `EDR-VENDORS-START` and `EDR-VENDORS-END` with Microsoft+CrowdStrike sections. Plan 03 then needs to insert SentinelOne+Carbon Black+Sophos+Trend Micro within the same marker boundaries, after the CrowdStrike section. The task description says "Append... immediately after the CrowdStrike section (between the EDR-VENDORS placeholder markers)" but doesn't specify the mechanism for finding the insertion point. An automated executor would need to parse markdown section boundaries or search for the `---` separator after CrowdStrike. **Recommendation:** Add an explicit insertion marker in Plan 02's output, e.g., `<!-- INSERT-REMAINING-VENDORS-AFTER-HERE -->`, which Plan 03 can target deterministically.
+All dependencies are correctly ordered. No cycles. No concurrent writes to the same file.
 
 ---
 
@@ -189,319 +374,146 @@ Plan 02 replaces the content between `EDR-VENDORS-START` and `EDR-VENDORS-END` w
 
 | Concern | Severity | Location | Mitigation |
 |---------|----------|----------|------------|
-| Policy restoration on crash | MEDIUM | Uat-EtwNtdll.ps1 Test-MonitorMode | Ensure finally block restores original policy mode |
-| Service stopped during test | MEDIUM | Uat-DaclTripwire.ps1 | Ensure finally block restarts dlp-agent service |
-| Clipboard data destruction | LOW | Uat-CloudSync.ps1 | Warning in .DESCRIPTION is sufficient |
+| Policy restoration on crash | MEDIUM | Uat-EtwNtdll.ps1 Test-MonitorMode | Finally block restores original policy mode -- addressed in cycle 2 |
+| Service stopped during test | MEDIUM | Uat-DaclTripwire.ps1 | Finally block restarts dlp-agent service -- addressed |
+| Clipboard data destruction | LOW | Uat-CloudSync.ps1 | Warning in .DESCRIPTION -- addressed |
 | Path exclusions increase attack surface | MEDIUM | Sophos, CrowdStrike sections | Documented as known limitation; install path has restricted ACLs |
+| UAT scripts flagged by EDR | HIGH | Uat-HookDll.ps1, Uat-EtwNtdll.ps1 | New concern: EDR may quarantine UAT scripts themselves |
 
 ---
 
-### Claude: Consensus on Cycle 1 Fix Effectiveness
+### Claude: Cycle Fix Effectiveness
 
-| Cycle 1 Concern | Fix Applied | Resolves? | Notes |
-|-----------------|-------------|-----------|-------|
-| Race condition Plans 02+03 | Plan 03 now `depends_on: [57-02]` | **Yes** | Serialization eliminates concurrent writes |
-| ActiveBlocking overloaded | Split into 6 focused scripts | **Yes** | Much more maintainable |
-| Custom binary dependencies | ETW suspend/resume; ntdll behavior test | **Yes** | No external binaries needed |
-| Missing placeholder markers | HTML comment markers in Plan 01 | **Yes** | Deterministic replacement enabled |
-| FalconPy Python-in-PowerShell | Labeled as Python + Invoke-RestMethod alt | **Yes** | Both options provided |
-| ASR rules missing | Added to Plan 02 Defender section | **Yes** | Addresses real deployment foot-gun |
-| Defender module prerequisite | Added Windows Server note | **Yes** | Clear prerequisite |
-| Carbon Black typo | Fixed to `[REGION]` placeholder | **Yes** | No typo |
-| SentinelOne registry fragility | Checks both native + WoW6432Node | **Yes** | Robust across architectures |
-| Trend Micro service variability | Uses `Get-Service` wildcard | **Yes** | Works across versions |
-| WDSI email gateway | Added warning about "infected" password | **Yes** | Prevents delivery failure |
-| Certificate renewal | Documented in both plans | **Yes** | Trust store update guidance |
-| Multi-signature output | Noted as expected for dual-signed DLLs | **Yes** | Prevents operator confusion |
-| Benchmark Rust skip | Checks cargo presence, skips gracefully | **Yes** | Prevents hard failure |
-| Clipboard warning | Added to CloudSync .DESCRIPTION | **Yes** | Operator informed |
-| Baseline-first benchmark | All baseline measurements first | **Yes** | Reduces cache effects |
-| Optional test blocking | Clarified skipped optional tests don't block | **Yes** | UAT can complete without SD card |
+| Cycle 1 Concern | Status |
+|-----------------|--------|
+| Race condition Plans 02+03 | **FULLY RESOLVED** (Plan 03 depends_on: [57-02]) |
+| ActiveBlocking overloaded | **FULLY RESOLVED** (6 focused scripts) |
+| Custom binary dependencies | **FULLY RESOLVED** (suspend/resume ETW, behavioral ntdll) |
+| Missing placeholder markers | **FULLY RESOLVED** (HTML comment markers) |
+| FalconPy Python/PowerShell | **FULLY RESOLVED** (labeled Python + Invoke-RestMethod) |
+| ASR rules missing | **FULLY RESOLVED** (added to Plan 02) |
+| Defender module prerequisite | **FULLY RESOLVED** (Windows Server note) |
+| Carbon Black typo | **FULLY RESOLVED** ([REGION] placeholder) |
+| SentinelOne registry fragility | **FULLY RESOLVED** (native + WoW6432Node) |
+| Trend Micro service variability | **FULLY RESOLVED** (Get-Service wildcard) |
+| WDSI email gateway | **FULLY RESOLVED** (warning about "infected" password) |
+| Certificate renewal | **FULLY RESOLVED** (trust store update guidance) |
+| Multi-signature output | **FULLY RESOLVED** (noted as expected) |
+| Benchmark Rust skip | **FULLY RESOLVED** (checks cargo presence) |
+| Clipboard warning | **FULLY RESOLVED** (added to CloudSync .DESCRIPTION) |
+| Baseline-first benchmark | **FULLY RESOLVED** (all baseline measurements first) |
+| Optional test blocking | **FULLY RESOLVED** (clarified skipped optional tests don't block) |
+
+| Cycle 2 Concern | Status |
+|-----------------|--------|
+| Defender SKU detection | **FULLY RESOLVED** (Get-MpComputerStatus + MDE registry check) |
+| CrowdStrike API scopes/endpoints | **FULLY RESOLVED** (ml_exclusions:write/read, US-1/US-2/EU-1/US-GOV-1) |
+| Plan 03 insertion precision | **FULLY RESOLVED** (INSERT-REMAINING-VENDORS-AFTER-HERE marker) |
+| Office launch timing | **FULLY RESOLVED** (FindWindow / MainWindowHandle) |
+| ETW bypass retry logic | **FULLY RESOLVED** (3 retries with new processes) |
+| Carbon Black pilot flow | **FULLY RESOLVED** (explicit pilot endpoint with path exclusion) |
+| Optional prerequisites | **FULLY RESOLVED** (visually separated Required vs Optional) |
+| Policy restoration requirement | **FULLY RESOLVED** (MonitorMode task explicitly requires finally block) |
 
 ---
 
 ### Claude: Overall Risk Assessment
 
-**Risk Level: LOW-MEDIUM**
+**Risk Level: LOW**
 
-**Justification:** The cycle 1 fixes comprehensively addressed the three highest-severity issues:
+**Justification:** All cycle 1 and cycle 2 HIGH-severity concerns have been fully resolved:
 
-1. **Race condition (HIGH -> RESOLVED):** Plan 03 now serializes after Plan 02, eliminating concurrent writes to deployment-guide.md.
-2. **Missing test binaries (HIGH -> RESOLVED):** The suspend/resume ETW approach and behavioral ntdll testing eliminate all custom binary dependencies.
-3. **Overloaded ActiveBlocking (HIGH -> RESOLVED):** Six focused scripts replace the monolithic script, dramatically reducing implementation risk.
+1. **Race condition (HIGH -> RESOLVED):** Plan 03 serializes after Plan 02 with deterministic insertion marker.
+2. **Missing test binaries (HIGH -> RESOLVED):** Suspend/resume ETW approach and behavioral ntdll testing eliminate all custom binary dependencies.
+3. **Overloaded ActiveBlocking (HIGH -> RESOLVED):** Six focused scripts replace the monolithic script.
+4. **Defender SKU variance (HIGH -> RESOLVED):** SKU detection via Get-MpComputerStatus and MDE onboarding registry check.
+5. **CrowdStrike API permissions (HIGH -> RESOLVED):** API scopes and region-specific endpoints documented.
 
-The remaining concerns are minor:
-- Plan 03's append semantics require precise insertion (MEDIUM), mitigable with an explicit sub-marker.
-- Uat-Benchmark's Office launch timing uses `WaitForInputIdle` instead of true window visibility (MEDIUM), which could skew measurements for Click-to-Run Office.
-- A few edge-case handling gaps (BIOS fallback, WDSI contingency, policy restoration on crash) are LOW severity.
+The remaining concerns are all LOW or LOW-MEDIUM severity:
+- BIOS fallback edge case (LOW)
+- ASR rule GUID precision (LOW)
+- Carbon Black file-known verification (LOW-MEDIUM)
+- SentinelOne version programmatic validation (LOW)
+- Binary naming verification (LOW)
+- WDSI contingency (LOW)
+- ETW retry interval specification (LOW-MEDIUM)
+- Startup sweep tolerance (LOW-MEDIUM)
+- Office launch timeout (LOW)
+- Exit code semantics clarification (LOW-MEDIUM)
+- Directory creation (LOW)
+- Error code recording guidance (LOW)
 
-**Recommendation:** This phase is ready for execution with two minor pre-execution tweaks:
-1. Add an explicit insertion marker in Plan 02's CrowdStrike section for Plan 03 to target.
-2. Fix the Office launch timing in Uat-Benchmark.ps1 to use actual window visibility detection.
+**New concern raised in Cycle 3:**
+- **HIGH:** UAT scripts (HookDll, EtwNtdll) may be flagged as malicious tooling by EDR itself, potentially skewing UAT results or causing the scripts to be quarantined mid-test. This is an operational reality that the deployment guide should address: operators may need to temporarily allowlist the UAT scripts themselves in their EDR console before running UAT.
 
-With these adjustments, the phase risk drops to **LOW**.
-
----
-
-## OpenCode Review
-
-### Plan 57-01 -- Master Deployment Guide Foundation
-
-**Summary:** Solid structural foundation. The use of deterministic placeholders and clearly defined sections sets up downstream plans well. However, validation via simple greps is too weak for something acting as a ship gate artifact.
-
-**Strengths:**
-- Clear separation of concerns: structure first, content later
-- HTML comment placeholders enable deterministic patching by later plans
-- "Architecture Reality Check" section aligns with critical invariant communication
-- Minimal dependency surface (good for parallelism)
-
-**Concerns:**
-- **MEDIUM:** Grep-based verification is shallow; does not ensure placeholder integrity or ordering
-- **MEDIUM:** No schema or contract for placeholders (risk of drift across plans)
-- **LOW:** Section naming brittleness (renames break downstream replacements silently)
-
-**Suggestions:**
-- Define a strict placeholder contract (exact marker names + required count)
-- Add a structural validation script (e.g., check all required markers exist exactly once)
-- Include a "DO NOT EDIT BETWEEN MARKERS" comment to prevent manual corruption
-- Add a version header inside the doc to detect stale generation
-
-**Risk Assessment:** LOW-MEDIUM. Foundation is sound, but weak validation could allow silent breakage in later plans.
-
----
-
-### Plan 57-02 -- Microsoft Defender + CrowdStrike Allowlist
-
-**Summary:** High-value and realistic coverage of the two most common EDRs. The dual approach (PowerShell + API/Python) is pragmatic. However, operational correctness depends heavily on environment prerequisites and tenant-specific permissions.
-
-**Strengths:**
-- Covers multiple Defender mechanisms (hash, cert, ASR, IOC) -- good depth
-- Acknowledges FalconPy vs PowerShell tradeoff
-- Fits cleanly into placeholder replacement model
-- Practical, operator-oriented commands
-
-**Concerns:**
-- **HIGH:** Defender features vary by SKU (Defender for Endpoint vs built-in AV); not gated or detected
-- **HIGH:** CrowdStrike API requires scoped API keys + region-specific endpoints; not addressed
-- **MEDIUM:** No rollback/removal instructions for allowlists
-- **MEDIUM:** ASR exclusions can weaken security posture if misapplied
-- **LOW:** No verification step (e.g., confirm exclusion is active)
-
-**Suggestions:**
-- Add environment detection: Defender module presence (`Get-MpPreference`), MDE onboarding state
-- Explicitly document required permissions/scopes for CrowdStrike APIs
-- Add verification commands after each allowlist step
-- Include rollback commands (remove exclusion)
-- Add warning box for ASR exclusions scope
-
-**Risk Assessment:** MEDIUM-HIGH. Technically correct but operational fragility (permissions, SKU variance) could block deployment or create inconsistent results.
-
----
-
-### Plan 57-03 -- Remaining EDR Vendors
-
-**Summary:** Good expansion to full vendor coverage with realistic constraints per vendor. The dependency fix resolves the prior race condition. The plan correctly reflects limitations (e.g., Sophos path-only), but reliability varies significantly across vendors.
-
-**Strengths:**
-- Dependency ordering issue correctly fixed
-- Vendor-specific nuances captured (Carbon Black "known file", Trend Micro PE-only)
-- Honest constraints (no overpromising capabilities)
-- Registry checks for SentinelOne improve robustness
-
-**Concerns:**
-- **HIGH:** Carbon Black "known file" requirement is underspecified (how to make file known?)
-- **HIGH:** Sophos path-only exclusion is weak and risky; no mitigation guidance
-- **MEDIUM:** SentinelOne version dependency (S-25.1.1+) not enforced or detected
-- **MEDIUM:** No centralized validation across vendors
-- **LOW:** Appending between markers assumes no prior corruption from Plan 02
-
-**Suggestions:**
-- For Carbon Black: Add explicit step: upload binary or wait for reputation sync
-- For Sophos: Add strong warning + recommend certificate-based trust if available
-- Add version detection snippets (e.g., registry/service checks per vendor)
-- Add post-install validation per vendor (e.g., confirm policy applied)
-- Consider a summary table comparing strength of each allowlist method
-
-**Risk Assessment:** MEDIUM. Coverage is complete, but vendor-specific operational gaps (especially Carbon Black and Sophos) could cause deployment failure or weak protection.
-
----
-
-### Plan 57-04 -- RELEASE_NOTES + Signing + WDSI
-
-**Summary:** Covers essential release integrity and trust chain steps. The inclusion of verification commands is good, but the plan stops short of enforcing correctness or automating validation.
-
-**Strengths:**
-- Includes both SHA-256 and SHA-512 (good compliance practice)
-- signtool verification commands are correct and explicit
-- WDSI submission included (often missed in similar plans)
-- Mentions certificate lifecycle impact
-
-**Concerns:**
-- **HIGH:** Hashes are not generated deterministically within the plan (manual step risk)
-- **MEDIUM:** No check that signed binaries match published hashes
-- **MEDIUM:** WDSI submission process is underspecified (portal vs API, turnaround time)
-- **LOW:** No timestamping verification (`/tr` or `/td`)
-
-**Suggestions:**
-- Add a script to generate hashes and inject into RELEASE_NOTES.md
-- Add verification step: Compare computed hash vs published hash
-- Include timestamp verification in signtool output
-- Document expected WDSI turnaround and fallback if delayed
-- Add CI-friendly commands for repeatability
-
-**Risk Assessment:** MEDIUM. Security intent is strong, but lack of automation introduces human error risk at ship gate.
-
----
-
-### Plan 57-05 -- UAT PowerShell Scripts
-
-**Summary:** The split into focused scripts is a major improvement and resolves prior overload issues. The scenarios are realistic and aligned with DLP behavior. However, reliability and reproducibility across environments remain concerns.
-
-**Strengths:**
-- Clean separation into 6 scripts -- improves debuggability
-- Removal of custom binaries reduces AV/EDR friction
-- Coverage aligns with real-world exfil vectors (cloud, print, USB, ETW, DACL)
-- Benchmark script includes baseline-first approach
-
-**Concerns:**
-- **HIGH:** Auto-detection (cloud clients, printers) may be unreliable across environments
-- **HIGH:** No standardized output format (hard to aggregate results)
-- **MEDIUM:** ETW/ntdll behavioral tests may produce inconsistent results across Windows builds
-- **MEDIUM:** Benchmark variability (no CPU/memory normalization)
-- **LOW:** No retry or timeout handling
-
-**Suggestions:**
-- Standardize output: JSON or structured logs for each script
-- Add explicit success/failure criteria per test
-- Add environment checks (e.g., installed apps, permissions)
-- For benchmark: Pin CPU affinity or document variability expectations
-- Add a master orchestrator script to run all tests and collect results
-
-**Risk Assessment:** MEDIUM-HIGH. Functional coverage is strong, but lack of determinism and structured output could make UAT results hard to trust.
-
----
-
-### Plan 57-06 -- UAT Results Template + Guide Update
-
-**Summary:** Provides necessary structure for sign-off and aligns with ship gate expectations. The inclusion of CRIT-04 benchmark gating is correct. However, integration with actual test execution is weak.
-
-**Strengths:**
-- Clear grouping and coverage (30+ test cases)
-- Explicit sign-off roles (good governance)
-- CRIT-04 threshold defined (<=25%)
-- Optional group clearly marked
-
-**Concerns:**
-- **HIGH:** No enforced linkage between scripts (57-05) and template (manual transcription risk)
-- **MEDIUM:** No pass/fail aggregation logic
-- **MEDIUM:** Optional group could be skipped without justification tracking
-- **LOW:** No audit trail or timestamping
-
-**Suggestions:**
-- Auto-populate template from script outputs (tie to structured logs from 57-05)
-- Add a summary section: Total tests, pass rate, blockers
-- Require justification field for skipped optional tests
-- Add timestamps and environment metadata (OS version, EDR present)
-- Consider a "go/no-go" computed field
-
-**Risk Assessment:** MEDIUM. Good structure, but manual processes weaken reliability at the final ship gate.
-
----
-
-### OpenCode: Overall Assessment
-
-**Summary:** Cycle 1 fixes meaningfully improved the plan set -- especially resolving the dependency race and decomposing UAT into manageable scripts. The architecture is now coherent and executable. The main remaining risk is not design correctness but **operational reliability and determinism** across diverse Windows + EDR environments.
-
-**Key Cross-Plan Risks:**
-- HIGH: Lack of end-to-end automation (hashes, allowlists, UAT results)
-- HIGH: Environment variability (EDR versions, permissions, Windows builds)
-- MEDIUM: Weak validation (greps, manual checks)
-- MEDIUM: Missing rollback/verification steps in multiple plans
-
-**Final Risk Level: MEDIUM-HIGH**
-
-The plans are **functionally complete and aligned with goals**, but as a *ship gate*, they rely too much on manual correctness. Tightening validation, automation, and environment detection would bring this down to LOW risk.
+**Recommendation:** This phase is ready for execution. The one new HIGH concern (EDR flagging UAT scripts) should be documented as a known operational consideration in the deployment guide's Troubleshooting section, but it does not block plan execution.
 
 ---
 
 ## Consensus Summary
 
 ### Agreed Strengths
-- Both reviewers confirm cycle 1 race condition is fixed (Plan 03 depends_on: [57-01, 57-02])
+- Both reviewers confirm cycle 1 and cycle 2 fixes are comprehensively applied
+- Both reviewers confirm the race condition is fully resolved
 - Both reviewers confirm ActiveBlocking split into 6 scripts resolves overload issues
 - Both reviewers confirm custom binary dependencies are eliminated
 - Both reviewers praise placeholder markers and deterministic replacement strategy
 - Both reviewers acknowledge honest vendor limitation documentation (Sophos no hash, Trend Micro PE-only)
 - Both reviewers find the test matrix structure and sign-off table appropriate for a ship gate
+- Both reviewers confirm the phase is close to deployable quality
 
 ### Agreed Concerns (Highest Priority)
 
-1. **HIGH/MEDIUM -- Plan 03 insertion precision**: Claude flags that Plan 03's "append after CrowdStrike" semantics are imprecise for automated execution. OpenCode notes "appending between markers assumes no prior corruption from Plan 02." Both agree the dependency fix is correct but the insertion mechanism needs refinement.
+1. **HIGH -- EDR may flag UAT scripts as malicious:** Both reviewers note that HookDll and EtwNtdll tests perform behaviors (process injection, suspend/resume) that EDRs may detect as suspicious. This could invalidate UAT results or quarantine the scripts mid-test. The deployment guide should warn operators to temporarily allowlist UAT scripts.
 
-2. **HIGH -- Environment variability and operational fragility**: OpenCode rates this HIGH (Defender SKU variance, CrowdStrike API permissions, auto-detection reliability). Claude rates this MEDIUM-LOW, noting the documentation is correct but operators may encounter tenant-specific issues.
+2. **HIGH -- Defender ASR policy precedence ambiguity:** OpenCode flags that ASR guidance may be ambiguous across E5 vs Business Premium edge cases (policy precedence conflicts). This is a new concern not raised in previous cycles.
 
-3. **MEDIUM -- Weak validation and lack of automation**: Both reviewers note grep-based verification is shallow. OpenCode calls for structural validation scripts and automation. Claude notes the verification improvements from cycle 1 are adequate but not exhaustive.
+3. **HIGH -- Uneven security guarantees across vendors:** OpenCode notes that path-only (Sophos) and PE-only (Trend) controls create security gaps if not explicitly risk-framed. Claude rates this as addressed by honest documentation but acknowledges the operational reality.
 
-4. **MEDIUM -- UAT determinism and structured output**: OpenCode flags lack of standardized output format and master orchestrator. Claude flags timing sensitivity in ETW bypass test and Office launch measurement inaccuracy.
+4. **MEDIUM -- UAT interpretation and evidence standards:** Both reviewers note lack of enforced completion/evidence standards. OpenCode wants explicit pass/fail criteria and evidence requirements. Claude notes exit code semantics could be clearer.
 
-5. **MEDIUM -- Carbon Black "known file" chicken-and-egg**: Claude specifically flags this as a deployment foot-gun. OpenCode also flags it as underspecified.
+5. **MEDIUM -- Missing rollback procedures:** OpenCode notes no explicit rollback steps for vendor configurations. This is a new cross-cutting concern.
 
 ### Divergent Views
 
-- **Overall risk level**: Claude rates LOW-MEDIUM (ready for execution with minor tweaks). OpenCode rates MEDIUM-HIGH (operational reliability concerns across heterogeneous environments).
-- **Defender SKU variance**: OpenCode calls this HIGH; Claude does not mention it.
-- **CrowdStrike API permissions**: OpenCode calls this HIGH; Claude considers it addressed by the documented required roles.
-- **Hash automation**: OpenCode calls manual hash generation HIGH risk; Claude considers it LOW since operators can generate hashes independently.
-- **UAT output format**: OpenCode wants JSON/structured logs and master orchestrator; Claude focuses on individual script correctness.
-- **Office launch timing**: Claude specifically flags WaitForInputIdle vs window visibility (cycle 1 carryover); OpenCode does not mention this.
+- **Overall risk level:** Claude rates LOW (ready for execution with minor tweaks). OpenCode rates Medium (operational ambiguity and vendor inconsistencies remain).
+- **Defender ASR variance:** OpenCode calls this HIGH; Claude does not mention it (new in cycle 3).
+- **UAT script EDR detection:** OpenCode calls this HIGH; Claude also calls this HIGH (agreed new concern).
+- **Hash automation:** OpenCode calls manual hash generation MEDIUM risk; Claude considers it LOW since operators can generate hashes independently.
+- **Benchmark threshold:** OpenCode wants the 25% threshold justified; Claude accepts it as a documented engineering gate.
 
-### Cycle 1 Fix Effectiveness (Both Reviewers Agree)
+### Cycle 3 Fix Effectiveness
 
-| Cycle 1 Concern | Status |
+| Cycle 2 Concern | Status |
 |-----------------|--------|
-| Race condition Plans 02+03 | **FULLY RESOLVED** |
-| ActiveBlocking overloaded | **FULLY RESOLVED** |
-| Custom binary dependencies | **FULLY RESOLVED** |
-| Missing placeholder markers | **FULLY RESOLVED** |
-| FalconPy Python/PowerShell | **FULLY RESOLVED** |
-| ASR rules missing | **FULLY RESOLVED** |
-| Defender module prerequisite | **FULLY RESOLVED** |
-| Carbon Black typo | **FULLY RESOLVED** |
-| SentinelOne registry fragility | **FULLY RESOLVED** |
-| Trend Micro service variability | **FULLY RESOLVED** |
-| WDSI email gateway | **FULLY RESOLVED** |
-| Certificate renewal | **FULLY RESOLVED** |
-| Multi-signature output | **FULLY RESOLVED** |
-| Benchmark Rust skip | **FULLY RESOLVED** |
-| Clipboard warning | **FULLY RESOLVED** |
-| Baseline-first benchmark | **FULLY RESOLVED** |
-| Optional test blocking | **FULLY RESOLVED** |
+| Defender SKU detection | **FULLY RESOLVED** |
+| CrowdStrike API scopes/endpoints | **FULLY RESOLVED** |
+| Plan 03 insertion precision | **FULLY RESOLVED** |
+| Office launch timing | **FULLY RESOLVED** |
+| ETW bypass retry logic | **FULLY RESOLVED** |
+| Carbon Black pilot flow | **FULLY RESOLVED** |
+| Optional prerequisites | **FULLY RESOLVED** |
+| Policy restoration requirement | **FULLY RESOLVED** |
 
-### New Concerns Raised in Cycle 2
+### New Concerns Raised in Cycle 3
 
 | Concern | Severity | Plan | Description |
 |---------|----------|------|-------------|
-| Plan 03 insertion precision | MEDIUM | 57-03 | Append semantics after CrowdStrike section are imprecise for automated execution |
-| Defender SKU variance | HIGH | 57-02 | Defender for Endpoint vs built-in AV feature differences not gated |
-| CrowdStrike API permissions | HIGH | 57-02 | API key scopes and region-specific endpoints not addressed |
-| Carbon Black known-file workaround | MEDIUM | 57-03 | Chicken-and-egg deployment problem needs clearer pilot endpoint guidance |
-| ETW bypass timing race | MEDIUM | 57-05 | Suspend/resume approach may miss injection window on fast systems |
-| Office launch timing accuracy | MEDIUM | 57-05 | WaitForInputIdle != window visibility for Click-to-Run Office |
-| UAT output standardization | MEDIUM | 57-05, 57-06 | No structured output format or master orchestrator |
-| Policy restoration on crash | MEDIUM | 57-05 | MonitorMode test must restore policy in finally block |
-| Manual hash generation risk | MEDIUM | 57-04 | Lack of automation introduces human error at ship gate |
-| Prerequisites checklist clarity | LOW | 57-06 | Optional vs required prerequisites not visually distinguished |
+| EDR flags UAT scripts | HIGH | 57-05, 57-06 | HookDll/EtwNtdll tests may be detected as malicious by EDR, invalidating results |
+| Defender ASR policy precedence | HIGH | 57-02 | ASR guidance ambiguous across E5 vs Business Premium (local vs Intune vs GPO) |
+| Uneven vendor security guarantees | HIGH | 57-03 | Path-only (Sophos) and PE-only (Trend) create security gaps |
+| Missing rollback procedures | MEDIUM | 57-02, 57-03 | No explicit rollback steps for vendor configurations |
+| UAT evidence standards | MEDIUM | 57-06 | No enforced evidence attachment (logs, screenshots) |
+| Benchmark threshold justification | MEDIUM | 57-05 | 25% gate lacks calibration guidance |
 
 ---
 
-## Recommendations for Cycle 3 (if needed)
+## Recommendations
 
-1. **Add insertion marker in Plan 02**: Include `<!-- INSERT-REMAINING-VENDORS-AFTER-HERE -->` at end of CrowdStrike section for Plan 03 to target deterministically.
-2. **Add Defender SKU detection note**: Document that `Get-MpComputerStatus` can verify MDE onboarding state before attempting hash indicators.
-3. **Fix Office launch timing**: Use `FindWindow` or `MainWindowHandle` detection instead of `WaitForInputIdle`.
-4. **Add ETW bypass retry logic**: Specify 3 retries with new processes if bypass alert not detected within 5 seconds.
-5. **Clarify Carbon Black pilot flow**: Explicitly state "deploy to pilot endpoint with temporary path exclusion first."
-6. **Distinguish optional prerequisites**: Visually separate required vs optional prerequisites in the UAT checklist.
-7. **Explicit policy restoration requirement**: State in Plan 05 MonitorMode task that finally block MUST restore original policy mode.
+1. **Document EDR UAT script allowlisting:** Add a note in the deployment guide Troubleshooting section that UAT scripts may need temporary EDR allowlisting before execution.
+2. **Add ASR policy precedence note:** Document that ASR rules may be managed via Intune/GPO/local policy and precedence varies by tenant configuration.
+3. **Add security tradeoff callouts:** For Sophos (path-only) and Trend Micro (PE-only), add explicit "Security Tradeoff" callouts noting the reduced precision vs hash-based exclusions.
+4. **Add rollback procedures:** For each vendor, include a brief "To remove this exclusion" subsection.
+5. **Add evidence requirements to UAT template:** Require evidence links (logs, screenshots) for each failed test case.
 
-With these 7 tweaks, the phase would achieve consensus LOW risk and be ready for execution.
+With these 5 tweaks, the phase achieves consensus LOW risk and is ready for execution.
