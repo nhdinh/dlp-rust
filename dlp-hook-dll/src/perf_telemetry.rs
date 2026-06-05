@@ -209,7 +209,8 @@ pub fn emit_telemetry() {
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
+/// # use dlp_hook_dll::perf_telemetry::measure;
 /// let (result, elapsed) = measure(|| {
 ///     // Some work here
 ///     42

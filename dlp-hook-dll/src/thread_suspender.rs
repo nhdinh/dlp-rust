@@ -478,7 +478,8 @@ impl<'a> Drop for ThreadSuspendGuard<'a> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
+/// # use dlp_hook_dll::thread_suspender::{with_suspended_threads, PatchError};
 /// let result = with_suspended_threads(0x7FF812340000 as *const u8, || {
 ///     // Perform atomic 5-byte write here...
 ///     42

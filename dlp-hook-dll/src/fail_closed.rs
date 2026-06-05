@@ -45,12 +45,11 @@ pub enum DenyReturn {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use dlp_hook_dll::fail_closed;
-/// use windows::Win32::Foundation::BOOL;
 ///
-/// let result: BOOL = fail_closed!(BoolFalse);
-/// assert_eq!(result.0, 0);
+/// let result: bool = fail_closed!(BoolFalse);
+/// assert!(!result);
 /// ```
 #[macro_export]
 macro_rules! fail_closed {

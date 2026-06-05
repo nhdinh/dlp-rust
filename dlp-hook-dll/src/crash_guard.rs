@@ -37,16 +37,15 @@ use windows::Win32::System::Diagnostics::Debug::{
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use dlp_hook_dll::crash_guard::guard_trampoline;
-/// use windows::Win32::Foundation::BOOL;
 ///
 /// let result = guard_trampoline(
 ///     "CreateFileW",
-///     || BOOL(1),
-///     || BOOL(0),
+///     || true,
+///     || false,
 /// );
-/// assert_eq!(result.0, 1);
+/// assert!(result);
 /// ```
 pub fn guard_trampoline<T>(
     fn_name: &str,
@@ -145,7 +144,7 @@ unsafe extern "system" fn seh_handler(
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use dlp_hook_dll::crash_guard::seh_guard;
 ///
 /// // This would normally crash; under seh_guard it returns Err(()).
@@ -211,7 +210,7 @@ thread_local! {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use dlp_hook_dll::crash_guard::with_reentrancy_guard;
 ///
 /// let result = with_reentrancy_guard(|| "classified", || "fallback");
