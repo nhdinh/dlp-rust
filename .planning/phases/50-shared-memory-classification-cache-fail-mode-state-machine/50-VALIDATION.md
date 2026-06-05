@@ -1,15 +1,16 @@
 ---
 phase: 50
 slug: shared-memory-classification-cache-fail-mode-state-machine
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
-created: 2026-05-20
+status: verified
+nyquist_compliant: true
+wave_0_complete: true
+updated: 2026-06-05
 ---
 
 # Phase 50 — Validation Strategy
 
-> Per-phase validation contract for feedback sampling during execution.
+> Shared-Memory Classification Cache + Fail-Mode State Machine
+> Per-phase validation contract: all 9 requirements verified through automated tests.
 
 ---
 
@@ -18,50 +19,36 @@ created: 2026-05-20
 | Property | Value |
 |----------|-------|
 | **Framework** | Rust built-in (`#[test]`) + `cargo test` |
-| **Config file** | None — workspace-level via `Cargo.toml` dev-dependencies |
+| **Config file** | Workspace `Cargo.toml` dev-dependencies |
 | **Quick run command** | `cargo test --workspace --lib` |
 | **Full suite command** | `cargo test --workspace` |
 | **Estimated runtime** | ~45 seconds |
 
 ---
 
-## Sampling Rate
+## Per-Requirement Verification Map
 
-- **After every task commit:** Run `cargo test --workspace --lib`
-- **After every plan wave:** Run `cargo test --workspace`
-- **Before `/gsd:verify-work`:** Full suite must be green
-- **Max feedback latency:** 60 seconds
-
----
-
-## Per-Task Verification Map
-
-| Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
-|---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| TBD | TBD | TBD | CACHE-01 | T-50-01 | Cache shared memory created with correct ACL | unit | `cargo test -p dlp-agent classification_cache` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | CACHE-02 | T-50-02 | DLL maps cache read-only after self-allowlist | unit | `cargo test -p dlp-hook-dll cache_map` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | CACHE-03 | T-50-03 | HookRequest/HookResponse carry cache_version and cache_hint | unit | `cargo test -p dlp-common hook_ipc` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | CACHE-04 | T-50-04 | CacheDelta push flips atomic version word | unit | `cargo test -p dlp-agent cache_delta` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | CACHE-05 | T-50-05 | Trusted paths bypass cache and pipe | unit | `cargo test -p dlp-hook-dll trusted_path` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | CACHE-06 | T-50-06 | Per-process host allowlist bypasses pipe | unit | `cargo test -p dlp-hook-dll host_allowlist` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | FAIL-01 | T-50-07 | State machine transitions correctly | unit | `cargo test -p dlp-hook-dll fail_mode` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | FAIL-02 | T-50-08 | Asymmetric tier-gated fail decisions | unit | `cargo test -p dlp-hook-dll tier_fail` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | FAIL-03 | T-50-09 | Per-tier TTL budgets enforced | unit | `cargo test -p dlp-hook-dll ttl_budget` | ❌ W0 | ⬜ pending |
-
-*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+| Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | Test File | Status |
+|-------------|------------|-----------------|-----------|-------------------|-----------|--------|
+| CACHE-01 | T-50-04, T-50-07 | Cache shared memory created with SYSTEM write / BA read ACL | unit | `cargo test -p dlp-agent --lib` | `dlp-agent/src/classification_cache.rs` | green |
+| CACHE-02 | T-50-08, T-50-09 | DLL maps cache read-only (FILE_MAP_READ) with validation | unit | `cargo test -p dlp-hook-dll -- classification_cache` | `dlp-hook-dll/src/classification_cache.rs` | green |
+| CACHE-03 | T-50-01, T-50-24 | HookRequest/HookResponse carry cache_version and cache_hint; bincode stable | unit + integration | `cargo test -p dlp-common --lib` + `cargo test -p dlp-e2e --test bincode_compat` | `dlp-common/src/hook_ipc.rs` + `dlp-e2e/tests/bincode_compat.rs` | green |
+| CACHE-04 | T-50-09, T-50-26 | Cache rebuild performs sequence-lock atomic version flip | unit | `cargo test -p dlp-agent --lib` | `dlp-agent/src/classification_cache.rs` | green |
+| CACHE-05 | T-50-12, T-50-17 | Trusted paths (System32, SysWOW64, WinSxS, etc.) bypass cache and pipe | unit | `cargo test -p dlp-hook-dll -- allowlist` | `dlp-hook-dll/src/allowlist.rs` | green |
+| CACHE-06 | T-50-17, T-50-32, T-50-33 | Build-tool allowlist with basename + parent + user-writable + signer checks | unit | `cargo test -p dlp-hook-dll -- allowlist` | `dlp-hook-dll/src/allowlist.rs` | green |
+| FAIL-01 | T-50-13, T-50-14, T-50-30 | State machine transitions: HEALTHY->DEGRADED->ISOLATED->RESYNC->HEALTHY | unit | `cargo test -p dlp-hook-dll -- fail_mode` | `dlp-hook-dll/src/fail_mode.rs` | green |
+| FAIL-02 | T-50-12, T-50-31 | Asymmetric tier-gated decisions: T3/T4 deny, T1/T2 allow, reads always allow | unit | `cargo test -p dlp-hook-dll -- fail_mode` | `dlp-hook-dll/src/fail_mode.rs` | green |
+| FAIL-03 | T-50-16, T-50-30 | Per-tier TTL budgets enforced (T4=30s, T3=60s, T2=300s, T1=1800s) | unit | `cargo test -p dlp-hook-dll -- fail_mode` | `dlp-hook-dll/src/fail_mode.rs` | green |
 
 ---
 
-## Wave 0 Requirements
+## Integration Test Coverage
 
-- [ ] `dlp-hook-dll/src/cache_lookup.rs` — cache lookup module with unit tests
-- [ ] `dlp-hook-dll/src/fail_mode.rs` — fail-mode state machine with unit tests
-- [ ] `dlp-agent/src/classification_cache.rs` — shared-memory cache manager with unit tests
-- [ ] `dlp-common/src/hook_ipc.rs` — extended HookRequest/HookResponse types
-- [ ] `dlp-hook-dll/src/allowlist.rs` — trusted-path and host allowlist with tests
-- [ ] Benchmark harness: `dlp-hook-dll/benches/cache_hit_latency.rs` — QueryPerformanceCounter p95
-
-*Wave 0 creates module stubs and test infrastructure before Wave 1 implementation begins.*
+| Suite | Tests | Command | Status |
+|-------|-------|---------|--------|
+| Bincode compatibility | 8 | `cargo test -p dlp-e2e --test bincode_compat` | green |
+| Cache benchmarks | 5 + 1 ignored | `cargo test -p dlp-e2e --test cache_benchmark` | green |
+| Phase 50 requirements | 21 | `cargo test -p dlp-e2e --test phase50_requirements` | green |
 
 ---
 
@@ -69,21 +56,29 @@ created: 2026-05-20
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| p95 latency <= 50 us on real Windows | CRIT-04 | Requires real Windows host with QPC; cannot simulate in CI | Run `cargo build --workspace --release` with hooks enabled; compare wall-clock vs hooks-disabled baseline; verify p95 via benchmark output |
-| HEALTHY → DEGRADED → ISOLATED transition with agent stopped | FAIL-01 | Requires stopping real agent service and observing hooked process behavior | Stop `dlp-agent` service; attempt T3/T4 write → denied; attempt T1/T2 write → allowed; check event log for transition telemetry |
-| ISOLATED → RESYNC → HEALTHY after agent restart | FAIL-01 | Requires real agent restart and pipe reconnection | Restart agent with higher cache_version; verify DLL transitions within 1s; check no in-flight decisions lost |
-| Cross-session shared memory (`Global\` prefix) | CACHE-01 | Requires multiple Windows sessions or UAC elevation | Elevated agent creates `Global\DlpClassificationCache`; non-elevated hooked process maps it read-only; verify visibility |
-| x86/x64 DLL compatibility with shared memory | CACHE-02 | Requires building and testing both architectures | Build `i686-pc-windows-msvc` target; verify x86 DLL maps same shared memory layout correctly |
+| p95 latency <= 50 us on real Windows | CRIT-04 | Requires real Windows host with QPC; synthetic benchmark approximates | Run `cargo test -p dlp-e2e --test cache_benchmark -- --ignored` on Windows host with hooks enabled |
+| HEALTHY -> DEGRADED -> ISOLATED with agent stopped | FAIL-01 | Requires stopping real agent service | Stop `dlp-agent` service; attempt T3/T4 write -> denied; T1/T2 -> allowed; check event log |
+| ISOLATED -> RESYNC -> HEALTHY after agent restart | FAIL-01 | Requires real agent restart and pipe reconnection | Restart agent with higher cache_version; verify transitions within 1s |
+| Cross-session shared memory (`Global\` prefix) | CACHE-01 | Requires multiple Windows sessions or UAC elevation | Elevated agent creates cache; non-elevated hooked process maps it read-only |
+| x86/x64 DLL compatibility | CACHE-02 | Requires building and testing both architectures | Build `i686-pc-windows-msvc` target; verify x86 DLL maps same layout |
 
 ---
 
-## Validation Sign-Off
+## Validation Audit Trail
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 60s
-- [ ] `nyquist_compliant: true` set in frontmatter
+| Audit Date | Requirements Total | Covered | Partial | Missing | Run By |
+|------------|-------------------|---------|---------|---------|--------|
+| 2026-05-20 | 9 | 0 | 0 | 9 | Plan-time draft |
+| 2026-06-05 | 9 | 9 | 0 | 0 | UAT verification + gsd-nyquist-auditor |
 
-**Approval:** pending
+---
+
+## Sign-Off
+
+- [x] All requirements have automated verification (9/9 covered)
+- [x] Sampling continuity: all plans verified after each task commit
+- [x] No watch-mode flags
+- [x] Feedback latency < 60s
+- [x] `nyquist_compliant: true` set in frontmatter
+
+**Approval:** verified 2026-06-05
