@@ -1,361 +1,334 @@
-# Coding Conventions
+# Code Conventions and Patterns
 
-**Analysis Date:** 2026-04-10
+**Analysis Date:** 2026-06-05
+**Workspace:** Enterprise DLP System (NTFS + Active Directory + ABAC)
+**Crates:** dlp-common, dlp-agent, dlp-server, dlp-admin-cli, dlp-user-ui, dlp-hook-dll, dlp-e2e
 
-## Naming Patterns
+---
 
-**Files:**
-- Lowercase with underscores: `engine_client.rs`, `audit_emitter.rs`, `policy_mapper.rs`
-- Module files use `mod.rs` convention: `clipboard/mod.rs`, `detection/mod.rs`, `interception/mod.rs`
-- Test files suffix: `integration.rs`, `comprehensive.rs`, `negative.rs` (collocated in `tests/` directory)
+## 1. Naming Conventions
 
-**Functions:**
-- Snake_case for all public and private functions: `resolve_caller_identity()`, `run_event_loop()`, `fail_closed_response()`
-- Async functions return `Result<T>` or `Result<T, CustomError>` pattern
-- Getter/query functions use descriptive prefixes: `resolve_`, `get_`, `is_`, `contains_`
-- Example: `get_application_metadata()`, `is_denied()`, `requires_audit()`
+### 1.1 Files and Modules
+- **Source files:** Lowercase with underscores: `audit_emitter.rs`, `policy_mapper.rs`, `engine_client.rs`
+- **Module entry points:** `mod.rs` convention: `ipc/mod.rs`, `detection/mod.rs`, `db/repositories/mod.rs`
+- **Test files:** Collocated in `tests/` directory with descriptive suffixes:
+  - `integration.rs` — Component integration tests
+  - `comprehensive.rs` — Multi-component boundary tests
+  - `negative.rs` — Error and failure-path tests
+  - `*_integration.rs` — Feature-specific integration tests
 
-**Variables:**
-- Snake_case throughout: `user_sid`, `process_id`, `device_trust`, `cache_entry`
-- Constants use SCREAMING_SNAKE_CASE: `DEFAULT_TTL`, `MAX_RETRIES`, `INITIAL_BACKOFF`, `DEFAULT_ENGINE_URL`
-- Struct field names match Rust style: `pub user_sid: String`, `pub matched_policy_id: Option<String>`
+### 1.2 Functions
+- **Snake_case** for all functions: `resolve_caller_identity()`, `emit_audit()`, `fail_closed_response()`
+- **Async functions:** Return `Result<T, E>` and use `pub async fn` prefix
+- **Query/predicate functions:** Descriptive prefixes:
+  - `resolve_*` — Resolution operations (`resolve_volume_class_from_path()`)
+  - `get_*` — Simple accessors (`get_active()`, `get_by_version()`)
+  - `is_*` — Boolean predicates (`is_denied()`, `is_blocking()`, `is_sensitive()`)
+  - `requires_*` — Capability checks (`requires_audit()`)
+  - `with_*` — Builder-style setters (`with_policy()`, `with_blocked_disk()`)
 
-**Types:**
-- PascalCase for all structs, enums, traits: `Subject`, `Resource`, `Environment`, `Decision`, `EngineClient`, `Cache`, `AuditEmitter`
-- Enum variants use both PascalCase and SCREAMING_SNAKE_CASE based on semantics:
-  - Enum variant names: `READ`, `WRITE`, `COPY`, `DELETE`, `MOVE`, `PASTE` (Action enum — actions as verbs)
-  - Decision variants: `ALLOW`, `DENY`, `AllowWithLog`, `DenyWithAlert` (mixed for readability)
-  - Status variants: `Managed`, `Unmanaged`, `Compliant`, `Unknown` (DeviceTrust enum)
-- Custom error enums use PascalCase with `Error` suffix: `EngineClientError`, `IdentityError`, `AppError`
+### 1.3 Variables and Constants
+- **Variables:** Snake_case: `user_sid`, `process_id`, `cache_entry`
+- **Constants:** SCREAMING_SNAKE_CASE: `SERVICE_NAME`, `SHUTDOWN_TIMEOUT`, `DEFAULT_BIND`
+- **Static globals:** Snake_case with type annotation: `static CONFIG: OnceLock<...>`, `static SCM_HANDLE: OnceLock<...>`
 
-## Code Style
+### 1.4 Types
+- **Structs/Enums/Traits:** PascalCase: `Subject`, `AuditEvent`, `AppState`, `SecretCrypto`
+- **Error types:** PascalCase with `Error` suffix: `AppError`, `CryptoError`, `CacheError`
+- **Repository types:** PascalCase with `Repository` suffix: `PolicyRepository`, `AuditEventRepository`
+- **Row types:** PascalCase with `Row` suffix: `PolicyRow`, `AuditEventRow`
 
-**Formatting:**
-- Uses `rustfmt` default settings (100-character line length)
-- 4 spaces for indentation (verified in dlp-agent/Cargo.toml dependencies)
-- No tabs used anywhere
+### 1.5 Enum Variants
+- **Action enum:** SCREAMING_SNAKE_CASE verbs: `READ`, `WRITE`, `COPY`, `DELETE`, `PASTE`, `DRAG_DROP`, `CLOUD_UPLOAD`
+- **Decision enum:** Mixed for readability: `ALLOW`, `DENY`, `AllowWithLog`, `DenyWithAlert`
+- **Status enums:** PascalCase: `Managed`, `Unmanaged`, `Compliant`, `Unknown`
+- **Serde rename attributes:** Match wire format exactly:
+  - `#[serde(rename_all = "snake_case")]` — `AppTrustTier` (`trusted`, `untrusted`, `unknown`)
+  - `#[serde(rename_all = "PascalCase")]` — `VolumeClass` (`LocalNTFS`, `USBRemovable`)
+  - `#[serde(rename_all = "SCREAMING_SNAKE_CASE")]` — `EventType` (`BLOCK`, `CONFIG_CHANGE`)
+  - `#[serde(rename_all = "UPPERCASE")]` — `Classification` (`T1`, `T2`, `T3`, `T4`)
 
-**Linting:**
-- Code must pass `cargo clippy -- -D warnings` (all warnings treated as errors)
-- Static analysis via `sonar-scanner` required before commits
-- Verified: dlp-common, dlp-agent, dlp-server all follow idiomatic Rust style
+---
 
-## Import Organization
+## 2. Code Style Rules
 
-**Order:**
-1. Standard library imports: `use std::...`
-2. External crate imports: `use tokio::...`, `use serde::...`, `use anyhow::...`
-3. Workspace imports: `use dlp_common::...`
-4. Local module imports: `use crate::...`
+### 2.1 Formatting
+- **Line length:** 100 characters (rustfmt default)
+- **Indentation:** 4 spaces, never tabs
+- **Import organization:** Three groups separated by blank lines:
+  1. Standard library: `use std::sync::Arc;`
+  2. External crates: `use tokio::sync::mpsc;`, `use tracing::{info, warn};`
+  3. Workspace/local: `use dlp_common::*;`, `use crate::db::Pool;`
 
-**Examples from codebase:**
-```rust
-// dlp-agent/src/engine_client.rs
-use std::sync::Arc;
-use std::time::Duration;
+### 2.2 Linting
+- `cargo clippy -- -D warnings` — all warnings treated as errors
+- `cargo fmt --check` — format verification
+- `sonar-scanner` — static analysis and security scanning (required before commits)
+- Common clippy allows (used sparingly):
+  - `#[allow(clippy::too_many_arguments)]` — for `AuditEvent::new()` and similar
+  - `#[allow(clippy::type_complexity)]` — for internal cache types
+  - `#[allow(clippy::enum_variant_names)]` — when variant names share a prefix
 
-use anyhow::{Context, Result};
-use dlp_common::{EvaluateRequest, EvaluateResponse};
-use reqwest::Client;
-use tracing::{debug, error, warn};
-```
+### 2.3 Import Rules
+- **No wildcard imports** in production code except preludes
+- **Test modules:** `use super::*;` is the only wildcard allowed
+- **Barrel exports:** `pub use abac::*;` in `dlp-common/src/lib.rs` for shared types
+- **Module preludes:** `dlp-agent/src/lib.rs` defines `pub mod prelude { pub use dlp_common::*; }`
 
-**Path Aliases:**
-- Uses `crate::prelude` for re-exports of shared types (`dlp-agent/src/lib.rs`):
+---
+
+## 3. Error Handling Patterns
+
+### 3.1 Error Type Hierarchy
+- **Library code:** Custom error types with `thiserror`:
   ```rust
-  pub mod prelude {
-      pub use dlp_common::*;
+  #[derive(Debug, thiserror::Error)]
+  pub enum AppError {
+      #[error("database error: {0}")]
+      Database(#[from] rusqlite::Error),
+      #[error("json error: {0}")]
+      Json(#[from] serde_json::Error),
+      #[error("internal error: {0}")]
+      Internal(#[from] anyhow::Error),
+      #[error("not found: {0}")]
+      NotFound(String),
+      #[error("bad request: {0}")]
+      BadRequest(String),
+      #[error("unauthorized: {0}")]
+      Unauthorized(String),
+      #[error("unprocessable entity: {0}")]
+      UnprocessableEntity(String),
+      #[error("conflict: {0}")]
+      Conflict(String),
+      #[error("forbidden: {0}")]
+      Forbidden(String),
   }
   ```
-- Modules export commonly-used types via `pub use` barrels
+- **Application boundaries:** `anyhow::Result<T>` with `.context()`:
+  ```rust
+  fn main() -> anyhow::Result<()> {
+      windows_service::service_dispatcher::start(SERVICE_NAME, ffi_entry)
+          .context("service dispatcher failed")?;
+      Ok(())
+  }
+  ```
 
-**Wildcard Imports:**
-- Avoided except in test modules: `use super::*;` in `#[cfg(test)]` blocks
-- No wildcard imports in production code; all imports are explicit
+### 3.2 Error Propagation
+- Use `?` operator for fallible operations
+- Use `#[from]` derive for automatic conversion
+- Use `.context()` from `anyhow` at application boundaries
+- **Never use `.unwrap()`** in production code; `.expect()` only for invariant violations with descriptive messages
 
-## Error Handling
+### 3.3 HTTP Error Mapping (dlp-server)
+- `AppError` implements `IntoResponse` mapping variants to status codes:
+  - `Database` / `Internal` / `Json` -> 500
+  - `NotFound` -> 404
+  - `BadRequest` -> 400
+  - `Unauthorized` -> 401
+  - `UnprocessableEntity` -> 422
+  - `Conflict` -> 409
+  - `Forbidden` -> 403
+- Axum extractor rejections (`JsonRejection`, `PathRejection`) convert to `AppError::BadRequest`
 
-**Patterns:**
-- Use `thiserror` for domain-specific error types (`EngineClientError`, `IdentityError`)
-- Use `anyhow::Result<T>` for application-level error propagation at boundary layers (main.rs, async spawn blocks)
-- Define custom error enums with `#[derive(Debug, thiserror::Error)]`
-- Errors are propagated with `?` operator; no `.unwrap()` in production paths
+### 3.4 Fail-Closed Semantics
+- Security-critical paths default to DENY:
+  - T3/T4 cache miss -> `fail_closed_response(classification)` returns DENY
+  - Unknown volume class -> condition evaluates to `false` (does not match)
+  - Unknown device trust -> `Blocked` (default enum variant)
 
-**Examples:**
-```rust
-// dlp-agent/src/engine_client.rs — Custom error type
-#[derive(Debug, thiserror::Error)]
-pub enum EngineClientError {
-    #[error("Policy Engine is unreachable after {attempts} attempts")]
-    Unreachable { attempts: u32 },
+---
 
-    #[error("HTTP error {status} from Policy Engine: {body}")]
-    HttpError { status: u16, body: String },
+## 4. Logging and Observability Conventions
 
-    #[error("TLS verification failed: {0}")]
-    TlsError(String),
-}
+### 4.1 Framework
+- **Primary:** `tracing` crate with structured fields
+- **Compat:** `log` crate as a facade shim for libraries that expect it
+- **Initialization:** `tracing_subscriber::fmt::init()` or `tracing_subscriber::util::SubscriberInitExt`
+- **Never use `println!`** in production code; use `tracing::info!`, `tracing::error!`, etc.
 
-// Return custom error type from library functions
-pub async fn evaluate(
-    &self,
-    request: &EvaluateRequest,
-) -> Result<EvaluateResponse, EngineClientError> { ... }
-```
+### 4.2 Log Levels
+- `trace!` — Very low-level details (IPC frame parsing, raw Windows API results)
+- `debug!` — Operational details (cache hits, path resolution, config reads)
+- `info!` — Significant events (service startup, policy loaded, connection established)
+- `warn!` — Recoverable errors and fallback behavior (retry, fallback to offline mode)
+- `error!` — Errors requiring attention (DB failure, encryption failure, service errors)
 
-```rust
-// dlp-agent/src/main.rs — Application boundary uses anyhow
-fn main() -> anyhow::Result<()> {
-    windows_service::service_dispatcher::start(SERVICE_NAME, ffi_entry)
-        .context("service dispatcher failed")?;
-    Ok(())
-}
-```
+### 4.3 Structured Fields
+- Use key-value field syntax: `info!(metric = "syslog_queue_depth", depth, "...")`
+- Format specifiers: `%` for Display, `?` for Debug
+- Examples:
+  ```rust
+  tracing::error!(error = %e, attempts, retryable, "Policy Engine evaluation failed");
+  tracing::warn!(error = %e, attempts, ?backoff, "Policy Engine unreachable — retrying");
+  tracing::info!(url = %url, "using DLP_SERVER_URL env var");
+  ```
 
-**Fail-closed for sensitive data:**
-- T3/T4 classifications must DENY on cache miss / offline (enforced in `dlp-agent/src/cache.rs`)
-- Pattern: `cache.get()` returns `Option<EvaluateResponse>`; on `None` for T3/T4, call `cache::fail_closed_response(classification)` which returns DENY decision
+### 4.4 Metrics
+- Atomic counters for observability (in `observability.rs`):
+  ```rust
+  static QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
+  static RETRY_COUNT: AtomicU64 = AtomicU64::new(0);
+  static DROP_COUNT: AtomicU64 = AtomicU64::new(0);
+  ```
+- Metrics are emitted via `tracing::info!` with `metric = "name"` field for external scraping
 
-## Logging
+### 4.5 Secrets in Logs
+- **Never log:** passwords, tokens, API keys, KEK material
+- SIDs and usernames are logged only in audit context, not debug/trace
+- Use `secrecy::SecretString` for sensitive data; redact in `Debug` impls:
+  ```rust
+  impl std::fmt::Debug for SecretCrypto {
+      fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+          f.debug_struct("SecretCrypto")
+              .field("version", &self.version)
+              .field("kek", &"<redacted>")
+              .finish()
+      }
+  }
+  ```
 
-**Framework:** `tracing` crate for structured logging with spans
+---
 
-**Imports:** 
-- `use tracing::{debug, info, warn, error};`
-- Do NOT use `log::` or `println!`
+## 5. API Design Patterns
 
-**Patterns:**
-- Use `debug!()` for low-level operational details (cache hits, parse operations)
-- Use `info!()` for significant events (service startup, configuration loaded)
-- Use `warn!()` for recoverable errors and fallback behavior
-- Use `error!()` only for errors that require immediate attention
+### 5.1 HTTP API (dlp-server with axum)
+- **Handlers:** Async, return `Result<Response, AppError>`:
+  ```rust
+  pub async fn list_policies(
+      State(state): State<Arc<AppState>>,
+  ) -> Result<Json<Vec<PolicyResponse>>, AppError> { ... }
+  ```
+- **Shared state:** `Arc<AppState>` passed via axum's `State` extractor
+- **Layered extractors:** Extract path params, query params, and JSON body separately
+- **Middleware:** `tower` middleware for timeouts, tracing, compression
 
-**Examples:**
-```rust
-// dlp-agent/src/cache.rs
-debug!(
-    resource_path,
-    user_sid,
-    decision = ?e.response.decision,
-    "cache hit"
-);
+### 5.2 Builder Pattern
+- Used for complex struct construction: `AuditEvent::new(...).with_policy(...).with_access_context(...)`
+- Chainable setters return `Self` by value
 
-// dlp-agent/src/engine_client.rs
-error!(error = %e, attempts, retryable, "Policy Engine evaluation failed");
-warn!(error = %e, attempts, ?backoff, "Policy Engine unreachable — retrying");
+### 5.3 Repository Pattern (dlp-server)
+- One repository per database table in `db/repositories/`
+- All raw SQL encapsulated in repositories; no `conn.execute()` outside this module
+- Stateless structs with static methods: `PolicyRepository::list(pool)`
+- Row types for read operations: `PolicyRow`, `AuditEventRow`
+- Upsert types for writes: `PolicyUpdateRow<'a>`, `ApprovalUpsertRow`
 
-// dlp-admin-cli/src/engine.rs
-info!(url = %url, "using DLP_SERVER_URL env var");
-debug!(addr = %addr, url = %url, "read BIND_ADDR from registry");
-```
+### 5.4 IPC Protocol
+- Named pipe IPC with typed message enums:
+  - `Pipe1AgentMsg` / `Pipe1UiMsg` — Command channel
+  - `Pipe2AgentMsg` / `Pipe2UiMsg` — Agent-to-UI notifications
+  - `Pipe3AgentMsg` / `Pipe3UiMsg` — UI-to-agent requests
+- Messages serialize via `serde_json` with version fields for backward compatibility
 
-**Structured fields:**
-- Include contextual fields in log calls: `error!(path = %path, error = %e, "..."`
-- Use `%` for Display and `?` for Debug formatting in field values
+### 5.5 Windows API Wrappers
+- Unsafe code isolated in platform-specific modules
+- `#[cfg(windows)]` guards on Windows-only modules and functions
+- `#[cfg(not(windows))]` stubs for cross-platform compilation and testing
+- Safety invariants documented in comments above each `unsafe` block
 
-## Comments
+### 5.6 Global State
+- `std::sync::OnceLock` for process-wide singletons:
+  - `static CONFIG: OnceLock<Arc<Mutex<AgentConfig>>>`
+  - `static SCM_HANDLE: OnceLock<ServiceStatusHandle>`
+  - `static AGENT_DB: OnceLock<Mutex<rusqlite::Connection>>`
+- Access via helper functions that return `Option<R>` or panic with context
 
-**When to Comment:**
-- Doc comments (starting with `///`) on all public functions, structs, enums, methods
-- No inline code comments unless explaining non-obvious Rust semantics or Windows API subtleties
-- Module-level doc comments explaining the crate's purpose and integration points
+---
 
-**JSDoc/TSDoc Pattern — Rust Doc Comments:**
-Required format for public items:
+## 6. Documentation Conventions
 
-```rust
-/// [One-sentence summary].
-///
-/// [Longer description if needed, explaining the behavior and use cases].
-///
-/// # Arguments
-///
-/// * `param1` - Description of param1
-/// * `param2` - Description of param2
-///
-/// # Returns
-///
-/// [Description of return value]
-///
-/// # Errors
-///
-/// Returns `ErrorType::Variant` if [condition]
-/// Returns `ErrorType::Other` if [other condition]
-///
-/// # Examples
-///
-/// ```
-/// let result = my_function(arg1, arg2)?;
-/// assert_eq!(result, expected);
-/// ```
-pub fn my_function(param1: &str, param2: u32) -> Result<String> { ... }
-```
+### 6.1 Required Doc Comments
+All public items MUST have doc comments with:
+- One-sentence summary
+- Longer description if behavior is non-obvious
+- `# Arguments` — for functions with parameters
+- `# Returns` — for non-void functions
+- `# Errors` — for fallible functions
+- `# Examples` — for complex functions
 
-**Examples from codebase:**
-- `dlp-agent/src/cache.rs::get()` — documents TTL behavior, fail-closed semantics, expiry mechanics
-- `dlp-agent/src/audit_emitter.rs::emit()` — documents append-only semantics, rotation, and no-blocking behavior
-- `dlp-common/src/classifier.rs::classify_text()` — includes examples showing each tier classification
+### 6.2 Module Documentation
+- Crate-level doc comments in `lib.rs` explaining architecture
+- Module-level doc comments explaining integration points
+- Phase/task references in comments: `(Phase 47, Task 47-08)`, `(AUDIT-02, Phase 36)`
 
-## Function Design
+### 6.3 Security Invariants
+- Documented inline with `## Fail-Closed Invariant` or `## Threat model` sections
+- Example from `abac.rs`:
+  ```rust
+  /// ## Fail-Closed Invariant
+  /// When a path cannot be classified, the classification returns `None`,
+  /// NOT `LocalNTFS`. A `None` volume class causes volume-class conditions
+  /// to evaluate to `false`.
+  /// NEVER use `VolumeClass::default()` as a fallback for unclassifiable paths.
+  ```
 
-**Size:** Functions are kept small and focused; longest ones are ~100 lines (event loop in `interception/mod.rs`)
+---
 
-**Parameters:** 
-- Maximum 5 parameters before switching to a config/builder struct
-- Prefer borrowing (`&T`, `&mut T`) over ownership transfers
-- Result types returned as `Result<T, E>` (never unwrap in library code)
-- Lifetimes used where needed for string slices and borrowed data
+## 7. Type System Practices
 
-**Return Values:**
-- Async functions return `Result<T, E>` where `E` is a custom error type or `anyhow::Error`
-- Queries return `Option<T>` (not default/sentinel values)
-- Boolean checks return `bool` with `is_*()` naming: `is_denied()`, `is_alert()`, `requires_audit()`
+### 7.1 Derives
+- Standard derives on almost all public types:
+  - `#[derive(Debug, Clone)]` — baseline
+  - `#[derive(PartialEq, Eq)]` — value types and enums
+  - `#[derive(Serialize, Deserialize)]` — wire-format types
+  - `#[derive(Default)]` — when sensible defaults exist
+- Copy derives for small value types: `#[derive(Debug, Clone, Copy, PartialEq, Eq)]`
 
-**Early Return Pattern:**
-```rust
-// dlp-admin-cli/src/engine.rs::resolve_engine_url()
-pub fn resolve_engine_url() -> String {
-    // Try env var first
-    if let Ok(url) = std::env::var("DLP_SERVER_URL") {
-        if !url.is_empty() {
-            info!(url = %url, "using DLP_SERVER_URL env var");
-            return url;
-        }
-    }
-    // Try registry
-    if let Ok(addr) = registry::read_registry_string(KEY, VALUE) {
-        // ... setup ...
-        return url;
-    }
-    // Fallback
-    DEFAULT_URL.to_string()
-}
-```
+### 7.2 Option vs Sentinel
+- Use `Option<T>` for optional fields; never use empty string or `-1` as sentinel
+- `#[serde(default)]` for backward-compatible optional fields
+- `#[serde(skip_serializing_if = "Option::is_none")]` to omit nulls from JSON
 
-## Module Design
-
-**Exports:**
-- Public types exported via module's `lib.rs` or `mod.rs`
-- `dlp-agent/src/lib.rs` exports major modules and provides a prelude for dlp-common re-exports
-- Each module documents its integration point with a comment block
-
-**Barrel Files:**
-- `dlp-common/src/lib.rs` re-exports all submodules: `pub use abac::*; pub use audit::*; pub use classification::*; pub use classifier::classify_text;`
-- `dlp-agent/src/lib.rs` does NOT wildcard-export all modules; lists them explicitly for clarity
-
-**Module Structure:**
-- One struct/type system per file (or closely-related variants)
-- `mod.rs` used to glue submodules together and export the public API
-- Private modules via `mod private_name;` without `pub` keyword
-
-## Derive Macros
-
-**Standard derives:**
-- `#[derive(Debug, Clone)]` — on almost all public types
-- `#[derive(PartialEq, Eq)]` — on value types (enums, small structs used in comparisons)
-- `#[derive(Serialize, Deserialize)]` — on types crossing IPC/HTTP boundaries
-- `#[derive(Default)]` — on types with sensible defaults
-
-**Examples:**
-```rust
-// dlp-common/src/abac.rs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum Action { READ, WRITE, COPY, DELETE, MOVE, PASTE }
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Subject { ... }
-```
-
-## Type System Practices
-
-**Newtypes:** Not heavily used in this codebase; paths/SIDs are `String`
-
-**Option vs Sentinel:**
-- Use `Option<String>` for optional fields: `pub matched_policy_id: Option<String>`
-- Never use empty string or `-1` as sentinel values
-
-**#[must_use]:**
-- Applied to all non-side-effect query methods:
+### 7.3 Must Use
+- `#[must_use]` on all non-side-effect query methods:
   ```rust
   #[must_use]
   pub fn is_denied(self) -> bool { ... }
-  
   #[must_use]
   pub fn default_allow() -> Self { ... }
   ```
 
-## Memory and Performance
+### 7.4 Newtypes
+- Not heavily used; paths and SIDs remain `String` for simplicity
+- `Zeroizing<[u8; 32]>` used for cryptographic key material
 
-**Allocations:**
-- Use `&str` for string slices (not `String`) in function parameters
+---
+
+## 8. Memory and Performance
+
+### 8.1 Allocations
+- Prefer `&str` over `String` in function parameters
 - Use `Cow<'_, str>` when ownership is conditionally needed
 - Pre-allocate `Vec` capacity when size is known: `Vec::with_capacity(capacity)`
+- Use `String::new()` for empty strings (no allocation)
 
-**Cloning:**
-- Explicit `.clone()` calls required; no implicit clones hidden in closures
-- Example: `cache.insert(action.path().to_string(), ...)` — `.to_string()` is explicit String allocation
+### 8.2 Cloning
+- Explicit `.clone()` calls required; no implicit clones in closures
+- `Arc::clone()` for shared reference counting (not `.clone()` on the inner type)
 
-## Concurrency
-
-**Async/Await:**
-- Uses `tokio` runtime with feature `"full"` for all async operations
-- Async functions are marked `pub async fn` and return `Result<T, E>`
-- Spawn long-running tasks with `tokio::spawn(async { ... })` to avoid blocking the reactor
-
-**Thread Safety:**
-- Shared state uses `Arc<RwLock<T>>` or `Arc<Mutex<T>>` (parking_lot preferred)
-- Cache uses `Arc<Cache>` with internal `RwLock<HashMap>`
-- Channels use `tokio::sync::mpsc` for message passing (FileAction events, IPC commands)
-
-**Example:**
-```rust
-// dlp-agent/src/cache.rs
-pub struct Cache {
-    inner: RwLock<HashMap<CacheKey, CacheEntry>>,
-    ttl: Duration,
-}
-```
-
-## Security
-
-**Secrets Handling:**
-- No hardcoded credentials or API keys in code
-- Configuration loaded from `.env` (must be in `.gitignore`)
-- Sensitive data types use `secrecy` crate where needed (not yet applied; aspirational from CLAUDE.md)
-
-**Logging:**
-- Never log sensitive information: passwords, tokens, API keys, PII (SIDs are logged for audit purposes)
-- SIDs and usernames are logged only in audit context, not in debug/trace logs
-
-**Windows API Safety:**
-- Unsafe code is isolated in platform-specific modules (`audit_emitter.rs`, `identity.rs`)
-- Each unsafe block is clearly documented with safety invariants
-- Example in `audit_emitter.rs`: unsafe calls to `OpenProcess`, `GetModuleFileNameExW` are wrapped with error handling
+### 8.3 Concurrency
+- **Async:** `tokio` runtime with `full` features
+- **CPU-bound:** `rayon` for data parallelism (where applicable)
+- **Shared state:** `Arc<RwLock<T>>` or `Arc<Mutex<T>>` (parking_lot preferred)
+- **Channels:** `tokio::sync::mpsc` for message passing
+- **Offload:** CPU-bound work to `tokio::task::spawn_blocking` to avoid blocking the reactor
 
 ---
 
-## Aspirational vs Actual
+## 9. Security Practices
 
-**Fully Implemented (from CLAUDE.md):**
-- Error handling with `thiserror` and `anyhow` ✓
-- `tracing` for structured logging ✓
-- Doc comments on public items ✓
-- Snake/Pascal/SCREAMING_SNAKE_CASE conventions ✓
-- `Result<T, E>` error propagation ✓
-- No `.unwrap()` in production paths ✓
-- Explicit `.clone()` calls ✓
-- `tokio` for async runtime ✓
+### 9.1 Secrets
+- No hardcoded credentials in source code
+- Configuration from `.env` (in `.gitignore`)
+- `secrecy` crate for sensitive data types
+- DPAPI for machine-bound encryption on Windows
 
-**Partially Implemented:**
-- `#[must_use]` on non-side-effect functions (used selectively, not universally) ~
-- Newtypes for semantic distinction (not used; paths/SIDs remain `String`) ~
+### 9.2 Unsafe Code
+- 623+ `unsafe` blocks, all isolated in Windows API modules
+- Each block documented with safety invariants
+- Minimized surface area; safe wrappers around unsafe primitives
 
-**Not Yet Applied (aspirational in CLAUDE.md):**
-- `secrecy` crate for sensitive types (no secrets stored in code currently)
-- `polars` for data processing (not applicable to this domain)
-- `indicatif` for progress bars (not needed in service/agent)
-- `ratatui` for TUI (dlp-admin-cli has custom TUI, not using ratatui)
-
----
-
-*Convention analysis: 2026-04-10*
+### 9.3 Platform Guards
+- 245 `#[cfg(windows)]` annotations
+- 60 `#[cfg(not(windows))]` stub implementations
+- Ensures code compiles on all platforms even if runtime behavior is Windows-only
