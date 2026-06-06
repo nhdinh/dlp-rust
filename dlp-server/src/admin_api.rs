@@ -1115,6 +1115,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/audit/events", get(audit_store::query_events))
         .route("/audit/events/count", get(audit_store::get_event_count))
         .route(
+            "/admin/audit/integrity",
+            get(audit_store::get_audit_integrity),
+        )
+        .route(
             "/policies",
             get(list_policies)
                 .post(create_policy)
@@ -7142,6 +7146,287 @@ mod tests {
             .expect("build");
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Phase 63: Audit integrity endpoint tests ─────────────────────────────
+
+    /// Integrity report shows all events verified for a valid chain.
+    #[tokio::test]
+    async fn test_integrity_endpoint_reports_valid_chain() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+        let genesis = dlp_common::audit::genesis_hash();
+
+        // Ingest 3 valid chained events.
+        let mut events = Vec::new();
+        let mut prev = genesis;
+        for i in 0..3 {
+            let mut event = dlp_common::AuditEvent::new(
+                dlp_common::EventType::Access,
+                "S-1-5-21-1".to_string(),
+                "user".to_string(),
+                format!(r"C:\file{i}.txt"),
+                dlp_common::Classification::T2,
+                dlp_common::Action::READ,
+                dlp_common::Decision::ALLOW,
+                "AGENT-INT-01".to_string(),
+                i as u32,
+            );
+            event.prev_hash = Some(prev.clone());
+            let hash = dlp_common::audit::compute_chain_hash(&prev, &event).expect("compute");
+            event.chain_hash = Some(hash.clone());
+            prev = hash;
+            event.source_application = Some(dlp_common::endpoint::agent_unknown_app());
+            event.destination_application = Some(dlp_common::endpoint::agent_unknown_app());
+            events.push(event);
+        }
+
+        let ingest = Request::builder()
+            .method("POST")
+            .uri("/audit/events")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&events).expect("serialize"),
+            ))
+            .expect("build");
+        let resp = app.clone().oneshot(ingest).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Query integrity report.
+        let query = Request::builder()
+            .method("GET")
+            .uri("/admin/audit/integrity")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build");
+        let resp = app.oneshot(query).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.expect("read");
+        let report: crate::audit_store::AuditIntegrityResponse =
+            serde_json::from_slice(&bytes).expect("parse");
+
+        assert_eq!(report.total_events, 3, "total_events must be 3");
+        assert_eq!(report.verified_events, 3, "verified_events must be 3");
+        assert!(report.chain_breaks.is_empty(), "no breaks for valid chain");
+        assert!(report.integrity_ok, "integrity must be ok");
+        assert_eq!(report.agents.len(), 1, "one agent in report");
+        assert_eq!(report.agents[0].event_count, 3);
+        assert_eq!(report.agents[0].verified_count, 3);
+    }
+
+    /// Integrity report detects a broken chain.
+    #[tokio::test]
+    async fn test_integrity_endpoint_reports_broken_chain() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+        let genesis = dlp_common::audit::genesis_hash();
+
+        // Event 1: valid.
+        let mut event1 = dlp_common::AuditEvent::new(
+            dlp_common::EventType::Access,
+            "S-1-5-21-1".to_string(),
+            "user".to_string(),
+            r"C:\file1.txt".to_string(),
+            dlp_common::Classification::T2,
+            dlp_common::Action::READ,
+            dlp_common::Decision::ALLOW,
+            "AGENT-INT-02".to_string(),
+            1,
+        );
+        event1.prev_hash = Some(genesis.clone());
+        let hash1 = dlp_common::audit::compute_chain_hash(&genesis, &event1).expect("compute");
+        event1.chain_hash = Some(hash1);
+        event1.source_application = Some(dlp_common::endpoint::agent_unknown_app());
+        event1.destination_application = Some(dlp_common::endpoint::agent_unknown_app());
+
+        // Event 2: broken prev_hash.
+        let mut event2 = dlp_common::AuditEvent::new(
+            dlp_common::EventType::Access,
+            "S-1-5-21-1".to_string(),
+            "user".to_string(),
+            r"C:\file2.txt".to_string(),
+            dlp_common::Classification::T2,
+            dlp_common::Action::READ,
+            dlp_common::Decision::ALLOW,
+            "AGENT-INT-02".to_string(),
+            2,
+        );
+        event2.prev_hash = Some(genesis.clone()); // wrong: should be hash1
+        let hash2 = dlp_common::audit::compute_chain_hash(&genesis, &event2).expect("compute");
+        event2.chain_hash = Some(hash2);
+        event2.source_application = Some(dlp_common::endpoint::agent_unknown_app());
+        event2.destination_application = Some(dlp_common::endpoint::agent_unknown_app());
+
+        let ingest = Request::builder()
+            .method("POST")
+            .uri("/audit/events")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&vec![event1, event2]).expect("serialize"),
+            ))
+            .expect("build");
+        let resp = app.clone().oneshot(ingest).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let query = Request::builder()
+            .method("GET")
+            .uri("/admin/audit/integrity")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build");
+        let resp = app.oneshot(query).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.expect("read");
+        let report: crate::audit_store::AuditIntegrityResponse =
+            serde_json::from_slice(&bytes).expect("parse");
+
+        assert_eq!(report.total_events, 2);
+        assert_eq!(report.verified_events, 1, "only first event verifies");
+        assert_eq!(report.chain_breaks.len(), 1, "one break detected");
+        assert_eq!(report.chain_breaks[0].agent_id, "AGENT-INT-02");
+        assert!(!report.integrity_ok, "integrity must be not ok");
+        assert_eq!(report.agents[0].event_count, 2);
+        assert_eq!(report.agents[0].verified_count, 1);
+    }
+
+    /// Integrity report excludes legacy events without hash fields.
+    #[tokio::test]
+    async fn test_integrity_endpoint_ignores_legacy_events() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+
+        let mut event = dlp_common::AuditEvent::new(
+            dlp_common::EventType::Access,
+            "S-1-5-21-1".to_string(),
+            "legacy".to_string(),
+            r"C:\legacy.txt".to_string(),
+            dlp_common::Classification::T1,
+            dlp_common::Action::READ,
+            dlp_common::Decision::ALLOW,
+            "AGENT-LEGACY".to_string(),
+            1,
+        );
+        event.source_application = Some(dlp_common::endpoint::agent_unknown_app());
+        event.destination_application = Some(dlp_common::endpoint::agent_unknown_app());
+
+        let ingest = Request::builder()
+            .method("POST")
+            .uri("/audit/events")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&vec![event]).expect("serialize"),
+            ))
+            .expect("build");
+        let resp = app.clone().oneshot(ingest).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let query = Request::builder()
+            .method("GET")
+            .uri("/admin/audit/integrity")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build");
+        let resp = app.oneshot(query).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.expect("read");
+        let report: crate::audit_store::AuditIntegrityResponse =
+            serde_json::from_slice(&bytes).expect("parse");
+
+        assert_eq!(report.total_events, 0, "legacy events excluded");
+        assert_eq!(report.verified_events, 0);
+        assert!(report.chain_breaks.is_empty());
+        assert!(report.integrity_ok);
+    }
+
+    /// Integrity report respects limit and agent_id filters.
+    #[tokio::test]
+    async fn test_integrity_endpoint_respects_pagination() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+        let token = mint_admin_jwt();
+        let genesis = dlp_common::audit::genesis_hash();
+
+        let mut events = Vec::new();
+        let mut prev = genesis;
+        for i in 0..5 {
+            let mut event = dlp_common::AuditEvent::new(
+                dlp_common::EventType::Access,
+                "S-1-5-21-1".to_string(),
+                "user".to_string(),
+                format!(r"C:\file{i}.txt"),
+                dlp_common::Classification::T2,
+                dlp_common::Action::READ,
+                dlp_common::Decision::ALLOW,
+                "AGENT-INT-03".to_string(),
+                i as u32,
+            );
+            event.prev_hash = Some(prev.clone());
+            let hash = dlp_common::audit::compute_chain_hash(&prev, &event).expect("compute");
+            event.chain_hash = Some(hash.clone());
+            prev = hash;
+            event.source_application = Some(dlp_common::endpoint::agent_unknown_app());
+            event.destination_application = Some(dlp_common::endpoint::agent_unknown_app());
+            events.push(event);
+        }
+
+        let ingest = Request::builder()
+            .method("POST")
+            .uri("/audit/events")
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&events).expect("serialize"),
+            ))
+            .expect("build");
+        let resp = app.clone().oneshot(ingest).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Test limit=2.
+        let query = Request::builder()
+            .method("GET")
+            .uri("/admin/audit/integrity?limit=2")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build");
+        let resp = app.clone().oneshot(query).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.expect("read");
+        let report: crate::audit_store::AuditIntegrityResponse =
+            serde_json::from_slice(&bytes).expect("parse");
+        assert_eq!(report.total_events, 2, "limit=2 restricts count");
+
+        // Test agent_id filter.
+        let query = Request::builder()
+            .method("GET")
+            .uri("/admin/audit/integrity?agent_id=AGENT-INT-03")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("build");
+        let resp = app.clone().oneshot(query).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.expect("read");
+        let report: crate::audit_store::AuditIntegrityResponse =
+            serde_json::from_slice(&bytes).expect("parse");
+        assert_eq!(report.total_events, 5, "agent filter returns all");
+        assert_eq!(report.agents.len(), 1);
+        assert_eq!(report.agents[0].agent_id, "AGENT-INT-03");
     }
 
     // ── Task 06-01 / Task 1: AgentConfigPayload serde test ───────────────────

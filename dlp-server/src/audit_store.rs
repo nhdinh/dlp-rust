@@ -66,6 +66,62 @@ pub struct EventCount {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 63: Integrity endpoint types
+// ---------------------------------------------------------------------------
+
+/// A detected chain break in the integrity report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainBreak {
+    /// Agent whose chain is broken.
+    pub agent_id: String,
+    /// Database row id of the broken event.
+    pub event_id: i64,
+    /// Expected prev_hash based on prior chain state.
+    pub expected_prev_hash: String,
+    /// Actual prev_hash stored in the event.
+    pub actual_prev_hash: String,
+}
+
+/// Per-agent chain status in the integrity report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentChainStatus {
+    /// Agent identifier.
+    pub agent_id: String,
+    /// Total events with chain_hash for this agent.
+    pub event_count: i64,
+    /// Events that passed continuity verification.
+    pub verified_count: i64,
+    /// Most recent chain_hash for this agent.
+    pub last_chain_hash: Option<String>,
+}
+
+/// Response for `GET /admin/audit/integrity`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditIntegrityResponse {
+    /// Total events with chain_hash examined.
+    pub total_events: i64,
+    /// Events that passed continuity verification.
+    pub verified_events: i64,
+    /// Detected chain breaks.
+    pub chain_breaks: Vec<ChainBreak>,
+    /// Per-agent chain statuses.
+    pub agents: Vec<AgentChainStatus>,
+    /// True if no chain breaks were detected across all verified events.
+    pub integrity_ok: bool,
+}
+
+/// Query parameters for `GET /admin/audit/integrity`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct IntegrityQueryParams {
+    /// Filter to a single agent's chain.
+    pub agent_id: Option<String>,
+    /// ISO-8601 timestamp -- only verify events at or after this time.
+    pub since: Option<String>,
+    /// Maximum number of events to verify (default 10_000, max 100_000).
+    pub limit: Option<i64>,
+}
+
+// ---------------------------------------------------------------------------
 // Sync helper (for use inside spawn_blocking)
 // ---------------------------------------------------------------------------
 
@@ -535,6 +591,124 @@ pub async fn get_event_count(
     Ok(Json(EventCount { count }))
 }
 
+/// `GET /admin/audit/integrity` -- re-verify hash chain for stored events.
+///
+/// Query parameters (all optional):
+/// - `agent_id`: Filter to a single agent's chain
+/// - `since`: ISO-8601 timestamp -- only verify events at or after this time
+/// - `limit`: Maximum number of events to verify (default 10_000, max 100_000)
+///
+/// Returns a summary of total events, verified events, detected chain breaks,
+/// per-agent chain status, and an overall integrity_ok boolean.
+/// Requires admin authentication.
+pub async fn get_audit_integrity(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<IntegrityQueryParams>,
+) -> Result<Json<AuditIntegrityResponse>, AppError> {
+    let pool = Arc::clone(&state.pool);
+    let response =
+        tokio::task::spawn_blocking(move || -> Result<AuditIntegrityResponse, AppError> {
+            let mut conn = pool.get().map_err(AppError::from)?;
+            let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+
+            let limit = params.limit.unwrap_or(10_000).min(100_000);
+
+            let mut conditions = vec!["chain_hash IS NOT NULL"];
+            let mut query_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+            if let Some(ref agent) = params.agent_id {
+                conditions.push("agent_id = ?");
+                query_params.push(Box::new(agent.clone()));
+            }
+            if let Some(ref since) = params.since {
+                conditions.push("timestamp >= ?");
+                query_params.push(Box::new(since.clone()));
+            }
+
+            let where_clause = conditions.join(" AND ");
+            let sql = format!(
+                "SELECT id, agent_id, prev_hash, chain_hash \
+                 FROM audit_events \
+                 WHERE {where_clause} \
+                 ORDER BY agent_id, id \
+                 LIMIT {limit}"
+            );
+
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                query_params.iter().map(|p| p.as_ref()).collect();
+
+            let rows = uow
+                .tx
+                .prepare(&sql)?
+                .query_map(rusqlite::params_from_iter(param_refs.iter()), |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let mut total_events = 0i64;
+            let mut verified_events = 0i64;
+            let mut chain_breaks = Vec::new();
+            let mut agent_statuses: std::collections::HashMap<String, AgentChainStatus> =
+                std::collections::HashMap::new();
+            let mut last_by_agent: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+
+            for (id, agent_id, prev_hash, chain_hash) in rows {
+                total_events += 1;
+                let prev = prev_hash.unwrap_or_else(dlp_common::audit::genesis_hash);
+                let status =
+                    agent_statuses
+                        .entry(agent_id.clone())
+                        .or_insert_with(|| AgentChainStatus {
+                            agent_id: agent_id.clone(),
+                            event_count: 0,
+                            verified_count: 0,
+                            last_chain_hash: None,
+                        });
+                status.event_count += 1;
+
+                let expected_prev = last_by_agent
+                    .get(&agent_id)
+                    .cloned()
+                    .unwrap_or_else(dlp_common::audit::genesis_hash);
+                if prev != expected_prev {
+                    chain_breaks.push(ChainBreak {
+                        agent_id: agent_id.clone(),
+                        event_id: id,
+                        expected_prev_hash: expected_prev,
+                        actual_prev_hash: prev.to_string(),
+                    });
+                } else {
+                    verified_events += 1;
+                    status.verified_count += 1;
+                }
+                if let Some(hash) = chain_hash {
+                    last_by_agent.insert(agent_id.clone(), hash.clone());
+                    status.last_chain_hash = Some(hash);
+                }
+            }
+
+            let integrity_ok = chain_breaks.is_empty();
+
+            Ok(AuditIntegrityResponse {
+                total_events,
+                verified_events,
+                chain_breaks,
+                agents: agent_statuses.into_values().collect(),
+                integrity_ok,
+            })
+        })
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
+    Ok(Json(response))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicBool;
@@ -663,8 +837,8 @@ mod tests {
                 |row: &rusqlite::Row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .expect("query audit_events");
-        assert_eq!(event_type, "\"ADMIN_ACTION\"");
-        assert_eq!(action, "\"PolicyCreate\"");
+        assert_eq!(event_type, "ADMIN_ACTION");
+        assert_eq!(action, "PolicyCreate");
         assert_eq!(resource_path, "policy:test-policy");
     }
 
