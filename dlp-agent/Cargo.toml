@@ -157,6 +157,8 @@ tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 # Serialize integration tests that share the global EncryptionChecker/DiskEnumerator singletons.
 # Each test annotated with #[serial_test::serial] runs exclusively with no interleaving.
 serial_test = "3"
+# Phase 56: dlp-server PolicyStore for end-to-end volume-class ABAC integration tests.
+dlp-server = { path = "../dlp-server" }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"

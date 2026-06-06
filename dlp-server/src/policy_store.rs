@@ -72,6 +72,30 @@ impl PolicyStore {
         Ok(store)
     }
 
+    /// Creates a `PolicyStore` with an explicit in-memory policy cache.
+    ///
+    /// This is intended for integration tests that need to evaluate against
+    /// a specific policy set without setting up a database. The pool is still
+    /// required for `refresh_global_mode` and potential cache invalidation.
+    ///
+    /// # Arguments
+    ///
+    /// * `policies` — The policy set to use for evaluation.
+    /// * `pool` — A database connection pool (may be `:memory:`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `refresh_global_mode` fails to read from `system_kv`.
+    pub fn new_with_policies(policies: Vec<Policy>, pool: Arc<Pool>) -> Self {
+        let store = Self {
+            cache: RwLock::new(policies),
+            pool,
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
+        };
+        store.refresh_global_mode();
+        store
+    }
+
     /// Re-reads all enabled policies from the database and replaces the cache.
     ///
     /// Called by the background refresh task. Logs errors but does NOT panic —

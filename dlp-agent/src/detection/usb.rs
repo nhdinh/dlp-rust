@@ -619,6 +619,25 @@ impl VolumeDetector {
     }
 }
 
+/// Test-only helper for `VolumeDetector`.
+///
+/// This method is intended for integration tests to seed volume class state
+/// without requiring WMI queries or physical hardware. It is `pub` because
+/// integration tests compile the crate as a library (not with `#[cfg(test)]`).
+/// Production code should use `on_drive_arrival` / `on_drive_removal` instead.
+///
+/// # Arguments
+///
+/// * `letter` — The drive letter to inject (e.g., `'C'`, `'D'`).
+/// * `class` — The [`VolumeClass`] to associate with the drive letter.
+impl VolumeDetector {
+    pub fn inject_volume_class_for_test(&self, letter: char, class: VolumeClass) {
+        self.volume_class_map
+            .write()
+            .insert(letter.to_ascii_uppercase(), (class, Instant::now()));
+    }
+}
+
 /// Handles a `VolumeClassQuery` from the hook DLL and returns a `VolumeClassResponse`.
 ///
 /// This function is called by the hook IPC handler when a `VolumeClassQuery`
