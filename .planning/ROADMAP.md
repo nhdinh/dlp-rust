@@ -440,6 +440,8 @@ Plans:
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
 | 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete | 2026-05-14 |
 | 62. Syslog Forwarder — RFC 5424 + Encrypted Offline Queue | 4/4 | Complete | 2026-05-21 |
+| 63. Tamper-Evident Audit — SHA-256 Hash Chain | 0/4 | Planned | - |
+| 64. Device Identity Expansion — Fingerprint + MAC + VPN + Health | 0/0 | Not started | - |
 
 ---
 
