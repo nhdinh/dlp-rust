@@ -88,6 +88,10 @@ pub enum EventType {
     BypassAlertDetected,
     /// Phase 56: A volume arrived (USB, SD, optical, virtual, or network).
     VolumeArrival,
+    /// Phase 63: A hash chain break was detected during audit ingestion.
+    /// Emitted server-side when an audit event's chain_hash does not match
+    /// the expected SHA256(prev_hash || canonical_json).
+    ChainBreakDetected,
 }
 
 impl EventType {
@@ -124,6 +128,7 @@ impl EventType {
                 | Self::EtwConsumerLostEvents
                 | Self::BypassAlertDetected
                 | Self::VolumeArrival
+                | Self::ChainBreakDetected
         )
     }
 
@@ -138,6 +143,7 @@ impl EventType {
                 | Self::DaclTamperDetected
                 | Self::EtwConsumerLostEvents
                 | Self::BypassAlertDetected
+                | Self::ChainBreakDetected
         )
     }
 }
@@ -293,6 +299,18 @@ pub struct AuditEvent {
     /// volume class could not be determined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume_class: Option<crate::VolumeClass>,
+    /// The SHA-256 chain hash of the previous audit event (hex-encoded).
+    ///
+    /// Phase 63: `None` for genesis events or events from pre-Phase 63 agents.
+    /// The genesis hash is deterministic — see [`genesis_hash`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_hash: Option<String>,
+    /// The SHA-256 chain hash of this audit event (hex-encoded).
+    ///
+    /// Phase 63: `chain_hash = SHA256(prev_hash || canonical_json)`.
+    /// `None` for events from pre-Phase 63 agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_hash: Option<String>,
 }
 
 impl AuditEvent {

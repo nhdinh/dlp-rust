@@ -12,6 +12,9 @@ serde_json = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = { workspace = true }
+# Phase 63 — SHA-256 hash chain for tamper-evident audit logging
+sha2 = "0.10"
+hex = "0.4"
 tokio = { workspace = true }
 ldap3 = { workspace = true }
 ipnetwork = { workspace = true }
