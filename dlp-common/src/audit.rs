@@ -99,8 +99,7 @@ pub fn canonical_json_for_hash(event: &AuditEvent) -> Result<String, serde_json:
         map.remove("chain_hash");
     }
     // Sort keys for deterministic output.
-    let map: std::collections::BTreeMap<String, serde_json::Value> =
-        serde_json::from_value(value)?;
+    let map: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_value(value)?;
     serde_json::to_string(&map)
 }
 

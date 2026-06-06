@@ -254,10 +254,7 @@ impl AuditEventRepository {
     /// # Errors
     ///
     /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
-    pub fn get_last_chain_hash(
-        pool: &Pool,
-        agent_id: &str,
-    ) -> rusqlite::Result<Option<String>> {
+    pub fn get_last_chain_hash(pool: &Pool, agent_id: &str) -> rusqlite::Result<Option<String>> {
         let conn = pool
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -307,35 +304,33 @@ impl AuditEventRepository {
 
         let mut stmt = conn.prepare(sql)?;
         let rows = stmt
-            .query_map(
-                rusqlite::params![since_id, limit as i64],
-                |row| {
-                    let id: i64 = row.get(0)?;
-                    let agent_id: String = row.get(1)?;
-                    let prev_hash: Option<String> = row.get(2)?;
-                    let chain_hash: String = row.get(3)?;
-                    let expected_prev: Option<String> = row.get(4)?;
-                    Ok((id, agent_id, prev_hash, chain_hash, expected_prev))
-                },
-            )?
+            .query_map(rusqlite::params![since_id, limit as i64], |row| {
+                let id: i64 = row.get(0)?;
+                let agent_id: String = row.get(1)?;
+                let prev_hash: Option<String> = row.get(2)?;
+                let chain_hash: String = row.get(3)?;
+                let expected_prev: Option<String> = row.get(4)?;
+                Ok((id, agent_id, prev_hash, chain_hash, expected_prev))
+            })?
             .filter_map(|r| {
-                r.ok().and_then(|(id, agent_id, prev_hash, chain_hash, expected_prev)| {
-                    // Skip the first event per agent (expected_prev IS NULL).
-                    // A break occurs when prev_hash != expected_prev.
-                    let expected = expected_prev?;
-                    let actual = prev_hash.as_deref().unwrap_or("");
-                    if actual != expected {
-                        Some(serde_json::json!({
-                            "id": id,
-                            "agent_id": agent_id,
-                            "prev_hash": prev_hash,
-                            "chain_hash": chain_hash,
-                            "expected_prev": expected,
-                        }))
-                    } else {
-                        None
-                    }
-                })
+                r.ok()
+                    .and_then(|(id, agent_id, prev_hash, chain_hash, expected_prev)| {
+                        // Skip the first event per agent (expected_prev IS NULL).
+                        // A break occurs when prev_hash != expected_prev.
+                        let expected = expected_prev?;
+                        let actual = prev_hash.as_deref().unwrap_or("");
+                        if actual != expected {
+                            Some(serde_json::json!({
+                                "id": id,
+                                "agent_id": agent_id,
+                                "prev_hash": prev_hash,
+                                "chain_hash": chain_hash,
+                                "expected_prev": expected,
+                            }))
+                        } else {
+                            None
+                        }
+                    })
             })
             .collect();
         Ok(rows)
@@ -364,7 +359,11 @@ mod tests {
     use crate::db::new_pool;
 
     /// Helper: build a minimal AuditEventRow for test insertion.
-    fn test_row(agent_id: &str, chain_hash: Option<&str>, prev_hash: Option<&str>) -> AuditEventRow {
+    fn test_row(
+        agent_id: &str,
+        chain_hash: Option<&str>,
+        prev_hash: Option<&str>,
+    ) -> AuditEventRow {
         AuditEventRow {
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             event_type: "FileRead".to_string(),
@@ -416,7 +415,11 @@ mod tests {
         uow.commit().expect("commit");
 
         let latest = AuditEventRepository::get_last_chain_hash(&pool, "agent-a").expect("query");
-        assert_eq!(latest, Some("hash-003".to_string()), "must return the most recent chain hash");
+        assert_eq!(
+            latest,
+            Some("hash-003".to_string()),
+            "must return the most recent chain hash"
+        );
     }
 
     #[test]
@@ -440,9 +443,18 @@ mod tests {
 
         let breaks = AuditEventRepository::get_chain_breaks(&pool, None, 100).expect("query");
         assert_eq!(breaks.len(), 1, "must detect exactly one break");
-        assert_eq!(breaks[0]["agent_id"], "agent-b", "break must belong to agent-b");
-        assert_eq!(breaks[0]["expected_prev"], "hash-b1", "expected_prev must be hash-b1");
-        assert_eq!(breaks[0]["prev_hash"], "tampered", "prev_hash must show tampered value");
+        assert_eq!(
+            breaks[0]["agent_id"], "agent-b",
+            "break must belong to agent-b"
+        );
+        assert_eq!(
+            breaks[0]["expected_prev"], "hash-b1",
+            "expected_prev must be hash-b1"
+        );
+        assert_eq!(
+            breaks[0]["prev_hash"], "tampered",
+            "prev_hash must show tampered value"
+        );
     }
 
     #[test]
@@ -473,7 +485,8 @@ mod tests {
         assert_eq!(breaks_mid.len(), 1, "break at id 3 must be detected");
 
         // since_id = 3 excludes id 3; remaining rows (4, 5) are continuous.
-        let breaks_since = AuditEventRepository::get_chain_breaks(&pool, Some(3), 100).expect("query");
+        let breaks_since =
+            AuditEventRepository::get_chain_breaks(&pool, Some(3), 100).expect("query");
         assert_eq!(breaks_since.len(), 0, "no break after id 3");
     }
 

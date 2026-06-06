@@ -9275,8 +9275,8 @@ mod tests {
             )
             .expect("audit_events must have one row");
 
-        assert_eq!(event_type, "\"ADMIN_ACTION\"");
-        assert_eq!(action, "\"DiskRegistryAdd\"");
+        assert_eq!(event_type, "ADMIN_ACTION");
+        assert_eq!(action, "DiskRegistryAdd");
         assert_eq!(resource_path, "disk:disk-Z@agent-X");
         assert!(
             classification.contains("T3"),
@@ -9821,8 +9821,8 @@ mod tests {
             )
             .expect("audit_events must have one row");
 
-        assert_eq!(event_type, "\"ADMIN_ACTION\"");
-        assert_eq!(action, "\"DiskRegistryRemove\"");
+        assert_eq!(event_type, "ADMIN_ACTION");
+        assert_eq!(action, "DiskRegistryRemove");
         assert_eq!(resource_path, "disk:disk-99@agent-B");
         assert!(
             classification.contains("T3"),
