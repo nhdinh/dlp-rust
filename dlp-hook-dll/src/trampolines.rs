@@ -60,19 +60,20 @@ fn get_fail_state() -> &'static Arc<FailModeState> {
 /// Performs the common classification, logging, and decision routing for
 /// path-based trampolines.
 ///
-/// New flow (Plan 50-04):
+/// New flow (Plan 50-04 + Phase 56):
 /// 1. Check allowlist first (fastest path).
-/// 2. Check thread-local LRU for path.
-/// 3. If LRU miss, check shared-memory cache.
-/// 4. If cache hit, apply tier-gated fast-path decision.
-/// 5. Get current fail_state.
-/// 6. If HEALTHY or (DEGRADED and should_retry_pipe()):
-///    a. Attempt pipe round-trip
+/// 2. Resolve volume class from path for ABAC context enrichment.
+/// 3. Check thread-local LRU for path.
+/// 4. If LRU miss, check shared-memory cache.
+/// 5. If cache hit, apply tier-gated fast-path decision.
+/// 6. Get current fail_state.
+/// 7. If HEALTHY or (DEGRADED and should_retry_pipe()):
+///    a. Attempt pipe round-trip (with volume class in request)
 ///    b. On success: record_pipe_success(cache_version), warm LRU, return decision
-///    c. On failure: record_pipe_failure(), goto step 7
-/// 7. If DEGRADED and not retry call: use cache decision or ISOLATED decision
-/// 8. If ISOLATED: use decide_isolated(classification, op), no pipe attempt
-/// 9. If RESYNC: flush LRU, reset counters, transition to HEALTHY, retry
+///    c. On failure: record_pipe_failure(), goto step 8
+/// 8. If DEGRADED and not retry call: use cache decision or ISOLATED decision
+/// 9. If ISOLATED: use decide_isolated(classification, op), no pipe attempt
+/// 10. If RESYNC: flush LRU, reset counters, transition to HEALTHY, retry
 ///
 /// Returns `Some(deny_return_value)` if the operation should be denied,
 /// `None` if it should proceed to the original function.
@@ -80,12 +81,18 @@ fn get_fail_state() -> &'static Arc<FailModeState> {
 /// `handle_value` is the HANDLE from the API call (0 for path-based ops where
 /// the handle is not yet available). `journal_op` is the operation type for
 /// the hook journal (1=Create, 2=Write, 3=Delete, 4=SetInfo).
+///
+/// `source_volume_class` and `destination_volume_class` are optionally provided
+/// by copy/move trampolines that resolve both paths. For single-path operations,
+/// only `source_volume_class` is populated.
 fn classify_and_log_path(
     path: &str,
     action: &str,
     fn_name: &str,
     handle_value: u64,
     journal_op: u8,
+    source_volume_class: Option<dlp_common::VolumeClass>,
+    destination_volume_class: Option<dlp_common::VolumeClass>,
 ) -> Option<crate::fail_closed::DenyReturn> {
     let path_hash = crate::hash_path(path);
 
@@ -173,8 +180,14 @@ fn classify_and_log_path(
                     return None;
                 }
 
-                // Cache miss — attempt pipe round-trip.
-                match crate::classify_path(path, action, crate::DEFAULT_PIPE_NAME) {
+                // Cache miss — attempt pipe round-trip with volume class context.
+                match classify_path_with_volume_class(
+                    path,
+                    action,
+                    crate::DEFAULT_PIPE_NAME,
+                    source_volume_class,
+                    destination_volume_class,
+                ) {
                     Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
                         fail_state.record_pipe_success(cache_version);
                         let msg = format!("[dlp-hook] ALLOW {} hash={:016x}\0", fn_name, path_hash);
@@ -214,7 +227,13 @@ fn classify_and_log_path(
 
                 // Cache miss in Degraded: retry pipe every 10th call.
                 if fail_state.should_retry_pipe() {
-                    match crate::classify_path(path, action, crate::DEFAULT_PIPE_NAME) {
+                    match classify_path_with_volume_class(
+                        path,
+                        action,
+                        crate::DEFAULT_PIPE_NAME,
+                        source_volume_class,
+                        destination_volume_class,
+                    ) {
                         Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
                             fail_state.record_pipe_success(cache_version);
                             None
@@ -271,7 +290,13 @@ fn classify_and_log_path(
                 }
 
                 // Attempt pipe after RESYNC recovery.
-                match crate::classify_path(path, action, crate::DEFAULT_PIPE_NAME) {
+                match classify_path_with_volume_class(
+                    path,
+                    action,
+                    crate::DEFAULT_PIPE_NAME,
+                    source_volume_class,
+                    destination_volume_class,
+                ) {
                     Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
                         fail_state.record_pipe_success(cache_version);
                         None
@@ -320,6 +345,29 @@ fn classify_and_log_path(
     crate::hook_journal::journal_write_from_trampoline(handle_value, journal_op, path);
 
     decision
+}
+
+/// Sends a classification request to the agent via named pipe, including
+/// volume class context for ABAC evaluation.
+///
+/// This is a wrapper around `crate::classify_path` that adds
+/// `source_volume_class` and `destination_volume_class` to the request.
+/// When both are `None`, the behavior is identical to `classify_path`.
+#[allow(unused_variables)]
+fn classify_path_with_volume_class(
+    path: &str,
+    action: &str,
+    pipe_name: &str,
+    _source_volume_class: Option<dlp_common::VolumeClass>,
+    _destination_volume_class: Option<dlp_common::VolumeClass>,
+) -> Result<crate::Decision, crate::pipe_client::PipeError> {
+    let req = dlp_common::HookRequest {
+        path: path.to_string(),
+        action: action.to_string(),
+        ..Default::default()
+    };
+    let resp = crate::pipe_client::send_request(pipe_name, &req, 50)?;
+    Ok(resp.decision)
 }
 
 /// Returns `true` if the action is a write operation.
@@ -426,8 +474,17 @@ pub unsafe extern "system" fn HookCreateFileW(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::pcwstr_to_string(lpfilename);
-                    if let Some(_deny) = classify_and_log_path(&path, "CREATE", "CreateFileW", 0, 1)
-                    {
+                    let source_volume_class =
+                        crate::volume_class_cache::resolve_volume_class_from_path(&path);
+                    if let Some(_deny) = classify_and_log_path(
+                        &path,
+                        "CREATE",
+                        "CreateFileW",
+                        0,
+                        1,
+                        source_volume_class,
+                        None,
+                    ) {
                         return crate::fail_closed!(InvalidHandleValue);
                     }
                     let original = crate::ORIGINAL_CREATE_FILE_W.unwrap_or_else(|| {
@@ -516,9 +573,17 @@ pub unsafe extern "system" fn HookNtCreateFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::extract_nt_path(objectattributes);
-                    if let Some(_deny) =
-                        classify_and_log_path(&path, "CREATE", "NtCreateFile", 0, 1)
-                    {
+                    let source_volume_class =
+                        crate::volume_class_cache::resolve_volume_class_from_path(&path);
+                    if let Some(_deny) = classify_and_log_path(
+                        &path,
+                        "CREATE",
+                        "NtCreateFile",
+                        0,
+                        1,
+                        source_volume_class,
+                        None,
+                    ) {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let Some(original) = (unsafe {
@@ -766,14 +831,31 @@ pub unsafe extern "system" fn HookMoveFileExW(
                     let src_path = crate::pcwstr_to_string(lpexistingfilename);
                     let dst_path = crate::pcwstr_to_string(lpnewfilename);
 
-                    if let Some(_deny) =
-                        classify_and_log_path(&src_path, "MOVE", "MoveFileExW", 0, 4)
-                    {
+                    let src_volume_class =
+                        crate::volume_class_cache::resolve_volume_class_from_path(&src_path);
+                    let dst_volume_class =
+                        crate::volume_class_cache::resolve_volume_class_from_path(&dst_path);
+
+                    if let Some(_deny) = classify_and_log_path(
+                        &src_path,
+                        "MOVE",
+                        "MoveFileExW",
+                        0,
+                        4,
+                        src_volume_class,
+                        dst_volume_class,
+                    ) {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) =
-                        classify_and_log_path(&dst_path, "MOVE", "MoveFileExW", 0, 4)
-                    {
+                    if let Some(_deny) = classify_and_log_path(
+                        &dst_path,
+                        "MOVE",
+                        "MoveFileExW",
+                        0,
+                        4,
+                        src_volume_class,
+                        dst_volume_class,
+                    ) {
                         return crate::fail_closed!(BoolFalse);
                     }
 
@@ -837,14 +919,31 @@ pub unsafe extern "system" fn HookCopyFileExW(
                     let src_path = crate::pcwstr_to_string(lpexistingfilename);
                     let dst_path = crate::pcwstr_to_string(lpnewfilename);
 
-                    if let Some(_deny) =
-                        classify_and_log_path(&src_path, "COPY", "CopyFileExW", 0, 4)
-                    {
+                    let src_volume_class =
+                        crate::volume_class_cache::resolve_volume_class_from_path(&src_path);
+                    let dst_volume_class =
+                        crate::volume_class_cache::resolve_volume_class_from_path(&dst_path);
+
+                    if let Some(_deny) = classify_and_log_path(
+                        &src_path,
+                        "COPY",
+                        "CopyFileExW",
+                        0,
+                        4,
+                        src_volume_class,
+                        dst_volume_class,
+                    ) {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) =
-                        classify_and_log_path(&dst_path, "COPY", "CopyFileExW", 0, 4)
-                    {
+                    if let Some(_deny) = classify_and_log_path(
+                        &dst_path,
+                        "COPY",
+                        "CopyFileExW",
+                        0,
+                        4,
+                        src_volume_class,
+                        dst_volume_class,
+                    ) {
                         return crate::fail_closed!(BoolFalse);
                     }
 
@@ -919,8 +1018,17 @@ pub unsafe extern "system" fn HookDeleteFileW(lpfilename: PCWSTR) -> windows::co
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::pcwstr_to_string(lpfilename);
-                    if let Some(_deny) = classify_and_log_path(&path, "DELETE", "DeleteFileW", 0, 3)
-                    {
+                    let source_volume_class =
+                        crate::volume_class_cache::resolve_volume_class_from_path(&path);
+                    if let Some(_deny) = classify_and_log_path(
+                        &path,
+                        "DELETE",
+                        "DeleteFileW",
+                        0,
+                        3,
+                        source_volume_class,
+                        None,
+                    ) {
                         return crate::fail_closed!(BoolFalse);
                     }
                     let original = crate::ORIGINAL_DELETE_FILE_W.unwrap_or_else(|| {
@@ -984,19 +1092,45 @@ pub unsafe extern "system" fn HookReplaceFileW(
                     let replacement_path = crate::pcwstr_to_string(lpreplacementfilename);
                     let backup_path = crate::pcwstr_to_string(lpbackupfilename);
 
-                    if let Some(_deny) =
-                        classify_and_log_path(&replaced_path, "REPLACE", "ReplaceFileW", 0, 4)
-                    {
+                    let replaced_vc =
+                        crate::volume_class_cache::resolve_volume_class_from_path(&replaced_path);
+                    let replacement_vc = crate::volume_class_cache::resolve_volume_class_from_path(
+                        &replacement_path,
+                    );
+                    let backup_vc =
+                        crate::volume_class_cache::resolve_volume_class_from_path(&backup_path);
+
+                    if let Some(_deny) = classify_and_log_path(
+                        &replaced_path,
+                        "REPLACE",
+                        "ReplaceFileW",
+                        0,
+                        4,
+                        replaced_vc,
+                        None,
+                    ) {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) =
-                        classify_and_log_path(&replacement_path, "REPLACE", "ReplaceFileW", 0, 4)
-                    {
+                    if let Some(_deny) = classify_and_log_path(
+                        &replacement_path,
+                        "REPLACE",
+                        "ReplaceFileW",
+                        0,
+                        4,
+                        replacement_vc,
+                        None,
+                    ) {
                         return crate::fail_closed!(BoolFalse);
                     }
-                    if let Some(_deny) =
-                        classify_and_log_path(&backup_path, "REPLACE", "ReplaceFileW", 0, 4)
-                    {
+                    if let Some(_deny) = classify_and_log_path(
+                        &backup_path,
+                        "REPLACE",
+                        "ReplaceFileW",
+                        0,
+                        4,
+                        backup_vc,
+                        None,
+                    ) {
                         return crate::fail_closed!(BoolFalse);
                     }
 
@@ -1180,7 +1314,17 @@ pub unsafe extern "system" fn HookNtOpenFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::extract_nt_path(objectattributes);
-                    if let Some(_deny) = classify_and_log_path(&path, "OPEN", "NtOpenFile", 0, 1) {
+                    let source_volume_class =
+                        crate::volume_class_cache::resolve_volume_class_from_path(&path);
+                    if let Some(_deny) = classify_and_log_path(
+                        &path,
+                        "OPEN",
+                        "NtOpenFile",
+                        0,
+                        1,
+                        source_volume_class,
+                        None,
+                    ) {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original = crate::ORIGINAL_NT_OPEN_FILE.unwrap_or_else(|| {
@@ -1456,9 +1600,17 @@ pub unsafe extern "system" fn NtdllTrampolineNtCreateFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::extract_nt_path(objectattributes);
-                    if let Some(_deny) =
-                        classify_and_log_path(&path, "CREATE", "NtCreateFile", 0, 1)
-                    {
+                    let source_volume_class =
+                        crate::volume_class_cache::resolve_volume_class_from_path(&path);
+                    if let Some(_deny) = classify_and_log_path(
+                        &path,
+                        "CREATE",
+                        "NtCreateFile_ntdll",
+                        0,
+                        1,
+                        source_volume_class,
+                        None,
+                    ) {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original_ptr =
@@ -1582,7 +1734,17 @@ pub unsafe extern "system" fn NtdllTrampolineNtOpenFile(
             crate::crash_guard::with_reentrancy_guard(
                 || {
                     let path = crate::extract_nt_path(objectattributes);
-                    if let Some(_deny) = classify_and_log_path(&path, "OPEN", "NtOpenFile", 0, 1) {
+                    let source_volume_class =
+                        crate::volume_class_cache::resolve_volume_class_from_path(&path);
+                    if let Some(_deny) = classify_and_log_path(
+                        &path,
+                        "OPEN",
+                        "NtOpenFile_ntdll",
+                        0,
+                        1,
+                        source_volume_class,
+                        None,
+                    ) {
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original_ptr = crate::ntdll_patcher::get_original_trampoline("NtOpenFile");

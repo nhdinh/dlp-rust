@@ -360,10 +360,7 @@ mod tests {
         let result = resolve_volume_class_from_path(
             "\\\\?\\Volume{12345678-1234-1234-1234-123456789012}\\file.txt",
         );
-        assert_eq!(
-            result, None,
-            "volume GUID path must fail-closed with None"
-        );
+        assert_eq!(result, None, "volume GUID path must fail-closed with None");
     }
 
     #[test]

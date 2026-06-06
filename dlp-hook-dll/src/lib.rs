@@ -675,6 +675,7 @@ pub extern "system" fn UnhookAll() {
 // ---------------------------------------------------------------------------
 
 /// Sends a classification request to the agent via named pipe.
+#[allow(dead_code)]
 pub(crate) fn classify_path(
     path: &str,
     action: &str,
