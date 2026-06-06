@@ -481,7 +481,7 @@ pub enum PolicyCondition {
 | A3 | MAC address sorting ensures deterministic fingerprint | Fingerprint Computation | If sort order differs between platforms or Rust versions, fingerprint becomes unstable |
 | A4 | `NetworkLocation::CorporateVpn` already exists and is used by ABAC | VPN Detection | If VPN state is not wired into `Subject.network_location`, ABAC policies won't evaluate it |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should the fingerprint include the install date or a static salt?**
    - What we know: CONTEXT.md says "SHA-256 of hostname + MACs + OS version + install date"
