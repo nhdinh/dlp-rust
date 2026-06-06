@@ -129,7 +129,7 @@ async fn test_e2e_file_action_to_audit_log() {
     )
     .with_policy("mock-pol-001".to_string(), "Mock Deny".to_string());
 
-    emitter.emit(&event).unwrap();
+    emitter.emit(&mut event).unwrap();
 
     // 9. Verify audit log contains the event.
     let log_contents = std::fs::read_to_string(emitter.log_path()).unwrap();
@@ -303,7 +303,7 @@ async fn test_e2e_audit_event_round_trip() {
             "AGENT-TEST".to_string(),
             1,
         );
-        emitter.emit(&event).unwrap();
+        emitter.emit(&mut event).unwrap();
     }
 
     // Read back and verify.
@@ -615,7 +615,7 @@ async fn test_write_t4_deny_audit() {
         "AGENT-TEST".into(),
         1,
     );
-    emitter.emit(&event).unwrap();
+    emitter.emit(&mut event).unwrap();
 
     let contents = std::fs::read_to_string(emitter.log_path()).unwrap();
     let parsed: dlp_common::AuditEvent = serde_json::from_str(contents.trim()).unwrap();
@@ -883,7 +883,7 @@ async fn test_clipboard_to_audit() {
         "AGENT-TEST".into(),
         1,
     );
-    emitter.emit(&event).unwrap();
+    emitter.emit(&mut event).unwrap();
 
     let contents = std::fs::read_to_string(emitter.log_path()).unwrap();
     let parsed: dlp_common::AuditEvent = serde_json::from_str(contents.trim()).unwrap();
@@ -1109,7 +1109,7 @@ async fn test_audit_rotation_size_trigger() {
             1,
         );
         // Ignore errors — rotation may fail on some platforms.
-        let _ = emitter.emit(&event);
+        let _ = emitter.emit(&mut event);
     }
 
     // After many small events the size threshold should have triggered rotation.
@@ -1611,7 +1611,7 @@ async fn test_file_write_to_sensitive_path_denied() {
     )
     .with_policy("mock-pol-001".to_string(), "E2E deny".to_string());
 
-    emitter.emit(&event).unwrap();
+    emitter.emit(&mut event).unwrap();
     let log = std::fs::read_to_string(emitter.log_path()).unwrap();
     let parsed: dlp_common::AuditEvent = serde_json::from_str(log.trim()).unwrap();
     assert_eq!(parsed.event_type, dlp_common::EventType::Block);
@@ -1682,7 +1682,7 @@ async fn test_file_write_to_public_path_allowed() {
         "AGENT-E2E-02".to_string(),
         1,
     );
-    emitter.emit(&event).unwrap();
+    emitter.emit(&mut event).unwrap();
 
     let log = std::fs::read_to_string(emitter.log_path()).unwrap();
     let parsed: dlp_common::AuditEvent = serde_json::from_str(log.trim()).unwrap();
@@ -1751,7 +1751,7 @@ async fn test_clipboard_paste_t4_content_denied_with_alert() {
         1,
     )
     .with_policy("mock-pol-001".to_string(), "SSN paste denied".to_string());
-    emitter.emit(&event).unwrap();
+    emitter.emit(&mut event).unwrap();
 
     let log = std::fs::read_to_string(emitter.log_path()).unwrap();
     let parsed: dlp_common::AuditEvent = serde_json::from_str(log.trim()).unwrap();
@@ -1834,7 +1834,7 @@ async fn test_smb_detection_triggers_policy_eval_and_audit() {
         1,
     )
     .with_policy("mock-pol-001".to_string(), "SMB egress blocked".to_string());
-    emitter.emit(&audit).unwrap();
+    emitter.emit(&mut audit).unwrap();
 
     let log = std::fs::read_to_string(emitter.log_path()).unwrap();
     let parsed: dlp_common::AuditEvent = serde_json::from_str(log.trim()).unwrap();
@@ -2027,7 +2027,7 @@ async fn test_tc_11_copy_confidential_to_internal_blocked_alert() {
         1,
     )
     .with_policy("pol-tc11-downgrade".into(), "TC-11 downgrade block".into());
-    emitter.emit(&event).unwrap();
+    emitter.emit(&mut event).unwrap();
 
     // Read back JSONL and verify event_type, decision, classification.
     let contents = std::fs::read_to_string(emitter.log_path()).unwrap();
@@ -2105,7 +2105,7 @@ async fn test_tc_14_copy_confidential_to_usb_blocked_log() {
         1,
     )
     .with_policy("pol-tc14-usb".into(), "TC-14 USB block".into());
-    emitter.emit(&event).unwrap();
+    emitter.emit(&mut event).unwrap();
 
     let contents = std::fs::read_to_string(emitter.log_path()).unwrap();
     let parsed: dlp_common::AuditEvent = serde_json::from_str(contents.trim()).unwrap();
@@ -2186,7 +2186,7 @@ async fn test_tc_21_email_credit_card_blocked_alert() {
         1,
     )
     .with_policy("pol-tc21-email".into(), "TC-21 email block".into());
-    emitter.emit(&event).unwrap();
+    emitter.emit(&mut event).unwrap();
 
     let contents = std::fs::read_to_string(emitter.log_path()).unwrap();
     let parsed: dlp_common::AuditEvent = serde_json::from_str(contents.trim()).unwrap();
@@ -2269,7 +2269,7 @@ async fn test_tc_72_delete_restricted_secure_delete() {
         "pol-tc72-secure-delete".into(),
         "TC-72 secure_delete".into(),
     );
-    emitter.emit(&event).unwrap();
+    emitter.emit(&mut event).unwrap();
 
     let contents = std::fs::read_to_string(emitter.log_path()).unwrap();
     let parsed: dlp_common::AuditEvent = serde_json::from_str(contents.trim()).unwrap();
@@ -2343,7 +2343,7 @@ async fn test_tc_81_bulk_download_alert() {
         1,
     )
     .with_policy("pol-tc81-bulk".into(), "TC-81 bulk download alert".into());
-    emitter.emit(&event).unwrap();
+    emitter.emit(&mut event).unwrap();
 
     let contents = std::fs::read_to_string(emitter.log_path()).unwrap();
     let parsed: dlp_common::AuditEvent = serde_json::from_str(contents.trim()).unwrap();

@@ -1720,7 +1720,7 @@ mod audit_emitter_edge_cases {
 
         // Write until rotation threshold.
         for i in 0..10 {
-            emitter.emit(&make_event(i)).unwrap();
+            emitter.emit(&mut make_event(i)).unwrap();
         }
 
         emitter.rotate().unwrap();
@@ -1742,7 +1742,7 @@ mod audit_emitter_edge_cases {
         // Trigger enough rotations to cycle through 1..9.
         for i in 0..9 {
             for _ in 0..3 {
-                emitter.emit(&make_event(i)).unwrap();
+                emitter.emit(&mut make_event(i)).unwrap();
             }
             emitter.rotate().unwrap();
         }

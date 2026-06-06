@@ -296,7 +296,10 @@ pub enum AuditError {
 /// Called by [`emit_audit`].  Returns `Ok(())` on success; callers must handle
 /// errors themselves.  This is the right choice for callers that want to
 /// propagate failures (e.g. during startup validation).
-pub fn emit(event: &AuditEvent) -> Result<(), AuditError> {
+///
+/// Phase 63: takes `&mut AuditEvent` so the emitter can populate
+/// `prev_hash` and `chain_hash` before serialization.
+pub fn emit(event: &mut AuditEvent) -> Result<(), AuditError> {
     EMITTER.emit(event)
 }
 
@@ -364,7 +367,7 @@ pub fn emit_audit(ctx: &EmitContext, event: &mut AuditEvent) {
                         max_size,
                         "offline audit queue at capacity — emitting synthetic queue_overflow event"
                     );
-                    let overflow = dlp_common::AuditEvent::new(
+                    let mut overflow = dlp_common::AuditEvent::new(
                         dlp_common::EventType::AdminAction,
                         "SYSTEM".to_string(),
                         "SYSTEM".to_string(),
@@ -376,7 +379,7 @@ pub fn emit_audit(ctx: &EmitContext, event: &mut AuditEvent) {
                         event.session_id,
                     );
                     // Write the synthetic event to JSONL only (do not re-queue).
-                    if let Err(e) = EMITTER.emit(&overflow) {
+                    if let Err(e) = EMITTER.emit(&mut overflow) {
                         warn!(error = %e, "failed to emit synthetic queue_overflow event to JSONL");
                     }
                 }
@@ -467,6 +470,18 @@ pub struct AuditEmitter {
     log_path: PathBuf,
     max_bytes: u64,
     events_since_check: Mutex<u64>,
+    /// Phase 63: the SHA-256 chain hash of the most recently emitted event.
+    ///
+    /// Initialized from the genesis hash on first boot, or recovered from the
+    /// JSONL tail on restart. Updated atomically (via the `writer` mutex) after
+    /// each successful write + flush so that the next event chains to it.
+    ///
+    /// Concurrency: `std::sync::Mutex<String>` serializes all emit operations.
+    /// This is acceptable because `emit()` is synchronous and the critical
+    /// section (hash compute + write + flush + hash update) is brief. If the
+    /// agent becomes a high-throughput bottleneck, consider an async
+    /// channel-based queue.
+    last_chain_hash: Mutex<String>,
 }
 
 impl AuditEmitter {
@@ -483,20 +498,77 @@ impl AuditEmitter {
             .map_err(|e| AuditError::DirectoryCreateFailed(format!("{}: {e}", dir.display())))?;
         let log_path = dir.join(name);
         let file = open_append(&log_path)?;
+
+        // Phase 63: recover the chain head from the existing JSONL file so
+        // agent restarts do not break continuity.
+        let last_chain_hash = if log_path.exists() {
+            match recover_last_hash_from_log(&log_path) {
+                Some(hash) => {
+                    info!(path = %log_path.display(), "recovered chain hash from existing log");
+                    hash
+                }
+                None => {
+                    // Recovery failure (corrupted JSONL, no valid lines in last 10).
+                    // We choose availability over security here: the chain continues
+                    // rather than halting. A chain reset is detectable server-side
+                    // because the next event's prev_hash will be the genesis hash
+                    // instead of the expected continuation.
+                    tracing::error!(
+                        log_path = %log_path.display(),
+                        "failed to recover chain hash from JSONL; falling back to genesis. \
+                         This may indicate log corruption or an empty file."
+                    );
+                    dlp_common::audit::genesis_hash()
+                }
+            }
+        } else {
+            dlp_common::audit::genesis_hash()
+        };
+
         info!(path = %log_path.display(), "audit log opened");
         Ok(Self {
             writer: Mutex::new(BufWriter::new(file)),
             log_path,
             max_bytes,
             events_since_check: Mutex::new(0),
+            last_chain_hash: Mutex::new(last_chain_hash),
         })
     }
 
-    pub fn emit(&self, event: &AuditEvent) -> Result<(), AuditError> {
-        let json = serde_json::to_string(event)?;
+    /// Emits a single audit event to the JSONL log with SHA-256 chain hashing.
+    ///
+    /// Phase 63: computes `chain_hash = SHA256(prev_hash || canonical_json)`,
+    /// populates `event.prev_hash` and `event.chain_hash`, then writes the
+    /// event. The internal `last_chain_hash` is updated only after a successful
+    /// write + flush so that a crash mid-write does not advance the chain head.
+    ///
+    /// # Arguments
+    ///
+    /// * `event` — the audit event to emit (mutated in place to set hash fields).
+    pub fn emit(&self, event: &mut AuditEvent) -> Result<(), AuditError> {
+        // Phase 63: hold the writer lock for the entire critical section
+        // (hash compute + write + flush + hash update). This guarantees
+        // that concurrent emit() calls are fully serialized — no two
+        // threads can read the same last_hash and produce divergent chains.
         let mut writer = self.writer.lock();
+
+        // Compute chain hash before serialization.
+        let last_hash = self.last_chain_hash.lock().clone();
+        let chain_hash = dlp_common::audit::compute_chain_hash(&last_hash, event)
+            .map_err(AuditError::SerializationFailed)?;
+        event.prev_hash = Some(last_hash);
+        event.chain_hash = Some(chain_hash.clone());
+
+        let json = serde_json::to_string(event)?;
         writeln!(writer, "{json}")?;
         writer.flush()?;
+
+        // Update the chain head only after successful write + flush.
+        // If the process crashes between write and here, the next restart
+        // will recover the same hash from the JSONL tail, so the chain
+        // remains consistent (no duplicate prev_hash values).
+        *self.last_chain_hash.lock() = chain_hash;
+
         debug!(
             event_type = ?event.event_type,
             path = %event.resource_path,
@@ -569,6 +641,41 @@ fn open_append(path: &Path) -> Result<File, AuditError> {
         .map_err(AuditError::OpenFailed)
 }
 
+// ---------------------------------------------------------------------------
+// Phase 63: JSONL chain-hash recovery
+// ---------------------------------------------------------------------------
+
+/// Maximum number of lines to scan backward from the end of the JSONL file
+/// when recovering the chain head after an agent restart.
+const MAX_RECOVERY_LINES: usize = 10;
+
+/// Reads the last valid line of `path` and attempts to parse it as an
+/// `AuditEvent`. Scans backward up to [`MAX_RECOVERY_LINES`] to handle a
+/// partially-written final line (e.g. process crash mid-write).
+///
+/// Returns the event's `chain_hash` if present, otherwise `None`.
+///
+/// # Performance note
+///
+/// This implementation streams all lines from the file. For files larger
+/// than 1 MiB a tail-seek optimisation (seek to near-end, find the last
+/// complete line) should be considered. That optimisation is deferred until
+/// profiling shows it is needed.
+fn recover_last_hash_from_log(path: &Path) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let candidates: Vec<String> = reader.lines().map_while(Result::ok).collect();
+    // Scan backward from the end for the first valid JSON line with a chain_hash.
+    candidates
+        .iter()
+        .rev()
+        .take(MAX_RECOVERY_LINES)
+        .filter_map(|line| serde_json::from_str::<dlp_common::AuditEvent>(line).ok())
+        .filter_map(|event| event.chain_hash)
+        .next()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,7 +699,7 @@ mod tests {
     fn test_emit_and_read_back() {
         let dir = tempfile::tempdir().unwrap();
         let emitter = AuditEmitter::open(dir.path(), "test.jsonl", DEFAULT_MAX_BYTES).unwrap();
-        emitter.emit(&make_event()).unwrap();
+        emitter.emit(&mut make_event()).unwrap();
         let contents = fs::read_to_string(emitter.log_path()).unwrap();
         let lines: Vec<&str> = contents.lines().collect();
         assert_eq!(lines.len(), 1);
@@ -606,7 +713,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let emitter = AuditEmitter::open(dir.path(), "test.jsonl", DEFAULT_MAX_BYTES).unwrap();
         for _ in 0..5 {
-            emitter.emit(&make_event()).unwrap();
+            emitter.emit(&mut make_event()).unwrap();
         }
         let contents = fs::read_to_string(emitter.log_path()).unwrap();
         assert_eq!(contents.lines().count(), 5);
@@ -617,7 +724,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 100).unwrap();
         for _ in 0..5 {
-            emitter.emit(&make_event()).unwrap();
+            emitter.emit(&mut make_event()).unwrap();
         }
         emitter.rotate().unwrap();
         let rotated = dir.path().join("audit.1.jsonl");
@@ -868,5 +975,195 @@ mod tests {
             event.destination_application.as_ref().unwrap().image_path,
             r"C:\Windows\notepad.exe"
         );
+    }
+
+    // -- Phase 63: SHA-256 hash chain tests ----------------------------------
+
+    #[test]
+    fn test_genesis_hash_is_deterministic() {
+        let h1 = dlp_common::audit::genesis_hash();
+        let h2 = dlp_common::audit::genesis_hash();
+        assert_eq!(h1.len(), 64, "genesis hash must be 64 hex chars");
+        assert_eq!(h1, h2, "genesis hash must be deterministic");
+    }
+
+    #[test]
+    fn test_emit_includes_hash_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let emitter = AuditEmitter::open(dir.path(), "test.jsonl", DEFAULT_MAX_BYTES).unwrap();
+        let mut event = make_event();
+        emitter.emit(&mut event).unwrap();
+
+        let contents = fs::read_to_string(emitter.log_path()).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let parsed: AuditEvent = serde_json::from_str(lines[0]).unwrap();
+
+        assert_eq!(
+            parsed.prev_hash,
+            Some(dlp_common::audit::genesis_hash()),
+            "first event must chain from genesis"
+        );
+        assert!(
+            parsed.chain_hash.as_ref().unwrap().len() == 64,
+            "chain_hash must be 64 hex chars"
+        );
+    }
+
+    #[test]
+    fn test_chain_continuity_across_multiple_emits() {
+        let dir = tempfile::tempdir().unwrap();
+        let emitter = AuditEmitter::open(dir.path(), "test.jsonl", DEFAULT_MAX_BYTES).unwrap();
+        let mut events = Vec::new();
+        for _ in 0..3 {
+            let mut event = make_event();
+            emitter.emit(&mut event).unwrap();
+            events.push(event);
+        }
+
+        assert_eq!(
+            events[1].prev_hash, events[0].chain_hash,
+            "event 2 must chain from event 1"
+        );
+        assert_eq!(
+            events[2].prev_hash, events[1].chain_hash,
+            "event 3 must chain from event 2"
+        );
+
+        let hashes: std::collections::HashSet<_> = events
+            .iter()
+            .map(|e| e.chain_hash.clone().unwrap())
+            .collect();
+        assert_eq!(hashes.len(), 3, "each chain_hash must be unique");
+    }
+
+    #[test]
+    fn test_chain_hash_computation() {
+        let dir = tempfile::tempdir().unwrap();
+        let emitter = AuditEmitter::open(dir.path(), "test.jsonl", DEFAULT_MAX_BYTES).unwrap();
+        let mut event = make_event();
+        emitter.emit(&mut event).unwrap();
+
+        let expected =
+            dlp_common::audit::compute_chain_hash(&dlp_common::audit::genesis_hash(), &event)
+                .unwrap();
+        assert_eq!(
+            event.chain_hash,
+            Some(expected),
+            "chain_hash must match manual computation"
+        );
+    }
+
+    #[test]
+    fn test_restart_recovers_last_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jsonl");
+
+        // Emit two events, then drop the emitter.
+        {
+            let emitter = AuditEmitter::open(dir.path(), "test.jsonl", DEFAULT_MAX_BYTES).unwrap();
+            let mut e1 = make_event();
+            emitter.emit(&mut e1).unwrap();
+            let mut e2 = make_event();
+            emitter.emit(&mut e2).unwrap();
+        }
+
+        // Reopen -- should recover the chain head from e2.
+        let emitter2 = AuditEmitter::open(dir.path(), "test.jsonl", DEFAULT_MAX_BYTES).unwrap();
+        let mut e3 = make_event();
+        emitter2.emit(&mut e3).unwrap();
+
+        // Read all three lines back.
+        let contents = fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 3);
+        let parsed2: AuditEvent = serde_json::from_str(lines[1]).unwrap();
+        let parsed3: AuditEvent = serde_json::from_str(lines[2]).unwrap();
+
+        assert_eq!(
+            parsed3.prev_hash, parsed2.chain_hash,
+            "event after restart must chain from last event before restart"
+        );
+    }
+
+    #[test]
+    fn test_recovery_handles_truncated_last_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jsonl");
+
+        // Emit three valid events.
+        {
+            let emitter = AuditEmitter::open(dir.path(), "test.jsonl", DEFAULT_MAX_BYTES).unwrap();
+            for _ in 0..3 {
+                let mut e = make_event();
+                emitter.emit(&mut e).unwrap();
+            }
+        }
+
+        // Append a truncated 4th line.
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(file, "{{\"truncated\": true").unwrap();
+        }
+
+        // Reopen -- should recover the 3rd event's chain_hash, skipping the truncated line.
+        let emitter2 = AuditEmitter::open(dir.path(), "test.jsonl", DEFAULT_MAX_BYTES).unwrap();
+        let mut e4 = make_event();
+        emitter2.emit(&mut e4).unwrap();
+
+        let contents = fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        // 3 valid events + 1 truncated line + 1 new event after recovery = 5 lines
+        assert_eq!(lines.len(), 5);
+        let parsed3: AuditEvent = serde_json::from_str(lines[2]).unwrap();
+        // Line 3 is the truncated JSON (unparseable).  Line 4 is the new event.
+        let parsed4: AuditEvent = serde_json::from_str(lines[4]).unwrap();
+
+        assert_eq!(
+            parsed4.prev_hash, parsed3.chain_hash,
+            "event after truncated line must chain from last valid event"
+        );
+    }
+
+    #[test]
+    fn test_concurrent_emit_maintains_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let emitter = std::sync::Arc::new(
+            AuditEmitter::open(dir.path(), "test.jsonl", DEFAULT_MAX_BYTES).unwrap(),
+        );
+        let mut handles = Vec::new();
+
+        for _ in 0..10 {
+            let e = emitter.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..5 {
+                    let mut event = make_event();
+                    e.emit(&mut event).unwrap();
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let contents = fs::read_to_string(emitter.log_path()).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 50, "expected 50 events");
+
+        let mut prev_chain_hash = dlp_common::audit::genesis_hash();
+        for line in &lines {
+            let event: AuditEvent = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                event.prev_hash,
+                Some(prev_chain_hash.clone()),
+                "chain continuity broken"
+            );
+            prev_chain_hash = event.chain_hash.unwrap();
+        }
     }
 }

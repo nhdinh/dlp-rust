@@ -917,7 +917,7 @@ fn repair_acl(
                     .unwrap_or_else(|_| "AGENT-UNKNOWN".to_string())
             });
 
-            let audit_event = dlp_common::audit::AuditEvent::new(
+            let mut audit_event = dlp_common::audit::AuditEvent::new(
                 dlp_common::audit::EventType::DaclTamperDetected,
                 "SYSTEM".to_string(),
                 "SYSTEM".to_string(),
@@ -929,7 +929,7 @@ fn repair_acl(
                 0,
             );
 
-            if let Err(emit_err) = crate::audit_emitter::emit(&audit_event) {
+            if let Err(emit_err) = crate::audit_emitter::emit(&mut audit_event) {
                 error!(
                     error = %emit_err,
                     "failed to emit DaclTamperDetected audit event"

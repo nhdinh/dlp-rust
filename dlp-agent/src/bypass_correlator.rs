@@ -772,7 +772,7 @@ impl BypassCorrelator {
         let event_type = dlp_common::audit::EventType::BypassAlertDetected;
         let agent_id = self.agent_id.clone();
 
-        let audit = dlp_common::audit::AuditEvent::new(
+        let mut audit = dlp_common::audit::AuditEvent::new(
             event_type,
             "SYSTEM".to_string(),
             "SYSTEM".to_string(),
@@ -784,7 +784,7 @@ impl BypassCorrelator {
             0,
         );
 
-        if let Err(e) = crate::audit_emitter::emit(&audit) {
+        if let Err(e) = crate::audit_emitter::emit(&mut audit) {
             warn!(error = %e, "failed to emit bypass audit event");
         }
     }

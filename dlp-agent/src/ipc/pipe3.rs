@@ -227,7 +227,7 @@ fn route(msg: Pipe3UiMsg) {
             event = event.with_access_context(dlp_common::AuditAccessContext::Local);
             event = event.with_source_application(source_application);
             event = event.with_destination_application(destination_application);
-            crate::audit_emitter::emit(&event).ok();
+            crate::audit_emitter::emit(&mut event).ok();
         }
         Pipe3UiMsg::DragDropAlert {
             session_id,

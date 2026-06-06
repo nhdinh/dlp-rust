@@ -1264,7 +1264,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
                 .map(|h| h.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| "AGENT-UNKNOWN".to_string())
         });
-        let event = dlp_common::audit::AuditEvent::new(
+        let mut event = dlp_common::audit::AuditEvent::new(
             dlp_common::audit::EventType::NtdllPatchingEnabled,
             "SYSTEM".to_string(),
             "SYSTEM".to_string(),
@@ -1275,7 +1275,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
             agent_id,
             0,
         );
-        crate::audit_emitter::emit(&event).ok();
+        crate::audit_emitter::emit(&mut event).ok();
     }
 
     // ── Sync-client process watcher (M017/S02) ───────────────────────────
