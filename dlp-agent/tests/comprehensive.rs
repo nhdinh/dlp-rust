@@ -1765,8 +1765,10 @@ mod audit_emitter_edge_cases {
         let emitter_a = AuditEmitter::open(dir.path(), "a.jsonl", 50 * 1024 * 1024).unwrap();
         let emitter_b = AuditEmitter::open(dir.path(), "b.jsonl", 50 * 1024 * 1024).unwrap();
 
-        emitter_a.emit(&make_event(1)).unwrap();
-        emitter_b.emit(&make_event(2)).unwrap();
+        let mut event_a = make_event(1);
+        let mut event_b = make_event(2);
+        emitter_a.emit(&mut event_a).unwrap();
+        emitter_b.emit(&mut event_b).unwrap();
 
         let content_a = fs::read_to_string(dir.path().join("a.jsonl")).unwrap();
         let content_b = fs::read_to_string(dir.path().join("b.jsonl")).unwrap();

@@ -116,7 +116,7 @@ async fn test_e2e_file_action_to_audit_log() {
     assert!(cached.is_some());
 
     // 8. Emit audit event.
-    let event = dlp_common::AuditEvent::new(
+    let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Block,
         "S-1-5-21-TEST".to_string(),
         "testuser".to_string(),
@@ -292,7 +292,7 @@ async fn test_e2e_audit_event_round_trip() {
 
     // Emit multiple events.
     for i in 0..3 {
-        let event = dlp_common::AuditEvent::new(
+        let mut event = dlp_common::AuditEvent::new(
             dlp_common::EventType::Access,
             format!("S-1-5-21-{i}"),
             format!("user{i}"),
@@ -604,7 +604,7 @@ async fn test_write_t4_deny_audit() {
     assert!(response.decision.is_denied());
 
     // Emit Block audit event.
-    let event = dlp_common::AuditEvent::new(
+    let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Block,
         "S-1-5-21-TEST".into(),
         "testuser".into(),
@@ -872,7 +872,7 @@ async fn test_clipboard_to_audit() {
     let dir = tempfile::tempdir().unwrap();
     let emitter = AuditEmitter::open(dir.path(), "audit.jsonl", 10 * 1024 * 1024).unwrap();
 
-    let event = dlp_common::AuditEvent::new(
+    let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Block,
         "S-1-5-21-CLIP".into(),
         "clipuser".into(),
@@ -1097,7 +1097,7 @@ async fn test_audit_rotation_size_trigger() {
 
     // Emit events until rotation should trigger.
     for i in 0..50 {
-        let event = dlp_common::AuditEvent::new(
+        let mut event = dlp_common::AuditEvent::new(
             dlp_common::EventType::Access,
             format!("S-1-5-21-{i}"),
             format!("user{i}"),
@@ -1598,7 +1598,7 @@ async fn test_file_write_to_sensitive_path_denied() {
     );
 
     // Emit a Block audit event and verify the JSONL entry.
-    let event = dlp_common::AuditEvent::new(
+    let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Block,
         "S-1-5-21-E2E-DENY".to_string(),
         "alice".to_string(),
@@ -1671,7 +1671,7 @@ async fn test_file_write_to_public_path_allowed() {
     assert_eq!(response.decision, Decision::ALLOW);
 
     // Emit an Access audit event (the standard event type for allowed operations).
-    let event = dlp_common::AuditEvent::new(
+    let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Access,
         "S-1-5-21-E2E-ALLOW".to_string(),
         "bob".to_string(),
@@ -1739,7 +1739,7 @@ async fn test_clipboard_paste_t4_content_denied_with_alert() {
     );
 
     // Emit an Alert audit event (event_type = Alert for DenyWithAlert).
-    let event = dlp_common::AuditEvent::new(
+    let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Alert,
         "S-1-5-21-E2E-CLIP".to_string(),
         "carol".to_string(),
@@ -1822,7 +1822,7 @@ async fn test_smb_detection_triggers_policy_eval_and_audit() {
         "non-whitelisted SMB share must be denied for T3 data"
     );
 
-    let audit = dlp_common::AuditEvent::new(
+    let mut audit = dlp_common::AuditEvent::new(
         dlp_common::EventType::Block,
         "S-1-5-21-E2E-SMB".to_string(),
         "dave".to_string(),
@@ -2015,7 +2015,7 @@ async fn test_tc_11_copy_confidential_to_internal_blocked_alert() {
     assert!(response.decision.is_denied());
 
     // DenyWithAlert maps to EventType::Alert (not Block).
-    let event = dlp_common::AuditEvent::new(
+    let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Alert,
         "S-1-5-21-TC-11".into(),
         "tc11-user".into(),
@@ -2093,7 +2093,7 @@ async fn test_tc_14_copy_confidential_to_usb_blocked_log() {
     let response = client.evaluate(&request).await.unwrap();
     assert!(response.decision.is_denied());
 
-    let event = dlp_common::AuditEvent::new(
+    let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Block,
         "S-1-5-21-TC-14".into(),
         "tc14-user".into(),
@@ -2174,7 +2174,7 @@ async fn test_tc_21_email_credit_card_blocked_alert() {
     assert_eq!(response.decision, Decision::DenyWithAlert);
     assert!(response.decision.is_denied());
 
-    let event = dlp_common::AuditEvent::new(
+    let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Alert, // DenyWithAlert → Alert
         "S-1-5-21-TC-21".into(),
         "tc21-user".into(),
@@ -2254,7 +2254,7 @@ async fn test_tc_72_delete_restricted_secure_delete() {
     assert!(response.decision.is_denied());
 
     // Corrective event: T4 delete triggers secure-wipe alert (EventType::Alert).
-    let event = dlp_common::AuditEvent::new(
+    let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Alert,
         "S-1-5-21-TC-72".into(),
         "tc72-user".into(),
@@ -2331,7 +2331,7 @@ async fn test_tc_81_bulk_download_alert() {
 
     // Step 2: emit one representative Alert event for the bulk download scenario.
     // Files are allowed; alert is the additive detective control.
-    let event = dlp_common::AuditEvent::new(
+    let mut event = dlp_common::AuditEvent::new(
         dlp_common::EventType::Alert,
         "S-1-5-21-TC-81".into(),
         "tc81-user".into(),
