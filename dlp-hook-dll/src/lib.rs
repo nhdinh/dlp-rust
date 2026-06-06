@@ -60,6 +60,7 @@ mod perf_telemetry;
 mod pipe_client;
 pub mod thread_suspender;
 pub mod trampolines;
+pub mod volume_class_cache;
 
 pub use fail_closed::DenyReturn;
 pub use pe_utils::{find_iat_entry, patch_iat, restore_iat};
