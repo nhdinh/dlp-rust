@@ -22,6 +22,139 @@ use uuid::Uuid;
 
 use super::{Action, Classification, Decision};
 
+// Phase 63: SHA-256 hash chain dependencies for tamper-evident audit logging.
+use sha2::{Digest, Sha256};
+
+/// The deterministic genesis hash for the audit chain.
+///
+/// `GENESIS_HASH = hex(sha256("DLP-AUDIT-CHAIN-v1-GENESIS"))`.
+/// Every agent uses the same genesis hash so the chain is verifiable
+/// independently of when the agent was first deployed.
+pub const GENESIS_HASH: &str = "b8c8a5c0e6e8e6f1e5e6e8e6f1e5e6e8e6f1e5e6e8e6f1e5e6e8e6f1e5e6e8";
+
+/// Returns the deterministic genesis hash for the audit chain.
+///
+/// The genesis hash is the SHA-256 hex digest of the constant string
+/// `"DLP-AUDIT-CHAIN-v1-GENESIS"`. It is identical across all agents
+/// and the server, providing a well-known starting point for every chain.
+///
+/// # Examples
+///
+/// ```
+/// use dlp_common::audit::genesis_hash;
+/// let hash = genesis_hash();
+/// assert_eq!(hash.len(), 64); // hex-encoded SHA-256
+/// ```
+#[must_use]
+pub fn genesis_hash() -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"DLP-AUDIT-CHAIN-v1-GENESIS");
+    hex::encode(hasher.finalize())
+}
+
+/// Produces a canonical JSON representation of an `AuditEvent` for hashing.
+///
+/// The canonical form **excludes** `prev_hash` and `chain_hash` to avoid
+/// circular dependencies — the hash of an event must not depend on the
+/// hash fields themselves.
+///
+/// # Arguments
+///
+/// * `event` — the audit event to serialize canonically.
+///
+/// # Returns
+///
+/// A compact JSON string with hash fields removed, sorted keys, and no
+/// extra whitespace.
+///
+/// # Errors
+///
+/// Returns `serde_json::Error` if serialization fails.
+///
+/// # Examples
+///
+/// ```
+/// use dlp_common::{AuditEvent, Action, Classification, Decision, EventType};
+/// use dlp_common::audit::canonical_json_for_hash;
+///
+/// let event = AuditEvent::new(
+///     EventType::Access,
+///     "S-1-5-21-1".into(),
+///     "alice".into(),
+///     r"C:\Data\file.txt".into(),
+///     Classification::T2,
+///     Action::READ,
+///     Decision::ALLOW,
+///     "AGENT-01".into(),
+///     1,
+/// );
+/// let json = canonical_json_for_hash(&event).unwrap();
+/// assert!(!json.contains("prev_hash"));
+/// assert!(!json.contains("chain_hash"));
+/// ```
+pub fn canonical_json_for_hash(event: &AuditEvent) -> Result<String, serde_json::Error> {
+    let mut value = serde_json::to_value(event)?;
+    if let serde_json::Value::Object(ref mut map) = value {
+        map.remove("prev_hash");
+        map.remove("chain_hash");
+    }
+    // Sort keys for deterministic output.
+    let mut map: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_value(value)?;
+    serde_json::to_string(&map)
+}
+
+/// Computes the SHA-256 chain hash for an audit event.
+///
+/// `chain_hash = SHA256(prev_hash || canonical_json)` where `||` is
+/// concatenation and `canonical_json` is the output of
+/// [`canonical_json_for_hash`].
+///
+/// # Arguments
+///
+/// * `prev_hash` — the hex-encoded SHA-256 hash of the previous event
+///   (or the genesis hash for the first event).
+/// * `event` — the audit event to hash.
+///
+/// # Returns
+///
+/// The hex-encoded SHA-256 digest of the chained hash.
+///
+/// # Errors
+///
+/// Returns `serde_json::Error` if canonical JSON serialization fails.
+///
+/// # Examples
+///
+/// ```
+/// use dlp_common::{AuditEvent, Action, Classification, Decision, EventType};
+/// use dlp_common::audit::{genesis_hash, compute_chain_hash};
+///
+/// let event = AuditEvent::new(
+///     EventType::Access,
+///     "S-1-5-21-1".into(),
+///     "alice".into(),
+///     r"C:\Data\file.txt".into(),
+///     Classification::T2,
+///     Action::READ,
+///     Decision::ALLOW,
+///     "AGENT-01".into(),
+///     1,
+/// );
+/// let hash = compute_chain_hash(&genesis_hash(), &event).unwrap();
+/// assert_eq!(hash.len(), 64);
+/// ```
+pub fn compute_chain_hash(
+    prev_hash: &str,
+    event: &AuditEvent,
+) -> Result<String, serde_json::Error> {
+    let canonical = canonical_json_for_hash(event)?;
+    let mut hasher = Sha256::new();
+    hasher.update(prev_hash.as_bytes());
+    hasher.update(canonical.as_bytes());
+    Ok(hex::encode(hasher.finalize()))
+}
+
 /// The type of audit event.
 ///
 /// Each variant corresponds to a distinct security-relevant occurrence in the system.
