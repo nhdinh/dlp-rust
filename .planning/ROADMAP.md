@@ -1,7 +1,7 @@
 ---
 milestone: v0.11.0
 milestone_name: Label Service + Workflow + Audit
-last_updated: 2026-05-29
+last_updated: 2026-06-07
 total_phases: 6
 v1_requirements: 26
 coverage: 26/26
@@ -402,6 +402,62 @@ Plans:
 **Plans**: 4 plans (61-01 through 61-04)
 **UI hint**: yes
 
+### Phase 62: Syslog Forwarder — RFC 5424 + Encrypted Offline Queue
+
+**Goal**: A syslog forwarder ships audit events in RFC 5424 format with TLS transport and an encrypted offline queue for resilience during network outages.
+**Depends on**: Phase 59 (label service audit events must exist to forward)
+**Requirements**: SYSLOG-01, SYSLOG-02, SYSLOG-03, SYSLOG-04
+**Success Criteria** (what must be TRUE):
+
+  1. RFC 5424 structured data with correct PRI, TIMESTAMP, HOSTNAME, APP-NAME, PROCID, MSGID, and structured-data elements.
+  2. TLS 1.3 transport with certificate pinning.
+  3. Encrypted offline queue (AES-256-GCM with DPAPI-wrapped key) survives agent restart.
+  4. Configurable batch size and flush interval with backpressure handling.
+
+**Plans**: 4 plans (62-01 through 62-04) — Complete 2026-05-21
+
+### Phase 63: Tamper-Evident Audit — SHA-256 Hash Chain
+
+**Goal**: Every audit event is cryptographically linked to its predecessor via a SHA-256 hash chain, making undetected tampering computationally infeasible.
+**Depends on**: Phase 62 (syslog forwarder must exist to relay tamper-evident events)
+**Requirements**: TAMPER-01, TAMPER-02, TAMPER-03, TAMPER-04
+**Success Criteria** (what must be TRUE):
+
+  1. Every audit event carries `prev_hash` and `chain_hash` fields linking it to the previous event in the chain.
+  2. The hash chain is verified on every server startup; a break triggers `EventType::HashChainBreak` with `triggers_alert = true`.
+  3. The chain root is anchored to a hardware-backed key (DPAPI) or external timestamp service.
+  4. A verification API allows operators to query chain integrity for any time range.
+
+**Plans**: 4 plans (63-01 through 63-04) — Complete 2026-06-06
+
+### Phase 64: Device Identity Expansion — Fingerprint + MAC + VPN + Health
+
+**Goal**: The agent collects and reports machine-level device identity (fingerprint, MAC addresses, VPN state, domain join) and health status, enabling ABAC policies that enforce based on endpoint posture and detect tamper or connectivity degradation.
+**Depends on**: None (new capability, orthogonal to prior phases)
+**Requirements**: DEVICE-01, DEVICE-02, DEVICE-03, DEVICE-04, DEVICE-05
+**Success Criteria** (what must be TRUE):
+
+  1. A stable device fingerprint (SHA-256 of hostname + sorted MACs + OS version + install date) is computed at agent install, persisted in `HKLM\SOFTWARE\DLP\Agent`, and reported with every heartbeat.
+  2. All active NIC MAC addresses are collected via `GetAdaptersAddresses`, sorted lexicographically, and sent in the heartbeat payload; the server stores them in the agents table.
+  3. VPN state is detected at runtime via `GetAdaptersAddresses` (IF_TYPE_TUNNEL + description keywords) and reflected in ABAC policy evaluation through the `DeviceHealth` condition.
+  4. Domain join state is included in the agent heartbeat via `NetGetJoinInformation`; the server stores and exposes it in agent info responses.
+  5. Health status transitions atomically on tamper detection (Tampered), connectivity loss (3 failures = Degraded, 10 = Offline), and recovery (successful heartbeat = Healthy); every transition emits a `DeviceHealthChange` audit event.
+
+**Plans:** 4/4 plans planned
+
+**Wave 1** *(no dependencies)*
+
+- [ ] `64-01-PLAN.md` — Core data types: EndpointIdentity struct, DeviceHealthStatus enum, DeviceHealth PolicyCondition variant, lib.rs re-exports, 9 unit tests
+- [ ] `64-02-PLAN.md` — Agent device collection: MAC addresses, VPN detection, domain join, fingerprint computation, registry persistence, 8 unit tests
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] `64-03-PLAN.md` — Heartbeat integration + server storage: extended heartbeat payload, HeartbeatRequest/AgentInfoResponse, DB migrations (5 columns), AgentRepository updates, offline sweeper
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] `64-04-PLAN.md` — ABAC integration + health state machine: EventType::DeviceHealthChange, PolicyStore DeviceHealth match arm, AtomicU8 transitions, heartbeat failure tracking, tamper detection, audit emission
+
 ---
 
 ## Progress Table
@@ -441,7 +497,7 @@ Plans:
 | 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete | 2026-05-14 |
 | 62. Syslog Forwarder — RFC 5424 + Encrypted Offline Queue | 4/4 | Complete | 2026-05-21 |
 | 63. Tamper-Evident Audit — SHA-256 Hash Chain | 4/4 | Complete | 2026-06-06 |
-| 64. Device Identity Expansion — Fingerprint + MAC + VPN + Health | 0/0 | Not started | - |
+| 64. Device Identity Expansion — Fingerprint + MAC + VPN + Health | 4/4 | Planned | 2026-06-07 |
 
 ---
 
@@ -484,4 +540,4 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 
 ---
 
-*Last updated: 2026-05-29 — Phase 56 plans created (6 plans, 3 waves).*
+*Last updated: 2026-06-07 — Phase 64 plans created (4 plans, 3 waves).*
