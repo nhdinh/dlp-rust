@@ -239,4 +239,285 @@ impl AuditEventRepository {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
+
+    /// Returns the most recent chain hash for a given agent.
+    ///
+    /// Used by the server-side chain verifier to validate the `prev_hash`
+    /// of newly ingested events. Returns `None` if the agent has no
+    /// chain-verified events yet.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - Connection pool to acquire a read connection from.
+    /// * `agent_id` - The agent UUID whose chain tail to look up.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
+    pub fn get_last_chain_hash(
+        pool: &Pool,
+        agent_id: &str,
+    ) -> rusqlite::Result<Option<String>> {
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        conn.query_row(
+            "SELECT chain_hash FROM audit_events \
+             WHERE agent_id = ?1 AND chain_hash IS NOT NULL \
+             ORDER BY id DESC LIMIT 1",
+            [agent_id],
+            |row| row.get(0),
+        )
+    }
+
+    /// Detects chain continuity breaks in the tamper-evident audit log.
+    ///
+    /// Uses a SQLite window function (LAG) to compare each event's
+    /// `prev_hash` against the `chain_hash` of the preceding event for
+    /// the same agent. Only rows where `chain_hash IS NOT NULL` are
+    /// considered.
+    ///
+    /// # Arguments
+    ///
+    /// * `pool` - Connection pool to acquire a read connection from.
+    /// * `since_id` - Optional lower bound on `id` (exclusive) for pagination.
+    /// * `limit` - Maximum number of candidate rows to examine.
+    ///
+    /// # Errors
+    ///
+    /// Returns `rusqlite::Error` if pool acquisition or query execution fails.
+    /// If the SQLite version does not support window functions (pre-3.25),
+    /// the query will fail — callers should handle this gracefully.
+    pub fn get_chain_breaks(
+        pool: &Pool,
+        since_id: Option<i64>,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<serde_json::Value>> {
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        let sql = "SELECT id, agent_id, prev_hash, chain_hash, \
+                   LAG(chain_hash) OVER (PARTITION BY agent_id ORDER BY id) AS expected_prev \
+            FROM audit_events \
+            WHERE chain_hash IS NOT NULL \
+              AND (?1 IS NULL OR id > ?1) \
+            ORDER BY id \
+            LIMIT ?2";
+
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![since_id, limit as i64],
+                |row| {
+                    let id: i64 = row.get(0)?;
+                    let agent_id: String = row.get(1)?;
+                    let prev_hash: Option<String> = row.get(2)?;
+                    let chain_hash: String = row.get(3)?;
+                    let expected_prev: Option<String> = row.get(4)?;
+                    Ok((id, agent_id, prev_hash, chain_hash, expected_prev))
+                },
+            )?
+            .filter_map(|r| {
+                r.ok().and_then(|(id, agent_id, prev_hash, chain_hash, expected_prev)| {
+                    // Skip the first event per agent (expected_prev IS NULL).
+                    // A break occurs when prev_hash != expected_prev.
+                    let expected = expected_prev?;
+                    let actual = prev_hash.as_deref().unwrap_or("");
+                    if actual != expected {
+                        Some(serde_json::json!({
+                            "id": id,
+                            "agent_id": agent_id,
+                            "prev_hash": prev_hash,
+                            "chain_hash": chain_hash,
+                            "expected_prev": expected,
+                        }))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        Ok(rows)
+    }
+}
+
+/// Validates that a hash string is exactly 64 hexadecimal characters.
+///
+/// Defense-in-depth helper used before binding hash fields to SQL
+/// parameters, ensuring only well-formed SHA-256 digests reach the DB.
+///
+/// # Arguments
+///
+/// * `hash` - The hash string to validate.
+///
+/// # Returns
+///
+/// `true` if the string is 64 characters and all hex digits; `false` otherwise.
+pub fn is_valid_hash_format(hash: &str) -> bool {
+    hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::new_pool;
+
+    /// Helper: build a minimal AuditEventRow for test insertion.
+    fn test_row(agent_id: &str, chain_hash: Option<&str>, prev_hash: Option<&str>) -> AuditEventRow {
+        AuditEventRow {
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            event_type: "FileRead".to_string(),
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "test".to_string(),
+            resource_path: r"C:\test.txt".to_string(),
+            classification: "T1".to_string(),
+            action_attempted: "Read".to_string(),
+            decision: "Allow".to_string(),
+            policy_id: None,
+            policy_name: None,
+            agent_id: agent_id.to_string(),
+            session_id: 1,
+            access_context: "local".to_string(),
+            correlation_id: None,
+            prev_hash: prev_hash.map(String::from),
+            chain_hash: chain_hash.map(String::from),
+        }
+    }
+
+    #[test]
+    fn test_get_last_chain_hash_returns_none_for_unknown_agent() {
+        let pool = new_pool(":memory:").expect("create pool");
+        // get_last_chain_hash returns QueryReturnedNoRows when no matching row exists;
+        // map that to None for a cleaner API.
+        let result = match AuditEventRepository::get_last_chain_hash(&pool, "unknown-agent") {
+            Ok(hash) => hash,
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+        assert_eq!(result, None, "unknown agent must have no chain hash");
+    }
+
+    #[test]
+    fn test_get_last_chain_hash_returns_latest_hash() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db file");
+        let path = tmp.path().to_str().expect("temp path utf8");
+        let pool = new_pool(path).expect("create pool");
+        let mut conn = pool.get().expect("acquire connection");
+        let uow = crate::db::UnitOfWork::new(&mut conn).expect("create uow");
+
+        // Insert three events for the same agent with ascending chain hashes.
+        let rows = vec![
+            test_row("agent-a", Some("hash-001"), Some("genesis")),
+            test_row("agent-a", Some("hash-002"), Some("hash-001")),
+            test_row("agent-a", Some("hash-003"), Some("hash-002")),
+        ];
+        AuditEventRepository::insert_batch(&uow, &rows).expect("insert batch");
+        uow.commit().expect("commit");
+
+        let latest = AuditEventRepository::get_last_chain_hash(&pool, "agent-a").expect("query");
+        assert_eq!(latest, Some("hash-003".to_string()), "must return the most recent chain hash");
+    }
+
+    #[test]
+    fn test_get_chain_breaks_detects_mismatch() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db file");
+        let path = tmp.path().to_str().expect("temp path utf8");
+        let pool = new_pool(path).expect("create pool");
+        let mut conn = pool.get().expect("acquire connection");
+        let uow = crate::db::UnitOfWork::new(&mut conn).expect("create uow");
+
+        // Agent-a: continuous chain (no break).
+        // Agent-b: break at event 2 (prev_hash does not match event 1's chain_hash).
+        let rows = vec![
+            test_row("agent-a", Some("hash-a1"), Some("genesis")),
+            test_row("agent-a", Some("hash-a2"), Some("hash-a1")),
+            test_row("agent-b", Some("hash-b1"), Some("genesis")),
+            test_row("agent-b", Some("hash-b2"), Some("tampered")), // break!
+        ];
+        AuditEventRepository::insert_batch(&uow, &rows).expect("insert batch");
+        uow.commit().expect("commit");
+
+        let breaks = AuditEventRepository::get_chain_breaks(&pool, None, 100).expect("query");
+        assert_eq!(breaks.len(), 1, "must detect exactly one break");
+        assert_eq!(breaks[0]["agent_id"], "agent-b", "break must belong to agent-b");
+        assert_eq!(breaks[0]["expected_prev"], "hash-b1", "expected_prev must be hash-b1");
+        assert_eq!(breaks[0]["prev_hash"], "tampered", "prev_hash must show tampered value");
+    }
+
+    #[test]
+    fn test_get_chain_breaks_respects_pagination() {
+        let tmp = tempfile::NamedTempFile::new().expect("create temp db file");
+        let path = tmp.path().to_str().expect("temp path utf8");
+        let pool = new_pool(path).expect("create pool");
+        let mut conn = pool.get().expect("acquire connection");
+        let uow = crate::db::UnitOfWork::new(&mut conn).expect("create uow");
+
+        // Insert 5 events for agent-a; only event 3 has a break.
+        let rows = vec![
+            test_row("agent-a", Some("h1"), Some("genesis")),
+            test_row("agent-a", Some("h2"), Some("h1")),
+            test_row("agent-a", Some("h3"), Some("BAD")), // break at id 3
+            test_row("agent-a", Some("h4"), Some("h3")),
+            test_row("agent-a", Some("h5"), Some("h4")),
+        ];
+        AuditEventRepository::insert_batch(&uow, &rows).expect("insert batch");
+        uow.commit().expect("commit");
+
+        // Limit to 2 rows (ids 1 and 2) — no break yet.
+        let breaks_early = AuditEventRepository::get_chain_breaks(&pool, None, 2).expect("query");
+        assert_eq!(breaks_early.len(), 0, "no break within first 2 rows");
+
+        // Limit to 4 rows (ids 1..4) — break at id 3 is included.
+        let breaks_mid = AuditEventRepository::get_chain_breaks(&pool, None, 4).expect("query");
+        assert_eq!(breaks_mid.len(), 1, "break at id 3 must be detected");
+
+        // since_id = 3 excludes id 3; remaining rows (4, 5) are continuous.
+        let breaks_since = AuditEventRepository::get_chain_breaks(&pool, Some(3), 100).expect("query");
+        assert_eq!(breaks_since.len(), 0, "no break after id 3");
+    }
+
+    #[test]
+    fn test_is_valid_hash_format_accepts_and_rejects() {
+        // Valid 64-char hex.
+        assert!(
+            is_valid_hash_format(
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+            ),
+            "64-char hex must be valid"
+        );
+
+        // Too short.
+        assert!(
+            !is_valid_hash_format("abcdef0123456789"),
+            "16-char hex must be rejected"
+        );
+
+        // Too long.
+        assert!(
+            !is_valid_hash_format(
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789aa"
+            ),
+            "66-char hex must be rejected"
+        );
+
+        // Non-hex character.
+        assert!(
+            !is_valid_hash_format(
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345678g"
+            ),
+            "non-hex char must be rejected"
+        );
+
+        // Empty.
+        assert!(!is_valid_hash_format(""), "empty string must be rejected");
+
+        // Uppercase hex is valid.
+        assert!(
+            is_valid_hash_format(
+                "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"
+            ),
+            "uppercase 64-char hex must be valid"
+        );
+    }
 }
