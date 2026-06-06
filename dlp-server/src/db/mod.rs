@@ -99,8 +99,19 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 agent_id         TEXT NOT NULL,
                 session_id       INTEGER NOT NULL,
                 access_context   TEXT NOT NULL DEFAULT 'local',
-                correlation_id   TEXT UNIQUE
+                correlation_id   TEXT UNIQUE,
+                prev_hash        TEXT,
+                chain_hash       TEXT
             );
+
+            -- Partial index for chain-verified events only (efficient integrity queries)
+            CREATE INDEX IF NOT EXISTS idx_audit_events_agent_chain
+                ON audit_events(agent_id, id)
+                WHERE chain_hash IS NOT NULL;
+
+            -- Index for efficient latest-per-agent lookup (supports ORDER BY id DESC LIMIT 1)
+            CREATE INDEX IF NOT EXISTS idx_audit_events_agent_latest
+                ON audit_events(agent_id, id DESC);
 
             CREATE TABLE IF NOT EXISTS exceptions (
                 id               TEXT PRIMARY KEY,
@@ -820,6 +831,20 @@ pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
         [],
     )
     .context("seed global_enforcement_mode system_kv")?;
+
+    // Phase 63: tamper-evident audit hash chain columns.
+    run_alter(
+        conn,
+        "ALTER TABLE audit_events ADD COLUMN prev_hash TEXT",
+        "prev_hash",
+        "audit_events",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE audit_events ADD COLUMN chain_hash TEXT",
+        "chain_hash",
+        "audit_events",
+    )?;
 
     Ok(())
 }

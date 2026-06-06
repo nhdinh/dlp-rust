@@ -506,6 +506,8 @@ impl AuditEvent {
             policy_mode: None,
             would_have_denied: false,
             volume_class: None,
+            prev_hash: None,
+            chain_hash: None,
         }
     }
 
