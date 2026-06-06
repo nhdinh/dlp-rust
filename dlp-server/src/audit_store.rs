@@ -78,6 +78,8 @@ pub fn store_events_sync(uow: &UnitOfWork<'_>, events: &[AuditEvent]) -> Result<
                 session_id: event.session_id as i64,
                 access_context: serde_json::to_string(&event.access_context)?,
                 correlation_id: event.correlation_id.clone(),
+                prev_hash: event.prev_hash.clone(),
+                chain_hash: event.chain_hash.clone(),
             })
         })
         .collect::<Result<Vec<_>, serde_json::Error>>()?;
@@ -182,6 +184,8 @@ pub async fn ingest_events(
                         .unwrap_or_default()
                         .to_string(),
                     correlation_id: event.correlation_id.clone(),
+                    prev_hash: event.prev_hash.clone(),
+                    chain_hash: event.chain_hash.clone(),
                 })
             })
             .collect::<Result<Vec<_>, serde_json::Error>>()
