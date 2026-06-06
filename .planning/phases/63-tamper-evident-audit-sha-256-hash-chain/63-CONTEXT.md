@@ -58,11 +58,32 @@ Events without hash fields (from pre-Phase 63 agents) are accepted without verif
 
 On chain break, the server constructs a synthetic `AuditEvent` with `EventType::ChainBreakDetected`, `Decision::DenyWithAlert`, and routes it through `alert_router.send_alert()`. A new event type keeps tamper alerts distinct from policy blocks.
 
+### D-07: Synthetic tamper events are persisted to the audit log
+
+In addition to sending alerts, the synthetic `ChainBreakDetected` event is inserted into `audit_events` via `AuditEventRepository::insert_batch()`. This preserves the detection in the tamper-evident log itself, fulfilling compliance requirements that the audit trail must record when breaks were detected.
+
+### D-08: Chain break alerts are deduplicated per batch
+
+Within a single ingestion batch, chain break alerts are deduplicated by unique `(agent_id, expected_prev_hash)` to prevent alert storms from multiple broken events with the same root cause.
+
+### D-09: Out-of-order events are sorted before verification
+
+Events within an ingestion batch are sorted by `(agent_id, event_timestamp)` before chain verification. This prevents false positives from out-of-order arrival (network retry, delayed batch). Gap-fill detection for events arriving across separate batches is deferred to a future phase.
+
+### D-10: Integrity endpoint is paginated and time-bounded
+
+The `GET /admin/audit/integrity` endpoint accepts optional `agent_id`, `since`, and `limit` query parameters. Default limit is 10,000 events; maximum is 100,000. This prevents unbounded full-table scans that could degrade the admin API.
+
+### D-11: Ordering guarantee is by `id` (auto-increment) with explicit documentation
+
+Chain ordering relies on `id` (SQLite INTEGER PRIMARY KEY auto-increment), which guarantees monotonic insertion order per server instance. If future designs introduce concurrent batch ingestion from the same agent, a dedicated `sequence` column must be added. This is documented in Plan 63-01.
+
 ### Claude's Discretion
 
-- Use `parking_lot::Mutex<String>` for `last_chain_hash` in `AuditEmitter` (consistent with existing `Mutex<BufWriter<File>>`)
-- Implement JSONL tail-read recovery using `rev_buf_reader` or manual seek-to-near-end strategy
-- Return `AuditIntegrityResponse` with summary counts and per-agent chain statuses
+- Use `std::sync::Mutex<String>` for `last_chain_hash` in `AuditEmitter` (consistent with existing `Mutex<BufWriter<File>>`); document that this serializes emits and is acceptable for current throughput
+- Implement JSONL tail-read recovery with backward-scan fallback (up to 10 lines) to handle truncated last lines
+- Return `AuditIntegrityResponse` with summary counts, per-agent chain statuses, and `integrity_ok` boolean
+- Add query parameters (`agent_id`, `since`, `limit`) to the integrity endpoint for pagination and time-bounding
 
 </decisions>
 
