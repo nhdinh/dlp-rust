@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
 status: executing
-last_updated: "2026-06-06T19:11:40.133Z"
-last_activity: 2026-06-06 -- Phase 64 planning complete
+last_updated: "2026-06-07T01:00:00.000Z"
+last_activity: 2026-06-07 -- Phase 64 execution started
 progress:
-  total_phases: 18
-  completed_phases: 14
-  total_plans: 81
-  completed_plans: 78
-  percent: 78
+  total_phases: 34
+  completed_phases: 25
+  total_plans: 123
+  completed_plans: 112
+  percent: 74
 ---
 
 # Project State
@@ -19,16 +19,16 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 64 — device-identity-expansion-fingerprint-mac-vpn-health
+**Current Focus:** Phase 64 — device-identity-expansion-fingerprint-mac-vpn-health — EXECUTING
 
 ---
 
 ## Current Position
 
-Phase: 64 (device-identity-expansion-fingerprint-mac-vpn-health) — NOT STARTED
-Plan: 0 of 4
-Status: Ready to execute
-Last activity: 2026-06-06 -- Phase 64 planning complete
+Phase: 64 (device-identity-expansion-fingerprint-mac-vpn-health) — EXECUTING
+Plan: 1 of 4
+Status: Wave 1 in progress (Plan 01 complete, Plan 02 pending)
+Last activity: 2026-06-07 -- Phase 64 Plan 01 complete
 
 ## Progress
 
@@ -110,13 +110,14 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 17. **2026-05-22: Phase 51 Plans 01-04 complete.** EDR detection (edr_detector.rs), thread suspend protocol (thread_suspender.rs), ntdll patcher core with retour (ntdll_patcher.rs), ntdll trampoline bodies (trampolines.rs), and background re-verification thread (background_thread.rs) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied.
 18. **2026-05-22: Phase 51 Plans 05-06 complete.** BypassAlert IPC types (dlp-common), enable_ntdll_patching config flag (dlp-agent), service startup SIEM emission, OnceLock lazy init integration in lib.rs, and chaos test fixture (1000 threads + 100 patch cycles) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied. Phase 51 COMPLETE.
 19. **2026-05-27: Phase 52 Plan 06 complete.** Admin API CRUD for protected paths with Windows API validation (GetFullPathNameW), agent config payload extension, and AppState wiring. 520 dlp-server tests pass, all dlp-agent tests pass, clippy clean. DACL-03 requirement satisfied.
-20. **2026-05-27: Phase 52 Plan 05 complete.** DPAPI recovery runbook (`docs/operations/dpapi-recovery.md`) with re-init-from-env-vars and restore-from-backup flows, PowerShell verification snippets, UAT checklist (7 positive + 6 negative cases). Audit wiring verified: `DaclTamperDetected` routes to SIEM with `triggers_alert=true`, `DaclTripwireTooLarge` routes with `triggers_alert=false`. Full workspace test suite passes (520 lib tests), clippy clean (-D warnings), cargo build clean. Beads issue `dlp-rust-aq4` closed. DACL-05 requirement satisfied. Phase 52 COMPLETE (all 7 plans).
+20. **2026-05-27: Phase 52 Plan 05 complete.** DPAPI recovery runbook (`docs/operations/dpapi-recovery.md`) with re-init-from-env-vars and restore-from-backup flows, PowerShell verification snippets, UAT checklist (7 positive + 6 negative cases). Audit wiring verified: `DaclTamperDetected` routes to SIEM with `triggers_alert=true`, `DaclTripwireTooLarge` routes with `triggers_alert=false`. Full workspace test suite passes (520 lib tests), clippy clean (-D warnings), cargo build --workspace passes. Beads issue `dlp-rust-aq4` closed. DACL-05 requirement satisfied. Phase 52 COMPLETE (all 7 plans).
 21. **2026-05-28: Phase 53 Plan 04 complete.** Bypass correlator matching ETW Kernel-File events against hook DLL journal entries. Extended BypassReason with NoHookJournal/OpMismatch; extended BypassAlert with 10 v2 fields and #[serde(default)] backward compat. QPC calibration pair at startup (CR-01), on-demand journal discovery with exponential backoff capped at 30s (CR-02), exact filename allowlist (WR-01), severity mapping with reduced mode capping crit->warn (WR-03), image SHA cache with 1h/5min TTL (WR-06), PID reuse detection (WR-07), alert batching with UUID batch_id and max 3 retries with new batch_id per retry (WR-08, WR-10, IN-02), explicit file_object wiring from ETW event (CR-08). 28 unit tests, 689 dlp-agent tests pass, 252 dlp-common tests pass, clippy clean (-D warnings). ETW-03 requirement satisfied.
 22. **2026-05-28: Phase 53 Plan 05 complete.** Server-side bypass alert storage: `bypass_alerts` SQLite table with CHECK constraints, 5 indexes (including pid per WR-05), composite unique constraint for dedup (WR-08). `BypassAlertsRepository` with list_by_filters, insert, insert_batch, ack_by_id, get_by_id — 15 unit tests. Three HTTP routes: POST /audit/bypass (agent JWT, max 100 alerts, v1+v2 deserialization), GET /admin/bypass-alerts (admin JWT, paginated filtered), POST /admin/bypass-alerts/{id}/ack (admin JWT, idempotent). 14 integration tests. SIEM relay for all alerts; alert router for crit severity. 542+ dlp-server lib tests pass, 14 integration tests pass, clippy clean (-D warnings), cargo build --workspace passes. ETW-04 requirement satisfied.
 23. **2026-05-28: Phase 53 Plan 06 complete.** SIEM + alert router wiring verification: 3 unit tests in `siem_connector.rs` (`test_relay_bypass_alert_detected`, `test_relay_etw_consumer_gated_off`, `test_relay_skips_non_siem_events`), 1 unit test in `alert_router.rs` (`test_send_alert_crit_severity`), 6 integration tests in `bypass_alerts_integration.rs` (file_object preservation CR-08, mixed severity DB state, SIEM payload structure, crit/warn routing predicates, EtwConsumerGatedOff semantics CR-09). 20 total integration tests pass. Full workspace lib tests pass. Clippy clean on workspace libs. ETW-05 requirement satisfied. Phase 53 COMPLETE (all 6 plans).
 24. **2026-05-28: Phase 54 Plan 04 complete.** BypassAlertList TUI screen: dispatch handler with optimistic ack (stable ID rollback, pending_ack_ids double-ack prevention), severity filter cycling (f), hide-acknowledged toggle (h), pagination (PgUp/PgDn), detail popup (Enter). Render function with severity badges (crit=Red+BOLD, warn=Yellow, info=Blue), relative time formatting, path truncation, human-friendly correlation reasons, acknowledged row dimming. 12 new unit tests (6 dispatch + 6 render). 184 dlp-admin-cli tests pass. Clippy clean (-D warnings). UX-02 requirement satisfied.
 25. **2026-05-28: Phase 54 Plan 06 complete.** Integration verification: full workspace build with zero warnings, all 39 test suites pass (lib + tests), clippy clean (-D warnings) across workspace, cargo fmt clean. Fixed SystemMenu consistency between dispatch.rs and render.rs (added missing "Syslog Config" item). Added `system_menu_item_count_and_order` test verifying 14 items and correct cycling. Fixed cross-crate BypassAlert struct compatibility in dlp-hook-dll (added v2 field defaults). Fixed v1 backward compat integration test (added required DB fields for CHECK constraints). 188 dlp-admin-cli tests pass. Phase 54 COMPLETE (all 6 plans).
 26. **2026-06-05: Phase 57 complete.** Operational Deployment Guide + AV/EDR Allowlist + UAT ship gate. Deliverables: `docs/operations/deployment-guide.md` (master deployment guide with pre-flight checks, 6-vendor EDR allowlist procedures, hash verification, WDSI submission), `docs/RELEASE_NOTES.md` (SHA-256/SHA-512 hash generation commands, Authenticode verification, WDSI steps), 6 UAT PowerShell scripts (`Uat-CloudSync.ps1`, `Uat-PrintBlock.ps1`, `Uat-HookDll.ps1`, `Uat-DaclTripwire.ps1`, `Uat-EtwNtdll.ps1`, `Uat-Benchmark.ps1`), `.planning/milestones/v0.10.0-UAT.md` (test matrix with 8 groups, 30+ test cases, CRIT-04 benchmark gate). OPS-01..04 requirements satisfied. Phase 57 COMPLETE (all 6 plans).
+27. **2026-06-07: Phase 64 Plan 01 complete.** Core data types for expanded device identity: `DeviceHealthStatus` enum (4 variants with Ord ordering), `EndpointIdentity` struct (5 fields with serde default), `PolicyCondition::DeviceHealth` variant (op + value pattern), `Subject.device_health` field. 13 new unit tests (9 in endpoint.rs, 4 in abac.rs). 299 total tests pass. Clippy clean. cargo fmt clean. DEVICE-01, DEVICE-02, DEVICE-05 requirements satisfied.
 
 ## Blockers
 
@@ -124,45 +125,9 @@ None.
 
 ## Next Action
 
-### Immediate: Start Phase 64
+### Immediate: Phase 64 executing
 
-Phase 63 is complete. The next v0.11.0 phase is **Phase 64: Device Identity Expansion**.
-
-```
-/gsd-plan-phase 64
-```
-
-Or proceed directly to execution if plans already exist:
-
-```
-/gsd-execute-phase 64
-```
-
-### v0.11.0 Active Phases
-
-1. **Phase 59** — Label Service DB schema + API + folder inheritance + manual assignment
-2. **Phase 60** — Data Owner Review Queue + admin TUI screen
-3. **Phase 61** — Approval Workflow Engine (T3 Data Owner + T4 Board digital signature)
-4. **Phase 62** — Syslog Forwarder (RFC 5424 + encrypted offline queue)
-5. **Phase 63** — Tamper-Evident Audit (SHA-256 hash chain)
-6. **Phase 64** — Device Identity Expansion (fingerprint + MAC + VPN + health)
-
-Then **v0.12.0**:
-
-7. **Phase 65** — File Scanner (enumeration + metadata + classifier, OCR deferred)
-8. **Phase 66** — Screenshot Control
-9. **Phase 67** — Print Watermarking
-10. **Phase 68** — Email/Outlook Interception
-11. **Phase 69** — RDP + Bluetooth Blocking
-12. **Phase 70** — Backup Policy + Ransomware Heuristics + Canary Files
-
-Active surface to consume in v0.11.0 implementation:
-
-- `dlp-hook-dll/` — cloud-sync hook DLL. v0.10.0 Phase 48 generalizes injection target, expands patched IAT surface, adds `catch_unwind` + SEH hardening; Phase 51 adds ntdll syscall-stub patching via `retour` 0.3.1.
-- `dlp-agent/src/cloud_enforcer.rs` and `hook_injector.rs` — proven injection / named-pipe / fail-closed templates that the universal hook DLL will reuse (Phase 49 generalizes the injector via ETW Kernel-Process trigger).
-- `dlp-agent/src/wfp_manager.rs` — defense-in-depth pattern; DACL tripwire watcher (Phase 52) follows similar shape.
-- `dlp-common/src/classification.rs` — classification feeds the local hook DLL cache (Phase 50) and the asymmetric fail semantics.
-- `AppState { pool, crypto, policy_store, siem, alert, ad }` (Phase 47) — every new admin TUI screen and ETW consumer reads from this struct; Phase 52/53 add `protected_paths`, `bypass_alerts`, `classification_publisher` Arcs.
+Phase 64 execution in progress. Wave 1 (Plans 01 + 02) running in parallel.
 
 ---
 
@@ -170,109 +135,8 @@ Active surface to consume in v0.11.0 implementation:
 
 `.planning.legacy/STATE.md` preserves the v0.8.1-era state at the time of the GSD format migration. `.gsd.legacy/STATE.md` (gitignored) preserves the milestone-slice-task tooling state through M017 (v0.9.0). All historical decisions surface through `.planning.legacy/` milestone audits and `.gsd.legacy/milestones/M*/`. The v1.0.0 abandonment (2026-05-12) is captured in PROJECT.md "Dropped from v1.0.0 Enterprise Hardening" and REQUIREMENTS.md Out of Scope; HARD-01 remains the sole shipped v1.0.0 artifact and carries forward as v0.10.0 Phase 47 prerequisite.
 
-## Plan 50-03 Completed (2026-05-20)
-
-- Hook DLL shared-memory cache reader implemented
-- CacheLookup with OnceLock lazy init, split validation, two-tier lookup
-- Thread-local LRU (128 entries) with version invalidation
-- Hardened path normalization (NT/DOS/UNC, rejects 8.3/ADS/volume GUID)
-- Allowlist module with hardcoded system paths
-- Trampoline integration: allowlist -> LRU -> cache -> pipe flow
-- Tier-gated fast-path: T3/T4 write = deny, T1/T2 = allow
-- 119 tests pass, clippy clean
-- Commits: 7a87899, 547d209, 93089eb, 3aa0418
-
-## Plan 51-01 Completed (2026-05-22)
-
-- Two-phase EDR detection module (`edr_detector.rs`) with cached module enumeration
-- Suspend-all-other-threads protocol (`thread_suspender.rs`) with RIP verification
-- `ThreadSuspendGuard` Drop guard guarantees resume even on panic
-- No disk-reading functions (D-06 compliance — avoids DoppelGate classifier triggers)
-- 24 new tests (10 edr_detector + 14 thread_suspender), 227 total dlp-hook-dll tests pass
-- Clippy clean (-D warnings)
-- Commits: 7d0fc01, 65ea767
-
-## Plan 51-02 Completed (2026-05-22)
-
-- retour 0.4.0-alpha.4 dependency added for cross-architecture Detours-style trampolines
-- Extended HookDescriptor with ntdll_stub_addr and original_ntdll_bytes (Copy-compatible)
-- Created NtdllPatcher with per-stub state machine (StubPatchState enum)
-- Implemented patch_all_stubs() consulting EDR detector before each patch
-- Implemented patch_stub() using thread_suspender::with_suspended_threads for atomic safety
-- Implemented unpatch_all_stubs() calling detour.disable() — never reads from disk (D-06)
-- Static DETOURS Mutex array for RawDetour handle storage
-- 12 unit tests covering state transitions, per-stub granularity, error paths
-- All 239 dlp-hook-dll tests pass; clippy clean
-- Commits: d9d38e5, a56028d
-
-## Plan 51-03 Completed (2026-05-22)
-
-- Four NtdllTrampoline* functions added: NtCreateFile, NtOpenFile, NtWriteFile, NtSetInformationFile
-- All use guard_trampoline + with_reentrancy_guard + fail_closed! pattern
-- Path-based trampolines call extract_nt_path; handle-based call classify_and_log_handle
-- All call get_original_trampoline() for retour-generated trampoline, with fallback to resolve_ntdll_proc
-- NTDLL_STUBS constant activated (removed #[cfg(any())] guard)
-- find_detour_for_stub() wired to NTDLL_STUBS lookup
-- Pub free function get_original_trampoline() added for trampoline access without NtdllPatcher instance
-- 5 export tests added and passing
-- All 244 dlp-hook-dll tests pass; clippy clean (-D warnings)
-- Commits: a5c4a7b, ecf6f8a
-
-## Plan 51-04 Completed (2026-05-22)
-
-- StubIntegrity enum added (Clean, Overwritten, NotPatched, Unknown) per D-12/D-13
-- verify_stub_integrity: reads first 5 bytes, checks 0xE9 JMP + rel32 target in our trampoline range (64KB window)
-- mark_stub_overwritten: sets state to Overwritten, emits BypassAlert(HookOverwritten) per D-07
-- verify_all_stubs: iterates all 4 stubs independently (per-stub granularity per D-13)
-- is_target_in_our_trampoline_range: compares JMP target against NtdllTrampoline* function addresses
-- TRAMPOLINE_VERIFY_INTERVAL_MS = 30_000, TRAMPOLINE_VERIFY_TICKS = 300
-- start_background_thread extended with optional verify_fn callback
-- background_thread_loop calls verify_fn every 300 ticks; existing ISOLATED/RESYNC logic unchanged
-- trampolines.rs call site updated to pass None (wiring deferred to Plan 06)
-- 12 new tests (7 ntdll_patcher + 5 background_thread), 253 total dlp-hook-dll tests pass
-- Clippy clean (-D warnings)
-- Commits: f9e4692, 7c90620, b7f4c14
-
-## Plan 51-05 Completed (2026-05-22)
-
-- BypassAlert struct and BypassReason enum added to dlp-common/src/hook_ipc.rs
-- Three EventType variants added: NtdllPatchingEnabled, NtdllPatchingEdrDetected, HookOverwritten
-- All three new variants wired to routed_to_siem()
-- enable_ntdll_patching: Option<bool> added to AgentConfig with serde(default)
-- Service startup emits EventType::NtdllPatchingEnabled SIEM event when flag is true
-- 5 new tests in dlp-common (bypass_alert_roundtrip, bypass_reason_serde, 3 SIEM routing)
-- 2 new tests in dlp-agent (enable_ntdll_patching default + deserialize)
-- 197 dlp-common tests pass; 585 dlp-agent tests pass; clippy clean (-D warnings)
-- Commits: 9a3ef9d, 7684fae, 49a5b34
-
-## Plan 51-06 Completed (2026-05-22)
-
-- NTDLL_PATCHER OnceLock<Mutex<NtdllPatcher>> added to lib.rs for lazy initialization
-- lazy_init_ntdll_patcher function initializes patcher on first hook call (never from DllMain)
-- NTDLL_PATCHING_ENABLED AtomicBool controls whether lazy init happens (~1ns fast-path)
-- init() reads flag from shared memory stub but does NOT create patcher (avoids DllMain deadlock)
-- All four NtdllTrampoline* functions call get_original_trampoline() free function for retour trampoline
-- ntdll_patcher module changed to pub for integration test access
-- ntdll_chaos_test.rs integration test: 1000 threads + 100 patch/unpatch cycles, marked #[ignore]
-- ntdll_patcher_smoke_test runs by default: verifies state machine, get_original_trampoline, verify_stub_integrity
-- 253 dlp-hook-dll tests pass; clippy clean (-D warnings)
-- Commits: e9fb126, 0f37ba1, 28f2340
-
-## Plan 52-04 Completed (2026-05-27)
-
-- dacl_staging.rs created with StagingState enum, StagingRow struct, DaclStaging data layer
-- Per-path locking via DashMap<String, Arc<parking_lot::Mutex<()>>>
-- init_staging_table() creates protected_paths_staging with CHECK constraint and two indexes
-- Methods: stage_removal, stage_add, mark_applied, is_staged, is_staged_and_applied, get_state, get_row, list_all, gc_expired_rows
-- stage_removals() free function for batch integration with config diff logic (Plan 52-07)
-- spawn_gc_task() for TTL-based GC with configurable interval
-- 15 unit tests covering state machine, per-path locking, concurrent access, GC behavior, idempotency, batch staging, schema validation
-- service.rs init_agent_db() creates staging table alongside existing agent tables
-- lib.rs exports dacl_staging module
-- Clippy clean (-D warnings), cargo fmt clean, cargo build -p dlp-agent passes
-- Commit: c8c2787
-
 ## Operator Next Steps
 
-- Phase 52: ALL 7 plans complete (DACL Tripwire, Repair Watcher, Protected Paths DB, Staging, DPAPI Recovery Doc, Admin API + Config Sync, Staged Update Integration). Phase 52 COMPLETE.
-- Start the next milestone with /gsd-new-milestone
+- Phase 64: EXECUTING. Wave 1 (Plans 01 + 02) in parallel.
+- After Wave 1: Wave 2 (Plan 03 — heartbeat integration).
+- After Wave 2: Wave 3 (Plan 04 — ABAC evaluation + health state machine).
