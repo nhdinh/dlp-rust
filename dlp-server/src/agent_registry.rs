@@ -125,6 +125,11 @@ pub async fn register_agent(
             last_heartbeat: registered_at_for_sb.clone(),
             status: "online".to_string(),
             registered_at: registered_at_for_sb,
+            fingerprint: "".to_string(),
+            mac_addresses: "[]".to_string(),
+            vpn_active: false,
+            domain_joined: false,
+            health_status: "healthy".to_string(),
         };
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
@@ -145,6 +150,11 @@ pub async fn register_agent(
         last_heartbeat: registered_at.clone(),
         status: "online".to_string(),
         registered_at,
+        fingerprint: "".to_string(),
+        mac_addresses: "[]".to_string(),
+        vpn_active: false,
+        domain_joined: false,
+        health_status: "healthy".to_string(),
     }))
 }
 
@@ -168,13 +178,8 @@ pub async fn heartbeat(
     let rows_updated = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
-        let rows = AgentRepository::update_heartbeat(
-            &uow,
-            &id,
-            &now,
-            device_identity.as_ref(),
-        )
-        .map_err(AppError::from)?;
+        let rows = AgentRepository::update_heartbeat(&uow, &id, &now, device_identity.as_ref())
+            .map_err(AppError::from)?;
         uow.commit().map_err(AppError::from)?;
         Ok(rows)
     })
@@ -194,19 +199,19 @@ pub async fn heartbeat(
 ///
 /// Returns `None` if validation fails (graceful degradation).
 /// Emits structured `tracing::warn!` on validation failure.
-fn validate_device_identity(
+pub(crate) fn validate_device_identity(
     agent_id: &str,
     device_identity: Option<dlp_common::EndpointIdentity>,
 ) -> Option<dlp_common::EndpointIdentity> {
-    let Some(identity) = device_identity else {
-        return None;
-    };
+    let identity = device_identity?;
 
     // Validate fingerprint format: v1: prefix + 64 lowercase hex chars.
     let fp = &identity.fingerprint;
     let fp_valid = fp.starts_with("v1:")
         && fp.len() == 67
-        && fp[3..].chars().all(|c| c.is_ascii_hexdigit() && c.is_ascii_lowercase());
+        && fp[3..]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
     if !fp_valid {
         tracing::warn!(
             agent_id = %agent_id,
@@ -229,7 +234,9 @@ fn validate_device_identity(
     }
     for mac in &identity.mac_addresses {
         let mac_valid = mac.len() == 12
-            && mac.chars().all(|c| c.is_ascii_hexdigit() && c.is_ascii_uppercase());
+            && mac
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && c.is_ascii_uppercase());
         if !mac_valid {
             tracing::warn!(
                 agent_id = %agent_id,
@@ -310,6 +317,11 @@ pub async fn get_agent(
             last_heartbeat: repo_row.last_heartbeat,
             status: repo_row.status,
             registered_at: repo_row.registered_at,
+            fingerprint: repo_row.fingerprint,
+            mac_addresses: repo_row.mac_addresses,
+            vpn_active: repo_row.vpn_active,
+            domain_joined: repo_row.domain_joined,
+            health_status: repo_row.health_status,
         })
     })
     .await
@@ -386,5 +398,143 @@ mod tests {
         let req: HeartbeatRequest =
             serde_json::from_str(json).expect("deserialize empty heartbeat");
         assert!(req.status.is_none());
+    }
+
+    #[test]
+    fn test_heartbeat_request_with_device_identity() {
+        let json = r#"{
+            "status": "healthy",
+            "device_identity": {
+                "fingerprint": "v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "mac_addresses": ["AABBCCDDEEFF", "001122334455"],
+                "vpn_active": true,
+                "domain_joined": true,
+                "health_status": "healthy"
+            }
+        }"#;
+        let req: HeartbeatRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.status, Some("healthy".to_string()));
+        let id = req
+            .device_identity
+            .expect("device_identity must be present");
+        assert_eq!(
+            id.fingerprint,
+            "v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(id.mac_addresses.len(), 2);
+        assert!(id.vpn_active);
+        assert!(id.domain_joined);
+        assert_eq!(id.health_status, dlp_common::DeviceHealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_heartbeat_request_backward_compat() {
+        let json = r#"{"status": "healthy"}"#;
+        let req: HeartbeatRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.status, Some("healthy".to_string()));
+        assert!(
+            req.device_identity.is_none(),
+            "old agents omit device_identity"
+        );
+    }
+
+    #[test]
+    fn test_agent_info_response_with_device_identity() {
+        let resp = AgentInfoResponse {
+            agent_id: "agent-1".to_string(),
+            hostname: "WS01".to_string(),
+            ip: "10.0.0.1".to_string(),
+            os_version: "Windows 11".to_string(),
+            agent_version: "0.1.0".to_string(),
+            last_heartbeat: "2026-06-07T12:00:00Z".to_string(),
+            status: "online".to_string(),
+            registered_at: "2026-01-01T00:00:00Z".to_string(),
+            fingerprint: "v1:abc".to_string(),
+            mac_addresses: "[\"AABBCCDDEEFF\"]".to_string(),
+            vpn_active: true,
+            domain_joined: false,
+            health_status: "degraded".to_string(),
+        };
+        let json = serde_json::to_string(&resp).expect("serialize");
+        assert!(json.contains("\"fingerprint\":\"v1:abc\""));
+        assert!(json.contains("\"mac_addresses\":\"[\\\"AABBCCDDEEFF\\\"]\""));
+        assert!(json.contains("\"vpn_active\":true"));
+        assert!(json.contains("\"domain_joined\":false"));
+        assert!(json.contains("\"health_status\":\"degraded\""));
+    }
+
+    #[test]
+    fn test_validate_device_identity_rejects_invalid_mac() {
+        let identity = dlp_common::EndpointIdentity {
+            fingerprint: "v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            mac_addresses: vec!["invalid".to_string()],
+            vpn_active: false,
+            domain_joined: false,
+            health_status: dlp_common::DeviceHealthStatus::Healthy,
+        };
+        let result = validate_device_identity("agent-1", Some(identity));
+        assert!(
+            result.is_none(),
+            "malformed MAC must be rejected with graceful degradation"
+        );
+    }
+
+    #[test]
+    fn test_validate_device_identity_rejects_invalid_fingerprint() {
+        let identity = dlp_common::EndpointIdentity {
+            fingerprint: "bad-fingerprint".to_string(),
+            mac_addresses: vec!["AABBCCDDEEFF".to_string()],
+            vpn_active: false,
+            domain_joined: false,
+            health_status: dlp_common::DeviceHealthStatus::Healthy,
+        };
+        let result = validate_device_identity("agent-1", Some(identity));
+        assert!(
+            result.is_none(),
+            "malformed fingerprint must be rejected with graceful degradation"
+        );
+    }
+
+    #[test]
+    fn test_validate_device_identity_rejects_too_many_macs() {
+        let macs: Vec<String> = (0..33).map(|i| format!("{:012X}", i)).collect();
+        let identity = dlp_common::EndpointIdentity {
+            fingerprint: "v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            mac_addresses: macs,
+            vpn_active: false,
+            domain_joined: false,
+            health_status: dlp_common::DeviceHealthStatus::Healthy,
+        };
+        let result = validate_device_identity("agent-1", Some(identity));
+        assert!(
+            result.is_none(),
+            "more than 32 MACs must be rejected with graceful degradation"
+        );
+    }
+
+    #[test]
+    fn test_validate_device_identity_accepts_valid() {
+        let identity = dlp_common::EndpointIdentity {
+            fingerprint: "v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            mac_addresses: vec!["AABBCCDDEEFF".to_string()],
+            vpn_active: true,
+            domain_joined: true,
+            health_status: dlp_common::DeviceHealthStatus::Degraded,
+        };
+        let result = validate_device_identity("agent-1", Some(identity.clone()));
+        let validated = result.expect("valid identity must pass");
+        assert_eq!(validated.fingerprint, identity.fingerprint);
+        assert_eq!(validated.mac_addresses, identity.mac_addresses);
+        assert_eq!(validated.vpn_active, identity.vpn_active);
+        assert_eq!(validated.domain_joined, identity.domain_joined);
+    }
+
+    #[test]
+    fn test_validate_device_identity_none_returns_none() {
+        let result = validate_device_identity("agent-1", None);
+        assert!(result.is_none());
     }
 }

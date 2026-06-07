@@ -846,6 +846,42 @@ pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
         "audit_events",
     )?;
 
+    // Phase 64: Device identity expansion columns.
+    // Wrapped in transaction for atomicity. Note: SQLite ALTER TABLE
+    // limitations mean some errors cannot be fully rolled back.
+    conn.execute("BEGIN", [])?;
+    run_alter(
+        conn,
+        "ALTER TABLE agents ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''",
+        "fingerprint",
+        "agents",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE agents ADD COLUMN mac_addresses TEXT NOT NULL DEFAULT '[]'",
+        "mac_addresses",
+        "agents",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE agents ADD COLUMN vpn_active INTEGER NOT NULL DEFAULT 0",
+        "vpn_active",
+        "agents",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE agents ADD COLUMN domain_joined INTEGER NOT NULL DEFAULT 0",
+        "domain_joined",
+        "agents",
+    )?;
+    run_alter(
+        conn,
+        "ALTER TABLE agents ADD COLUMN health_status TEXT NOT NULL DEFAULT 'healthy' CHECK (health_status IN ('healthy','degraded','offline','tampered'))",
+        "health_status",
+        "agents",
+    )?;
+    conn.execute("COMMIT", [])?;
+
     Ok(())
 }
 
@@ -2037,5 +2073,125 @@ mod tests {
             result.is_err(),
             "ack_by referencing nonexistent admin must fail FK constraint"
         );
+    }
+
+    // Phase 64: Device identity expansion column tests.
+
+    #[test]
+    fn test_agents_device_identity_columns() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(agents)")
+            .expect("prepare pragma")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query pragma")
+            .filter_map(Result::ok)
+            .collect();
+
+        for col in &[
+            "fingerprint",
+            "mac_addresses",
+            "vpn_active",
+            "domain_joined",
+            "health_status",
+        ] {
+            assert!(
+                columns.contains(&col.to_string()),
+                "agents must have column '{col}'; found {columns:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_agents_device_identity_defaults() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        // Insert agent without specifying new columns.
+        conn.execute(
+            "INSERT INTO agents (agent_id, hostname, ip, os_version, agent_version, \
+             last_heartbeat, status, registered_at) \
+             VALUES ('agent-1', 'host', '10.0.0.1', 'Windows 11', '0.1.0', \
+             '2026-01-01T00:00:00Z', 'online', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert agent");
+
+        let (fingerprint, mac_addresses, vpn_active, domain_joined, health_status): (
+            String,
+            String,
+            i64,
+            i64,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT fingerprint, mac_addresses, vpn_active, domain_joined, health_status \
+                 FROM agents WHERE agent_id = 'agent-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .expect("query row");
+
+        assert_eq!(fingerprint, "", "default fingerprint must be empty");
+        assert_eq!(mac_addresses, "[]", "default mac_addresses must be '[]'");
+        assert_eq!(vpn_active, 0, "default vpn_active must be 0");
+        assert_eq!(domain_joined, 0, "default domain_joined must be 0");
+        assert_eq!(
+            health_status, "healthy",
+            "default health_status must be 'healthy'"
+        );
+    }
+
+    #[test]
+    fn test_agents_health_status_check_constraint() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        // Insert a valid agent first.
+        conn.execute(
+            "INSERT INTO agents (agent_id, hostname, ip, os_version, agent_version, \
+             last_heartbeat, status, registered_at) \
+             VALUES ('agent-1', 'host', '10.0.0.1', 'Windows 11', '0.1.0', \
+             '2026-01-01T00:00:00Z', 'online', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("insert valid agent");
+
+        // Attempt to set an invalid health_status.
+        let result = conn.execute(
+            "UPDATE agents SET health_status = 'invalid_status' WHERE agent_id = 'agent-1'",
+            [],
+        );
+        assert!(
+            result.is_err(),
+            "invalid health_status must be rejected by CHECK constraint"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("CHECK constraint failed"),
+            "error must mention CHECK constraint; got: {err_msg}"
+        );
+
+        // All four valid values must succeed.
+        for status in ["healthy", "degraded", "offline", "tampered"] {
+            conn.execute(
+                "UPDATE agents SET health_status = ?1 WHERE agent_id = 'agent-1'",
+                [status],
+            )
+            .unwrap_or_else(|e| {
+                panic!("UPDATE health_status='{status}' must succeed; got: {e}");
+            });
+
+            let stored: String = conn
+                .query_row(
+                    "SELECT health_status FROM agents WHERE agent_id = 'agent-1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("read health_status");
+            assert_eq!(stored, status, "health_status must round-trip");
+        }
     }
 }

@@ -450,8 +450,8 @@ impl ServerClient {
             "status": "healthy",
         });
         if let Some(identity) = device_identity {
-            payload["device_identity"] = serde_json::to_value(identity)
-                .expect("serialize endpoint identity");
+            payload["device_identity"] =
+                serde_json::to_value(identity).expect("serialize endpoint identity");
         }
 
         let resp = self.client.post(&url).json(&payload).send().await?;
