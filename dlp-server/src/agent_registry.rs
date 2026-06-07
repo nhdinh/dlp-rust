@@ -43,6 +43,9 @@ pub struct HeartbeatRequest {
     /// Current agent status description (optional metadata).
     #[serde(default)]
     pub status: Option<String>,
+    /// Device identity collected at runtime (fingerprint, MACs, VPN, domain, health).
+    #[serde(default)]
+    pub device_identity: Option<dlp_common::EndpointIdentity>,
 }
 
 /// Full agent record returned by list/get endpoints.
@@ -64,6 +67,16 @@ pub struct AgentInfoResponse {
     pub status: String,
     /// ISO 8601 timestamp when the agent first registered.
     pub registered_at: String,
+    /// Stable device fingerprint (v1:SHA256).
+    pub fingerprint: String,
+    /// JSON-serialized MAC address list.
+    pub mac_addresses: String,
+    /// Whether a VPN adapter is currently active.
+    pub vpn_active: bool,
+    /// Whether the machine is joined to an Active Directory domain.
+    pub domain_joined: bool,
+    /// Device health status: healthy, degraded, offline, tampered.
+    pub health_status: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -143,16 +156,25 @@ pub async fn register_agent(
 pub async fn heartbeat(
     State(state): State<Arc<AppState>>,
     Path(agent_id): Path<String>,
-    Json(_payload): Json<HeartbeatRequest>,
+    Json(payload): Json<HeartbeatRequest>,
 ) -> Result<StatusCode, AppError> {
     let now = Utc::now().to_rfc3339();
     let id = agent_id.clone();
     let pool = Arc::clone(&state.pool);
 
+    // Validate device identity before passing to repository.
+    let device_identity = validate_device_identity(&agent_id, payload.device_identity);
+
     let rows_updated = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
-        let rows = AgentRepository::update_heartbeat(&uow, &id, &now).map_err(AppError::from)?;
+        let rows = AgentRepository::update_heartbeat(
+            &uow,
+            &id,
+            &now,
+            device_identity.as_ref(),
+        )
+        .map_err(AppError::from)?;
         uow.commit().map_err(AppError::from)?;
         Ok(rows)
     })
@@ -166,6 +188,60 @@ pub async fn heartbeat(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Validates device identity fields from the heartbeat payload.
+///
+/// Returns `None` if validation fails (graceful degradation).
+/// Emits structured `tracing::warn!` on validation failure.
+fn validate_device_identity(
+    agent_id: &str,
+    device_identity: Option<dlp_common::EndpointIdentity>,
+) -> Option<dlp_common::EndpointIdentity> {
+    let Some(identity) = device_identity else {
+        return None;
+    };
+
+    // Validate fingerprint format: v1: prefix + 64 lowercase hex chars.
+    let fp = &identity.fingerprint;
+    let fp_valid = fp.starts_with("v1:")
+        && fp.len() == 67
+        && fp[3..].chars().all(|c| c.is_ascii_hexdigit() && c.is_ascii_lowercase());
+    if !fp_valid {
+        tracing::warn!(
+            agent_id = %agent_id,
+            field = "fingerprint",
+            reason = "must match ^v1:[0-9a-f]{64}$",
+            "device identity validation failed"
+        );
+        return None;
+    }
+
+    // Validate MAC format: uppercase hex, no separators, 12 chars.
+    if identity.mac_addresses.len() > 32 {
+        tracing::warn!(
+            agent_id = %agent_id,
+            field = "mac_addresses",
+            reason = "too many MACs (max 32)",
+            "device identity validation failed"
+        );
+        return None;
+    }
+    for mac in &identity.mac_addresses {
+        let mac_valid = mac.len() == 12
+            && mac.chars().all(|c| c.is_ascii_hexdigit() && c.is_ascii_uppercase());
+        if !mac_valid {
+            tracing::warn!(
+                agent_id = %agent_id,
+                field = "mac_addresses",
+                reason = "must match ^[0-9A-F]{12}$",
+                "device identity validation failed"
+            );
+            return None;
+        }
+    }
+
+    Some(identity)
 }
 
 /// `GET /agents` — list all registered agents.
@@ -195,6 +271,11 @@ pub async fn list_agents(
             last_heartbeat: r.last_heartbeat,
             status: r.status,
             registered_at: r.registered_at,
+            fingerprint: r.fingerprint,
+            mac_addresses: r.mac_addresses,
+            vpn_active: r.vpn_active,
+            domain_joined: r.domain_joined,
+            health_status: r.health_status,
         })
         .collect();
 

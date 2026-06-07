@@ -440,12 +440,19 @@ impl ServerClient {
     ///
     /// Returns `ServerClientError::Http` on network failures.
     /// Returns `ServerClientError::ServerError` on non-2xx responses.
-    pub async fn send_heartbeat(&self) -> Result<(), ServerClientError> {
+    pub async fn send_heartbeat(
+        &self,
+        device_identity: Option<&dlp_common::EndpointIdentity>,
+    ) -> Result<(), ServerClientError> {
         let url = format!("{}/agents/{}/heartbeat", self.base_url, self.agent_id);
 
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "status": "healthy",
         });
+        if let Some(identity) = device_identity {
+            payload["device_identity"] = serde_json::to_value(identity)
+                .expect("serialize endpoint identity");
+        }
 
         let resp = self.client.post(&url).json(&payload).send().await?;
 
@@ -1257,7 +1264,7 @@ mod tests {
     #[tokio::test]
     async fn test_heartbeat_unreachable_server() {
         let client = unreachable_client();
-        let result = client.send_heartbeat().await;
+        let result = client.send_heartbeat(None).await;
         assert!(result.is_err());
     }
 

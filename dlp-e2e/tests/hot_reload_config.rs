@@ -290,6 +290,7 @@ async fn test_policy_store_hot_reload() {
             groups: vec![],
             device_trust: dlp_common::abac::DeviceTrust::Managed,
             network_location: dlp_common::abac::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::abac::Resource {
             path: "C:\\\\Data\\\\secret.docx".to_string(),

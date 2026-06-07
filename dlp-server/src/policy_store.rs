@@ -671,6 +671,7 @@ mod tests {
                 groups: vec!["S-1-5-21-123-512".to_string()],
                 device_trust: DeviceTrust::Managed,
                 network_location: NetworkLocation::Corporate,
+                device_health: dlp_common::DeviceHealthStatus::default(),
             },
             resource: dlp_common::abac::Resource {
                 path: r"C:\Data\test.txt".to_string(),
@@ -2098,6 +2099,7 @@ mod tests {
                 groups: vec!["S-1-5-21-123-512".to_string()],
                 device_trust: DeviceTrust::Managed,
                 network_location: NetworkLocation::Corporate,
+                device_health: dlp_common::DeviceHealthStatus::default(),
             },
             resource: dlp_common::abac::Resource {
                 path: r"C:\Data\test.txt".to_string(),

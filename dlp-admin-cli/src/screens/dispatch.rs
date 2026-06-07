@@ -2887,6 +2887,7 @@ fn action_submit_simulate(app: &mut App) {
                 .get(form.network_location)
                 .cloned()
                 .unwrap_or(NetworkLocation::Unknown),
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: Resource {
             path: form.path,
@@ -3615,6 +3616,12 @@ fn condition_to_prefill(
             volume_class_to_idx(value),
             String::new(),
         ),
+        PolicyCondition::DeviceHealth { op, value } => (
+            ConditionAttribute::DeviceTrust,
+            op.clone(),
+            0,
+            format!("{:?}", value),
+        ),
     }
 }
 
@@ -3651,6 +3658,9 @@ pub fn condition_display(cond: &dlp_common::abac::PolicyCondition) -> String {
         }
         PolicyCondition::DestinationVolumeClass { op, value } => {
             format!("DestinationVolumeClass {op} {value}")
+        }
+        PolicyCondition::DeviceHealth { op, value } => {
+            format!("DeviceHealth {op} {value:?}")
         }
     }
 }

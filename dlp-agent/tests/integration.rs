@@ -91,6 +91,7 @@ async fn test_e2e_file_action_to_audit_log() {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: action.path().to_string(),
@@ -413,6 +414,7 @@ async fn test_agent_to_real_engine_e2e() {
             groups: vec![],
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: r"C:\Restricted\secret.xlsx".into(),
@@ -586,6 +588,7 @@ async fn test_write_t4_deny_audit() {
             groups: vec![],
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: action.path().into(),
@@ -1577,6 +1580,7 @@ async fn test_file_write_to_sensitive_path_denied() {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: action.path().to_string(),
@@ -1653,6 +1657,7 @@ async fn test_file_write_to_public_path_allowed() {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: action.path().to_string(),
@@ -1717,6 +1722,7 @@ async fn test_clipboard_paste_t4_content_denied_with_alert() {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: "clipboard://paste".to_string(),
@@ -1801,6 +1807,7 @@ async fn test_smb_detection_triggers_policy_eval_and_audit() {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: path.clone(),
@@ -1863,6 +1870,7 @@ async fn test_engine_unreachable_fails_closed_for_t4() {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: r"C:\Restricted\top-secret.docx".to_string(),
@@ -1921,6 +1929,7 @@ async fn test_engine_429_triggers_offline_manager_fallback() {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: r"C:\Restricted\quarterly.xlsx".to_string(),
@@ -1996,6 +2005,7 @@ async fn test_tc_11_copy_confidential_to_internal_blocked_alert() {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: action.path().into(),
@@ -2076,6 +2086,7 @@ async fn test_tc_14_copy_confidential_to_usb_blocked_log() {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: r"F:\confidential_report.pdf".into(),
@@ -2156,6 +2167,7 @@ async fn test_tc_21_email_credit_card_blocked_alert() {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: "email://outbound".into(),
@@ -2236,6 +2248,7 @@ async fn test_tc_72_delete_restricted_secure_delete() {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: action.path().into(),

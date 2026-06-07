@@ -1,31 +1,56 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-28T01:07:57.087Z",
-  "phase": "54",
-  "phase_name": "admin-tui-protected-paths-bypass-alerts-screens",
-  "phase_dir": ".planning/phases/54-admin-tui-protected-paths-bypass-alerts-screens",
-  "plan": 0,
-  "task": 0,
-  "total_tasks": 0,
+  "timestamp": "2026-06-07T01:45:00Z",
+  "phase": "64",
+  "phase_name": "device-identity-expansion-fingerprint-mac-vpn-health",
+  "phase_dir": ".planning/phases/64-device-identity-expansion-fingerprint-mac-vpn-health",
+  "plan": 3,
+  "task": 1,
+  "total_tasks": 12,
   "status": "paused",
   "completed_tasks": [
-    {"id": 1, "name": "Phase 54 discuss-phase", "status": "done", "commit": "3bd9629"},
-    {"id": 2, "name": "Phase 54 context committed", "status": "done", "commit": "3bd9629"},
-    {"id": 3, "name": "Phase 54 state recorded", "status": "done", "commit": "f6f36e5"}
+    {"id": 1, "name": "Plan 01: Core data types in dlp-common", "status": "done", "commit": "bf2d3ff"},
+    {"id": 2, "name": "Plan 02: Agent-side device info collection", "status": "done", "commit": "0d1e6a1"},
+    {"id": 3, "name": "Plan 03 Task 1: Extend agent heartbeat payload", "status": "done", "progress": "send_heartbeat signature extended, heartbeat loop integrated"},
+    {"id": 4, "name": "Plan 03 Task 2: Extend server types and validation", "status": "done", "progress": "HeartbeatRequest + AgentInfoResponse extended, validate_device_identity added, list_agents mapped"}
   ],
   "remaining_tasks": [
-    {"id": 4, "name": "Phase 54 plan-phase (UI-SPEC + planner + checker)", "status": "not_started"}
+    {"id": 5, "name": "Plan 03 Task 3: Extend agents DB schema, repository, offline sweeper", "status": "not_started"},
+    {"id": 6, "name": "Plan 03: Integration tests for heartbeat round-trip", "status": "not_started"},
+    {"id": 7, "name": "Plan 04 Task 1: EventType::DeviceHealthChange + ABAC condition matching", "status": "not_started"},
+    {"id": 8, "name": "Plan 04 Task 2: Agent health state machine", "status": "not_started"},
+    {"id": 9, "name": "Plan 04 Task 3: Audit events + integration tests", "status": "not_started"},
+    {"id": 10, "name": "Phase verification: full workspace build + test", "status": "not_started"},
+    {"id": 11, "name": "Phase verification: clippy + fmt", "status": "not_started"},
+    {"id": 12, "name": "Create plan summaries (64-03-SUMMARY.md, 64-04-SUMMARY.md)", "status": "not_started"}
   ],
   "blockers": [
-    {"description": "Context window at 77% -- cannot safely complete plan-phase with subagent spawns", "type": "technical", "workaround": "Resume in fresh session with /gsd:resume-work"}
+    {"description": "Context exhaustion at 75%", "type": "technical", "workaround": "Pause and resume with /gsd:resume-work"}
   ],
   "human_actions_pending": [],
   "decisions": [
-    {"decision": "Auto-mode selected all gray areas for Phase 54", "rationale": "--auto flag present; TUI screen patterns are well-established in codebase", "phase": "54"},
-    {"decision": "Single-list layout for Protected Paths with [A]/[M] source badges", "rationale": "Follows existing list screen patterns; avoids complex split-pane layout", "phase": "54"},
-    {"decision": "Compact list + detail popup for Bypass Alerts", "rationale": "Follows ApprovalList/ApprovalDetail pattern from Phase 61", "phase": "54"}
+    {"decision": "Use manual char validation instead of regex in dlp-server", "rationale": "Avoid adding regex dependency; char-by-char checks are sufficient and zero-cost", "phase": "64"},
+    {"decision": "Map DeviceHealth to DeviceTrust in admin TUI condition_to_prefill", "rationale": "ConditionAttribute enum lacks DeviceHealth variant; placeholder mapping sufficient for this phase", "phase": "64"},
+    {"decision": "Use 131u32 literal for IF_TYPE_TUNNEL", "rationale": "windows crate 0.62 does not export IF_TYPE_TUNNEL from Ndis module", "phase": "64"}
   ],
-  "uncommitted_files": [],
-  "next_action": "Run /gsd:plan-phase 54 --auto to continue planning (UI-SPEC gate + planner + checker)",
-  "context_notes": "Discuss-phase produced comprehensive CONTEXT.md and DISCUSSION-LOG.md. Plan-phase init succeeded (phase_found=true, has_context=true, has_research=false, has_plans=false, plan_count=0). Phase requires UI-SPEC.md generation before planner can run (frontend indicators detected). Auto-advance config is true, so after planning completes, execute-phase will auto-trigger."
+  "uncommitted_files": [
+    "dlp-agent/src/server_client.rs",
+    "dlp-agent/src/service.rs",
+    "dlp-agent/src/offline.rs",
+    "dlp-agent/src/identity.rs",
+    "dlp-agent/src/interception/mod.rs",
+    "dlp-agent/src/interception/drag_drop.rs",
+    "dlp-agent/src/print_watcher.rs",
+    "dlp-agent/src/chrome/handler.rs",
+    "dlp-agent/tests/integration.rs",
+    "dlp-server/src/agent_registry.rs",
+    "dlp-server/src/policy_store.rs",
+    "dlp-admin-cli/src/screens/dispatch.rs",
+    "dlp-e2e/tests/hot_reload_config.rs",
+    ".planning/STATE.md",
+    ".planning/phases/64-device-identity-expansion-fingerprint-mac-vpn-health/.continue-here.md",
+    ".planning/HANDOFF.json"
+  ],
+  "next_action": "Extend AgentRow in dlp-server/src/db/repositories/agents.rs with 5 new fields (fingerprint, mac_addresses, vpn_active, domain_joined, health_status), then update all AgentRepository SQL queries and row mappings",
+  "context_notes": "Plan 03 is approximately 60% complete. The agent-side and server type extensions are done. The critical remaining work is the DB layer: AgentRow struct, AgentRepository SQL updates, and DB migration. After that, Plan 04 (ABAC evaluation + health state machine) is entirely unstarted. All cross-crate compilation issues from Plan 01's Subject.device_health addition have been resolved. The workspace currently builds with zero errors."
 }

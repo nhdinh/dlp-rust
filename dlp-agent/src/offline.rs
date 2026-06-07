@@ -171,7 +171,8 @@ impl OfflineManager {
             // Best-effort heartbeat to dlp-server (independent of
             // Policy Engine online/offline state).
             let server_connected = if let Some(ref sc) = self.server_client {
-                let ok = sc.send_heartbeat().await.is_ok();
+                let endpoint_identity = crate::device_identity::build_endpoint_identity();
+                let ok = sc.send_heartbeat(Some(&endpoint_identity)).await.is_ok();
                 if !ok {
                     debug!("dlp-server heartbeat failed (best-effort)");
                 }
