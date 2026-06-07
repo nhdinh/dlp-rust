@@ -284,6 +284,7 @@ fn dispatch_request(request: &ContentAnalysisRequest) -> ContentAnalysisResponse
             groups: Vec::new(),
             device_trust: dlp_common::abac::DeviceTrust::Unknown,
             network_location: dlp_common::abac::NetworkLocation::Unknown,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::abac::Resource {
             path: "chrome://clipboard".to_string(),

@@ -58,6 +58,14 @@ windows = { version = "0.62", features = [
     "Win32_Storage_Packaging_Appx",
     # detection/network_share.rs: WNetOpenEnumW, WNetEnumResourceW (MPR/WNet submodule)
     "Win32_NetworkManagement_WNet",
+    # Phase 64: GetAdaptersAddresses, GAA_FLAG_INCLUDE_PREFIX, IP_ADAPTER_ADDRESSES_LH
+    "Win32_NetworkManagement_IpHelper",
+    # Phase 64: NetGetJoinInformation, NetApiBufferFree, NETSETUP_JOIN_STATUS
+    "Win32_NetworkManagement_NetManagement",
+    # Phase 64: AF_UNSPEC for GetAdaptersAddresses
+    "Win32_Networking_WinSock",
+    # Phase 64: IF_TYPE_TUNNEL for VPN detection
+    "Win32_NetworkManagement_Ndis",
     "Win32_System_DataExchange",
     # clipboard/listener.rs + detection/usb.rs: SetWindowsHookExW, CreateWindowExW,
     # RegisterClassW, RegisterDeviceNotificationW, DEV_BROADCAST_DEVICEINTERFACE_W, etc.

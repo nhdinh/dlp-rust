@@ -438,6 +438,9 @@ fn condition_matches(
         PolicyCondition::DestinationVolumeClass { op, value } => {
             volume_class_matches(op, value, ctx.destination_volume_class)
         }
+        PolicyCondition::DeviceHealth { op, value } => {
+            compare_op(op, &ctx.subject.device_health, value)
+        }
     }
 }
 

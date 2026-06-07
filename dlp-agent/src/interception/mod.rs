@@ -381,6 +381,7 @@ pub async fn run_event_loop(
                 groups: Vec::new(),
                 device_trust: dlp_common::DeviceTrust::Unknown,
                 network_location: dlp_common::NetworkLocation::Unknown,
+                device_health: dlp_common::DeviceHealthStatus::default(),
             }
         };
 

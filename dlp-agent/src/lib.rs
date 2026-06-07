@@ -149,6 +149,8 @@ pub mod allowlist;
 #[cfg(windows)]
 pub mod appinit;
 
+pub mod device_identity;
+
 #[cfg(windows)]
 pub mod process_watcher;
 

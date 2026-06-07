@@ -662,6 +662,7 @@ fn evaluate_drag_drop(
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Unknown,
             network_location: dlp_common::NetworkLocation::Unknown,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: dlp_common::Resource {
             path: "dragdrop://operation".to_string(),

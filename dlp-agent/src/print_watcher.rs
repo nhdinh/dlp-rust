@@ -341,6 +341,7 @@ fn evaluate_job(
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Unknown,
             network_location: NetworkLocation::Unknown,
+            device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: Resource {
             path: job.document_name.clone(),
