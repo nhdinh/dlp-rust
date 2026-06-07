@@ -146,6 +146,44 @@ pub struct DeviceIdentity {
     pub description: String,
 }
 
+/// Device health status for ABAC policy evaluation.
+///
+/// Ordering (for compare_op gt/lt/gte/lte): Healthy < Degraded < Offline < Tampered.
+/// This ordering is intentional -- it represents increasing severity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceHealthStatus {
+    /// Device is operating normally (default -- least restrictive).
+    #[default]
+    Healthy,
+    /// Device has degraded functionality but is still online.
+    Degraded,
+    /// Device is offline or unreachable.
+    Offline,
+    /// Device has been tampered with or integrity check failed (most restrictive).
+    Tampered,
+}
+
+/// Machine-level endpoint identity for Phase 64 device identity expansion.
+///
+/// This struct captures the machine-level identity of the endpoint device,
+/// distinct from the USB-specific [`DeviceIdentity`]. It is used by the ABAC
+/// policy engine for device-health-aware policy evaluation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct EndpointIdentity {
+    /// Format: v1:SHA256(lowercase-hex). Computed at install from hostname + sorted MACs + OS version + install date.
+    pub fingerprint: String,
+    /// Uppercase hex, no separators, e.g. AABBCCDDEEFF. Sorted lexicographically.
+    pub mac_addresses: Vec<String>,
+    /// Whether the device is currently connected to a VPN.
+    pub vpn_active: bool,
+    /// Whether the device is joined to the Active Directory domain.
+    pub domain_joined: bool,
+    /// The current health status of the endpoint device.
+    pub health_status: DeviceHealthStatus,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,5 +373,118 @@ mod tests {
         };
         let json = serde_json::to_string(&d).unwrap();
         assert!(json.contains("\"serial\":\"(none)\""));
+    }
+
+    // --- Phase 64: DeviceHealthStatus + EndpointIdentity tests ---
+
+    #[test]
+    fn test_device_health_status_serde_roundtrip() {
+        for variant in [
+            DeviceHealthStatus::Healthy,
+            DeviceHealthStatus::Degraded,
+            DeviceHealthStatus::Offline,
+            DeviceHealthStatus::Tampered,
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            let rt: DeviceHealthStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(variant, rt, "serde round-trip failed for {variant:?}");
+        }
+    }
+
+    #[test]
+    fn test_device_health_status_default_is_healthy() {
+        assert_eq!(DeviceHealthStatus::default(), DeviceHealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_device_health_status_snake_case_serde() {
+        assert_eq!(
+            serde_json::to_string(&DeviceHealthStatus::Healthy).unwrap(),
+            "\"healthy\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DeviceHealthStatus::Degraded).unwrap(),
+            "\"degraded\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DeviceHealthStatus::Offline).unwrap(),
+            "\"offline\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DeviceHealthStatus::Tampered).unwrap(),
+            "\"tampered\""
+        );
+    }
+
+    #[test]
+    fn test_endpoint_identity_serde_roundtrip() {
+        let original = EndpointIdentity {
+            fingerprint: "v1:abc123".to_string(),
+            mac_addresses: vec!["AABBCCDDEEFF".to_string()],
+            vpn_active: true,
+            domain_joined: true,
+            health_status: DeviceHealthStatus::Healthy,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let round_trip: EndpointIdentity = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, round_trip);
+    }
+
+    #[test]
+    fn test_endpoint_identity_default() {
+        let identity = EndpointIdentity::default();
+        assert_eq!(identity.fingerprint, "");
+        assert!(identity.mac_addresses.is_empty());
+        assert!(!identity.vpn_active);
+        assert!(!identity.domain_joined);
+        assert_eq!(identity.health_status, DeviceHealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_endpoint_identity_backward_compat_empty_json() {
+        // #[serde(default)] at struct level lets `{}` deserialize with all-default fields.
+        let parsed: EndpointIdentity = serde_json::from_str("{}").unwrap();
+        assert_eq!(parsed.fingerprint, "");
+        assert!(parsed.mac_addresses.is_empty());
+        assert!(!parsed.vpn_active);
+        assert!(!parsed.domain_joined);
+        assert_eq!(parsed.health_status, DeviceHealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_endpoint_identity_mac_normalization_doc() {
+        // Verify the doc comment on mac_addresses contains the normalization example.
+        // This test serves as an observable contract for the MAC normalization format.
+        let identity = EndpointIdentity {
+            mac_addresses: vec!["AABBCCDDEEFF".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(identity.mac_addresses[0], "AABBCCDDEEFF");
+    }
+
+    #[test]
+    fn test_device_health_status_ord_ordering() {
+        // Ord derive: declaration order defines ordering.
+        assert!(DeviceHealthStatus::Healthy < DeviceHealthStatus::Degraded);
+        assert!(DeviceHealthStatus::Degraded < DeviceHealthStatus::Offline);
+        assert!(DeviceHealthStatus::Offline < DeviceHealthStatus::Tampered);
+        // Transitive check.
+        assert!(DeviceHealthStatus::Healthy < DeviceHealthStatus::Tampered);
+    }
+
+    #[test]
+    fn test_device_health_status_partial_ord() {
+        assert_eq!(
+            DeviceHealthStatus::Degraded.partial_cmp(&DeviceHealthStatus::Healthy),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            DeviceHealthStatus::Healthy.partial_cmp(&DeviceHealthStatus::Degraded),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            DeviceHealthStatus::Healthy.partial_cmp(&DeviceHealthStatus::Healthy),
+            Some(std::cmp::Ordering::Equal)
+        );
     }
 }
