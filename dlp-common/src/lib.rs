@@ -32,7 +32,10 @@ pub use disk::{
     enumerate_fixed_disks, get_boot_drive_letter, is_usb_bridged, BusType, DiskError, DiskIdentity,
     EncryptionMethod, EncryptionStatus,
 };
-pub use endpoint::{AppIdentity, AppTrustTier, DeviceIdentity, SignatureState, UsbTrustTier};
+pub use endpoint::{
+    AppIdentity, AppTrustTier, DeviceHealthStatus, DeviceIdentity, EndpointIdentity,
+    SignatureState, UsbTrustTier,
+};
 pub use hash::fnv1a_64;
 pub use hook_ipc::{HookRequest, HookResponse};
 pub use label::{Label, LabelState, ObjectType, Tier};
