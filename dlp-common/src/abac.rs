@@ -3,7 +3,7 @@
 //! These types define the attribute model used by the Policy Engine's
 //! Attribute-Based Access Control evaluation layer.
 
-use crate::endpoint::AppIdentity;
+use crate::endpoint::{AppIdentity, DeviceHealthStatus};
 use serde::{Deserialize, Serialize};
 
 /// The class of a Windows volume for ABAC policy enforcement.
@@ -249,6 +249,9 @@ pub struct Subject {
     /// The network location of the device.
     #[serde(default)]
     pub network_location: NetworkLocation,
+    /// The health status of the endpoint device.
+    #[serde(default)]
+    pub device_health: DeviceHealthStatus,
 }
 
 /// The file resource being accessed.
@@ -563,6 +566,15 @@ pub enum PolicyCondition {
         op: String,
         value: NetworkLocation,
     },
+    /// Match by device health status.
+    ///
+    /// Valid operators: "eq", "neq", "gt", "lt", "gte", "lte", "in", "not_in".
+    /// Ordering (from DeviceHealthStatus::cmp): Healthy < Degraded < Offline < Tampered.
+    DeviceHealth {
+        #[serde(rename = "op")]
+        op: String,
+        value: DeviceHealthStatus,
+    },
     /// Match by access context (local vs. SMB).
     AccessContext {
         #[serde(rename = "op")]
@@ -845,6 +857,7 @@ mod tests {
                 groups: vec!["S-1-5-21-123-512".to_string()],
                 device_trust: DeviceTrust::Managed,
                 network_location: NetworkLocation::CorporateVpn,
+                device_health: DeviceHealthStatus::default(),
             },
             resource: Resource {
                 path: r"C:\Data\Report.xlsx".to_string(),
@@ -1129,6 +1142,71 @@ mod tests {
             serde_json::to_string(&AppField::TrustTier).unwrap(),
             "\"trust_tier\""
         );
+    }
+
+    // --- Phase 64: DeviceHealth PolicyCondition + Subject tests ---
+
+    #[test]
+    fn test_policy_condition_device_health_serde() {
+        use crate::endpoint::DeviceHealthStatus;
+        let condition = PolicyCondition::DeviceHealth {
+            op: "eq".to_string(),
+            value: DeviceHealthStatus::Tampered,
+        };
+        let json = serde_json::to_string(&condition).unwrap();
+        assert!(
+            json.contains("\"attribute\":\"device_health\""),
+            "json: {json}"
+        );
+        assert!(json.contains("\"op\":\"eq\""), "json: {json}");
+        assert!(json.contains("\"value\":\"tampered\""), "json: {json}");
+        let rt: PolicyCondition = serde_json::from_str(&json).unwrap();
+        assert_eq!(condition, rt);
+    }
+
+    #[test]
+    fn test_subject_device_health_default() {
+        use crate::endpoint::DeviceHealthStatus;
+        let subject = Subject::default();
+        assert_eq!(subject.device_health, DeviceHealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_abac_context_device_health_roundtrip() {
+        use crate::endpoint::DeviceHealthStatus;
+        let ctx = AbacContext {
+            subject: Subject {
+                device_health: DeviceHealthStatus::Degraded,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let rt: AbacContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.subject.device_health, DeviceHealthStatus::Degraded);
+    }
+
+    #[test]
+    fn test_policy_condition_device_health_operators_doc() {
+        // Verify the DeviceHealth variant supports the documented operators.
+        // This test constructs each operator variant to ensure they compile and serde works.
+        use crate::endpoint::DeviceHealthStatus;
+        for (op, value) in [
+            ("eq", DeviceHealthStatus::Healthy),
+            ("neq", DeviceHealthStatus::Degraded),
+            ("gt", DeviceHealthStatus::Offline),
+            ("lt", DeviceHealthStatus::Tampered),
+            ("gte", DeviceHealthStatus::Healthy),
+            ("lte", DeviceHealthStatus::Degraded),
+        ] {
+            let condition = PolicyCondition::DeviceHealth {
+                op: op.to_string(),
+                value,
+            };
+            let json = serde_json::to_string(&condition).unwrap();
+            let rt: PolicyCondition = serde_json::from_str(&json).unwrap();
+            assert_eq!(condition, rt, "serde round-trip failed for op={op}");
+        }
     }
 
     #[test]
