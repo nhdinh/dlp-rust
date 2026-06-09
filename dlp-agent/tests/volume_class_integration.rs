@@ -51,6 +51,7 @@ fn make_copy_context(
             groups: vec![],
             device_trust: dlp_common::abac::DeviceTrust::Managed,
             network_location: dlp_common::abac::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::Healthy,
         },
         resource: Resource {
             path: src_path.to_string(),

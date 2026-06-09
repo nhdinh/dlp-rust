@@ -552,6 +552,7 @@ fn make_request(path: &str, classification: Classification) -> EvaluateRequest {
             groups: Vec::new(),
             device_trust: dlp_common::DeviceTrust::Managed,
             network_location: dlp_common::NetworkLocation::Corporate,
+            device_health: dlp_common::DeviceHealthStatus::Healthy,
         },
         resource: dlp_common::Resource {
             path: path.into(),
@@ -2780,6 +2781,7 @@ mod print_tc {
                 groups: Vec::new(),
                 device_trust: DeviceTrust::Unknown,
                 network_location: NetworkLocation::Unknown,
+                device_health: dlp_common::DeviceHealthStatus::Healthy,
             },
             resource: Resource {
                 path: job.document_name.clone(),
