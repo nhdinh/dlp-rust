@@ -236,7 +236,7 @@ pub(crate) fn validate_device_identity(
         let mac_valid = mac.len() == 12
             && mac
                 .chars()
-                .all(|c| c.is_ascii_hexdigit() && c.is_ascii_uppercase());
+                .all(|c| c.is_ascii_digit() || ('A'..='F').contains(&c));
         if !mac_valid {
             tracing::warn!(
                 agent_id = %agent_id,
@@ -519,7 +519,7 @@ mod tests {
         let identity = dlp_common::EndpointIdentity {
             fingerprint: "v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
                 .to_string(),
-            mac_addresses: vec!["AABBCCDDEEFF".to_string()],
+            mac_addresses: vec!["AABBCCDDEEFF".to_string(), "001122334455".to_string()],
             vpn_active: true,
             domain_joined: true,
             health_status: dlp_common::DeviceHealthStatus::Degraded,
