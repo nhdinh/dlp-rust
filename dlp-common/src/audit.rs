@@ -224,6 +224,10 @@ pub enum EventType {
     /// Emitted server-side when an audit event's chain_hash does not match
     /// the expected SHA256(prev_hash || canonical_json).
     ChainBreakDetected,
+    /// Phase 64: Device health status changed (e.g., Healthy -> Tampered).
+    /// Emitted when the agent's health state machine transitions between
+    /// DeviceHealthStatus variants.
+    DeviceHealthChange,
 }
 
 impl EventType {
@@ -261,6 +265,7 @@ impl EventType {
                 | Self::BypassAlertDetected
                 | Self::VolumeArrival
                 | Self::ChainBreakDetected
+                | Self::DeviceHealthChange
         )
     }
 
@@ -276,6 +281,7 @@ impl EventType {
                 | Self::EtwConsumerLostEvents
                 | Self::BypassAlertDetected
                 | Self::ChainBreakDetected
+                | Self::DeviceHealthChange
         )
     }
 }
@@ -1615,6 +1621,40 @@ mod tests {
             json.contains("\"would_have_denied\":false"),
             "would_have_denied false must be present: {json}"
         );
+    }
+
+    // --- Phase 64: DeviceHealthChange event type tests ---
+
+    #[test]
+    fn test_event_type_device_health_change_serde() {
+        let event = AuditEvent::new(
+            EventType::DeviceHealthChange,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            "Healthy -> Degraded".to_string(),
+            Classification::T1,
+            Action::PolicyUpdate,
+            Decision::ALLOW,
+            "AGENT-01".to_string(),
+            1,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            json.contains("DEVICE_HEALTH_CHANGE"),
+            "JSON must contain DEVICE_HEALTH_CHANGE: {json}"
+        );
+        let rt: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.event_type, EventType::DeviceHealthChange);
+    }
+
+    #[test]
+    fn test_device_health_change_routed_to_siem() {
+        assert!(EventType::DeviceHealthChange.routed_to_siem());
+    }
+
+    #[test]
+    fn test_device_health_change_triggers_alert() {
+        assert!(EventType::DeviceHealthChange.triggers_alert());
     }
 
     // --- Phase 56: VolumeArrival event type tests ---

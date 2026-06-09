@@ -439,7 +439,7 @@ fn condition_matches(
             volume_class_matches(op, value, ctx.destination_volume_class)
         }
         PolicyCondition::DeviceHealth { op, value } => {
-            compare_op(op, &ctx.subject.device_health, value)
+            compare_op_ord(op, &ctx.subject.device_health, value)
         }
     }
 }
@@ -452,6 +452,27 @@ fn compare_op<T: PartialEq>(op: &str, actual: &T, expected: &T) -> bool {
     match op {
         "eq" => actual == expected,
         "neq" => actual != expected,
+        // Defensive: "in"/"not_in" on non-MemberOf conditions never match.
+        "in" | "not_in" => false,
+        _ => false,
+    }
+}
+
+/// Compares two Ord values using the given operator string.
+///
+/// Supports `"eq"`, `"neq"`, `"gt"`, `"lt"`, `"gte"`, and `"lte"` for
+/// all `T: PartialEq + Ord` types. The derived ordering is used for ordinal
+/// comparisons (e.g., `Healthy < Degraded < Offline < Tampered`).
+///
+/// Operators `"in"` and `"not_in"` return `false` (not applicable to scalar types).
+fn compare_op_ord<T: PartialEq + Ord>(op: &str, actual: &T, expected: &T) -> bool {
+    match op {
+        "eq" => actual == expected,
+        "neq" => actual != expected,
+        "gt" => actual > expected,
+        "lt" => actual < expected,
+        "gte" => actual >= expected,
+        "lte" => actual <= expected,
         // Defensive: "in"/"not_in" on non-MemberOf conditions never match.
         "in" | "not_in" => false,
         _ => false,
@@ -3700,5 +3721,153 @@ mod tests {
         let resp = store.evaluate(&ctx, None, false);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.matched_policy_id.as_deref(), Some("vol-in-001"));
+    }
+
+    // --- Phase 64: DeviceHealth condition tests ---
+
+    #[test]
+    fn test_condition_matches_device_health_eq() {
+        use dlp_common::DeviceHealthStatus;
+        let ctx = make_request(Classification::T1);
+        let cond = PolicyCondition::DeviceHealth {
+            op: "eq".to_string(),
+            value: DeviceHealthStatus::Healthy,
+        };
+        assert!(condition_matches(&cond, &ctx, &ctx.resource));
+    }
+
+    #[test]
+    fn test_condition_matches_device_health_neq() {
+        use dlp_common::DeviceHealthStatus;
+        let ctx = make_request(Classification::T1);
+        let cond = PolicyCondition::DeviceHealth {
+            op: "neq".to_string(),
+            value: DeviceHealthStatus::Healthy,
+        };
+        assert!(!condition_matches(&cond, &ctx, &ctx.resource));
+    }
+
+    #[test]
+    fn test_condition_matches_device_health_tampered() {
+        use dlp_common::DeviceHealthStatus;
+        let mut ctx = make_request(Classification::T1);
+        ctx.subject.device_health = DeviceHealthStatus::Tampered;
+        let cond = PolicyCondition::DeviceHealth {
+            op: "eq".to_string(),
+            value: DeviceHealthStatus::Tampered,
+        };
+        assert!(condition_matches(&cond, &ctx, &ctx.resource));
+    }
+
+    #[test]
+    fn test_condition_matches_device_health_gt() {
+        use dlp_common::DeviceHealthStatus;
+        let mut ctx = make_request(Classification::T1);
+        ctx.subject.device_health = DeviceHealthStatus::Offline;
+        let cond = PolicyCondition::DeviceHealth {
+            op: "gt".to_string(),
+            value: DeviceHealthStatus::Degraded,
+        };
+        // Offline > Degraded (ordering: Healthy < Degraded < Offline < Tampered)
+        assert!(condition_matches(&cond, &ctx, &ctx.resource));
+    }
+
+    #[test]
+    fn test_condition_matches_device_health_lt() {
+        use dlp_common::DeviceHealthStatus;
+        let ctx = make_request(Classification::T1);
+        let cond = PolicyCondition::DeviceHealth {
+            op: "lt".to_string(),
+            value: DeviceHealthStatus::Degraded,
+        };
+        // Healthy < Degraded
+        assert!(condition_matches(&cond, &ctx, &ctx.resource));
+    }
+
+    #[test]
+    fn test_condition_matches_device_health_gte() {
+        use dlp_common::DeviceHealthStatus;
+        let mut ctx = make_request(Classification::T1);
+        ctx.subject.device_health = DeviceHealthStatus::Degraded;
+        let cond = PolicyCondition::DeviceHealth {
+            op: "gte".to_string(),
+            value: DeviceHealthStatus::Degraded,
+        };
+        // Degraded >= Degraded
+        assert!(condition_matches(&cond, &ctx, &ctx.resource));
+    }
+
+    #[test]
+    fn test_condition_matches_device_health_lte() {
+        use dlp_common::DeviceHealthStatus;
+        let ctx = make_request(Classification::T1);
+        let cond = PolicyCondition::DeviceHealth {
+            op: "lte".to_string(),
+            value: DeviceHealthStatus::Degraded,
+        };
+        // Healthy <= Degraded
+        assert!(condition_matches(&cond, &ctx, &ctx.resource));
+    }
+
+    #[test]
+    fn test_compare_op_ord_gt() {
+        use dlp_common::DeviceHealthStatus;
+        assert!(compare_op_ord("gt", &DeviceHealthStatus::Offline, &DeviceHealthStatus::Degraded));
+        assert!(!compare_op_ord("gt", &DeviceHealthStatus::Healthy, &DeviceHealthStatus::Degraded));
+    }
+
+    #[test]
+    fn test_compare_op_ord_lt() {
+        use dlp_common::DeviceHealthStatus;
+        assert!(compare_op_ord("lt", &DeviceHealthStatus::Healthy, &DeviceHealthStatus::Degraded));
+        assert!(!compare_op_ord("lt", &DeviceHealthStatus::Offline, &DeviceHealthStatus::Degraded));
+    }
+
+    #[test]
+    fn test_compare_op_ord_gte_lte() {
+        use dlp_common::DeviceHealthStatus;
+        assert!(compare_op_ord("gte", &DeviceHealthStatus::Degraded, &DeviceHealthStatus::Degraded));
+        assert!(compare_op_ord("lte", &DeviceHealthStatus::Degraded, &DeviceHealthStatus::Degraded));
+        assert!(compare_op_ord("gte", &DeviceHealthStatus::Offline, &DeviceHealthStatus::Degraded));
+        assert!(compare_op_ord("lte", &DeviceHealthStatus::Healthy, &DeviceHealthStatus::Degraded));
+    }
+
+    #[test]
+    fn test_evaluate_device_health_policy() {
+        use dlp_common::DeviceHealthStatus;
+        let policy = Policy {
+            enforcement_mode: EnforcementMode::Block,
+            id: "health-001".to_string(),
+            name: "DENY if Tampered".to_string(),
+            description: None,
+            priority: 1,
+            conditions: vec![PolicyCondition::DeviceHealth {
+                op: "eq".to_string(),
+                value: DeviceHealthStatus::Tampered,
+            }],
+            action: Decision::DENY,
+            enabled: true,
+            mode: PolicyMode::ALL,
+            version: 1,
+        };
+        let store = PolicyStore {
+            cache: RwLock::new(vec![policy]),
+            pool: Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool")),
+            global_mode: RwLock::new(EnforcementMode::PerPolicy),
+        };
+
+        // Healthy subject → no match → default deny for T3
+        let mut ctx = make_request(Classification::T3);
+        ctx.subject.device_health = DeviceHealthStatus::Healthy;
+        let resp = store.evaluate(&ctx, None, false);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert!(resp.matched_policy_id.is_none());
+
+        // Tampered subject → match → DENY via policy
+        let mut ctx2 = make_request(Classification::T3);
+        ctx2.subject.device_health = DeviceHealthStatus::Tampered;
+        let resp2 = store.evaluate(&ctx2, None, false);
+        assert_eq!(resp2.decision, Decision::DENY);
+        assert_eq!(resp2.matched_policy_id.as_deref(), Some("health-001"));
     }
 }
