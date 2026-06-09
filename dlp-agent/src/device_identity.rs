@@ -9,6 +9,227 @@
 
 use dlp_common::{DeviceHealthStatus, EndpointIdentity};
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicU8, Ordering};
+
+// ---------------------------------------------------------------------------
+// Health state machine (Phase 64)
+// ---------------------------------------------------------------------------
+
+/// Current device health status as an atomic u8 (maps to DeviceHealthStatus ordinal).
+///
+/// Ordinal mapping: 0 = Healthy, 1 = Degraded, 2 = Offline, 3 = Tampered.
+/// This ordering matches the derived `Ord` on `DeviceHealthStatus`:
+/// Healthy < Degraded < Offline < Tampered.
+static HEALTH_STATUS: AtomicU8 = AtomicU8::new(0); // 0 = Healthy
+
+/// Converts a `DeviceHealthStatus` to its u8 ordinal.
+fn health_to_u8(h: DeviceHealthStatus) -> u8 {
+    match h {
+        DeviceHealthStatus::Healthy => 0,
+        DeviceHealthStatus::Degraded => 1,
+        DeviceHealthStatus::Offline => 2,
+        DeviceHealthStatus::Tampered => 3,
+    }
+}
+
+/// Converts a u8 ordinal to a `DeviceHealthStatus`.
+///
+/// Values outside the valid range default to `Healthy` (defensive).
+fn u8_to_health(v: u8) -> DeviceHealthStatus {
+    match v {
+        0 => DeviceHealthStatus::Healthy,
+        1 => DeviceHealthStatus::Degraded,
+        2 => DeviceHealthStatus::Offline,
+        3 => DeviceHealthStatus::Tampered,
+        _ => DeviceHealthStatus::Healthy,
+    }
+}
+
+/// Atomically transitions the device health status in memory.
+///
+/// Returns the previous health status. Emits a tracing log if the status changed.
+/// This function does NOT perform registry I/O -- it only updates the in-memory atomic.
+/// Callers MUST pair this with a persistence call (see `persist_health_to_registry` or
+/// use `transition_health_async` from async contexts).
+///
+/// All tamper/connectivity detection paths MUST call this function to avoid races.
+///
+/// # Eventual Consistency Note
+///
+/// The health status read by `current_health()` is a point-in-time snapshot. Between
+/// the read and the heartbeat send, the status may change. This is intentional -- the
+/// stale-read window is minimized by calling `current_health()` immediately before
+/// serialization, but true snapshot consistency across the full send path is not
+/// guaranteed. Consumers MUST treat health status as eventually consistent.
+pub fn transition_health(new_status: DeviceHealthStatus) -> DeviceHealthStatus {
+    let new_u8 = health_to_u8(new_status);
+    let prev_u8 = HEALTH_STATUS.swap(new_u8, Ordering::SeqCst);
+    let prev_status = u8_to_health(prev_u8);
+    if prev_u8 != new_u8 {
+        tracing::info!(prev = ?prev_status, new = ?new_status, "device health status changed");
+    }
+    prev_status
+}
+
+/// Persists the current health status to the registry.
+///
+/// Call this after `transition_health` to save state. Sync callers call directly;
+/// async callers wrap in `spawn_blocking` via `transition_health_async`.
+pub fn persist_health_to_registry() -> anyhow::Result<()> {
+    let current = current_health();
+    write_health_status_to_registry(&current)
+}
+
+/// Async-safe wrapper for health transition + persistence.
+///
+/// Atomically transitions health in memory, then wraps the registry write in
+/// `spawn_blocking` to avoid blocking the async runtime. Use this from the heartbeat
+/// loop or other async contexts.
+pub async fn transition_health_async(new_status: DeviceHealthStatus) -> DeviceHealthStatus {
+    let prev = transition_health(new_status);
+    let _ = tokio::task::spawn_blocking(move || persist_health_to_registry()).await;
+    prev
+}
+
+/// Returns the current device health status.
+#[must_use]
+pub fn current_health() -> DeviceHealthStatus {
+    u8_to_health(HEALTH_STATUS.load(Ordering::SeqCst))
+}
+
+/// Reads health status from registry at startup.
+///
+/// Call this in service.rs init to restore state after restart.
+/// Returns `Some(DeviceHealthStatus)` if a valid value was found, `None` otherwise.
+#[cfg(windows)]
+pub fn read_health_from_registry() -> Option<DeviceHealthStatus> {
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, HKEY_LOCAL_MACHINE, KEY_READ,
+    };
+
+    let mut hkey = windows::Win32::System::Registry::HKEY::default();
+    let result = unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            windows::core::w!(r"SOFTWARE\DLP\Agent"),
+            None,
+            KEY_READ,
+            &mut hkey,
+        )
+    };
+
+    if result.is_err() {
+        return None;
+    }
+
+    let value = read_reg_string(hkey, "health_status");
+
+    unsafe {
+        let _ = RegCloseKey(hkey);
+    }
+
+    value.and_then(|s| match s.as_str() {
+        "healthy" => Some(DeviceHealthStatus::Healthy),
+        "degraded" => Some(DeviceHealthStatus::Degraded),
+        "offline" => Some(DeviceHealthStatus::Offline),
+        "tampered" => Some(DeviceHealthStatus::Tampered),
+        _ => None,
+    })
+}
+
+#[cfg(not(windows))]
+pub fn read_health_from_registry() -> Option<DeviceHealthStatus> {
+    None
+}
+
+/// Writes health status to the registry.
+///
+/// On Windows, creates/opens `HKLM\SOFTWARE\DLP\Agent` and writes
+/// `health_status` as REG_SZ with the snake_case variant name.
+///
+/// On non-Windows, this is a no-op that returns `Ok(())`.
+#[cfg(windows)]
+fn write_health_status_to_registry(status: &DeviceHealthStatus) -> anyhow::Result<()> {
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_SZ,
+    };
+
+    let mut hkey = windows::Win32::System::Registry::HKEY::default();
+    let result = unsafe {
+        RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            windows::core::w!(r"SOFTWARE\DLP\Agent"),
+            None,
+            windows::core::PCWSTR::null(),
+            windows::Win32::System::Registry::REG_OPTION_NON_VOLATILE,
+            KEY_WRITE,
+            None,
+            &mut hkey,
+            None,
+        )
+    };
+
+    if result.is_err() {
+        return Err(anyhow::anyhow!("RegCreateKeyExW failed: {:?}", result));
+    }
+
+    let status_str = serde_json::to_string(status)
+        .map_err(|e| anyhow::anyhow!("failed to serialize health status: {e}"))?;
+    // serde_json produces quoted string like "healthy" -- strip quotes for REG_SZ
+    let status_str = status_str.trim_matches('"');
+
+    let wide: Vec<u16> = status_str
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let wide_bytes = unsafe {
+        std::slice::from_raw_parts(
+            wide.as_ptr() as *const u8,
+            wide.len() * std::mem::size_of::<u16>(),
+        )
+    };
+    let set_result = unsafe {
+        RegSetValueExW(
+            hkey,
+            windows::core::w!("health_status"),
+            None,
+            REG_SZ,
+            Some(wide_bytes),
+        )
+    };
+
+    unsafe {
+        let _ = RegCloseKey(hkey);
+    }
+
+    if set_result.is_err() {
+        return Err(anyhow::anyhow!("RegSetValueExW failed: {:?}", set_result));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn write_health_status_to_registry(_status: &DeviceHealthStatus) -> anyhow::Result<()> {
+    Ok(())
+}
+
+/// Called by tamper detection subsystems (e.g., Phase 63 hash chain verification).
+///
+/// Immediately sets health status to `Tampered`. This is a one-way transition --
+/// recovery to `Healthy` requires a successful heartbeat (see heartbeat loop).
+///
+/// NOTE: No caller in this phase. Phase 63 hash chain verification will call this.
+/// See Phase 63 plan for the hash chain integrity check that triggers this.
+///
+/// Dependency: Phase 63 (hash-chain-verification) -- this function is the integration
+/// point. When Phase 63 detects a hash chain break, it calls `report_tamper_detected()`.
+pub fn report_tamper_detected() {
+    let prev = transition_health(DeviceHealthStatus::Tampered);
+    if prev != DeviceHealthStatus::Tampered {
+        let _ = persist_health_to_registry();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // VPN keyword list
@@ -530,7 +751,7 @@ pub fn build_endpoint_identity() -> EndpointIdentity {
         mac_addresses,
         vpn_active,
         domain_joined,
-        health_status: DeviceHealthStatus::Healthy,
+        health_status: current_health(),
     }
 }
 
@@ -732,6 +953,9 @@ mod tests {
 
     #[test]
     fn test_build_endpoint_identity() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        // Ensure known state before building.
+        HEALTH_STATUS.store(0, Ordering::SeqCst);
         let identity = build_endpoint_identity();
         assert!(!identity.fingerprint.is_empty());
         assert!(!identity.mac_addresses.is_empty());
@@ -790,6 +1014,164 @@ mod tests {
         #[cfg(not(windows))]
         {
             assert_eq!(os, "non-windows (test)");
+        }
+    }
+
+    // --- Phase 64: Health state machine tests ---
+
+    // Tests that mutate the global HEALTH_STATUS static must be serialised
+    // to avoid race conditions.  This mutex is acquired by every test that
+    // reads or writes HEALTH_STATUS.  parking_lot::Mutex is used because it
+    // does not poison on panic (unlike std::sync::Mutex).
+    static HEALTH_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    #[test]
+    fn test_current_health_default() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        HEALTH_STATUS.store(0, Ordering::SeqCst);
+        assert_eq!(current_health(), DeviceHealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_transition_health_healthy_to_degraded() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        HEALTH_STATUS.store(0, Ordering::SeqCst);
+        let prev = transition_health(DeviceHealthStatus::Degraded);
+        assert_eq!(prev, DeviceHealthStatus::Healthy);
+        assert_eq!(current_health(), DeviceHealthStatus::Degraded);
+    }
+
+    #[test]
+    fn test_transition_health_degraded_to_offline() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        HEALTH_STATUS.store(1, Ordering::SeqCst);
+        let prev = transition_health(DeviceHealthStatus::Offline);
+        assert_eq!(prev, DeviceHealthStatus::Degraded);
+        assert_eq!(current_health(), DeviceHealthStatus::Offline);
+    }
+
+    #[test]
+    fn test_transition_health_any_to_healthy() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        HEALTH_STATUS.store(2, Ordering::SeqCst);
+        let prev = transition_health(DeviceHealthStatus::Healthy);
+        assert_eq!(prev, DeviceHealthStatus::Offline);
+        assert_eq!(current_health(), DeviceHealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_transition_health_tampered() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        HEALTH_STATUS.store(0, Ordering::SeqCst);
+        let prev = transition_health(DeviceHealthStatus::Tampered);
+        assert_eq!(prev, DeviceHealthStatus::Healthy);
+        assert_eq!(current_health(), DeviceHealthStatus::Tampered);
+    }
+
+    #[test]
+    fn test_transition_health_idempotent() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        HEALTH_STATUS.store(0, Ordering::SeqCst);
+        let prev1 = transition_health(DeviceHealthStatus::Degraded);
+        assert_eq!(prev1, DeviceHealthStatus::Healthy);
+        let prev2 = transition_health(DeviceHealthStatus::Degraded);
+        assert_eq!(prev2, DeviceHealthStatus::Degraded);
+        assert_eq!(current_health(), DeviceHealthStatus::Degraded);
+    }
+
+    #[test]
+    fn test_health_to_u8_roundtrip() {
+        assert_eq!(health_to_u8(DeviceHealthStatus::Healthy), 0);
+        assert_eq!(health_to_u8(DeviceHealthStatus::Degraded), 1);
+        assert_eq!(health_to_u8(DeviceHealthStatus::Offline), 2);
+        assert_eq!(health_to_u8(DeviceHealthStatus::Tampered), 3);
+    }
+
+    #[test]
+    fn test_u8_to_health_roundtrip() {
+        assert_eq!(u8_to_health(0), DeviceHealthStatus::Healthy);
+        assert_eq!(u8_to_health(1), DeviceHealthStatus::Degraded);
+        assert_eq!(u8_to_health(2), DeviceHealthStatus::Offline);
+        assert_eq!(u8_to_health(3), DeviceHealthStatus::Tampered);
+    }
+
+    #[test]
+    fn test_u8_to_health_invalid_defaults_to_healthy() {
+        assert_eq!(u8_to_health(255), DeviceHealthStatus::Healthy);
+        assert_eq!(u8_to_health(4), DeviceHealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_persist_health_to_registry_idempotent() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        HEALTH_STATUS.store(0, Ordering::SeqCst);
+        transition_health(DeviceHealthStatus::Degraded);
+        // Registry write may fail in test environments (non-admin, non-Windows).
+        // We only assert it does not panic; success is environment-dependent.
+        let _ = persist_health_to_registry();
+        let _ = persist_health_to_registry();
+    }
+
+    #[test]
+    fn test_health_persistence_roundtrip() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        HEALTH_STATUS.store(0, Ordering::SeqCst);
+        transition_health(DeviceHealthStatus::Offline);
+        // Registry write may fail in test environments (non-admin, non-Windows).
+        // We only assert it does not panic; roundtrip verification is environment-dependent.
+        let write_ok = persist_health_to_registry().is_ok();
+        if write_ok {
+            let read_back = read_health_from_registry();
+            assert_eq!(read_back, Some(DeviceHealthStatus::Offline));
+        }
+    }
+
+    #[test]
+    fn test_report_tamper_detected_sets_tampered() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        HEALTH_STATUS.store(0, Ordering::SeqCst);
+        report_tamper_detected();
+        assert_eq!(current_health(), DeviceHealthStatus::Tampered);
+    }
+
+    #[test]
+    fn test_report_tamper_detected_idempotent() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        HEALTH_STATUS.store(0, Ordering::SeqCst);
+        report_tamper_detected();
+        assert_eq!(current_health(), DeviceHealthStatus::Tampered);
+        // Second call should be a no-op (already Tampered).
+        report_tamper_detected();
+        assert_eq!(current_health(), DeviceHealthStatus::Tampered);
+    }
+
+    #[tokio::test]
+    async fn test_transition_health_async_does_not_panic() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        HEALTH_STATUS.store(0, Ordering::SeqCst);
+        let prev = transition_health_async(DeviceHealthStatus::Degraded).await;
+        assert_eq!(prev, DeviceHealthStatus::Healthy);
+        assert_eq!(current_health(), DeviceHealthStatus::Degraded);
+    }
+
+    #[test]
+    fn test_build_endpoint_identity_uses_current_health() {
+        let _guard = HEALTH_TEST_LOCK.lock();
+        HEALTH_STATUS.store(2, Ordering::SeqCst); // Offline
+        let identity = build_endpoint_identity();
+        assert_eq!(identity.health_status, DeviceHealthStatus::Offline);
+    }
+
+    #[test]
+    fn test_health_to_u8_and_u8_to_health_consistency() {
+        for (status, expected_u8) in [
+            (DeviceHealthStatus::Healthy, 0u8),
+            (DeviceHealthStatus::Degraded, 1u8),
+            (DeviceHealthStatus::Offline, 2u8),
+            (DeviceHealthStatus::Tampered, 3u8),
+        ] {
+            assert_eq!(health_to_u8(status), expected_u8);
+            assert_eq!(u8_to_health(expected_u8), status);
         }
     }
 }

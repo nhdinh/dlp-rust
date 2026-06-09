@@ -12,7 +12,7 @@
 //! The caller should consult [`offline_decision`] when `EngineClient::evaluate`
 //! fails with `EngineClientError::Unreachable`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,6 +45,9 @@ pub struct OfflineManager {
     /// Optional client for sending heartbeats to dlp-server.
     /// When set, each heartbeat iteration also pings the central server.
     server_client: Option<ServerClient>,
+    /// Consecutive heartbeat failure counter (Phase 64).
+    /// 3 failures = Degraded, 10 failures = Offline.
+    heartbeat_failures: AtomicU8,
 }
 
 impl OfflineManager {
@@ -63,6 +66,7 @@ impl OfflineManager {
             heartbeat_interval: HEARTBEAT_INTERVAL,
             machine_name,
             server_client: None,
+            heartbeat_failures: AtomicU8::new(0),
         }
     }
 
@@ -81,6 +85,7 @@ impl OfflineManager {
             heartbeat_interval: interval,
             machine_name,
             server_client: None,
+            heartbeat_failures: AtomicU8::new(0),
         }
     }
 
@@ -173,8 +178,48 @@ impl OfflineManager {
             let server_connected = if let Some(ref sc) = self.server_client {
                 let endpoint_identity = crate::device_identity::build_endpoint_identity();
                 let ok = sc.send_heartbeat(Some(&endpoint_identity)).await.is_ok();
-                if !ok {
-                    debug!("dlp-server heartbeat failed (best-effort)");
+                if ok {
+                    // Success: reset failure counter and recover to Healthy if needed.
+                    let prev_failures = self.heartbeat_failures.swap(0, Ordering::SeqCst);
+                    if prev_failures > 0 {
+                        info!(
+                            prev_failures,
+                            "dlp-server heartbeat recovered after failures"
+                        );
+                        let current = crate::device_identity::current_health();
+                        if current != dlp_common::DeviceHealthStatus::Healthy {
+                            let _ = crate::device_identity::transition_health_async(
+                                dlp_common::DeviceHealthStatus::Healthy,
+                            )
+                            .await;
+                        }
+                    }
+                } else {
+                    // Failure: increment counter and trigger health transitions.
+                    let failures = self.heartbeat_failures.fetch_add(1, Ordering::SeqCst) + 1;
+                    warn!(
+                        failures,
+                        "dlp-server heartbeat failed (best-effort)"
+                    );
+                    if failures == 3 {
+                        warn!(
+                            failures,
+                            "3 consecutive heartbeat failures -- transitioning to Degraded"
+                        );
+                        let _ = crate::device_identity::transition_health_async(
+                            dlp_common::DeviceHealthStatus::Degraded,
+                        )
+                        .await;
+                    } else if failures == 10 {
+                        warn!(
+                            failures,
+                            "10 consecutive heartbeat failures -- transitioning to Offline"
+                        );
+                        let _ = crate::device_identity::transition_health_async(
+                            dlp_common::DeviceHealthStatus::Offline,
+                        )
+                        .await;
+                    }
                 }
                 ok
             } else {

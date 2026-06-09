@@ -1050,6 +1050,12 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         warn!(error = %e, "agent DB init failed — offline audit queue unavailable");
     }
 
+    // ── Restore device health status from registry (Phase 64) ──────────────
+    if let Some(health) = crate::device_identity::read_health_from_registry() {
+        info!(health = ?health, "restored device health status from registry");
+        crate::device_identity::transition_health(health);
+    }
+
     // ── Load agent config (needed for cache prepopulation and monitor setup) ───
     let agent_config = crate::config::AgentConfig::load_default();
 
