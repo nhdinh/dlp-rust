@@ -67,8 +67,33 @@ pub fn transition_health(new_status: DeviceHealthStatus) -> DeviceHealthStatus {
     let prev_status = u8_to_health(prev_u8);
     if prev_u8 != new_u8 {
         tracing::info!(prev = ?prev_status, new = ?new_status, "device health status changed");
+        emit_health_change_audit_event(prev_status, new_status);
     }
     prev_status
+}
+
+/// Emits an audit event for a device health status change.
+///
+/// Best-effort: errors are logged but not propagated. Audit failures must never
+/// interfere with health state transitions.
+fn emit_health_change_audit_event(prev: DeviceHealthStatus, new: DeviceHealthStatus) {
+    use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+    let agent_id = std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "unknown".to_string());
+    let mut event = AuditEvent::new(
+        EventType::DeviceHealthChange,
+        "SYSTEM".to_string(),
+        "agent".to_string(),
+        format!("{:?} -> {:?}", prev, new),
+        Classification::T1,
+        Action::PolicyUpdate,
+        Decision::ALLOW,
+        agent_id,
+        0,
+    );
+    if let Err(e) = crate::audit_emitter::emit(&mut event) {
+        tracing::warn!(error = %e, "failed to emit DeviceHealthChange audit event");
+    }
 }
 
 /// Persists the current health status to the registry.
@@ -87,7 +112,7 @@ pub fn persist_health_to_registry() -> anyhow::Result<()> {
 /// loop or other async contexts.
 pub async fn transition_health_async(new_status: DeviceHealthStatus) -> DeviceHealthStatus {
     let prev = transition_health(new_status);
-    let _ = tokio::task::spawn_blocking(move || persist_health_to_registry()).await;
+    let _ = tokio::task::spawn_blocking(persist_health_to_registry).await;
     prev
 }
 

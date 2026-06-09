@@ -197,10 +197,7 @@ impl OfflineManager {
                 } else {
                     // Failure: increment counter and trigger health transitions.
                     let failures = self.heartbeat_failures.fetch_add(1, Ordering::SeqCst) + 1;
-                    warn!(
-                        failures,
-                        "dlp-server heartbeat failed (best-effort)"
-                    );
+                    warn!(failures, "dlp-server heartbeat failed (best-effort)");
                     if failures == 3 {
                         warn!(
                             failures,

@@ -3812,24 +3812,56 @@ mod tests {
     #[test]
     fn test_compare_op_ord_gt() {
         use dlp_common::DeviceHealthStatus;
-        assert!(compare_op_ord("gt", &DeviceHealthStatus::Offline, &DeviceHealthStatus::Degraded));
-        assert!(!compare_op_ord("gt", &DeviceHealthStatus::Healthy, &DeviceHealthStatus::Degraded));
+        assert!(compare_op_ord(
+            "gt",
+            &DeviceHealthStatus::Offline,
+            &DeviceHealthStatus::Degraded
+        ));
+        assert!(!compare_op_ord(
+            "gt",
+            &DeviceHealthStatus::Healthy,
+            &DeviceHealthStatus::Degraded
+        ));
     }
 
     #[test]
     fn test_compare_op_ord_lt() {
         use dlp_common::DeviceHealthStatus;
-        assert!(compare_op_ord("lt", &DeviceHealthStatus::Healthy, &DeviceHealthStatus::Degraded));
-        assert!(!compare_op_ord("lt", &DeviceHealthStatus::Offline, &DeviceHealthStatus::Degraded));
+        assert!(compare_op_ord(
+            "lt",
+            &DeviceHealthStatus::Healthy,
+            &DeviceHealthStatus::Degraded
+        ));
+        assert!(!compare_op_ord(
+            "lt",
+            &DeviceHealthStatus::Offline,
+            &DeviceHealthStatus::Degraded
+        ));
     }
 
     #[test]
     fn test_compare_op_ord_gte_lte() {
         use dlp_common::DeviceHealthStatus;
-        assert!(compare_op_ord("gte", &DeviceHealthStatus::Degraded, &DeviceHealthStatus::Degraded));
-        assert!(compare_op_ord("lte", &DeviceHealthStatus::Degraded, &DeviceHealthStatus::Degraded));
-        assert!(compare_op_ord("gte", &DeviceHealthStatus::Offline, &DeviceHealthStatus::Degraded));
-        assert!(compare_op_ord("lte", &DeviceHealthStatus::Healthy, &DeviceHealthStatus::Degraded));
+        assert!(compare_op_ord(
+            "gte",
+            &DeviceHealthStatus::Degraded,
+            &DeviceHealthStatus::Degraded
+        ));
+        assert!(compare_op_ord(
+            "lte",
+            &DeviceHealthStatus::Degraded,
+            &DeviceHealthStatus::Degraded
+        ));
+        assert!(compare_op_ord(
+            "gte",
+            &DeviceHealthStatus::Offline,
+            &DeviceHealthStatus::Degraded
+        ));
+        assert!(compare_op_ord(
+            "lte",
+            &DeviceHealthStatus::Healthy,
+            &DeviceHealthStatus::Degraded
+        ));
     }
 
     #[test]
