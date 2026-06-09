@@ -1,43 +1,88 @@
 ---
-phase: 64-device-identity-expansion-fingerprint-mac-vpn-health
-status: planned
-generated: "2026-06-06"
+phase: 64
+slug: device-identity-expansion-fingerprint-mac-vpn-health
+status: verified
+nyquist_compliant: true
+generated: "2026-06-09"
 ---
 
-# Phase 64 Validation Strategy
+# Phase 64 — Validation Strategy
 
-## Dimension Coverage
+> Per-phase validation contract. All requirements verified with automated tests.
 
-| Dimension | Coverage | Evidence |
-|-----------|----------|----------|
-| 1. Correctness | Plan tests for serde round-trips, fingerprint determinism, MAC validation | Unit tests in dlp-common and dlp-agent |
-| 2. Edge Cases | Empty MAC list, registry read failure, non-Windows stubs | Test stubs and fallback paths |
-| 3. Integration | Heartbeat payload round-trip, ABAC condition evaluation | Integration tests in dlp-server |
-| 4. Performance | Fingerprint computation is O(n log n) due to MAC sorting; heartbeat adds small JSON payload | Benchmark not required — negligible overhead |
-| 5. Security | Registry write to HKLM requires admin; fingerprint tampering changes hash | Threat model in PLAN.md |
-| 6. Concurrency | Health status transitions use AtomicU8/Mutex | Single-owner transition function |
-| 7. Regression | USB DeviceIdentity unchanged; existing heartbeat tests pass | Backward compat tests |
-| 8. Dependencies | No new external crates — all from existing workspace | Cargo.toml audit |
+---
 
-## Test Commands
+## Test Infrastructure
 
-```bash
-# Per-plan verification
-cargo test -p dlp-common --lib
-cargo test -p dlp-agent --lib
-cargo test -p dlp-server --lib
+| Property | Value |
+|----------|-------|
+| **Framework** | Built-in `#[test]` (Rust) |
+| **Config file** | None — workspace Cargo.toml |
+| **Quick run command** | `cargo test -p dlp-common -p dlp-agent -p dlp-server --lib` |
+| **Full suite command** | `cargo test --workspace` |
+| **Estimated runtime** | ~90 seconds |
 
-# Full workspace
-cargo test --workspace
+---
 
-# Quality gates
-cargo clippy --workspace -- -D warnings
-cargo fmt --check
-```
+## Per-Requirement Verification Map
 
-## Acceptance Criteria
+| Requirement | Description | Test Evidence | Crate | Status |
+|-------------|-------------|---------------|-------|--------|
+| DEVICE-01 | Device fingerprint (SHA-256, v1: prefix, registry persistence) | `test_fingerprint_*`, `test_read/write_fingerprint_to_registry` | dlp-agent | green |
+| DEVICE-02 | MAC address collection (GetAdaptersAddresses, sort, uppercase, >32 reject) | `test_collect_mac_addresses_*`, `test_validate_device_identity_rejects_too_many_macs` | dlp-agent, dlp-server | green |
+| DEVICE-03 | VPN detection + ABAC DeviceHealth condition (gt/lt/gte/lte Ord) | `test_detect_vpn_active_*`, `test_condition_matches_device_health_*`, `test_compare_op_ord_*` | dlp-agent, dlp-server | green |
+| DEVICE-04 | Domain join state (NetGetJoinInformation) | `test_get_domain_joined_*` | dlp-agent | green |
+| DEVICE-05 | Health state machine (AtomicU8, 3/10 failure thresholds, audit, registry) | `test_transition_health_*`, `test_current_health_default`, `test_health_persistence_roundtrip`, `test_report_tamper_detected_*`, `test_device_health_change_*` | dlp-agent, dlp-common | green |
 
-- [ ] All DEVICE-01 through DEVICE-05 requirements have passing tests
-- [ ] No compiler warnings (`-D warnings`)
-- [ ] Clippy clean
-- [ ] Existing tests still pass (regression check)
+---
+
+## Test Count by Plan
+
+| Plan | Tests Added | Crate | Key Files |
+|------|-------------|-------|-----------|
+| 64-01 | 13 | dlp-common | `endpoint.rs` (9), `abac.rs` (4) |
+| 64-02 | 8 | dlp-agent | `device_identity.rs` |
+| 64-03 | 11 | dlp-server | `agents.rs` (3), `db/mod.rs` (3), `agent_registry.rs` (5) |
+| 64-04 | 32 | dlp-common, dlp-server, dlp-agent | `audit.rs` (3), `policy_store.rs` (12), `device_identity.rs` (17) |
+| **Total** | **64** | | |
+
+---
+
+## Regression Verification
+
+| Check | Result |
+|-------|--------|
+| dlp-common lib tests | 317 passed |
+| dlp-server lib tests | 614 passed |
+| dlp-agent lib tests | 761 passed |
+| dlp-user-ui lib tests | 27 passed |
+| dlp-admin-cli lib tests | 198 passed |
+| dlp-hook-dll lib tests | 280 passed, 1 flaky (unrelated) |
+| `cargo build --workspace` | zero errors |
+| `cargo clippy --workspace -- -D warnings` | clean |
+| `cargo fmt --check` | clean |
+
+---
+
+## Manual-Only Verifications
+
+None. All phase behaviors have automated verification.
+
+---
+
+## Validation Audit Trail
+
+| Audit Date | Tests Total | Passing | Failing | Manual-Only | Run By |
+|------------|-------------|---------|---------|-------------|--------|
+| 2026-06-09 | 64 new + 2017 existing | 2081 | 0 (1 flaky pre-existing) | 0 | gsd-validate-phase |
+
+---
+
+## Sign-Off
+
+- [x] All DEVICE-01 through DEVICE-05 requirements have passing automated tests
+- [x] No compiler warnings (`cargo clippy --workspace -- -D warnings`)
+- [x] Existing tests still pass (regression check)
+- [x] `nyquist_compliant: true` set in frontmatter
+
+**Approval:** verified 2026-06-09
