@@ -443,20 +443,20 @@ Plans:
   4. Domain join state is included in the agent heartbeat via `NetGetJoinInformation`; the server stores and exposes it in agent info responses.
   5. Health status transitions atomically on tamper detection (Tampered), connectivity loss (3 failures = Degraded, 10 = Offline), and recovery (successful heartbeat = Healthy); every transition emits a `DeviceHealthChange` audit event.
 
-**Plans:** 4/4 plans planned
+**Plans:** 4/4 plans complete (2026-06-09)
 
 **Wave 1** *(no dependencies)*
 
-- [ ] `64-01-PLAN.md` — Core data types: EndpointIdentity struct, DeviceHealthStatus enum, DeviceHealth PolicyCondition variant, lib.rs re-exports, 9 unit tests
-- [ ] `64-02-PLAN.md` — Agent device collection: MAC addresses, VPN detection, domain join, fingerprint computation, registry persistence, 8 unit tests
+- [x] `64-01-PLAN.md` — Core data types: EndpointIdentity struct, DeviceHealthStatus enum, DeviceHealth PolicyCondition variant, lib.rs re-exports, 9 unit tests
+- [x] `64-02-PLAN.md` — Agent device collection: MAC addresses, VPN detection, domain join, fingerprint computation, registry persistence, 8 unit tests
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] `64-03-PLAN.md` — Heartbeat integration + server storage: extended heartbeat payload, HeartbeatRequest/AgentInfoResponse, DB migrations (5 columns), AgentRepository updates, offline sweeper
+- [x] `64-03-PLAN.md` — Heartbeat integration + server storage: extended heartbeat payload, HeartbeatRequest/AgentInfoResponse, DB migrations (5 columns), AgentRepository updates, offline sweeper
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] `64-04-PLAN.md` — ABAC integration + health state machine: EventType::DeviceHealthChange, PolicyStore DeviceHealth match arm, AtomicU8 transitions, heartbeat failure tracking, tamper detection, audit emission
+- [x] `64-04-PLAN.md` — ABAC integration + health state machine: EventType::DeviceHealthChange, PolicyStore DeviceHealth match arm, AtomicU8 transitions, heartbeat failure tracking, tamper detection, audit emission
 
 ---
 
@@ -540,4 +540,4 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 
 ---
 
-*Last updated: 2026-06-07 — Phase 64 plans created (4 plans, 3 waves).*
+*Last updated: 2026-06-09 — Phase 64 complete (all 4 plans executed, verification pending).*
