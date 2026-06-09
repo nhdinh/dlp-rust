@@ -1,7 +1,7 @@
 ---
 milestone: v0.11.0
 milestone_name: Label Service + Workflow + Audit
-last_updated: 2026-06-07
+last_updated: 2026-06-09
 total_phases: 6
 v1_requirements: 26
 coverage: 26/26
@@ -29,8 +29,8 @@ Phase numbering is continuous across milestones — it never restarts. Phases 0.
 - v0.8.1 Deferred Items & Issue Debt — Phases 43–46 (shipped 2026-05-08)
 - v0.9.0 Cloud & Print Exfiltration Prevention — M017 / pre-Phase 47 (shipped 2026-05-09)
 - ~~v1.0.0 Enterprise Hardening & Scale — abandoned 2026-05-12; only Phase 47 (HARD-01) shipped~~
-- **v0.10.0 Real-Time File Access Prevention — Phases 47 (prerequisite) + 48–58 (active)**
-- ✅ **v0.11.0 Label Service + Workflow + Syslog — Phases 59–62 (shipped 2026-05-22)**
+- **v0.10.0 Real-Time File Access Prevention — Phases 47 (prerequisite) + 48–56 (complete) + 57–58 (active)**
+- ✅ **v0.11.0 Label Service + Workflow + Syslog + Hash + Device — Phases 59–64 (shipped 2026-06-09)**
 
 ---
 
@@ -67,7 +67,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 53: ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring** — turn hook-vs-ETW divergence into auditable BypassAlert events routed through SIEM and the alert router. (completed 2026-05-28)
 - [x] **Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens** — operator UX for the two new server surfaces. (completed 2026-05-28)
 - [x] **Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode** — safe-rollout mode every industry DLP requires before production deployment. (completed 2026-05-29)
-- [ ] **Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)** — fold SEED-004 in: device enumeration, two new ABAC attributes, admin TUI extension.
+- [x] **Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)** — fold SEED-004 in: device enumeration, two new ABAC attributes, admin TUI extension. (completed 2026-06-06)
 - [ ] **Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT** — the milestone ship gate; per-vendor allowlist procedures, hash publishing, and real-Windows UAT (folds in former HARD-05).
 - [ ] **Phase 58: Differentiators Bundle (cuttable to v0.10.1 if scope pressure hits)** — cuttable as a unit to v0.10.1 if scope pressure hits; otherwise materially improves deployability.
 
@@ -306,25 +306,25 @@ Plans:
   3. The admin TUI Conditions Builder exposes `source_volume_class` and `destination_volume_class` as dropdowns with the six enum values; the existing USB/disk allowlist screens render SD/Optical/Virtual rows alongside USB without UI breakage.
   4. `WM_DEVICECHANGE` handlers cover virtual mounts (Daemon Tools, ISO mounting via Windows Explorer, VHD/VHDX mount) by registering `GUID_DEVINTERFACE_VOLUME` notification handlers for non-USB volume classes; the 500 ms deferred-processing pattern from v0.7.0 is preserved.
 
-**Plans:** 4/6 plans executed
+**Plans:** 6/6 plans complete (completed 2026-06-06)
 **UI hint**: yes
 
 Plans:
 
 **Wave 1** *(no dependencies)*
 
-- [ ] `56-01-PLAN.md` — VolumeClass enum + AbacContext extension + PolicyCondition variants + VolumeArrival audit event in dlp-common
-- [ ] `56-02-PLAN.md` — Agent-side volume classification (GetDriveTypeW + WMI hybrid) + VolumeArrival emission + volume_class_map
+- [x] `56-01-PLAN.md` — VolumeClass enum + AbacContext extension + PolicyCondition variants + VolumeArrival audit event in dlp-common *(completed 2026-05-29)*
+- [x] `56-02-PLAN.md` — Agent-side volume classification (GetDriveTypeW + WMI hybrid) + VolumeArrival emission + volume_class_map *(completed 2026-05-29)*
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] `56-03-PLAN.md` — Hook DLL thread-local volume-class cache (30s TTL) + trampoline integration for path-based and copy/move ops
-- [ ] `56-04-PLAN.md` — Server-side ABAC evaluation: PolicyStore match arms for SourceVolumeClass/DestinationVolumeClass + integration test
-- [ ] `56-05-PLAN.md` — Admin TUI Conditions Builder: SourceVolumeClass/DestinationVolumeClass dropdowns + allowlist volume class badges
+- [x] `56-03-PLAN.md` — Hook DLL thread-local volume-class cache (10s TTL) + trampoline integration for path-based and copy/move ops *(completed 2026-06-06)*
+- [x] `56-04-PLAN.md` — Server-side ABAC evaluation: PolicyStore match arms for SourceVolumeClass/DestinationVolumeClass + integration test *(completed 2026-05-29)*
+- [x] `56-05-PLAN.md` — Admin TUI Conditions Builder: SourceVolumeClass/DestinationVolumeClass dropdowns + allowlist volume class badges *(completed 2026-05-29)*
 
 **Wave 3** *(blocked on Waves 1-2 completion)*
 
-- [ ] `56-06-PLAN.md` — End-to-end integration test: DENY LocalNTFS T4 to Optical policy + full workspace verification
+- [x] `56-06-PLAN.md` — End-to-end integration test: DENY LocalNTFS T4 to Optical policy + full workspace verification *(completed 2026-06-06)*
 
 ### Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT
 
@@ -489,7 +489,7 @@ Plans:
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Complete    | 2026-05-28 |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
-| 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 4/6 | In Progress|  |
+| 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 6/6 | Complete | 2026-06-06 |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 0/0 | Not started | - |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
@@ -540,4 +540,4 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 
 ---
 
-*Last updated: 2026-06-09 — Phase 64 complete (all 4 plans executed, verification pending).*
+*Last updated: 2026-06-09 — Phase 56 marked complete (all 6 plans verified), Phase 64 verified complete.*
