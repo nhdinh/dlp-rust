@@ -125,6 +125,12 @@ pub fn serve() -> Result<()> {
 fn accept_loop(first_pipe: HANDLE) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
+        if crate::service::shutdown_requested() {
+            let _ = unsafe { CloseHandle(pipe) };
+            info!(pipe = PIPE_NAME, "shutdown requested — exiting Pipe 1 accept loop");
+            return Ok(());
+        }
+
         // Wait for a client to connect.  ConnectNamedPipe returns
         // ERROR_PIPE_CONNECTED if a client connected between
         // CreateNamedPipeW and this call — that is a success case.
