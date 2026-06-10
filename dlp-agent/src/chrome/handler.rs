@@ -111,6 +111,15 @@ fn pipe_mode() -> NAMED_PIPE_MODE {
 fn accept_loop(first_pipe: HANDLE) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
+        if crate::service::shutdown_requested() {
+            let _ = unsafe { CloseHandle(pipe) };
+            info!(
+                pipe = CHROME_PIPE_NAME,
+                "shutdown requested — exiting Chrome accept loop"
+            );
+            return Ok(());
+        }
+
         if let Err(e) = unsafe { ConnectNamedPipe(pipe, None) } {
             let win32_code = (e.code().0 as u32) & 0xFFFF;
             if win32_code != 535 {

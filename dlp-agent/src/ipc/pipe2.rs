@@ -124,7 +124,10 @@ fn accept_loop(first_pipe: HANDLE) -> Result<()> {
     loop {
         if crate::service::shutdown_requested() {
             let _ = unsafe { CloseHandle(pipe) };
-            info!(pipe = PIPE_NAME, "shutdown requested — exiting Pipe 2 accept loop");
+            info!(
+                pipe = PIPE_NAME,
+                "shutdown requested — exiting Pipe 2 accept loop"
+            );
             return Ok(());
         }
 
