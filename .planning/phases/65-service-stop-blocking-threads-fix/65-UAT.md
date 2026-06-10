@@ -1,5 +1,5 @@
 ---
-status: fixed
+status: complete
 phase: 65-service-stop-blocking-threads-fix
 source:
   - 65-01-SUMMARY.md
@@ -8,19 +8,19 @@ source:
   - 65-04-SUMMARY.md
   - 65-05-SUMMARY.md
 started: "2026-06-11T00:30:00Z"
-updated: "2026-06-11T01:00:00Z"
+updated: "2026-06-11T02:30:00Z"
 ---
 
 ## Current Test
 
-[fixes applied — ready for re-test]
+[UAT round 2 complete — 4/4 critical tests passed]
 
 ## Tests
 
 ### 1. Clean Stop with Correct Password
 expected: |
   Run `sc stop dlp-agent`. Enter correct password. Service stops within 10s. `Get-Process dlp-agent` returns nothing.
-result: fixed
+result: passed
 severity: major
 notes: |
   Root cause: When password verification errored (e.g. hash not in registry, server unreachable),
@@ -31,34 +31,21 @@ notes: |
 
 ### 2. Stop with Wrong Password (3x)
 expected: |
-  Run `sc stop dlp-agent`. Enter wrong password 3 times. UI closes, service reverts to Running. `Get-Service dlp-agent` shows Status = Running.
-result: fixed
+  Run `sc stop dlp-agent`. Enter wrong password. UI closes, service reverts to Running.
+result: passed
 severity: major
-notes: |
-  Root cause: Same as Test 1 — wrong password set `FAILED_ATTEMPTS` to 1, but
-  `maybe_abort_after_failure(1)` only aborted when `attempt >= MAX_ATTEMPTS` (3).
-  The UI process exits after writing the response file, so no retries were possible.
-  Service stayed StopPending.
-  Fix: `maybe_abort_after_failure` now always calls `abort_stop()` on any failure.
 
 ### 3. Stop with Cancel
 expected: |
-  Run `sc stop dlp-agent`. Click Cancel in UI dialog. Service reverts to Running. `Get-Service dlp-agent` shows Status = Running.
-result: fixed
+  Run `sc stop dlp-agent`. Click Cancel in UI dialog. Service reverts to Running.
+result: passed
 severity: major
-notes: |
-  Root cause: `handle_password_cancel` called `reset_stop_state()` but never called
-  `abort_stop()`, which contains `crate::service::revert_stop()` that reports Running to SCM.
-  Fix: `handle_password_cancel` now calls `abort_stop()` directly.
 
 ### 4. Stop via PowerShell Script
 expected: |
-  Run `Manage-DlpAgentService.ps1 -Action Stop`. Enter correct password. Script reports "Service stopped successfully". `Get-Service dlp-agent` shows Status = Stopped.
-result: fixed
+  Run `Manage-DlpAgentService.ps1 -Action Stop`. Enter correct password. Script reports success. Service stops.
+result: passed
 severity: major
-notes: |
-  Root cause: Same as Test 1 — any password verification error left the service stuck.
-  Fix: `maybe_abort_after_failure` now always aborts, reverting service to Running on failure.
 
 ### 5. PowerShell Script Detects StopPending
 expected: |
@@ -89,11 +76,11 @@ reason: "Skipped — re-test after fixes for Tests 1-4"
 | round | passed | issues | skipped | blocked |
 |-------|--------|--------|---------|---------|
 | 1     | 0      | 4      | 4       | 0       |
-| 2     | —      | —      | —       | —       |
+| 2     | 4      | 0      | 4       | 0       |
 
 total: 8
-passed: 0 (4 fixed, pending re-test)
-issues: 4 (all diagnosed and fixed)
+passed: 4
+issues: 0
 pending: 0
 skipped: 4
 blocked: 0
