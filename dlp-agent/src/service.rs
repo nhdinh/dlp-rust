@@ -170,6 +170,51 @@ pub fn service_main(_arguments: Vec<std::ffi::OsString>) {
 // Service body
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Holds JoinHandles for all blocking std::threads spawned during service startup.
+/// Used during shutdown to signal and join each thread before reporting STOPPED.
+struct BlockingThreads {
+    health: Option<std::thread::JoinHandle<()>>,
+    ipc: Vec<std::thread::JoinHandle<()>>,
+    chrome: Option<std::thread::JoinHandle<()>>,
+    session: Option<std::thread::JoinHandle<()>>,
+}
+
+impl BlockingThreads {
+    fn new() -> Self {
+        Self {
+            health: None,
+            ipc: Vec::new(),
+            chrome: None,
+            session: None,
+        }
+    }
+
+    /// Signal shutdown and join all threads.
+    fn shutdown_and_join(self) {
+        request_shutdown();
+        info!("shutdown requested — joining blocking threads");
+
+        let join_with_timeout = |name: &str, handle: Option<std::thread::JoinHandle<()>>| {
+            if let Some(h) = handle {
+                debug!(thread = name, "joining thread");
+                match h.join() {
+                    Ok(()) => debug!(thread = name, "thread joined cleanly"),
+                    Err(e) => warn!(thread = name, error = ?e, "thread panicked during shutdown"),
+                }
+            }
+        };
+
+        join_with_timeout("health", self.health);
+        for (i, h) in self.ipc.into_iter().enumerate() {
+            join_with_timeout(&format!("ipc-pipe-{i}"), Some(h));
+        }
+        join_with_timeout("chrome", self.chrome);
+        join_with_timeout("session", self.session);
+
+        info!("all blocking threads joined");
+    }
+}
+
 /// Runs the DLP Agent Windows Service to completion.
 pub fn run_service() -> Result<()> {
     // Load the config early — only to read `log_level` before the subscriber
