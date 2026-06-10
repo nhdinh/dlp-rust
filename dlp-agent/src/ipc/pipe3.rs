@@ -92,6 +92,12 @@ pub fn serve() -> Result<()> {
 fn accept_loop(first_pipe: HANDLE) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
+        if crate::service::shutdown_requested() {
+            let _ = unsafe { CloseHandle(pipe) };
+            info!(pipe = PIPE_NAME, "shutdown requested — exiting Pipe 3 accept loop");
+            return Ok(());
+        }
+
         if let Err(e) = unsafe { ConnectNamedPipe(pipe, None) } {
             let win32_code = (e.code().0 as u32) & 0xFFFF;
             if win32_code != 535 {
@@ -143,6 +149,11 @@ fn create_pipe() -> Result<HANDLE> {
 /// Handles a single UI client connection.
 fn handle_client(pipe: HANDLE) -> Result<()> {
     loop {
+        if crate::service::shutdown_requested() {
+            info!("shutdown requested — exiting Pipe 3 client handler");
+            break;
+        }
+
         let frame = match read_frame(pipe) {
             Ok(f) => f,
             Err(e) => {
