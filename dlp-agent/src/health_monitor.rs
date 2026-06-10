@@ -113,6 +113,11 @@ async fn ping_task(last_pong: Arc<Mutex<HashMap<usize, Instant>>>) {
     loop {
         interval.tick().await;
 
+        if crate::service::shutdown_requested() {
+            info!("health monitor: shutdown requested — exiting ping task");
+            break;
+        }
+
         let count = BROADCASTER.broadcast(&Pipe2AgentMsg::HealthPing);
         debug!(count, "Health monitor: broadcast HEALTH_PING");
 
@@ -135,18 +140,33 @@ async fn pong_task(
     mut rx: mpsc::Receiver<UiHealthEvent>,
 ) {
     loop {
-        match rx.recv().await {
-            Some(UiHealthEvent::Pong) => {
-                debug!("Health monitor: received HEALTH_PONG from UI");
-                // Stamp all known clients — in practice only the sending client's
-                // entries are live; stamping all keeps them alive collectively.
-                let now = Instant::now();
-                let mut lp = last_pong.lock();
-                for client_id in BROADCASTER.clients().into_keys() {
-                    lp.insert(client_id, now);
+        tokio::select! {
+            biased;
+
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                if crate::service::shutdown_requested() {
+                    info!("health monitor: shutdown requested — exiting pong task");
+                    break;
                 }
             }
-            None => {
+
+            Some(event) = rx.recv() => {
+                match event {
+                    UiHealthEvent::Pong => {
+                        debug!("Health monitor: received HEALTH_PONG from UI");
+                        // Stamp all known clients — in practice only the
+                        // sending client's entries are live; stamping all
+                        // keeps them alive collectively.
+                        let now = Instant::now();
+                        let mut lp = last_pong.lock();
+                        for client_id in BROADCASTER.clients().into_keys() {
+                            lp.insert(client_id, now);
+                        }
+                    }
+                }
+            }
+
+            else => {
                 // Channel closed — Pipe 3 server shut down.  Exit gracefully.
                 info!("Health monitor: Pipe 3 health channel closed");
                 break;
@@ -167,6 +187,13 @@ async fn timeout_task(
             biased;
 
             _ = check_interval.tick() => {
+                if crate::service::shutdown_requested() {
+                    info!(
+                        "health monitor: shutdown requested — exiting timeout task"
+                    );
+                    break;
+                }
+
                 // Walk all known clients and check their last pong time.
                 let now = Instant::now();
                 for (client_id, _) in BROADCASTER.clients() {

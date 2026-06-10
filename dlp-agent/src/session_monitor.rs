@@ -89,6 +89,11 @@ async fn session_loop(active_sessions: Arc<Mutex<HashSet<u32>>>) {
     let mut interval = tokio::time::interval(POLL_INTERVAL);
 
     loop {
+        if crate::service::shutdown_requested() {
+            info!("session monitor: shutdown requested — exiting session loop");
+            break;
+        }
+
         interval.tick().await;
 
         let current_sessions = match enumerate_active_sessions() {
