@@ -4384,6 +4384,7 @@ fn init_logging(level: Level) {
 // Shutdown signal and BlockingThreads tests
 // ──────────────────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 /// Mutex to serialize tests that mutate the global `SHUTDOWN_REQUESTED` static.
 /// Without this, parallel test execution causes non-deterministic failures
 /// when one test resets the flag while another expects it to remain set.
@@ -4439,5 +4440,9 @@ fn test_blocking_threads_joins_running_thread() {
 
     threads.shutdown_and_join();
 
-    assert_eq!(counter.load(Ordering::SeqCst), 1, "thread should have exited cleanly");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "thread should have exited cleanly"
+    );
 }
