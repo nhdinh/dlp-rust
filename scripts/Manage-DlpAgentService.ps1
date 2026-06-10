@@ -227,20 +227,89 @@ function Stop-DlpAgentService {
         Write-Status "Service '$ServiceName' is not installed." -Level INFO
         return
     }
+
+    # State pre-checks
+    if ($svc.Status -eq 'StopPending') {
+        Write-Status "Service is already stopping (StopPending)." -Level WARN
+        Write-Status "The dlp-admin may be entering the password. Wait or cancel from the UI." -Level INFO
+        Write-Status "If stuck for >2 minutes, escalation options:" -Level INFO
+        Write-Status "  1. Restart the machine (guaranteed)" -Level INFO
+        Write-Status "  2. From SYSTEM context: psexec -s taskkill /F /IM dlp-agent.exe" -Level INFO
+        Write-Status "  3. Then re-register: sc.exe delete $ServiceName; .\Manage-DlpAgentService.ps1 -Action Install" -Level INFO
+        return
+    }
+
     if ($svc.Status -eq 'Stopped') {
-        Write-Status "Service is already stopped." -Level INFO
+        Write-Status "Service is already stopped." -Level OK
         return
     }
 
     Write-Status "Stopping service '$ServiceName' (password challenge may add delay)..." -Level INFO
     Write-Status "The dlp-admin must confirm the stop in the UI dialog (up to 3 attempts, 30 s each)." -Level INFO
 
-    $null = Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+    try {
+        Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+        Write-Status "Stop command sent. Waiting for service to stop..." -Level INFO
+    }
+    catch {
+        Write-Status "Failed to send stop command: $_" -Level FAIL
+        return
+    }
 
-    if (-not (Wait-ForServiceState -DesiredState 'Stopped' -TimeoutSeconds $StopTimeoutSeconds)) {
-        Write-Status "Service did not stop cleanly in ${StopTimeoutSeconds}s." -Level WARN
-        Write-Status "The service may still be waiting for the dlp-admin password dialog." -Level WARN
-        Write-Status "To force-terminate: sc.exe stop $ServiceName && sc.exe delete $ServiceName" -Level INFO
+    # Poll every 1 second for up to 30 seconds
+    $maxWaitSeconds = 30
+    $pollIntervalSeconds = 1
+    $elapsed = 0
+    $finalState = $null
+
+    while ($elapsed -lt $maxWaitSeconds) {
+        Start-Sleep -Seconds $pollIntervalSeconds
+        $elapsed += $pollIntervalSeconds
+
+        $svc = Get-CurrentService
+        if (-not $svc) {
+            $finalState = 'Removed'
+            break
+        }
+
+        if ($svc.Status -eq 'Stopped') {
+            $finalState = 'Stopped'
+            break
+        }
+
+        if ($svc.Status -eq 'Running') {
+            # Service returned to Running -- stop was cancelled or failed
+            $finalState = 'Running'
+            break
+        }
+
+        # Still StopPending -- continue polling
+    }
+
+    # Report final state
+    switch ($finalState) {
+        'Stopped' {
+            Write-Status "Service stopped successfully (${elapsed}s)." -Level OK
+        }
+        'Running' {
+            Write-Status "Service returned to Running -- stop was cancelled or password failed." -Level WARN
+        }
+        'Removed' {
+            Write-Status "Service was removed during stop." -Level WARN
+        }
+        default {
+            # Timeout -- still StopPending or unknown state
+            $svc = Get-CurrentService
+            if ($svc) {
+                Write-Status "Service did not stop within ${maxWaitSeconds}s -- current state: $($svc.Status)" -Level FAIL
+            } else {
+                Write-Status "Service did not stop within ${maxWaitSeconds}s -- service no longer found." -Level FAIL
+            }
+            Write-Status "The service may be stuck in StopPending. Escalation options:" -Level INFO
+            Write-Status "  1. Restart the machine (guaranteed recovery)" -Level INFO
+            Write-Status "  2. From SYSTEM context: psexec -s taskkill /F /IM dlp-agent.exe" -Level INFO
+            Write-Status "  3. Then re-register: sc.exe delete $ServiceName; .\Manage-DlpAgentService.ps1 -Action Install" -Level INFO
+        }
     }
 }
 
