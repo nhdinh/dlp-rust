@@ -3356,11 +3356,6 @@ fn service_control_handler(control: ServiceControl) -> ServiceControlHandlerResu
             info!(service_name = SERVICE_NAME, "SCM: STOP");
             *SERVICE_STATE.lock() = ServiceState::StopPending;
 
-            // Signal shutdown to all blocking threads immediately so they
-            // begin breaking out of their loops even while the password
-            // dialog is displayed.  This reduces total shutdown latency.
-            request_shutdown();
-
             // Report StopPending to the SCM with a 120-second wait_hint so the
             // SCM does not time out while the password dialog is displayed.
             report_scm_status(
@@ -3368,6 +3363,12 @@ fn service_control_handler(control: ServiceControl) -> ServiceControlHandlerResu
                 ServiceControlAccept::empty(),
                 Duration::from_secs(120),
             );
+
+            // NOTE: We do NOT call request_shutdown() here. Shutdown is only
+            // authorized AFTER password verification succeeds. This preserves the
+            // two-phase lifecycle: StopPending (password pending) -> StopConfirmed
+            // (shutdown authorized). If the stop is cancelled or fails, the service
+            // returns to Running without having torn down any worker threads.
 
             // In debug builds, skip the password challenge so `sc stop` works
             // without an AD server.  Release builds require the full flow.
