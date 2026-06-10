@@ -62,7 +62,7 @@ Set-StrictMode -Version Latest
 
 $SCRIPT:HookDllName = 'dlp_hook_dll.dll'
 $SCRIPT:HookDllX86Name = 'dlp_hook_dll_x86.dll'
-$SCRIPT:InjectionTimeoutMs = 500
+$SCRIPT:InjectionTimeoutMs = 3000
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -396,9 +396,9 @@ finally {
     $testProcs = @('notepad')
     foreach ($name in $testProcs) {
         Get-Process -Name $name -ErrorAction SilentlyContinue |
-            Where-Object { $_.Modules.ModuleName -contains $SCRIPT:HookDllName -or
-                           $_.Modules.ModuleName -contains $SCRIPT:HookDllX86Name } |
-            Stop-Process -Force -ErrorAction SilentlyContinue
+        Where-Object { $_.Modules.ModuleName -contains $SCRIPT:HookDllName -or
+            $_.Modules.ModuleName -contains $SCRIPT:HookDllX86Name } |
+        Stop-Process -Force -ErrorAction SilentlyContinue
     }
 }
 

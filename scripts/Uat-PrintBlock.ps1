@@ -225,7 +225,7 @@ function Test-PrintAuditEvent {
 
     try {
         $response = Invoke-RestMethod `
-            -Uri "$ServerUrl/admin/audit-events?since=$since&action=PRINT" `
+            -Uri "$ServerUrl/audit/events?since=$since&action=PRINT" `
             -Method GET `
             -Headers $headers
 

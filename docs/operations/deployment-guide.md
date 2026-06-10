@@ -789,11 +789,11 @@ capturing results), see `.planning/milestones/v0.10.0-UAT.md`.
 | Feature Area | Test Script | Hardware Required | Milestone |
 |--------------|-------------|-------------------|-----------|
 | Cloud Sync Regression | `Uat-CloudSync.ps1` | Cloud sync clients (OneDrive, Google Drive, Dropbox, Box) | v0.9.0 |
-| Print Enforcement | `Uat-PrintEnforce.ps1` | Real printer installed | v0.9.0 |
-| Hook DLL Injection | `Uat-HookInjection.ps1` | None | v0.10.0 |
+| Print Enforcement | `Uat-PrintBlock.ps1` | Real printer installed | v0.9.0 |
+| Hook DLL Injection | `Uat-HookDll.ps1` | None | v0.10.0 |
 | DACL Tripwire | `Uat-DaclTripwire.ps1` | None | v0.10.0 |
-| ETW Consumer + ntdll Patch + Monitor Mode | `Uat-EtwConsumer.ps1`, `Uat-NtdllPatch.ps1`, `Uat-MonitorMode.ps1` | None | v0.10.0 |
-| Volume Class (optional) | `Uat-VolumeClass.ps1` | SD card, optical drive, or virtual drive | v0.10.0 |
+| ETW Consumer + ntdll Patch + Monitor Mode | `Uat-EtwNtdll.ps1` | None | v0.10.0 |
+| Volume Class (optional) | Manual test (see below) | SD card, optical drive, or virtual drive | v0.10.0 |
 | USB Enforcement | `Uat-UsbBlock.ps1` | Physical USB removable drive | v0.7.0+ |
 | CRIT-04 Benchmark | `Uat-Benchmark.ps1` | None | v0.10.0 |
 
@@ -802,54 +802,40 @@ capturing results), see `.planning/milestones/v0.10.0-UAT.md`.
 Run tests in the following order. Each step depends on the previous steps
 passing.
 
-1. **Prerequisites check** -- verify server, agent, JWT, T4 policy, Protected
-   Path, printer, USB drive, and EDR allowlist:
-   ```powershell
-   .\scripts\Uat-PrereqCheck.ps1
-   ```
-2. **Cloud Sync Regression** -- validate the v0.9.0 baseline:
+1. **Cloud Sync Regression** -- validate the v0.9.0 baseline:
    ```powershell
    .\scripts\Uat-CloudSync.ps1
    ```
-3. **Print Enforcement**:
+2. **Print Enforcement**:
    ```powershell
-   .\scripts\Uat-PrintEnforce.ps1
+   .\scripts\Uat-PrintBlock.ps1
    ```
-4. **Hook DLL Injection**:
+3. **Hook DLL Injection**:
    ```powershell
-   .\scripts\Uat-HookInjection.ps1
+   .\scripts\Uat-HookDll.ps1
    ```
-5. **DACL Tripwire**:
+4. **DACL Tripwire**:
    ```powershell
    .\scripts\Uat-DaclTripwire.ps1
    ```
-6. **ETW Consumer**:
+5. **ETW Consumer + ntdll Patch + Monitor Mode**:
    ```powershell
-   .\scripts\Uat-EtwConsumer.ps1
-   ```
-7. **ntdll Patch**:
-   ```powershell
-   .\scripts\Uat-NtdllPatch.ps1
-   ```
-8. **Monitor Mode**:
-   ```powershell
-   .\scripts\Uat-MonitorMode.ps1
+   .\scripts\Uat-EtwNtdll.ps1
    ```
 
 ### Manual Volume Class Tests (if hardware available)
 
-If optional hardware is present, run the volume class tests after Step 5
-(DACL Tripwire) and before Step 6 (ETW Consumer):
+If optional hardware is present, verify volume class detection manually after
+Step 4 (DACL Tripwire) and before Step 5 (ETW + ntdll + Monitor Mode):
 
-```powershell
-.\scripts\Uat-VolumeClass.ps1
-```
+1. Insert an SD card, optical disc, or mount a virtual drive.
+2. Check the DLP agent audit log for a `device_arrival` event with the correct
+   `volume_class` (`SDCard`, `Optical`, or `Virtual`).
+3. Attempt to copy a T4-classified file from LocalNTFS to the removable volume
+   and confirm the operation is denied with `ERROR_ACCESS_DENIED`.
 
-The script auto-detects SD cards, optical drives, and virtual drives via WMI
-(`Win32_DiskDrive` + `Win32_LogicalDisk`). Each detected volume class produces
-a distinct device-arrival audit event. If no optional hardware is available,
-mark Group 6 as SKIP in `.planning/milestones/v0.10.0-UAT.md` -- UAT remains
-valid.
+If no optional hardware is available, mark Group 6 as SKIP in
+`.planning/milestones/v0.10.0-UAT.md` -- UAT remains valid.
 
 ### USB Enforcement
 

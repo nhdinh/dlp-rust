@@ -514,7 +514,7 @@ function Test-MonitorMode {
     $auditFound = $false
     try {
         $events = Invoke-RestMethod `
-            -Uri "$ServerUrl/admin/audit-events?since=$since" `
+            -Uri "$ServerUrl/audit/events?since=$since" `
             -Method GET `
             -Headers $headers
 

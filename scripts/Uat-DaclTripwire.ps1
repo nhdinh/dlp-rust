@@ -255,7 +255,7 @@ function Test-IcaclsResetTriggersAlert {
     $baseline = 0
     try {
         $response = Invoke-RestMethod `
-            -Uri "$ServerUrl/admin/audit-events?since=$since" `
+            -Uri "$ServerUrl/audit/events?since=$since" `
             -Method GET `
             -Headers $headers
         $baseline = $response.Count
@@ -282,7 +282,7 @@ function Test-IcaclsResetTriggersAlert {
         try {
             $since = (Get-Date).AddMinutes(-2).ToUniversalTime().ToString('o')
             $response = Invoke-RestMethod `
-                -Uri "$ServerUrl/admin/audit-events?since=$since" `
+                -Uri "$ServerUrl/audit/events?since=$since" `
                 -Method GET `
                 -Headers $headers
 
@@ -329,7 +329,7 @@ function Test-StagedRemovalSafe {
     $baselineEvents = @()
     try {
         $baselineEvents = Invoke-RestMethod `
-            -Uri "$ServerUrl/admin/audit-events?since=$since" `
+            -Uri "$ServerUrl/audit/events?since=$since" `
             -Method GET `
             -Headers $headers
     }
@@ -352,7 +352,7 @@ function Test-StagedRemovalSafe {
     $newEvents = @()
     try {
         $newEvents = Invoke-RestMethod `
-            -Uri "$ServerUrl/admin/audit-events?since=$since" `
+            -Uri "$ServerUrl/audit/events?since=$since" `
             -Method GET `
             -Headers $headers
     }
@@ -393,7 +393,7 @@ function Get-AuditEvents {
 
     try {
         $response = Invoke-RestMethod `
-            -Uri "$ServerUrl/admin/audit-events?since=$since" `
+            -Uri "$ServerUrl/audit/events?since=$since" `
             -Method GET `
             -Headers $headers
         return $response

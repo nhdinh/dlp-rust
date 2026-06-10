@@ -34,7 +34,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$ServerUrl = "http://127.0.0.1:9090",
+    [string]$ServerUrl = "http://127.0.0.1:3000",
 
     [Parameter()]
     [string]$JwtToken = $env:DLP_ADMIN_JWT,
@@ -197,7 +197,7 @@ function Test-CloudUploadBlocked {
         # If WriteAllText threw, the write was blocked at the file-system level
         $ex = $_.Exception
         $isBlocked = (
-            ($ex.HResult -eq -2147024891) -or          # 0x80070005 = ERROR_ACCESS_DENIED
+            ($ex.HResult -eq -2147024891) -or # 0x80070005 = ERROR_ACCESS_DENIED
             ($ex.Message -match 'access is denied') -or
             ($ex.Message -match 'AccessDenied')
         )
@@ -237,11 +237,11 @@ function Test-ShareLinkBlocked {
     }
 
     $shareUrl = switch ($ClientName) {
-        'OneDrive'    { 'https://1drv.ms/u/s!AbCdEfGhIjKlMnOpQrStUvWxYz' }
+        'OneDrive' { 'https://1drv.ms/u/s!AbCdEfGhIjKlMnOpQrStUvWxYz' }
         'GoogleDrive' { 'https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/view?usp=sharing' }
-        'Dropbox'     { 'https://www.dropbox.com/s/abcdefgh12345678/test.txt?dl=0' }
-        'Box'         { 'https://app.box.com/s/abcdefghijklmnopqrstuvwxyz1234' }
-        default       { 'https://example.com/share/12345' }
+        'Dropbox' { 'https://www.dropbox.com/s/abcdefgh12345678/test.txt?dl=0' }
+        'Box' { 'https://app.box.com/s/abcdefghijklmnopqrstuvwxyz1234' }
+        default { 'https://example.com/share/12345' }
     }
 
     try {
@@ -280,7 +280,7 @@ function Get-AuditEvents {
 
     try {
         $response = Invoke-RestMethod `
-            -Uri "$ServerUrl/admin/audit-events?since=$since" `
+            -Uri "$ServerUrl/audit/events?since=$since" `
             -Method GET `
             -Headers $headers
         return $response
@@ -329,8 +329,8 @@ foreach ($client in $clientsToTest) {
     $info = Test-CloudClientInstalled $client
     if ($info.Installed) {
         $detectedClients += [PSCustomObject]@{
-            Name     = $client
-            Info     = $info
+            Name = $client
+            Info = $info
         }
         $status = if ($info.Running) { 'running' } else { 'installed but not running' }
         Write-Result "$client detected ($status, path: $($info.SyncPath))" 'INFO'
