@@ -93,6 +93,20 @@ const DISK_ENUM_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 /// directly to the SCM instead of only updating the internal `SERVICE_STATE` mutex.
 static SCM_HANDLE: std::sync::OnceLock<ServiceStatusHandle> = std::sync::OnceLock::new();
 
+/// Global shutdown signal — set to true when the service is stopping.
+/// All blocking threads must poll this flag and break their loops.
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Returns true if service shutdown has been requested.
+pub fn shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
+}
+
+/// Requests service shutdown. Idempotent.
+pub fn request_shutdown() {
+    SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+}
+
 /// Global SQLite connection for the agent's offline audit queue.
 ///
 /// Set once during service startup via [`init_agent_db`].  All callers that
@@ -155,6 +169,51 @@ pub fn service_main(_arguments: Vec<std::ffi::OsString>) {
 // ──────────────────────────────────────────────────────────────────────────────
 // Service body
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// Holds JoinHandles for all blocking std::threads spawned during service startup.
+/// Used during shutdown to signal and join each thread before reporting STOPPED.
+struct BlockingThreads {
+    health: Option<std::thread::JoinHandle<()>>,
+    ipc: Vec<std::thread::JoinHandle<()>>,
+    chrome: Option<std::thread::JoinHandle<()>>,
+    session: Option<std::thread::JoinHandle<()>>,
+}
+
+impl BlockingThreads {
+    fn new() -> Self {
+        Self {
+            health: None,
+            ipc: Vec::new(),
+            chrome: None,
+            session: None,
+        }
+    }
+
+    /// Signal shutdown and join all threads.
+    fn shutdown_and_join(self) {
+        request_shutdown();
+        info!("shutdown requested — joining blocking threads");
+
+        let join_with_timeout = |name: &str, handle: Option<std::thread::JoinHandle<()>>| {
+            if let Some(h) = handle {
+                debug!(thread = name, "joining thread");
+                match h.join() {
+                    Ok(()) => debug!(thread = name, "thread joined cleanly"),
+                    Err(e) => warn!(thread = name, error = ?e, "thread panicked during shutdown"),
+                }
+            }
+        };
+
+        join_with_timeout("health", self.health);
+        for (i, h) in self.ipc.into_iter().enumerate() {
+            join_with_timeout(&format!("ipc-pipe-{i}"), Some(h));
+        }
+        join_with_timeout("chrome", self.chrome);
+        join_with_timeout("session", self.session);
+
+        info!("all blocking threads joined");
+    }
+}
 
 /// Runs the DLP Agent Windows Service to completion.
 pub fn run_service() -> Result<()> {
@@ -223,20 +282,23 @@ pub fn run_service() -> Result<()> {
         );
     }
 
+    // ── Thread handle storage for graceful shutdown ────────────────
+    let mut threads = BlockingThreads::new();
+
     // ── Start the health monitor first ───────────────────────────────
     // health_monitor::run() calls ROUTER.set_health_sender() — this MUST
     // happen before Pipe 3's handle_client runs, so Pipe 3 can read the
     // session sender from the same ROUTER.
-    let health_handle = crate::health_monitor::start();
-    info!(thread_id = ?health_handle.thread().id(), "health monitor started");
+    threads.health = Some(crate::health_monitor::start());
+    info!(thread_id = ?threads.health.as_ref().unwrap().thread().id(), "health monitor started");
 
     // ── Start IPC pipe servers ────────────────────────────────────
     // Each serve() call blocks on a dedicated thread.  Pipe 1, 2, and 3
     // are independent; they communicate via the shared BROADCASTER and ROUTER
     // statics.  Pipe 3's handle_client sets ROUTER.session_sender on each
     // new connection.
-    crate::ipc::start_all()?;
-    info!("IPC pipe servers started");
+    threads.ipc = crate::ipc::start_all()?;
+    info!(count = threads.ipc.len(), "IPC pipe servers started");
 
     // ── Start Chrome Content Analysis pipe server ────────────────
     // Spawn as a dedicated std::thread (NOT a tokio task) because
@@ -248,22 +310,24 @@ pub fn run_service() -> Result<()> {
     // speaks ABAC while the backing evaluation still uses the cache
     // until full OfflineManager integration.
     crate::chrome::handler::set_policy_evaluator(chrome_policy_evaluator);
-    let chrome_handle = std::thread::Builder::new()
-        .name("chrome-pipe".into())
-        .spawn(|| {
-            if let Err(e) = crate::chrome::handler::serve() {
-                error!(error = %e, "Chrome pipe server exited with error");
-            }
-        })
-        .context("failed to spawn Chrome pipe thread")?;
-    info!(thread_id = ?chrome_handle.thread().id(), "Chrome pipe server started");
+    threads.chrome = Some(
+        std::thread::Builder::new()
+            .name("chrome-pipe".into())
+            .spawn(|| {
+                if let Err(e) = crate::chrome::handler::serve() {
+                    error!(error = %e, "Chrome pipe server exited with error");
+                }
+            })
+            .context("failed to spawn Chrome pipe thread")?,
+    );
+    info!(thread_id = ?threads.chrome.as_ref().unwrap().thread().id(), "Chrome pipe server started");
 
     // ── Start the session monitor ──────────────────────────────────
     // session_monitor::run() calls ui_spawner::init() which enumerates
     // active sessions and spawns a UI in each.  New sessions are detected
     // via polling (WTSEnumerateSessionsW every 2 s).
-    let session_handle = crate::session_monitor::start();
-    info!(thread_id = ?session_handle.thread().id(), "session monitor started");
+    threads.session = Some(crate::session_monitor::start());
+    info!(thread_id = ?threads.session.as_ref().unwrap().thread().id(), "session monitor started");
 
     // Report RUNNING.
     set_status(
@@ -298,6 +362,8 @@ pub fn run_service() -> Result<()> {
     // ── Graceful shutdown of blocking threads ────────────────────────
     crate::password_stop::debug_log("run_service: run_loop returned — shutting down subsystems");
     info!(service_name = SERVICE_NAME, "shutting down subsystems");
+
+    threads.shutdown_and_join();
 
     crate::password_stop::debug_log("run_service: reporting STOPPED to SCM");
 
@@ -3289,6 +3355,11 @@ fn service_control_handler(control: ServiceControl) -> ServiceControlHandlerResu
 
             info!(service_name = SERVICE_NAME, "SCM: STOP");
             *SERVICE_STATE.lock() = ServiceState::StopPending;
+
+            // Signal shutdown to all blocking threads immediately so they
+            // begin breaking out of their loops even while the password
+            // dialog is displayed.  This reduces total shutdown latency.
+            request_shutdown();
 
             // Report StopPending to the SCM with a 120-second wait_hint so the
             // SCM does not time out while the password dialog is displayed.
