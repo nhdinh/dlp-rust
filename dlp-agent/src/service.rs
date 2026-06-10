@@ -282,20 +282,23 @@ pub fn run_service() -> Result<()> {
         );
     }
 
+    // ── Thread handle storage for graceful shutdown ────────────────
+    let mut threads = BlockingThreads::new();
+
     // ── Start the health monitor first ───────────────────────────────
     // health_monitor::run() calls ROUTER.set_health_sender() — this MUST
     // happen before Pipe 3's handle_client runs, so Pipe 3 can read the
     // session sender from the same ROUTER.
-    let health_handle = crate::health_monitor::start();
-    info!(thread_id = ?health_handle.thread().id(), "health monitor started");
+    threads.health = Some(crate::health_monitor::start());
+    info!(thread_id = ?threads.health.as_ref().unwrap().thread().id(), "health monitor started");
 
     // ── Start IPC pipe servers ────────────────────────────────────
     // Each serve() call blocks on a dedicated thread.  Pipe 1, 2, and 3
     // are independent; they communicate via the shared BROADCASTER and ROUTER
     // statics.  Pipe 3's handle_client sets ROUTER.session_sender on each
     // new connection.
-    crate::ipc::start_all()?;
-    info!("IPC pipe servers started");
+    threads.ipc = crate::ipc::start_all()?;
+    info!(count = threads.ipc.len(), "IPC pipe servers started");
 
     // ── Start Chrome Content Analysis pipe server ────────────────
     // Spawn as a dedicated std::thread (NOT a tokio task) because
@@ -307,22 +310,24 @@ pub fn run_service() -> Result<()> {
     // speaks ABAC while the backing evaluation still uses the cache
     // until full OfflineManager integration.
     crate::chrome::handler::set_policy_evaluator(chrome_policy_evaluator);
-    let chrome_handle = std::thread::Builder::new()
-        .name("chrome-pipe".into())
-        .spawn(|| {
-            if let Err(e) = crate::chrome::handler::serve() {
-                error!(error = %e, "Chrome pipe server exited with error");
-            }
-        })
-        .context("failed to spawn Chrome pipe thread")?;
-    info!(thread_id = ?chrome_handle.thread().id(), "Chrome pipe server started");
+    threads.chrome = Some(
+        std::thread::Builder::new()
+            .name("chrome-pipe".into())
+            .spawn(|| {
+                if let Err(e) = crate::chrome::handler::serve() {
+                    error!(error = %e, "Chrome pipe server exited with error");
+                }
+            })
+            .context("failed to spawn Chrome pipe thread")?,
+    );
+    info!(thread_id = ?threads.chrome.as_ref().unwrap().thread().id(), "Chrome pipe server started");
 
     // ── Start the session monitor ──────────────────────────────────
     // session_monitor::run() calls ui_spawner::init() which enumerates
     // active sessions and spawns a UI in each.  New sessions are detected
     // via polling (WTSEnumerateSessionsW every 2 s).
-    let session_handle = crate::session_monitor::start();
-    info!(thread_id = ?session_handle.thread().id(), "session monitor started");
+    threads.session = Some(crate::session_monitor::start());
+    info!(thread_id = ?threads.session.as_ref().unwrap().thread().id(), "session monitor started");
 
     // Report RUNNING.
     set_status(
@@ -357,6 +362,8 @@ pub fn run_service() -> Result<()> {
     // ── Graceful shutdown of blocking threads ────────────────────────
     crate::password_stop::debug_log("run_service: run_loop returned — shutting down subsystems");
     info!(service_name = SERVICE_NAME, "shutting down subsystems");
+
+    threads.shutdown_and_join();
 
     crate::password_stop::debug_log("run_service: reporting STOPPED to SCM");
 
@@ -3348,6 +3355,11 @@ fn service_control_handler(control: ServiceControl) -> ServiceControlHandlerResu
 
             info!(service_name = SERVICE_NAME, "SCM: STOP");
             *SERVICE_STATE.lock() = ServiceState::StopPending;
+
+            // Signal shutdown to all blocking threads immediately so they
+            // begin breaking out of their loops even while the password
+            // dialog is displayed.  This reduces total shutdown latency.
+            request_shutdown();
 
             // Report StopPending to the SCM with a 120-second wait_hint so the
             // SCM does not time out while the password dialog is displayed.

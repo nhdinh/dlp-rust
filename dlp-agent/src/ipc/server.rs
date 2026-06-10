@@ -25,7 +25,7 @@ use super::{pipe1, pipe2, pipe3};
 ///
 /// Returns an error if any pipe server thread fails to spawn, or if
 /// any pipe fails to create within the readiness timeout.
-pub fn start_all() -> Result<()> {
+pub fn start_all() -> Result<Vec<std::thread::JoinHandle<()>>> {
     // Each pipe server will set its slot to `true` after the first
     // CreateNamedPipeW succeeds.  We poll until all three are ready.
     let ready = Arc::new(Mutex::new([false; 3]));
@@ -85,11 +85,13 @@ pub fn start_all() -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
+    let handles = vec![p1, p2, p3];
+
     info!(
-        pipe1 = ?p1.thread().id(),
-        pipe2 = ?p2.thread().id(),
-        pipe3 = ?p3.thread().id(),
+        pipe1 = ?handles[0].thread().id(),
+        pipe2 = ?handles[1].thread().id(),
+        pipe3 = ?handles[2].thread().id(),
         "all IPC pipe servers started and ready"
     );
-    Ok(())
+    Ok(handles)
 }
