@@ -135,6 +135,127 @@ pub fn debug_log(msg: &str) {
 /// StopPending forever if the UI never responds).
 const STOP_TIMEOUT_SECS: u64 = 120;
 
+/// Error type for password stop verification failures.
+#[derive(Debug)]
+pub enum StopError {
+    /// The user cancelled the stop or the operation timed out.
+    Cancelled,
+    /// The maximum number of password attempts was exceeded.
+    MaxAttempts,
+}
+
+/// Verifies a password stop request. Called from the initiate_stop thread.
+///
+/// This function is separate from initiate_stop so it can be unit-tested
+/// without spawning threads or touching global state.
+///
+/// # Arguments
+///
+/// * `request_id` — The UUID for this stop request.
+/// * `response_path` — Path to the JSON response file written by the UI.
+///
+/// # Returns
+///
+/// `Ok(())` if the stop was confirmed (password correct).
+/// `Err(StopError::Cancelled)` if the user cancelled or timed out.
+/// `Err(StopError::MaxAttempts)` if max password attempts exceeded.
+pub fn verify_stop_password(request_id: &str, response_path: &str) -> Result<(), StopError> {
+    debug_log("=== verify_stop_password START ===");
+    info!(request_id, "verifying password-protected stop");
+
+    // Step 1: spawn UI
+    if !try_spawn_password_ui(request_id, response_path) {
+        debug_log("step 1: FAILED to spawn UI — aborting stop");
+        error!("failed to spawn password UI — aborting stop");
+        return Err(StopError::Cancelled);
+    }
+    debug_log("step 1: UI process created successfully");
+
+    // Step 2: poll the response file
+    debug_log("step 2: polling for response file...");
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(STOP_TIMEOUT_SECS);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        if crate::service::shutdown_requested() {
+            debug_log("shutdown requested during password stop — aborting");
+            return Err(StopError::Cancelled);
+        }
+
+        if let Ok(data) = std::fs::read_to_string(response_path) {
+            debug_log(&format!("step 2: response file found ({} bytes)", data.len()));
+            let _ = std::fs::remove_file(response_path);
+            return handle_file_response_for_verify(request_id, &data);
+        }
+
+        if std::time::Instant::now() >= deadline {
+            debug_log(&format!(
+                "step 2: TIMEOUT after {}s — aborting stop",
+                STOP_TIMEOUT_SECS
+            ));
+            error!("password stop timed out after {}s", STOP_TIMEOUT_SECS);
+            let _ = std::fs::remove_file(response_path);
+            return Err(StopError::Cancelled);
+        }
+    }
+}
+
+/// Handles the file response during password verification.
+/// Returns Ok(()) on confirmed stop, Err on cancel/failure.
+pub fn handle_file_response_for_verify(
+    request_id: &str,
+    data: &str,
+) -> Result<(), StopError> {
+    #[derive(serde::Deserialize)]
+    struct StopResponse {
+        result: String,
+        #[serde(default)]
+        password: Option<String>,
+        #[serde(default)]
+        encoding: Option<String>,
+    }
+
+    match serde_json::from_str::<StopResponse>(data) {
+        Ok(resp) if resp.result == "submit" => {
+            if let Some(password) = resp.password {
+                let is_plaintext = resp.encoding.as_deref() == Some("base64-utf8");
+                debug_log(&format!(
+                    "handle_file_response: PasswordSubmit received (encoding={:?})",
+                    resp.encoding.as_deref().unwrap_or("dpapi")
+                ));
+                handle_password_submit(request_id, password, is_plaintext);
+                // handle_password_submit calls confirm_stop() on success,
+                // which sets STOP_CONFIRMED. We return Ok to signal success.
+                if is_stop_confirmed() {
+                    Ok(())
+                } else {
+                    // Password was wrong but max attempts not yet reached.
+                    // The polling loop will continue. This path should not
+                    // normally be reached because handle_password_submit
+                    // either confirms or aborts.
+                    Err(StopError::MaxAttempts)
+                }
+            } else {
+                debug_log("handle_file_response: submit with no password — treating as cancel");
+                handle_password_cancel(request_id);
+                Err(StopError::Cancelled)
+            }
+        }
+        Ok(_) => {
+            debug_log("handle_file_response: PasswordCancel received");
+            handle_password_cancel(request_id);
+            Err(StopError::Cancelled)
+        }
+        Err(e) => {
+            debug_log(&format!("handle_file_response: parse error: {e}"));
+            error!(error = %e, "failed to parse stop response");
+            handle_password_cancel(request_id);
+            Err(StopError::Cancelled)
+        }
+    }
+}
+
 /// Initiates the password-challenge stop sequence.
 ///
 /// Spawns a background thread that:
@@ -163,58 +284,43 @@ pub fn initiate_stop() {
     let request_id = uuid::Uuid::new_v4().to_string();
     set_pending_request(&request_id);
 
+    let response_path = format!(
+        r"C:\ProgramData\DLP\logs\stop-response-{}.json",
+        request_id
+    );
+    let _ = std::fs::create_dir_all(r"C:\ProgramData\DLP\logs");
+    let _ = std::fs::remove_file(&response_path);
+
     std::thread::spawn(move || {
-        debug_log("=== initiate_stop START ===");
-        info!(request_id, "initiating password-protected stop");
+        // SAFETY: AssertUnwindSafe is correct here because:
+        // 1. The closure captures only String values (request_id, response_path)
+        //    which are Send + UnwindSafe and immutable after capture.
+        // 2. No MutexGuard, RwLockReadGuard, or other RAII guard is held across
+        //    the catch_unwind boundary. All shared state (STOP_STATE, STOP_CONFIRMED,
+        //    AUTH_HASH) is accessed via short-lived lock acquisitions inside
+        //    verify_stop_password and its callees.
+        // 3. parking_lot::Mutex does not poison on panic, so state remains consistent.
+        // 4. On panic, abort_stop() resets all state atomically.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_stop_password(&request_id, &response_path)
+        }));
 
-        // Build the response file path.  The spawned UI writes its result
-        // here instead of going through Pipe 1 (which deadlocks because
-        // synchronous ReadFile/WriteFile on the same handle are serialised).
-        let response_path = format!(r"C:\ProgramData\DLP\logs\stop-response-{}.json", request_id);
-        let _ = std::fs::create_dir_all(r"C:\ProgramData\DLP\logs");
-        // Remove any stale response file.
-        let _ = std::fs::remove_file(&response_path);
-
-        // Step 1: spawn a lightweight stop-password UI in the active session.
-        debug_log(&format!(
-            "step 1: spawning stop-password UI (request_id={request_id})"
-        ));
-        if !try_spawn_password_ui(&request_id, &response_path) {
-            debug_log("step 1: FAILED to spawn UI — aborting stop");
-            error!("failed to spawn password UI — aborting stop");
-            cancel_stop();
-            return;
-        }
-        debug_log("step 1: UI process created successfully");
-
-        // Step 2: poll the response file.
-        debug_log("step 2: polling for response file...");
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(STOP_TIMEOUT_SECS);
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-
-            if let Ok(data) = std::fs::read_to_string(&response_path) {
-                debug_log(&format!(
-                    "step 2: response file found ({} bytes)",
-                    data.len()
-                ));
-                let _ = std::fs::remove_file(&response_path);
-                handle_file_response(&request_id, &data);
-                return;
+        match result {
+            Ok(Ok(())) => {
+                debug_log("initiate_stop: password verified — stop confirmed");
             }
-
-            if std::time::Instant::now() >= deadline {
-                debug_log(&format!(
-                    "step 2: TIMEOUT after {}s — aborting stop",
-                    STOP_TIMEOUT_SECS
-                ));
-                error!("password stop timed out after {}s", STOP_TIMEOUT_SECS);
-                let _ = std::fs::remove_file(&response_path);
+            Ok(Err(_)) => {
+                debug_log("initiate_stop: password verification failed or cancelled");
+                // abort_stop() or handle_password_cancel() was already called by verify_stop_password
+            }
+            Err(e) => {
+                error!(panic = ?e, "password_stop thread panicked — aborting stop");
                 abort_stop();
-                return;
             }
         }
+
+        // Clean up response file if it still exists
+        let _ = std::fs::remove_file(&response_path);
     });
 }
 
@@ -225,49 +331,6 @@ pub fn initiate_stop() {
 /// dialog, sends the result over Pipe 1, and exits.
 ///
 /// Returns `true` if the process was successfully created.
-/// Handles the JSON response written by the stop-password UI process.
-///
-/// Expected format:
-/// - `{"result":"submit","password":"<dpapi_base64>"}` → verify credentials
-/// - `{"result":"cancel"}` → abort stop
-fn handle_file_response(request_id: &str, data: &str) {
-    #[derive(serde::Deserialize)]
-    struct StopResponse {
-        result: String,
-        #[serde(default)]
-        password: Option<String>,
-        /// `"base64-utf8"` = plaintext password base64-encoded (no DPAPI).
-        /// `None` / absent = legacy DPAPI-wrapped blob.
-        #[serde(default)]
-        encoding: Option<String>,
-    }
-
-    match serde_json::from_str::<StopResponse>(data) {
-        Ok(resp) if resp.result == "submit" => {
-            if let Some(password) = resp.password {
-                let is_plaintext = resp.encoding.as_deref() == Some("base64-utf8");
-                debug_log(&format!(
-                    "handle_file_response: PasswordSubmit received (encoding={:?})",
-                    resp.encoding.as_deref().unwrap_or("dpapi")
-                ));
-                handle_password_submit(request_id, password, is_plaintext);
-            } else {
-                debug_log("handle_file_response: submit with no password — treating as cancel");
-                handle_password_cancel(request_id);
-            }
-        }
-        Ok(_) => {
-            debug_log("handle_file_response: PasswordCancel received");
-            handle_password_cancel(request_id);
-        }
-        Err(e) => {
-            debug_log(&format!("handle_file_response: parse error: {e}"));
-            error!(error = %e, "failed to parse stop response");
-            handle_password_cancel(request_id);
-        }
-    }
-}
-
 fn try_spawn_password_ui(request_id: &str, response_path: &str) -> bool {
     let binary = match crate::ui_spawner::ui_binary() {
         Some(b) => b,
@@ -977,12 +1040,6 @@ fn abort_stop() {
         "EVENT_DLP_ADMIN_STOP_FAILED: max password attempts exceeded — \
          aborting service stop"
     );
-    clear_pending_request();
-    reset_stop_state();
-    crate::service::revert_stop();
-}
-
-fn cancel_stop() {
     clear_pending_request();
     reset_stop_state();
     crate::service::revert_stop();
