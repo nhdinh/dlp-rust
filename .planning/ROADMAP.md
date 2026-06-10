@@ -68,7 +68,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens** — operator UX for the two new server surfaces. (completed 2026-05-28)
 - [x] **Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode** — safe-rollout mode every industry DLP requires before production deployment. (completed 2026-05-29)
 - [x] **Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)** — fold SEED-004 in: device enumeration, two new ABAC attributes, admin TUI extension. (completed 2026-06-06)
-- [ ] **Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT** — the milestone ship gate; per-vendor allowlist procedures, hash publishing, and real-Windows UAT (folds in former HARD-05).
+- [x] **Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT** — the milestone ship gate; per-vendor allowlist procedures, hash publishing, and real-Windows UAT (folds in former HARD-05). (completed 2026-06-10)
 - [ ] **Phase 58: Differentiators Bundle (cuttable to v0.10.1 if scope pressure hits)** — cuttable as a unit to v0.10.1 if scope pressure hits; otherwise materially improves deployability.
 
 ---
@@ -338,7 +338,7 @@ Plans:
   3. The deployment guide explicitly addresses Secure Boot reality (AppInit_DLLs is inert; `siem.appinit_dlls_disabled` will fire), the PPL coverage gap (lsass/MsMpEng/EDR-self) and the DACL-tripwire backstop, `SeSystemProfilePrivilege` preservation across upgrades, and the post-install reboot requirement for hook activation.
   4. UAT executes on a real Windows 11 host with real OneDrive/Google Drive/Dropbox/Box clients, real printers, and real USB/SD/optical/virtual drives; every v0.9.0 cloud-sync regression test plus every v0.10.0 active-blocking scenario passes; the CRIT-04 benchmark gate (<= 25% wall-clock overhead on representative `cargo build` + `Office app launch` workloads) holds; results are captured in `.planning/milestones/v0.10.0-UAT.md`.
 
-**Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
+**Plans:** 6/6 plans complete
 
 ### Phase 58: Differentiators Bundle (Override + Diagnostic + Hash Evidence + Self-Health)
 
@@ -490,7 +490,7 @@ Plans:
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 6/6 | Complete | 2026-06-06 |
-| 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 0/0 | Not started | - |
+| 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 6/6 | Complete    | 2026-06-10 |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
