@@ -107,6 +107,14 @@ pub fn request_shutdown() {
     SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
 }
 
+/// Resets the shutdown signal to false.
+///
+/// Used in tests to ensure a clean state between test cases.
+#[cfg(test)]
+fn reset_shutdown_signal() {
+    SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+}
+
 /// Global SQLite connection for the agent's offline audit queue.
 ///
 /// Set once during service startup via [`init_agent_db`].  All callers that
@@ -4332,4 +4340,58 @@ fn init_logging(level: Level) {
             ));
         }
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Shutdown signal and BlockingThreads tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Test that the shutdown signal can be set, read, and reset.
+#[test]
+fn test_shutdown_signal_roundtrip() {
+    reset_shutdown_signal();
+    assert!(!shutdown_requested());
+
+    request_shutdown();
+    assert!(shutdown_requested());
+
+    reset_shutdown_signal();
+    assert!(!shutdown_requested());
+}
+
+/// Test that BlockingThreads can be created and shutdown_and_join
+/// completes even with no threads (empty case).
+#[test]
+fn test_blocking_threads_empty_shutdown() {
+    reset_shutdown_signal();
+    let threads = BlockingThreads::new();
+    threads.shutdown_and_join();
+    assert!(shutdown_requested());
+}
+
+/// Test that BlockingThreads shutdown_and_join signals a running thread.
+#[test]
+fn test_blocking_threads_joins_running_thread() {
+    use std::sync::atomic::AtomicUsize;
+
+    reset_shutdown_signal();
+    let counter = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter_clone = counter.clone();
+
+    let handle = std::thread::spawn(move || {
+        while !shutdown_requested() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        counter_clone.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let mut threads = BlockingThreads::new();
+    threads.health = Some(handle);
+
+    // Give the thread time to start
+    std::thread::sleep(Duration::from_millis(50));
+
+    threads.shutdown_and_join();
+
+    assert_eq!(counter.load(Ordering::SeqCst), 1, "thread should have exited cleanly");
 }
