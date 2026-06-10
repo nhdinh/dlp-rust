@@ -1,58 +1,105 @@
-# Phase 65: UAT — Service Stop Blocking Threads Fix
+---
+status: partial
+phase: 65-service-stop-blocking-threads-fix
+source:
+  - 65-01-SUMMARY.md
+  - 65-02-SUMMARY.md
+  - 65-03-SUMMARY.md
+  - 65-04-SUMMARY.md
+  - 65-05-SUMMARY.md
+started: "2026-06-11T00:30:00Z"
+updated: "2026-06-11T00:35:00Z"
+---
 
-## Test Environment
+## Current Test
 
-- Windows 10/11 host with dlp-agent installed as service
-- dlp-admin password configured
-- UI binary (dlp-user-ui.exe) present
+[testing complete — 4 issues found, 4 skipped]
 
-## Test Cases
+## Tests
 
-### TC-01: Clean Stop with Correct Password
-1. Ensure service is Running: `Get-Service dlp-agent`
-2. Run: `sc stop dlp-agent`
-3. Enter correct dlp-admin password in UI dialog
-4. **Expected**: Service transitions to Stopped within 10 seconds
-5. **Verify**: `Get-Process dlp-agent` returns no results
+### 1. Clean Stop with Correct Password
+expected: |
+  Run `sc stop dlp-agent`. Enter correct password. Service stops within 10s. `Get-Process dlp-agent` returns nothing.
+result: issue
+reported: "no"
+severity: major
 
-### TC-02: Stop with Wrong Password (3x)
-1. Ensure service is Running
-2. Run: `sc stop dlp-agent`
-3. Enter wrong password 3 times
-4. **Expected**: UI closes, service reverts to Running
-5. **Verify**: `Get-Service dlp-agent` shows Status = Running
+### 2. Stop with Wrong Password (3x)
+expected: |
+  Run `sc stop dlp-agent`. Enter wrong password 3 times. UI closes, service reverts to Running. `Get-Service dlp-agent` shows Status = Running.
+result: issue
+reported: "Provide wrong password and hit enter, the window close and won't ask for anymore attempt"
+severity: major
 
-### TC-03: Stop with Cancel
-1. Ensure service is Running
-2. Run: `sc stop dlp-agent`
-3. Click Cancel in UI dialog
-4. **Expected**: Service reverts to Running
-5. **Verify**: `Get-Service dlp-agent` shows Status = Running
+### 3. Stop with Cancel
+expected: |
+  Run `sc stop dlp-agent`. Click Cancel in UI dialog. Service reverts to Running. `Get-Service dlp-agent` shows Status = Running.
+result: issue
+reported: "The status is StopPending after hit cancel in the UI dialog"
+severity: major
 
-### TC-04: Stop via PowerShell Script
-1. Ensure service is Running
-2. Run: `.\Manage-DlpAgentService.ps1 -Action Stop`
-3. Enter correct password
-4. **Expected**: Script reports "Service stopped successfully"
-5. **Verify**: `Get-Service dlp-agent` shows Status = Stopped
+### 4. Stop via PowerShell Script
+expected: |
+  Run `Manage-DlpAgentService.ps1 -Action Stop`. Enter correct password. Script reports "Service stopped successfully". `Get-Service dlp-agent` shows Status = Stopped.
+result: issue
+reported: "The service status is keeping StopPending"
+severity: major
 
-### TC-05: PowerShell Script Detects StopPending
-1. Start a stop: `sc stop dlp-agent`
-2. While in StopPending, run: `.\Manage-DlpAgentService.ps1 -Action Stop`
-3. **Expected**: Script detects StopPending and prints guidance instead of error
+### 5. PowerShell Script Detects StopPending
+expected: |
+  Start a stop with `sc stop dlp-agent`. While in StopPending, run `Manage-DlpAgentService.ps1 -Action Stop`. Script detects StopPending and prints guidance instead of error.
+result: skipped
+reason: "Skipped — same root cause as Tests 1-4 (password verification broken)"
 
-### TC-06: Restart After Stop
-1. Stop service (TC-01)
-2. Run: `sc start dlp-agent`
-3. **Expected**: Service starts successfully
-4. **Verify**: Chrome, IPC, health monitor, session monitor all functional
+### 6. Restart After Stop
+expected: |
+  Stop service, then run `sc start dlp-agent`. Service starts successfully. Chrome, IPC, health monitor, session monitor all functional.
+result: skipped
+reason: "Skipped — same root cause as Tests 1-4 (password verification broken)"
 
-### TC-07: Multiple Stop/Start Cycles
-1. Repeat TC-01 and TC-06 three times
-2. **Expected**: Each cycle completes cleanly
+### 7. Multiple Stop/Start Cycles
+expected: |
+  Repeat stop/start 3 times. Each cycle completes cleanly without hangs.
+result: skipped
+reason: "Skipped — same root cause as Tests 1-4 (password verification broken)"
 
-### TC-08: Stop with No Active UI Session
-1. Log off all interactive sessions (or run on headless server)
-2. Run: `sc stop dlp-agent`
-3. **Expected**: Stop times out after 120s, service reverts to Running
-4. **Verify**: Service shows Running after timeout
+### 8. Stop with No Active UI Session
+expected: |
+  Log off all interactive sessions. Run `sc stop dlp-agent`. Stop times out after 120s, service reverts to Running.
+result: skipped
+reason: "Skipped — same root cause as Tests 1-4 (password verification broken)"
+
+## Summary
+
+total: 8
+passed: 0
+issues: 4
+pending: 0
+skipped: 4
+blocked: 0
+
+## Gaps
+
+- truth: "Service stops within 10s after correct password entered"
+  status: failed
+  reason: "User reported: service does not stop gracefully with correct password"
+  severity: major
+  test: 1
+
+- truth: "Password UI allows 3 wrong password attempts before closing"
+  status: failed
+  reason: "User reported: After wrong password + Enter, window closes immediately without retry"
+  severity: major
+  test: 2
+
+- truth: "Clicking Cancel in password dialog reverts service to Running"
+  status: failed
+  reason: "User reported: Service stays StopPending after Cancel clicked"
+  severity: major
+  test: 3
+
+- truth: "PowerShell script stops service with correct password"
+  status: failed
+  reason: "User reported: Service stays StopPending via PowerShell script"
+  severity: major
+  test: 4
