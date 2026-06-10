@@ -230,10 +230,9 @@ pub fn handle_file_response_for_verify(
                 if is_stop_confirmed() {
                     Ok(())
                 } else {
-                    // Password was wrong but max attempts not yet reached.
-                    // The polling loop will continue. This path should not
-                    // normally be reached because handle_password_submit
-                    // either confirms or aborts.
+                    // Password was wrong or verification errored.
+                    // abort_stop() was already called; signal failure to
+                    // the caller so the thread exits cleanly.
                     Err(StopError::MaxAttempts)
                 }
             } else {
@@ -476,9 +475,8 @@ pub fn handle_password_cancel(request_id: &str) {
         warn!(request_id, "PASSWORD_CANCEL: stale or unknown request_id");
         return;
     }
-    clear_pending_request();
     warn!("dlp-admin cancelled password dialog — aborting service stop");
-    reset_stop_state();
+    abort_stop();
 }
 
 /// Handles a `PASSWORD_SUBMIT` response from the UI.
@@ -537,12 +535,13 @@ fn handle_verification_result(result: Result<bool>, attempt: u32) {
     maybe_abort_after_failure(attempt);
 }
 
-/// Aborts the stop if the maximum number of attempts has been reached.
+/// Aborts the stop after any failed password attempt.
+///
+/// The UI process exits after writing the response file, so there is no
+/// retry mechanism — every failure is final.
 fn maybe_abort_after_failure(attempt: u32) {
-    if attempt >= MAX_ATTEMPTS {
-        log_failure(attempt);
-        abort_stop();
-    }
+    log_failure(attempt);
+    abort_stop();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
