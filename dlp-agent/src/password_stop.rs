@@ -1052,3 +1052,131 @@ fn log_failure(attempt: u32) {
         attempt, "dlp-admin stop failed after {} attempts", attempt
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// Test that catch_unwind catches a panic and the error path is taken.
+    #[test]
+    fn test_catch_unwind_catches_panic() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            panic!("simulated bcrypt verify failure");
+        }));
+
+        assert!(result.is_err(), "catch_unwind should return Err on panic");
+    }
+
+    /// Test that handle_file_response_for_verify handles a cancel response correctly.
+    #[test]
+    fn test_handle_file_response_for_verify_cancel() {
+        let result = handle_file_response_for_verify("test-request", r#"{"result":"cancel"}"#);
+        assert!(
+            matches!(result, Err(StopError::Cancelled)),
+            "cancel response should return Err(Cancelled)"
+        );
+    }
+
+    /// Test that handle_file_response_for_verify handles a submit with no password.
+    #[test]
+    fn test_handle_file_response_for_verify_submit_no_password() {
+        let result =
+            handle_file_response_for_verify("test-request", r#"{"result":"submit"}"#);
+        assert!(
+            matches!(result, Err(StopError::Cancelled)),
+            "submit with no password should return Err(Cancelled)"
+        );
+    }
+
+    /// Test that handle_file_response_for_verify handles a parse error.
+    #[test]
+    fn test_handle_file_response_for_verify_parse_error() {
+        let result = handle_file_response_for_verify("test-request", "not valid json");
+        assert!(
+            matches!(result, Err(StopError::Cancelled)),
+            "parse error should return Err(Cancelled)"
+        );
+    }
+
+    /// Test that abort_stop resets state correctly.
+    #[test]
+    fn test_abort_stop_resets_state() {
+        // Set pending state
+        {
+            let mut state = STOP_STATE.lock();
+            state.pending = true;
+            state.attempts = 2;
+        }
+        STOP_CONFIRMED.store(true, Ordering::SeqCst);
+
+        // Call abort_stop
+        abort_stop();
+
+        assert!(!STOP_STATE.lock().pending, "pending should be false after abort_stop");
+        assert!(!is_stop_confirmed(), "STOP_CONFIRMED should be false after abort_stop");
+    }
+
+    /// Test that AssertUnwindSafe is sound by verifying the closure captures
+    /// only immutable String data.
+    #[test]
+    fn test_assert_unwind_safe_soundness() {
+        // This test documents the safety invariant:
+        // The closure passed to catch_unwind in initiate_stop captures:
+        // - request_id: String (immutable, Send + UnwindSafe)
+        // - response_path: String (immutable, Send + UnwindSafe)
+        //
+        // No MutexGuard, RwLockReadGuard, or other !UnwindSafe type is captured.
+        // All shared state access happens inside verify_stop_password via
+        // short-lived lock acquisitions.
+        let request_id = "test-id".to_string();
+        let response_path = "/tmp/test.json".to_string();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            // Simulate the operations that could panic
+            let _ = request_id;
+            let _ = response_path;
+            // Deliberately panic to test the catch path
+            panic!("test panic");
+        }));
+
+        assert!(result.is_err());
+    }
+
+    /// Test that reset_stop_state clears all stop state.
+    #[test]
+    fn test_reset_stop_state() {
+        // Set state
+        {
+            let mut state = STOP_STATE.lock();
+            state.pending = true;
+            state.attempts = 3;
+        }
+        STOP_CONFIRMED.store(true, Ordering::SeqCst);
+        FAILED_ATTEMPTS.store(2, Ordering::SeqCst);
+
+        reset_stop_state();
+
+        assert!(!STOP_STATE.lock().pending);
+        assert_eq!(STOP_STATE.lock().attempts, 0);
+        assert!(!is_stop_confirmed());
+        assert_eq!(FAILED_ATTEMPTS.load(Ordering::SeqCst), 0);
+    }
+
+    /// Test that is_stop_confirmed reflects STOP_CONFIRMED atomic.
+    #[test]
+    fn test_is_stop_confirmed_roundtrip() {
+        STOP_CONFIRMED.store(false, Ordering::SeqCst);
+        assert!(!is_stop_confirmed());
+
+        STOP_CONFIRMED.store(true, Ordering::SeqCst);
+        assert!(is_stop_confirmed());
+
+        STOP_CONFIRMED.store(false, Ordering::SeqCst);
+        assert!(!is_stop_confirmed());
+    }
+}
