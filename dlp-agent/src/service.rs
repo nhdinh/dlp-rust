@@ -93,6 +93,20 @@ const DISK_ENUM_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 /// directly to the SCM instead of only updating the internal `SERVICE_STATE` mutex.
 static SCM_HANDLE: std::sync::OnceLock<ServiceStatusHandle> = std::sync::OnceLock::new();
 
+/// Global shutdown signal — set to true when the service is stopping.
+/// All blocking threads must poll this flag and break their loops.
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Returns true if service shutdown has been requested.
+pub fn shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
+}
+
+/// Requests service shutdown. Idempotent.
+pub fn request_shutdown() {
+    SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+}
+
 /// Global SQLite connection for the agent's offline audit queue.
 ///
 /// Set once during service startup via [`init_agent_db`].  All callers that
