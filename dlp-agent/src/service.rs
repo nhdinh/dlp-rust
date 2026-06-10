@@ -25,7 +25,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use dlp_common::usb::{
@@ -99,20 +99,20 @@ static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Returns true if service shutdown has been requested.
 pub fn shutdown_requested() -> bool {
-    SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
+    SHUTDOWN_REQUESTED.load(Ordering::Acquire)
 }
 
 /// Requests service shutdown. Idempotent.
 pub fn request_shutdown() {
-    SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+    SHUTDOWN_REQUESTED.store(true, Ordering::Release);
 }
 
 /// Resets the shutdown signal to false.
 ///
-/// Used in tests to ensure a clean state between test cases.
-#[cfg(test)]
-fn reset_shutdown_signal() {
-    SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+/// Called at service startup to support in-process restart scenarios,
+/// and in tests to ensure a clean state between test cases.
+pub fn reset_shutdown_signal() {
+    SHUTDOWN_REQUESTED.store(false, Ordering::Release);
 }
 
 /// Global SQLite connection for the agent's offline audit queue.
@@ -198,33 +198,65 @@ impl BlockingThreads {
     }
 
     /// Signal shutdown and join all threads.
+    ///
+    /// A watchdog timer guarantees the process exits if any thread remains
+    /// blocked beyond the timeout. This prevents the service from hanging
+    /// in `StopPending` indefinitely when a thread is stuck in a Win32 call
+    /// that never returns (e.g. `ConnectNamedPipeW` with no client).
     fn shutdown_and_join(self) {
         request_shutdown();
         info!("shutdown requested — joining blocking threads");
 
-        let join_with_timeout = |name: &str, handle: Option<std::thread::JoinHandle<()>>| {
+        // Watchdog: if shutdown takes longer than timeout + 5 s buffer, force exit.
+        let watchdog_timeout = SHUTDOWN_TIMEOUT
+            .saturating_mul(4)
+            .saturating_add(Duration::from_secs(5));
+        std::thread::spawn(move || {
+            std::thread::sleep(watchdog_timeout);
+            error!(
+                ?watchdog_timeout,
+                "shutdown watchdog: forced process exit after timeout"
+            );
+            std::process::exit(1);
+        });
+
+        let start = Instant::now();
+
+        let join_with_log = |name: &str, handle: Option<std::thread::JoinHandle<()>>| {
             if let Some(h) = handle {
+                let thread_start = Instant::now();
                 debug!(thread = name, "joining thread");
                 match h.join() {
-                    Ok(()) => debug!(thread = name, "thread joined cleanly"),
-                    Err(e) => warn!(thread = name, error = ?e, "thread panicked during shutdown"),
+                    Ok(()) => {
+                        let elapsed = thread_start.elapsed();
+                        debug!(thread = name, ?elapsed, "thread joined cleanly");
+                    }
+                    Err(e) => {
+                        warn!(thread = name, error = ?e, "thread panicked during shutdown");
+                    }
                 }
             }
         };
 
-        join_with_timeout("health", self.health);
+        join_with_log("health", self.health);
         for (i, h) in self.ipc.into_iter().enumerate() {
-            join_with_timeout(&format!("ipc-pipe-{i}"), Some(h));
+            join_with_log(&format!("ipc-pipe-{i}"), Some(h));
         }
-        join_with_timeout("chrome", self.chrome);
-        join_with_timeout("session", self.session);
+        join_with_log("chrome", self.chrome);
+        join_with_log("session", self.session);
 
-        info!("all blocking threads joined");
+        let total = start.elapsed();
+        info!(?total, "all blocking threads joined");
     }
 }
 
 /// Runs the DLP Agent Windows Service to completion.
 pub fn run_service() -> Result<()> {
+    // Reset the shutdown signal to support in-process restart scenarios.
+    // If a previous service instance set this flag, a new start must begin
+    // with a clean state so that blocking threads do not exit immediately.
+    reset_shutdown_signal();
+
     // Load the config early — only to read `log_level` before the subscriber
     // is initialised.  The full config load happens later at its normal site.
     let log_level = crate::config::AgentConfig::load_default().resolved_log_level();
@@ -298,7 +330,9 @@ pub fn run_service() -> Result<()> {
     // happen before Pipe 3's handle_client runs, so Pipe 3 can read the
     // session sender from the same ROUTER.
     threads.health = Some(crate::health_monitor::start());
-    info!(thread_id = ?threads.health.as_ref().unwrap().thread().id(), "health monitor started");
+    if let Some(ref h) = threads.health {
+        info!(thread_id = ?h.thread().id(), "health monitor started");
+    }
 
     // ── Start IPC pipe servers ────────────────────────────────────
     // Each serve() call blocks on a dedicated thread.  Pipe 1, 2, and 3
@@ -328,14 +362,18 @@ pub fn run_service() -> Result<()> {
             })
             .context("failed to spawn Chrome pipe thread")?,
     );
-    info!(thread_id = ?threads.chrome.as_ref().unwrap().thread().id(), "Chrome pipe server started");
+    if let Some(ref h) = threads.chrome {
+        info!(thread_id = ?h.thread().id(), "Chrome pipe server started");
+    }
 
     // ── Start the session monitor ──────────────────────────────────
     // session_monitor::run() calls ui_spawner::init() which enumerates
     // active sessions and spawns a UI in each.  New sessions are detected
     // via polling (WTSEnumerateSessionsW every 2 s).
     threads.session = Some(crate::session_monitor::start());
-    info!(thread_id = ?threads.session.as_ref().unwrap().thread().id(), "session monitor started");
+    if let Some(ref h) = threads.session {
+        info!(thread_id = ?h.thread().id(), "session monitor started");
+    }
 
     // Report RUNNING.
     set_status(
@@ -4346,9 +4384,15 @@ fn init_logging(level: Level) {
 // Shutdown signal and BlockingThreads tests
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Mutex to serialize tests that mutate the global `SHUTDOWN_REQUESTED` static.
+/// Without this, parallel test execution causes non-deterministic failures
+/// when one test resets the flag while another expects it to remain set.
+static SHUTDOWN_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Test that the shutdown signal can be set, read, and reset.
 #[test]
 fn test_shutdown_signal_roundtrip() {
+    let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
     reset_shutdown_signal();
     assert!(!shutdown_requested());
 
@@ -4363,6 +4407,7 @@ fn test_shutdown_signal_roundtrip() {
 /// completes even with no threads (empty case).
 #[test]
 fn test_blocking_threads_empty_shutdown() {
+    let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
     reset_shutdown_signal();
     let threads = BlockingThreads::new();
     threads.shutdown_and_join();
@@ -4374,6 +4419,7 @@ fn test_blocking_threads_empty_shutdown() {
 fn test_blocking_threads_joins_running_thread() {
     use std::sync::atomic::AtomicUsize;
 
+    let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
     reset_shutdown_signal();
     let counter = std::sync::Arc::new(AtomicUsize::new(0));
     let counter_clone = counter.clone();
