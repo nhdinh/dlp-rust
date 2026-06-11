@@ -458,6 +458,52 @@ Plans:
 
 - [x] `64-04-PLAN.md` — ABAC integration + health state machine: EventType::DeviceHealthChange, PolicyStore DeviceHealth match arm, AtomicU8 transitions, heartbeat failure tracking, tamper detection, audit emission
 
+### Phase 66.1: Close gap: WORKFLOW-04 — wire ApprovalCache into enforcement
+
+**Goal**: Wire the fully-implemented but never-consulted `ApprovalCache` into both agent enforcement paths (file monitor event loop and hook DLL IPC handler) so that approved operations carrying a valid JWT token override an ABAC DENY decision.
+**Depends on**: Phase 61 (ApprovalCache must exist with JWT verification, TTL expiry, background polling)
+**Requirements**: WORKFLOW-04
+**Success Criteria** (what must be TRUE):
+
+  1. When a user has a valid approval token for (sid, data_object_id, action, destination_scope), an ABAC DENY on that exact tuple is overridden to ALLOW by the agent.
+  2. The override is validated with Ed25519 JWT signature re-verification (~50us) against the cached server public key.
+  3. Expired or revoked tokens are rejected (lazy expiry on access + 60s background sweep).
+  4. Destination scope mismatches (e.g. USB drive A approval used for USB drive B) are rejected.
+  5. Every approval override emits an auditable `EventType::ApprovalOverride` event with approver SID, approval ID, expiry, and justification.
+  6. The override check works in both the file monitor event loop and the hook DLL IPC handler.
+
+**Plans**: 4 plans (66.1-01 through 66.1-04)
+
+**Wave 1** *(no dependencies)*
+
+- [ ] `66.1-01-PLAN.md` — Shared types: EvaluateResponse + matched_label_id, EventType::ApprovalOverride, backward-compat tests
+- [ ] `66.1-02-PLAN.md` — Server-side: LabelService resolve_tier_and_label_id, PolicyStore::evaluate populates matched_label_id
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] `66.1-03-PLAN.md` — Agent core: check_approval_override helper, ApprovalCacheKey::from_evaluation, spawn_event_loop wiring
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] `66.1-04-PLAN.md` — Agent enforcement paths: run_event_loop override + audit, hook_ipc override + PID-to-SID resolution
+
+
+### Phase 67: Print Watermarking — XPS Overlay
+
+**Goal**: Every approved print job for T3/T4 data carries a visible watermark overlay containing user identity, timestamp, device fingerprint, data tier, and approval ID — embedded directly into the XPS spool file before it reaches the printer driver.
+**Depends on**: Phase 61 (approval workflow tokens provide the approval ID to embed); Phase 64 (device fingerprint and health status feed the watermark context)
+**Requirements**: WATERMARK-01, WATERMARK-02
+**Success Criteria** (what must be TRUE):
+
+  1. When a T3/T4 print job is approved (via Phase 61 workflow or pre-existing policy allow), the XPS spool file is intercepted after `FindFirstPrinterChangeNotification` fires `JOB_STATUS_SPOOLING`; the watermark is overlaid on every page before `EndDocPrinter` completes.
+  2. The watermark text contains: Windows username, ISO-8601 timestamp, device fingerprint (first 8 hex chars), ResolvedTier label, and approval token ID (if applicable); font is Arial 8pt semi-transparent gray at bottom-right margin with 15 pt padding.
+  3. The watermark survives rasterization through the printer driver's XPS-to-PDL conversion; a physical printout on a test laser printer shows the watermark legibly on every page.
+  4. Watermark failures (XPS parse error, font load failure, disk-full during rewrite) emit `EventType::WatermarkFailure` with `triggers_alert = true` and route through SIEM; the print job is denied rather than allowed to proceed unwatermarked.
+  5. An admin TUI screen lists watermark policy configuration (enable/disable per tier, font/size/position overrides) and a live feed of recent watermark events with preview paths.
+
+**Plans**: 0/0 plans planned
+**UI hint**: yes
+
 ---
 
 ## Progress Table
@@ -498,6 +544,15 @@ Plans:
 | 62. Syslog Forwarder — RFC 5424 + Encrypted Offline Queue | 4/4 | Complete | 2026-05-21 |
 | 63. Tamper-Evident Audit — SHA-256 Hash Chain | 4/4 | Complete | 2026-06-06 |
 | 64. Device Identity Expansion — Fingerprint + MAC + VPN + Health | 4/4 | Planned | 2026-06-07 |
+| **v0.12.0** | | | | |
+| 65 | File Scanner — Enumeration + Metadata + Rule Classifier (OCR deferred) | 0/0 | Not started | - |
+| 66 | Screenshot Control + Policy Condition | 0/0 | Not started | - |
+| 66.1 | Close gap: WORKFLOW-04 — wire ApprovalCache into enforcement (INSERTED) | 0/0 | Not started | - |
+| 67 | Print Watermarking — XPS Overlay | 0/0 | Not started | - |
+| 68 | Email/Outlook Interception + Browser Upload Detection | 0/0 | Not started | - |
+| 68.1 | Close gap: DEVICE-05/TAMPER-03/04 — wire tamper detection to SIEM and health (INSERTED) | 0/0 | Not started | - |
+| 69 | RDP File Redirection + Bluetooth Transfer Blocking | 0/0 | Not started | - |
+| 70 | Backup Policy Docs + Ransomware Heuristics + Canary Files | 0/0 | Not started | - |
 
 ---
 
@@ -541,3 +596,13 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 ---
 
 *Last updated: 2026-06-09 — Phase 56 marked complete (all 6 plans verified), Phase 64 verified complete.*
+
+### Phase 67.1: Print Watermarking — XPS Page Geometry + Text Metrics (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 67
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 67.1 to break down)
