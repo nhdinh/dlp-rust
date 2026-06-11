@@ -12,5 +12,12 @@
     "auto_advance": true,
     "plan_review_convergence": true,
     "_auto_chain_active": false
+  },
+  "search_gitignored": false,
+  "review": {
+    "models": {
+      "codex": "codex exec --model gpt-5.5",
+      "opencode": "opencode run"
+    }
   }
 }
