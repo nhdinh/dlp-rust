@@ -450,6 +450,13 @@ pub struct EvaluateResponse {
     /// Whether the policy would have denied if it were in Block mode.
     #[serde(default)]
     pub would_have_denied: bool,
+    /// The ID of the label that matched during evaluation (if any).
+    ///
+    /// Populated when a label-aware ABAC policy matches a resource's
+    /// classification label. `None` when no label matched or the evaluation
+    /// predates label-aware enforcement (Phase 66.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_label_id: Option<String>,
 }
 
 impl EvaluateResponse {
@@ -461,6 +468,7 @@ impl EvaluateResponse {
             reason: "No matching policy; default deny".to_string(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: None,
         }
     }
 
@@ -474,6 +482,7 @@ impl EvaluateResponse {
             reason: "No matching policy; default allow".to_string(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: None,
         }
     }
 }
@@ -919,6 +928,26 @@ mod tests {
         assert_eq!(resp.decision, Decision::DENY);
         assert!(resp.enforcement_mode.is_none());
         assert!(!resp.would_have_denied);
+        assert!(resp.matched_label_id.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_response_with_matched_label_id() {
+        // Round-trip serialization with matched_label_id populated.
+        let resp = EvaluateResponse {
+            decision: Decision::ALLOW,
+            matched_policy_id: Some("pol-001".to_string()),
+            reason: "Label match granted".to_string(),
+            enforcement_mode: Some(EnforcementMode::Block),
+            would_have_denied: false,
+            matched_label_id: Some("lbl-123".to_string()),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"matched_label_id\":\"lbl-123\""));
+
+        let rt: EvaluateResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.decision, Decision::ALLOW);
+        assert_eq!(rt.matched_label_id, Some("lbl-123".to_string()));
     }
 
     #[test]
