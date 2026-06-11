@@ -456,6 +456,19 @@ pub struct AuditEvent {
     /// `None` for events from pre-Phase 63 agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain_hash: Option<String>,
+    /// The SID of the approver who granted the approval token (Phase 66.1).
+    ///
+    /// Populated for [`EventType::ApprovalOverride`] events to identify
+    /// the user whose approval token was used to override the ABAC DENY.
+    /// `None` for non-override events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approver_sid: Option<String>,
+    /// The expiry timestamp (Unix seconds) of the approval token (Phase 66.1).
+    ///
+    /// Populated for [`EventType::ApprovalOverride`] events to record
+    /// when the approval token expires. `None` for non-override events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_expiry: Option<i64>,
 }
 
 impl AuditEvent {
@@ -520,6 +533,8 @@ impl AuditEvent {
             volume_class: None,
             prev_hash: None,
             chain_hash: None,
+            approver_sid: None,
+            approval_expiry: None,
         }
     }
 
@@ -720,6 +735,28 @@ impl AuditEvent {
     #[must_use]
     pub fn with_volume_class(mut self, volume_class: crate::VolumeClass) -> Self {
         self.volume_class = Some(volume_class);
+        self
+    }
+
+    /// Sets the approver SID for an ApprovalOverride event (Phase 66.1).
+    ///
+    /// # Arguments
+    ///
+    /// * `approver_sid` — The SID of the user whose approval token was used.
+    #[must_use]
+    pub fn with_approver_sid(mut self, approver_sid: Option<String>) -> Self {
+        self.approver_sid = approver_sid;
+        self
+    }
+
+    /// Sets the approval expiry timestamp for an ApprovalOverride event (Phase 66.1).
+    ///
+    /// # Arguments
+    ///
+    /// * `approval_expiry` — The expiry timestamp (Unix seconds) of the token.
+    #[must_use]
+    pub fn with_approval_expiry(mut self, approval_expiry: Option<i64>) -> Self {
+        self.approval_expiry = approval_expiry;
         self
     }
 }

@@ -420,14 +420,50 @@ pub async fn run_event_loop(
 
         // ── Determine final decision based on effective mode ──────────────
         // Audit mode: always ALLOW the physical operation, but record what would have happened.
-        let final_decision = if effective_mode.is_audit() {
+        let mut final_decision = if effective_mode.is_audit() {
             Decision::ALLOW
         } else {
             response.decision
         };
 
-        let response_reason = response.reason.clone();
+        let mut response_reason = response.reason.clone();
         let response_policy_id = response.matched_policy_id.clone();
+
+        // Stage 3: Approval cache override (only when blocking and DENY).
+        // Audit mode short-circuits before this check (avoids unnecessary JWT verification).
+        let mut override_granted = false;
+        let mut override_claims: Option<dlp_common::approval::ApprovalClaims> = None;
+        if effective_mode.is_blocking() && final_decision.is_denied() {
+            if let Some(ref ac) = _approval_cache {
+                if let Some((ovr, claims)) = crate::approval_cache::check_approval_override(
+                    ac,
+                    &response,
+                    &user_sid,
+                    &format!("{:?}", abac_action),
+                    None, // TODO: derive dst from operation context for copy/move to external destinations
+                ) {
+                    final_decision = ovr.decision;
+                    override_granted = true;
+                    override_claims = Some(claims);
+                    debug!(
+                        sid = %user_sid,
+                        label_id = ?response.matched_label_id,
+                        "approval override granted"
+                    );
+                } else {
+                    debug!(
+                        sid = %user_sid,
+                        label_id = ?response.matched_label_id,
+                        "approval override missed — keeping DENY"
+                    );
+                    // Annotate block reason when a label matched but no approval exists.
+                    if response.matched_label_id.is_some() {
+                        response_reason = format!("{} — no active approval", response_reason);
+                    }
+                }
+            }
+        }
+
         let is_denied = final_decision.is_denied();
 
         // Event type reflects the physical operation outcome, not the policy intent.
@@ -438,9 +474,21 @@ pub async fn run_event_loop(
         };
 
         // ── Emit enriched audit event ──────────────────────────────────────
-        let policy_id_str = response_policy_id.unwrap_or_default();
+        let policy_id_str = if override_granted {
+            override_claims
+                .as_ref()
+                .map(|c| format!("approval:{}", c.jti))
+                .unwrap_or_default()
+        } else {
+            response_policy_id.unwrap_or_default()
+        };
+
         let mut audit_event = AuditEvent::new(
-            event_type,
+            if override_granted {
+                EventType::ApprovalOverride
+            } else {
+                event_type
+            },
             user_sid.clone(),
             user_name.clone(),
             path.clone(),
@@ -453,7 +501,25 @@ pub async fn run_event_loop(
         .with_access_context(AuditAccessContext::Local)
         .with_policy(policy_id_str.clone(), response_reason.clone())
         .with_policy_mode(format!("{:?}", effective_mode))
-        .with_would_have_denied(response.would_have_denied);
+        .with_would_have_denied(if override_granted {
+            true
+        } else {
+            response.would_have_denied
+        });
+
+        if override_granted {
+            if let Some(ref claims) = override_claims {
+                audit_event.approver_sid = Some(claims.sub.clone());
+                audit_event.approval_expiry = Some(claims.exp);
+                audit_event.justification = Some(
+                    claims
+                        .dst
+                        .clone()
+                        .unwrap_or_else(|| "pre-approved".to_string()),
+                );
+                audit_event.override_granted = true;
+            }
+        }
 
         // AUDIT-04 (Phase 42): Enrich with app identity from the initiating process.
         crate::audit_emitter::enrich_audit_with_app_identity(&mut audit_event, pid);
@@ -495,6 +561,69 @@ fn fnv1a_hex(s: &str) -> String {
 
 pub use policy_mapper::PolicyMapper;
 
+/// Computes the effective decision after considering the approval cache override.
+///
+/// This is a pure function extracted from `run_event_loop` for testability.
+/// It encapsulates the Stage 3 approval cache override logic.
+///
+/// # Arguments
+///
+/// * `initial_decision` — the decision after effective mode computation.
+/// * `effective_mode` — the computed effective enforcement mode.
+/// * `response` — the ABAC evaluation response (contains matched_label_id).
+/// * `approval_cache` — optional reference to the approval cache.
+/// * `user_sid` — the requesting user's SID.
+/// * `action_str` — the action as a string (e.g. "WRITE").
+///
+/// # Returns
+///
+/// `(final_decision, override_granted, override_claims, annotated_reason)`
+#[must_use]
+#[allow(clippy::type_complexity)]
+fn compute_override_decision(
+    initial_decision: Decision,
+    effective_mode: dlp_common::abac::EnforcementMode,
+    response: &dlp_common::EvaluateResponse,
+    approval_cache: Option<&crate::approval_cache::ApprovalCache>,
+    user_sid: &str,
+    action_str: &str,
+) -> (
+    Decision,
+    bool,
+    Option<dlp_common::approval::ApprovalClaims>,
+    String,
+) {
+    let mut final_decision = initial_decision;
+    let mut override_granted = false;
+    let mut override_claims: Option<dlp_common::approval::ApprovalClaims> = None;
+    let mut annotated_reason = response.reason.clone();
+
+    if effective_mode.is_blocking() && final_decision.is_denied() {
+        if let Some(ac) = approval_cache {
+            if let Some((ovr, claims)) = crate::approval_cache::check_approval_override(
+                ac,
+                response,
+                user_sid,
+                action_str,
+                None,
+            ) {
+                final_decision = ovr.decision;
+                override_granted = true;
+                override_claims = Some(claims);
+            } else if response.matched_label_id.is_some() {
+                annotated_reason = format!("{} — no active approval", annotated_reason);
+            }
+        }
+    }
+
+    (
+        final_decision,
+        override_granted,
+        override_claims,
+        annotated_reason,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use dlp_common::abac::{compute_effective_mode, EnforcementMode};
@@ -521,5 +650,155 @@ mod tests {
     fn test_compute_effective_mode_perpolicy_defersto_block() {
         let effective = compute_effective_mode(EnforcementMode::PerPolicy, EnforcementMode::Block);
         assert_eq!(effective, EnforcementMode::Block);
+    }
+
+    // ── Approval override integration tests ───────────────────────────────
+
+    use super::*;
+
+    #[test]
+    fn test_compute_override_decision_no_cache_keeps_deny() {
+        let response = dlp_common::EvaluateResponse {
+            decision: Decision::DENY,
+            matched_policy_id: Some("policy-1".to_string()),
+            reason: "default deny".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
+            matched_label_id: Some("label-001".to_string()),
+        };
+
+        let (final_decision, override_granted, claims, reason) = compute_override_decision(
+            Decision::DENY,
+            EnforcementMode::Block,
+            &response,
+            None,
+            "S-1-5-21-1",
+            "WRITE",
+        );
+
+        assert_eq!(final_decision, Decision::DENY);
+        assert!(!override_granted);
+        assert!(claims.is_none());
+        // No approval cache configured — reason is NOT annotated.
+        assert_eq!(reason, "default deny");
+    }
+
+    #[test]
+    fn test_compute_override_decision_empty_cache_annotates_reason() {
+        // When approval cache is Some but empty, and a label matched,
+        // the reason is annotated with "no active approval".
+        let response = dlp_common::EvaluateResponse {
+            decision: Decision::DENY,
+            matched_policy_id: Some("policy-1".to_string()),
+            reason: "default deny".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
+            matched_label_id: Some("label-001".to_string()),
+        };
+
+        let cache = crate::approval_cache::ApprovalCache::new();
+
+        let (final_decision, override_granted, claims, reason) = compute_override_decision(
+            Decision::DENY,
+            EnforcementMode::Block,
+            &response,
+            Some(&cache),
+            "S-1-5-21-1",
+            "WRITE",
+        );
+
+        assert_eq!(final_decision, Decision::DENY);
+        assert!(!override_granted);
+        assert!(claims.is_none());
+        assert_eq!(reason, "default deny — no active approval");
+    }
+
+    #[test]
+    fn test_compute_override_decision_audit_mode_skips_check() {
+        let response = dlp_common::EvaluateResponse {
+            decision: Decision::DENY,
+            matched_policy_id: Some("policy-1".to_string()),
+            reason: "default deny".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
+            matched_label_id: Some("label-001".to_string()),
+        };
+
+        let cache = crate::approval_cache::ApprovalCache::new();
+
+        let (final_decision, override_granted, claims, reason) = compute_override_decision(
+            Decision::ALLOW, // audit mode short-circuits to ALLOW before override
+            EnforcementMode::Audit,
+            &response,
+            Some(&cache),
+            "S-1-5-21-1",
+            "WRITE",
+        );
+
+        // Audit mode: decision is already ALLOW, override check is skipped.
+        assert_eq!(final_decision, Decision::ALLOW);
+        assert!(!override_granted);
+        assert!(claims.is_none());
+        assert_eq!(reason, "default deny");
+    }
+
+    #[test]
+    fn test_compute_override_decision_no_label_id_skips_reason_annotation() {
+        // When matched_label_id is None (offline mode / no label resolution),
+        // the cache check is skipped and no reason annotation occurs.
+        let response = dlp_common::EvaluateResponse {
+            decision: Decision::DENY,
+            matched_policy_id: None,
+            reason: "offline mode".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
+            matched_label_id: None,
+        };
+
+        let cache = crate::approval_cache::ApprovalCache::new();
+
+        let (final_decision, override_granted, claims, reason) = compute_override_decision(
+            Decision::DENY,
+            EnforcementMode::Block,
+            &response,
+            Some(&cache),
+            "S-1-5-21-1",
+            "WRITE",
+        );
+
+        assert_eq!(final_decision, Decision::DENY);
+        assert!(!override_granted);
+        assert!(claims.is_none());
+        // No "no active approval" annotation because matched_label_id is None.
+        assert_eq!(reason, "offline mode");
+    }
+
+    #[test]
+    fn test_compute_override_decision_allow_bypasses_check() {
+        // When initial decision is already ALLOW, override check is skipped.
+        let response = dlp_common::EvaluateResponse {
+            decision: Decision::ALLOW,
+            matched_policy_id: Some("policy-1".to_string()),
+            reason: "allowed".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
+            matched_label_id: Some("label-001".to_string()),
+        };
+
+        let cache = crate::approval_cache::ApprovalCache::new();
+
+        let (final_decision, override_granted, claims, reason) = compute_override_decision(
+            Decision::ALLOW,
+            EnforcementMode::Block,
+            &response,
+            Some(&cache),
+            "S-1-5-21-1",
+            "WRITE",
+        );
+
+        assert_eq!(final_decision, Decision::ALLOW);
+        assert!(!override_granted);
+        assert!(claims.is_none());
+        assert_eq!(reason, "allowed");
     }
 }
