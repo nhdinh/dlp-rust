@@ -191,12 +191,18 @@ pub enum EventType {
     ApprovalGrant,
     /// An approval was revoked by an administrator (WORKFLOW-02, Phase 61).
     ApprovalRevoke,
-    /// An approval token was used to allow a blocked operation (WORKFLOW-03, Phase 61).
+    /// Reserved for future use. ApprovalOverride is the enforcement-time event
+    /// for successful overrides. This variant is retained for backward
+    /// compatibility with existing SIEM rules but is not emitted by current code.
     ApprovalUse,
     /// An approval expired automatically (WORKFLOW-03, Phase 61).
     ApprovalExpiry,
     /// The Board public key was updated (WORKFLOW-06, Phase 61).
     ApprovalBoardKeyUpdate,
+    /// An approval token was used to override an ABAC DENY decision at
+    /// enforcement time. Emitted when ApprovalCache::check() grants an override
+    /// (WORKFLOW-04, Phase 66.1).
+    ApprovalOverride,
     /// Phase 51: ntdll patching was enabled at agent boot.
     NtdllPatchingEnabled,
     /// Phase 51: EDR was detected at boot while ntdll patching is enabled.
@@ -253,6 +259,7 @@ impl EventType {
                 | Self::ApprovalUse
                 | Self::ApprovalExpiry
                 | Self::ApprovalBoardKeyUpdate
+                | Self::ApprovalOverride
                 | Self::NtdllPatchingEnabled
                 | Self::NtdllPatchingEdrDetected
                 | Self::HookOverwritten
@@ -1655,6 +1662,40 @@ mod tests {
     #[test]
     fn test_device_health_change_triggers_alert() {
         assert!(EventType::DeviceHealthChange.triggers_alert());
+    }
+
+    // --- Phase 66.1: ApprovalOverride event type tests ---
+
+    #[test]
+    fn test_approval_override_routed_to_siem() {
+        assert!(EventType::ApprovalOverride.routed_to_siem());
+    }
+
+    #[test]
+    fn test_approval_override_does_not_trigger_alert() {
+        assert!(!EventType::ApprovalOverride.triggers_alert());
+    }
+
+    #[test]
+    fn test_approval_override_serde_round_trip() {
+        let event = AuditEvent::new(
+            EventType::ApprovalOverride,
+            "S-1-5-21-1".to_string(),
+            "jsmith".to_string(),
+            r"C:\Data\Secret.docx".to_string(),
+            Classification::T3,
+            Action::WRITE,
+            Decision::ALLOW,
+            "AGENT-01".to_string(),
+            1,
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            json.contains("APPROVAL_OVERRIDE"),
+            "JSON must contain APPROVAL_OVERRIDE: {json}"
+        );
+        let rt: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.event_type, EventType::ApprovalOverride);
     }
 
     // --- Phase 56: VolumeArrival event type tests ---
