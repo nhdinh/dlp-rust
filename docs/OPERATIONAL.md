@@ -157,28 +157,29 @@ The dlp-admin password is a DLP-specific credential (NOT an Active Directory acc
 
 #### Setting or Changing the Password
 
-Use `dlp-admin-cli.exe` to set or update the password. Run as Administrator:
+The dlp-admin password is managed by `dlp-server` and automatically synchronized to the agent stop credential.
+
+**First-run setup (server):**
 
 ```cmd
-C:\Program Files\DLP\dlp-admin-cli.exe set-password
+dlp-server --init-admin "your-password"
 ```
 
-The tool:
+This creates the `dlp-admin` account and stores the bcrypt-hashed password in both `admin_users.password_hash` (for JWT login) and `agent_credentials.DLPAuthHash` (for agent service stop verification).
 
-1. Prompts for the new password twice (with confirmation).
-2. Hashes it with bcrypt (cost 12).
-3. Prompts for dlp-server admin credentials.
-4. Pushes the hash to `dlp-server` via `PUT /agent-credentials/auth-hash`.
+**Changing the password (TUI):**
 
-The CLI never writes to the local registry. Agents sync the hash from the server on startup and cache it locally. All connected agents will receive the updated hash on their next startup or sync cycle.
+Run `dlp-admin-cli.exe` as Administrator and select **Password Management > Change Admin Password**. This sends `PUT /auth/password` to the server, which updates both stores automatically.
 
-To verify the current password against the server-stored hash:
+**Setting a separate agent stop password (TUI):**
 
-```cmd
-C:\Program Files\DLP\dlp-admin-cli.exe verify-password
-```
+If you want the agent service stop to use a different password from the admin login password, use **Password Management > Set Agent Password** (`PUT /agent-credentials/auth-hash`). This overrides the synchronized hash. To restore synchronization, change the admin password again.
 
-> **These commands require a running dlp-server** and valid admin credentials on the server.
+**Verifying the password (TUI):**
+
+Select **Password Management > Verify Agent Password** to check the currently configured stop password against the server.
+
+> **TUI operations require a running dlp-server** and valid admin credentials.
 
 #### Stopping the Service
 
@@ -470,7 +471,7 @@ Common causes:
 
 ### Password stop always fails
 
-- Verify the password was set via `dlp-admin-cli set-password` and pushed to dlp-server.
+- Verify the dlp-admin password was set via `--init-admin` or TUI **Change Admin Password** and propagated to dlp-server.
 - Check that the agent synced the hash on startup (look for `"agent auth hash synced from server"` in tracing logs).
 - As a fallback, verify `HKLM\SOFTWARE\DLP\Agent\Credentials\DLPAuthHash` is set in the local registry.
 - Verify the bcrypt hash was set with cost factor 12.

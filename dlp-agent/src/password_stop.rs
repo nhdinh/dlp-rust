@@ -173,8 +173,7 @@ pub fn verify_stop_password(request_id: &str, response_path: &str) -> Result<(),
 
     // Step 2: poll the response file
     debug_log("step 2: polling for response file...");
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_secs(STOP_TIMEOUT_SECS);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(STOP_TIMEOUT_SECS);
     loop {
         std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -184,7 +183,10 @@ pub fn verify_stop_password(request_id: &str, response_path: &str) -> Result<(),
         }
 
         if let Ok(data) = std::fs::read_to_string(response_path) {
-            debug_log(&format!("step 2: response file found ({} bytes)", data.len()));
+            debug_log(&format!(
+                "step 2: response file found ({} bytes)",
+                data.len()
+            ));
             let _ = std::fs::remove_file(response_path);
             return handle_file_response_for_verify(request_id, &data);
         }
@@ -203,10 +205,7 @@ pub fn verify_stop_password(request_id: &str, response_path: &str) -> Result<(),
 
 /// Handles the file response during password verification.
 /// Returns Ok(()) on confirmed stop, Err on cancel/failure.
-pub fn handle_file_response_for_verify(
-    request_id: &str,
-    data: &str,
-) -> Result<(), StopError> {
+pub fn handle_file_response_for_verify(request_id: &str, data: &str) -> Result<(), StopError> {
     #[derive(serde::Deserialize)]
     struct StopResponse {
         result: String,
@@ -283,10 +282,7 @@ pub fn initiate_stop() {
     let request_id = uuid::Uuid::new_v4().to_string();
     set_pending_request(&request_id);
 
-    let response_path = format!(
-        r"C:\ProgramData\DLP\logs\stop-response-{}.json",
-        request_id
-    );
+    let response_path = format!(r"C:\ProgramData\DLP\logs\stop-response-{}.json", request_id);
     let _ = std::fs::create_dir_all(r"C:\ProgramData\DLP\logs");
     let _ = std::fs::remove_file(&response_path);
 
@@ -1084,8 +1080,7 @@ mod tests {
     /// Test that handle_file_response_for_verify handles a submit with no password.
     #[test]
     fn test_handle_file_response_for_verify_submit_no_password() {
-        let result =
-            handle_file_response_for_verify("test-request", r#"{"result":"submit"}"#);
+        let result = handle_file_response_for_verify("test-request", r#"{"result":"submit"}"#);
         assert!(
             matches!(result, Err(StopError::Cancelled)),
             "submit with no password should return Err(Cancelled)"
@@ -1116,8 +1111,14 @@ mod tests {
         // Call abort_stop
         abort_stop();
 
-        assert!(!STOP_STATE.lock().pending, "pending should be false after abort_stop");
-        assert!(!is_stop_confirmed(), "STOP_CONFIRMED should be false after abort_stop");
+        assert!(
+            !STOP_STATE.lock().pending,
+            "pending should be false after abort_stop"
+        );
+        assert!(
+            !is_stop_confirmed(),
+            "STOP_CONFIRMED should be false after abort_stop"
+        );
     }
 
     /// Test that AssertUnwindSafe is sound by verifying the closure captures

@@ -19,7 +19,7 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use serde::{Deserialize, Serialize};
 
 use crate::audit_store;
-use crate::db::repositories::AdminUserRepository;
+use crate::db::repositories::{AdminUserRepository, CredentialsRepository};
 use crate::db::UnitOfWork;
 use crate::AppError;
 use crate::AppState;
@@ -364,10 +364,13 @@ pub async fn change_password(
 
     let uname = username.clone();
     let pool = Arc::clone(&state.pool);
+    let ts = Utc::now().to_rfc3339();
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
         AdminUserRepository::update_password_hash(&uow, &uname, &new_hash)
+            .map_err(AppError::from)?;
+        CredentialsRepository::upsert(&uow, "DLPAuthHash", &new_hash, &ts)
             .map_err(AppError::from)?;
         uow.commit().map_err(AppError::from)?;
         Ok(())
@@ -437,6 +440,8 @@ pub fn create_admin_user(
         .map_err(|e| anyhow::anyhow!("transaction failed: {e}"))?;
     AdminUserRepository::insert(&uow, username, &hash, &now)
         .map_err(|e| anyhow::anyhow!("failed to insert admin user: {e}"))?;
+    CredentialsRepository::upsert(&uow, "DLPAuthHash", &hash, &now)
+        .map_err(|e| anyhow::anyhow!("failed to upsert agent auth hash: {e}"))?;
     uow.commit()
         .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
 

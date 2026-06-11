@@ -120,7 +120,7 @@ See [CONFIGURATION.md](CONFIGURATION.md) for the full configuration reference.
 
 ### dlp-admin-cli first-run setup
 
-After installing the agent MSI, run the bundled `dlp-admin-cli.exe set-password` to set the dlp-admin password. This is launched automatically by the MSI custom action after installation.
+After installing the agent MSI, use `dlp-admin-cli.exe` TUI **Set Agent Password** (or start `dlp-server --init-admin <password>` on the server) to set the dlp-admin password.
 
 ## Rollback procedure
 
