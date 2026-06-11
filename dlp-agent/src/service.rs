@@ -1240,6 +1240,11 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
     let (approval_shutdown_tx, approval_poll_handle) =
         spawn_approval_poll_task(server_client.clone(), Arc::clone(&approval_cache));
 
+    // TODO(WORKFLOW-04-followup): When HookIpcServer is constructed for the
+    // hook DLL IPC path, use HookIpcServer::with_approval_cache() instead of
+    // with_cache() and pass approval_cache.clone(). The hook-path approval
+    // override check is deferred until real ABAC evaluation is wired.
+
     // ── Store server client for on-demand auth hash fetching ─────────────
     if let Some(ref sc) = server_client {
         crate::password_stop::set_server_client(sc.clone());

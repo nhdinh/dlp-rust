@@ -111,7 +111,39 @@ impl HookIpcServer {
         cache: Arc<dyn CacheAccessor>,
     ) -> Self {
         let handler: HookHandler =
-            Arc::new(move |req: HookRequest| handle_hook_request(req, &inner_handler, &cache));
+            Arc::new(move |req: HookRequest| handle_hook_request(req, &inner_handler, &cache, None));
+        Self {
+            pipe_name: pipe_name.into(),
+            handler,
+        }
+    }
+
+    /// Creates a new hook IPC server with both cache and approval cache awareness.
+    ///
+    /// This is the structural preparation for future hook-path approval override
+    /// integration (WORKFLOW-04-followup). The approval cache is stored but the
+    /// override check is NOT activated — the hook path remains fail-closed until
+    /// real ABAC evaluation is wired.
+    ///
+    /// The returned handler:
+    /// 1. Reads `cache_version` from the request and detects stale DLLs.
+    /// 2. Delegates to `inner_handler` for the actual ABAC evaluation.
+    /// 3. Builds a [`CacheHint`] from the response for DLL LRU warming.
+    /// 4. Returns the current cache version in the response.
+    ///
+    /// # Cache Non-Authoritative Invariant
+    ///
+    /// The cache stores classification **HINT only**. ABAC authority is never
+    /// bypassed. The `inner_handler` always performs full ABAC evaluation.
+    pub fn with_approval_cache(
+        pipe_name: impl Into<String>,
+        inner_handler: HookHandler,
+        cache: Arc<dyn CacheAccessor>,
+        approval_cache: Option<Arc<crate::approval_cache::ApprovalCache>>,
+    ) -> Self {
+        let handler: HookHandler = Arc::new(move |req: HookRequest| {
+            handle_hook_request(req, &inner_handler, &cache, approval_cache.as_ref())
+        });
         Self {
             pipe_name: pipe_name.into(),
             handler,
@@ -281,6 +313,7 @@ fn handle_hook_request(
     req: HookRequest,
     inner_handler: &HookHandler,
     cache: &Arc<dyn CacheAccessor>,
+    approval_cache: Option<&Arc<crate::approval_cache::ApprovalCache>>,
 ) -> HookResponse {
     let current_version = cache.current_version();
 
@@ -296,6 +329,19 @@ fn handle_hook_request(
 
     // Perform full ABAC evaluation (no bypass).
     let mut response = inner_handler(req.clone());
+
+    // TODO(WORKFLOW-04-followup): Hook-path approval override is deferred.
+    // The hook DLL path currently uses a placeholder heuristic (build_cache_hint)
+    // rather than real ABAC evaluation. Approval override requires:
+    //   1. Real ABAC evaluation in inner_handler returning EvaluateResponse with matched_label_id.
+    //   2. PID in HookRequest (or user_sid) to construct ApprovalCacheKey.
+    //   3. get_sid_for_pid() to resolve SID from PID.
+    //   4. Audit emission with agent_id and session_id threaded through.
+    // Until then, the hook path skips approval cache check (fail-closed).
+    // if response.decision.is_denied() {
+    //     if let Some(ref ac) = approval_cache { ... }
+    // }
+    let _ = approval_cache; // suppress unused warning until follow-up
 
     // Build cache_hint for DLL LRU warming.
     // TTL based on tier: T4=30s, T3=60s, T2=300s, T1=1800s.
@@ -756,7 +802,7 @@ mod tests {
             op: dlp_common::hook_ipc::HookOp::Write,
         };
 
-        let resp = handle_hook_request(req, &inner, &cache);
+        let resp = handle_hook_request(req, &inner, &cache, None);
 
         // Stale detection should not change the decision.
         assert_eq!(resp.decision, Decision::ALLOW);
@@ -787,7 +833,7 @@ mod tests {
             op: dlp_common::hook_ipc::HookOp::Read,
         };
 
-        let resp = handle_hook_request(req, &inner, &cache);
+        let resp = handle_hook_request(req, &inner, &cache, None);
 
         assert_eq!(resp.decision, Decision::ALLOW);
         assert_eq!(resp.cache_version, 42);
@@ -814,7 +860,7 @@ mod tests {
             op: dlp_common::hook_ipc::HookOp::Write,
         };
 
-        let resp = handle_hook_request(req, &inner, &cache);
+        let resp = handle_hook_request(req, &inner, &cache, None);
 
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.cache_version, 7);
@@ -844,5 +890,86 @@ mod tests {
         // Unclassified = None
         let hint = build_cache_hint(r"C:\public\file.txt");
         assert!(hint.is_none());
+    }
+
+    // ── Task 3: with_approval_cache constructor + deferred override tests ───
+
+    #[test]
+    fn test_with_approval_cache_constructor() {
+        let inner: HookHandler = Arc::new(|req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: format!("ok: {}", req.path),
+            cache_hint: None,
+            cache_version: 0,
+        });
+
+        let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 1 });
+        let approval_cache = Some(Arc::new(crate::approval_cache::ApprovalCache::new()));
+
+        let server = HookIpcServer::with_approval_cache(
+            r"\\.\pipe\DlpHookPipeTestApproval",
+            inner,
+            cache,
+            approval_cache,
+        );
+
+        // The server should be constructible; we can't easily test the handler
+        // without a real pipe connection, but we verify the struct is built.
+        assert_eq!(server.pipe_name, r"\\.\pipe\DlpHookPipeTestApproval");
+    }
+
+    #[test]
+    fn test_handle_hook_request_deferred_override_deny_unchanged() {
+        // Even with approval_cache provided, the hook path does NOT override
+        // DENY — the override is deferred until real ABAC evaluation is wired.
+        let inner: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::DENY,
+            reason: "blocked".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+        });
+
+        let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 1 });
+        let approval_cache = Arc::new(crate::approval_cache::ApprovalCache::new());
+
+        let req = HookRequest {
+            path: r"C:\secret.txt".to_string(),
+            action: "WRITE".to_string(),
+            cache_version: 1,
+            protocol_version: 1,
+            op: dlp_common::hook_ipc::HookOp::Write,
+        };
+
+        let resp = handle_hook_request(req, &inner, &cache, Some(&approval_cache));
+
+        // Decision should remain DENY (fail-closed — override is deferred).
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.reason, "blocked");
+    }
+
+    #[test]
+    fn test_with_cache_backward_compat() {
+        // Verify the original with_cache constructor still works and passes
+        // None for approval_cache.
+        let inner: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::DENY,
+            reason: "blocked".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+        });
+
+        let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 1 });
+
+        let req = HookRequest {
+            path: r"C:\test.txt".to_string(),
+            action: "READ".to_string(),
+            cache_version: 1,
+            protocol_version: 1,
+            op: dlp_common::hook_ipc::HookOp::Read,
+        };
+
+        let resp = handle_hook_request(req, &inner, &cache, None);
+        assert_eq!(resp.decision, Decision::DENY);
+        assert_eq!(resp.cache_version, 1);
     }
 }

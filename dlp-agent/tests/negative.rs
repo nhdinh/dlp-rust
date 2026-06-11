@@ -116,6 +116,7 @@ async fn test_cache_bulk_eviction() {
                 reason: "bulk".into(),
                 enforcement_mode: None,
                 would_have_denied: false,
+                matched_label_id: None,
             },
         );
     }

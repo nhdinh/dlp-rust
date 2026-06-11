@@ -631,6 +631,7 @@ async fn test_engine_success_allow() {
         reason: "T2 allowed".into(),
         enforcement_mode: None,
         would_have_denied: false,
+        matched_label_id: None,
     };
     let (addr, _h) = start_engine_with_json_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
@@ -652,6 +653,7 @@ async fn test_engine_success_deny() {
         reason: "T4 blocked".into(),
         enforcement_mode: None,
         would_have_denied: false,
+        matched_label_id: None,
     };
     let (addr, _h) = start_engine_with_json_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
@@ -677,6 +679,7 @@ async fn test_offline_manager_cache_hit_second_request() {
         reason: "ok".into(),
         enforcement_mode: None,
         would_have_denied: false,
+        matched_label_id: None,
     };
     let (addr, _h) = start_engine_with_json_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
@@ -1263,6 +1266,7 @@ mod cache_edge_cases {
             reason: "test".into(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: None,
         }
     }
 
@@ -2863,6 +2867,7 @@ mod print_tc {
             reason: "no policy restricts T2 print".to_string(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: None,
         };
         assert_eq!(simulated_response.decision, Decision::ALLOW);
     }
@@ -2897,6 +2902,7 @@ mod print_tc {
             reason: "T3 content requires authentication to print".to_string(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: None,
         };
         assert_eq!(simulated_response.decision, Decision::DenyWithAlert);
 
@@ -2955,6 +2961,7 @@ mod print_tc {
             reason: "T4 content is never allowed to print".to_string(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: None,
         };
         assert_eq!(simulated_response.decision, Decision::DENY);
 
