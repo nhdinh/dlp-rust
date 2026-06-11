@@ -426,6 +426,93 @@ pub fn get_current_process_sid() -> Option<String> {
     None
 }
 
+/// Resolves the user SID for an arbitrary process by PID.
+///
+/// Opens the target process with `PROCESS_QUERY_INFORMATION`, queries its
+/// token via `OpenProcessToken` + `GetTokenInformation(TokenUser)`, and
+/// converts the SID to a string.
+///
+/// # Returns
+///
+/// `Some(sid_string)` on success, `None` on any failure.
+///
+/// # Fail-Closed Behavior
+///
+/// Returns `None` if `OpenProcess` fails (protected process, cross-session,
+/// higher integrity level). Callers must fall through to DENY (fail-closed).
+///
+/// This function is used by the hook DLL path to resolve the user SID for
+/// approval cache lookups.
+#[cfg(windows)]
+pub fn get_sid_for_pid(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY};
+    use windows::Win32::System::Threading::OpenProcess;
+    use windows::Win32::System::Threading::PROCESS_QUERY_INFORMATION;
+
+    // SAFETY: OpenProcess with PROCESS_QUERY_INFORMATION is safe for any PID.
+    let process_handle = unsafe {
+        OpenProcess(PROCESS_QUERY_INFORMATION, false, pid).ok()?
+    };
+
+    let mut token_handle = HANDLE::default();
+    // SAFETY: process_handle is valid; token_handle is a valid out-pointer.
+    let open_result = unsafe {
+        windows::Win32::System::Threading::OpenProcessToken(
+            process_handle,
+            TOKEN_QUERY,
+            &mut token_handle,
+        )
+    };
+
+    if open_result.is_err() {
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(process_handle) };
+        return None;
+    }
+
+    const BUF_SIZE: usize = 512;
+    let mut buf = vec![0u8; BUF_SIZE];
+    let mut returned = 0u32;
+
+    // SAFETY: token_handle is valid; buf is valid for writes.
+    let ok = unsafe {
+        GetTokenInformation(
+            token_handle,
+            TokenUser,
+            Some(buf.as_mut_ptr() as *mut _),
+            BUF_SIZE as u32,
+            &mut returned,
+        )
+    };
+
+    if ok.is_err() {
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(token_handle) };
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(process_handle) };
+        return None;
+    }
+
+    let sid_ptr = unsafe { *(buf.as_ptr() as *const *const std::ffi::c_void) };
+    if sid_ptr.is_null() {
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(token_handle) };
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(process_handle) };
+        return None;
+    }
+
+    let sid_str = sid_ptr_to_string(sid_ptr);
+
+    // Close both handles on all paths.
+    let _ = unsafe { windows::Win32::Foundation::CloseHandle(token_handle) };
+    let _ = unsafe { windows::Win32::Foundation::CloseHandle(process_handle) };
+
+    sid_str
+}
+
+/// Non-Windows fallback: returns `None` (tests).
+#[cfg(not(windows))]
+pub fn get_sid_for_pid(_pid: u32) -> Option<String> {
+    None
+}
+
 /// Queries the current process token for the user SID.
 #[cfg(windows)]
 fn query_process_sid() -> Option<String> {
@@ -514,5 +601,20 @@ mod tests {
         assert_eq!(subject.user_sid, "S-1-5-21-123");
         assert_eq!(subject.user_name, "jsmith");
         assert!(subject.groups.is_empty());
+    }
+
+    /// Verifies that `get_sid_for_pid` on the current process returns the same
+    /// SID as `get_current_process_sid`.
+    #[test]
+    fn test_get_sid_for_pid_current_process() {
+        let current_pid = std::process::id();
+        let from_pid = get_sid_for_pid(current_pid);
+        let from_current = get_current_process_sid();
+
+        // On non-Windows both return None; on Windows they should match.
+        assert_eq!(
+            from_pid, from_current,
+            "get_sid_for_pid(current_pid) must match get_current_process_sid()"
+        );
     }
 }
