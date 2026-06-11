@@ -546,7 +546,7 @@ Plans:
 | **v0.12.0** | | | | |
 | 65 | File Scanner — Enumeration + Metadata + Rule Classifier (OCR deferred) | 0/0 | Not started | - |
 | 66 | Screenshot Control + Policy Condition | 0/0 | Not started | - |
-| 66.1 | Close gap: WORKFLOW-04 — wire ApprovalCache into enforcement (INSERTED) | 4/4 | Complete   | 2026-06-11 |
+| 66.1 | Close gap: WORKFLOW-04 — wire ApprovalCache into enforcement (INSERTED) | 4/4 | Complete    | 2026-06-11 |
 | 67 | Print Watermarking — XPS Overlay | 0/0 | Not started | - |
 | 68 | Email/Outlook Interception + Browser Upload Detection | 0/0 | Not started | - |
 | 68.1 | Close gap: DEVICE-05/TAMPER-03/04 — wire tamper detection to SIEM and health (INSERTED) | 0/0 | Not started | - |
