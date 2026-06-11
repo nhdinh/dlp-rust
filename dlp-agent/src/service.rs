@@ -3304,6 +3304,7 @@ fn chrome_policy_evaluator(
             reason: "Source origin is in managed-origins list".to_string(),
             enforcement_mode: None,
             would_have_denied: true,
+            matched_label_id: None,
         }
     } else {
         EvaluateResponse {
@@ -3312,6 +3313,7 @@ fn chrome_policy_evaluator(
             reason: "Source origin is not managed".to_string(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: None,
         }
     }
 }

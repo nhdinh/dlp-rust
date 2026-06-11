@@ -465,6 +465,7 @@ mod tests {
             reason: "test".to_string(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: None,
         };
         assert_eq!(
             decision_from_response(resp, &job, &config),
@@ -489,6 +490,7 @@ mod tests {
             reason: "test".to_string(),
             enforcement_mode: None,
             would_have_denied: true,
+            matched_label_id: None,
         };
         assert_eq!(
             decision_from_response(resp, &job, &config),
@@ -513,6 +515,7 @@ mod tests {
             reason: "test".to_string(),
             enforcement_mode: None,
             would_have_denied: true,
+            matched_label_id: None,
         };
         assert_eq!(
             decision_from_response(resp, &job, &config),
@@ -537,6 +540,7 @@ mod tests {
             reason: "test".to_string(),
             enforcement_mode: None,
             would_have_denied: true,
+            matched_label_id: None,
         };
         assert_eq!(
             decision_from_response(resp, &job, &config),

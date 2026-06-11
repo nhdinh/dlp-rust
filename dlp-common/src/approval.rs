@@ -240,6 +240,28 @@ impl ApprovalCacheKey {
     pub fn decode(encoded: &str) -> Option<Self> {
         serde_json::from_str(encoded).ok()
     }
+
+    /// Construct a cache key from an `EvaluateResponse` and identity/action context.
+    ///
+    /// Returns `None` if the evaluation response does not contain a `matched_label_id`,
+    /// which is required to form the cache key's `obj_id` field.
+    ///
+    /// # Arguments
+    ///
+    /// * `response` — the evaluation response from the ABAC engine.
+    /// * `sid` — requester SID (from session identity).
+    /// * `action` — action being requested (e.g. "WRITE", "COPY").
+    /// * `dst` — optional destination scope.
+    #[must_use]
+    pub fn from_evaluation(
+        response: &crate::EvaluateResponse,
+        sid: &str,
+        action: &str,
+        dst: Option<&str>,
+    ) -> Option<Self> {
+        let obj_id = response.matched_label_id.as_deref()?;
+        Some(Self::new(sid, obj_id, action, dst))
+    }
 }
 
 /// Legacy helper for backward compatibility during migration.
@@ -407,5 +429,40 @@ mod tests {
         assert_eq!(upper, ApprovalStatus::Pending);
         let mixed: ApprovalStatus = "Revoked".try_into().unwrap();
         assert_eq!(mixed, ApprovalStatus::Revoked);
+    }
+
+    #[test]
+    fn test_approval_cache_key_from_evaluation_some() {
+        let response = crate::EvaluateResponse {
+            decision: crate::Decision::DENY,
+            matched_policy_id: None,
+            reason: "default deny".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
+            matched_label_id: Some("label-001".to_string()),
+        };
+
+        let key = ApprovalCacheKey::from_evaluation(&response, "S-1-5-21-1", "WRITE", Some("C:\\Data"));
+        assert!(key.is_some());
+        let key = key.unwrap();
+        assert_eq!(key.sid, "S-1-5-21-1");
+        assert_eq!(key.obj_id, "label-001");
+        assert_eq!(key.action, "WRITE");
+        assert_eq!(key.dst, Some("C:\\Data".to_string()));
+    }
+
+    #[test]
+    fn test_approval_cache_key_from_evaluation_none() {
+        let response = crate::EvaluateResponse {
+            decision: crate::Decision::DENY,
+            matched_policy_id: None,
+            reason: "default deny".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
+            matched_label_id: None,
+        };
+
+        let key = ApprovalCacheKey::from_evaluation(&response, "S-1-5-21-1", "WRITE", None);
+        assert!(key.is_none(), "None matched_label_id must return None");
     }
 }

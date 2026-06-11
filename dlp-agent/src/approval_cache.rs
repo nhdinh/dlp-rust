@@ -199,6 +199,7 @@ impl ApprovalCache {
             reason: "approved via override token".to_string(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: Some(entry.claims.obj.clone()),
         })
     }
 
@@ -241,6 +242,44 @@ impl Default for ApprovalCache {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Check whether an approval override exists for the given evaluation response.
+///
+/// This is the **single public entry point** for enforcement paths (file monitor,
+/// hook DLL, etc.) to query the approval cache. It wraps [`ApprovalCache::check()`]
+/// and returns both the override response and the original claims for audit
+/// enrichment.
+///
+/// # Arguments
+///
+/// * `cache` — the agent's approval cache.
+/// * `response` — the ABAC evaluation response (must contain `matched_label_id`).
+/// * `sid` — requester SID.
+/// * `action` — action being requested (e.g. "WRITE", "COPY").
+/// * `dst` — optional destination scope.
+///
+/// # Returns
+///
+/// `Some((EvaluateResponse, ApprovalClaims))` if a valid approval exists.
+/// `None` if no label matched, no cache entry exists, the entry is expired,
+/// or signature verification fails.
+#[must_use]
+pub fn check_approval_override(
+    cache: &ApprovalCache,
+    response: &dlp_common::EvaluateResponse,
+    sid: &str,
+    action: &str,
+    dst: Option<&str>,
+) -> Option<(dlp_common::EvaluateResponse, ApprovalClaims)> {
+    let key = ApprovalCacheKey::from_evaluation(response, sid, action, dst)?;
+    // check() performs: cache lookup + expiry + JWT re-verify + scope match.
+    let ovr = cache.check(&key, dst)?;
+    // To return claims for audit enrichment, read the cached entry.
+    // check() already verified the entry is valid, so this read is safe
+    // without re-verification.
+    let entry = cache.cache.get(&key.encode())?;
+    Some((ovr, entry.claims.clone()))
 }
 
 /// Checks whether a request destination matches an approved destination scope.
@@ -569,5 +608,86 @@ mod tests {
         // When an approval is cached and valid, the final result is ALLOW.
         // This is enforced by the caller (interception::run_event_loop), not by
         // ApprovalCache itself, which only answers "is there a valid approval?".
+    }
+
+    // ── check_approval_override tests ───────────────────────────────────────
+
+    #[test]
+    fn test_check_approval_override_hit() {
+        use ed25519_dalek::pkcs8::EncodePrivateKey;
+
+        let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+        let verifying_key = signing_key.verifying_key();
+
+        let claims = make_claims(Utc::now().timestamp() + 3600, Some("C:\\Data"));
+
+        let pkcs8_der = signing_key.to_pkcs8_der().expect("pkcs8 encode");
+        let enc_key = jsonwebtoken::EncodingKey::from_ed_der(pkcs8_der.as_bytes());
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA),
+            &claims,
+            &enc_key,
+        )
+        .expect("jwt encode");
+
+        let cache = ApprovalCache::new();
+        let pubkey_hex = hex::encode(verifying_key.to_bytes());
+        cache.set_public_key(&pubkey_hex).expect("set pubkey");
+
+        let key =
+            ApprovalCacheKey::new(&claims.sub, &claims.obj, &claims.act, claims.dst.as_deref());
+        cache.insert(key.clone(), token, claims.clone());
+
+        let response = dlp_common::EvaluateResponse {
+            decision: dlp_common::Decision::DENY,
+            matched_policy_id: None,
+            reason: "default deny".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
+            matched_label_id: Some("label-001".to_string()),
+        };
+
+        let result = check_approval_override(&cache, &response, "S-1-5-21-1", "WRITE", Some("C:\\Data"));
+        assert!(result.is_some(), "valid approval should produce override");
+        let (ovr, returned_claims) = result.unwrap();
+        assert_eq!(ovr.decision, dlp_common::Decision::ALLOW);
+        assert_eq!(returned_claims.jti, claims.jti);
+    }
+
+    #[test]
+    fn test_check_approval_override_miss_no_label_id() {
+        let cache = ApprovalCache::new();
+
+        let response = dlp_common::EvaluateResponse {
+            decision: dlp_common::Decision::DENY,
+            matched_policy_id: None,
+            reason: "default deny".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
+            matched_label_id: None,
+        };
+
+        let result = check_approval_override(&cache, &response, "S-1-5-21-1", "WRITE", None);
+        assert!(result.is_none(), "missing matched_label_id must return None");
+    }
+
+    #[test]
+    fn test_check_approval_override_miss_no_cache_entry() {
+        let cache = ApprovalCache::new();
+
+        let response = dlp_common::EvaluateResponse {
+            decision: dlp_common::Decision::DENY,
+            matched_policy_id: None,
+            reason: "default deny".to_string(),
+            enforcement_mode: None,
+            would_have_denied: false,
+            matched_label_id: Some("label-001".to_string()),
+        };
+
+        let result = check_approval_override(&cache, &response, "S-1-5-21-1", "WRITE", None);
+        assert!(
+            result.is_none(),
+            "matched_label_id present but no cache entry must return None"
+        );
     }
 }

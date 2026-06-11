@@ -528,6 +528,7 @@ mod tests {
                 reason: "mock: managed origin blocked".to_string(),
                 enforcement_mode: None,
                 would_have_denied: false,
+                matched_label_id: None,
             }
         } else {
             dlp_common::abac::EvaluateResponse {
@@ -536,6 +537,7 @@ mod tests {
                 reason: "mock: allowed".to_string(),
                 enforcement_mode: None,
                 would_have_denied: false,
+                matched_label_id: None,
             }
         }
     }
@@ -550,6 +552,7 @@ mod tests {
             reason: "mock: always allow".to_string(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: None,
         }
     }
 
@@ -563,6 +566,7 @@ mod tests {
             reason: "mock: always deny".to_string(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: None,
         }
     }
 

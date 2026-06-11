@@ -181,6 +181,7 @@ pub fn fail_closed_response(classification: Classification) -> EvaluateResponse 
             reason: "Fail-closed: no cached decision for sensitive resource".to_string(),
             enforcement_mode: None,
             would_have_denied: true,
+            matched_label_id: None,
         }
     } else {
         EvaluateResponse {
@@ -189,6 +190,7 @@ pub fn fail_closed_response(classification: Classification) -> EvaluateResponse 
             reason: "Cache miss: default allow for non-sensitive resource".to_string(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: None,
         }
     }
 }
@@ -205,6 +207,7 @@ mod tests {
             reason: "test".to_string(),
             enforcement_mode: None,
             would_have_denied: false,
+            matched_label_id: None,
         }
     }
 

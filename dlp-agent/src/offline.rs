@@ -416,6 +416,7 @@ mod tests {
             reason: "test".to_string(),
             enforcement_mode: None,
             would_have_denied: decision.is_denied(),
+            matched_label_id: None,
         }
     }
 
