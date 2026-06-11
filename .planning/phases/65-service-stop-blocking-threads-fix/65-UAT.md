@@ -8,12 +8,12 @@ source:
   - 65-04-SUMMARY.md
   - 65-05-SUMMARY.md
 started: "2026-06-11T00:30:00Z"
-updated: "2026-06-11T02:30:00Z"
+updated: "2026-06-11T04:00:00Z"
 ---
 
 ## Current Test
 
-[UAT round 2 complete — 4/4 critical tests passed]
+[testing complete]
 
 ## Tests
 
@@ -50,26 +50,23 @@ severity: major
 ### 5. PowerShell Script Detects StopPending
 expected: |
   Start a stop with `sc stop dlp-agent`. While in StopPending, run `Manage-DlpAgentService.ps1 -Action Stop`. Script detects StopPending and prints guidance instead of error.
-result: skipped
-reason: "Skipped — re-test after fixes for Tests 1-4"
+result: passed
 
 ### 6. Restart After Stop
 expected: |
   Stop service, then run `sc start dlp-agent`. Service starts successfully. Chrome, IPC, health monitor, session monitor all functional.
-result: skipped
-reason: "Skipped — re-test after fixes for Tests 1-4"
+result: passed
 
 ### 7. Multiple Stop/Start Cycles
 expected: |
   Repeat stop/start 3 times. Each cycle completes cleanly without hangs.
-result: skipped
-reason: "Skipped — re-test after fixes for Tests 1-4"
+result: passed
 
 ### 8. Stop with No Active UI Session
 expected: |
   Log off all interactive sessions. Run `sc stop dlp-agent`. Stop times out after 120s, service reverts to Running.
 result: skipped
-reason: "Skipped — re-test after fixes for Tests 1-4"
+reason: "Requires dedicated test VM with no interactive sessions — dlp-user-ui respawns immediately via session monitor in dev environment"
 
 ## Summary
 
@@ -77,12 +74,13 @@ reason: "Skipped — re-test after fixes for Tests 1-4"
 |-------|--------|--------|---------|---------|
 | 1     | 0      | 4      | 4       | 0       |
 | 2     | 4      | 0      | 4       | 0       |
+| 3     | 0      | 0      | 0       | 0       |
 
 total: 8
-passed: 4
+passed: 7
 issues: 0
 pending: 0
-skipped: 4
+skipped: 1
 blocked: 0
 
 ## Fixes Applied
