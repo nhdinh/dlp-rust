@@ -4,14 +4,14 @@ milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
 status: executing
 stopped_at: context exhaustion at 75% (2026-06-10)
-last_updated: "2026-06-11T11:43:23.334Z"
+last_updated: "2026-06-11T12:17:08.187Z"
 last_activity: 2026-06-11 -- Phase 66.1 execution started
 progress:
   total_phases: 38
-  completed_phases: 26
+  completed_phases: 27
   total_plans: 136
-  completed_plans: 124
-  percent: 68
+  completed_plans: 125
+  percent: 71
 ---
 
 # Project State
@@ -27,7 +27,7 @@ progress:
 ## Current Position
 
 Phase: 66.1 (workflow-04-approvalcache-enforcement) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-06-11 -- Phase 66.1 execution started
 
@@ -145,7 +145,7 @@ Phase 64 verified complete 2026-06-09. v0.11.0 milestone (Phases 59-64, 26/26 re
 
 ## Session Continuity
 
-Last session: 2026-06-11T11:43:23.324Z
+Last session: 2026-06-11T12:16:43.698Z
 Stopped at: context exhaustion at 75% (2026-06-10)
 Resume file: None
 
@@ -161,3 +161,15 @@ Resume file: None
 - Phase 66.1 inserted after Phase 66: Close gap: WORKFLOW-04 — wire ApprovalCache into enforcement (URGENT)
 - Phase 68.1 inserted after Phase 68: Close gap: DEVICE-05/TAMPER-03/04 — wire tamper detection to SIEM and health (URGENT)
 - Phase 67.1 inserted after Phase 67: Print Watermarking — XPS Page Geometry + Text Metrics (URGENT)
+
+## Performance Metrics
+
+| Phase | Plan | Duration | Notes |
+|-------|------|----------|-------|
+| Phase 66.1 P04 | 28m | - tasks | - files |
+
+## Decisions
+
+- [Phase ?]: Extracted compute_override_decision() as pure testable function from run_event_loop
+- [Phase ?]: Added approver_sid and approval_expiry to AuditEvent in dlp-common for cross-crate sharing
+- [Phase ?]: Hook DLL path approval override DEFERRED to follow-up phase — structural wiring only
