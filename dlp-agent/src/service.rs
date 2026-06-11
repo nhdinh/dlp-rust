@@ -1011,8 +1011,7 @@ struct RunLoopContext {
     /// Optional print enforcer (M017/S04). `None` when `print_enabled` is false.
     print_enforcer: Option<crate::print_enforcer::PrintEnforcer>,
     /// Approval cache (Phase 61) — agent-side approval token cache with JWT verification.
-    /// Stored for future integration with the interception engine's three-stage pipeline.
-    #[allow(dead_code)]
+    /// Wired into the interception engine's three-stage pipeline (Phase 66.1).
     approval_cache: Arc<crate::approval_cache::ApprovalCache>,
     /// Handle to the approval cache poll task.
     approval_poll_handle: Option<tokio::task::JoinHandle<()>>,
@@ -1633,6 +1632,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         usb_enforcer_opt,
         disk_enforcer_opt,
         cloud_enforcer_opt,
+        Some(Arc::clone(&approval_cache)),
     );
 
     let file_monitor_for_shutdown = file_monitor.clone();
@@ -2995,6 +2995,7 @@ fn spawn_event_loop(
     usb_enforcer: Option<Arc<crate::usb_enforcer::UsbEnforcer>>,
     disk_enforcer: Option<Arc<crate::disk_enforcer::DiskEnforcer>>,
     cloud_enforcer: Option<Arc<crate::cloud_enforcer::CloudEnforcer>>,
+    approval_cache: Option<Arc<crate::approval_cache::ApprovalCache>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         crate::interception::run_event_loop(
@@ -3006,6 +3007,7 @@ fn spawn_event_loop(
             usb_enforcer,
             disk_enforcer,
             cloud_enforcer,
+            approval_cache,
         )
         .await;
     })
@@ -3016,6 +3018,9 @@ fn spawn_event_loop(
 /// Extracted from [`run_loop`] to reduce cognitive complexity.  Each subsystem
 /// is stopped in reverse order of initialisation.
 async fn run_loop_shutdown(ctx: RunLoopContext) {
+    // Reference approval_cache to keep the field alive until Plan 04 consumes it.
+    let _ = &ctx.approval_cache;
+
     crate::password_stop::debug_log("run_loop: starting graceful shutdown");
     info!(
         service_name = SERVICE_NAME,

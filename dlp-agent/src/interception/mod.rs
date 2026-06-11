@@ -297,6 +297,7 @@ pub async fn run_event_loop(
     usb_enforcer: Option<Arc<UsbEnforcer>>,
     disk_enforcer: Option<Arc<DiskEnforcer>>,
     cloud_enforcer: Option<Arc<CloudEnforcer>>,
+    _approval_cache: Option<Arc<crate::approval_cache::ApprovalCache>>,
 ) {
     info!("interception event loop started");
 
