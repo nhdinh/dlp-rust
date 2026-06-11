@@ -16,6 +16,7 @@ use dlp_common::abac::{
     Policy, PolicyCondition, PolicyMode, VolumeClass,
 };
 use dlp_common::Classification;
+use dlp_common::Tier;
 use parking_lot::RwLock;
 use tracing::{error, info, warn};
 
@@ -197,6 +198,10 @@ impl PolicyStore {
         label_aware_enabled: bool,
     ) -> EvaluateResponse {
         let mut resource = ctx.resource.clone();
+        // Tracks the label ID from label-aware resolution for approval cache
+        // key construction on the agent. Only populated when label-aware
+        // evaluation is enabled and a label is found.
+        let mut matched_label_id: Option<String> = None;
 
         // Label-aware evaluation: resolve tier from LabelService when enabled.
         // Uses the cached flag (no DB query on the hot path).
@@ -213,28 +218,40 @@ impl PolicyStore {
                         resource.classification = Classification::T4;
                     }
                     Some(ref path) => {
-                        let resolved = service.resolve_tier(path);
+                        let resolved = service.resolve_tier_and_label_id(path);
                         match resolved {
-                            crate::label_service::ResolvedTier::Exact(tier)
-                            | crate::label_service::ResolvedTier::Inherited { tier, .. } => {
+                            crate::label_service::ResolvedTierWithId { tier, label_id, .. }
+                                if matches!(tier, Tier::T1 | Tier::T2 | Tier::T3 | Tier::T4) =>
+                            {
                                 if let Some(classification) = tier.to_classification() {
                                     resource.classification = classification;
+                                    matched_label_id = label_id;
                                 } else {
                                     // UnclassifiedBlocked: T4 deny
                                     resource.classification = Classification::T4;
                                 }
                             }
-                            crate::label_service::ResolvedTier::Fallback => {
+                            crate::label_service::ResolvedTierWithId {
+                                source: crate::label_service::ResolutionSource::Fallback,
+                                ..
+                            } => {
                                 // No label found: fail-closed (T4 deny).
                                 resource.classification = Classification::T4;
                             }
-                            crate::label_service::ResolvedTier::LookupFailed => {
+                            crate::label_service::ResolvedTierWithId {
+                                source: crate::label_service::ResolutionSource::LookupFailed,
+                                ..
+                            } => {
                                 // DB lookup failed: fail-closed (T4 deny).
                                 resource.classification = Classification::T4;
                                 tracing::error!(
                                     path = %path,
                                     "label service lookup failed during evaluation — denying (T4)"
                                 );
+                            }
+                            // Catch-all for any other tier variant (defensive)
+                            _ => {
+                                resource.classification = Classification::T4;
                             }
                         }
                     }
@@ -294,14 +311,29 @@ impl PolicyStore {
                     ),
                     enforcement_mode: Some(effective_mode),
                     would_have_denied,
+                    matched_label_id,
                 };
             }
         }
 
         // No policy matched — tiered default-deny (D-01).
         match resource.classification {
-            Classification::T1 | Classification::T2 => EvaluateResponse::default_allow(),
-            Classification::T3 | Classification::T4 => EvaluateResponse::default_deny(),
+            Classification::T1 | Classification::T2 => EvaluateResponse {
+                decision: Decision::ALLOW,
+                matched_policy_id: None,
+                reason: "No matching policy; default allow".to_string(),
+                enforcement_mode: None,
+                would_have_denied: false,
+                matched_label_id,
+            },
+            Classification::T3 | Classification::T4 => EvaluateResponse {
+                decision: Decision::DENY,
+                matched_policy_id: None,
+                reason: "No matching policy; default deny".to_string(),
+                enforcement_mode: None,
+                would_have_denied: false,
+                matched_label_id,
+            },
         }
     }
 
@@ -2962,6 +2994,142 @@ mod tests {
         assert_eq!(resp.decision, Decision::DENY);
         // The flag is passed as a parameter (no DB read per evaluation).
         // This is verified by the implementation structure: the flag is a bool param.
+    }
+
+    // ---- matched_label_id tests (Phase 66.1-02) ----
+
+    /// Exact label match populates matched_label_id with the label's UUID.
+    #[test]
+    fn test_label_aware_matched_label_id_exact() {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        enable_label_aware(&pool);
+
+        let label_svc = LabelService::new(Arc::clone(&pool));
+        let store = PolicyStore::new(Arc::clone(&pool)).expect("store");
+
+        // Insert a T3 label with known ID
+        {
+            let mut conn = pool.get().expect("acquire");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "lbl-exact-001",
+                    path: r"C:\Data\secret.txt",
+                    object_type: "file",
+                    tier: "T3",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert");
+            uow.commit().expect("commit");
+        }
+
+        let ctx = make_ctx_with_path(r"C:\Data\secret.txt", Classification::T1);
+        let resp = store.evaluate(&ctx, Some(&label_svc), true);
+        assert_eq!(resp.matched_label_id, Some("lbl-exact-001".to_string()));
+    }
+
+    /// Inherited label match populates matched_label_id with the parent label's UUID.
+    #[test]
+    fn test_label_aware_matched_label_id_inherited() {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        enable_label_aware(&pool);
+
+        let label_svc = LabelService::new(Arc::clone(&pool));
+        let store = PolicyStore::new(Arc::clone(&pool)).expect("store");
+
+        // Insert a T4 folder label with known ID
+        {
+            let mut conn = pool.get().expect("acquire");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "lbl-parent-001",
+                    path: r"C:\Data\HR",
+                    object_type: "folder",
+                    tier: "T4",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert");
+            uow.commit().expect("commit");
+        }
+
+        let ctx = make_ctx_with_path(r"C:\Data\HR\salary.xlsx", Classification::T1);
+        let resp = store.evaluate(&ctx, Some(&label_svc), true);
+        assert_eq!(resp.matched_label_id, Some("lbl-parent-001".to_string()));
+    }
+
+    /// When label-aware is disabled, matched_label_id is always None.
+    #[test]
+    fn test_label_aware_disabled_matched_label_id_none() {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        let label_svc = LabelService::new(Arc::clone(&pool));
+        let store = PolicyStore::new(Arc::clone(&pool)).expect("store");
+
+        // Insert a T3 label
+        {
+            let mut conn = pool.get().expect("acquire");
+            let uow = UnitOfWork::new(&mut conn).expect("create uow");
+            LabelRepository::insert(
+                &uow,
+                &LabelUpsertRow {
+                    id: "lbl-disabled-001",
+                    path: r"C:\Data\file.txt",
+                    object_type: "file",
+                    tier: "T3",
+                    label_state: "confirmed",
+                    owner_sid: None,
+                    parent_label_id: None,
+                    acl_snapshot_id: None,
+                    hash: None,
+                    scanner_confidence: None,
+                    department: None,
+                    created_at: "2026-05-12T00:00:00Z",
+                    updated_at: "2026-05-12T00:00:00Z",
+                },
+            )
+            .expect("insert");
+            uow.commit().expect("commit");
+        }
+
+        // Flag is OFF -> matched_label_id must be None
+        let ctx = make_ctx_with_path(r"C:\Data\file.txt", Classification::T1);
+        let resp = store.evaluate(&ctx, Some(&label_svc), false);
+        assert!(resp.matched_label_id.is_none());
+    }
+
+    /// When no label matches (fallback), matched_label_id is None.
+    #[test]
+    fn test_label_aware_fallback_matched_label_id_none() {
+        let pool = Arc::new(crate::db::new_pool(":memory:").expect("in-memory pool"));
+        enable_label_aware(&pool);
+
+        let label_svc = LabelService::new(Arc::clone(&pool));
+        let store = PolicyStore::new(Arc::clone(&pool)).expect("store");
+
+        // No labels at all
+        let ctx = make_ctx_with_path(r"C:\Unknown\file.txt", Classification::T1);
+        let resp = store.evaluate(&ctx, Some(&label_svc), true);
+        assert!(resp.matched_label_id.is_none());
     }
 
     // ---- Fail-closed behavior matrix tests (D-11b) ----

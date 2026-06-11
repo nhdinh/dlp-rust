@@ -459,22 +459,6 @@ fn parse_tier(s: &str) -> Tier {
     <Tier as std::convert::TryFrom<&str>>::try_from(s).unwrap_or(Tier::UnclassifiedBlocked)
 }
 
-/// Converts a [`CacheEntry`] back to a [`ResolvedTier`].
-///
-/// This is used on cache hits to reconstruct the full resolution result
-/// from the cached metadata.
-fn cache_entry_to_resolved(entry: CacheEntry) -> ResolvedTier {
-    match entry.source {
-        ResolutionSource::Exact => ResolvedTier::Exact(entry.tier),
-        ResolutionSource::Inherited => ResolvedTier::Inherited {
-            tier: entry.tier,
-            parent_path: entry.parent_path.unwrap_or_default(),
-        },
-        ResolutionSource::Fallback => ResolvedTier::Fallback,
-        ResolutionSource::LookupFailed => ResolvedTier::LookupFailed,
-    }
-}
-
 /// Converts a [`CacheEntry`] back to a [`ResolvedTierWithId`].
 ///
 /// This is used on cache hits to reconstruct the full resolution result
@@ -508,36 +492,6 @@ fn cache_entry_to_resolved_with_id(entry: CacheEntry) -> ResolvedTierWithId {
             source: ResolutionSource::LookupFailed,
             parent_path: None,
             label_id: None,
-        },
-    }
-}
-
-/// Converts a [`ResolvedTier`] into a [`CacheEntry`] for storage.
-fn resolved_to_cache_entry(resolved: &ResolvedTier) -> CacheEntry {
-    match resolved {
-        ResolvedTier::Exact(tier) => CacheEntry {
-            tier: *tier,
-            source: ResolutionSource::Exact,
-            parent_path: None,
-            inserted: Instant::now(),
-        },
-        ResolvedTier::Inherited { tier, parent_path } => CacheEntry {
-            tier: *tier,
-            source: ResolutionSource::Inherited,
-            parent_path: Some(parent_path.clone()),
-            inserted: Instant::now(),
-        },
-        ResolvedTier::Fallback => CacheEntry {
-            tier: Tier::UnclassifiedBlocked,
-            source: ResolutionSource::Fallback,
-            parent_path: None,
-            inserted: Instant::now(),
-        },
-        ResolvedTier::LookupFailed => CacheEntry {
-            tier: Tier::UnclassifiedBlocked,
-            source: ResolutionSource::LookupFailed,
-            parent_path: None,
-            inserted: Instant::now(),
         },
     }
 }
