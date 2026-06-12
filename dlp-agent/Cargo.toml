@@ -91,6 +91,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Rpc",
     # Print spooler wrappers (M017 T02)
     "Win32_Graphics_Printing",
+    # Phase 67.1: DirectWrite text metrics for watermark font measurement
+    "Win32_Graphics_DirectWrite",
     # Sync-client process watcher (M017 S02 T03)
     "Win32_System_Diagnostics_ToolHelp",
     # Phase 49: GetFirmwareEnvironmentVariableW for Secure Boot detection
