@@ -602,7 +602,10 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 **Requirements**: WATERMARK-01 (foundational), WATERMARK-02 (foundational)
 **Depends on:** Phase 67
 **Plans:** 0/2 plans complete
-
 Plans:
 
 - [ ] TBD (run /gsd-plan-phase 67.1 to break down)
+
+**Cross-cutting constraints:**
+
+- All public items have doc comments per CLAUDE.md section 9.3
