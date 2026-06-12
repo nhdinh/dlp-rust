@@ -598,10 +598,10 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 
 ### Phase 67.1: Print Watermarking — XPS Page Geometry + Text Metrics (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
+**Goal:** Deliver foundational XPS page geometry and text-metric modules for print watermarking.
+**Requirements**: WATERMARK-01 (foundational), WATERMARK-02 (foundational)
 **Depends on:** Phase 67
-**Plans:** 4/4 plans complete
+**Plans:** 0/2 plans complete
 
 Plans:
 
