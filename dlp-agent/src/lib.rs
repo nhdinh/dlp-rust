@@ -104,6 +104,14 @@ pub mod print_watcher;
 #[cfg(windows)]
 pub mod print_enforcer;
 
+pub mod print_watermark;
+
+#[cfg(windows)]
+pub mod print_watermark_directwrite;
+
+#[cfg(not(windows))]
+pub mod print_watermark_directwrite;
+
 #[cfg(windows)]
 pub mod device_controller;
 
