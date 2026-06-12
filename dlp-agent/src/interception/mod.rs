@@ -580,6 +580,7 @@ pub use policy_mapper::PolicyMapper;
 /// `(final_decision, override_granted, override_claims, annotated_reason)`
 #[must_use]
 #[allow(clippy::type_complexity)]
+#[allow(dead_code)]
 fn compute_override_decision(
     initial_decision: Decision,
     effective_mode: dlp_common::abac::EnforcementMode,

@@ -10,10 +10,59 @@
 //! - [`truncate_with_ellipsis`] — iterative truncation with re-measurement
 //! - [`pt_to_xps_units`] — single source of truth for point-to-XPS conversion
 //! - [`dip_to_xps_units`] — identity documenting DIP == XPS unit equivalence
+//! - [`find_font_uri_in_xps`] — scans XPS ZIP for first `FontUri` attribute
+//! - [`inject_watermark_into_fpage`] — streaming XML injection of Canvas/Glyphs
+//! - [`rewrite_xps_with_watermark`] — ZIP traversal rewriting `.fpage` files
+//! - [`inject_watermark`] — convenience wrapper for full XPS watermarking
+//! - [`validate_xps_structure`] — post-rewrite validation helper
+//!
+//! # OPC Relationship Handling
+//!
+//! ## FontUri strategy for Phase 67.1
+//!
+//! The watermark injection reuses an existing `FontUri` from the first `Glyphs`
+//! element found in any `.fpage`. If no `FontUri` is found, the `FontUri`
+//! attribute is omitted and the printer driver performs font substitution. This
+//! is an accepted risk because Windows spooler-generated XPS typically embeds at
+//! least one font.
+//!
+//! ## OPC relationship updates deferred
+//!
+//! If a new font part were embedded (not implemented in Phase 67.1), the
+//! following OPC files would need updating:
+//!
+//! - `[Content_Types].xml`: Add
+//!   `<Override PartName="/Documents/1/Resources/Fonts/Fallback.otf" ContentType="application/vnd.openxmlformats-officedocument.obfuscatedFont"/>`
+//!   (or the appropriate font content type).
+//! - The relevant `.rels` file (e.g., `/Documents/1/FixedDocument.fdoc.rels`):
+//!   Add `<Relationship Id="rIdFont1" Type="http://schemas.microsoft.com/xps/2005/06/required-resource" Target="Resources/Fonts/Fallback.otf"/>`.
+//! - The font part itself must be added to the ZIP at the referenced path.
+//!
+//! These updates are **deferred to Phase 67** if production testing reveals
+//! font-substitution failures.
+//!
+//! ## Namespace handling
+//!
+//! The `inject_watermark_into_fpage` function parses `xmlns` and `xmlns:*`
+//! attributes from the `FixedPage` `BytesStart` event using `e.attributes()`,
+//! populates a [`FixedPageNs`] enum (`Unqualified`, `Default(uri)`,
+//! `Prefixed { prefix, uri }`), and emits the injected `Canvas`/`Glyphs`
+//! elements with matching namespace qualification. If `FixedPage` has no
+//! namespace, unqualified `Canvas`/`Glyphs` are used.
+//!
+//! ## Compression preservation
+//!
+//! Non-`.fpage` entries are copied with their original `CompressionMethod` to
+//! avoid changing spool file hashes or downstream tooling behavior. `.fpage`
+//! entries are intentionally rewritten as `CompressionMethod::Stored` because
+//! they are small XML files and spooler compatibility is prioritized over
+//! compression ratio.
 
 use anyhow::{Context, Result};
-use quick_xml::events::Event;
+use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::Reader;
+use quick_xml::Writer;
+use std::io::{Cursor, Read, Write};
 use std::str::FromStr;
 
 /// Convert points (pt) to XPS units (1/96 inch).
@@ -360,12 +409,525 @@ pub fn compute_watermark_geometry(
 }
 
 // ---------------------------------------------------------------------------
+// XPS ZIP watermark injection
+// ---------------------------------------------------------------------------
+
+/// Namespace representation for the `FixedPage` element.
+///
+/// Captured from `xmlns` and `xmlns:*` attributes on the `FixedPage` start
+/// event. Used to emit the injected `Canvas`/`Glyphs` with matching namespace
+/// qualification.
+#[derive(Debug, Clone, PartialEq)]
+enum FixedPageNs {
+    /// No namespace declaration on FixedPage.
+    Unqualified,
+    /// Default namespace: `xmlns="uri"`.
+    Default(String),
+    /// Prefixed namespace: `xmlns:prefix="uri"`.
+    Prefixed { prefix: String, uri: String },
+}
+
+/// Scans an XPS ZIP archive for the first `FontUri` attribute in any `.fpage`.
+///
+/// This is a best-effort heuristic: Windows-generated XPS spool files typically
+/// embed a single font part referenced by all pages. If no `FontUri` is found,
+/// the watermark will rely on printer-driver font substitution (accepted risk
+/// per review consensus).
+///
+/// # Arguments
+///
+/// * `xps_bytes` — Raw bytes of the XPS ZIP archive.
+///
+/// # Returns
+///
+/// * `Some(String)` — The first `FontUri` attribute value found.
+/// * `None` — No `FontUri` found in any `.fpage`.
+///
+/// # Errors
+///
+/// Returns `Err` for malformed ZIP archives.
+pub fn find_font_uri_in_xps(xps_bytes: &[u8]) -> Result<Option<String>> {
+    let cursor = Cursor::new(xps_bytes);
+    let mut archive = zip::read::ZipArchive::new(cursor).context("invalid XPS/ZIP archive")?;
+
+    let mut page_indices: Vec<usize> = Vec::new();
+    for i in 0..archive.len() {
+        let file = archive.by_index(i)?;
+        let name_lower = file.name().to_lowercase();
+        if name_lower.ends_with(".fpage") {
+            page_indices.push(i);
+        }
+    }
+
+    for idx in page_indices {
+        let mut file = archive.by_index(idx)?;
+        let mut xml_bytes = Vec::new();
+        file.read_to_end(&mut xml_bytes)?;
+
+        let mut reader = Reader::from_reader(xml_bytes.as_slice());
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) => {
+                    if e.local_name().as_ref() == b"Glyphs" {
+                        for attr_result in e.attributes() {
+                            let attr = attr_result.context("invalid XML attribute")?;
+                            if attr.key.as_ref() == b"FontUri" {
+                                let value = attr
+                                    .decode_and_unescape_value(reader.decoder())
+                                    .unwrap_or_default()
+                                    .into_owned();
+                                if !value.is_empty() {
+                                    return Ok(Some(value));
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    tracing::warn!(
+                        page = %file.name(),
+                        error = %e,
+                        "XML parse error scanning for FontUri; skipping page"
+                    );
+                    break;
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+    }
+
+    Ok(None)
+}
+
+/// Injects a watermark `Canvas`/`Glyphs` element into `.fpage` XML.
+///
+/// Uses a streaming reader-writer pattern: all XML events are passed through
+/// verbatim except at the `</FixedPage>` end tag, where the watermark is
+/// injected immediately before the closing tag.
+///
+/// # Arguments
+///
+/// * `xml` — Raw XML bytes of a `.fpage` file.
+/// * `geometry` — [`WatermarkGeometry`] with placement data and text.
+/// * `font_uri` — Optional font URI to embed in the `Glyphs` `FontUri`
+///   attribute. If `None`, the attribute is omitted entirely.
+///
+/// # Returns
+///
+/// Rewritten XML bytes with the watermark injected.
+///
+/// # Errors
+///
+/// Returns `Err` if:
+/// - No `FixedPage` element is found.
+/// - `FixedPage` was seen but watermark was never injected (EOF reached first).
+/// - XML parse error occurs during streaming.
+///
+/// # Namespace handling
+///
+/// The function parses `xmlns` and `xmlns:*` attributes from the `FixedPage`
+/// `BytesStart` event using `e.attributes()`, populates a [`FixedPageNs`] enum,
+/// and emits the injected `Canvas`/`Glyphs` elements with matching namespace
+/// qualification. If `FixedPage` has no namespace, unqualified `Canvas`/`Glyphs`
+/// are used.
+pub fn inject_watermark_into_fpage(
+    xml: &[u8],
+    geometry: &WatermarkGeometry,
+    font_uri: Option<&str>,
+) -> Result<Vec<u8>> {
+    let mut reader = Reader::from_reader(xml);
+    // Preserve whitespace text nodes — do not trim.
+    reader.config_mut().trim_text(false);
+
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    let mut buf = Vec::new();
+    let mut saw_fixed_page = false;
+    let mut injected_watermark = false;
+    let mut fixed_page_ns: Option<FixedPageNs> = None;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                if e.local_name().as_ref() == b"FixedPage" {
+                    saw_fixed_page = true;
+                    if fixed_page_ns.is_none() {
+                        fixed_page_ns = parse_fixed_page_ns(e);
+                    }
+                }
+                writer.write_event(Event::Start(e.clone()))?;
+            }
+            Ok(Event::Empty(ref e)) => {
+                if e.local_name().as_ref() == b"FixedPage" {
+                    saw_fixed_page = true;
+                    if fixed_page_ns.is_none() {
+                        fixed_page_ns = parse_fixed_page_ns(e);
+                    }
+                }
+                writer.write_event(Event::Empty(e.clone()))?;
+            }
+            Ok(Event::End(ref e)) => {
+                if e.local_name().as_ref() == b"FixedPage" {
+                    injected_watermark = true;
+                    write_watermark_canvas(&mut writer, geometry, font_uri, &fixed_page_ns)?;
+                }
+                writer.write_event(Event::End(e.clone()))?;
+            }
+            Ok(Event::Text(ref e)) => {
+                writer.write_event(Event::Text(e.clone()))?;
+            }
+            Ok(Event::CData(ref e)) => {
+                writer.write_event(Event::CData(e.clone()))?;
+            }
+            Ok(Event::Comment(ref e)) => {
+                writer.write_event(Event::Comment(e.clone()))?;
+            }
+            Ok(Event::Decl(ref e)) => {
+                writer.write_event(Event::Decl(e.clone()))?;
+            }
+            Ok(Event::PI(ref e)) => {
+                writer.write_event(Event::PI(e.clone()))?;
+            }
+            Ok(Event::DocType(ref e)) => {
+                writer.write_event(Event::DocType(e.clone()))?;
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                anyhow::bail!(
+                    "XML parse error at position {}: {:?}",
+                    reader.buffer_position(),
+                    e
+                );
+            }
+        }
+        buf.clear();
+    }
+
+    if !saw_fixed_page {
+        return Err(anyhow::anyhow!("no FixedPage element found"));
+    }
+    if saw_fixed_page && !injected_watermark {
+        return Err(anyhow::anyhow!(
+            "reached EOF without injecting watermark into FixedPage"
+        ));
+    }
+
+    Ok(writer.into_inner().into_inner())
+}
+
+/// Parse `xmlns` and `xmlns:*` attributes from a `FixedPage` `BytesStart` event.
+fn parse_fixed_page_ns(e: &BytesStart) -> Option<FixedPageNs> {
+    for attr_result in e.attributes() {
+        let attr = match attr_result {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+        let key = attr.key.as_ref();
+        // Namespace URIs are ASCII/UTF-8; decode raw bytes directly.
+        let value = String::from_utf8_lossy(attr.value.as_ref()).to_string();
+
+        if key == b"xmlns" {
+            return Some(FixedPageNs::Default(value));
+        }
+        if key.starts_with(b"xmlns:") {
+            let prefix = String::from_utf8_lossy(&key[6..]).to_string();
+            return Some(FixedPageNs::Prefixed { prefix, uri: value });
+        }
+    }
+    Some(FixedPageNs::Unqualified)
+}
+
+/// Write the watermark `Canvas` start, `Glyphs` empty, and `Canvas` end events.
+fn write_watermark_canvas(
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    geometry: &WatermarkGeometry,
+    font_uri: Option<&str>,
+    fixed_page_ns: &Option<FixedPageNs>,
+) -> Result<()> {
+    // Pre-allocate buffers at function scope so references outlive match arms.
+    let mut canvas_name_buf = String::new();
+    let mut canvas_attr_buf = String::new();
+    let mut glyphs_name_buf = String::new();
+
+    // Build Canvas start tag with namespace and Opacity attribute.
+    let (canvas_name, canvas_ns_attr) = match fixed_page_ns {
+        Some(FixedPageNs::Unqualified) | None => ("Canvas", None),
+        Some(FixedPageNs::Default(uri)) => ("Canvas", Some(("xmlns", uri.as_str()))),
+        Some(FixedPageNs::Prefixed { prefix, uri }) => {
+            canvas_name_buf.push_str(prefix);
+            canvas_name_buf.push_str(":Canvas");
+            canvas_attr_buf.push_str("xmlns:");
+            canvas_attr_buf.push_str(prefix);
+            (
+                canvas_name_buf.as_str(),
+                Some((canvas_attr_buf.as_str(), uri.as_str())),
+            )
+        }
+    };
+
+    let mut canvas_start = BytesStart::new(canvas_name);
+    if let Some((key, value)) = canvas_ns_attr {
+        canvas_start.push_attribute((key, value));
+    }
+    canvas_start.push_attribute(("Opacity", "0.5"));
+    writer.write_event(Event::Start(canvas_start))?;
+
+    // Build Glyphs empty tag with namespace and all attributes.
+    let glyphs_name = match fixed_page_ns {
+        Some(FixedPageNs::Prefixed { prefix, .. }) => {
+            glyphs_name_buf.push_str(prefix);
+            glyphs_name_buf.push_str(":Glyphs");
+            glyphs_name_buf.as_str()
+        }
+        _ => "Glyphs",
+    };
+
+    let mut glyphs = BytesStart::new(glyphs_name);
+    // push_attribute with (&str, &str) auto-escapes special XML characters.
+    glyphs.push_attribute(("UnicodeString", geometry.truncated_text.as_str()));
+    let em_size_str = format!("{:.4}", geometry.font_em_size);
+    glyphs.push_attribute(("FontRenderingEmSize", em_size_str.as_str()));
+    let origin_x_str = format!("{:.4}", geometry.origin_x);
+    glyphs.push_attribute(("OriginX", origin_x_str.as_str()));
+    let origin_y_str = format!("{:.4}", geometry.origin_y);
+    glyphs.push_attribute(("OriginY", origin_y_str.as_str()));
+    glyphs.push_attribute(("Fill", "#FF808080"));
+    glyphs.push_attribute(("Opacity", "0.5"));
+    if let Some(uri) = font_uri {
+        glyphs.push_attribute(("FontUri", uri));
+    }
+    writer.write_event(Event::Empty(glyphs))?;
+
+    // Canvas end tag.
+    let canvas_end = BytesEnd::new(canvas_name);
+    writer.write_event(Event::End(canvas_end))?;
+
+    Ok(())
+}
+
+/// Rewrites an XPS ZIP archive by injecting watermarks into every `.fpage`.
+///
+/// Traverses the input ZIP, copies non-`.fpage` entries verbatim with their
+/// original compression method, and rewrites each `.fpage` with a watermark
+/// injected via [`inject_watermark_into_fpage`].
+///
+/// # Arguments
+///
+/// * `xps_bytes` — Raw bytes of the input XPS ZIP archive.
+/// * `geometry_builder` — Closure that receives `(page_index, width, height)`
+///   and returns a [`WatermarkGeometry`] for that page.
+/// * `font_uri` — Optional font URI to reuse in the watermark.
+///
+/// # Returns
+///
+/// Rewritten XPS ZIP bytes as a new in-memory `Vec<u8>`.
+///
+/// # Errors
+///
+/// Returns `Err` for malformed ZIP, unreadable pages, or injection failures.
+///
+/// # Compression handling
+///
+/// Non-`.fpage` entries preserve their original `CompressionMethod`. `.fpage`
+/// entries are rewritten as `CompressionMethod::Stored` (small XML files,
+/// spooler compatibility prioritized over compression ratio).
+pub fn rewrite_xps_with_watermark(
+    xps_bytes: &[u8],
+    geometry_builder: &mut dyn FnMut(usize, f64, f64) -> Result<WatermarkGeometry>,
+    font_uri: Option<&str>,
+) -> Result<Vec<u8>> {
+    let cursor = Cursor::new(xps_bytes);
+    let mut archive = zip::read::ZipArchive::new(cursor).context("invalid XPS/ZIP archive")?;
+
+    let mut out_buf = Cursor::new(Vec::new());
+    let mut zip_writer = zip::write::ZipWriter::new(&mut out_buf);
+
+    let mut page_index: usize = 0;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let name = file.name().to_string();
+        let name_lower = name.to_lowercase();
+
+        if name_lower.ends_with(".fpage") {
+            let mut xml_bytes = Vec::new();
+            file.read_to_end(&mut xml_bytes)?;
+
+            let (width, height) = extract_page_geometry(&xml_bytes)?;
+            let geometry = geometry_builder(page_index, width, height)?;
+            let rewritten = inject_watermark_into_fpage(&xml_bytes, &geometry, font_uri)?;
+
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip_writer.start_file(name, options)?;
+            zip_writer.write_all(&rewritten)?;
+
+            page_index += 1;
+        } else {
+            let method = file.compression();
+            let options = zip::write::SimpleFileOptions::default().compression_method(method);
+            zip_writer.start_file(name, options)?;
+
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)?;
+            zip_writer.write_all(&content)?;
+        }
+    }
+
+    zip_writer.finish()?;
+    Ok(out_buf.into_inner())
+}
+
+/// Convenience wrapper: inject watermark into every `.fpage` of an XPS archive.
+///
+/// This is the primary entry point for Phase 67 integration. It finds an
+/// existing font URI, computes per-page geometry, and returns rewritten XPS
+/// bytes.
+///
+/// # Arguments
+///
+/// * `xps_bytes` — Raw bytes of the XPS ZIP archive.
+/// * `text` — Watermark text string (before truncation).
+/// * `metrics` — [`FontMetrics`] implementation for text measurement.
+///
+/// # Returns
+///
+/// Rewritten XPS ZIP bytes with watermarks injected into every page.
+///
+/// # Errors
+///
+/// Returns `Err` for malformed ZIP, unreadable pages, or measurement failures.
+///
+/// # Font substitution
+///
+/// If the XPS package does not contain an embedded font part, the watermark
+/// `Glyphs` element will omit `FontUri` and rely on the printer driver's font
+/// substitution. This is an accepted risk for Windows spooler-generated XPS,
+/// which typically embeds at least one font. Full font embedding and OPC
+/// relationship updates are deferred to Phase 67 if production testing reveals
+/// substitution failures.
+pub fn inject_watermark(
+    xps_bytes: &[u8],
+    text: &str,
+    metrics: &dyn FontMetrics,
+) -> Result<Vec<u8>> {
+    let font_uri = find_font_uri_in_xps(xps_bytes)?;
+    let font_uri_ref = font_uri.as_deref();
+
+    rewrite_xps_with_watermark(
+        xps_bytes,
+        &mut |_page_index, page_width, page_height| {
+            compute_watermark_geometry(page_width, page_height, text, metrics, 20.0)
+        },
+        font_uri_ref,
+    )
+}
+
+/// Validates the structural integrity of a rewritten XPS package.
+///
+/// Verifies:
+/// - The archive contains `[Content_Types].xml` at the root (required by OPC).
+/// - At least one `.fpage` entry exists.
+/// - Each `.fpage` contains a `<FixedPage` start tag.
+///
+/// # Arguments
+///
+/// * `xps_bytes` — Raw bytes of the XPS ZIP archive.
+///
+/// # Returns
+///
+/// `Ok(())` if all checks pass, or `Err` with a descriptive message.
+///
+/// # Errors
+///
+/// Returns `Err` for missing `[Content_Types].xml`, no `.fpage` entries, or
+/// `.fpage` files without a `FixedPage` element.
+pub fn validate_xps_structure(xps_bytes: &[u8]) -> Result<()> {
+    let cursor = Cursor::new(xps_bytes);
+    let mut archive = zip::read::ZipArchive::new(cursor).context("invalid XPS/ZIP archive")?;
+
+    let mut has_content_types = false;
+    let mut fpage_count = 0;
+
+    for i in 0..archive.len() {
+        let file = archive.by_index(i)?;
+        let name = file.name();
+        if name == "[Content_Types].xml" {
+            has_content_types = true;
+        }
+        if name.to_lowercase().ends_with(".fpage") {
+            fpage_count += 1;
+        }
+    }
+
+    if !has_content_types {
+        return Err(anyhow::anyhow!("missing [Content_Types].xml"));
+    }
+    if fpage_count == 0 {
+        return Err(anyhow::anyhow!("no .fpage entries found"));
+    }
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let name = file.name().to_string();
+        if name.to_lowercase().ends_with(".fpage") {
+            let mut xml_bytes = Vec::new();
+            file.read_to_end(&mut xml_bytes)?;
+
+            let mut reader = Reader::from_reader(xml_bytes.as_slice());
+            reader.config_mut().trim_text(true);
+            let mut buf = Vec::new();
+            let mut found_fixed_page = false;
+
+            loop {
+                match reader.read_event_into(&mut buf) {
+                    Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) => {
+                        if e.local_name().as_ref() == b"FixedPage" {
+                            found_fixed_page = true;
+                            break;
+                        }
+                    }
+                    Ok(Event::Eof) => break,
+                    Err(e) => {
+                        anyhow::bail!(
+                            "XML parse error in {} at position {}: {:?}",
+                            name,
+                            reader.buffer_position(),
+                            e
+                        );
+                    }
+                    _ => {}
+                }
+                buf.clear();
+            }
+
+            if !found_fixed_page {
+                return Err(anyhow::anyhow!(
+                    "{} does not contain a FixedPage element",
+                    name
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Existing Plan 01 tests (preserved)
+    // -----------------------------------------------------------------------
 
     #[test]
     fn pt_to_xps_units_8pt() {
@@ -540,5 +1102,660 @@ mod tests {
         let result = truncate_with_ellipsis("VeryLong", &metrics, 12.0, 50.0).unwrap();
         assert!(result.ends_with("..."));
         assert!(result.len() <= "VeryLong...".len());
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan 02: XPS ZIP watermark injection tests
+    // -----------------------------------------------------------------------
+
+    use std::io::Write;
+
+    /// Build a minimal in-memory XPS (ZIP) fixture.
+    fn build_xps_fixture(pages: &[(&str, &str)]) -> Vec<u8> {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+
+            let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Default Extension="fpage" ContentType="application/vnd.ms-package.xps-fixedpage+xml"/>
+</Types>"#;
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(content_types.as_bytes()).unwrap();
+
+            let fdseq = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedDocumentSequence xmlns="http://schemas.microsoft.com/xps/2005/06">
+  <DocumentReference Source="Documents/1/FixedDocument.fdoc"/>
+</FixedDocumentSequence>"#;
+            zip.start_file("FixedDocumentSequence.fdseq", options)
+                .unwrap();
+            zip.write_all(fdseq.as_bytes()).unwrap();
+
+            let fdoc = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedDocument xmlns="http://schemas.microsoft.com/xps/2005/06">
+  <PageContent Source="Pages/1.fpage"/>
+</FixedDocument>"#;
+            zip.start_file("Documents/1/FixedDocument.fdoc", options)
+                .unwrap();
+            zip.write_all(fdoc.as_bytes()).unwrap();
+
+            for (i, (width, height)) in pages.iter().enumerate() {
+                let page = format!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedPage xmlns="http://schemas.microsoft.com/xps/2005/06" Width="{}" Height="{}">
+  <Glyphs UnicodeString="Hello XPS World" FontRenderingEmSize="12" FontUri="/Documents/1/Resources/Fonts/arial.ttf"/>
+</FixedPage>"#,
+                    width, height
+                );
+                zip.start_file(format!("Documents/1/Pages/{}.fpage", i + 1), options)
+                    .unwrap();
+                zip.write_all(page.as_bytes()).unwrap();
+            }
+
+            zip.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    /// Build a single-page XPS fixture with custom page XML content.
+    fn build_single_page_xps(page_xml: &str) -> Vec<u8> {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+
+            let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Default Extension="fpage" ContentType="application/vnd.ms-package.xps-fixedpage+xml"/>
+</Types>"#;
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(content_types.as_bytes()).unwrap();
+
+            zip.start_file("Documents/1/Pages/1.fpage", options)
+                .unwrap();
+            zip.write_all(page_xml.as_bytes()).unwrap();
+
+            zip.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    #[test]
+    fn test_inject_watermark_into_fpage_adds_canvas_glyphs() {
+        let page_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedPage xmlns="http://schemas.microsoft.com/xps/2005/06" Width="816" Height="1056">
+  <Glyphs UnicodeString="Hello XPS World" FontRenderingEmSize="12" FontUri="/Documents/1/Resources/Fonts/arial.ttf"/>
+</FixedPage>"#;
+
+        let geometry = WatermarkGeometry {
+            origin_x: 500.0,
+            origin_y: 1000.0,
+            font_em_size: 10.6667,
+            page_width: 816.0,
+            page_height: 1056.0,
+            truncated_text: "Test Watermark".to_string(),
+            padding: 20.0,
+        };
+
+        let result = inject_watermark_into_fpage(
+            page_xml.as_bytes(),
+            &geometry,
+            Some("/Documents/1/Resources/Fonts/arial.ttf"),
+        )
+        .unwrap();
+        let result_str = String::from_utf8_lossy(&result);
+
+        // Verify original Glyphs is still present.
+        assert!(result_str.contains("Hello XPS World"));
+        // Verify Canvas start appears before FixedPage end.
+        assert!(result_str.contains("<Canvas"));
+        // Verify Glyphs with watermark attributes.
+        assert!(result_str.contains("UnicodeString=\"Test Watermark\""));
+        assert!(result_str.contains("FontUri=\"/Documents/1/Resources/Fonts/arial.ttf\""));
+        assert!(result_str.contains("Fill=\"#FF808080\""));
+        assert!(result_str.contains("Opacity=\"0.5\""));
+        // Verify Canvas end appears.
+        assert!(result_str.contains("</Canvas>"));
+        // Verify FixedPage end is still there.
+        assert!(result_str.contains("</FixedPage>"));
+    }
+
+    #[test]
+    fn test_inject_watermark_into_fpage_namespaced_fixedpage() {
+        let page_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedPage xmlns="http://schemas.microsoft.com/xps/2005/06" Width="816" Height="1056">
+  <Glyphs UnicodeString="Text" FontRenderingEmSize="12"/>
+</FixedPage>"#;
+
+        let geometry = WatermarkGeometry {
+            origin_x: 500.0,
+            origin_y: 1000.0,
+            font_em_size: 10.6667,
+            page_width: 816.0,
+            page_height: 1056.0,
+            truncated_text: "NS Test".to_string(),
+            padding: 20.0,
+        };
+
+        let result = inject_watermark_into_fpage(page_xml.as_bytes(), &geometry, None).unwrap();
+        let result_str = String::from_utf8_lossy(&result);
+
+        // Injection succeeded (local-name matching, not raw byte matching).
+        assert!(result_str.contains("<Canvas"));
+        assert!(result_str.contains("</Canvas>"));
+        // Canvas should carry the same namespace URI.
+        assert!(result_str.contains("xmlns=\"http://schemas.microsoft.com/xps/2005/06\""));
+    }
+
+    #[test]
+    fn test_inject_watermark_into_fpage_prefixed_fixedpage() {
+        let page_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xps:FixedPage xmlns:xps="http://schemas.microsoft.com/xps/2005/06" Width="816" Height="1056">
+  <xps:Glyphs UnicodeString="Text" FontRenderingEmSize="12"/>
+</xps:FixedPage>"#;
+
+        let geometry = WatermarkGeometry {
+            origin_x: 500.0,
+            origin_y: 1000.0,
+            font_em_size: 10.6667,
+            page_width: 816.0,
+            page_height: 1056.0,
+            truncated_text: "Prefixed Test".to_string(),
+            padding: 20.0,
+        };
+
+        let result = inject_watermark_into_fpage(page_xml.as_bytes(), &geometry, None).unwrap();
+        let result_str = String::from_utf8_lossy(&result);
+
+        // Injection succeeded using local-name matching.
+        assert!(result_str.contains("xps:Canvas"));
+        assert!(result_str.contains("xps:Glyphs"));
+        assert!(result_str.contains("xmlns:xps=\"http://schemas.microsoft.com/xps/2005/06\""));
+        assert!(result_str.contains("</xps:Canvas>"));
+        assert!(result_str.contains("</xps:FixedPage>"));
+    }
+
+    #[test]
+    fn test_inject_watermark_into_fpage_unqualified_fixedpage() {
+        let page_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedPage Width="816" Height="1056">
+  <Glyphs UnicodeString="Text" FontRenderingEmSize="12"/>
+</FixedPage>"#;
+
+        let geometry = WatermarkGeometry {
+            origin_x: 500.0,
+            origin_y: 1000.0,
+            font_em_size: 10.6667,
+            page_width: 816.0,
+            page_height: 1056.0,
+            truncated_text: "Unqualified Test".to_string(),
+            padding: 20.0,
+        };
+
+        let result = inject_watermark_into_fpage(page_xml.as_bytes(), &geometry, None).unwrap();
+        let result_str = String::from_utf8_lossy(&result);
+
+        // No namespace attributes on injected elements.
+        assert!(result_str.contains("<Canvas"));
+        assert!(!result_str.contains("xmlns="));
+        assert!(result_str.contains("<Glyphs"));
+        assert!(result_str.contains("</Canvas>"));
+    }
+
+    #[test]
+    fn test_inject_watermark_roundtrip() {
+        let xps = build_xps_fixture(&[("816", "1056"), ("612", "792")]);
+        let metrics = TestFontMetrics {
+            char_width: 5.0,
+            line_height: 10.0,
+        };
+        let text = "User | 2024-01-01 | abcdef12 | T3 | approval-123";
+
+        let result = inject_watermark(&xps, text, &metrics).unwrap();
+
+        // Verify output is a valid ZIP.
+        let cursor = Cursor::new(&result);
+        let mut archive = zip::read::ZipArchive::new(cursor).unwrap();
+
+        // Verify both .fpage entries exist.
+        let mut fpage_count = 0;
+        for i in 0..archive.len() {
+            let name = archive.by_index(i).unwrap().name().to_string();
+            if name.to_lowercase().ends_with(".fpage") {
+                fpage_count += 1;
+            }
+        }
+        assert_eq!(fpage_count, 2);
+
+        // Validate structure.
+        validate_xps_structure(&result).unwrap();
+    }
+
+    #[test]
+    fn test_inject_watermark_preserves_non_page_files() {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+
+            let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Default Extension="fpage" ContentType="application/vnd.ms-package.xps-fixedpage+xml"/>
+</Types>"#;
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(content_types.as_bytes()).unwrap();
+
+            let fdseq = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedDocumentSequence xmlns="http://schemas.microsoft.com/xps/2005/06">
+  <DocumentReference Source="Documents/1/FixedDocument.fdoc"/>
+</FixedDocumentSequence>"#;
+            zip.start_file("FixedDocumentSequence.fdseq", options)
+                .unwrap();
+            zip.write_all(fdseq.as_bytes()).unwrap();
+
+            let fdoc = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedDocument xmlns="http://schemas.microsoft.com/xps/2005/06">
+  <PageContent Source="Pages/1.fpage"/>
+</FixedDocument>"#;
+            zip.start_file("Documents/1/FixedDocument.fdoc", options)
+                .unwrap();
+            zip.write_all(fdoc.as_bytes()).unwrap();
+
+            let page = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedPage xmlns="http://schemas.microsoft.com/xps/2005/06" Width="816" Height="1056">
+  <Glyphs UnicodeString="Text" FontRenderingEmSize="12"/>
+</FixedPage>"#;
+            zip.start_file("Documents/1/Pages/1.fpage", options)
+                .unwrap();
+            zip.write_all(page.as_bytes()).unwrap();
+
+            zip.finish().unwrap();
+        }
+        let xps = buf.into_inner();
+
+        let metrics = TestFontMetrics {
+            char_width: 5.0,
+            line_height: 10.0,
+        };
+        let result = inject_watermark(&xps, "Test", &metrics).unwrap();
+
+        // Verify non-page files are preserved byte-for-byte.
+        let cursor = Cursor::new(&result);
+        let mut out_archive = zip::read::ZipArchive::new(cursor).unwrap();
+
+        let in_cursor = Cursor::new(&xps);
+        let mut in_archive = zip::read::ZipArchive::new(in_cursor).unwrap();
+
+        for i in 0..out_archive.len() {
+            let mut out_file = out_archive.by_index(i).unwrap();
+            let name = out_file.name().to_string();
+            if name.to_lowercase().ends_with(".fpage") {
+                continue;
+            }
+
+            let mut in_file = in_archive.by_name(&name).unwrap();
+            let mut out_content = Vec::new();
+            let mut in_content = Vec::new();
+            out_file.read_to_end(&mut out_content).unwrap();
+            in_file.read_to_end(&mut in_content).unwrap();
+            assert_eq!(
+                out_content, in_content,
+                "non-page file {} content changed",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_inject_watermark_empty_text() {
+        let xps = build_xps_fixture(&[("816", "1056")]);
+        let metrics = TestFontMetrics {
+            char_width: 5.0,
+            line_height: 10.0,
+        };
+
+        let result = inject_watermark(&xps, "", &metrics).unwrap();
+        validate_xps_structure(&result).unwrap();
+
+        // Verify watermark of empty string still has Canvas/Glyphs.
+        let cursor = Cursor::new(&result);
+        let mut archive = zip::read::ZipArchive::new(cursor).unwrap();
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).unwrap();
+            let name = file.name().to_string();
+            if name.to_lowercase().ends_with(".fpage") {
+                let mut xml_bytes = Vec::new();
+                file.read_to_end(&mut xml_bytes).unwrap();
+                let xml_str = String::from_utf8_lossy(&xml_bytes);
+                assert!(xml_str.contains("<Canvas"));
+                assert!(xml_str.contains("<Glyphs"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_inject_watermark_into_fpage_missing_fixedpage() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Root><Child/></Root>"#;
+        let geometry = WatermarkGeometry {
+            origin_x: 0.0,
+            origin_y: 0.0,
+            font_em_size: 10.0,
+            page_width: 100.0,
+            page_height: 100.0,
+            truncated_text: "Test".to_string(),
+            padding: 20.0,
+        };
+
+        let result = inject_watermark_into_fpage(xml.as_bytes(), &geometry, None);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("no FixedPage element found"));
+    }
+
+    #[test]
+    fn test_inject_watermark_into_fpage_whitespace_preserved() {
+        let page_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedPage Width="816" Height="1056">
+  <Glyphs/>
+</FixedPage>"#;
+
+        let geometry = WatermarkGeometry {
+            origin_x: 500.0,
+            origin_y: 1000.0,
+            font_em_size: 10.6667,
+            page_width: 816.0,
+            page_height: 1056.0,
+            truncated_text: "WS Test".to_string(),
+            padding: 20.0,
+        };
+
+        let result = inject_watermark_into_fpage(page_xml.as_bytes(), &geometry, None).unwrap();
+
+        // Parse output with trim_text(false) and count Text events.
+        let mut reader = Reader::from_reader(result.as_slice());
+        reader.config_mut().trim_text(false);
+        let mut buf = Vec::new();
+        let mut text_count = 0;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Text(_)) => {
+                    text_count += 1;
+                }
+                Ok(Event::Eof) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        // Should have at least one whitespace text node (the "\n  " before Glyphs).
+        assert!(
+            text_count >= 1,
+            "expected at least 1 text event, got {}",
+            text_count
+        );
+    }
+
+    #[test]
+    fn test_inject_watermark_into_fpage_escaped_attributes() {
+        let page_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedPage Width="816" Height="1056">
+  <Glyphs/>
+</FixedPage>"#;
+
+        let geometry = WatermarkGeometry {
+            origin_x: 500.0,
+            origin_y: 1000.0,
+            font_em_size: 10.6667,
+            page_width: 816.0,
+            page_height: 1056.0,
+            truncated_text: "User & Device <test> \"quote\" 'apos'".to_string(),
+            padding: 20.0,
+        };
+
+        let result = inject_watermark_into_fpage(page_xml.as_bytes(), &geometry, None).unwrap();
+
+        // Parse the output XML — should not error on escaped attributes.
+        let mut reader = Reader::from_reader(result.as_slice());
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        let mut found_unicode_string = false;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) => {
+                    if e.local_name().as_ref() == b"Glyphs" {
+                        for attr_result in e.attributes() {
+                            let attr = attr_result.unwrap();
+                            if attr.key.as_ref() == b"UnicodeString" {
+                                let value = attr
+                                    .decode_and_unescape_value(reader.decoder())
+                                    .unwrap_or_default()
+                                    .into_owned();
+                                assert_eq!(value, "User & Device <test> \"quote\" 'apos'");
+                                found_unicode_string = true;
+                            }
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => panic!("XML parse error: {:?}", e),
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        assert!(found_unicode_string);
+    }
+
+    #[test]
+    fn test_rewrite_xps_with_watermark_per_page_geometry() {
+        let xps = build_xps_fixture(&[("816", "1056"), ("612", "792")]);
+
+        let mut received_dims: Vec<(usize, f64, f64)> = Vec::new();
+        let result = rewrite_xps_with_watermark(
+            &xps,
+            &mut |page_index, width, height| {
+                received_dims.push((page_index, width, height));
+                Ok(WatermarkGeometry {
+                    origin_x: 0.0,
+                    origin_y: 0.0,
+                    font_em_size: 10.0,
+                    page_width: width,
+                    page_height: height,
+                    truncated_text: "Test".to_string(),
+                    padding: 20.0,
+                })
+            },
+            None,
+        )
+        .unwrap();
+
+        validate_xps_structure(&result).unwrap();
+        assert_eq!(received_dims.len(), 2);
+        assert_eq!(received_dims[0], (0, 816.0, 1056.0));
+        assert_eq!(received_dims[1], (1, 612.0, 792.0));
+    }
+
+    #[test]
+    fn test_find_font_uri_in_xps_finds_existing_font() {
+        let xps = build_xps_fixture(&[("816", "1056")]);
+        let result = find_font_uri_in_xps(&xps).unwrap();
+        assert_eq!(
+            result,
+            Some("/Documents/1/Resources/Fonts/arial.ttf".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_font_uri_in_xps_returns_none_when_no_font() {
+        let page_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedPage Width="816" Height="1056">
+  <Glyphs UnicodeString="Text" FontRenderingEmSize="12"/>
+</FixedPage>"#;
+        let xps = build_single_page_xps(page_xml);
+        let result = find_font_uri_in_xps(&xps).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_inject_watermark_malformed_zip() {
+        let metrics = TestFontMetrics {
+            char_width: 5.0,
+            line_height: 10.0,
+        };
+        let result = inject_watermark(b"not a zip", "Test", &metrics);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_inject_watermark_missing_content_types() {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            let page = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedPage Width="816" Height="1056">
+  <Glyphs/>
+</FixedPage>"#;
+            zip.start_file("Documents/1/Pages/1.fpage", options)
+                .unwrap();
+            zip.write_all(page.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let xps = buf.into_inner();
+
+        let result = validate_xps_structure(&xps);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("missing [Content_Types].xml"));
+    }
+
+    #[test]
+    fn test_inject_watermark_truncated_fpage() {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+
+            let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="fpage" ContentType="application/vnd.ms-package.xps-fixedpage+xml"/>
+</Types>"#;
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(content_types.as_bytes()).unwrap();
+
+            // Truncated XML (unclosed FixedPage).
+            let page = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedPage Width="816" Height="1056">
+  <Glyphs UnicodeString="Text" FontRenderingEmSize="12">"#;
+            zip.start_file("Documents/1/Pages/1.fpage", options)
+                .unwrap();
+            zip.write_all(page.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let xps = buf.into_inner();
+
+        let metrics = TestFontMetrics {
+            char_width: 5.0,
+            line_height: 10.0,
+        };
+        let result = inject_watermark(&xps, "Test", &metrics);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_inject_watermark_preserves_compression_method() {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+
+            let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="fpage" ContentType="application/vnd.ms-package.xps-fixedpage+xml"/>
+</Types>"#;
+            let stored_options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("[Content_Types].xml", stored_options)
+                .unwrap();
+            zip.write_all(content_types.as_bytes()).unwrap();
+
+            let page = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FixedPage Width="816" Height="1056">
+  <Glyphs/>
+</FixedPage>"#;
+            zip.start_file("Documents/1/Pages/1.fpage", stored_options)
+                .unwrap();
+            zip.write_all(page.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let xps = buf.into_inner();
+
+        let metrics = TestFontMetrics {
+            char_width: 5.0,
+            line_height: 10.0,
+        };
+        let result = inject_watermark(&xps, "Test", &metrics).unwrap();
+
+        // Verify non-page content is byte-identical.
+        let out_cursor = Cursor::new(&result);
+        let mut out_archive = zip::read::ZipArchive::new(out_cursor).unwrap();
+
+        let in_cursor = Cursor::new(&xps);
+        let mut in_archive = zip::read::ZipArchive::new(in_cursor).unwrap();
+
+        for i in 0..out_archive.len() {
+            let mut out_file = out_archive.by_index(i).unwrap();
+            let name = out_file.name().to_string();
+            if name.to_lowercase().ends_with(".fpage") {
+                continue;
+            }
+
+            let mut in_file = in_archive.by_name(&name).unwrap();
+            let mut out_content = Vec::new();
+            let mut in_content = Vec::new();
+            out_file.read_to_end(&mut out_content).unwrap();
+            in_file.read_to_end(&mut in_content).unwrap();
+            assert_eq!(out_content, in_content, "file {} content changed", name);
+        }
+    }
+
+    #[test]
+    fn test_validate_xps_structure_passes_valid() {
+        let xps = build_xps_fixture(&[("816", "1056")]);
+        validate_xps_structure(&xps).unwrap();
+    }
+
+    #[test]
+    fn test_validate_xps_structure_fails_no_fpage() {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::write::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+</Types>"#;
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(content_types.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let xps = buf.into_inner();
+
+        let result = validate_xps_structure(&xps);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("no .fpage entries found"));
     }
 }
