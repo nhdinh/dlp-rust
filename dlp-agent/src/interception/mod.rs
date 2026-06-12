@@ -602,11 +602,7 @@ fn compute_override_decision(
     if effective_mode.is_blocking() && final_decision.is_denied() {
         if let Some(ac) = approval_cache {
             if let Some((ovr, claims)) = crate::approval_cache::check_approval_override(
-                ac,
-                response,
-                user_sid,
-                action_str,
-                None,
+                ac, response, user_sid, action_str, None,
             ) {
                 final_decision = ovr.decision;
                 override_granted = true;

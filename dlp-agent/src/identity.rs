@@ -451,9 +451,7 @@ pub fn get_sid_for_pid(pid: u32) -> Option<String> {
     use windows::Win32::System::Threading::PROCESS_QUERY_INFORMATION;
 
     // SAFETY: OpenProcess with PROCESS_QUERY_INFORMATION is safe for any PID.
-    let process_handle = unsafe {
-        OpenProcess(PROCESS_QUERY_INFORMATION, false, pid).ok()?
-    };
+    let process_handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, false, pid).ok()? };
 
     let mut token_handle = HANDLE::default();
     // SAFETY: process_handle is valid; token_handle is a valid out-pointer.

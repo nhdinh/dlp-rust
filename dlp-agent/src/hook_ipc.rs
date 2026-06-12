@@ -110,8 +110,9 @@ impl HookIpcServer {
         inner_handler: HookHandler,
         cache: Arc<dyn CacheAccessor>,
     ) -> Self {
-        let handler: HookHandler =
-            Arc::new(move |req: HookRequest| handle_hook_request(req, &inner_handler, &cache, None));
+        let handler: HookHandler = Arc::new(move |req: HookRequest| {
+            handle_hook_request(req, &inner_handler, &cache, None)
+        });
         Self {
             pipe_name: pipe_name.into(),
             handler,

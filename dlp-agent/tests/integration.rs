@@ -398,7 +398,7 @@ async fn evaluate_handler(
         reason: "default allow".to_string(),
         enforcement_mode: None,
         would_have_denied: false,
-            matched_label_id: None,
+        matched_label_id: None,
     })
 }
 
@@ -1065,7 +1065,7 @@ async fn test_concurrent_cache_access_stress() {
                         reason: "stress".into(),
                         enforcement_mode: None,
                         would_have_denied: false,
-            matched_label_id: None,
+                        matched_label_id: None,
                     },
                 );
                 match cache.get(&path, "S-1-5-21-CONCURRENT") {
@@ -1988,7 +1988,7 @@ async fn test_tc_11_copy_confidential_to_internal_blocked_alert() {
         reason: "T3 copy to T2 destination denied".into(),
         enforcement_mode: None,
         would_have_denied: false,
-            matched_label_id: None,
+        matched_label_id: None,
     };
     let (addr, _h) = start_mock_engine_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
@@ -2085,7 +2085,7 @@ async fn test_tc_14_copy_confidential_to_usb_blocked_log() {
         reason: "T3 copy to USB blocked".into(),
         enforcement_mode: None,
         would_have_denied: false,
-            matched_label_id: None,
+        matched_label_id: None,
     };
     let (addr, _h) = start_mock_engine_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
@@ -2167,7 +2167,7 @@ async fn test_tc_21_email_credit_card_blocked_alert() {
         reason: "T4 content in external email denied".into(),
         enforcement_mode: None,
         would_have_denied: false,
-            matched_label_id: None,
+        matched_label_id: None,
     };
     let (addr, _h) = start_mock_engine_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();
@@ -2240,7 +2240,7 @@ async fn test_tc_72_delete_restricted_secure_delete() {
         reason: "T4 delete triggers secure wipe".into(),
         enforcement_mode: None,
         would_have_denied: false,
-            matched_label_id: None,
+        matched_label_id: None,
     };
     let (addr, _h) = start_mock_engine_response(resp).await;
     let client = EngineClient::new(format!("http://{addr}"), false).unwrap();

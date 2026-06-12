@@ -647,7 +647,8 @@ mod tests {
             matched_label_id: Some("label-001".to_string()),
         };
 
-        let result = check_approval_override(&cache, &response, "S-1-5-21-1", "WRITE", Some("C:\\Data"));
+        let result =
+            check_approval_override(&cache, &response, "S-1-5-21-1", "WRITE", Some("C:\\Data"));
         assert!(result.is_some(), "valid approval should produce override");
         let (ovr, returned_claims) = result.unwrap();
         assert_eq!(ovr.decision, dlp_common::Decision::ALLOW);
@@ -668,7 +669,10 @@ mod tests {
         };
 
         let result = check_approval_override(&cache, &response, "S-1-5-21-1", "WRITE", None);
-        assert!(result.is_none(), "missing matched_label_id must return None");
+        assert!(
+            result.is_none(),
+            "missing matched_label_id must return None"
+        );
     }
 
     #[test]
