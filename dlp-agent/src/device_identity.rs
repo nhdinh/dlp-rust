@@ -859,6 +859,16 @@ fn read_reg_dword(hkey: windows::Win32::System::Registry::HKEY, value_name: &str
 }
 
 // ---------------------------------------------------------------------------
+// Test-only synchronization lock
+// ---------------------------------------------------------------------------
+
+/// Tests that mutate the global HEALTH_STATUS static must be serialised
+/// to avoid race conditions.  parking_lot::Mutex is used because it
+/// does not poison on panic (unlike std::sync::Mutex).
+#[cfg(test)]
+pub(crate) static HEALTH_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1043,12 +1053,6 @@ mod tests {
     }
 
     // --- Phase 64: Health state machine tests ---
-
-    // Tests that mutate the global HEALTH_STATUS static must be serialised
-    // to avoid race conditions.  This mutex is acquired by every test that
-    // reads or writes HEALTH_STATUS.  parking_lot::Mutex is used because it
-    // does not poison on panic (unlike std::sync::Mutex).
-    static HEALTH_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
     #[test]
     fn test_current_health_default() {
