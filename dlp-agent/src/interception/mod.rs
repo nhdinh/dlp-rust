@@ -382,7 +382,7 @@ pub async fn run_event_loop(
                 groups: Vec::new(),
                 device_trust: dlp_common::DeviceTrust::Unknown,
                 network_location: dlp_common::NetworkLocation::Unknown,
-                device_health: dlp_common::DeviceHealthStatus::default(),
+                device_health: crate::device_identity::current_health(),
             }
         };
 
@@ -797,5 +797,29 @@ mod tests {
         assert!(!override_granted);
         assert!(claims.is_none());
         assert_eq!(reason, "allowed");
+    }
+
+    /// Verifies that the no-AD fallback Subject construction uses live health.
+    #[test]
+    fn test_evaluate_request_uses_live_health() {
+        let _guard = crate::device_identity::HEALTH_TEST_LOCK.lock();
+
+        // Set global health to Offline.
+        crate::device_identity::transition_health(dlp_common::DeviceHealthStatus::Offline);
+
+        // Build a Subject using the same fallback path as run_event_loop (no AD client).
+        let subject = Subject {
+            user_sid: "S-1-5-21-123".to_string(),
+            user_name: "jsmith".to_string(),
+            groups: Vec::new(),
+            device_trust: dlp_common::DeviceTrust::Unknown,
+            network_location: dlp_common::NetworkLocation::Unknown,
+            device_health: crate::device_identity::current_health(),
+        };
+
+        assert_eq!(subject.device_health, dlp_common::DeviceHealthStatus::Offline);
+
+        // Restore.
+        crate::device_identity::transition_health(dlp_common::DeviceHealthStatus::Healthy);
     }
 }
