@@ -817,7 +817,10 @@ mod tests {
             device_health: crate::device_identity::current_health(),
         };
 
-        assert_eq!(subject.device_health, dlp_common::DeviceHealthStatus::Offline);
+        assert_eq!(
+            subject.device_health,
+            dlp_common::DeviceHealthStatus::Offline
+        );
 
         // Restore.
         crate::device_identity::transition_health(dlp_common::DeviceHealthStatus::Healthy);

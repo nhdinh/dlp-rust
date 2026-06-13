@@ -615,7 +615,10 @@ mod tests {
             primary_group: None,
         };
         let subject = identity.to_subject();
-        assert_eq!(subject.device_health, dlp_common::DeviceHealthStatus::Degraded);
+        assert_eq!(
+            subject.device_health,
+            dlp_common::DeviceHealthStatus::Degraded
+        );
 
         // Restore.
         crate::device_identity::transition_health(dlp_common::DeviceHealthStatus::Healthy);
