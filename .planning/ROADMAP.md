@@ -623,7 +623,7 @@ Plans:
   4. The admin TUI provides an Audit Integrity screen that consumes `GET /admin/audit/integrity` and displays per-agent chain status and break count (TAMPER-04).
   5. All changes pass workspace tests, clippy (`-D warnings`), `cargo fmt --check`, and `sonar-scanner` quality gate.
 
-**Plans:** 3/3 plans planned
+**Plans:** 3/3 plans complete
 
 **Wave 1** *(no dependencies)*
 
@@ -632,7 +632,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 server endpoint)*
 
-- [ ] `68.1-03-PLAN.md` — Admin TUI Audit Integrity screen: AuditIntegrityList screen, client method, dispatch/render, SystemMenu entry
+- [x] `68.1-03-PLAN.md` — Admin TUI Audit Integrity screen: AuditIntegrityList screen, client method, dispatch/render, SystemMenu entry
 
 **Cross-cutting constraints:**
 
