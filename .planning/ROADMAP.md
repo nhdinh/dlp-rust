@@ -549,7 +549,7 @@ Plans:
 | 66.1 | Close gap: WORKFLOW-04 — wire ApprovalCache into enforcement (INSERTED) | 4/4 | Complete    | 2026-06-11 |
 | 67 | Print Watermarking — XPS Overlay | 0/0 | Not started | - |
 | 68 | Email/Outlook Interception + Browser Upload Detection | 0/0 | Not started | - |
-| 68.1 | Close gap: DEVICE-05/TAMPER-03/04 — wire tamper detection to SIEM and health (INSERTED) | 0/0 | Not started | - |
+| 68.1 | Close gap: DEVICE-05/TAMPER-03/04 — wire tamper detection to SIEM and health (INSERTED) | 2/3 | In progress | 2026-06-13 |
 | 69 | RDP File Redirection + Bluetooth Transfer Blocking | 0/0 | Not started | - |
 | 70 | Backup Policy Docs + Ransomware Heuristics + Canary Files | 0/0 | Not started | - |
 
@@ -627,8 +627,8 @@ Plans:
 
 **Wave 1** *(no dependencies)*
 
-- [ ] `68.1-01-PLAN.md` — Server ingest response + synthetic event relay: IngestEventsResponse, tamper flag in response, ChainBreakDetected to SIEM/syslog, agent IngestResponse type
-- [ ] `68.1-02-PLAN.md` — Agent health wiring: replace hardcoded DeviceHealthStatus::default() with current_health() in identity.rs and interception/mod.rs
+- [x] `68.1-01-PLAN.md` — Server ingest response + synthetic event relay: IngestEventsResponse, tamper flag in response, ChainBreakDetected to SIEM/syslog, agent IngestResponse type
+- [x] `68.1-02-PLAN.md` — Agent health wiring: replace hardcoded DeviceHealthStatus::default() with current_health() in identity.rs and interception/mod.rs
 
 **Wave 2** *(blocked on Wave 1 server endpoint)*
 
