@@ -11,7 +11,7 @@
     "nyquist_validation": true,
     "auto_advance": true,
     "plan_review_convergence": true,
-    "_auto_chain_active": false
+    "_auto_chain_active": true
   },
   "search_gitignored": false,
   "review": {
