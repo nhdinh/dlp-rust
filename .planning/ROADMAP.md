@@ -540,7 +540,7 @@ Plans:
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
 | 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete | 2026-05-14 |
-| 62. Syslog Forwarder — RFC 5424 + Encrypted Offline Queue | 4/4 | Complete | 2026-05-21 |
+| 62. Syslog Forwarder — RFC 5424 + Encrypted Offline Queue | 4/4 | Complete | 2026-06-21 |
 | 63. Tamper-Evident Audit — SHA-256 Hash Chain | 4/4 | Complete | 2026-06-06 |
 | 64. Device Identity Expansion — Fingerprint + MAC + VPN + Health | 4/4 | Planned | 2026-06-07 |
 | **v0.12.0** | | | | |
@@ -609,3 +609,34 @@ Plans:
 **Cross-cutting constraints:**
 
 - All public items have doc comments per CLAUDE.md section 9.3
+
+### Phase 68.1: Close gap: DEVICE-05/TAMPER-03/04 — wire tamper detection to SIEM and health (INSERTED)
+
+**Goal:** Close the integration gaps identified in the v0.11.0 milestone audit for DEVICE-05, TAMPER-03, and TAMPER-04. Wire tamper-evident hash-chain break detection into device health transitions, SIEM/syslog forwarding, and the admin TUI.
+**Requirements**: DEVICE-05, TAMPER-03, TAMPER-04
+**Depends on:** Phases 63 (hash chain), 64 (device health)
+**Success Criteria** (what must be TRUE):
+
+  1. When the server detects a hash-chain break for an agent, that agent transitions its local `DeviceHealthStatus` to `Tampered` and emits a `DeviceHealthChange` audit event (DEVICE-05).
+  2. Synthetic `ChainBreakDetected` events reach both the SIEM relay (`SiemConnector::relay_events`) and the encrypted syslog queue (`SyslogQueueRepository`) — not only `alert_router` (TAMPER-03).
+  3. ABAC `EvaluateRequest` carries the endpoint's live `current_health()` instead of the hardcoded `Healthy` default (DEVICE-05 / TAMPER-04 cross-cutting).
+  4. The admin TUI provides an Audit Integrity screen that consumes `GET /admin/audit/integrity` and displays per-agent chain status and break count (TAMPER-04).
+  5. All changes pass workspace tests, clippy (`-D warnings`), `cargo fmt --check`, and `sonar-scanner` quality gate.
+
+**Plans:** 3/3 plans planned
+
+**Wave 1** *(no dependencies)*
+
+- [ ] `68.1-01-PLAN.md` — Server ingest response + synthetic event relay: IngestEventsResponse, tamper flag in response, ChainBreakDetected to SIEM/syslog, agent IngestResponse type
+- [ ] `68.1-02-PLAN.md` — Agent health wiring: replace hardcoded DeviceHealthStatus::default() with current_health() in identity.rs and interception/mod.rs
+
+**Wave 2** *(blocked on Wave 1 server endpoint)*
+
+- [ ] `68.1-03-PLAN.md` — Admin TUI Audit Integrity screen: AuditIntegrityList screen, client method, dispatch/render, SystemMenu entry
+
+**Cross-cutting constraints:**
+
+- All ingest response changes are backward-compatible via `#[serde(default)]`
+- Synthetic events are appended to relay/syslog lists after persistence (relay failure does not roll back audit log)
+- TUI screen follows the BypassAlertList pattern (list + detail popup + filter + pagination)
+- SystemMenu item count updated from 14 to 15 with test coverage
