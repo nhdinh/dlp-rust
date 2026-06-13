@@ -603,6 +603,22 @@ impl EngineClient {
         self.get(&path).await
     }
 
+    /// Calls GET /admin/audit/integrity.
+    ///
+    /// Returns a JSON object with `agents`, `total`, and `integrity_ok` fields.
+    ///
+    /// # Arguments
+    ///
+    /// * `agent_id` - Optional agent ID filter.
+    #[allow(dead_code)]
+    pub async fn list_audit_integrity(&self, agent_id: Option<&str>) -> Result<serde_json::Value> {
+        let mut path = "admin/audit/integrity".to_string();
+        if let Some(id) = agent_id {
+            path.push_str(&format!("?agent_id={}", urlencoding::encode(id)));
+        }
+        self.get(&path).await
+    }
+
     /// Calls POST /admin/bypass-alerts/{id}/ack.
     ///
     /// Acknowledges a bypass alert. Returns `Ok(())` on 200 success.
@@ -720,5 +736,17 @@ mod client_tests {
         // Verify the URL is built correctly by inspecting the method signature.
         // The actual HTTP call would fail at runtime against a non-routable address.
         let _ = client.ack_bypass_alert(123);
+    }
+
+    #[test]
+    fn test_list_audit_integrity_method_exists() {
+        let client = EngineClient::for_test();
+        let _ = client.list_audit_integrity(None);
+    }
+
+    #[test]
+    fn test_list_audit_integrity_with_agent_id() {
+        let client = EngineClient::for_test_with_url("http://127.0.0.1:9999".to_string());
+        let _ = client.list_audit_integrity(Some("agent-001"));
     }
 }

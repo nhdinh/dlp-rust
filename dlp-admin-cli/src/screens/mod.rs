@@ -2,6 +2,7 @@
 
 pub mod allowlist;
 mod approvals;
+pub mod audit_integrity;
 mod bypass_alerts;
 mod cloud_config;
 mod dispatch;

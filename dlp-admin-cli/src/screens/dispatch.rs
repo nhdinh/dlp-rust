@@ -3,11 +3,11 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use crate::app::{
-    App, ApprovalFilter, BypassAlertSeverityFilter, CallerScreen, ConditionAttribute,
-    ConfirmPurpose, ImportCaller, ImportState, InputPurpose, LabelFilter, LabelFormMode,
-    PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState, SimulateOutcome,
-    StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, LDAP_BACK_ROW,
-    LDAP_ROW_COUNT, LDAP_SAVE_ROW, OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
+    App, ApprovalFilter, AuditIntegrityFilter, BypassAlertSeverityFilter, CallerScreen,
+    ConditionAttribute, ConfirmPurpose, ImportCaller, ImportState, InputPurpose, LabelFilter,
+    LabelFormMode, PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState,
+    SimulateOutcome, StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES,
+    LDAP_BACK_ROW, LDAP_ROW_COUNT, LDAP_SAVE_ROW, OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
 };
 use crate::event::AppEvent;
 use crate::screens::approvals::EXPIRY_OPTIONS;
@@ -80,6 +80,9 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::ProtectedPathList { .. } => handle_protected_path_list(app, key),
         Screen::BypassAlertList { .. } => handle_bypass_alert_list(app, key),
         Screen::BypassAlertDetail { .. } => handle_bypass_alert_detail(app, key),
+        // Phase 68.1 screens
+        Screen::AuditIntegrityList { .. } => handle_audit_integrity_list(app, key),
+        Screen::AuditIntegrityDetail { .. } => handle_audit_integrity_detail(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -241,7 +244,8 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
         // Phase 59: expanded from 9 to 10 items — added "Label Review Queue" at index 8.
         // Phase 54: expanded from 12 to 14 items — added "Protected Paths" at 10,
         // "Bypass Alerts" at 11.
-        KeyCode::Up | KeyCode::Down => nav(selected, 14, key.code),
+        // Phase 68.1: expanded from 14 to 15 items — added "Audit Integrity" at 14.
+        KeyCode::Up | KeyCode::Down => nav(selected, 15, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
@@ -257,6 +261,7 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
             11 => action_load_bypass_alert_list(app, BypassAlertSeverityFilter::All, false, 0),
             12 => action_load_syslog_config(app),
             13 => app.screen = Screen::MainMenu { selected: 2 },
+            14 => action_load_audit_integrity(app, AuditIntegrityFilter::All, 0),
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
@@ -7931,6 +7936,123 @@ fn action_load_bypass_alert_list(
 }
 
 // ---------------------------------------------------------------------------
+// Audit Integrity List screen
+// ---------------------------------------------------------------------------
+
+fn handle_audit_integrity_list(app: &mut App, key: KeyEvent) {
+    let (agents, selected, filter, page, page_size, total) = match &mut app.screen {
+        Screen::AuditIntegrityList {
+            agents,
+            selected,
+            filter,
+            page,
+            page_size,
+            total,
+            ..
+        } => (
+            agents.clone(),
+            selected,
+            filter.clone(),
+            *page,
+            *page_size,
+            *total,
+        ),
+        _ => return,
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            if !agents.is_empty() {
+                nav(selected, agents.len(), key.code);
+            }
+        }
+        KeyCode::Char('f') => {
+            let next_filter = filter.next();
+            action_load_audit_integrity(app, next_filter, 0);
+        }
+        KeyCode::Char('r') => {
+            action_load_audit_integrity(app, filter, page);
+        }
+        KeyCode::PageUp => {
+            if page > 0 {
+                action_load_audit_integrity(app, filter, page - 1);
+            }
+        }
+        KeyCode::PageDown => {
+            if (page + 1) * page_size < total {
+                action_load_audit_integrity(app, filter, page + 1);
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(agent) = agents.get(*selected) {
+                app.screen = Screen::AuditIntegrityDetail {
+                    agent: agent.clone(),
+                };
+            }
+        }
+        KeyCode::Esc => app.screen = Screen::SystemMenu { selected: 14 },
+        _ => {}
+    }
+}
+
+fn handle_audit_integrity_detail(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter | KeyCode::Esc => {
+            // Return to list. Reload with defaults since we don't preserve filter state.
+            action_load_audit_integrity(app, AuditIntegrityFilter::All, 0);
+        }
+        _ => {}
+    }
+}
+
+fn action_load_audit_integrity(app: &mut App, filter: AuditIntegrityFilter, page: usize) {
+    let page_size = 20usize;
+    let agent_id = filter.agent_id();
+    match app.rt.block_on(app.client.list_audit_integrity(agent_id)) {
+        Ok(response) => {
+            let agents = response
+                .get("agents")
+                .and_then(|a| a.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let total = response
+                .get("total")
+                .and_then(|t| t.as_u64())
+                .map(|t| t as usize)
+                .unwrap_or(agents.len());
+            let integrity_ok = response
+                .get("integrity_ok")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let total_pages = total.div_ceil(page_size).max(1);
+            app.set_status(
+                format!(
+                    "Loaded {} audit integrity agents (page {} of {})",
+                    agents.len(),
+                    page + 1,
+                    total_pages
+                ),
+                StatusKind::Success,
+            );
+            app.screen = Screen::AuditIntegrityList {
+                agents,
+                selected: 0,
+                filter,
+                page,
+                page_size,
+                total,
+                integrity_ok,
+            };
+        }
+        Err(e) => {
+            app.set_status(
+                format!("Error loading audit integrity data: {e}"),
+                StatusKind::Error,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Protected Path List screen
 // ---------------------------------------------------------------------------
 
@@ -8172,11 +8294,11 @@ mod protected_path_tests {
     }
 
     #[test]
-    fn handle_system_menu_has_14_items() {
+    fn handle_system_menu_has_15_items() {
         let mut app = test_app();
         app.screen = Screen::SystemMenu { selected: 0 };
-        // Down 14 times should cycle back to 0 (0->1->2->...->13->0)
-        for _ in 0..14 {
+        // Down 15 times should cycle back to 0 (0->1->2->...->14->0)
+        for _ in 0..15 {
             let key = KeyEvent::from(KeyCode::Down);
             handle_event(&mut app, crate::event::AppEvent::Key(key));
         }
@@ -8184,7 +8306,7 @@ mod protected_path_tests {
             Screen::SystemMenu { selected } => *selected,
             _ => panic!("expected SystemMenu"),
         };
-        assert_eq!(selected, 0, "nav with 14 items should cycle correctly");
+        assert_eq!(selected, 0, "nav with 15 items should cycle correctly");
     }
 
     #[test]
@@ -8359,28 +8481,28 @@ mod protected_path_tests {
 
     #[test]
     fn system_menu_item_count_and_order() {
-        // Verifies SystemMenu has exactly 14 items and navigation cycles correctly.
+        // Verifies SystemMenu has exactly 15 items and navigation cycles correctly.
         // This test prevents silent menu drift when new items are added.
         let mut app = test_app();
         app.screen = Screen::SystemMenu { selected: 0 };
 
         // Navigate through all items and verify count
         let mut seen = std::collections::HashSet::new();
-        for _ in 0..14 {
+        for _ in 0..15 {
             if let Screen::SystemMenu { selected } = &app.screen {
                 seen.insert(*selected);
             }
             let key = KeyEvent::from(KeyCode::Down);
             handle_event(&mut app, crate::event::AppEvent::Key(key));
         }
-        assert_eq!(seen.len(), 14, "SystemMenu should have exactly 14 items");
+        assert_eq!(seen.len(), 15, "SystemMenu should have exactly 15 items");
 
-        // Verify cycling: after 14 downs, should be back at 0
+        // Verify cycling: after 15 downs, should be back at 0
         let selected = match &app.screen {
             Screen::SystemMenu { selected } => *selected,
             _ => panic!("expected SystemMenu"),
         };
-        assert_eq!(selected, 0, "nav with 14 items should cycle back to 0");
+        assert_eq!(selected, 0, "nav with 15 items should cycle back to 0");
     }
 
     #[test]
@@ -8424,5 +8546,80 @@ mod protected_path_tests {
             json.contains("AuditAndBlock"),
             "payload missing AuditAndBlock value: {json}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Audit Integrity screen tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn handle_audit_integrity_list_esc_goes_to_system_menu() {
+        let mut app = test_app();
+        app.screen = Screen::AuditIntegrityList {
+            agents: vec![],
+            selected: 0,
+            filter: AuditIntegrityFilter::All,
+            page: 0,
+            page_size: 20,
+            total: 0,
+            integrity_ok: true,
+        };
+        let key = KeyEvent::from(KeyCode::Esc);
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        assert!(
+            matches!(app.screen, Screen::SystemMenu { selected: 14 }),
+            "expected SystemMenu with selected=14, got {:?}",
+            app.screen
+        );
+    }
+
+    #[test]
+    fn handle_audit_integrity_list_enter_opens_detail() {
+        let mut app = test_app();
+        app.screen = Screen::AuditIntegrityList {
+            agents: vec![serde_json::json!({"agent_id": "agent-x"})],
+            selected: 0,
+            filter: AuditIntegrityFilter::All,
+            page: 0,
+            page_size: 20,
+            total: 1,
+            integrity_ok: true,
+        };
+        let key = KeyEvent::from(KeyCode::Enter);
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        assert!(
+            matches!(app.screen, Screen::AuditIntegrityDetail { .. }),
+            "expected AuditIntegrityDetail, got {:?}",
+            app.screen
+        );
+    }
+
+    #[test]
+    fn handle_audit_integrity_list_page_down_loads_next_page() {
+        let mut app = test_app();
+        app.screen = Screen::AuditIntegrityList {
+            agents: vec![serde_json::json!({"agent_id": "agent-x"})],
+            selected: 0,
+            filter: AuditIntegrityFilter::All,
+            page: 0,
+            page_size: 1,
+            total: 2,
+            integrity_ok: true,
+        };
+        let key = KeyEvent::from(KeyCode::PageDown);
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+        // PageDown triggers a reload action; in test mode the client call fails
+        // and sets an error status. The screen remains the same.
+        assert!(
+            matches!(app.screen, Screen::AuditIntegrityList { .. }),
+            "expected AuditIntegrityList after PageDown, got {:?}",
+            app.screen
+        );
+        let (msg, kind) = app.status.as_ref().expect("status should be set");
+        assert!(
+            msg.contains("Error loading audit integrity data"),
+            "expected error status, got: {msg}"
+        );
+        assert_eq!(*kind, StatusKind::Error);
     }
 }

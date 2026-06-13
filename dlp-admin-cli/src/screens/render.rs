@@ -9,14 +9,17 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::app::{
-    App, ApprovalFilter, BypassAlertSeverityFilter, ConditionAttribute, ImportState, LabelFilter,
-    LabelFormMode, Screen, SimulateFormState, SimulateOutcome, StatusKind, UsbScanEntry,
-    ACTION_OPTIONS, ATTRIBUTES, OBJECT_TYPE_OPTIONS, SIMULATE_ACCESS_CONTEXT_OPTIONS,
-    SIMULATE_ACTION_OPTIONS, SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
-    SIMULATE_NETWORK_LOCATION_OPTIONS, TIER_OPTIONS,
+    App, ApprovalFilter, AuditIntegrityFilter, BypassAlertSeverityFilter, ConditionAttribute,
+    ImportState, LabelFilter, LabelFormMode, Screen, SimulateFormState, SimulateOutcome,
+    StatusKind, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, OBJECT_TYPE_OPTIONS,
+    SIMULATE_ACCESS_CONTEXT_OPTIONS, SIMULATE_ACTION_OPTIONS, SIMULATE_CLASSIFICATION_OPTIONS,
+    SIMULATE_DEVICE_TRUST_OPTIONS, SIMULATE_NETWORK_LOCATION_OPTIONS, TIER_OPTIONS,
 };
 use crate::screens::approvals::{
     APPROVAL_GRANT_HINTS, APPROVAL_LIST_EMPTY, APPROVAL_LIST_HINTS, EXPIRY_OPTIONS,
+};
+use crate::screens::audit_integrity::{
+    AUDIT_INTEGRITY_DETAIL_HINTS, AUDIT_INTEGRITY_LIST_EMPTY, AUDIT_INTEGRITY_LIST_HINTS,
 };
 use crate::screens::bypass_alerts::{
     BYPASS_ALERT_DETAIL_HINTS, BYPASS_ALERT_LIST_EMPTY, BYPASS_ALERT_LIST_HINTS,
@@ -485,6 +488,31 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         }
         Screen::BypassAlertDetail { alert } => {
             draw_bypass_alert_detail(frame, area, alert);
+        }
+        // Phase 68.1 screens
+        Screen::AuditIntegrityList {
+            agents,
+            selected,
+            filter,
+            page,
+            page_size,
+            total,
+            integrity_ok,
+        } => {
+            draw_audit_integrity_list(
+                frame,
+                area,
+                agents,
+                *selected,
+                filter.clone(),
+                *page,
+                *page_size,
+                *total,
+                *integrity_ok,
+            );
+        }
+        Screen::AuditIntegrityDetail { agent } => {
+            draw_audit_integrity_detail(frame, area, agent);
         }
     }
 }
@@ -4429,6 +4457,222 @@ fn draw_bypass_alert_detail(frame: &mut Frame, area: Rect, alert: &serde_json::V
     draw_hints(frame, area, BYPASS_ALERT_DETAIL_HINTS);
 }
 
+/// Renders the audit integrity list screen.
+#[allow(clippy::too_many_arguments)]
+///
+/// Columns: Agent ID | Events | Verified | Breaks | Last Hash (truncated).
+/// Top banner shows integrity status (green "OK" or red "BROKEN").
+fn draw_audit_integrity_list(
+    frame: &mut Frame,
+    area: Rect,
+    agents: &[serde_json::Value],
+    selected: usize,
+    filter: AuditIntegrityFilter,
+    page: usize,
+    page_size: usize,
+    total: usize,
+    integrity_ok: bool,
+) {
+    if agents.is_empty() {
+        let filter_suffix = match &filter {
+            AuditIntegrityFilter::All => String::new(),
+            AuditIntegrityFilter::PerAgent(id) => format!(" [Agent: {id}]"),
+        };
+        let paragraph = Paragraph::new(AUDIT_INTEGRITY_LIST_EMPTY)
+            .block(
+                Block::default()
+                    .title(format!(" Audit Integrity (0){filter_suffix} "))
+                    .borders(Borders::ALL),
+            )
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(paragraph, area);
+        draw_hints(frame, area, AUDIT_INTEGRITY_LIST_HINTS);
+        return;
+    }
+
+    let filter_suffix = match &filter {
+        AuditIntegrityFilter::All => String::new(),
+        AuditIntegrityFilter::PerAgent(id) => format!(" [Agent: {id}]"),
+    };
+
+    let total_pages = total.div_ceil(page_size).max(1);
+    let page_info = format!("Page {} of {} ({} total)", page + 1, total_pages, total);
+
+    let header = Row::new(vec![
+        "Agent ID",
+        "Events",
+        "Verified",
+        "Breaks",
+        "Last Hash",
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD))
+    .bottom_margin(1);
+
+    let rows: Vec<Row> = agents
+        .iter()
+        .map(|a| {
+            let agent_id = a["agent_id"].as_str().unwrap_or("-");
+            let event_count = a["event_count"].as_u64().unwrap_or(0);
+            let verified_count = a["verified_count"].as_u64().unwrap_or(0);
+            let break_count = a["break_count"].as_u64().unwrap_or(0);
+            let last_hash = a["last_chain_hash"].as_str().unwrap_or("-");
+            let hash_display = if last_hash.len() > 16 {
+                format!("{}...", &last_hash[..16])
+            } else {
+                last_hash.to_string()
+            };
+
+            let break_style = if break_count > 0 {
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            Row::new(vec![
+                Cell::from(agent_id.to_string()),
+                Cell::from(format!("{event_count}")),
+                Cell::from(format!("{verified_count}")),
+                Cell::from(format!("{break_count}")).style(break_style),
+                Cell::from(hash_display),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(30), // Agent ID
+        Constraint::Percentage(15), // Events
+        Constraint::Percentage(15), // Verified
+        Constraint::Percentage(15), // Breaks
+        Constraint::Percentage(25), // Last Hash
+    ];
+
+    let integrity_status = if integrity_ok {
+        (
+            "OK",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (
+            "BROKEN",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )
+    };
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .title(format!(
+                    " Audit Integrity ({}) — {} {}{} ",
+                    total,
+                    integrity_status.0,
+                    filter_suffix,
+                    if integrity_ok { "" } else { " ⚠" }
+                ))
+                .borders(Borders::ALL),
+        )
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(table, area, &mut state);
+
+    let hint_text = format!("{AUDIT_INTEGRITY_LIST_HINTS}  |  {page_info}");
+    draw_hints(frame, area, &hint_text);
+}
+
+/// Renders the audit integrity detail view.
+///
+/// Displays per-agent chain metadata: agent_id, event_count, verified_count,
+/// break_count, last_chain_hash, and chain_breaks list.
+fn draw_audit_integrity_detail(frame: &mut Frame, area: Rect, agent: &serde_json::Value) {
+    let agent_id = agent["agent_id"].as_str().unwrap_or("-");
+    let event_count = agent["event_count"].as_u64().unwrap_or(0);
+    let verified_count = agent["verified_count"].as_u64().unwrap_or(0);
+    let break_count = agent["break_count"].as_u64().unwrap_or(0);
+    let last_hash = agent["last_chain_hash"].as_str().unwrap_or("-");
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Agent ID: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(agent_id.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Total Events: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{event_count}")),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Verified Events: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{verified_count}")),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Break Count: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{break_count}"),
+                if break_count > 0 {
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Green)
+                },
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Last Chain Hash: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(last_hash.to_string()),
+        ]),
+        Line::from(""),
+    ];
+
+    if let Some(breaks) = agent["chain_breaks"].as_array() {
+        if !breaks.is_empty() {
+            lines.push(Line::from(vec![Span::styled(
+                "Chain Breaks:",
+                Style::default().add_modifier(Modifier::BOLD),
+            )]));
+            for b in breaks {
+                let expected = b["expected_prev_hash"].as_str().unwrap_or("-");
+                let actual = b["actual_prev_hash"].as_str().unwrap_or("-");
+                lines.push(Line::from(vec![
+                    Span::raw("  Expected: "),
+                    Span::raw(expected.to_string()),
+                    Span::raw(" | Actual: "),
+                    Span::raw(actual.to_string()),
+                ]));
+            }
+        }
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(format!(" Audit Integrity Detail — {agent_id} "))
+                .borders(Borders::ALL),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+    draw_hints(frame, area, AUDIT_INTEGRITY_DETAIL_HINTS);
+}
+
 #[cfg(test)]
 mod bypass_alert_render_tests {
     use super::*;
@@ -4723,6 +4967,158 @@ mod bypass_alert_render_tests {
     fn format_relative_time_invalid() {
         let result = format_relative_time("not-a-timestamp");
         assert_eq!(result, "not-a-timestamp");
+    }
+}
+
+#[cfg(test)]
+mod audit_integrity_render_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    #[test]
+    fn draw_audit_integrity_list_empty_renders() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_audit_integrity_list(
+                    frame,
+                    frame.area(),
+                    &[],
+                    0,
+                    AuditIntegrityFilter::All,
+                    0,
+                    20,
+                    0,
+                    true,
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("No audit integrity data found"));
+    }
+
+    #[test]
+    fn draw_audit_integrity_list_renders_agent_row() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let agents = vec![serde_json::json!({
+            "agent_id": "agent-001",
+            "event_count": 42,
+            "verified_count": 40,
+            "break_count": 2,
+            "last_chain_hash": "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+        })];
+        terminal
+            .draw(|frame| {
+                draw_audit_integrity_list(
+                    frame,
+                    frame.area(),
+                    &agents,
+                    0,
+                    AuditIntegrityFilter::All,
+                    0,
+                    20,
+                    1,
+                    false,
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("agent-001"),
+            "agent_id should be present: {content}"
+        );
+        assert!(
+            content.contains("42"),
+            "event_count should be present: {content}"
+        );
+        assert!(
+            content.contains("40"),
+            "verified_count should be present: {content}"
+        );
+        assert!(
+            content.contains("2"),
+            "break_count should be present: {content}"
+        );
+        assert!(
+            content.contains("aabbccddeeff0011"),
+            "truncated hash should be present: {content}"
+        );
+        assert!(
+            content.contains("BROKEN"),
+            "integrity status should show BROKEN: {content}"
+        );
+    }
+
+    #[test]
+    fn draw_audit_integrity_detail_renders_all_fields() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let agent = serde_json::json!({
+            "agent_id": "agent-001",
+            "event_count": 42,
+            "verified_count": 40,
+            "break_count": 2,
+            "last_chain_hash": "deadbeef",
+            "chain_breaks": [
+                {
+                    "expected_prev_hash": "expected-hash-1",
+                    "actual_prev_hash": "actual-hash-1",
+                }
+            ],
+        });
+        terminal
+            .draw(|frame| {
+                draw_audit_integrity_detail(frame, frame.area(), &agent);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("agent-001"), "agent_id should be present");
+        assert!(content.contains("42"), "event_count should be present");
+        assert!(content.contains("40"), "verified_count should be present");
+        assert!(content.contains("2"), "break_count should be present");
+        assert!(
+            content.contains("deadbeef"),
+            "last_chain_hash should be present"
+        );
+        assert!(
+            content.contains("expected-hash-1"),
+            "expected hash should be present"
+        );
+        assert!(
+            content.contains("actual-hash-1"),
+            "actual hash should be present"
+        );
+        assert!(
+            content.contains("[Enter/Esc] Back to list"),
+            "hints should be present"
+        );
+    }
+
+    #[test]
+    fn draw_audit_integrity_detail_no_breaks_shows_ok() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let agent = serde_json::json!({
+            "agent_id": "agent-002",
+            "event_count": 10,
+            "verified_count": 10,
+            "break_count": 0,
+            "last_chain_hash": "cafebabe",
+        });
+        terminal
+            .draw(|frame| {
+                draw_audit_integrity_detail(frame, frame.area(), &agent);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("0"), "break_count 0 should be present");
     }
 }
 

@@ -568,6 +568,54 @@ impl BypassAlertSeverityFilter {
     }
 }
 
+/// Filter state for the AuditIntegrityList screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[allow(dead_code)]
+pub enum AuditIntegrityFilter {
+    #[default]
+    All,
+    PerAgent(String),
+}
+
+#[allow(dead_code)]
+impl AuditIntegrityFilter {
+    /// Cycles to the next filter state.
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::PerAgent(String::new()),
+            Self::PerAgent(_) => Self::All,
+        }
+    }
+
+    /// Returns the wire-format query parameter value, or None for "all".
+    pub fn agent_id(&self) -> Option<&str> {
+        match self {
+            Self::All => None,
+            Self::PerAgent(id) => {
+                if id.is_empty() {
+                    None
+                } else {
+                    Some(id)
+                }
+            }
+        }
+    }
+
+    /// Returns the human-readable display label.
+    pub fn label(&self) -> String {
+        match self {
+            Self::All => "All".to_string(),
+            Self::PerAgent(id) => {
+                if id.is_empty() {
+                    "All".to_string()
+                } else {
+                    format!("Agent: {}", id)
+                }
+            }
+        }
+    }
+}
+
 /// Mode for the LabelForm multi-step flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelFormMode {
@@ -1189,6 +1237,20 @@ pub enum Screen {
     /// Bypass alert detail popup (read-only).
     /// Pattern: ApprovalDetail — full-screen read-only view.
     BypassAlertDetail { alert: serde_json::Value },
+    /// Audit integrity chain status list screen.
+    /// Pattern: BypassAlertList — scrollable table with filter and pagination.
+    AuditIntegrityList {
+        agents: Vec<serde_json::Value>,
+        selected: usize,
+        filter: AuditIntegrityFilter,
+        page: usize,
+        page_size: usize,
+        total: usize,
+        integrity_ok: bool,
+    },
+    /// Audit integrity detail popup (read-only).
+    /// Pattern: BypassAlertDetail — full-screen read-only view.
+    AuditIntegrityDetail { agent: serde_json::Value },
     /// Allowlist configuration screen.
     Allowlist {
         /// Screen state.
