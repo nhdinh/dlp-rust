@@ -33,9 +33,20 @@ enum ChainBreakReason {
     HashComputationFailed,
 }
 
-// ---------------------------------------------------------------------------
-// Query / response types
-// ---------------------------------------------------------------------------
+/// Response for `POST /audit/events`.
+///
+/// Returned after successful ingestion.  Contains tamper-detection
+/// metadata so the agent can react locally to chain-breaks that
+/// involve its own audit stream.
+#[derive(Debug, Clone, Serialize)]
+pub struct IngestEventsResponse {
+    /// `Some(agent_id)` when at least one chain break in the batch
+    /// belongs to the requesting agent.  `None` otherwise.
+    pub tamper_detected_for_agent: Option<String>,
+    /// Total number of unique chain breaks detected in this batch
+    /// (deduplicated per agent+reason).
+    pub chain_break_count: usize,
+}
 
 /// Query parameters for `GET /audit/events`.
 #[derive(Debug, Clone, Deserialize)]
@@ -190,7 +201,7 @@ pub fn store_events_sync(uow: &UnitOfWork<'_>, events: &[AuditEvent]) -> Result<
 pub async fn ingest_events(
     State(state): State<Arc<AppState>>,
     Json(mut events): Json<Vec<AuditEvent>>,
-) -> Result<StatusCode, AppError> {
+) -> Result<(StatusCode, Json<IngestEventsResponse>), AppError> {
     if events.is_empty() {
         return Err(AppError::BadRequest(
             "event batch must not be empty".to_string(),
@@ -290,6 +301,7 @@ pub async fn ingest_events(
     }
 
     let count = events.len();
+    let requesting_agent_id = events.first().map(|e| e.agent_id.clone());
 
     // Clone events before moving into spawn_blocking so we can relay to SIEM after.
     // LO-03 (deferred): this clones the full batch into relay_events, then
@@ -303,7 +315,7 @@ pub async fn ingest_events(
     let pool = Arc::clone(&state.pool);
     let events_for_repo = events.clone();
     let chain_breaks_for_persist = chain_breaks.clone();
-    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+    let synthetic_events = tokio::task::spawn_blocking(move || -> Result<Vec<AuditEvent>, AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;
         let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
 
@@ -353,6 +365,7 @@ pub async fn ingest_events(
         // Phase 63: Persist synthetic ChainBreakDetected events for detected chain breaks.
         // Deduplicate per (agent_id, reason) within the batch to prevent alert storms.
         let mut seen = std::collections::HashSet::new();
+        let mut synthetic_events = Vec::new();
         for (agent_id, _correlation_id, reason) in &chain_breaks_for_persist {
             let key = (agent_id.clone(), *reason);
             if !seen.insert(key) {
@@ -407,19 +420,21 @@ pub async fn ingest_events(
                 chain_hash: synthetic.chain_hash.clone(),
             };
             AuditEventRepository::insert_batch(&uow, &[row]).map_err(AppError::from)?;
+            synthetic_events.push(synthetic);
         }
 
         uow.commit().map_err(AppError::from)?;
-        Ok(())
+        Ok(synthetic_events)
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     // Phase 63: Emit tamper alerts for detected chain breaks (fire-and-forget).
-    if !chain_breaks.is_empty() {
+    let chain_breaks_for_alert = chain_breaks.clone();
+    if !chain_breaks_for_alert.is_empty() {
         let alert_router = state.alert.clone();
         tokio::spawn(async move {
-            for (agent_id, correlation_id, reason) in &chain_breaks {
+            for (agent_id, correlation_id, reason) in &chain_breaks_for_alert {
                 let synthetic = dlp_common::AuditEvent::new(
                     dlp_common::EventType::ChainBreakDetected,
                     "S-1-5-18".to_string(),
@@ -465,7 +480,9 @@ pub async fn ingest_events(
     // Durable-first syslog forwarding: queue events BEFORE attempting external delivery.
     // This ensures no audit events are lost even if the syslog collector is unreachable.
     // The background drain loop (spawned in main.rs) reads from the queue and forwards.
-    let syslog_events = Arc::new(events);
+    let mut syslog_events_vec = events;
+    syslog_events_vec.extend(synthetic_events.clone());
+    let syslog_events = Arc::new(syslog_events_vec);
     let syslog_pool = Arc::clone(&state.pool);
     let syslog_crypto = Arc::clone(&state.crypto);
     tokio::task::spawn_blocking(move || {
@@ -511,6 +528,8 @@ pub async fn ingest_events(
 
     // Best-effort SIEM relay — fire-and-forget in a background task
     // so the HTTP response is not delayed by external SIEM latency.
+    let mut relay_events = relay_events;
+    relay_events.extend(synthetic_events);
     let siem = state.siem.clone();
     tokio::spawn(async move {
         if let Err(e) = siem.relay_events(&relay_events).await {
@@ -534,8 +553,25 @@ pub async fn ingest_events(
         });
     }
 
+    // Compute response fields.
+    let tamper_detected_for_agent = requesting_agent_id.and_then(|req_id| {
+        chain_breaks
+            .iter()
+            .find(|(agent_id, _, _)| *agent_id == req_id)
+            .map(|(agent_id, _, _)| agent_id.clone())
+    });
+    // Deduplicate chain breaks per (agent_id, reason) for the count.
+    let mut seen_breaks = std::collections::HashSet::new();
+    for (agent_id, _, reason) in &chain_breaks {
+        seen_breaks.insert((agent_id.clone(), *reason));
+    }
+    let chain_break_count = seen_breaks.len();
+
     tracing::info!(count, "ingested audit events");
-    Ok(StatusCode::CREATED)
+    Ok((StatusCode::CREATED, Json(IngestEventsResponse {
+        tamper_detected_for_agent,
+        chain_break_count,
+    })))
 }
 
 /// `GET /audit/events` — query audit events with optional filters.
@@ -898,7 +934,7 @@ mod tests {
 
             // First: ingest a valid event to establish chain state.
             let event1 = chain_event("agent-b", Some(genesis.clone()), chrono::Duration::zero());
-            ingest_events(State(state.clone()), Json(vec![event1]))
+            let _ = ingest_events(State(state.clone()), Json(vec![event1]))
                 .await
                 .expect("first event ingested");
 
@@ -1160,6 +1196,117 @@ mod tests {
                 0,
                 "no false positive chain break after sorting"
             );
+        });
+    }
+
+    // --- Phase 68.1: IngestEventsResponse tamper detection tests ---
+
+    /// A valid batch returns tamper_detected_for_agent: None and chain_break_count: 0.
+    #[test]
+    fn test_ingest_response_contains_tamper_flag() {
+        let rt = tokio::runtime::Runtime::new().expect("create runtime");
+        rt.block_on(async {
+            let state = test_app_state();
+            let genesis = dlp_common::audit::genesis_hash();
+            let event = chain_event("agent-x", Some(genesis.clone()), chrono::Duration::zero());
+
+            let result = ingest_events(State(state.clone()), Json(vec![event])).await;
+            assert!(result.is_ok(), "valid batch must be accepted");
+
+            let (status, json) = result.expect("unwrap");
+            assert_eq!(status, StatusCode::CREATED);
+            let resp = json.0;
+            assert_eq!(
+                resp.tamper_detected_for_agent, None,
+                "no tamper for valid batch"
+            );
+            assert_eq!(resp.chain_break_count, 0, "no breaks for valid batch");
+        });
+    }
+
+    /// A broken batch for the same agent returns tamper_detected_for_agent: Some(agent-x)
+    /// and chain_break_count: 1.
+    #[test]
+    fn test_ingest_response_tamper_flag_for_same_agent() {
+        let rt = tokio::runtime::Runtime::new().expect("create runtime");
+        rt.block_on(async {
+            let state = test_app_state();
+            let genesis = dlp_common::audit::genesis_hash();
+
+            // Seed a broken event: hash mismatch.
+            let mut event = chain_event("agent-x", Some(genesis.clone()), chrono::Duration::zero());
+            event.resource_path = r"C:\tampered.txt".to_string();
+            event.chain_hash =
+                Some(dlp_common::audit::compute_chain_hash(&genesis, &event).expect("compute"));
+            event.resource_path = r"C:\original.txt".to_string(); // mutate after hash
+
+            let result = ingest_events(State(state.clone()), Json(vec![event])).await;
+            assert!(result.is_ok(), "handler must not error on chain break");
+
+            let (status, json) = result.expect("unwrap");
+            assert_eq!(status, StatusCode::CREATED);
+            let resp = json.0;
+            assert_eq!(
+                resp.tamper_detected_for_agent,
+                Some("agent-x".to_string()),
+                "tamper flag must name the requesting agent"
+            );
+            assert_eq!(resp.chain_break_count, 1, "one unique break");
+        });
+    }
+
+    /// When a batch contains events from agent A but the break is for agent B,
+    /// tamper_detected_for_agent is None.
+    #[test]
+    fn test_ingest_response_other_agent_break() {
+        let rt = tokio::runtime::Runtime::new().expect("create runtime");
+        rt.block_on(async {
+            let state = test_app_state();
+            let genesis = dlp_common::audit::genesis_hash();
+
+            // First: seed a valid event for agent-b to establish DB state.
+            let event_b = chain_event("agent-b", Some(genesis.clone()), chrono::Duration::zero());
+            let _ = ingest_events(State(state.clone()), Json(vec![event_b]))
+                .await
+                .expect("seed agent-b");
+
+            // Second: ingest an event from agent-a with a broken chain_hash,
+            // but the prev_hash points to agent-b's chain (wrong agent).
+            // Actually, the chain verification only checks per-agent continuity,
+            // so a break for agent-b would require an agent-b event. Instead:
+            // Send a valid event for agent-a, and a separate broken event for agent-b
+            // in the SAME batch. The requesting_agent_id is agent-a (first event),
+            // but the break is for agent-b.
+            let event_a = chain_event("agent-a", Some(genesis.clone()), chrono::Duration::zero());
+
+            // Broken event for agent-b: wrong prev_hash (claims genesis again,
+            // but DB now expects event_b's chain_hash).
+            let mut event_b2 = chain_event(
+                "agent-b",
+                Some(genesis.clone()),
+                chrono::Duration::seconds(1),
+            );
+            event_b2.prev_hash = Some(genesis.clone());
+            event_b2.chain_hash =
+                Some(dlp_common::audit::compute_chain_hash(&genesis, &event_b2).expect("compute"));
+
+            let result = ingest_events(
+                State(state.clone()),
+                Json(vec![event_a, event_b2]),
+            )
+            .await;
+            assert!(result.is_ok(), "handler must not error");
+
+            let (status, json) = result.expect("unwrap");
+            assert_eq!(status, StatusCode::CREATED);
+            let resp = json.0;
+            // The first event is from agent-a, so requesting_agent_id = agent-a.
+            // The break is for agent-b, so tamper_detected_for_agent should be None.
+            assert_eq!(
+                resp.tamper_detected_for_agent, None,
+                "no tamper flag when break is for a different agent"
+            );
+            assert_eq!(resp.chain_break_count, 1, "one unique break counted");
         });
     }
 }
