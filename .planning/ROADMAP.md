@@ -549,7 +549,7 @@ Plans:
 | 66.1 | Close gap: WORKFLOW-04 — wire ApprovalCache into enforcement (INSERTED) | 4/4 | Complete    | 2026-06-11 |
 | 67 | Print Watermarking — XPS Overlay | 0/0 | Not started | - |
 | 68 | Email/Outlook Interception + Browser Upload Detection | 0/0 | Not started | - |
-| 68.1 | Close gap: DEVICE-05/TAMPER-03/04 — wire tamper detection to SIEM and health (INSERTED) | 2/3 | In progress | 2026-06-13 |
+| 68.1 | Close gap: DEVICE-05/TAMPER-03/04 — wire tamper detection to SIEM and health (INSERTED) | 3/3 | Complete | 2026-06-13 |
 | 69 | RDP File Redirection + Bluetooth Transfer Blocking | 0/0 | Not started | - |
 | 70 | Backup Policy Docs + Ransomware Heuristics + Canary Files | 0/0 | Not started | - |
 
