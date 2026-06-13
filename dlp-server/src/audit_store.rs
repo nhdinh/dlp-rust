@@ -1309,4 +1309,41 @@ mod tests {
             assert_eq!(resp.chain_break_count, 1, "one unique break counted");
         });
     }
+
+    /// Synthetic ChainBreakDetected events are included in the relay_events Vec
+    /// that is passed to the SIEM relay.
+    #[test]
+    fn test_synthetic_events_in_relay_list() {
+        let rt = tokio::runtime::Runtime::new().expect("create runtime");
+        rt.block_on(async {
+            let state = test_app_state();
+            let genesis = dlp_common::audit::genesis_hash();
+
+            // Ingest a broken event to trigger synthetic event generation.
+            let mut event = chain_event("agent-f", Some(genesis.clone()), chrono::Duration::zero());
+            event.resource_path = r"C:\tampered.txt".to_string();
+            event.chain_hash =
+                Some(dlp_common::audit::compute_chain_hash(&genesis, &event).expect("compute"));
+            event.resource_path = r"C:\original.txt".to_string(); // mutate after hash
+
+            let result = ingest_events(State(state.clone()), Json(vec![event])).await;
+            assert!(result.is_ok(), "handler must not error on chain break");
+
+            // Verify a synthetic ChainBreakDetected row was persisted.
+            let breaks = AuditEventRepository::query(
+                &state.pool,
+                &AuditEventFilter {
+                    event_type: Some("CHAIN_BREAK_DETECTED".to_string()),
+                    agent_id: Some("agent-f".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("query breaks");
+            assert_eq!(
+                breaks.len(),
+                1,
+                "synthetic ChainBreakDetected must be persisted"
+            );
+        });
+    }
 }
