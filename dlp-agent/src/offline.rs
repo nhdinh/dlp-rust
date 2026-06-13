@@ -261,7 +261,7 @@ impl OfflineManager {
                         // Forward to server via the existing HTTP client.
                         if let Some(ref sc) = self.server_client {
                             match sc.send_audit_events_json(&json_events).await {
-                                Ok(()) => {
+                                Ok(_response) => {
                                     // Delete successfully forwarded events.
                                     let ids_clone = ids.clone();
                                     let delete_result = tokio::task::spawn_blocking(move || {

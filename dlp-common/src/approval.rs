@@ -442,7 +442,8 @@ mod tests {
             matched_label_id: Some("label-001".to_string()),
         };
 
-        let key = ApprovalCacheKey::from_evaluation(&response, "S-1-5-21-1", "WRITE", Some("C:\\Data"));
+        let key =
+            ApprovalCacheKey::from_evaluation(&response, "S-1-5-21-1", "WRITE", Some("C:\\Data"));
         assert!(key.is_some());
         let key = key.unwrap();
         assert_eq!(key.sid, "S-1-5-21-1");

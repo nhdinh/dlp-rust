@@ -76,6 +76,26 @@ pub enum ServerClientError {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 68.1: Ingest response type (agent-side)
+// ---------------------------------------------------------------------------
+
+/// Response body from `POST /audit/events`.
+///
+/// The server returns tamper-detection metadata so the agent can react
+/// locally to chain-breaks that involve its own audit stream.  All new
+/// fields are `#[serde(default)]` so older agents ignore them gracefully.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct IngestResponse {
+    /// `Some(agent_id)` when at least one chain break in the batch belongs
+    /// to this agent.  `None` otherwise.
+    #[serde(default)]
+    pub tamper_detected_for_agent: Option<String>,
+    /// Total number of unique chain breaks detected in this batch.
+    #[serde(default)]
+    pub chain_break_count: usize,
+}
+
+// ---------------------------------------------------------------------------
 // LdapConfigPayload
 // ---------------------------------------------------------------------------
 
@@ -676,9 +696,12 @@ impl ServerClient {
         Ok(entries)
     }
 
-    pub async fn send_audit_events(&self, events: &[AuditEvent]) -> Result<(), ServerClientError> {
+    pub async fn send_audit_events(
+        &self,
+        events: &[AuditEvent],
+    ) -> Result<IngestResponse, ServerClientError> {
         if events.is_empty() {
-            return Ok(());
+            return Ok(IngestResponse::default());
         }
 
         let url = format!("{}/audit/events", self.base_url);
@@ -694,8 +717,9 @@ impl ServerClient {
             return Err(ServerClientError::ServerError { status, body });
         }
 
+        let body = resp.json::<IngestResponse>().await?;
         debug!(count = events.len(), "audit events relayed to server");
-        Ok(())
+        Ok(body)
     }
 
     /// Sends a batch of pre-serialised JSON audit events to the dlp-server.
@@ -714,9 +738,9 @@ impl ServerClient {
     pub async fn send_audit_events_json(
         &self,
         json_events: &[String],
-    ) -> Result<(), ServerClientError> {
+    ) -> Result<IngestResponse, ServerClientError> {
         if json_events.is_empty() {
-            return Ok(());
+            return Ok(IngestResponse::default());
         }
 
         let url = format!("{}/audit/events", self.base_url);
@@ -741,11 +765,12 @@ impl ServerClient {
             return Err(ServerClientError::ServerError { status, body });
         }
 
+        let body = resp.json::<IngestResponse>().await?;
         debug!(
             count = json_events.len(),
             "audit events (JSON) relayed to server"
         );
-        Ok(())
+        Ok(body)
     }
 
     // ---------------------------------------------------------------------------
@@ -1034,38 +1059,49 @@ impl AuditBuffer {
         };
 
         let count = events.len();
-        if let Err(e) = self.client.send_audit_events(&events).await {
-            // Server unreachable — enqueue events to the offline audit queue
-            // so they can be retried when connectivity returns.
-            warn!(
-                count,
-                error = %e,
-                "failed to relay audit events to server — enqueueing to offline queue"
-            );
-            if let Some(mutex) = crate::service::agent_db() {
-                if let Ok(conn) = mutex.lock() {
-                    for event in &events {
-                        let json = match serde_json::to_string(event) {
-                            Ok(j) => j,
-                            Err(e) => {
-                                warn!(error = %e, "failed to serialise event for offline queue");
-                                continue;
+        match self.client.send_audit_events(&events).await {
+            Ok(response) => {
+                debug!(count, "audit buffer flushed to server");
+                // Phase 68.1: Check server-reported tamper flag for this agent.
+                if response.tamper_detected_for_agent.as_deref() == Some(self.client.agent_id()) {
+                    tracing::error!(
+                        agent_id = %self.client.agent_id(),
+                        "server detected tamper in audit chain — reporting local tamper state"
+                    );
+                    crate::device_identity::report_tamper_detected();
+                }
+            }
+            Err(e) => {
+                // Server unreachable — enqueue events to the offline audit queue
+                // so they can be retried when connectivity returns.
+                warn!(
+                    count,
+                    error = %e,
+                    "failed to relay audit events to server — enqueueing to offline queue"
+                );
+                if let Some(mutex) = crate::service::agent_db() {
+                    if let Ok(conn) = mutex.lock() {
+                        for event in &events {
+                            let json = match serde_json::to_string(event) {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    warn!(error = %e, "failed to serialise event for offline queue");
+                                    continue;
+                                }
+                            };
+                            if let Err(e) = crate::offline_audit_queue::enqueue(
+                                &conn,
+                                &json,
+                                crate::offline_audit_queue::DEFAULT_MAX_QUEUE_SIZE,
+                            ) {
+                                warn!(error = %e, "failed to enqueue event to offline queue");
                             }
-                        };
-                        if let Err(e) = crate::offline_audit_queue::enqueue(
-                            &conn,
-                            &json,
-                            crate::offline_audit_queue::DEFAULT_MAX_QUEUE_SIZE,
-                        ) {
-                            warn!(error = %e, "failed to enqueue event to offline queue");
                         }
                     }
+                } else {
+                    warn!("agent DB not initialised — events dropped");
                 }
-            } else {
-                warn!("agent DB not initialised — events dropped");
             }
-        } else {
-            debug!(count, "audit buffer flushed to server");
         }
     }
 
@@ -1706,5 +1742,60 @@ mod tests {
         let json = serde_json::to_string(&payload).expect("serialize");
         let rt: AgentConfigPayload = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(rt.global_enforcement_mode, "Audit");
+    }
+
+    // --- Phase 68.1: IngestResponse deserialization tests ---
+
+    /// IngestResponse deserializes correctly with all fields present.
+    #[test]
+    fn test_ingest_response_deserialization_full() {
+        let json = r#"{
+            "tamper_detected_for_agent": "agent-42",
+            "chain_break_count": 3
+        }"#;
+        let resp: IngestResponse = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(resp.tamper_detected_for_agent, Some("agent-42".to_string()));
+        assert_eq!(resp.chain_break_count, 3);
+    }
+
+    /// IngestResponse deserializes correctly when fields are missing
+    /// (backward compatibility with older server builds).
+    #[test]
+    fn test_ingest_response_deserialization_missing_fields() {
+        let json = r#"{}"#;
+        let resp: IngestResponse = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(resp.tamper_detected_for_agent, None);
+        assert_eq!(resp.chain_break_count, 0);
+    }
+
+    /// IngestResponse deserializes correctly when only chain_break_count is present.
+    #[test]
+    fn test_ingest_response_deserialization_partial() {
+        let json = r#"{"chain_break_count": 1}"#;
+        let resp: IngestResponse = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(resp.tamper_detected_for_agent, None);
+        assert_eq!(resp.chain_break_count, 1);
+    }
+
+    /// send_audit_events with an empty slice returns the default IngestResponse.
+    #[tokio::test]
+    async fn test_send_audit_events_empty_returns_default() {
+        let client = ServerClient::from_env().expect("from_env should succeed");
+        let result = client.send_audit_events(&[]).await;
+        assert!(result.is_ok());
+        let resp = result.expect("unwrap");
+        assert_eq!(resp.tamper_detected_for_agent, None);
+        assert_eq!(resp.chain_break_count, 0);
+    }
+
+    /// send_audit_events_json with an empty slice returns the default IngestResponse.
+    #[tokio::test]
+    async fn test_send_audit_events_json_empty_returns_default() {
+        let client = ServerClient::from_env().expect("from_env should succeed");
+        let result = client.send_audit_events_json(&[]).await;
+        assert!(result.is_ok());
+        let resp = result.expect("unwrap");
+        assert_eq!(resp.tamper_detected_for_agent, None);
+        assert_eq!(resp.chain_break_count, 0);
     }
 }

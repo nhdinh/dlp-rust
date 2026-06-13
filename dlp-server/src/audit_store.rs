@@ -315,119 +315,120 @@ pub async fn ingest_events(
     let pool = Arc::clone(&state.pool);
     let events_for_repo = events.clone();
     let chain_breaks_for_persist = chain_breaks.clone();
-    let synthetic_events = tokio::task::spawn_blocking(move || -> Result<Vec<AuditEvent>, AppError> {
-        let mut conn = pool.get().map_err(AppError::from)?;
-        let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
+    let synthetic_events =
+        tokio::task::spawn_blocking(move || -> Result<Vec<AuditEvent>, AppError> {
+            let mut conn = pool.get().map_err(AppError::from)?;
+            let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
 
-        // Pre-serialize enum fields into AuditEventRow structs.
-        let rows: Vec<AuditEventRow> = events_for_repo
-            .iter()
-            .map(|event| {
-                Ok(AuditEventRow {
-                    timestamp: event.timestamp.to_rfc3339(),
-                    event_type: serde_json::to_value(event.event_type)?
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    user_sid: event.user_sid.clone(),
-                    user_name: event.user_name.clone(),
-                    resource_path: event.resource_path.clone(),
-                    classification: serde_json::to_value(event.classification)?
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    action_attempted: serde_json::to_value(event.action_attempted)?
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    decision: serde_json::to_value(event.decision)?
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    policy_id: event.policy_id.clone(),
-                    policy_name: event.policy_name.clone(),
-                    agent_id: event.agent_id.clone(),
-                    session_id: event.session_id as i64,
-                    access_context: serde_json::to_value(event.access_context)?
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    correlation_id: event.correlation_id.clone(),
-                    prev_hash: event.prev_hash.clone(),
-                    chain_hash: event.chain_hash.clone(),
+            // Pre-serialize enum fields into AuditEventRow structs.
+            let rows: Vec<AuditEventRow> = events_for_repo
+                .iter()
+                .map(|event| {
+                    Ok(AuditEventRow {
+                        timestamp: event.timestamp.to_rfc3339(),
+                        event_type: serde_json::to_value(event.event_type)?
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        user_sid: event.user_sid.clone(),
+                        user_name: event.user_name.clone(),
+                        resource_path: event.resource_path.clone(),
+                        classification: serde_json::to_value(event.classification)?
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        action_attempted: serde_json::to_value(event.action_attempted)?
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        decision: serde_json::to_value(event.decision)?
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        policy_id: event.policy_id.clone(),
+                        policy_name: event.policy_name.clone(),
+                        agent_id: event.agent_id.clone(),
+                        session_id: event.session_id as i64,
+                        access_context: serde_json::to_value(event.access_context)?
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        correlation_id: event.correlation_id.clone(),
+                        prev_hash: event.prev_hash.clone(),
+                        chain_hash: event.chain_hash.clone(),
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>, serde_json::Error>>()
-            .map_err(AppError::from)?;
+                .collect::<Result<Vec<_>, serde_json::Error>>()
+                .map_err(AppError::from)?;
 
-        AuditEventRepository::insert_batch(&uow, &rows).map_err(AppError::from)?;
+            AuditEventRepository::insert_batch(&uow, &rows).map_err(AppError::from)?;
 
-        // Phase 63: Persist synthetic ChainBreakDetected events for detected chain breaks.
-        // Deduplicate per (agent_id, reason) within the batch to prevent alert storms.
-        let mut seen = std::collections::HashSet::new();
-        let mut synthetic_events = Vec::new();
-        for (agent_id, _correlation_id, reason) in &chain_breaks_for_persist {
-            let key = (agent_id.clone(), *reason);
-            if !seen.insert(key) {
-                continue; // skip duplicate (same agent + same reason)
+            // Phase 63: Persist synthetic ChainBreakDetected events for detected chain breaks.
+            // Deduplicate per (agent_id, reason) within the batch to prevent alert storms.
+            let mut seen = std::collections::HashSet::new();
+            let mut synthetic_events = Vec::new();
+            for (agent_id, _correlation_id, reason) in &chain_breaks_for_persist {
+                let key = (agent_id.clone(), *reason);
+                if !seen.insert(key) {
+                    continue; // skip duplicate (same agent + same reason)
+                }
+
+                let synthetic = dlp_common::AuditEvent::new(
+                    dlp_common::EventType::ChainBreakDetected,
+                    "S-1-5-18".to_string(),
+                    "SYSTEM".to_string(),
+                    "audit_chain_break".to_string(),
+                    dlp_common::Classification::T4,
+                    dlp_common::Action::WRITE,
+                    dlp_common::Decision::DenyWithAlert,
+                    agent_id.clone(),
+                    0,
+                );
+                // Synthetic events do NOT copy the original correlation_id because
+                // audit_events.correlation_id has a UNIQUE constraint.
+
+                let row = AuditEventRow {
+                    timestamp: synthetic.timestamp.to_rfc3339(),
+                    event_type: serde_json::to_value(synthetic.event_type)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    user_sid: synthetic.user_sid.clone(),
+                    user_name: synthetic.user_name.clone(),
+                    resource_path: synthetic.resource_path.clone(),
+                    classification: serde_json::to_value(synthetic.classification)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    action_attempted: serde_json::to_value(synthetic.action_attempted)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    decision: serde_json::to_value(synthetic.decision)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    policy_id: synthetic.policy_id.clone(),
+                    policy_name: synthetic.policy_name.clone(),
+                    agent_id: synthetic.agent_id.clone(),
+                    session_id: synthetic.session_id as i64,
+                    access_context: serde_json::to_value(synthetic.access_context)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    correlation_id: synthetic.correlation_id.clone(),
+                    prev_hash: synthetic.prev_hash.clone(),
+                    chain_hash: synthetic.chain_hash.clone(),
+                };
+                AuditEventRepository::insert_batch(&uow, &[row]).map_err(AppError::from)?;
+                synthetic_events.push(synthetic);
             }
 
-            let synthetic = dlp_common::AuditEvent::new(
-                dlp_common::EventType::ChainBreakDetected,
-                "S-1-5-18".to_string(),
-                "SYSTEM".to_string(),
-                "audit_chain_break".to_string(),
-                dlp_common::Classification::T4,
-                dlp_common::Action::WRITE,
-                dlp_common::Decision::DenyWithAlert,
-                agent_id.clone(),
-                0,
-            );
-            // Synthetic events do NOT copy the original correlation_id because
-            // audit_events.correlation_id has a UNIQUE constraint.
-
-            let row = AuditEventRow {
-                timestamp: synthetic.timestamp.to_rfc3339(),
-                event_type: serde_json::to_value(synthetic.event_type)?
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                user_sid: synthetic.user_sid.clone(),
-                user_name: synthetic.user_name.clone(),
-                resource_path: synthetic.resource_path.clone(),
-                classification: serde_json::to_value(synthetic.classification)?
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                action_attempted: serde_json::to_value(synthetic.action_attempted)?
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                decision: serde_json::to_value(synthetic.decision)?
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                policy_id: synthetic.policy_id.clone(),
-                policy_name: synthetic.policy_name.clone(),
-                agent_id: synthetic.agent_id.clone(),
-                session_id: synthetic.session_id as i64,
-                access_context: serde_json::to_value(synthetic.access_context)?
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                correlation_id: synthetic.correlation_id.clone(),
-                prev_hash: synthetic.prev_hash.clone(),
-                chain_hash: synthetic.chain_hash.clone(),
-            };
-            AuditEventRepository::insert_batch(&uow, &[row]).map_err(AppError::from)?;
-            synthetic_events.push(synthetic);
-        }
-
-        uow.commit().map_err(AppError::from)?;
-        Ok(synthetic_events)
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+            uow.commit().map_err(AppError::from)?;
+            Ok(synthetic_events)
+        })
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     // Phase 63: Emit tamper alerts for detected chain breaks (fire-and-forget).
     let chain_breaks_for_alert = chain_breaks.clone();
@@ -568,10 +569,13 @@ pub async fn ingest_events(
     let chain_break_count = seen_breaks.len();
 
     tracing::info!(count, "ingested audit events");
-    Ok((StatusCode::CREATED, Json(IngestEventsResponse {
-        tamper_detected_for_agent,
-        chain_break_count,
-    })))
+    Ok((
+        StatusCode::CREATED,
+        Json(IngestEventsResponse {
+            tamper_detected_for_agent,
+            chain_break_count,
+        }),
+    ))
 }
 
 /// `GET /audit/events` — query audit events with optional filters.
@@ -1290,11 +1294,7 @@ mod tests {
             event_b2.chain_hash =
                 Some(dlp_common::audit::compute_chain_hash(&genesis, &event_b2).expect("compute"));
 
-            let result = ingest_events(
-                State(state.clone()),
-                Json(vec![event_a, event_b2]),
-            )
-            .await;
+            let result = ingest_events(State(state.clone()), Json(vec![event_a, event_b2])).await;
             assert!(result.is_ok(), "handler must not error");
 
             let (status, json) = result.expect("unwrap");
