@@ -524,17 +524,104 @@ mod tests {
         assert!(registry.get(&key).is_some());
     }
 
-    #[test]
-    fn test_universal_injector_latency_metrics() {
+    #[tokio::test]
+    async fn test_retry_queue_receives_failed_injection() {
+        // Phase 49: Verify that on RemoteThreadFailed/InjectionFailed, a retry
+        // is queued with approximately +200ms delay.
+        use crate::process_watcher::{EventSource, ProcessEvent};
+        use std::time::Instant;
+
         let registry = test_registry();
         let matcher = test_matcher();
         let injector = test_injector();
-        let ui = UniversalInjector::new(registry, matcher, injector);
 
-        let (p50, p95, p99, pct) = ui.latency_metrics();
-        assert_eq!(p50, 0.0);
-        assert_eq!(p95, 0.0);
-        assert_eq!(p99, 0.0);
-        assert_eq!(pct, 100.0);
+        let (retry_tx, mut retry_rx) = mpsc::unbounded_channel();
+        let ui = UniversalInjector::with_retry_queue(registry.clone(), matcher, injector, retry_tx);
+
+        // Use current process PID so target_architecture succeeds,
+        // but dummy DLL path causes DllNotFound -> InjectionFailed -> retry.
+        let current_pid = std::process::id();
+        let event = ProcessEvent {
+            pid: current_pid,
+            image_path: r"C:\Windows\System32\notepad.exe".to_string(),
+            parent_pid: 0,
+            creation_time: 1,
+            source: EventSource::Etw,
+            event_timestamp: Instant::now(),
+        };
+
+        let (sweep_tx, _sweep_rx) = mpsc::channel(1);
+        let before = Instant::now();
+        ui.handle_event(event.clone(), &sweep_tx).await;
+
+        // The injection will fail (dummy DLL path), which should queue a retry.
+        // Wait for the retry to arrive (with a generous timeout).
+        let retry_result = tokio::time::timeout(Duration::from_secs(5), retry_rx.recv()).await;
+
+        assert!(
+            retry_result.is_ok(),
+            "retry should be received within timeout"
+        );
+        let (retry_event, retry_at) = retry_result
+            .unwrap()
+            .expect("retry channel should not be closed");
+        assert_eq!(retry_event.pid, event.pid, "retry event PID should match");
+
+        // Verify the retry is scheduled approximately 200ms from now.
+        let delay = retry_at.saturating_duration_since(before);
+        assert!(
+            delay >= Duration::from_millis(150) && delay <= Duration::from_millis(500),
+            "expected retry delay ~200ms, got {:?}",
+            delay
+        );
+    }
+
+    #[tokio::test]
+    async fn test_retry_queue_only_one_retry() {
+        // Phase 49: Verify that handle_retry does NOT queue another retry
+        // (no infinite retry loop).
+        let registry = test_registry();
+        let matcher = test_matcher();
+        let injector = test_injector();
+
+        let (retry_tx, mut retry_rx) = mpsc::unbounded_channel();
+        let ui = UniversalInjector::with_retry_queue(registry.clone(), matcher, injector, retry_tx);
+
+        // Use current process PID so target_architecture succeeds,
+        // but dummy DLL path causes DllNotFound -> InjectionFailed -> retry.
+        let current_pid = std::process::id();
+        let event = ProcessEvent {
+            pid: current_pid,
+            image_path: r"C:\Windows\System32\notepad.exe".to_string(),
+            parent_pid: 0,
+            creation_time: 1,
+            source: EventSource::Etw,
+            event_timestamp: Instant::now(),
+        };
+
+        let (sweep_tx, _sweep_rx) = mpsc::channel(1);
+
+        // First attempt queues a retry.
+        ui.handle_event(event.clone(), &sweep_tx).await;
+        let first_retry = tokio::time::timeout(Duration::from_secs(5), retry_rx.recv()).await;
+        assert!(first_retry.is_ok(), "first retry should be queued");
+
+        // Now call handle_retry directly (simulating the retry consumer).
+        // The retry handler calls handle_event again, but since the retry_queue
+        // sender is the same, if it tried to queue another retry we would see it.
+        // However, handle_retry calls handle_event which uses the same retry_queue.
+        // The key assertion: after handle_retry, no SECOND retry is queued because
+        // the process is already in Failed state (already claimed then failed).
+        // Actually, handle_retry calls handle_event which will try_claim again.
+        // Since the key is already in Failed state, try_claim returns AlreadyClaimed
+        // and NO retry is queued. Let's verify.
+        ui.handle_retry(event.clone(), &sweep_tx).await;
+
+        // Give a brief moment for any second retry to arrive.
+        let second_retry = tokio::time::timeout(Duration::from_millis(500), retry_rx.recv()).await;
+        assert!(
+            second_retry.is_err() || second_retry.unwrap().is_none(),
+            "no second retry should be queued — process already in failed state"
+        );
     }
 }

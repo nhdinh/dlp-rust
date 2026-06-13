@@ -1355,6 +1355,107 @@ mod tests {
         assert_eq!(loaded.enforcement.global_mode, EnforcementMode::Audit);
     }
 
+    #[test]
+    fn test_agent_config_allowlist_entries_toml_roundtrip() {
+        // Phase 49: Verify allowlist_entries serialize and deserialize correctly.
+        use crate::allowlist::{AllowlistCategory, AllowlistEntry, MatchType};
+
+        let entries = vec![
+            AllowlistEntry {
+                match_type: MatchType::ExactPath,
+                value: r"C:\Program Files\App\app.exe".to_string(),
+                description: "Exact match test".to_string(),
+                category: AllowlistCategory::OperatorDefined,
+            },
+            AllowlistEntry {
+                match_type: MatchType::PathGlob,
+                value: r"C:\Program Files\CrowdStrike\*".to_string(),
+                description: "Glob match test".to_string(),
+                category: AllowlistCategory::Avedr,
+            },
+            AllowlistEntry {
+                match_type: MatchType::PathPrefix,
+                value: r"C:\Windows\System32\".to_string(),
+                description: "Prefix match test".to_string(),
+                category: AllowlistCategory::SystemCritical,
+            },
+        ];
+
+        let config = AgentConfig {
+            allowlist_entries: entries.clone(),
+            allowlist_version: 42,
+            ..Default::default()
+        };
+
+        let tmp_path = std::env::temp_dir().join("test_allowlist_entries_toml_roundtrip.toml");
+        config.save(&tmp_path).expect("save should succeed");
+        let loaded = AgentConfig::load(&tmp_path);
+        let _ = std::fs::remove_file(&tmp_path);
+
+        assert_eq!(
+            loaded.allowlist_entries.len(),
+            3,
+            "expected 3 allowlist entries"
+        );
+        assert_eq!(loaded.allowlist_version, 42);
+
+        // Verify each entry roundtripped correctly.
+        for (i, (original, loaded)) in entries
+            .iter()
+            .zip(loaded.allowlist_entries.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                original.match_type, loaded.match_type,
+                "match_type mismatch at index {i}"
+            );
+            assert_eq!(original.value, loaded.value, "value mismatch at index {i}");
+            assert_eq!(
+                original.description, loaded.description,
+                "description mismatch at index {i}"
+            );
+            assert_eq!(
+                original.category, loaded.category,
+                "category mismatch at index {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_agent_config_allowlist_version_roundtrip() {
+        // Verify allowlist_version survives TOML roundtrip.
+        let config = AgentConfig {
+            allowlist_version: 123,
+            ..Default::default()
+        };
+
+        let tmp_path = std::env::temp_dir().join("test_allowlist_version_roundtrip.toml");
+        config.save(&tmp_path).expect("save should succeed");
+        let loaded = AgentConfig::load(&tmp_path);
+        let _ = std::fs::remove_file(&tmp_path);
+
+        assert_eq!(loaded.allowlist_version, 123);
+    }
+
+    #[test]
+    fn test_agent_config_allowlist_empty_by_default() {
+        // Default config must have empty allowlist_entries and version 0.
+        let config = AgentConfig::default();
+        assert!(config.allowlist_entries.is_empty());
+        assert_eq!(config.allowlist_version, 0);
+    }
+
+    #[test]
+    fn test_agent_config_allowlist_backwards_compatible() {
+        // TOML without allowlist fields must parse successfully.
+        let toml_str = r"
+            monitored_paths = ['C:\Restricted\']
+        ";
+        let config: AgentConfig = toml::from_str(toml_str).expect("backwards-compat parse");
+        assert!(config.allowlist_entries.is_empty());
+        assert_eq!(config.allowlist_version, 0);
+    }
+
     /// Helper: parse TOML from a string (for tests that need serde_ignored).
     fn load_from_str(content: &str) -> AgentConfig {
         let mut unknown_keys: Vec<String> = Vec::new();

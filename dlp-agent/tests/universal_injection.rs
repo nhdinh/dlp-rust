@@ -458,3 +458,256 @@ async fn test_duplicate_claim_prevents_double_inject() {
     // Should still be in some state (either Injected or Skipped depending on injection result).
     assert!(registry.get(&key).is_some());
 }
+
+// ---------------------------------------------------------------------------
+// Simulated ETW Event Stream Tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_simulated_etw_stream_100_events() {
+    use dlp_agent::allowlist::AllowlistMatcher;
+    use dlp_agent::hook_injector::HookInjector;
+    use dlp_agent::process_registry::ProcessRegistry;
+    use dlp_agent::process_watcher::{EventSource, ProcessEvent};
+    use dlp_agent::universal_injector::UniversalInjector;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let registry = Arc::new(ProcessRegistry::new());
+    let matcher = Arc::new(AllowlistMatcher::new(
+        vec![],
+        r"C:\ProgramData\DLP\dlp-agent.exe".to_string(),
+        9999,
+    ));
+    let injector = Arc::new(HookInjector::new("C:\\dummy.dll", None));
+    let (retry_tx, _retry_rx) = tokio::sync::mpsc::unbounded_channel();
+    let ui = UniversalInjector::with_retry_queue(registry.clone(), matcher, injector, retry_tx);
+
+    let (sweep_tx, _sweep_rx) = tokio::sync::mpsc::channel(1);
+
+    // Simulate 100 process creation events.
+    for i in 0..100 {
+        let event = ProcessEvent {
+            pid: 1000 + i,
+            image_path: format!(r"C:\Program Files\App{}\app.exe", i),
+            parent_pid: 1,
+            creation_time: i as u64,
+            source: EventSource::Etw,
+            event_timestamp: Instant::now(),
+        };
+        ui.handle_event(event, &sweep_tx).await;
+    }
+
+    let counts = registry.counts();
+    // All events should be processed (none remain Discovered).
+    assert_eq!(
+        counts.discovered, 0,
+        "all 100 events should be processed, none Discovered"
+    );
+
+    // Total tracked should be exactly 100 (all unique PIDs).
+    assert_eq!(
+        counts.injected_hello
+            + counts.injected_no_hello
+            + counts.skipped_self
+            + counts.skipped_avedr
+            + counts.skipped_system
+            + counts.skipped_ppl
+            + counts.skipped_wow64
+            + counts.skipped_operator
+            + counts.skipped_failed
+            + counts.exited,
+        100,
+        "all 100 events should be accounted for in counts"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PID Reuse Integration Tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_pid_reuse_same_pid_different_creation_time() {
+    use dlp_agent::allowlist::AllowlistMatcher;
+    use dlp_agent::hook_injector::HookInjector;
+    use dlp_agent::process_registry::{ProcessKey, ProcessRegistry, ProcessState};
+    use dlp_agent::process_watcher::{EventSource, ProcessEvent};
+    use dlp_agent::universal_injector::UniversalInjector;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let registry = Arc::new(ProcessRegistry::new());
+    let matcher = Arc::new(AllowlistMatcher::new(
+        vec![],
+        r"C:\ProgramData\DLP\dlp-agent.exe".to_string(),
+        9999,
+    ));
+    let injector = Arc::new(HookInjector::new("C:\\dummy.dll", None));
+    let (retry_tx, _retry_rx) = tokio::sync::mpsc::unbounded_channel();
+    let ui = UniversalInjector::with_retry_queue(registry.clone(), matcher, injector, retry_tx);
+
+    let (sweep_tx, _sweep_rx) = tokio::sync::mpsc::channel(1);
+
+    // First process with PID 1234, creation_time 1000.
+    let event1 = ProcessEvent {
+        pid: 1234,
+        image_path: r"C:\Program Files\App1\app.exe".to_string(),
+        parent_pid: 1,
+        creation_time: 1000,
+        source: EventSource::Etw,
+        event_timestamp: Instant::now(),
+    };
+    ui.handle_event(event1, &sweep_tx).await;
+
+    // Second process with same PID 1234 but different creation_time 2000.
+    let event2 = ProcessEvent {
+        pid: 1234,
+        image_path: r"C:\Program Files\App2\app.exe".to_string(),
+        parent_pid: 1,
+        creation_time: 2000,
+        source: EventSource::Etw,
+        event_timestamp: Instant::now(),
+    };
+    ui.handle_event(event2, &sweep_tx).await;
+
+    // Both should be tracked as separate entries.
+    let key1 = ProcessKey {
+        pid: 1234,
+        creation_time: 1000,
+    };
+    let key2 = ProcessKey {
+        pid: 1234,
+        creation_time: 2000,
+    };
+
+    assert!(
+        registry.get(&key1).is_some(),
+        "first process should be tracked"
+    );
+    assert!(
+        registry.get(&key2).is_some(),
+        "second process (PID reuse) should be tracked"
+    );
+
+    // The states should be different (one was claimed first).
+    let state1 = registry.get(&key1).unwrap();
+    let state2 = registry.get(&key2).unwrap();
+    // Both should be in some terminal state (not Discovered).
+    assert!(
+        !matches!(&*state1, ProcessState::Discovered),
+        "first process should not be Discovered"
+    );
+    assert!(
+        !matches!(&*state2, ProcessState::Discovered),
+        "second process should not be Discovered"
+    );
+}
+
+#[tokio::test]
+async fn test_pid_reuse_rapid_claim_unclaim_claim() {
+    use dlp_agent::process_registry::{ClaimResult, ProcessKey, ProcessRegistry, ProcessState};
+
+    let registry = ProcessRegistry::new();
+    let key = ProcessKey {
+        pid: 5555,
+        creation_time: 100,
+    };
+
+    // First claim succeeds.
+    let result1 = registry.try_claim(key);
+    assert_eq!(result1, ClaimResult::Claimed);
+
+    // Record as injected.
+    registry.record_injected(key, "x64".to_string());
+    assert!(matches!(
+        *registry.get(&key).unwrap(),
+        ProcessState::Injected { .. }
+    ));
+
+    // Record exit.
+    registry.record_exited(key);
+    assert_eq!(*registry.get(&key).unwrap(), ProcessState::Exited);
+
+    // Prune exited.
+    let removed = registry.prune_exited();
+    assert_eq!(removed, 1);
+    assert!(
+        registry.get(&key).is_none(),
+        "exited entry should be pruned"
+    );
+
+    // Same PID with different creation_time should be claimable again.
+    let key2 = ProcessKey {
+        pid: 5555,
+        creation_time: 200,
+    };
+    let result2 = registry.try_claim(key2);
+    assert_eq!(
+        result2,
+        ClaimResult::Claimed,
+        "PID reuse with different creation_time should be claimable"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Stress Test
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_high_churn_1000_processes() {
+    use dlp_agent::allowlist::AllowlistMatcher;
+    use dlp_agent::hook_injector::HookInjector;
+    use dlp_agent::process_registry::ProcessRegistry;
+    use dlp_agent::process_watcher::{EventSource, ProcessEvent};
+    use dlp_agent::universal_injector::UniversalInjector;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let registry = Arc::new(ProcessRegistry::new());
+    let matcher = Arc::new(AllowlistMatcher::new(
+        vec![],
+        r"C:\ProgramData\DLP\dlp-agent.exe".to_string(),
+        9999,
+    ));
+    let injector = Arc::new(HookInjector::new("C:\\dummy.dll", None));
+    let (retry_tx, _retry_rx) = tokio::sync::mpsc::unbounded_channel();
+    let ui = UniversalInjector::with_retry_queue(registry.clone(), matcher, injector, retry_tx);
+
+    let (sweep_tx, _sweep_rx) = tokio::sync::mpsc::channel(1);
+
+    let start = Instant::now();
+
+    // Simulate 1000 events with PID reuse (modulo 500).
+    for i in 0..1000 {
+        let event = ProcessEvent {
+            pid: 2000 + (i % 500), // simulate PID reuse
+            image_path: format!(r"C:\Temp\app{}.exe", i),
+            parent_pid: 1,
+            creation_time: i as u64, // unique creation_time prevents collision
+            source: EventSource::Etw,
+            event_timestamp: Instant::now(),
+        };
+        ui.handle_event(event, &sweep_tx).await;
+    }
+
+    let elapsed = start.elapsed();
+
+    let counts = registry.counts();
+    let total = counts.injected_hello
+        + counts.injected_no_hello
+        + counts.skipped_self
+        + counts.skipped_avedr
+        + counts.skipped_system
+        + counts.skipped_ppl
+        + counts.skipped_wow64
+        + counts.skipped_operator
+        + counts.skipped_failed
+        + counts.exited;
+
+    assert_eq!(total, 1000, "all 1000 events should be accounted for");
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "should process 1000 events in <10s, took {:?}",
+        elapsed
+    );
+}

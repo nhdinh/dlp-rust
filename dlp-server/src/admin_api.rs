@@ -12344,4 +12344,68 @@ mod tests {
         assert_eq!(payload.protected_paths[0].path, r"C:\AgentTest");
         assert_eq!(payload.protected_paths[0].tier, "T3");
     }
+
+    #[tokio::test]
+    async fn test_agent_config_304_not_modified() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+
+        // First request without If-None-Match — should return 200 with version.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/agent-config/test-agent-304")
+            .body(Body::empty())
+            .expect("build GET");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let payload: AgentConfigPayload = serde_json::from_slice(&body).expect("parse");
+        let version = payload.allowlist_version;
+
+        // Second request with matching If-None-Match — should return 304.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/agent-config/test-agent-304")
+            .header("If-None-Match", version.to_string())
+            .body(Body::empty())
+            .expect("build GET");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_MODIFIED,
+            "GET with matching If-None-Match should return 304"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_agent_config_200_when_version_mismatch() {
+        use axum::body::{to_bytes, Body};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = spawn_admin_app();
+
+        // Request with a mismatched If-None-Match — should return 200 with body.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/agent-config/test-agent-mismatch")
+            .header("If-None-Match", "999999")
+            .body(Body::empty())
+            .expect("build GET");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "GET with mismatched If-None-Match should return 200"
+        );
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.expect("body");
+        let payload: AgentConfigPayload = serde_json::from_slice(&body).expect("parse");
+        // Response should have a different version than what we sent.
+        assert_ne!(payload.allowlist_version, 999999);
+    }
 }
