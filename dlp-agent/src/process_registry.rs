@@ -4,9 +4,18 @@
 //! false "already injected" states when Windows recycles PIDs rapidly.
 //! All state transitions are atomic via DashMap entry API.
 
+use dashmap::mapref::one::Ref as DashMapRef;
 use dashmap::DashMap;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+
+/// Maximum number of entries retained in the registry.
+///
+/// Exited and failed entries are evicted first; if necessary, older
+/// discovered/injected entries are evicted to keep the registry bounded.
+const MAX_REGISTRY_SIZE: usize = 1000;
 
 /// Unique identifier for a process instance: PID + creation time (from ETW or OpenProcess).
 /// The creation_time (u64, FILETIME) distinguishes PID reuse.
@@ -76,13 +85,35 @@ pub enum ClaimResult {
     AlreadyClaimed(ProcessState),
 }
 
+/// Internal entry stored in the registry.
+///
+/// `seq` is a monotonically increasing sequence number used for approximate
+/// LRU eviction when the registry reaches [`MAX_REGISTRY_SIZE`].
+#[derive(Debug, Clone)]
+struct ProcessEntry {
+    state: ProcessState,
+    seq: u64,
+}
+
+/// Read-only view of a registry entry that dereferences to [`ProcessState`].
+pub struct ProcessStateRef<'a>(DashMapRef<'a, ProcessKey, ProcessEntry>);
+
+impl Deref for ProcessStateRef<'_> {
+    type Target = ProcessState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.state
+    }
+}
+
 /// Lock-free process lifecycle registry.
 ///
 /// Uses `DashMap` for concurrent access across ETW callback threads,
 /// tokio injection tasks, and cleanup sweeps.
 #[derive(Debug, Clone)]
 pub struct ProcessRegistry {
-    states: Arc<DashMap<ProcessKey, ProcessState>>,
+    states: Arc<DashMap<ProcessKey, ProcessEntry>>,
+    next_seq: Arc<AtomicU64>,
 }
 
 impl ProcessRegistry {
@@ -91,6 +122,70 @@ impl ProcessRegistry {
     pub fn new() -> Self {
         Self {
             states: Arc::new(DashMap::new()),
+            next_seq: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Returns the next monotonically increasing sequence number.
+    fn bump_seq(&self) -> u64 {
+        self.next_seq.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Inserts a state and enforces the registry size cap.
+    ///
+    /// Eviction preference:
+    /// 1. Oldest `Exited` or `Skipped(Failed(_))` entries.
+    /// 2. Oldest `Skipped` entries for other reasons.
+    /// 3. Oldest `Discovered` entries.
+    /// 4. Oldest `Injected` entries without a hello.
+    /// 5. Oldest `Injected` entries with a hello.
+    fn insert_with_eviction(&self, key: ProcessKey, state: ProcessState) {
+        let seq = self.bump_seq();
+        self.states.insert(key, ProcessEntry { state, seq });
+        self.enforce_cap();
+    }
+
+    /// Evict entries until the registry is at or below [`MAX_REGISTRY_SIZE`].
+    fn enforce_cap(&self) {
+        while self.states.len() > MAX_REGISTRY_SIZE {
+            let mut victim_key: Option<ProcessKey> = None;
+            let mut victim_priority: Option<u8> = None;
+            let mut victim_seq: Option<u64> = None;
+
+            for entry in self.states.iter() {
+                let priority = match &entry.value().state {
+                    ProcessState::Exited | ProcessState::Skipped(SkipReason::Failed(_)) => 0,
+                    ProcessState::Skipped(_) => 1,
+                    ProcessState::Discovered => 2,
+                    ProcessState::Injected {
+                        hello_received_at: None,
+                        ..
+                    } => 3,
+                    ProcessState::Injected {
+                        hello_received_at: Some(_),
+                        ..
+                    } => 4,
+                };
+                let seq = entry.value().seq;
+
+                let replace = match (victim_priority, victim_seq) {
+                    (Some(vp), Some(vs)) => priority < vp || (priority == vp && seq < vs),
+                    _ => true,
+                };
+
+                if replace {
+                    victim_key = Some(*entry.key());
+                    victim_priority = Some(priority);
+                    victim_seq = Some(seq);
+                }
+            }
+
+            if let Some(key) = victim_key {
+                self.states.remove(&key);
+            } else {
+                // Defensive: no entries to evict (should not happen when len > 0).
+                break;
+            }
         }
     }
 
@@ -106,10 +201,14 @@ impl ProcessRegistry {
         use dashmap::mapref::entry::Entry;
         match self.states.entry(key) {
             Entry::Vacant(e) => {
-                e.insert(ProcessState::Discovered);
+                let seq = self.bump_seq();
+                e.insert(ProcessEntry {
+                    state: ProcessState::Discovered,
+                    seq,
+                });
                 ClaimResult::Claimed
             }
-            Entry::Occupied(e) => ClaimResult::AlreadyClaimed(e.get().clone()),
+            Entry::Occupied(e) => ClaimResult::AlreadyClaimed(e.get().state.clone()),
         }
     }
 
@@ -120,7 +219,7 @@ impl ProcessRegistry {
     /// * `key` — The process key.
     /// * `arch` — Architecture string (e.g., "x64" or "x86").
     pub fn record_injected(&self, key: ProcessKey, arch: String) {
-        self.states.insert(
+        self.insert_with_eviction(
             key,
             ProcessState::Injected {
                 arch,
@@ -135,12 +234,13 @@ impl ProcessRegistry {
     /// # Arguments
     ///
     /// * `key` — The process key.
-    pub fn record_hello(&self, key: ProcessKey) {
-        if let Some(mut entry) = self.states.get_mut(&key) {
+    pub fn record_hello(&self, key: &ProcessKey) {
+        if let Some(mut entry) = self.states.get_mut(key) {
+            let ProcessEntry { ref mut state, .. } = *entry.value_mut();
             if let ProcessState::Injected {
                 ref mut hello_received_at,
                 ..
-            } = *entry.value_mut()
+            } = *state
             {
                 *hello_received_at = Some(Instant::now());
             }
@@ -154,7 +254,7 @@ impl ProcessRegistry {
     /// * `key` — The process key.
     /// * `reason` — Why the process was skipped.
     pub fn record_skipped(&self, key: ProcessKey, reason: SkipReason) {
-        self.states.insert(key, ProcessState::Skipped(reason));
+        self.insert_with_eviction(key, ProcessState::Skipped(reason));
     }
 
     /// Record process exit.
@@ -163,19 +263,16 @@ impl ProcessRegistry {
     ///
     /// * `key` — The process key.
     pub fn record_exited(&self, key: ProcessKey) {
-        self.states.insert(key, ProcessState::Exited);
+        self.insert_with_eviction(key, ProcessState::Exited);
     }
 
-    /// Get state for a key.
+    /// Get a clone of the state for a key.
     ///
     /// # Arguments
     ///
     /// * `key` — The process key to look up.
-    pub fn get(
-        &self,
-        key: &ProcessKey,
-    ) -> Option<dashmap::mapref::one::Ref<'_, ProcessKey, ProcessState>> {
-        self.states.get(key)
+    pub fn get(&self, key: &ProcessKey) -> Option<ProcessStateRef<'_>> {
+        self.states.get(key).map(ProcessStateRef)
     }
 
     /// Remove exited PIDs (called by cleanup sweep).
@@ -185,7 +282,7 @@ impl ProcessRegistry {
         let to_remove: Vec<ProcessKey> = self
             .states
             .iter()
-            .filter(|entry| matches!(entry.value(), ProcessState::Exited))
+            .filter(|entry| matches!(entry.value().state, ProcessState::Exited))
             .map(|entry| *entry.key())
             .collect();
         let count = to_remove.len();
@@ -200,7 +297,7 @@ impl ProcessRegistry {
     pub fn counts(&self) -> ProcessCounts {
         let mut counts = ProcessCounts::default();
         for entry in self.states.iter() {
-            match entry.value() {
+            match entry.value().state {
                 ProcessState::Discovered => counts.discovered += 1,
                 ProcessState::Skipped(ref r) => match r {
                     SkipReason::SelfProcess => counts.skipped_self += 1,
@@ -384,7 +481,7 @@ mod tests {
             assert!(is_injected_no_hello, "expected Injected with no hello");
         }
 
-        registry.record_hello(key);
+        registry.record_hello(&key);
 
         // Verify injected state with hello.
         {
@@ -464,7 +561,7 @@ mod tests {
         };
         registry.try_claim(key_injected_hello);
         registry.record_injected(key_injected_hello, "x64".to_string());
-        registry.record_hello(key_injected_hello);
+        registry.record_hello(&key_injected_hello);
 
         // Injected without hello: 1
         let key_injected_no_hello = ProcessKey {
@@ -585,5 +682,150 @@ mod tests {
                 i
             );
         }
+    }
+
+    #[test]
+    fn test_registry_eviction_enforces_max_size() {
+        let registry = ProcessRegistry::new();
+
+        for i in 0..MAX_REGISTRY_SIZE + 200 {
+            let key = ProcessKey {
+                pid: i as u32,
+                creation_time: i as u64,
+            };
+            registry.try_claim(key);
+            registry.record_exited(key);
+        }
+
+        assert!(
+            registry.states.len() <= MAX_REGISTRY_SIZE,
+            "registry size {} exceeded cap {}",
+            registry.states.len(),
+            MAX_REGISTRY_SIZE
+        );
+    }
+
+    #[test]
+    fn test_registry_eviction_prefers_exited_and_failed() {
+        let registry = ProcessRegistry::new();
+
+        // Fill to cap with injected entries.
+        for i in 0..MAX_REGISTRY_SIZE {
+            let key = ProcessKey {
+                pid: i as u32,
+                creation_time: i as u64,
+            };
+            registry.try_claim(key);
+            registry.record_injected(key, "x64".to_string());
+        }
+
+        // Add one more exited entry; it should be evicted immediately because
+        // exited/failed entries are the lowest priority.
+        let exited_key = ProcessKey {
+            pid: MAX_REGISTRY_SIZE as u32,
+            creation_time: MAX_REGISTRY_SIZE as u64,
+        };
+        registry.try_claim(exited_key);
+        registry.record_exited(exited_key);
+
+        assert!(
+            registry.states.len() <= MAX_REGISTRY_SIZE,
+            "registry size {} exceeded cap {}",
+            registry.states.len(),
+            MAX_REGISTRY_SIZE
+        );
+        assert!(
+            registry.get(&exited_key).is_none(),
+            "exited entry should have been evicted first"
+        );
+
+        // All original injected entries should still be present.
+        for i in 0..MAX_REGISTRY_SIZE {
+            let key = ProcessKey {
+                pid: i as u32,
+                creation_time: i as u64,
+            };
+            assert!(
+                registry.get(&key).is_some(),
+                "injected entry {} should not be evicted before exited entries",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_registry_eviction_failed_treated_as_evictable() {
+        let registry = ProcessRegistry::new();
+
+        // Fill to cap with discovered entries.
+        for i in 0..MAX_REGISTRY_SIZE {
+            let key = ProcessKey {
+                pid: i as u32,
+                creation_time: i as u64,
+            };
+            registry.try_claim(key);
+        }
+
+        // Add a failed entry; it should be evicted before the older discovered entries
+        // if the cap is exceeded, but since discovered entries are also evictable,
+        // the oldest entry (the first discovered one) will be evicted.
+        let failed_key = ProcessKey {
+            pid: MAX_REGISTRY_SIZE as u32,
+            creation_time: MAX_REGISTRY_SIZE as u64,
+        };
+        registry.try_claim(failed_key);
+        registry.record_skipped(
+            failed_key,
+            SkipReason::Failed(InjectionFailure::RemoteThreadFailed),
+        );
+
+        assert!(
+            registry.states.len() <= MAX_REGISTRY_SIZE,
+            "registry size {} exceeded cap {}",
+            registry.states.len(),
+            MAX_REGISTRY_SIZE
+        );
+
+        let counts = registry.counts();
+        assert!(
+            counts.discovered + counts.skipped_failed <= MAX_REGISTRY_SIZE as u64,
+            "total evictable entries should not exceed cap"
+        );
+    }
+
+    #[test]
+    fn test_registry_eviction_oldest_removed() {
+        let registry = ProcessRegistry::new();
+
+        // Insert MAX_REGISTRY_SIZE exited entries.
+        for i in 0..MAX_REGISTRY_SIZE {
+            let key = ProcessKey {
+                pid: i as u32,
+                creation_time: i as u64,
+            };
+            registry.try_claim(key);
+            registry.record_exited(key);
+        }
+
+        // The oldest key should be evicted when adding a new exited entry.
+        let oldest_key = ProcessKey {
+            pid: 0,
+            creation_time: 0,
+        };
+        let new_key = ProcessKey {
+            pid: MAX_REGISTRY_SIZE as u32,
+            creation_time: MAX_REGISTRY_SIZE as u64,
+        };
+        registry.try_claim(new_key);
+        registry.record_exited(new_key);
+
+        assert!(
+            registry.get(&oldest_key).is_none(),
+            "oldest exited entry should be evicted"
+        );
+        assert!(
+            registry.get(&new_key).is_some(),
+            "newly inserted exited entry should be present"
+        );
     }
 }

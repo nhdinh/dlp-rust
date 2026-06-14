@@ -37,7 +37,7 @@ fn test_process_registry_state_transitions() {
     }
 
     // Record hello.
-    registry.record_hello(key);
+    registry.record_hello(&key);
     {
         let state = registry.get(&key).expect("key should exist");
         assert!(
