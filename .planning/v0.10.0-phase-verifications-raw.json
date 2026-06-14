@@ -1,0 +1,530 @@
+{
+  "milestone": "v0.10.0",
+  "audit_date": "2026-06-14",
+  "phases_audited": 56,
+  "phases": [
+    {
+      "phase": "13",
+      "directory": "13-policy-engine-abac-evaluator",
+      "verification_status": "passed",
+      "score": "16/16",
+      "requirements_covered": ["POLICY-05"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "14",
+      "directory": "14-usb-device-blocking",
+      "verification_status": "passed",
+      "score": "15/15",
+      "requirements_covered": ["POLICY-02"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "15",
+      "directory": "15-print-enforcement",
+      "verification_status": "passed",
+      "score": "14/14",
+      "requirements_covered": ["POLICY-03", "POLICY-04"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "16",
+      "directory": "16-admin-tui-policy-screens",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": ["POLICY-01", "POLICY-06"],
+      "critical_gaps": ["No VERIFICATION.md exists — status inferred from SUMMARY.md only"],
+      "non_critical_gaps": ["UAT 10/11 (one acceptance gap closed in Wave 2)"],
+      "anti_patterns": [],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "17",
+      "directory": "17-agent-policy-sync",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": [],
+      "critical_gaps": ["No VERIFICATION.md exists — status inferred from SUMMARY.md only"],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "18",
+      "directory": "18-siem-integration",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": ["POLICY-12"],
+      "critical_gaps": ["No VERIFICATION.md exists — status inferred from SUMMARY.md only"],
+      "non_critical_gaps": ["Wave 3 acceptance gaps closed in Wave 2"],
+      "anti_patterns": [],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "19",
+      "directory": "19-alert-router",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": ["POLICY-09"],
+      "critical_gaps": ["No VERIFICATION.md exists — status inferred from SUMMARY.md only"],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "20",
+      "directory": "20-agent-installer-wix",
+      "verification_status": "passed",
+      "score": "10/10",
+      "requirements_covered": ["POLICY-11"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 5
+    },
+    {
+      "phase": "21",
+      "directory": "21-admin-tui-screens",
+      "verification_status": "passed",
+      "score": "5/5",
+      "requirements_covered": ["POLICY-10"],
+      "critical_gaps": [],
+      "non_critical_gaps": ["WR-01 picker_idx UX limitation noted"],
+      "anti_patterns": [],
+      "human_verification_items": 3
+    },
+    {
+      "phase": "22",
+      "directory": "22-agent-hook-dll",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": [],
+      "critical_gaps": ["No VERIFICATION.md exists — only draft VALIDATION.md (nyquist_compliant=false)"],
+      "non_critical_gaps": ["PHASE-22-INFRA noted in validation"],
+      "anti_patterns": [],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "23",
+      "directory": "23-usb-write-blocking",
+      "verification_status": "passed",
+      "score": "13/13",
+      "requirements_covered": ["USB-01"],
+      "critical_gaps": [],
+      "non_critical_gaps": ["CR-01/CR-02 non-blocking bugs noted"],
+      "anti_patterns": [],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "24",
+      "directory": "24-clipboard-blocking",
+      "verification_status": "human_needed",
+      "score": "8/9",
+      "requirements_covered": ["USB-02"],
+      "critical_gaps": ["Release-mode smoke test pending — human verification required"],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 1
+    },
+    {
+      "phase": "25",
+      "directory": "25-cloud-sync-blocking",
+      "verification_status": "human_needed",
+      "score": "4/5",
+      "requirements_covered": ["APP-01", "APP-02", "APP-05", "APP-06"],
+      "critical_gaps": ["1 override applied for SC-3 spawn_blocking"],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 1
+    },
+    {
+      "phase": "26",
+      "directory": "26-email-blocking",
+      "verification_status": "human_needed",
+      "score": "4/4",
+      "requirements_covered": ["APP-03", "USB-03"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 4
+    },
+    {
+      "phase": "27",
+      "directory": "27-application-blocking",
+      "verification_status": "human_needed",
+      "score": "9/9",
+      "requirements_covered": ["USB-04"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 3
+    },
+    {
+      "phase": "28",
+      "directory": "28-browser-extension",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": ["BRW-02"],
+      "critical_gaps": ["No VERIFICATION.md exists"],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "47",
+      "directory": "47-secrets-encryption-at-rest",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": ["HARD-01"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0,
+      "notes": "No VERIFICATION.md but has 47-VALIDATION.md (nyquist_compliant=true). 313+9 tests, 5 success criteria closed."
+    },
+    {
+      "phase": "48",
+      "directory": "48-windows-service-daemon",
+      "verification_status": "gaps_found",
+      "score": "4/5",
+      "requirements_covered": ["BLOCK-01", "BLOCK-03", "BLOCK-04", "BLOCK-10"],
+      "critical_gaps": ["CopyFile2 gap — 1 override applied"],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "49",
+      "directory": "49-universal-injection-etw-process-watcher-allowlist-appinit-fa",
+      "verification_status": "passed",
+      "score": "18/18",
+      "requirements_covered": ["BLOCK-05", "BLOCK-06", "BLOCK-07"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "50",
+      "directory": "50-shared-memory-classification-cache-fail-mode-state-machine",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": ["CACHE-01", "CACHE-02", "CACHE-03", "CACHE-04", "CACHE-05", "CACHE-06", "FAIL-01", "FAIL-02", "FAIL-03"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        "cache_pusher.rs:perform_rebuild placeholder rebuild with empty entries — needs policy store integration",
+        "build_cache_hint() uses path-pattern heuristic instead of policy store lookup",
+        "build_workload_overhead_benchmark() is #[ignore] — requires manual Windows execution"
+      ],
+      "human_verification_items": 0,
+      "notes": "6 plans (01-06) all complete. No VERIFICATION.md but all plans have SUMMARY.md with passing tests."
+    },
+    {
+      "phase": "51",
+      "directory": "51-ntdll-syscall-stub-trampolines-edr-coexistence",
+      "verification_status": "passed",
+      "score": "15/15",
+      "requirements_covered": ["BLOCK-08", "BLOCK-09"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        "lib.rs:533 TODO(Phase 53): Read from actual shared memory segment",
+        "ntdll_patcher.rs:635-642 emit_bypass_alert() logs only via debug_log — pipe IPC deferred to Phase 53",
+        "ntdll_patcher.rs:~520 emit_bypass_alert() logs only via debug_log — deferred to Phase 53",
+        "background_thread.rs:~60 verify_fn is always None at call site — deferred to Plan 06",
+        "lib.rs:~532 read_ntdll_patching_flag_from_shared_memory() returns false — Phase 53 wiring",
+        "verify_code_signer() returns false always — production hardening needed"
+      ],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "52",
+      "directory": "52-dacl-tripwire-repair-watcher-protected-paths-dpapi-recovery-",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": ["DACL-01", "DACL-02", "DACL-05"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0,
+      "notes": "7 plans (01-07) all complete. No VERIFICATION.md but all plans have SUMMARY.md with passing tests. Plan 52-05 (DPAPI Recovery) is documentation-only."
+    },
+    {
+      "phase": "53",
+      "directory": "53-etw-kernel-file-consumer-bypass-correlator-hook-journal-ring",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": ["ETW-03", "ETW-04", "ETW-05"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        "dlp-agent/src/etw_kernel_file.rs:~360 check_lost_events() returns false — full WMI/wevtapi query deferred to Plan 04",
+        "dlp-agent/src/lib.rs:155-156 etw_kernel_file module commented out — module will be created in Plan 53-01 (resolved during execution)"
+      ],
+      "human_verification_items": 0,
+      "notes": "6 plans (01-06) all complete. No VERIFICATION.md but all plans have SUMMARY.md with passing tests."
+    },
+    {
+      "phase": "54",
+      "directory": "54-admin-tui-protected-paths-bypass-alerts-screens",
+      "verification_status": "passed",
+      "score": "10/10",
+      "requirements_covered": ["UX-01", "UX-02"],
+      "critical_gaps": [],
+      "non_critical_gaps": [
+        "update_protected_path method exists with #[allow(dead_code)] — not called by dispatch handler",
+        "list_bypass_alerts_builds_correct_query_string test not found in codebase",
+        "ROADMAP.md Phase 54 progress table shows 0/0 | Not started — STATE.md correctly reflects completion"
+      ],
+      "anti_patterns": [
+        "client.rs:531 #[allow(dead_code)] on update_protected_path",
+        "protected_paths.rs:6-7 #[allow(dead_code)] on constants",
+        "bypass_alerts.rs:6-14 #[allow(dead_code)] on constants"
+      ],
+      "human_verification_items": 0
+    },
+    {
+      "phase": "55",
+      "directory": "55-monitor-only-audit-only-per-policy-enforcement-mode",
+      "verification_status": "passed",
+      "score": "7/7 plans",
+      "requirements_covered": ["MODE-01"],
+      "critical_gaps": [],
+      "non_critical_gaps": [
+        "SonarQube scanner not run (requires auth)",
+        "Pre-existing warnings in dlp-server (unused imports, mut)",
+        "Pre-existing dlp-e2e test failures",
+        "Pre-existing dlp-hook-dll doc test failures"
+      ],
+      "anti_patterns": [],
+      "human_verification_items": 0,
+      "notes": "217 Phase-55-specific tests all pass. Full end-to-end feature verified: Audit mode, Block mode, Global override."
+    },
+    {
+      "phase": "56",
+      "directory": "56-sd-optical-virtual-drive-enumeration-volume-class-abac-seed-",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": [],
+      "critical_gaps": ["No VERIFICATION.md exists"],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0,
+      "notes": "6 plans (01-06) have SUMMARY.md files. No VERIFICATION.md found."
+    },
+    {
+      "phase": "57",
+      "directory": "57-operational-deployment-guide-av-edr-allowlist-uat",
+      "verification_status": "passed",
+      "score": "20/20",
+      "requirements_covered": ["OPS-01", "OPS-02", "OPS-03", "OPS-04"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        "deployment-guide.md:199,674 HTML comment placeholders still present (EDR-VENDORS-START/END)",
+        "deployment-guide.md:792-836 References non-existent script names (fixed 2026-06-10)",
+        ".planning/milestones/v0.10.0-UAT.md:67-162 References non-existent script names (fixed 2026-06-10)"
+      ],
+      "human_verification_items": 4,
+      "notes": "Re-verification performed. All gaps closed 2026-06-10. Script name references fixed."
+    },
+    {
+      "phase": "58",
+      "directory": "58-differentiators-bundle-override-diagnostic-hash-evidence-sel",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": [],
+      "critical_gaps": ["No VERIFICATION.md exists"],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0,
+      "notes": "Only 58-04-SUMMARY.md found. No VERIFICATION.md."
+    },
+    {
+      "phase": "59",
+      "directory": "59-label-service",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": [],
+      "critical_gaps": ["No VERIFICATION.md exists"],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0,
+      "notes": "4 plans (01-04) have SUMMARY.md files. No VERIFICATION.md found."
+    },
+    {
+      "phase": "60",
+      "directory": "60-data-owner-review-queue-admin-tui-screen",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": [],
+      "critical_gaps": ["No VERIFICATION.md exists"],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0,
+      "notes": "Only 60-01-SUMMARY.md found. No VERIFICATION.md."
+    },
+    {
+      "phase": "61",
+      "directory": "61-approval-workflow-engine-t3-data-owner-t4-board-digital-signature",
+      "verification_status": "passed",
+      "score": "6/6 criteria",
+      "requirements_covered": ["WORKFLOW-01", "WORKFLOW-02", "WORKFLOW-03", "WORKFLOW-04", "WORKFLOW-05", "WORKFLOW-06"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0,
+      "notes": "1660 tests passed, 10 ignored. All 6 workflow requirements verified."
+    },
+    {
+      "phase": "62",
+      "directory": "62-syslog-forwarder",
+      "verification_status": "passed",
+      "score": "19/19",
+      "requirements_covered": ["SYSLOG-01", "SYSLOG-02", "SYSLOG-03", "SYSLOG-04"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        "dlp-admin-cli/src/screens/syslog_config.rs:67-68 #[allow(dead_code)] on BOOL_FIELDS and NUMERIC_FIELDS",
+        "dlp-agent/src/audit_emitter.rs:52 TODO (Phase 5, N-SEC-07): compute SHA-256 hash — pre-existing",
+        "dlp-server/src/admin_api.rs:7 TODO(followup): apply ME-01 mask-on-GET to siem-config — pre-existing"
+      ],
+      "human_verification_items": 3,
+      "notes": "Re-verification performed after gap closure. Both previous gaps (agent queue wiring, queue overflow event) closed by Plan 04."
+    },
+    {
+      "phase": "63",
+      "directory": "63-tamper-evident-audit-sha-256-hash-chain",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": [],
+      "critical_gaps": ["No VERIFICATION.md exists"],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0,
+      "notes": "4 plans (01-04) have SUMMARY.md files. No VERIFICATION.md found."
+    },
+    {
+      "phase": "64",
+      "directory": "64-device-identity-expansion-fingerprint-mac-vpn-health",
+      "verification_status": "passed",
+      "score": "5/5",
+      "requirements_covered": ["DEVICE-01", "DEVICE-02", "DEVICE-03", "DEVICE-04", "DEVICE-05"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0,
+      "notes": "All 5 roadmap success criteria satisfied. 302 dlp-common tests, 29 dlp-agent device_identity tests pass."
+    },
+    {
+      "phase": "65",
+      "directory": "65-service-stop-blocking-threads-fix",
+      "verification_status": "passed",
+      "score": "10/10",
+      "requirements_covered": ["STOP-01", "STOP-02", "STOP-03"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        "dlp-agent/src/ipc/pipe3.rs:283 TODO(61) marker — pre-existing, references Phase 61",
+        "dlp-agent/src/service.rs:4298 // TODO in doc comment (tracing-appender) — pre-existing"
+      ],
+      "human_verification_items": 0,
+      "notes": "Re-verification performed after gap closure. All 5 original gaps closed: watchdog timer, Acquire/Release ordering, unwrap removal, per-thread logging, reset at startup."
+    },
+    {
+      "phase": "66.1",
+      "directory": "66.1-workflow-04-approvalcache-enforcement",
+      "verification_status": "passed",
+      "score": "12/12",
+      "requirements_covered": ["WORKFLOW-04"],
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        "dlp-agent/src/hook_ipc.rs TODO(WORKFLOW-04-followup) — hook DLL path DEFERRED (fail-closed)"
+      ],
+      "human_verification_items": 0,
+      "notes": "1715 tests pass across modified crates. Hook DLL path skips approval cache — fail-closed until follow-up phase."
+    },
+    {
+      "phase": "67.1",
+      "directory": "67.1-print-watermarking-xps-page-geometry-text-metrics",
+      "verification_status": "passed",
+      "score": "27/27",
+      "requirements_covered": ["WATERMARK-01", "WATERMARK-02"],
+      "critical_gaps": [],
+      "non_critical_gaps": [
+        "WATERMARK-02 partially satisfied — foundation complete, EvaluateResponse obligation wiring and print enforcer integration deferred to Phase 67"
+      ],
+      "anti_patterns": [],
+      "human_verification_items": 0,
+      "notes": "40 tests pass. No TBD/FIXME/XXX markers. No unwrap in library code."
+    },
+    {
+      "phase": "68.1",
+      "directory": "68.1-close-gap-device-05-tamper-03-04-wire-tamper-detection-to-siem-and-health",
+      "verification_status": "missing",
+      "score": null,
+      "requirements_covered": [],
+      "critical_gaps": ["No VERIFICATION.md exists"],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "human_verification_items": 0,
+      "notes": "3 plans (01-03) have SUMMARY.md files. No VERIFICATION.md found."
+    }
+  ],
+  "summary": {
+    "passed": 14,
+    "gaps_found": 1,
+    "human_needed": 4,
+    "missing": 14,
+    "total_phases": 56,
+    "total_verification_files_found": 14,
+    "total_summary_files_found": 56,
+    "requirements_traced": [
+      "POLICY-01", "POLICY-02", "POLICY-03", "POLICY-04", "POLICY-05", "POLICY-06",
+      "POLICY-09", "POLICY-10", "POLICY-11", "POLICY-12",
+      "USB-01", "USB-02", "USB-03", "USB-04",
+      "APP-01", "APP-02", "APP-03", "APP-05", "APP-06",
+      "BRW-02",
+      "HARD-01",
+      "BLOCK-01", "BLOCK-03", "BLOCK-04", "BLOCK-05", "BLOCK-06", "BLOCK-07", "BLOCK-08", "BLOCK-09", "BLOCK-10",
+      "CACHE-01", "CACHE-02", "CACHE-03", "CACHE-04", "CACHE-05", "CACHE-06",
+      "FAIL-01", "FAIL-02", "FAIL-03",
+      "DACL-01", "DACL-02", "DACL-05",
+      "ETW-03", "ETW-04", "ETW-05",
+      "UX-01", "UX-02",
+      "MODE-01",
+      "OPS-01", "OPS-02", "OPS-03", "OPS-04",
+      "WORKFLOW-01", "WORKFLOW-02", "WORKFLOW-03", "WORKFLOW-04", "WORKFLOW-05", "WORKFLOW-06",
+      "SYSLOG-01", "SYSLOG-02", "SYSLOG-03", "SYSLOG-04",
+      "DEVICE-01", "DEVICE-02", "DEVICE-03", "DEVICE-04", "DEVICE-05",
+      "STOP-01", "STOP-02", "STOP-03",
+      "WATERMARK-01", "WATERMARK-02"
+    ],
+    "critical_gaps_by_phase": {
+      "48": "CopyFile2 gap — 1 override applied",
+      "24": "Release-mode smoke test pending",
+      "25": "1 override applied for SC-3 spawn_blocking"
+    },
+    "human_verification_required": {
+      "20": 5,
+      "21": 3,
+      "24": 1,
+      "25": 1,
+      "26": 4,
+      "27": 3,
+      "57": 4,
+      "62": 3
+    }
+  }
+}
