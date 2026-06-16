@@ -1,11 +1,11 @@
 ---
 phase: 16
 reviewers: [opencode]
-reviewed_at: 2026-06-16T11:56:00Z
+reviewed_at: 2026-06-16T12:13:00Z
 plans_reviewed: [16-01a-PLAN.md, 16-01b-PLAN.md, 16-02-PLAN.md]
 ---
 
-# Cross-AI Plan Review — Phase 16, Cycle 2
+# Cross-AI Plan Review — Phase 16, Cycle 3 (Final)
 
 ## Reviewers
 - **OpenCode** (gpt-5.3-chat-latest via GitHub Copilot) — reviewed against actual source code with grep verification
@@ -17,76 +17,78 @@ plans_reviewed: [16-01a-PLAN.md, 16-01b-PLAN.md, 16-02-PLAN.md]
 
 ### 1. Summary
 
-The cycle 1 HIGH concern ("stale column spec") is **resolved**. Plan 16-01a accurately documents the shipped 5-column PolicyList reality and its grep-based verification commands validate against actual code. Plan 16-01b correctly documents the existing Simulate foundation (including the truthful absence of a Loading variant). Plan 16-02 addresses the remaining MEDIUM/LOW items from cycle 1 (advanced section dropped, validation, normalization, error granularity) and aligns planning artifacts. However, a **new HIGH concern** is introduced: the Loading state implementation as designed will never be rendered to the user, making it dead code. The convergence loop is making progress but a cycle 3 will be needed to fix this flaw.
+The Cycle 3 revisions resolve all previous HIGH concerns. **Plan 16-01a** correctly verifies the 5-column PolicyList against actual source code via grep assertions — the Cycle 1 column spec concern is definitively closed. **Plan 16-01b** accurately documents the existing Simulate foundation. **Plan 16-02** delivers the critical architectural fix for the Loading state (terminal ownership restructuring + forced redraw before `block_on`), plus validation, normalization, granular errors, and aligned planning artifacts. The plans are substantially complete and ready for execution with only minor residual concerns.
 
 ### 2. Strengths
 
-- **16-01a column spec accuracy**: Correctly identifies 5-column reality with verified widths (12/38/15/12/23%), `global_mode: Option<&str>` parameter, and `render_global_override_banner` call. All must-haves truths are verifiable via `grep` against actual source code.
-- **16-01b honest about current state**: Truths state `SimulateOutcome` has `None, Success, Error` variants — notably does NOT claim a Loading variant exists. This prevents confusion between current and target state.
-- **16-02 explicit removal of "Advanced section"**: The plan explicitly documents why `timestamp_override`/`session_id_override` are being dropped (server auto-generates them), closing the MEDIUM concern from cycle 1 with clear reasoning.
-- **Complete artifact alignment**: Task 0 in 16-02 comprehensively updates D-01, D-02, D-20, D-24, RESEARCH.md, PATTERNS.md, and creates VALIDATION.md. The planner recognized that documentation alignment is as important as code changes in a reopened review phase.
-- **TDD annotations**: Both 16-02 Task 1 and Task 2 include `tdd="true"` with behavior specs before implementation, showing awareness of test-driven discipline.
-- **Re-submission guard**: `handle_simulate_nav` loading guard prevents double-submits — correct pattern even if the Loading visualization is broken.
+- **Loading state HIGH resolved (Cycle 2 → 3).** The take/draw/restore pattern (`app.terminal.take() → terminal.draw(...) → app.terminal = Some(terminal)`) avoids borrow checker conflicts and forces a synchronous redraw of the `SimulateOutcome::Loading` frame before `block_on(post)` blocks the thread. The user WILL see "Submitting..." during the HTTP request. Verified: `screens::draw` at `render.rs:44` takes `&App`, the forced redraw passes `&*app` (reborrow from `&mut App`), and the terminal is restored before `block_on`.
+
+- **Column spec HIGH resolved (Cycle 1 → 2).** Plan 16-01a correctly specifies 5 columns (Priority/Name/Action/Enabled/Mode) with verified widths 12/38/15/12/23%, `global_mode: Option<&str>`, and `render_global_override_banner`. All grep assertions target actual shipped code.
+
+- **Must-haves ambiguity fixed.** All future-state truths in 16-02 frontmatter now use the `"After execution:"` prefix, eliminating the confusion between current and target state identified in Cycle 2.
+
+- **D-01 column order typo fixed.** Frontmatter truth now reads `Priority/Name/Action/Enabled/Mode` (correct order matching shipped code).
+
+- **Re-submission guard is correct.** The `is_loading` guard in `handle_simulate_nav` prevents double-fire by checking `SimulateOutcome::Loading` before calling `action_submit_simulate`.
+
+- **Tests for validation and normalization are solid.** 5 group normalization tests and 5 validation tests with realistic edge cases (empty input, whitespace, dedupe order preservation).
+
+- **Planning artifact alignment is comprehensive.** All 4 context decisions, research questions, patterns, and validation strategy are updated to match shipped reality.
 
 ### 3. Concerns
 
 | # | Concern | Severity | File | Detail |
 |---|---------|----------|------|--------|
-| 1 | **Loading state will never render** | **HIGH** | `16-02-PLAN.md` Task 1+2 | `action_submit_simulate` sets `*result = SimulateOutcome::Loading` then immediately calls `app.rt.block_on(post(...))`, which blocks the single-threaded ratatui event loop. The TUI only re-draws on the next iteration of the `draw → handle_event` loop, which happens AFTER `action_submit_simulate` returns — at which point the result is already `Success` or `Error`. **The Loading state will never be visible to the user.** The rendered yellow "Submitting..." block plus "please wait" hints are dead code. The plan does not address this: no explicit re-draw is triggered before `block_on`, and the app's `terminal` field (if accessible) is not used. |
-| 2 | **Must-haves ambiguity (present tense for future state)** | **MEDIUM** | `16-02-PLAN.md` frontmatter | The `must_haves` truths use present tense: `"SimulateOutcome::Loading variant exists"`, `"Groups are normalized..."`. In 16-01a and 16-01b, must-haves truths describe current shipped state. In 16-02, they describe target state after execution. A reviewer or automated tool reading the frontmatter without the plan body will misinterpret these as false claims about the shipped code. Recommend prefixing future-state truths with `"After execution:"` or using separate `postconditions` key. |
-| 3 | **D-01 column order typo in must-haves** | **LOW** | `16-02-PLAN.md:22` | Must-haves truth says `(Priority/Name/Action/Mode/Enabled)` but actual shipped code and the plan's own Task 0 step 1 specify `Priority, Name, Action, Enabled, Mode` — Mode and Enabled are transposed. The actual CONTEXT.md revision (Task 0 action) is correct, so the final artifact will be right, but the frontmatter creates a misleading signal. |
-| 4 | **Loading state re-submission guard has wrong row constant** | **MEDIUM** | `16-02-PLAN.md:499-509` | The loading guard is placed at `SIMULATE_SUBMIT_ROW` which is `9` (the Enter-to-submit row). However, pressing Enter on non-submit rows triggers text-edit (for text fields) or cycle (for select fields). The plan correctly identifies `SIMULATE_SUBMIT_ROW` as row 9, so this is fine on re-read. **No issue.** *Retracted on further analysis.* |
-| 5 | **Exception: Blocking call (#6) not addressed** | **LOW** | `16-02-PLAN.md` | The Loading addition is an attempt to address concern #6 ("TUI freezes during block_on"), but since the Loading state won't render during the blocking call, this concern is not actually addressed. The plan acknowledges the pattern is "consistent with codebase conventions" but does not document that the Loading mitigation is ineffective. |
-| 6 | **Missing: Granular error testing** | **LOW** | `16-02-PLAN.md Task 2` | The test module covers group normalization (5 tests) but does NOT test validation or error classification. Behaviors 1 (empty user_sid), 2 (empty path), 7-11 (error prefixes) have no automated verification beyond grep. The `grep` for prefix strings is weak — it proves the strings exist in the source file but not that they're reached at the correct code path. |
-| 7 | **Potential dependency hazard: Task ordering** | **LOW** | `16-02-PLAN.md` | Task 0 (planning artifact alignment) modifies .md files. Task 1+2 modify .rs files. These are independent and could run in parallel. The plan correctly separates them by wave, but the tasks could be parallelized for efficiency. |
+| 1 | **Error propagation in take/draw/restore can lose terminal** | **MEDIUM** | `16-02-PLAN.md` Task 1, main.rs | The event loop does: `terminal.draw(...)?; app.terminal = Some(terminal)`. If `terminal.draw()` returns `Err`, the `?` propagates before restoring the terminal to `app.terminal`. The outer recovery code then calls `app.terminal.take().unwrap()` which panics on `None`. **Fix:** swap ordering to `let r = terminal.draw(...); app.terminal = Some(terminal); r?;` — restore first, propagate second. |
+| 2 | **`#[allow(dead_code)]` on `SIMULATE_SUBMIT_ROW` becomes stale** | **LOW** | `dlp-admin-cli/src/app.rs:431` | Currently `SIMULATE_SUBMIT_ROW` has `#[allow(dead_code)]`. Task 2 plans to use it in `handle_simulate_nav` (replacing magic number `9`). The annotation should be removed. Harmless but untidy. |
+| 3 | **Error classification tests are compile-check only, not runtime** | **LOW** | `16-02-PLAN.md` Task 2, `simulate_tests` | `test_error_prefix_timeout` uses a closure that instantiates the function pointer but never calls it with a real `reqwest::Error`. The comment acknowledges this. The grep assertions for `"Timeout: "`, `"Connection error: "` etc. prove string existence but not that the correct code path selects each prefix. This is an honest limitation (can't easily construct `reqwest::Error` in unit tests) but should be documented in the test module. |
+| 4 | **Loading flash duration depends on network latency** | **LOW** | 16-02-PLAN.md | For localhost requests (~1-5ms), the Loading state renders for exactly one forced redraw before the outcome resolves. On fast servers, the user may see a sub-100ms flash. This is expected and correct — the Loading state is most useful when the server is slow or the network is congested. Not a bug, but worth noting in the code comment. |
+| 5 | **No test for re-submission guard** | **LOW** | 16-02-PLAN.md Task 2 | The `is_loading` guard has no unit test (requires constructing a `Screen::PolicySimulate` with `SimulateOutcome::Loading`). Could be added via a helper that constructs the state directly. |
 
 ### 4. Suggestions
 
-1. **Fix the Loading state rendering (HIGH severity)** — Add an explicit terminal re-draw in `action_submit_simulate` before `block_on`:
+1. **Fix the error propagation gap (Concern #1)** — Change the main.rs event loop take/draw/restore to:
    ```rust
-   *result = SimulateOutcome::Loading;
-   if let Some(terminal) = app.terminal.as_mut() {
-       let _ = terminal.draw(|f| app.draw(f));
-   }
+   let mut terminal = app.terminal.take().unwrap();
+   let draw_result = terminal.draw(|frame| screens::draw(&app, frame));
+   app.terminal = Some(terminal);
+   draw_result?;
    ```
-   This forces the Loading frame to render before the blocking call. If `terminal` is not accessible from `action_submit_simulate`, expose it via `App::force_redraw()` or restructure `action_submit_simulate` to be async.
 
-2. **Clarify must-haves semantics** — Add a comment in the frontmatter template: `# These are POSTCONDITIONS — truths that MUST hold after plan execution, not claims about current code.`
+2. **Remove `#[allow(dead_code)]` from `SIMULATE_SUBMIT_ROW`** — Trivial fix, include in Task 1 or as a note in the plan.
 
-3. **Fix D-01 column order typo** — Change `(Priority/Name/Action/Mode/Enabled)` to `(Priority/Name/Action/Enabled/Mode)` in line 22 of 16-02-PLAN.md.
+3. **Add a code comment explaining Loading visibility** — Add a note above the forced redraw: `// Force terminal redraw so "Submitting..." is visible to the user before block_on blocks the thread.`
 
-4. **Add validation + error classification tests** — Extend `simulate_tests` module with:
-   - A test that calls a helper function (extracted from `action_submit_simulate`) with empty `user_sid` and asserts `Validation error:` prefix
-   - A test that constructs timeout-like errors and asserts correct prefix mapping
-   - These require extracting validation/error logic into testable helper functions, which is good practice anyway.
+4. **Document the error test limitation** — Add `// NOTE: This test verifies compile-time correctness only. Runtime error classification is tested via integration testing with a real server.` above the error classification test.
 
-5. **Document Loading limitation explicitly** — Add a note in the plan or in the code that the Loading state rendering depends on the app architecture and may be a no-op if the TUI framework doesn't re-draw synchronously. This prevents future confusion when a developer wonders why the yellow box never appears.
-
-6. **Accept the limitation as-is** — If explicit re-draw before `block_on` is deemed too invasive for this phase, consider removing the Loading visual entirely and replacing it with a simpler approach: disable the [Simulate] button during submission (the re-submission guard already does this). Document that concern #6 is deferred to a future refactoring phase (async event loop).
+5. **Consider adding a re-submission guard test using `SimulateFormState` construction** — Trivial to construct `Screen::PolicySimulate { result: SimulateOutcome::Loading, .. }` and verify `action_submit_simulate` is not called.
 
 ### 5. Risk Assessment
 
-**Overall risk: MEDIUM** (borderline HIGH due to the Loading rendering flaw)
+**Overall risk: LOW** — Ready for execution.
 
 #### Convergence Analysis
 
-| Cycle | Concerns | Status |
-|-------|----------|--------|
-| 1 | HIGH: stale column spec | → RESOLVED in cycle 2 |
-| 1 | MEDIUM: advanced section | → RESOLVED (dropped) |
-| 1 | MEDIUM: no Loading state | → PARTIALLY ADDRESSED (implemented but non-functional) |
-| 1 | LOW: no validation | → ADDRESSED |
-| 1 | LOW: group normalization | → ADDRESSED |
-| 1 | LOW: blocking call | → NOT ADDRESSED (unchanged) |
-| 1 | LOW: error classification | → ADDRESSED |
+| Concern | Cycle 1 | Cycle 2 | Cycle 3 |
+|---------|---------|---------|---------|
+| Stale column spec (4 vs 5 cols) | HIGH | RESOLVED | ✅ RESOLVED |
+| Advanced section not implementable | MEDIUM | RESOLVED | ✅ RESOLVED |
+| No Loading state | MEDIUM | HIGH (won't render) | ✅ **RESOLVED** (forced redraw) |
+| No client-side validation | LOW | ADDRESSED | ✅ ADDRESSED |
+| Group normalization incomplete | LOW | ADDRESSED | ✅ ADDRESSED |
+| Blocking call in TUI loop | LOW | NOT ADDRESSED | ⚠️ PARTIALLY ADDRESSED (Loading visual mitigates, but not fixed) |
+| Error classification missing | LOW | ADDRESSED | ✅ ADDRESSED |
+| Must-haves ambiguity | — | MEDIUM | ✅ FIXED |
+| D-01 column order typo | — | LOW | ✅ FIXED |
+| Missing validation tests | — | LOW | ✅ ADDRESSED |
+| New: Error propagation gap | — | — | ⚠️ MEDIUM (suggestion #1 fixes) |
 
-**The convergence loop IS making progress** — the HIGH concern is resolved, 4 LOW items are addressed. However:
+**The convergence loop is complete.** Two cycles of feedback have brought all HIGH/MEDIUM concerns to resolution. The remaining items are:
+- 1 MEDIUM (error propagation in event loop — easy fix, suggestion #1)
+- 3 LOW (stale annotation, error test limitation, no re-submission test)
+- 1 LOW (blocking call — acknowledged limitation, not addressed)
 
-- **The new HIGH concern (Loading won't render)** means cycle 3 is likely needed to fix this.
-- The Loading implementation as specified will compile, pass tests, and pass grep verification, but will have **zero visual effect**. A casual observer running the verification commands would see all checks pass. Only runtime testing would reveal the problem.
-- **Net risk verdict**: If the Loading rendering flaw is fixed (suggestion #1) before execution, this drops to LOW. If executed as-is, the plan introduces effective dead code that creates maintenance debt.
-
-**Recommended**: Accept the plan with the condition that suggestion #1 (explicit re-draw before `block_on`) is implemented, or remove the Loading variant from scope and defer to a future async-refactoring phase.
+**Verdict:** Accept with condition that suggestion #1 (error propagation fix) is implemented. The plans are executable and the remaining concerns do not block execution.
 
 ---
 
@@ -94,34 +96,42 @@ The cycle 1 HIGH concern ("stale column spec") is **resolved**. Plan 16-01a accu
 
 ### Agreed Strengths
 - Cycle 1 HIGH concern (stale column spec) is fully resolved — 16-01a accurately documents 5-column reality
-- 16-01b is honest about current Simulate foundation state (no Loading variant claimed)
-- 16-02 comprehensively addresses documentation alignment and closes 4 of 5 cycle 1 LOW/MEDIUM concerns
+- Cycle 2 HIGH concern (Loading won't render) is fully resolved — the forced redraw approach (terminal ownership + explicit draw before block_on) correctly renders the Loading state
+- 16-01b is honest about current Simulate foundation state (no Loading variant claimed in Wave 1)
+- 16-02 comprehensively addresses documentation alignment and closes all cycle 1 LOW/MEDIUM concerns
 - TDD annotations and re-submission guard show good engineering discipline
+- Must-haves ambiguity fixed with "After execution:" prefix
+- Validation and error classification tests added in Task 2
 
 ### Agreed Concerns
-- **NEW HIGH: Loading state will never render** — `block_on` blocks the ratatui event loop before any re-draw can occur. The yellow "Submitting..." block is dead code. This is a significant architectural oversight in the 16-02 plan.
-- **MEDIUM: Must-haves ambiguity** — 16-02 frontmatter uses present tense for postconditions, creating confusion between current and target state
-- **LOW: D-01 column order typo** in 16-02 frontmatter (Mode/Enabled transposed)
-- **LOW: Missing validation and error classification tests** — only group normalization has unit tests
+- **MEDIUM: Error propagation in take/draw/restore** — If `terminal.draw()` returns `Err`, the `?` propagates before restoring terminal to `app.terminal`, causing panic in outer recovery. Fix: restore first, then propagate.
+- **LOW: `#[allow(dead_code)]` on `SIMULATE_SUBMIT_ROW`** becomes stale when Task 2 uses it
+- **LOW: Error classification tests are compile-check only** — no runtime verification with real `reqwest::Error`
+- **LOW: Loading flash duration** — fast localhost requests may show sub-100ms flash; expected behavior
+- **LOW: No test for re-submission guard** — `is_loading` guard lacks unit test
 
 ### Divergent Views
 - None significant. OpenCode is the sole reviewer (Codex unavailable). The review is based on direct source code inspection (grep + read) and is internally consistent.
 
 ---
 
-## Cycle 2 vs Cycle 1 Comparison
+## Cycle 3 vs Cycle 2 Comparison
 
-| Concern | Cycle 1 Severity | Cycle 2 Status |
-|---------|-----------------|----------------|
-| Stale column spec (4 vs 5 columns) | HIGH | **RESOLVED** — 16-01a correctly documents 5-column reality |
-| Advanced section not implemented | MEDIUM | **RESOLVED** — explicitly dropped from 16-02 with reasoning |
-| No Loading state | MEDIUM | **PARTIALLY ADDRESSED** — plan adds Loading variant but it will never render (new HIGH) |
-| No client-side validation | LOW | **ADDRESSED** — 16-02 Task 2 adds validation for empty user_sid and path |
-| Group normalization incomplete | LOW | **ADDRESSED** — 16-02 Task 2 adds dedupe + lowercase |
-| Blocking call in TUI event loop | LOW | **NOT ADDRESSED** — unchanged; Loading attempt is ineffective |
-| Network error classification | LOW | **ADDRESSED** — 16-02 Task 2 adds timeout/connection/decode/server granularity |
+| Concern | Cycle 2 Severity | Cycle 3 Status |
+|---------|----------------|----------------|
+| Stale column spec (4 vs 5 columns) | RESOLVED | ✅ RESOLVED (unchanged) |
+| Advanced section not implemented | RESOLVED | ✅ RESOLVED (unchanged) |
+| Loading state will never render | **HIGH** | ✅ **RESOLVED** — forced redraw approach works; user WILL see "Submitting..." |
+| No client-side validation | ADDRESSED | ✅ ADDRESSED (unchanged) |
+| Group normalization incomplete | ADDRESSED | ✅ ADDRESSED (unchanged) |
+| Blocking call in TUI event loop | NOT ADDRESSED | ⚠️ PARTIALLY ADDRESSED (Loading visual mitigates) |
+| Error classification missing | ADDRESSED | ✅ ADDRESSED (unchanged) |
+| Must-haves ambiguity | MEDIUM | ✅ FIXED (unchanged) |
+| D-01 column order typo | LOW | ✅ FIXED (unchanged) |
+| Missing validation tests | LOW | ✅ ADDRESSED (unchanged) |
+| Error propagation gap | — | ⚠️ **NEW MEDIUM** — terminal not restored if draw() fails before `?` |
 
-**Unresolved HIGH count: 1** (new Loading rendering flaw)
+**Unresolved HIGH count: 0**
 
 ---
 
