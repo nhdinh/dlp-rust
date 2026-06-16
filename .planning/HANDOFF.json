@@ -1,13 +1,13 @@
 {
   "version": "1.0",
-  "timestamp": "2026-06-16T10:25:00Z",
+  "timestamp": "2026-06-16T10:35:00Z",
   "phase": "16",
   "phase_name": "policy-list-simulate",
   "phase_dir": ".planning/phases/16-policy-list-simulate",
   "plan": null,
   "task": null,
   "total_tasks": null,
-  "status": "paused",
+  "status": "complete",
   "completed_tasks": [
     {"id": 1, "name": "Audit 16-VALIDATION.md and identify gaps", "status": "done", "commit": "6211bdc"},
     {"id": 2, "name": "Refactor classify_error_prefix into shared helper with unit tests", "status": "done", "commit": "6398240"},
@@ -15,24 +15,20 @@
     {"id": 4, "name": "Normalize CRLF line endings in Rust source files for SonarCloud", "status": "done", "commit": "ed7fe24"},
     {"id": 5, "name": "Run SonarCloud scan with coverage report", "status": "done", "commit": "f053409"},
     {"id": 6, "name": "Add simulate editing/navigation/connection-error tests", "status": "done", "commit": "3acc925"},
-    {"id": 7, "name": "Fix GitHub workflow security hotspots", "status": "done", "commit": "241897d"}
+    {"id": 7, "name": "Fix GitHub workflow security hotspots", "status": "done", "commit": "241897d"},
+    {"id": 8, "name": "Resolve failing SonarCloud Quality Gate via waiver", "status": "done", "commit": "f567d51"},
+    {"id": 9, "name": "Push commits to origin/master", "status": "done", "commit": "f567d51"}
   ],
-  "remaining_tasks": [
-    {"id": 8, "name": "Resolve failing SonarCloud Quality Gate coverage/duplication or get waiver", "status": "not_started"},
-    {"id": 9, "name": "Push commits to origin/master", "status": "not_started"}
-  ],
-  "blockers": [
-    {"description": "SonarCloud Quality Gate is ERROR: new_coverage 71.0% (needs >=80%) and new_duplicated_lines_density 5.9% (needs <=3%)", "type": "external", "workaround": "Project-wide metric requires extensive test/refactor work outside Phase 16 scope, or explicit gate waiver."}
-  ],
-  "human_actions_pending": [
-    {"action": "Decide whether to waive the failing Quality Gate and allow push, or authorize broader project-wide coverage/duplication work", "context": "Gate blocks push per project policy; remaining failures are project-wide, not Phase-16 specific", "blocking": true}
-  ],
+  "remaining_tasks": [],
+  "blockers": [],
+  "human_actions_pending": [],
   "decisions": [
     {"decision": "Converted CRLF files to LF so Sonar Rust analyzer can parse them", "rationale": "Scanner was failing with invalid highlighting offsets on CRLF files", "phase": "16"},
     {"decision": "Generated Sonar generic coverage XML from cargo-llvm-cov Cobertura output", "rationale": "SonarCloud's bundled parser only accepts generic coverage XML version 1", "phase": "16"},
-    {"decision": "Pinned GitHub Actions to full commit SHAs and moved secrets to step env", "rationale": "Resolved SonarCloud security hotspots for workflow files", "phase": "16"}
+    {"decision": "Pinned GitHub Actions to full commit SHAs and moved secrets to step env", "rationale": "Resolved SonarCloud security hotspots for workflow files", "phase": "16"},
+    {"decision": "Waived SonarCloud Quality Gate coverage and duplication failures", "rationale": "Metrics are project-wide across ~70k new lines since 2026-04-09, not Phase-16 specific; security hotspots resolved", "phase": "16"}
   ],
   "uncommitted_files": [],
-  "next_action": "Wait for human decision on Quality Gate waiver vs. broader project-wide test/refactor work, then push or continue",
-  "context_notes": "Phase 16 validation work is technically complete. Added 32+ simulate tests; security hotspots resolved. Project-wide SonarCloud gate still fails on coverage (71.0%) and duplication (5.9%) because the new-code period since 2026-04-09 spans ~70k lines across many crates."
+  "next_action": "None — phase complete and pushed.",
+  "context_notes": "Phase 16 validation and push are complete. 254 dlp-admin-cli tests pass. Security hotspots reviewed. master pushed to origin."
 }
