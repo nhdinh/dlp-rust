@@ -3127,7 +3127,7 @@ fn simulate_return_to_caller(app: &mut App) {
 
 /// Handles key events while navigating the Policy Simulate form (not editing).
 fn handle_simulate_nav(app: &mut App, key: KeyEvent, selected: usize) {
-    use crate::app::SIMULATE_ROW_COUNT;
+    use crate::app::{SIMULATE_ROW_COUNT, SIMULATE_SUBMIT_ROW};
     match key.code {
         KeyCode::Up | KeyCode::Down => {
             if let Screen::PolicySimulate { selected: sel, .. } = &mut app.screen {
