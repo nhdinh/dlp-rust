@@ -376,16 +376,17 @@ pub enum SimulateCaller {
     PolicyMenu,
 }
 
-/// The outcome of a simulate submission: no result yet, a successful evaluation,
+/// The outcome of a simulate submission: no result yet, loading, a successful evaluation,
 /// or an error (network or server).
 #[derive(Debug, Clone)]
 pub enum SimulateOutcome {
     /// No submission made yet, or result was cleared.
     None,
+    /// Request is in flight; UI should show a loading indicator.
+    Loading,
     /// Server returned a decision successfully.
     Success(dlp_common::abac::EvaluateResponse),
-    /// Network or server error; message is already prefixed with
-    /// "Network error: " or "Server error: ".
+    /// Network or server error; message is already prefixed.
     Error(String),
 }
 
@@ -1280,6 +1281,9 @@ pub struct App {
     /// Any other value ("Audit", "Block", "AuditAndBlock") means a global
     /// override is active and the TUI must show a banner on every policy screen.
     pub global_enforcement_mode: Option<String>,
+    /// Terminal handle for forced redraws during blocking operations.
+    /// Populated by `run_tui` on startup; `None` outside the TUI loop.
+    pub terminal: Option<crate::tui::Tui>,
 }
 
 impl App {
@@ -1297,6 +1301,7 @@ impl App {
             should_quit: false,
             status: None,
             global_enforcement_mode: None,
+            terminal: None,
         }
     }
 

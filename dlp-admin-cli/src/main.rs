@@ -189,22 +189,18 @@ fn run() -> Result<()> {
     let client = login::run(&rt)?;
 
     // Enter the ratatui TUI.
-    let mut terminal = tui::setup()?;
-    let result = run_tui(&mut terminal, client, rt);
-
-    // Always restore the terminal, even on error.
-    tui::restore(&mut terminal)?;
-
-    result
+    let terminal = tui::setup()?;
+    run_tui(terminal, client, rt)
 }
 
 /// Runs the main TUI event loop.
 fn run_tui(
-    terminal: &mut tui::Tui,
+    terminal: tui::Tui,
     client: client::EngineClient,
     rt: tokio::runtime::Runtime,
 ) -> Result<()> {
     let mut app = app::App::new(client, rt);
+    app.terminal = Some(terminal);
 
     // Fetch global enforcement mode before first render.
     // This is a safety feature: if the admin has set a global override,
@@ -218,19 +214,34 @@ fn run_tui(
         }
     }
 
-    loop {
-        terminal.draw(|frame| screens::draw(&app, frame))?;
+    let loop_result = (|| -> Result<()> {
+        loop {
+            // Draw: take terminal out of app to avoid borrow checker conflicts
+            // between &mut terminal and &app passed to screens::draw.
+            let mut terminal = app.terminal.take().unwrap();
+            terminal.draw(|frame| screens::draw(&app, frame))?;
+            app.terminal = Some(terminal);
 
-        if let Some(evt) = event::poll()? {
-            screens::handle_event(&mut app, evt);
-        }
+            if let Some(evt) = event::poll()? {
+                screens::handle_event(&mut app, evt);
+            }
 
-        if app.should_quit {
-            break;
+            if app.should_quit {
+                break;
+            }
         }
+        Ok(())
+    })();
+
+    // Always restore terminal, even on error.
+    let mut terminal = app.terminal.take().unwrap();
+    let restore_result = tui::restore(&mut terminal);
+
+    // Preserve the loop error over the restore error.
+    match loop_result {
+        Err(e) => Err(e),
+        Ok(()) => restore_result,
     }
-
-    Ok(())
 }
 
 /// Extracts `--connect <host:port>` from the argument list and sets

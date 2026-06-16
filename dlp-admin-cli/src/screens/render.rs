@@ -2011,6 +2011,18 @@ fn draw_policy_simulate(
             SimulateOutcome::None => {
                 // Nothing to render — form only.
             }
+            SimulateOutcome::Loading => {
+                let block = Block::default()
+                    .title(" Submitting... ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow));
+                frame.render_widget(
+                    Paragraph::new("Evaluating policy... please wait.")
+                        .style(Style::default().fg(Color::Yellow))
+                        .block(block),
+                    result_area,
+                );
+            }
             SimulateOutcome::Success(resp) => {
                 let decision_color = if resp.decision.is_denied() {
                     Color::Red
@@ -2052,6 +2064,8 @@ fn draw_policy_simulate(
 
     let hints = if editing {
         "Type to edit | Enter: commit | Esc: cancel"
+    } else if matches!(result, SimulateOutcome::Loading) {
+        "Submitting... | please wait"
     } else {
         "Up/Down: navigate | Enter: select/cycle | Esc: back"
     };
