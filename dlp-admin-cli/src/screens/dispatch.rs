@@ -2823,11 +2823,15 @@ fn action_open_simulate(app: &mut App, caller: SimulateCaller) {
     };
 }
 
-/// Builds an EvaluateRequest from the current form state, POSTs to /evaluate,
-/// and stores the outcome in the screen's result field.
+/// Builds an EvaluateRequest from the current form state, validates required fields,
+/// normalizes groups, forces a terminal redraw to show the Loading state, POSTs to
+/// /evaluate, and stores the outcome.
 ///
+/// On validation failure: result = SimulateOutcome::Error("Validation error: ...").
 /// On success: result = SimulateOutcome::Success(response).
-/// On reqwest network error: result = SimulateOutcome::Error("Network error: ...").
+/// On reqwest timeout: result = SimulateOutcome::Error("Timeout: ...").
+/// On reqwest connection failure: result = SimulateOutcome::Error("Connection error: ...").
+/// On reqwest decode failure: result = SimulateOutcome::Error("Decode error: ...").
 /// On server 4xx/5xx: result = SimulateOutcome::Error("Server error: ...").
 fn action_submit_simulate(app: &mut App) {
     // Clone form out of the screen to avoid borrow conflicts.
@@ -2836,12 +2840,36 @@ fn action_submit_simulate(app: &mut App) {
         _ => return,
     };
 
-    // Parse groups from comma-separated raw input.
+    // --- Client-side validation ---
+    let mut validation_errors: Vec<String> = Vec::new();
+    if form.user_sid.trim().is_empty() {
+        validation_errors.push("User SID is required".to_string());
+    }
+    if form.path.trim().is_empty() {
+        validation_errors.push("Path is required".to_string());
+    }
+    if !validation_errors.is_empty() {
+        if let Screen::PolicySimulate { result, .. } = &mut app.screen {
+            *result = SimulateOutcome::Error(format!(
+                "Validation error: {}",
+                validation_errors.join("; ")
+            ));
+        }
+        return;
+    }
+
+    // --- Normalize groups (trim, dedupe preserving order, lowercase) ---
+    let mut seen = std::collections::HashSet::new();
     let groups: Vec<String> = form
         .groups_raw
         .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| {
+            if s.is_empty() {
+                return false;
+            }
+            seen.insert(s.clone())
+        })
         .collect();
 
     // Map select indices to typed ABAC enums.
@@ -2881,8 +2909,8 @@ fn action_submit_simulate(app: &mut App) {
 
     let req = EvaluateRequest {
         subject: Subject {
-            user_sid: form.user_sid,
-            user_name: form.user_name,
+            user_sid: form.user_sid.trim().to_string(),
+            user_name: form.user_name.trim().to_string(),
             groups,
             device_trust: device_trust_vals
                 .get(form.device_trust)
@@ -2895,7 +2923,7 @@ fn action_submit_simulate(app: &mut App) {
             device_health: dlp_common::DeviceHealthStatus::default(),
         },
         resource: Resource {
-            path: form.path,
+            path: form.path.trim().to_string(),
             classification: classification_vals
                 .get(form.classification)
                 .copied()
@@ -2914,6 +2942,21 @@ fn action_submit_simulate(app: &mut App) {
         ..Default::default()
     };
 
+    // Set loading state before the blocking call.
+    if let Screen::PolicySimulate { result, .. } = &mut app.screen {
+        *result = SimulateOutcome::Loading;
+    }
+
+    // --- Force terminal redraw so the Loading state is visible ---
+    // We take the terminal out of app to avoid borrow checker conflicts:
+    // terminal.draw needs &mut Terminal while screens::draw needs &App.
+    // By taking ownership temporarily, app.terminal is None during the draw,
+    // so &app does not conflict with the mutable terminal borrow.
+    if let Some(mut terminal) = app.terminal.take() {
+        let _ = terminal.draw(|frame| crate::screens::draw(&*app, frame));
+        app.terminal = Some(terminal);
+    }
+
     let result = app.rt.block_on(
         app.client
             .post::<dlp_common::abac::EvaluateResponse, _>("evaluate", &req),
@@ -2929,13 +2972,21 @@ fn action_submit_simulate(app: &mut App) {
                 *out_result = SimulateOutcome::Success(resp);
             }
             Err(e) => {
-                // Distinguish reqwest transport errors from HTTP 4xx/5xx.
-                let prefix = if e.downcast_ref::<reqwest::Error>().is_some() {
-                    "Network error: "
+                let msg = e.to_string();
+                let prefix = if let Some(req_err) = e.downcast_ref::<reqwest::Error>() {
+                    if req_err.is_timeout() {
+                        "Timeout: "
+                    } else if req_err.is_connect() {
+                        "Connection error: "
+                    } else if req_err.is_decode() {
+                        "Decode error: "
+                    } else {
+                        "Network error: "
+                    }
                 } else {
                     "Server error: "
                 };
-                *out_result = SimulateOutcome::Error(format!("{prefix}{e}"));
+                *out_result = SimulateOutcome::Error(format!("{prefix}{msg}"));
             }
         }
     }
@@ -3098,7 +3149,16 @@ fn handle_simulate_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 }
             }
             3 | 4 | 6 | 7 | 8 => simulate_cycle_field(app, selected),
-            9 => action_submit_simulate(app),
+            SIMULATE_SUBMIT_ROW => {
+                // Prevent double-submission while a request is in flight.
+                let is_loading = matches!(
+                    &app.screen,
+                    Screen::PolicySimulate { result: SimulateOutcome::Loading, .. }
+                );
+                if !is_loading {
+                    action_submit_simulate(app);
+                }
+            }
             _ => {}
         },
         KeyCode::Esc | KeyCode::Char('q') => simulate_return_to_caller(app),
@@ -8621,5 +8681,139 @@ mod protected_path_tests {
             "expected error status, got: {msg}"
         );
         assert_eq!(*kind, StatusKind::Error);
+    }
+
+    // ------------------------------------------------------------------
+    // Simulate tests — group normalization, validation, error classification
+    // ------------------------------------------------------------------
+
+    /// Normalize groups the same way action_submit_simulate does.
+    fn normalize_groups(raw: &str) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        raw.split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| {
+                if s.is_empty() {
+                    return false;
+                }
+                seen.insert(s.clone())
+            })
+            .collect()
+    }
+
+    /// Validate simulate form the same way action_submit_simulate does.
+    fn validate_simulate(user_sid: &str, path: &str) -> Option<String> {
+        let mut errors: Vec<String> = Vec::new();
+        if user_sid.trim().is_empty() {
+            errors.push("User SID is required".to_string());
+        }
+        if path.trim().is_empty() {
+            errors.push("Path is required".to_string());
+        }
+        if errors.is_empty() {
+            None
+        } else {
+            Some(format!("Validation error: {}", errors.join("; ")))
+        }
+    }
+
+    /// Classify an error string the same way action_submit_simulate does.
+    fn classify_error_prefix(err: &reqwest::Error) -> &'static str {
+        if err.is_timeout() {
+            "Timeout: "
+        } else if err.is_connect() {
+            "Connection error: "
+        } else if err.is_decode() {
+            "Decode error: "
+        } else {
+            "Network error: "
+        }
+    }
+
+    // Group normalization tests
+
+    #[test]
+    fn test_group_normalization_trim_and_lowercase() {
+        let raw = "  S-1-5-21-A  ,  S-1-5-21-B  ";
+        let got = normalize_groups(raw);
+        assert_eq!(got, vec!["s-1-5-21-a", "s-1-5-21-b"]);
+    }
+
+    #[test]
+    fn test_group_normalization_dedupe_preserves_order() {
+        let raw = "A, B, A, C, B, D";
+        let got = normalize_groups(raw);
+        assert_eq!(got, vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn test_group_normalization_empty_input() {
+        let raw = "";
+        let got = normalize_groups(raw);
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn test_group_normalization_empty_segments() {
+        let raw = "A,,B, ,C";
+        let got = normalize_groups(raw);
+        assert_eq!(got, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_group_normalization_single_group() {
+        let raw = "S-1-5-21-ADMIN";
+        let got = normalize_groups(raw);
+        assert_eq!(got, vec!["s-1-5-21-admin"]);
+    }
+
+    // Validation tests
+
+    #[test]
+    fn test_validation_empty_user_sid() {
+        let msg = validate_simulate("", "/some/path");
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("User SID is required"));
+    }
+
+    #[test]
+    fn test_validation_empty_path() {
+        let msg = validate_simulate("S-1-5-21", "");
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("Path is required"));
+    }
+
+    #[test]
+    fn test_validation_both_empty() {
+        let msg = validate_simulate("", "");
+        assert!(msg.is_some());
+        let m = msg.unwrap();
+        assert!(m.contains("User SID is required"));
+        assert!(m.contains("Path is required"));
+    }
+
+    #[test]
+    fn test_validation_whitespace_only() {
+        let msg = validate_simulate("   ", "   ");
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("Validation error:"));
+    }
+
+    #[test]
+    fn test_validation_valid_passes() {
+        let msg = validate_simulate("S-1-5-21", "/some/path");
+        assert!(msg.is_none());
+    }
+
+    // Error classification compile-time check
+
+    #[test]
+    fn test_error_prefix_function_signature() {
+        // reqwest::Error cannot be easily constructed in unit tests.
+        // This test verifies the classification function signature compiles
+        // and accepts a reqwest::Error reference.
+        let _ = |e: &reqwest::Error| {
+            let _ = classify_error_prefix(e);
+        };
     }
 }
