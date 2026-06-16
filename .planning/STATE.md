@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-status: verifying
+status: executing
 stopped_at: context exhaustion at 76% (2026-06-16)
-last_updated: "2026-06-16T05:15:46.441Z"
-last_activity: 2026-06-13 -- Phase 68.1 Plan 03 complete
+last_updated: "2026-06-16T06:08:09.668Z"
+last_activity: 2026-06-16 -- Phase 16 execution started
 progress:
   total_phases: 38
   completed_phases: 29
-  total_plans: 141
-  completed_plans: 130
+  total_plans: 142
+  completed_plans: 131
   percent: 76
 ---
 
@@ -20,16 +20,16 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 68.1 — close-gap-device-05-tamper-03-04-wire-tamper-detection-to-siem-and-health
+**Current Focus:** Phase 16 — policy-list-simulate
 
 ---
 
 ## Current Position
 
-Phase: 68.1 (close-gap-device-05-tamper-03-04-wire-tamper-detection-to-siem-and-health) — COMPLETE
-Plan: 3 of 3 COMPLETE
-Status: All plans executed, committed, verified. Phase 68.1 complete.
-Last activity: 2026-06-13 -- Phase 68.1 Plan 03 complete
+Phase: 16 (policy-list-simulate) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-06-16 -- Phase 16 execution started
 
 ## Progress
 
@@ -122,7 +122,8 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 26. **2026-06-05: Phase 57 complete.** Operational Deployment Guide + AV/EDR Allowlist + UAT ship gate. Deliverables: `docs/operations/deployment-guide.md` (master deployment guide with pre-flight checks, 6-vendor EDR allowlist procedures, hash verification, WDSI submission), `docs/RELEASE_NOTES.md` (SHA-256/SHA-512 hash generation commands, Authenticode verification, WDSI steps), 6 UAT PowerShell scripts (`Uat-CloudSync.ps1`, `Uat-PrintBlock.ps1`, `Uat-HookDll.ps1`, `Uat-DaclTripwire.ps1`, `Uat-EtwNtdll.ps1`, `Uat-Benchmark.ps1`), `.planning/milestones/v0.10.0-UAT.md` (test matrix with 8 groups, 30+ test cases, CRIT-04 benchmark gate). OPS-01..04 requirements satisfied. Phase 57 COMPLETE (all 6 plans).
 27. **2026-06-07: Phase 64 Plan 01 complete.** Core data types for expanded device identity: `DeviceHealthStatus` enum (4 variants with Ord ordering), `EndpointIdentity` struct (5 fields with serde default), `PolicyCondition::DeviceHealth` variant (op + value pattern), `Subject.device_health` field. 13 new unit tests (9 in endpoint.rs, 4 in abac.rs). 299 total tests pass. Clippy clean. cargo fmt clean. DEVICE-01, DEVICE-02, DEVICE-05 requirements satisfied.
 28. **2026-06-13: Phase 68.1 Plan 01 complete.** Server-side `IngestEventsResponse` with `tamper_detected_for_agent` and `chain_break_count`. Synthetic `ChainBreakDetected` events routed to SIEM relay and syslog queue. Agent-side `IngestResponse` with `#[serde(default)]` backward compat. `AuditBuffer::flush` checks tamper flag and calls `report_tamper_detected()`. 13 dlp-server tests pass, 829 dlp-agent tests pass, clippy clean, fmt clean.
-29. **2026-06-13: Phase 68.1 Plan 03 complete.** Admin TUI Audit Integrity screen: `audit_integrity.rs` constants module, `Screen::AuditIntegrityList` and `Screen::AuditIntegrityDetail` variants, `AuditIntegrityFilter` enum, `EngineClient::list_audit_integrity` client method, `handle_audit_integrity_list`/`handle_audit_integrity_detail`/`action_load_audit_integrity` dispatch handlers, `draw_audit_integrity_list`/`draw_audit_integrity_detail` render functions with OK/BROKEN banner and chain break detail. SystemMenu expanded to 15 items. 14 new unit tests (3 audit_integrity + 3 dispatch + 2 client + 4 render + 2 updated). 210 dlp-admin-cli tests pass, clippy clean (-D warnings), fmt clean. TAMPER-04 requirement satisfied. Phase 68.1 COMPLETE (all 3 plans).
+29. **2026-06-16: Phase 16 Plan 01a complete.** Verified PolicyList TUI implementation matches 5-column spec (Priority/Name/Action/Enabled/Mode) with global_mode parameter, render_global_override_banner call, Char('n') branch to PolicyCreate, client-side sort with priority ascending + name tiebreak, malformed priority sinking via u32::MAX. Build passes, 210 tests pass. POLICY-01 requirement satisfied.
+30. **2026-06-13: Phase 68.1 Plan 03 complete.** Admin TUI Audit Integrity screen: `audit_integrity.rs` constants module, `Screen::AuditIntegrityList` and `Screen::AuditIntegrityDetail` variants, `AuditIntegrityFilter` enum, `EngineClient::list_audit_integrity` client method, `handle_audit_integrity_list`/`handle_audit_integrity_detail`/`action_load_audit_integrity` dispatch handlers, `draw_audit_integrity_list`/`draw_audit_integrity_detail` render functions with OK/BROKEN banner and chain break detail. SystemMenu expanded to 15 items. 14 new unit tests (3 audit_integrity + 3 dispatch + 2 client + 4 render + 2 updated). 210 dlp-admin-cli tests pass, clippy clean (-D warnings), fmt clean. TAMPER-04 requirement satisfied. Phase 68.1 COMPLETE (all 3 plans).
 
 ## Blockers
 
@@ -146,7 +147,7 @@ Phase 64 verified complete 2026-06-09. Phase 68.1 verified complete 2026-06-13. 
 
 ## Session Continuity
 
-Last session: 2026-06-16T03:54:45.887Z
+Last session: 2026-06-16T06:08:09.659Z
 Stopped at: context exhaustion at 76% (2026-06-16)
 Resume file: .planning/phases/68.1-close-gap-device-05-tamper-03-04-wire-tamper-detection-to-siem-and-health/68.1-CONTEXT.md
 
