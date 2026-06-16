@@ -1,98 +1,127 @@
 ---
 phase: 16
-reviewers: [codex, opencode]
-reviewed_at: 2026-06-16T11:15:00Z
-plans_reviewed: [16-01-PLAN.md, 16-02-PLAN.md]
+reviewers: [opencode]
+reviewed_at: 2026-06-16T11:56:00Z
+plans_reviewed: [16-01a-PLAN.md, 16-01b-PLAN.md, 16-02-PLAN.md]
 ---
 
-# Cross-AI Plan Review — Phase 16
+# Cross-AI Plan Review — Phase 16, Cycle 2
 
-## Codex Review
-
-Codex CLI (v0.130.0) was selected but could not be invoked. The configured default model (`gpt-5.3-codex`) and all fallback models (`gpt-5`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`) returned:
-
-```
-ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account."}}
-```
-
-This account appears to be a ChatGPT Plus/Team subscription without Codex API access. The available models in the Codex cache (`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `codex-auto-review`) all require OpenAI API billing. To enable Codex reviews, upgrade to OpenAI API billing or configure a valid API key with Codex model access.
+## Reviewers
+- **OpenCode** (gpt-5.3-chat-latest via GitHub Copilot) — reviewed against actual source code with grep verification
+- **Codex** — unavailable (ChatGPT account restriction — no Codex API access)
 
 ---
 
 ## OpenCode Review
 
-### Plan 16-01 Review
+### 1. Summary
 
-#### Summary
+The cycle 1 HIGH concern ("stale column spec") is **resolved**. Plan 16-01a accurately documents the shipped 5-column PolicyList reality and its grep-based verification commands validate against actual code. Plan 16-01b correctly documents the existing Simulate foundation (including the truthful absence of a Loading variant). Plan 16-02 addresses the remaining MEDIUM/LOW items from cycle 1 (advanced section dropped, validation, normalization, error granularity) and aligns planning artifacts. However, a **new HIGH concern** is introduced: the Loading state implementation as designed will never be rendered to the user, making it dead code. The convergence loop is making progress but a cycle 3 will be needed to fix this flaw.
 
-Both plans are well-structured with clear wave separation (Wave 1 = types + PolicyList, Wave 2 = simulate implementation). However, the plans contain multiple deviations from what actually shipped — most notably the persistent **Mode column** and the **missing Advanced section** and **Loading state**. The plans are good at the architectural level but over-promise some features (advanced fields, validation, Loading state) that were dropped without documented deviations.
+### 2. Strengths
 
-#### Strengths
+- **16-01a column spec accuracy**: Correctly identifies 5-column reality with verified widths (12/38/15/12/23%), `global_mode: Option<&str>` parameter, and `render_global_override_banner` call. All must-haves truths are verifiable via `grep` against actual source code.
+- **16-01b honest about current state**: Truths state `SimulateOutcome` has `None, Success, Error` variants — notably does NOT claim a Loading variant exists. This prevents confusion between current and target state.
+- **16-02 explicit removal of "Advanced section"**: The plan explicitly documents why `timestamp_override`/`session_id_override` are being dropped (server auto-generates them), closing the MEDIUM concern from cycle 1 with clear reasoning.
+- **Complete artifact alignment**: Task 0 in 16-02 comprehensively updates D-01, D-02, D-20, D-24, RESEARCH.md, PATTERNS.md, and creates VALIDATION.md. The planner recognized that documentation alignment is as important as code changes in a reopened review phase.
+- **TDD annotations**: Both 16-02 Task 1 and Task 2 include `tdd="true"` with behavior specs before implementation, showing awareness of test-driven discipline.
+- **Re-submission guard**: `handle_simulate_nav` loading guard prevents double-submits — correct pattern even if the Loading visualization is broken.
 
-- **Clean Wave 1 / Wave 2 split** — sharing types (`SimulateFormState`, `SimulateCaller`, `SimulateOutcome`) before render/dispatch code prevents circular dependencies.
-- **`SimulateCaller` enum for Esc routing** — correct pattern (matches `CallerScreen`, `ImportCaller`, `TierPickerCaller`). Correct return indices: MainMenu `{ selected: 3 }`, PolicyMenu `{ selected: 5 }`.
-- **`EDITABLE_TO_RENDER` lookup table** — correctly maps the 10 editable indices to 14 render positions with section headers interleaved. Good coupling of render and dispatch.
-- **Client-side sort in `action_list_policies`** — sort-once-per-fetch pattern per D-06, malformed priority as `u32::MAX` per D-07.
-- **Error classification** — distinguishing reqwest transport errors from HTTP errors is correct.
-- **`'n'` key in PolicyList** — correctly navigates to PolicyCreate, which the plan correctly identified as missing.
+### 3. Concerns
 
-#### Concerns
+| # | Concern | Severity | File | Detail |
+|---|---------|----------|------|--------|
+| 1 | **Loading state will never render** | **HIGH** | `16-02-PLAN.md` Task 1+2 | `action_submit_simulate` sets `*result = SimulateOutcome::Loading` then immediately calls `app.rt.block_on(post(...))`, which blocks the single-threaded ratatui event loop. The TUI only re-draws on the next iteration of the `draw → handle_event` loop, which happens AFTER `action_submit_simulate` returns — at which point the result is already `Success` or `Error`. **The Loading state will never be visible to the user.** The rendered yellow "Submitting..." block plus "please wait" hints are dead code. The plan does not address this: no explicit re-draw is triggered before `block_on`, and the app's `terminal` field (if accessible) is not used. |
+| 2 | **Must-haves ambiguity (present tense for future state)** | **MEDIUM** | `16-02-PLAN.md` frontmatter | The `must_haves` truths use present tense: `"SimulateOutcome::Loading variant exists"`, `"Groups are normalized..."`. In 16-01a and 16-01b, must-haves truths describe current shipped state. In 16-02, they describe target state after execution. A reviewer or automated tool reading the frontmatter without the plan body will misinterpret these as false claims about the shipped code. Recommend prefixing future-state truths with `"After execution:"` or using separate `postconditions` key. |
+| 3 | **D-01 column order typo in must-haves** | **LOW** | `16-02-PLAN.md:22` | Must-haves truth says `(Priority/Name/Action/Mode/Enabled)` but actual shipped code and the plan's own Task 0 step 1 specify `Priority, Name, Action, Enabled, Mode` — Mode and Enabled are transposed. The actual CONTEXT.md revision (Task 0 action) is correct, so the final artifact will be right, but the frontmatter creates a misleading signal. |
+| 4 | **Loading state re-submission guard has wrong row constant** | **MEDIUM** | `16-02-PLAN.md:499-509` | The loading guard is placed at `SIMULATE_SUBMIT_ROW` which is `9` (the Enter-to-submit row). However, pressing Enter on non-submit rows triggers text-edit (for text fields) or cycle (for select fields). The plan correctly identifies `SIMULATE_SUBMIT_ROW` as row 9, so this is fine on re-read. **No issue.** *Retracted on further analysis.* |
+| 5 | **Exception: Blocking call (#6) not addressed** | **LOW** | `16-02-PLAN.md` | The Loading addition is an attempt to address concern #6 ("TUI freezes during block_on"), but since the Loading state won't render during the blocking call, this concern is not actually addressed. The plan acknowledges the pattern is "consistent with codebase conventions" but does not document that the Loading mitigation is ineffective. |
+| 6 | **Missing: Granular error testing** | **LOW** | `16-02-PLAN.md Task 2` | The test module covers group normalization (5 tests) but does NOT test validation or error classification. Behaviors 1 (empty user_sid), 2 (empty path), 7-11 (error prefixes) have no automated verification beyond grep. The `grep` for prefix strings is weak — it proves the strings exist in the source file but not that they're reached at the correct code path. |
+| 7 | **Potential dependency hazard: Task ordering** | **LOW** | `16-02-PLAN.md` | Task 0 (planning artifact alignment) modifies .md files. Task 1+2 modify .rs files. These are independent and could run in parallel. The plan correctly separates them by wave, but the tasks could be parallelized for efficiency. |
 
-| # | Concern | Severity | Detail |
-|---|---------|----------|--------|
-| 1 | **Stale column spec** | **HIGH** | Plan says 4 columns (Priority/Name/Action/Enabled) with widths 15/45/20/20%. Shipped code has **5 columns** including Mode (enforcement_mode) with widths 12/38/15/12/23%. Plan did not account for the enforcement_mode column that Phase 15 added to the data model. Either the plan should drop the Mode column per D-01, or the shipped code should not have it — there's a mismatch. |
-| 2 | **"Advanced section" not implemented** | **MEDIUM** | D-11 and Plan 16-02 describe `timestamp_override`, `session_id_override`, and `advanced_visible` toggle. The `Environment` struct has no such fields, `SimulateFormState` has no such fields, and `action_submit_simulate` hardcodes `chrono::Utc::now()` and `session_id: 0`. These fields do not exist on the wire. Plan over-promises or assumes server-side work that wasn't authorized (D-12 already says "no server-side work required"). |
-| 3 | **No Loading state** | **MEDIUM** | Plan 16-02 says "Loading state: SimulateOutcome::Loading". The shipped `SimulateOutcome` enum only has `None`, `Success`, `Error`. No Loading rendering exists. During `block_on` the TUI freezes with no spinner — a UX gap the plan identified but didn't deliver. |
-| 4 | **No client-side validation** | **LOW** | Plan 16-02 mentions "Validation: required fields, length caps, group normalization". `action_submit_simulate` does zero pre-validation — it directly builds `EvaluateRequest` and POSTs. Server-side validation per D-09 is correct, but empty `user_sid` sending an empty string to the server would be better caught client-side. |
-| 5 | **Group normalization not implemented** | **LOW** | D-10 specifies: comma-separated, trim, dedupe, lowercase, preserve order. The code only does `split(',')`, `trim()`, and `filter(empty)` — no dedupe or lowercase. |
-| 6 | **Blocking call in `action_submit_simulate`** | **LOW** | `app.rt.block_on(post(...))` blocks the TUI event loop for the full HTTP round-trip. Existing pattern (same as all other actions), but a 10s timeout means the TUI is unresponsive for up to 10 seconds. Not a blocker — consistent with codebase conventions. |
-| 7 | **Network error classification** | **LOW** | Plan mentions "timeout, connection, decode, server" — shipped code only distinguishes `reqwest::Error` (network) from `anyhow::Error` (server). The classification is coarser than planned. |
+### 4. Suggestions
 
-#### Suggestions
+1. **Fix the Loading state rendering (HIGH severity)** — Add an explicit terminal re-draw in `action_submit_simulate` before `block_on`:
+   ```rust
+   *result = SimulateOutcome::Loading;
+   if let Some(terminal) = app.terminal.as_mut() {
+       let _ = terminal.draw(|f| app.draw(f));
+   }
+   ```
+   This forces the Loading frame to render before the blocking call. If `terminal` is not accessible from `action_submit_simulate`, expose it via `App::force_redraw()` or restructure `action_submit_simulate` to be async.
 
-1. **Document the Mode column as a deliberate deviation** — The shipped 5-column PolicyList (with Mode) works well and matches what admins see in PolicyCreate/PolicyEdit. Either update the plan to include Mode or update the code to remove it. Given the enforcement-mode banner feature, keeping Mode in the table is arguably correct — but the plan should reflect this.
+2. **Clarify must-haves semantics** — Add a comment in the frontmatter template: `# These are POSTCONDITIONS — truths that MUST hold after plan execution, not claims about current code.`
 
-2. **Drop the "Advanced section" from the plan** — Since `timestamp` and `session_id` are not settable via the wire API (they're endpoint-generated), the Advanced section can't work without server changes. Remove D-11 from CONTEXT.md or flag it as deferred.
+3. **Fix D-01 column order typo** — Change `(Priority/Name/Action/Mode/Enabled)` to `(Priority/Name/Action/Enabled/Mode)` in line 22 of 16-02-PLAN.md.
 
-3. **Add a working/loading indicator** — Even a simple `"Sending request..."` status bar message on submit would be an improvement over the silent freeze. The pattern exists: `action_submit_simulate` could set a status message before `block_on`.
+4. **Add validation + error classification tests** — Extend `simulate_tests` module with:
+   - A test that calls a helper function (extracted from `action_submit_simulate`) with empty `user_sid` and asserts `Validation error:` prefix
+   - A test that constructs timeout-like errors and asserts correct prefix mapping
+   - These require extracting validation/error logic into testable helper functions, which is good practice anyway.
 
-4. **Implement group normalization fully** — Dedupe and lowercase are trivial (`groups.dedup()` and `.to_lowercase()`) and would make D-10 match the code.
+5. **Document Loading limitation explicitly** — Add a note in the plan or in the code that the Loading state rendering depends on the app architecture and may be a no-op if the TUI framework doesn't re-draw synchronously. This prevents future confusion when a developer wonders why the yellow box never appears.
 
-5. **Add empty-field guard for user_sid** — A 3-line check before building the request. Not critical (server returns 400), but better UX per the plan's stated validation intent.
+6. **Accept the limitation as-is** — If explicit re-draw before `block_on` is deemed too invasive for this phase, consider removing the Loading visual entirely and replacing it with a simpler approach: disable the [Simulate] button during submission (the re-submission guard already does this). Document that concern #6 is deferred to a future refactoring phase (async event loop).
 
-#### Risk Assessment
+### 5. Risk Assessment
 
-**Overall risk: MEDIUM**
+**Overall risk: MEDIUM** (borderline HIGH due to the Loading rendering flaw)
 
-The shipped code is functional and UAT-passed (11/11). The risks are about **plan accuracy and completeness** rather than implementation bugs. Two HIGH concerns exist:
+#### Convergence Analysis
 
-1. The column spec mismatch (plan says 4 columns, code has 5) means the plan is an unreliable source of truth for PolicyList structure.
-2. The Advanced section was fully planned (D-11, Plan 16-02) but completely absent from the shipped code without being marked as a deviation in SUMMARY.md. This creates confusion for future phases that might depend on it.
+| Cycle | Concerns | Status |
+|-------|----------|--------|
+| 1 | HIGH: stale column spec | → RESOLVED in cycle 2 |
+| 1 | MEDIUM: advanced section | → RESOLVED (dropped) |
+| 1 | MEDIUM: no Loading state | → PARTIALLY ADDRESSED (implemented but non-functional) |
+| 1 | LOW: no validation | → ADDRESSED |
+| 1 | LOW: group normalization | → ADDRESSED |
+| 1 | LOW: blocking call | → NOT ADDRESSED (unchanged) |
+| 1 | LOW: error classification | → ADDRESSED |
 
-Both concerns are documentation/alignment issues, not runtime bugs. The plan structure (Wave 1/2 split, shared types, caller routing) was effective and well-executed.
+**The convergence loop IS making progress** — the HIGH concern is resolved, 4 LOW items are addressed. However:
+
+- **The new HIGH concern (Loading won't render)** means cycle 3 is likely needed to fix this.
+- The Loading implementation as specified will compile, pass tests, and pass grep verification, but will have **zero visual effect**. A casual observer running the verification commands would see all checks pass. Only runtime testing would reveal the problem.
+- **Net risk verdict**: If the Loading rendering flaw is fixed (suggestion #1) before execution, this drops to LOW. If executed as-is, the plan introduces effective dead code that creates maintenance debt.
+
+**Recommended**: Accept the plan with the condition that suggestion #1 (explicit re-draw before `block_on`) is implemented, or remove the Loading variant from scope and defer to a future async-refactoring phase.
 
 ---
 
 ## Consensus Summary
 
 ### Agreed Strengths
-- Clean wave-based separation (Wave 1 types/scaffolding, Wave 2 full implementation)
-- Reuses existing server endpoint (`/evaluate`) and ABAC types without backend changes
-- Keyboard interaction model is consistent with prior phases (Phase 14/15 patterns)
-- Inline result rendering is user-friendly
-- Good separation of editing vs navigation modes
-- `SimulateCaller` enum for Esc routing is clean and correct
-- Client-side sort with malformed priority handling is well-designed
+- Cycle 1 HIGH concern (stale column spec) is fully resolved — 16-01a accurately documents 5-column reality
+- 16-01b is honest about current Simulate foundation state (no Loading variant claimed)
+- 16-02 comprehensively addresses documentation alignment and closes 4 of 5 cycle 1 LOW/MEDIUM concerns
+- TDD annotations and re-submission guard show good engineering discipline
 
 ### Agreed Concerns
-- **Plan staleness vs. shipped code (HIGH)** — The column spec in the plan (4 columns) does not match the shipped code (5 columns with Mode). This is a documentation/alignment gap.
-- **Advanced section planned but not implemented (MEDIUM)** — D-11 and Plan 16-02 describe `timestamp_override`, `session_id_override`, and `advanced_visible` toggle, but these fields do not exist in the shipped code. The plan over-promised features that were not delivered.
-- **No Loading state (MEDIUM)** — Plan 16-02 specifies `SimulateOutcome::Loading`, but the shipped `SimulateOutcome` enum only has `None`, `Success`, `Error`. The TUI freezes during the blocking HTTP call with no visual feedback.
-- **Group normalization incomplete (LOW)** — D-10 specifies trim, dedupe, lowercase, preserve order, but the code only does `split(',')`, `trim()`, and `filter(empty)` — no dedupe or lowercase.
-- **Blocking HTTP call in TUI event loop (LOW)** — `app.rt.block_on(post(...))` blocks the TUI for the full HTTP round-trip. Consistent with codebase conventions but a UX gap.
+- **NEW HIGH: Loading state will never render** — `block_on` blocks the ratatui event loop before any re-draw can occur. The yellow "Submitting..." block is dead code. This is a significant architectural oversight in the 16-02 plan.
+- **MEDIUM: Must-haves ambiguity** — 16-02 frontmatter uses present tense for postconditions, creating confusion between current and target state
+- **LOW: D-01 column order typo** in 16-02 frontmatter (Mode/Enabled transposed)
+- **LOW: Missing validation and error classification tests** — only group normalization has unit tests
 
 ### Divergent Views
-- None significant in this cycle. OpenCode reviewed against the shipped codebase and found plan/code deviations. Codex was unavailable.
+- None significant. OpenCode is the sole reviewer (Codex unavailable). The review is based on direct source code inspection (grep + read) and is internally consistent.
+
+---
+
+## Cycle 2 vs Cycle 1 Comparison
+
+| Concern | Cycle 1 Severity | Cycle 2 Status |
+|---------|-----------------|----------------|
+| Stale column spec (4 vs 5 columns) | HIGH | **RESOLVED** — 16-01a correctly documents 5-column reality |
+| Advanced section not implemented | MEDIUM | **RESOLVED** — explicitly dropped from 16-02 with reasoning |
+| No Loading state | MEDIUM | **PARTIALLY ADDRESSED** — plan adds Loading variant but it will never render (new HIGH) |
+| No client-side validation | LOW | **ADDRESSED** — 16-02 Task 2 adds validation for empty user_sid and path |
+| Group normalization incomplete | LOW | **ADDRESSED** — 16-02 Task 2 adds dedupe + lowercase |
+| Blocking call in TUI event loop | LOW | **NOT ADDRESSED** — unchanged; Loading attempt is ineffective |
+| Network error classification | LOW | **ADDRESSED** — 16-02 Task 2 adds timeout/connection/decode/server granularity |
+
+**Unresolved HIGH count: 1** (new Loading rendering flaw)
 
 ---
 
