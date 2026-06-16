@@ -3120,7 +3120,7 @@ fn simulate_return_to_caller(app: &mut App) {
         _ => return,
     };
     match caller {
-        SimulateCaller::MainMenu => app.screen = Screen::MainMenu { selected: 3 },
+        SimulateCaller::MainMenu => app.screen = Screen::MainMenu { selected: 5 },
         SimulateCaller::PolicyMenu => app.screen = Screen::PolicyMenu { selected: 5 },
     }
 }
@@ -8683,6 +8683,12 @@ mod protected_path_tests {
         assert_eq!(*kind, StatusKind::Error);
     }
 
+}
+
+#[cfg(test)]
+mod simulate_tests {
+    use super::*;
+
     // ------------------------------------------------------------------
     // Simulate tests — group normalization, validation, error classification
     // ------------------------------------------------------------------
@@ -8805,15 +8811,54 @@ mod protected_path_tests {
         assert!(msg.is_none());
     }
 
-    // Error classification compile-time check
+    #[test]
+    fn test_simulate_esc_returns_to_main_menu_simulate_policy_index() {
+        // "Simulate Policy" is the 6th item (index 5) in the current MainMenu.
+        let mut app = make_test_app(Screen::PolicySimulate {
+            form: SimulateFormState::default(),
+            selected: 0,
+            editing: false,
+            buffer: String::new(),
+            result: SimulateOutcome::None,
+            caller: SimulateCaller::MainMenu,
+        });
+        handle_event(&mut app, crate::event::AppEvent::Key(key_event(KeyCode::Esc)));
+        match app.screen {
+            Screen::MainMenu { selected } => assert_eq!(selected, 5),
+            other => panic!("expected MainMenu {{ selected: 5 }}, got {other:?}"),
+        }
+    }
 
     #[test]
-    fn test_error_prefix_function_signature() {
-        // reqwest::Error cannot be easily constructed in unit tests.
-        // This test verifies the classification function signature compiles
-        // and accepts a reqwest::Error reference.
-        let _ = |e: &reqwest::Error| {
-            let _ = classify_error_prefix(e);
-        };
+    fn test_simulate_esc_returns_to_policy_menu_simulate_policy_index() {
+        // "Simulate Policy" is the 6th item (index 5) in the PolicyMenu.
+        let mut app = make_test_app(Screen::PolicySimulate {
+            form: SimulateFormState::default(),
+            selected: 0,
+            editing: false,
+            buffer: String::new(),
+            result: SimulateOutcome::None,
+            caller: SimulateCaller::PolicyMenu,
+        });
+        handle_event(&mut app, crate::event::AppEvent::Key(key_event(KeyCode::Esc)));
+        match app.screen {
+            Screen::PolicyMenu { selected } => assert_eq!(selected, 5),
+            other => panic!("expected PolicyMenu {{ selected: 5 }}, got {other:?}"),
+        }
+    }
+
+    fn key_event(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn make_test_app(screen: Screen) -> crate::app::App {
+        let client = crate::client::EngineClient::for_test();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime build must succeed");
+        let mut app = crate::app::App::new(client, rt);
+        app.screen = screen;
+        app
     }
 }
