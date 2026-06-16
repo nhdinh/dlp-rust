@@ -2810,6 +2810,23 @@ fn action_submit_policy_update(app: &mut App, id: &str, form: PolicyFormState) {
 // Policy Simulate screen
 // ---------------------------------------------------------------------------
 
+/// Classify a `reqwest` error into the prefix used in the simulate result message.
+///
+/// The boolean inputs mirror `reqwest::Error::is_timeout`, `is_connect`, and
+/// `is_decode` so the function is trivially unit-testable without constructing
+/// real `reqwest::Error` values.
+fn classify_error_prefix(is_timeout: bool, is_connect: bool, is_decode: bool) -> &'static str {
+    if is_timeout {
+        "Timeout: "
+    } else if is_connect {
+        "Connection error: "
+    } else if is_decode {
+        "Decode error: "
+    } else {
+        "Network error: "
+    }
+}
+
 /// Opens the Policy Simulate screen with a fresh `SimulateFormState::default()`
 /// and the appropriate caller enum value.
 fn action_open_simulate(app: &mut App, caller: SimulateCaller) {
@@ -2974,15 +2991,11 @@ fn action_submit_simulate(app: &mut App) {
             Err(e) => {
                 let msg = e.to_string();
                 let prefix = if let Some(req_err) = e.downcast_ref::<reqwest::Error>() {
-                    if req_err.is_timeout() {
-                        "Timeout: "
-                    } else if req_err.is_connect() {
-                        "Connection error: "
-                    } else if req_err.is_decode() {
-                        "Decode error: "
-                    } else {
-                        "Network error: "
-                    }
+                    classify_error_prefix(
+                        req_err.is_timeout(),
+                        req_err.is_connect(),
+                        req_err.is_decode(),
+                    )
                 } else {
                     "Server error: "
                 };
@@ -3153,7 +3166,10 @@ fn handle_simulate_nav(app: &mut App, key: KeyEvent, selected: usize) {
                 // Prevent double-submission while a request is in flight.
                 let is_loading = matches!(
                     &app.screen,
-                    Screen::PolicySimulate { result: SimulateOutcome::Loading, .. }
+                    Screen::PolicySimulate {
+                        result: SimulateOutcome::Loading,
+                        ..
+                    }
                 );
                 if !is_loading {
                     action_submit_simulate(app);
@@ -8682,7 +8698,6 @@ mod protected_path_tests {
         );
         assert_eq!(*kind, StatusKind::Error);
     }
-
 }
 
 #[cfg(test)]
@@ -8723,17 +8738,32 @@ mod simulate_tests {
         }
     }
 
-    /// Classify an error string the same way action_submit_simulate does.
-    fn classify_error_prefix(err: &reqwest::Error) -> &'static str {
-        if err.is_timeout() {
-            "Timeout: "
-        } else if err.is_connect() {
+    // Error classification tests
+
+    #[test]
+    fn test_classify_error_prefix_timeout() {
+        assert_eq!(classify_error_prefix(true, false, false), "Timeout: ");
+    }
+
+    #[test]
+    fn test_classify_error_prefix_connect() {
+        assert_eq!(
+            classify_error_prefix(false, true, false),
             "Connection error: "
-        } else if err.is_decode() {
-            "Decode error: "
-        } else {
+        );
+    }
+
+    #[test]
+    fn test_classify_error_prefix_decode() {
+        assert_eq!(classify_error_prefix(false, false, true), "Decode error: ");
+    }
+
+    #[test]
+    fn test_classify_error_prefix_fallback() {
+        assert_eq!(
+            classify_error_prefix(false, false, false),
             "Network error: "
-        }
+        );
     }
 
     // Group normalization tests
@@ -8822,7 +8852,10 @@ mod simulate_tests {
             result: SimulateOutcome::None,
             caller: SimulateCaller::MainMenu,
         });
-        handle_event(&mut app, crate::event::AppEvent::Key(key_event(KeyCode::Esc)));
+        handle_event(
+            &mut app,
+            crate::event::AppEvent::Key(key_event(KeyCode::Esc)),
+        );
         match app.screen {
             Screen::MainMenu { selected } => assert_eq!(selected, 5),
             other => panic!("expected MainMenu {{ selected: 5 }}, got {other:?}"),
@@ -8840,7 +8873,10 @@ mod simulate_tests {
             result: SimulateOutcome::None,
             caller: SimulateCaller::PolicyMenu,
         });
-        handle_event(&mut app, crate::event::AppEvent::Key(key_event(KeyCode::Esc)));
+        handle_event(
+            &mut app,
+            crate::event::AppEvent::Key(key_event(KeyCode::Esc)),
+        );
         match app.screen {
             Screen::PolicyMenu { selected } => assert_eq!(selected, 5),
             other => panic!("expected PolicyMenu {{ selected: 5 }}, got {other:?}"),
