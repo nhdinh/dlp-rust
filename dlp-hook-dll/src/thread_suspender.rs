@@ -118,40 +118,65 @@ fn process_info_data_size() -> usize {
 ///
 /// # Errors
 ///
-/// Returns `PatchError::EnumerationFailed` if the system call fails.
+/// Returns `PatchError::EnumerationFailed` if the system call fails after retries.
 pub fn enumerate_process_threads(pid: u32) -> Result<Vec<ThreadInfo>, PatchError> {
-    // First call: get required buffer size.
+    // Retry loop: the required buffer size can change between the sizing call
+    // and the actual query due to new processes/threads being created.
+    // STATUS_INFO_LENGTH_MISMATCH (0xC0000004) means the buffer is too small.
+    const MAX_RETRIES: usize = 3;
+    const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC0000004_u32 as i32;
+
     let mut size = 0u32;
-    unsafe {
-        let _ = NtQuerySystemInformation(
-            SYSTEM_PROCESS_INFORMATION_CLASS,
-            std::ptr::null_mut(),
-            0,
-            &mut size,
-        );
-    }
+    let mut buffer: Vec<u8>;
 
-    if size == 0 {
+    for _ in 0..MAX_RETRIES {
+        // First call: get required buffer size.
+        unsafe {
+            let _ = NtQuerySystemInformation(
+                SYSTEM_PROCESS_INFORMATION_CLASS,
+                std::ptr::null_mut(),
+                0,
+                &mut size,
+            );
+        }
+
+        if size == 0 {
+            return Err(PatchError::EnumerationFailed);
+        }
+
+        // Allocate buffer and query.
+        buffer = vec![0u8; size as usize];
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_PROCESS_INFORMATION_CLASS,
+                buffer.as_mut_ptr() as *mut c_void,
+                size,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if status.is_ok() || status.0 == 0 {
+            // Success — proceed to parse the buffer.
+            return parse_process_threads(pid, &buffer);
+        }
+
+        // If the buffer was too small, retry with the updated size.
+        if status.0 as i32 == STATUS_INFO_LENGTH_MISMATCH {
+            continue;
+        }
+
+        // Any other error is fatal.
         return Err(PatchError::EnumerationFailed);
     }
 
-    // Allocate buffer and query.
-    let mut buffer = vec![0u8; size as usize];
-    let status = unsafe {
-        NtQuerySystemInformation(
-            SYSTEM_PROCESS_INFORMATION_CLASS,
-            buffer.as_mut_ptr() as *mut c_void,
-            size,
-            std::ptr::null_mut(),
-        )
-    };
+    // Exceeded max retries.
+    Err(PatchError::EnumerationFailed)
+}
 
-    // STATUS_SUCCESS = 0; STATUS_INFO_LENGTH_MISMATCH is expected on first call.
-    if status.is_err() && status.0 != 0 {
-        return Err(PatchError::EnumerationFailed);
-    }
-
-    // Walk the linked list of SYSTEM_PROCESS_INFORMATION entries.
+/// Parse thread information from a SYSTEM_PROCESS_INFORMATION buffer.
+///
+/// Extracted from [`enumerate_process_threads`] to keep the retry loop clean.
+fn parse_process_threads(pid: u32, buffer: &[u8]) -> Result<Vec<ThreadInfo>, PatchError> {
     let mut threads = Vec::new();
     unsafe {
         let mut ptr = buffer.as_ptr() as *const SYSTEM_PROCESS_INFORMATION;

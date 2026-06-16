@@ -1150,6 +1150,30 @@ async fn run_loop(
     Ok(())
 }
 
+/// Emit a `NtdllPatchingEnabled` audit event when ntdll patching is configured.
+///
+/// Extracted as a standalone function for testability. The event is emitted
+/// via the global audit emitter; failures are logged but not propagated.
+fn emit_ntdll_patching_enabled_event() {
+    let agent_id = std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| {
+        hostname::get()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "AGENT-UNKNOWN".to_string())
+    });
+    let mut event = dlp_common::audit::AuditEvent::new(
+        dlp_common::audit::EventType::NtdllPatchingEnabled,
+        "SYSTEM".to_string(),
+        "SYSTEM".to_string(),
+        "N/A".to_string(),
+        dlp_common::Classification::T1,
+        dlp_common::Action::PolicyUpdate,
+        dlp_common::Decision::ALLOW,
+        agent_id,
+        0,
+    );
+    crate::audit_emitter::emit(&mut event).ok();
+}
+
 /// Initialises all enforcement subsystems and returns a [`RunLoopContext`]
 /// containing every handle and sender needed for graceful shutdown.
 ///
@@ -1381,23 +1405,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         // Emit SIEM event per D-15.
         // The hook DLL will emit BypassAlert(reason=EdrDetected) when EDR is
         // detected at boot; the agent converts that to EventType::NtdllPatchingEdrDetected.
-        let agent_id = std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| {
-            hostname::get()
-                .map(|h| h.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| "AGENT-UNKNOWN".to_string())
-        });
-        let mut event = dlp_common::audit::AuditEvent::new(
-            dlp_common::audit::EventType::NtdllPatchingEnabled,
-            "SYSTEM".to_string(),
-            "SYSTEM".to_string(),
-            "N/A".to_string(),
-            dlp_common::Classification::T1,
-            dlp_common::Action::PolicyUpdate,
-            dlp_common::Decision::ALLOW,
-            agent_id,
-            0,
-        );
-        crate::audit_emitter::emit(&mut event).ok();
+        emit_ntdll_patching_enabled_event();
     }
 
     // ── Sync-client process watcher (M017/S02) ───────────────────────────
@@ -4457,4 +4465,54 @@ fn test_blocking_threads_joins_running_thread() {
         1,
         "thread should have exited cleanly"
     );
+}
+
+/// Test that `emit_ntdll_patching_enabled_event` emits a `NtdllPatchingEnabled`
+/// audit event with the correct fields and SIEM routing.
+#[test]
+fn test_emit_ntdll_patching_enabled_event() {
+    use dlp_common::audit::EventType;
+
+    // Enable the in-process capture sink so we can assert on emitted events.
+    crate::audit_emitter::enable_test_capture();
+
+    // Call the emission function.
+    emit_ntdll_patching_enabled_event();
+
+    // Drain captured events and verify.
+    let events = crate::audit_emitter::drain_test_events();
+    assert!(
+        !events.is_empty(),
+        "emit_ntdll_patching_enabled_event must emit at least one audit event"
+    );
+
+    let event = &events[0];
+    assert_eq!(
+        event.event_type,
+        EventType::NtdllPatchingEnabled,
+        "event type must be NtdllPatchingEnabled"
+    );
+    assert_eq!(event.user_sid, "SYSTEM", "user_sid must be SYSTEM");
+    assert_eq!(event.user_name, "SYSTEM", "user_name must be SYSTEM");
+    assert_eq!(event.resource_path, "N/A", "resource_path must be N/A");
+    assert_eq!(
+        event.classification,
+        dlp_common::Classification::T1,
+        "classification must be T1"
+    );
+    assert_eq!(
+        event.action_attempted,
+        dlp_common::Action::PolicyUpdate,
+        "action must be PolicyUpdate"
+    );
+    assert_eq!(
+        event.decision,
+        dlp_common::Decision::ALLOW,
+        "decision must be ALLOW"
+    );
+    assert!(
+        event.event_type.routed_to_siem(),
+        "NtdllPatchingEnabled must be routed to SIEM"
+    );
+    assert!(!event.agent_id.is_empty(), "agent_id must not be empty");
 }

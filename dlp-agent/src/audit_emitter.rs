@@ -295,12 +295,21 @@ pub enum AuditError {
 ///
 /// Called by [`emit_audit`].  Returns `Ok(())` on success; callers must handle
 /// errors themselves.  This is the right choice for callers that want to
-/// propagate failures (e.g. during startup validation).
+/// propagate failures (e.g., during startup validation).
 ///
 /// Phase 63: takes `&mut AuditEvent` so the emitter can populate
 /// `prev_hash` and `chain_hash` before serialization.
 pub fn emit(event: &mut AuditEvent) -> Result<(), AuditError> {
-    EMITTER.emit(event)
+    let result = EMITTER.emit(event);
+
+    // In-process capture sink. Enabled only when a test calls
+    // `enable_test_capture()`. The atomic check is a single relaxed load on
+    // the production hot path -- negligible overhead when disabled.
+    if TEST_CAPTURE_ENABLED.load(AtomicOrdering::Relaxed) {
+        TEST_EVENT_SINK.lock().push(event.clone());
+    }
+
+    result
 }
 
 /// High-level audit emission helper.
