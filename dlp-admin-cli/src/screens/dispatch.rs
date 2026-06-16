@@ -8883,8 +8883,417 @@ mod simulate_tests {
         }
     }
 
+    #[test]
+    fn test_action_open_simulate_initializes_screen() {
+        let mut app = make_test_app(Screen::MainMenu { selected: 0 });
+        action_open_simulate(&mut app, SimulateCaller::MainMenu);
+        match app.screen {
+            Screen::PolicySimulate {
+                selected,
+                editing,
+                result,
+                caller,
+                ..
+            } => {
+                assert_eq!(selected, 0);
+                assert!(!editing);
+                assert!(matches!(result, SimulateOutcome::None));
+                assert!(matches!(caller, SimulateCaller::MainMenu));
+            }
+            other => panic!("expected PolicySimulate screen, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_action_submit_simulate_validation_error() {
+        let mut app = make_test_app(Screen::PolicySimulate {
+            form: SimulateFormState::default(),
+            selected: 0,
+            editing: false,
+            buffer: String::new(),
+            result: SimulateOutcome::None,
+            caller: SimulateCaller::MainMenu,
+        });
+        action_submit_simulate(&mut app);
+        match &app.screen {
+            Screen::PolicySimulate { result, .. } => match result {
+                SimulateOutcome::Error(msg) => {
+                    assert!(msg.contains("Validation error:"));
+                    assert!(msg.contains("User SID is required"));
+                    assert!(msg.contains("Path is required"));
+                }
+                other => panic!("expected validation error, got {other:?}"),
+            },
+            other => panic!("expected PolicySimulate screen, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_action_submit_simulate_no_op_when_not_simulate_screen() {
+        let mut app = make_test_app(Screen::MainMenu { selected: 0 });
+        // Should not panic and should leave screen unchanged.
+        action_submit_simulate(&mut app);
+        assert!(matches!(app.screen, Screen::MainMenu { selected: 0 }));
+    }
+
+    #[test]
+    fn test_action_submit_simulate_connection_error_classifies_prefix() {
+        let mut app = make_test_app(Screen::PolicySimulate {
+            form: SimulateFormState {
+                user_sid: "S-1-5-21".to_string(),
+                user_name: "testuser".to_string(),
+                groups_raw: "admins, users".to_string(),
+                device_trust: 0,
+                network_location: 0,
+                classification: 0,
+                action: 0,
+                access_context: 0,
+                path: "C:\\secret.doc".to_string(),
+            },
+            selected: 0,
+            editing: false,
+            buffer: String::new(),
+            result: SimulateOutcome::None,
+            caller: SimulateCaller::MainMenu,
+        });
+        action_submit_simulate(&mut app);
+        match &app.screen {
+            Screen::PolicySimulate { result, .. } => match result {
+                SimulateOutcome::Error(msg) => {
+                    assert!(
+                        msg.starts_with("Connection error:")
+                            || msg.starts_with("Network error:")
+                            || msg.starts_with("Timeout:"),
+                        "expected classified network error, got {msg}"
+                    );
+                }
+                other => panic!("expected connection error, got {other:?}"),
+            },
+            other => panic!("expected PolicySimulate screen, got {other:?}"),
+        }
+    }
+
+    // Editing tests
+
+    #[test]
+    fn test_handle_simulate_editing_char_appends_to_buffer() {
+        let mut app = make_test_app(simulate_screen_edit(0, ""));
+        handle_simulate_editing(&mut app, key_event(KeyCode::Char('a')), 0);
+        assert_simulate_buffer(&app, "a");
+    }
+
+    #[test]
+    fn test_handle_simulate_editing_backspace_removes_char() {
+        let mut app = make_test_app(simulate_screen_edit(0, "ab"));
+        handle_simulate_editing(&mut app, key_event(KeyCode::Backspace), 0);
+        assert_simulate_buffer(&app, "a");
+    }
+
+    #[test]
+    fn test_handle_simulate_editing_enter_commits_text_field() {
+        let mut app = make_test_app(simulate_screen_edit(0, "S-1-5-21"));
+        handle_simulate_editing(&mut app, key_event(KeyCode::Enter), 0);
+        assert_simulate_editing(&app, false);
+        assert_simulate_field(&app, |form| form.user_sid == "S-1-5-21");
+    }
+
+    #[test]
+    fn test_handle_simulate_editing_enter_commits_user_name() {
+        let mut app = make_test_app(simulate_screen_edit(1, "Alice"));
+        handle_simulate_editing(&mut app, key_event(KeyCode::Enter), 1);
+        assert_simulate_field(&app, |form| form.user_name == "Alice");
+    }
+
+    #[test]
+    fn test_handle_simulate_editing_enter_commits_path() {
+        let mut app = make_test_app(simulate_screen_edit(5, "C:\\path"));
+        handle_simulate_editing(&mut app, key_event(KeyCode::Enter), 5);
+        assert_simulate_field(&app, |form| form.path == "C:\\path");
+    }
+
+    #[test]
+    fn test_handle_simulate_editing_enter_commits_groups_raw() {
+        let mut app = make_test_app(simulate_screen_edit(2, "a, b"));
+        handle_simulate_editing(&mut app, key_event(KeyCode::Enter), 2);
+        assert_simulate_field(&app, |form| form.groups_raw == "a, b");
+    }
+
+    #[test]
+    fn test_handle_simulate_editing_enter_trims_text_fields() {
+        let mut app = make_test_app(simulate_screen_edit(0, "  SID  "));
+        handle_simulate_editing(&mut app, key_event(KeyCode::Enter), 0);
+        assert_simulate_field(&app, |form| form.user_sid == "SID");
+    }
+
+    #[test]
+    fn test_handle_simulate_editing_esc_clears_buffer_and_exits() {
+        let mut app = make_test_app(simulate_screen_edit(0, "partial"));
+        handle_simulate_editing(&mut app, key_event(KeyCode::Esc), 0);
+        assert_simulate_buffer(&app, "");
+        assert_simulate_editing(&app, false);
+    }
+
+    // Cycle field tests
+
+    #[test]
+    fn test_simulate_cycle_field_advances_device_trust() {
+        let mut app = make_test_app(simulate_screen_nav(3));
+        let before = simulate_field(&app, |form| form.device_trust);
+        simulate_cycle_field(&mut app, 3);
+        assert_simulate_field(&app, |form| {
+            form.device_trust == (before + 1) % crate::app::SIMULATE_DEVICE_TRUST_OPTIONS.len()
+        });
+    }
+
+    #[test]
+    fn test_simulate_cycle_field_advances_network_location() {
+        let mut app = make_test_app(simulate_screen_nav(4));
+        let before = simulate_field(&app, |form| form.network_location);
+        simulate_cycle_field(&mut app, 4);
+        assert_simulate_field(&app, |form| {
+            form.network_location
+                == (before + 1) % crate::app::SIMULATE_NETWORK_LOCATION_OPTIONS.len()
+        });
+    }
+
+    #[test]
+    fn test_simulate_cycle_field_advances_classification() {
+        let mut app = make_test_app(simulate_screen_nav(6));
+        let before = simulate_field(&app, |form| form.classification);
+        simulate_cycle_field(&mut app, 6);
+        assert_simulate_field(&app, |form| {
+            form.classification == (before + 1) % crate::app::SIMULATE_CLASSIFICATION_OPTIONS.len()
+        });
+    }
+
+    #[test]
+    fn test_simulate_cycle_field_advances_action() {
+        let mut app = make_test_app(simulate_screen_nav(7));
+        let before = simulate_field(&app, |form| form.action);
+        simulate_cycle_field(&mut app, 7);
+        assert_simulate_field(&app, |form| {
+            form.action == (before + 1) % crate::app::SIMULATE_ACTION_OPTIONS.len()
+        });
+    }
+
+    #[test]
+    fn test_simulate_cycle_field_advances_access_context() {
+        let mut app = make_test_app(simulate_screen_nav(8));
+        let before = simulate_field(&app, |form| form.access_context);
+        simulate_cycle_field(&mut app, 8);
+        assert_simulate_field(&app, |form| {
+            form.access_context == (before + 1) % crate::app::SIMULATE_ACCESS_CONTEXT_OPTIONS.len()
+        });
+    }
+
+    // Enter text edit tests
+
+    #[test]
+    fn test_simulate_enter_text_edit_prefills_user_sid() {
+        let mut app = make_test_app(simulate_screen_with_form(|form| {
+            form.user_sid = "SID-123".to_string();
+        }));
+        simulate_enter_text_edit(&mut app, 0);
+        assert_simulate_buffer(&app, "SID-123");
+        assert_simulate_editing(&app, true);
+    }
+
+    #[test]
+    fn test_simulate_enter_text_edit_prefills_user_name() {
+        let mut app = make_test_app(simulate_screen_with_form(|form| {
+            form.user_name = "Bob".to_string();
+        }));
+        simulate_enter_text_edit(&mut app, 1);
+        assert_simulate_buffer(&app, "Bob");
+    }
+
+    #[test]
+    fn test_simulate_enter_text_edit_prefills_path() {
+        let mut app = make_test_app(simulate_screen_with_form(|form| {
+            form.path = "C:\\file.txt".to_string();
+        }));
+        simulate_enter_text_edit(&mut app, 5);
+        assert_simulate_buffer(&app, "C:\\file.txt");
+    }
+
+    #[test]
+    fn test_simulate_enter_text_edit_ignores_non_text_rows() {
+        let mut app = make_test_app(simulate_screen_nav(3));
+        simulate_enter_text_edit(&mut app, 3);
+        assert_simulate_editing(&app, false);
+    }
+
+    // Navigation tests
+
+    #[test]
+    fn test_handle_simulate_nav_up_decrements_selected() {
+        let mut app = make_test_app(simulate_screen_nav(2));
+        handle_simulate_nav(&mut app, key_event(KeyCode::Up), 2);
+        assert_simulate_selected(&app, 1);
+    }
+
+    #[test]
+    fn test_handle_simulate_nav_down_increments_selected() {
+        let mut app = make_test_app(simulate_screen_nav(2));
+        handle_simulate_nav(&mut app, key_event(KeyCode::Down), 2);
+        assert_simulate_selected(&app, 3);
+    }
+
+    #[test]
+    fn test_handle_simulate_nav_enter_starts_text_edit() {
+        let mut app = make_test_app(simulate_screen_nav(0));
+        handle_simulate_nav(&mut app, key_event(KeyCode::Enter), 0);
+        assert_simulate_editing(&app, true);
+    }
+
+    #[test]
+    fn test_handle_simulate_nav_enter_starts_groups_edit() {
+        let mut app = make_test_app(simulate_screen_with_form(|form| {
+            form.groups_raw = "g1, g2".to_string();
+        }));
+        handle_simulate_nav(&mut app, key_event(KeyCode::Enter), 2);
+        assert_simulate_editing(&app, true);
+        assert_simulate_buffer(&app, "g1, g2");
+    }
+
+    #[test]
+    fn test_handle_simulate_nav_enter_cycles_select_field() {
+        let mut app = make_test_app(simulate_screen_nav(3));
+        let before = simulate_field(&app, |form| form.device_trust);
+        handle_simulate_nav(&mut app, key_event(KeyCode::Enter), 3);
+        assert_simulate_field(&app, |form| {
+            form.device_trust == (before + 1) % crate::app::SIMULATE_DEVICE_TRUST_OPTIONS.len()
+        });
+    }
+
+    #[test]
+    fn test_handle_simulate_nav_enter_submit_triggers_request() {
+        let mut app = make_test_app(simulate_screen_with_form(|form| {
+            form.user_sid = "S-1-5-21".to_string();
+            form.path = "C:\\x.txt".to_string();
+        }));
+        handle_simulate_nav(
+            &mut app,
+            key_event(KeyCode::Enter),
+            crate::app::SIMULATE_SUBMIT_ROW,
+        );
+        assert!(matches!(
+            &app.screen,
+            Screen::PolicySimulate {
+                result: SimulateOutcome::Error(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_handle_simulate_nav_enter_submit_blocked_while_loading() {
+        let mut app = make_test_app(Screen::PolicySimulate {
+            form: SimulateFormState {
+                user_sid: "S-1-5-21".to_string(),
+                path: "C:\\x.txt".to_string(),
+                ..Default::default()
+            },
+            selected: crate::app::SIMULATE_SUBMIT_ROW,
+            editing: false,
+            buffer: String::new(),
+            result: SimulateOutcome::Loading,
+            caller: SimulateCaller::MainMenu,
+        });
+        handle_simulate_nav(
+            &mut app,
+            key_event(KeyCode::Enter),
+            crate::app::SIMULATE_SUBMIT_ROW,
+        );
+        assert!(matches!(
+            &app.screen,
+            Screen::PolicySimulate {
+                result: SimulateOutcome::Loading,
+                ..
+            }
+        ));
+    }
+
     fn key_event(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn simulate_screen_edit(selected: usize, buffer: &str) -> Screen {
+        Screen::PolicySimulate {
+            form: SimulateFormState::default(),
+            selected,
+            editing: true,
+            buffer: buffer.to_string(),
+            result: SimulateOutcome::None,
+            caller: SimulateCaller::MainMenu,
+        }
+    }
+
+    fn simulate_screen_nav(selected: usize) -> Screen {
+        Screen::PolicySimulate {
+            form: SimulateFormState::default(),
+            selected,
+            editing: false,
+            buffer: String::new(),
+            result: SimulateOutcome::None,
+            caller: SimulateCaller::MainMenu,
+        }
+    }
+
+    fn simulate_screen_with_form(mutator: impl FnOnce(&mut SimulateFormState)) -> Screen {
+        let mut form = SimulateFormState::default();
+        mutator(&mut form);
+        Screen::PolicySimulate {
+            form,
+            selected: 0,
+            editing: false,
+            buffer: String::new(),
+            result: SimulateOutcome::None,
+            caller: SimulateCaller::MainMenu,
+        }
+    }
+
+    fn assert_simulate_buffer(app: &crate::app::App, expected: &str) {
+        match &app.screen {
+            Screen::PolicySimulate { buffer, .. } => assert_eq!(buffer, expected),
+            other => panic!("expected PolicySimulate screen, got {other:?}"),
+        }
+    }
+
+    fn assert_simulate_editing(app: &crate::app::App, expected: bool) {
+        match &app.screen {
+            Screen::PolicySimulate { editing, .. } => assert_eq!(*editing, expected),
+            other => panic!("expected PolicySimulate screen, got {other:?}"),
+        }
+    }
+
+    fn assert_simulate_selected(app: &crate::app::App, expected: usize) {
+        match &app.screen {
+            Screen::PolicySimulate { selected, .. } => assert_eq!(*selected, expected),
+            other => panic!("expected PolicySimulate screen, got {other:?}"),
+        }
+    }
+
+    fn assert_simulate_field(
+        app: &crate::app::App,
+        predicate: impl FnOnce(&SimulateFormState) -> bool,
+    ) {
+        match &app.screen {
+            Screen::PolicySimulate { form, .. } => {
+                assert!(predicate(form), "form predicate failed: {form:?}");
+            }
+            other => panic!("expected PolicySimulate screen, got {other:?}"),
+        }
+    }
+
+    fn simulate_field<T>(
+        app: &crate::app::App,
+        extractor: impl FnOnce(&SimulateFormState) -> T,
+    ) -> T {
+        match &app.screen {
+            Screen::PolicySimulate { form, .. } => extractor(form),
+            other => panic!("expected PolicySimulate screen, got {other:?}"),
+        }
     }
 
     fn make_test_app(screen: Screen) -> crate::app::App {
