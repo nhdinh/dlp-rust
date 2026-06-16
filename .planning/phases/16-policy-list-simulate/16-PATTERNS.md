@@ -20,12 +20,14 @@
 
 ### A-1. `draw_policy_list` column rewrite (render.rs §1137–1192)
 
-**Analog:** existing `draw_policy_list` (render.rs lines 1137–1192)
+**Analog:** existing `draw_policy_list` (render.rs lines 1746–1823)
 
 **What changes:**
-- `header` row: `["Priority", "Name", "Action", "Enabled"]` (drop `ID`, `Version`)
-- `widths`: `[15%, 45%, 20%, 20%]`
-- Row builder: `p["priority"].as_u64()` → u32 (malformed = u32::MAX); `p["enabled"].as_bool()` → `"Yes"`/`"No"`; `action` = raw string from `p["action"]`
+- `header` row: `["Priority", "Name", "Action", "Enabled", "Mode"]` (drop `ID`, `Version`)
+- `widths`: `[12%, 38%, 15%, 12%, 23%]`
+- Row builder: `p["priority"].as_u64()` → u32 (malformed = u32::MAX); `p["enabled"].as_bool()` → `"Yes"`/`"No"`; `action` = raw string from `p["action"]`; `mode` = `p["enforcement_mode"]` with " (global)" suffix when active
+- `global_mode: Option<&str>` parameter in function signature
+- `render_global_override_banner(frame, area, global_mode)` call after table render
 - Hints: `"n: new | e: edit | d: delete | Enter: view | Esc: back"`
 
 **Excerpt (from analog — replace only the differing parts):**
@@ -37,7 +39,7 @@ let header = Row::new(vec!["ID", "Name", "Priority", "Enabled", "Version"])
     .bottom_margin(1);
 
 // REPLACE WITH:
-let header = Row::new(vec!["Priority", "Name", "Action", "Enabled"])
+let header = Row::new(vec!["Priority", "Name", "Action", "Enabled", "Mode"])
     .style(Style::default().add_modifier(Modifier::BOLD))
     .bottom_margin(1);
 
@@ -52,10 +54,11 @@ let widths = [
 
 // REPLACE WITH:
 let widths = [
-    Constraint::Percentage(15),  // Priority
-    Constraint::Percentage(45),  // Name
-    Constraint::Percentage(20),  // Action
-    Constraint::Percentage(20),  // Enabled
+    Constraint::Percentage(12),  // Priority
+    Constraint::Percentage(38),  // Name
+    Constraint::Percentage(15),  // Action
+    Constraint::Percentage(12),  // Enabled
+    Constraint::Percentage(23),  // Mode
 ];
 
 // CURRENT row builder (replace):
@@ -80,13 +83,26 @@ let rows: Vec<Row> = policies.iter().map(|p| {
         .unwrap_or(u32::MAX);
     let action = p["action"].as_str().unwrap_or("-");
     let enabled = if p["enabled"].as_bool().unwrap_or(false) { "Yes" } else { "No" };
+    let mode = p["enforcement_mode"].as_str().unwrap_or("-");
+    let global_active = global_mode.is_some_and(|g| g != "PerPolicy");
+    let mode_display = if global_active {
+        format!("{mode} (global)")
+    } else {
+        mode.to_string()
+    };
     Row::new(vec![
         priority.to_string(),
         p["name"].as_str().unwrap_or("-").to_string(),
         action.to_string(),
         enabled.to_string(),
+        mode_display,
     ])
 }).collect();
+
+// After table render, draw global override banner if active:
+if let Some(gm) = global_mode {
+    render_global_override_banner(frame, area, gm);
+}
 
 // CURRENT hints (replace):
 draw_hints(frame, area, "e: edit | d: delete | Enter: view | Esc: back");

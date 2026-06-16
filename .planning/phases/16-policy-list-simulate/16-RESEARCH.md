@@ -281,12 +281,12 @@ detail to specify, not a research blocker.
 
 ---
 
-## 6. Open Questions for the Planner
+## 6. Open Questions for the Planner (RESOLVED)
 
-1. **Error prefix granularity (U5):** Use a single `"Server error: "` prefix for all failures, or detect network vs server separately? (Single prefix is simpler; separate detection is more accurate.)
-2. **Column widths:** 16-CONTEXT.md §D-02 specifies 15%/45%/20%/20% for PolicyList. Should `Name` get 50% and `Enabled` 15%, or is the 15%/45%/20%/20% split correct as-is?
-3. **Result block height:** The simulate result block uses a `Paragraph` with wrap. The plan should specify the height of the result area (suggest: 3 rows for success, 1 row for error) so the render area allocation is deterministic.
-4. **Groups buffer split timing:** `groups_raw` is preserved across edits. Is it also preserved across navigating away and back to the simulate screen, or does re-opening the screen reset it? (Spec says preserved across field edits — clarify whether screen re-entry is in scope.)
+1. **Error prefix granularity (U5):** Use a single `"Server error: "` prefix for all failures, or detect network vs server separately? (Single prefix is simpler; separate detection is more accurate.) — **RESOLVED**: Granular classification implemented in Phase 16 Plan 02. Timeout, connection, decode, and server errors each get distinct prefixes.
+2. **Column widths:** 16-CONTEXT.md §D-02 specifies 15%/45%/20%/20% for PolicyList. Should `Name` get 50% and `Enabled` 15%, or is the 15%/45%/20%/20% split correct as-is? — **RESOLVED**: 5-column spec shipped in Phase 16 Plan 01a with widths 12%/38%/15%/12%/23% (Priority/Name/Action/Enabled/Mode).
+3. **Result block height:** The simulate result block uses a `Paragraph` with wrap. The plan should specify the height of the result area (suggest: 3 rows for success, 1 row for error) so the render area allocation is deterministic. — **RESOLVED**: Result block height is fixed at 4 rows with conditional inner content. Success renders 3 lines, Error renders 1 line, both within the same 4-row area. Shipped in Phase 16 Plan 01b.
+4. **Groups buffer split timing:** `groups_raw` is preserved across edits. Is it also preserved across navigating away and back to the simulate screen, or does re-opening the screen reset it? (Spec says preserved across field edits — clarify whether screen re-entry is in scope.) — **RESOLVED**: `groups_raw` is preserved across field edits within a single simulate session. Re-opening the screen from a menu creates a fresh `SimulateFormState::default()` per D-18. This is the intended behavior — no persistence across screen re-entry. Shipped in Phase 16 Plan 01b.
 
 ---
 

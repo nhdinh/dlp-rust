@@ -32,14 +32,15 @@ refresh is unchanged.
 ## Implementation Decisions
 
 ### PolicyList — Column Schema
-- **D-01:** Column set is **exactly per ROADMAP §1**: `Priority`, `Name`,
-  `Action`, `Enabled`. Drop the current `ID` and `Version` columns from the
-  table. ID and version remain available in `PolicyDetail` (read-only view
-  reached by Enter) for admin debugging; they are not needed on the overview
-  table. This also narrows column widths so long policy names get more
-  horizontal space.
-- **D-02:** Column widths (target): `Priority` 15%, `Name` 45%, `Action` 20%,
-  `Enabled` 20%. Percentages mirror current proportions with wider `Name`.
+- **D-01:** Column set is **Priority**, **Name**, **Action**, **Enabled**, **Mode**.
+  Drop the current `ID` and `Version` columns from the table. ID and version
+  remain available in `PolicyDetail` (read-only view reached by Enter) for
+  admin debugging; they are not needed on the overview table. The `Mode` column
+  reads `p["enforcement_mode"]` and appends " (global)" when the global mode
+  is active for that policy.
+- **D-02:** Column widths (target): `Priority` 12%, `Name` 38%, `Action` 15%,
+  `Enabled` 12%, `Mode` 23%. Percentages mirror current proportions with wider
+  `Name` and space for the `Mode` column.
 - **D-03:** `Action` column reads the raw JSON `action` string (e.g. `"ALLOW"`,
   `"DENY"`, `"AllowWithLog"`, `"DenyWithAlert"`) verbatim — server tolerates
   case-insensitive input per `deserialize_policy_row`, and the TUI renders
@@ -155,9 +156,11 @@ refresh is unchanged.
   PolicyCreate Action row (Phase 14) so no new UX pattern is introduced.
 - **D-20:** `Groups` row is a **single comma-separated text field**
   (label: `Groups (comma-separated SIDs):`). On `[Simulate]` submit:
-  split by `,`, trim each segment of surrounding whitespace, drop empty
-  segments, collect into `Vec<String>`. Example: `"S-1-5-21-a, S-1-5-21-b"`
-  → `vec!["S-1-5-21-a", "S-1-5-21-b"]`. Matches ROADMAP §2 wording verbatim.
+  split by `,`, trim each segment of surrounding whitespace, convert each
+  segment to lowercase, drop empty segments, deduplicate while preserving
+  first-occurrence order, collect into `Vec<String>`.
+  Example: `"S-1-5-21-a, S-1-5-21-b, S-1-5-21-A"`
+  → `vec!["s-1-5-21-a", "s-1-5-21-b"]`.
   The `groups_raw` buffer is preserved (not re-joined) across edits so the
   admin's formatting survives re-editing.
 - **D-21:** Text fields use the established edit-mode pattern: Enter opens
@@ -183,12 +186,15 @@ refresh is unchanged.
      contract).
   5. `selected` stays at row 9 so admin can immediately re-submit or adjust
      fields.
-- **D-24:** **No client-side validation.** Empty `user_sid` / `path` /
-  `groups` are permitted — the server handles `EvaluateRequest::default()`
-  gracefully and the ABAC engine produces a default-deny response for an
-  empty subject. This keeps the simulate path maximally useful for poking
-  at policy behavior with minimal input. ROADMAP §4 only requires error
-  display on network / server failures, not client pre-validation.
+- **D-24:** **Client-side validation is required.** Empty `user_sid` and `path`
+  are rejected before the request is sent. The simulate form must show inline
+  validation errors (via `SimulateOutcome::Error`) when either field is empty
+  or whitespace-only. The ABAC engine still produces a default-deny response
+  for an empty subject on the server side, but the TUI prevents the round-trip
+  for better UX. Validation runs in `action_submit_simulate` before building
+  `EvaluateRequest`; on failure the result field is set to
+  `SimulateOutcome::Error("Validation error: ...")` and the function returns
+  early without calling `client.post`.
 
 ### Simulate — Result & Error Rendering
 - **D-25:** Result renders **inline below the `[Simulate]` row** as a
