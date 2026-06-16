@@ -19,18 +19,18 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           targets: i686-pc-windows-msvc
 
       - name: Install protoc
-        uses: arduino/setup-protoc@v3
+        uses: arduino/setup-protoc@f4d5893b897028ff5739576ea0409746887fa536
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ~/.cargo/registry
@@ -54,14 +54,18 @@ jobs:
           RUSTFLAGS: "-D warnings"
 
       - name: Decode signing certificate
+        env:
+          AUTHENTICODE_PFX: ${{ secrets.AUTHENTICODE_PFX }}
         run: |
-          $pfxBytes = [Convert]::FromBase64String('${{ secrets.AUTHENTICODE_PFX }}')
+          $pfxBytes = [Convert]::FromBase64String($env:AUTHENTICODE_PFX)
           [IO.File]::WriteAllBytes('${{ runner.temp }}\cert.pfx', $pfxBytes)
         shell: pwsh
 
       - name: Sign binaries (DigiCert primary)
         id: sign_primary
         continue-on-error: true
+        env:
+          AUTHENTICODE_PASSWORD: ${{ secrets.AUTHENTICODE_PASSWORD }}
         run: |
           $binaries = @(
             'target\release\dlp-agent.exe',
@@ -74,7 +78,7 @@ jobs:
           $failed = @()
           foreach ($bin in $binaries) {
             if (Test-Path $bin) {
-              signtool sign /f '${{ runner.temp }}\cert.pfx' /p '${{ secrets.AUTHENTICODE_PASSWORD }}' `
+              signtool sign /f '${{ runner.temp }}\cert.pfx' /p $env:AUTHENTICODE_PASSWORD `
                 /tr http://timestamp.digicert.com /td sha256 /fd sha256 `
                 "$bin"
               if ($LASTEXITCODE -ne 0) { $failed += $bin }
@@ -90,6 +94,8 @@ jobs:
 
       - name: Sign binaries (Sectigo fallback)
         if: steps.sign_primary.outcome == 'failure'
+        env:
+          AUTHENTICODE_PASSWORD: ${{ secrets.AUTHENTICODE_PASSWORD }}
         run: |
           $binaries = @(
             'target\release\dlp-agent.exe',
@@ -103,7 +109,7 @@ jobs:
             if (Test-Path $bin) {
               # Only re-sign if primary failed (binary may already be signed)
               # signtool verify /pa will catch any unsigned binaries in the next step
-              signtool sign /f '${{ runner.temp }}\cert.pfx' /p '${{ secrets.AUTHENTICODE_PASSWORD }}' `
+              signtool sign /f '${{ runner.temp }}\cert.pfx' /p $env:AUTHENTICODE_PASSWORD `
                 /tr http://timestamp.sectigo.com /td sha256 /fd sha256 `
                 "$bin"
               if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -130,7 +136,7 @@ jobs:
         shell: pwsh
 
       - name: Upload signed artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: signed-binaries-${{ github.ref_name }}
           path: |
