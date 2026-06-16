@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "timestamp": "2026-06-16T08:35:00Z",
+  "timestamp": "2026-06-16T10:25:00Z",
   "phase": "16",
   "phase_name": "policy-list-simulate",
   "phase_dir": ".planning/phases/16-policy-list-simulate",
@@ -13,23 +13,26 @@
     {"id": 2, "name": "Refactor classify_error_prefix into shared helper with unit tests", "status": "done", "commit": "6398240"},
     {"id": 3, "name": "Update validation map and set nyquist_compliant: true", "status": "done", "commit": "6211bdc"},
     {"id": 4, "name": "Normalize CRLF line endings in Rust source files for SonarCloud", "status": "done", "commit": "ed7fe24"},
-    {"id": 5, "name": "Run SonarCloud scan with coverage report", "status": "done", "commit": "f053409"}
+    {"id": 5, "name": "Run SonarCloud scan with coverage report", "status": "done", "commit": "f053409"},
+    {"id": 6, "name": "Add simulate editing/navigation/connection-error tests", "status": "done", "commit": "3acc925"},
+    {"id": 7, "name": "Fix GitHub workflow security hotspots", "status": "done", "commit": "241897d"}
   ],
   "remaining_tasks": [
-    {"id": 6, "name": "Resolve failing SonarCloud Quality Gate or get waiver", "status": "not_started"},
-    {"id": 7, "name": "Push commits to origin/master", "status": "not_started"}
+    {"id": 8, "name": "Resolve failing SonarCloud Quality Gate coverage/duplication or get waiver", "status": "not_started"},
+    {"id": 9, "name": "Push commits to origin/master", "status": "not_started"}
   ],
   "blockers": [
-    {"description": "SonarCloud Quality Gate is ERROR: new_coverage 72.2% (needs >=80%) and new_security_hotspots_reviewed 0% (needs 100%)", "type": "external", "workaround": "Review hotspots in SonarCloud UI, or waive gate and push."}
+    {"description": "SonarCloud Quality Gate is ERROR: new_coverage 71.0% (needs >=80%) and new_duplicated_lines_density 5.9% (needs <=3%)", "type": "external", "workaround": "Project-wide metric requires extensive test/refactor work outside Phase 16 scope, or explicit gate waiver."}
   ],
   "human_actions_pending": [
-    {"action": "Review/mark security hotspots in SonarCloud dashboard or approve push despite failing gate", "context": "Quality Gate blocks push per project policy", "blocking": true}
+    {"action": "Decide whether to waive the failing Quality Gate and allow push, or authorize broader project-wide coverage/duplication work", "context": "Gate blocks push per project policy; remaining failures are project-wide, not Phase-16 specific", "blocking": true}
   ],
   "decisions": [
     {"decision": "Converted CRLF files to LF so Sonar Rust analyzer can parse them", "rationale": "Scanner was failing with invalid highlighting offsets on CRLF files", "phase": "16"},
-    {"decision": "Generated Sonar generic coverage XML from cargo-llvm-cov Cobertura output", "rationale": "SonarCloud's bundled parser only accepts generic coverage XML version 1", "phase": "16"}
+    {"decision": "Generated Sonar generic coverage XML from cargo-llvm-cov Cobertura output", "rationale": "SonarCloud's bundled parser only accepts generic coverage XML version 1", "phase": "16"},
+    {"decision": "Pinned GitHub Actions to full commit SHAs and moved secrets to step env", "rationale": "Resolved SonarCloud security hotspots for workflow files", "phase": "16"}
   ],
   "uncommitted_files": [],
-  "next_action": "Open https://sonarcloud.io/dashboard?id=nhdinh_dlp-rust, review new security hotspots, then run git push (or get explicit waiver to push with failing gate)",
-  "context_notes": "Phase 16 validation work is technically complete. All code changes are committed locally. The only remaining work is external: SonarCloud gate + push. Context was exhausted at 76% during scan retries."
+  "next_action": "Wait for human decision on Quality Gate waiver vs. broader project-wide test/refactor work, then push or continue",
+  "context_notes": "Phase 16 validation work is technically complete. Added 32+ simulate tests; security hotspots resolved. Project-wide SonarCloud gate still fails on coverage (71.0%) and duplication (5.9%) because the new-code period since 2026-04-09 spans ~70k lines across many crates."
 }
