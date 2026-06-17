@@ -151,6 +151,7 @@ Plans:
 **Plans:** 0 plans
 
 Plans:
+
 - [ ] TBD (run `/gsd-plan-phase 50.1` to break down)
 
 ### Phase 51: ntdll Syscall-Stub Trampolines + EDR Coexistence
@@ -260,11 +261,11 @@ Plans:
 **Goal:** Close integration blocker INT-BLOCK-01: the hook DLL emits BypassAlert frames over the named pipe, but the agent deserializes every frame as HookRequest and IpcPayloadV1 has no BypassAlert variant. Add the variant, route BypassAlert to the bypass correlator, and wrap the hook DLL emission in the versioned envelope.
 **Requirements**: ETW-03
 **Depends on:** Phase 53
-**Plans:** 3 plans
+**Plans:** 2/4 plans executed
 
 **Wave 1** *(no dependencies)*
 
-- [ ] `53.1-01-PLAN.md` — Extend IpcPayloadV1 with BypassAlert(BypassAlert) variant in dlp-common; add round-trip bincode unit test
+- [x] `53.1-01-PLAN.md` — Extend IpcPayloadV1 with BypassAlert(BypassAlert) variant in dlp-common; add round-trip bincode unit test *(completed 2026-06-17)*
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -272,6 +273,7 @@ Plans:
 - [ ] `53.1-03-PLAN.md` — Hook DLL emission: wrap BypassAlert in IpcEnvelope::V1 before bincode::serialize in emit_bypass_alert; add envelope wrapping unit test
 
 **Cross-cutting constraints:**
+
 - All new BypassAlert fields have #[serde(default)] for backward compat (WR-12 from Phase 53)
 - Sync->async handoff uses crossbeam_channel::Sender<BypassAlert> without blocking the pipe loop (Pitfall 3 from RESEARCH.md)
 
@@ -364,6 +366,7 @@ Plans:
 **Plans:** 0 plans
 
 Plans:
+
 - [ ] TBD (run `/gsd-plan-phase 56.1` to break down)
 
 ### Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT
@@ -573,7 +576,7 @@ Plans:
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 6/6 | Complete    | 2026-05-22 |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 7/7 | Complete    | 2026-05-27 |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Complete    | 2026-05-28 |
-| 53.1 | Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED) | 0/0 | Not started | - |
+| 53.1 | Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED) | 2/4 | In Progress|  |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 6/6 | Complete | 2026-06-06 |
