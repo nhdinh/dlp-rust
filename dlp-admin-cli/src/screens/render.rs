@@ -5331,3 +5331,271 @@ mod disk_registry_render_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod import_confirm_render_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn get_buffer_content(terminal: &Terminal<TestBackend>) -> String {
+        let buf = terminal.backend().buffer().clone();
+        buf.content.iter().map(|c| c.symbol()).collect()
+    }
+
+    #[test]
+    fn draw_import_confirm_shows_header_and_counts() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_import_confirm(frame, frame.area(), 5, 2, 3, 3, &ImportState::Pending);
+            })
+            .unwrap();
+        let content = get_buffer_content(&terminal);
+
+        assert!(
+            content.contains("Import 5 policies?"),
+            "header missing: {content}"
+        );
+        assert!(
+            content.contains("2 will overwrite existing entries"),
+            "conflicting count missing: {content}"
+        );
+        assert!(
+            content.contains("3 will be created as new"),
+            "non-conflicting count missing: {content}"
+        );
+    }
+
+    #[test]
+    fn draw_import_confirm_shows_confirm_selected() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_import_confirm(frame, frame.area(), 2, 1, 1, 3, &ImportState::Pending);
+            })
+            .unwrap();
+        let content = get_buffer_content(&terminal);
+
+        assert!(
+            content.contains("[ Confirm ]"),
+            "confirm button missing: {content}"
+        );
+        assert!(
+            content.contains("(Enter to proceed)"),
+            "confirm hint missing: {content}"
+        );
+    }
+
+    #[test]
+    fn draw_import_confirm_shows_cancel_selected() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_import_confirm(frame, frame.area(), 2, 1, 1, 4, &ImportState::Pending);
+            })
+            .unwrap();
+        let content = get_buffer_content(&terminal);
+
+        assert!(
+            content.contains("[ Cancel ]"),
+            "cancel button missing: {content}"
+        );
+        assert!(
+            content.contains("(Esc to abort)"),
+            "cancel hint missing: {content}"
+        );
+    }
+
+    #[test]
+    fn draw_import_confirm_pending_shows_nav_hints() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_import_confirm(frame, frame.area(), 3, 1, 2, 3, &ImportState::Pending);
+            })
+            .unwrap();
+        let content = get_buffer_content(&terminal);
+
+        assert!(
+            content.contains("Up/Down: navigate"),
+            "pending nav hint missing: {content}"
+        );
+        assert!(
+            content.contains("Enter: confirm"),
+            "pending confirm hint missing: {content}"
+        );
+        assert!(
+            content.contains("Esc: cancel"),
+            "pending cancel hint missing: {content}"
+        );
+    }
+
+    #[test]
+    fn draw_import_confirm_inprogress_shows_working_block() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_import_confirm(frame, frame.area(), 4, 0, 4, 3, &ImportState::InProgress);
+            })
+            .unwrap();
+        let content = get_buffer_content(&terminal);
+
+        assert!(
+            content.contains("Importing policies..."),
+            "inprogress text missing: {content}"
+        );
+        assert!(
+            content.contains("Enter/Esc: dismiss"),
+            "dismiss hint missing in inprogress: {content}"
+        );
+    }
+
+    #[test]
+    fn draw_import_confirm_success_shows_summary() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_import_confirm(
+                    frame,
+                    frame.area(),
+                    5,
+                    2,
+                    3,
+                    3,
+                    &ImportState::Success {
+                        created: 3,
+                        updated: 2,
+                    },
+                );
+            })
+            .unwrap();
+        let content = get_buffer_content(&terminal);
+
+        assert!(
+            content.contains("Import Complete"),
+            "success title missing: {content}"
+        );
+        assert!(
+            content.contains("Imported 5 policies (3 new, 2 updated)"),
+            "success summary missing: {content}"
+        );
+        assert!(
+            content.contains("Enter/Esc: dismiss"),
+            "dismiss hint missing in success: {content}"
+        );
+    }
+
+    #[test]
+    fn draw_import_confirm_error_shows_message() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_import_confirm(
+                    frame,
+                    frame.area(),
+                    3,
+                    1,
+                    2,
+                    3,
+                    &ImportState::Error("Failed on policy 'Bad': 500".to_string()),
+                );
+            })
+            .unwrap();
+        let content = get_buffer_content(&terminal);
+
+        assert!(
+            content.contains("Import Failed"),
+            "error title missing: {content}"
+        );
+        assert!(
+            content.contains("Failed on policy 'Bad': 500"),
+            "error message missing: {content}"
+        );
+        assert!(
+            content.contains("Enter/Esc: dismiss"),
+            "dismiss hint missing in error: {content}"
+        );
+    }
+
+    #[test]
+    fn draw_import_confirm_zero_counts_still_renders() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_import_confirm(frame, frame.area(), 0, 0, 0, 3, &ImportState::Pending);
+            })
+            .unwrap();
+        let content = get_buffer_content(&terminal);
+
+        assert!(
+            content.contains("Import 0 policies?"),
+            "zero header missing: {content}"
+        );
+        assert!(
+            content.contains("0 will overwrite existing entries"),
+            "zero conflicting missing: {content}"
+        );
+        assert!(
+            content.contains("0 will be created as new"),
+            "zero non-conflicting missing: {content}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod policy_menu_render_tests {
+    use super::*;
+    use crate::app::{App, Screen};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn make_app(screen: Screen) -> App {
+        let client = crate::client::EngineClient::for_test();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime build must succeed");
+        let mut app = App::new(client, rt);
+        app.screen = screen;
+        app
+    }
+
+    #[test]
+    fn draw_screen_policy_menu_shows_import_export_entries() {
+        let backend = TestBackend::new(80, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        let app = make_app(Screen::PolicyMenu { selected: 6 });
+        term.draw(|frame| draw_screen(&app, frame, frame.area()))
+            .unwrap();
+        let content: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        assert!(
+            content.contains("Policy Management"),
+            "title missing: {content}"
+        );
+        assert!(
+            content.contains("Import Policies..."),
+            "import entry missing: {content}"
+        );
+        assert!(
+            content.contains("Export Policies..."),
+            "export entry missing: {content}"
+        );
+        assert!(content.contains("Back"), "back entry missing: {content}");
+    }
+}

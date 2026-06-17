@@ -9307,3 +9307,433 @@ mod simulate_tests {
         app
     }
 }
+
+#[cfg(test)]
+mod import_execution_tests {
+    use super::*;
+    use crate::app::{ImportCaller, ImportState, PolicyResponse, Screen};
+    use crate::event::AppEvent;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn enter() -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        )
+    }
+
+    fn esc() -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        )
+    }
+
+    fn make_policy_response(id: &str, name: &str) -> PolicyResponse {
+        PolicyResponse {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: None,
+            priority: 1,
+            conditions: serde_json::json!([]),
+            action: "DENY".to_string(),
+            enabled: true,
+            version: 1,
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            mode: dlp_common::abac::PolicyMode::ALL,
+            enforcement_mode: dlp_common::abac::EnforcementMode::Block,
+        }
+    }
+
+    #[test]
+    fn import_confirm_all_new_policies_post_success() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut app, _server) = rt.block_on(async {
+            let server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(path("/admin/policies"))
+                .respond_with(
+                    ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "p1"})),
+                )
+                .mount(&server)
+                .await;
+
+            Mock::given(method("POST"))
+                .and(path("/admin/policies"))
+                .respond_with(
+                    ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "p2"})),
+                )
+                .mount(&server)
+                .await;
+
+            let client = crate::client::EngineClient::for_test_with_url(server.uri());
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            let mut app = crate::app::App::new(client, rt);
+            app.screen = Screen::ImportConfirm {
+                policies: vec![
+                    make_policy_response("p1", "Policy One"),
+                    make_policy_response("p2", "Policy Two"),
+                ],
+                existing_ids: vec![],
+                conflicting_count: 0,
+                non_conflicting_count: 2,
+                selected: 3,
+                state: ImportState::Pending,
+                caller: ImportCaller::PolicyMenu,
+            };
+            (app, server)
+        });
+
+        handle_event(&mut app, AppEvent::Key(enter()));
+
+        match &app.screen {
+            Screen::ImportConfirm { state, .. } => match state {
+                ImportState::Success { created, updated } => {
+                    assert_eq!(*created, 2, "expected 2 created, got {created}");
+                    assert_eq!(*updated, 0, "expected 0 updated, got {updated}");
+                }
+                other => panic!("expected Success, got {other:?}"),
+            },
+            other => panic!("expected ImportConfirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_confirm_mixed_post_and_put_success() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut app, _server) = rt.block_on(async {
+            let server = MockServer::start().await;
+
+            // POST for new policy
+            Mock::given(method("POST"))
+                .and(path("/admin/policies"))
+                .respond_with(
+                    ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "p-new"})),
+                )
+                .mount(&server)
+                .await;
+
+            // PUT for existing policy
+            Mock::given(method("PUT"))
+                .and(path("/admin/policies/p-existing"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"id": "p-existing"})),
+                )
+                .mount(&server)
+                .await;
+
+            let client = crate::client::EngineClient::for_test_with_url(server.uri());
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            let mut app = crate::app::App::new(client, rt);
+            app.screen = Screen::ImportConfirm {
+                policies: vec![
+                    make_policy_response("p-new", "New Policy"),
+                    make_policy_response("p-existing", "Existing Policy"),
+                ],
+                existing_ids: vec!["p-existing".to_string()],
+                conflicting_count: 1,
+                non_conflicting_count: 1,
+                selected: 3,
+                state: ImportState::Pending,
+                caller: ImportCaller::PolicyMenu,
+            };
+            (app, server)
+        });
+
+        handle_event(&mut app, AppEvent::Key(enter()));
+
+        match &app.screen {
+            Screen::ImportConfirm { state, .. } => match state {
+                ImportState::Success { created, updated } => {
+                    assert_eq!(*created, 1, "expected 1 created, got {created}");
+                    assert_eq!(*updated, 1, "expected 1 updated, got {updated}");
+                }
+                other => panic!("expected Success, got {other:?}"),
+            },
+            other => panic!("expected ImportConfirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_confirm_post_failure_aborts_with_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut app, _server) = rt.block_on(async {
+            let server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(path("/admin/policies"))
+                .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
+                .mount(&server)
+                .await;
+
+            let client = crate::client::EngineClient::for_test_with_url(server.uri());
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            let mut app = crate::app::App::new(client, rt);
+            app.screen = Screen::ImportConfirm {
+                policies: vec![
+                    make_policy_response("p1", "Bad Policy"),
+                    make_policy_response("p2", "Good Policy"),
+                ],
+                existing_ids: vec![],
+                conflicting_count: 0,
+                non_conflicting_count: 2,
+                selected: 3,
+                state: ImportState::Pending,
+                caller: ImportCaller::PolicyMenu,
+            };
+            (app, server)
+        });
+
+        handle_event(&mut app, AppEvent::Key(enter()));
+
+        match &app.screen {
+            Screen::ImportConfirm { state, .. } => match state {
+                ImportState::Error(msg) => {
+                    assert!(
+                        msg.contains("Failed on policy 'Bad Policy'"),
+                        "error should name the failing policy: {msg}"
+                    );
+                    assert!(
+                        msg.contains("500"),
+                        "error should contain status code: {msg}"
+                    );
+                }
+                other => panic!("expected Error, got {other:?}"),
+            },
+            other => panic!("expected ImportConfirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_confirm_put_failure_aborts_with_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut app, _server) = rt.block_on(async {
+            let server = MockServer::start().await;
+
+            // POST succeeds
+            Mock::given(method("POST"))
+                .and(path("/admin/policies"))
+                .respond_with(
+                    ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "p-new"})),
+                )
+                .mount(&server)
+                .await;
+
+            // PUT fails
+            Mock::given(method("PUT"))
+                .and(path("/admin/policies/p-existing"))
+                .respond_with(ResponseTemplate::new(500).set_body_string("update failed"))
+                .mount(&server)
+                .await;
+
+            let client = crate::client::EngineClient::for_test_with_url(server.uri());
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            let mut app = crate::app::App::new(client, rt);
+            app.screen = Screen::ImportConfirm {
+                policies: vec![
+                    make_policy_response("p-new", "New Policy"),
+                    make_policy_response("p-existing", "Existing Policy"),
+                ],
+                existing_ids: vec!["p-existing".to_string()],
+                conflicting_count: 1,
+                non_conflicting_count: 1,
+                selected: 3,
+                state: ImportState::Pending,
+                caller: ImportCaller::PolicyMenu,
+            };
+            (app, server)
+        });
+
+        handle_event(&mut app, AppEvent::Key(enter()));
+
+        match &app.screen {
+            Screen::ImportConfirm { state, .. } => match state {
+                ImportState::Error(msg) => {
+                    assert!(
+                        msg.contains("Failed on policy 'Existing Policy'"),
+                        "error should name the failing policy: {msg}"
+                    );
+                    assert!(
+                        msg.contains("500"),
+                        "error should contain status code: {msg}"
+                    );
+                }
+                other => panic!("expected Error, got {other:?}"),
+            },
+            other => panic!("expected ImportConfirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_confirm_esc_returns_to_policy_menu() {
+        let client = crate::client::EngineClient::for_test();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let mut app = crate::app::App::new(client, rt);
+        app.screen = Screen::ImportConfirm {
+            policies: vec![make_policy_response("p1", "Policy One")],
+            existing_ids: vec![],
+            conflicting_count: 0,
+            non_conflicting_count: 1,
+            selected: 3,
+            state: ImportState::Pending,
+            caller: ImportCaller::PolicyMenu,
+        };
+
+        handle_event(&mut app, AppEvent::Key(esc()));
+
+        match &app.screen {
+            Screen::PolicyMenu { selected } => {
+                assert_eq!(*selected, 0);
+            }
+            other => panic!("expected PolicyMenu, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_confirm_success_dismiss_returns_to_policy_menu() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut app, _server) = rt.block_on(async {
+            let server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(path("/admin/policies"))
+                .respond_with(
+                    ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "p1"})),
+                )
+                .mount(&server)
+                .await;
+
+            let client = crate::client::EngineClient::for_test_with_url(server.uri());
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            let mut app = crate::app::App::new(client, rt);
+            app.screen = Screen::ImportConfirm {
+                policies: vec![make_policy_response("p1", "Policy One")],
+                existing_ids: vec![],
+                conflicting_count: 0,
+                non_conflicting_count: 1,
+                selected: 3,
+                state: ImportState::Pending,
+                caller: ImportCaller::PolicyMenu,
+            };
+            (app, server)
+        });
+
+        // Execute import
+        handle_event(&mut app, AppEvent::Key(enter()));
+
+        // Verify success
+        match &app.screen {
+            Screen::ImportConfirm { state, .. } => {
+                assert!(
+                    matches!(state, ImportState::Success { .. }),
+                    "expected Success"
+                );
+            }
+            other => panic!("expected ImportConfirm, got {other:?}"),
+        }
+
+        // Dismiss with Enter
+        handle_event(&mut app, AppEvent::Key(enter()));
+
+        match &app.screen {
+            Screen::PolicyMenu { selected } => {
+                assert_eq!(*selected, 0);
+            }
+            other => panic!("expected PolicyMenu after dismiss, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_confirm_error_dismiss_returns_to_policy_menu() {
+        let client = crate::client::EngineClient::for_test();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let mut app = crate::app::App::new(client, rt);
+        app.screen = Screen::ImportConfirm {
+            policies: vec![make_policy_response("p1", "Policy One")],
+            existing_ids: vec![],
+            conflicting_count: 0,
+            non_conflicting_count: 1,
+            selected: 3,
+            state: ImportState::Error("network failure".to_string()),
+            caller: ImportCaller::PolicyMenu,
+        };
+
+        handle_event(&mut app, AppEvent::Key(enter()));
+
+        match &app.screen {
+            Screen::PolicyMenu { selected } => {
+                assert_eq!(*selected, 0);
+            }
+            other => panic!("expected PolicyMenu after dismiss, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_confirm_navigates_between_confirm_and_cancel() {
+        let client = crate::client::EngineClient::for_test();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let mut app = crate::app::App::new(client, rt);
+        app.screen = Screen::ImportConfirm {
+            policies: vec![make_policy_response("p1", "Policy One")],
+            existing_ids: vec![],
+            conflicting_count: 0,
+            non_conflicting_count: 1,
+            selected: 3,
+            state: ImportState::Pending,
+            caller: ImportCaller::PolicyMenu,
+        };
+
+        // Down from Confirm (3) -> Cancel (4)
+        handle_event(
+            &mut app,
+            AppEvent::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Down,
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        );
+        match &app.screen {
+            Screen::ImportConfirm { selected, .. } => assert_eq!(*selected, 4),
+            other => panic!("expected ImportConfirm, got {other:?}"),
+        }
+
+        // Up from Cancel (4) -> Confirm (3)
+        handle_event(
+            &mut app,
+            AppEvent::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Up,
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        );
+        match &app.screen {
+            Screen::ImportConfirm { selected, .. } => assert_eq!(*selected, 3),
+            other => panic!("expected ImportConfirm, got {other:?}"),
+        }
+    }
+}
