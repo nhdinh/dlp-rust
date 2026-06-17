@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-status: verifying
+status: Not planned
 stopped_at: context exhaustion at 78% (2026-06-17)
-last_updated: "2026-06-17T10:37:37.350Z"
-last_activity: 2026-06-17 -- Phase 18 boolean mode engine + wire format implementation verified; all tests pass, clippy clean, fmt clean.
+last_updated: "2026-06-17T12:37:50.855Z"
+last_activity: "2026-06-17 -- Inserted Phase 50.1 to close FAIL-01/02/03 gap: verify ISOLATED->RESYNC->HEALTHY recovery at runtime."
 progress:
-  total_phases: 39
+  total_phases: 41
   completed_phases: 30
   total_plans: 143
   completed_plans: 133
-  percent: 77
+  percent: 73
 ---
 
 # Project State
@@ -20,16 +20,16 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 16 — policy-list-simulate
+**Current Focus:** Phase 50.1 — Close gap FAIL-01/02/03
 
 ---
 
 ## Current Position
 
 Phase: 53.1
-Plan: 0/0 plans; urgent insertion after Phase 53
-Status: Not planned
-Last activity: 2026-06-17 -- Inserted Phase 53.1 to close ETW-03 gap: add BypassAlert to IpcPayloadV1 and route in agent hook_ipc.
+Plan: 4/4 plans; ready to execute
+Status: Planned
+Last activity: 2026-06-17 -- Phase 53.1 planned: 4 plans (Wave 0 test stubs + 3 implementation waves) to close ETW-03 INT-BLOCK-01 gap.
 
 ## Progress
 
@@ -62,13 +62,15 @@ v0.12.0 [Phases 65–70 planned] (planned — Scanner + Screenshot + Watermark +
 | 48 | Hook DLL Surface Expansion + Crash Hardening + Build Harness | BLOCK-01..04, BLOCK-10 |
 | 49 | Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | BLOCK-05..07 |
 | 50 | Shared-Memory Classification Cache + Fail-Mode State Machine | CACHE-01..06, FAIL-01..03 |
+| 50.1 | Close gap FAIL-01/02/03 — verify ISOLATED->RESYNC->HEALTHY recovery at runtime (INSERTED) | TBD |
 | 51 | ntdll Syscall-Stub Trampolines + EDR Coexistence | BLOCK-08, BLOCK-09 |
 | 52 | DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | DACL-01..05 |
 | 53 | ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | ETW-01..05 |
-| 53.1 | Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED) | TBD |
+| 53.1 | Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED) | ETW-03 |
 | 54 | Admin TUI Protected Paths + Bypass Alerts Screens | UX-01, UX-02 |
 | 55 | Monitor-Only / Audit-Only Per-Policy Enforcement Mode | MODE-01 |
 | 56 | SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | DRIVE-01..04 |
+| 56.1 | Close gap DRIVE-03/04 — add volume class fields to HookRequest and ABAC path (INSERTED) | TBD |
 | 57 | Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | OPS-01..04 |
 | 58 | Differentiators Bundle (cuttable to v0.10.1) | DIFF-01..04 |
 | **v0.11.0** | | |
@@ -94,8 +96,9 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 
 ## Recent Decisions
 
-1. **2026-06-17: Phase 18 execution verified complete.** `PolicyMode` enum (ALL/ANY/NONE), `Policy.mode` field, DB `mode` column with idempotent migration, wire format round-trip, mode-aware evaluator, and full test coverage were all found already implemented. Verification: `cargo test --workspace` passes (no failures), `cargo clippy -- -D warnings` clean, `cargo fmt --check` clean. SonarQube scanner could not reach localhost:9000 (server unavailable). Phase 18 marked complete in STATE.md.
-2. Milestone pivot 2026-05-12: v1.0.0 Enterprise Hardening dropped; v0.10.0 Real-Time File Access Prevention is the new active milestone.
+1. **2026-06-17: Phase 53.1 planned.** Gap closure for ETW-03 / INT-BLOCK-01: 4 plans created (Wave 0 test stubs + 3 implementation waves). Scope: add `BypassAlert(BypassAlert)` variant to `IpcPayloadV1` in `dlp-common`, route agent `handle_connection` to `BypassCorrelator::submit_bypass_alert`, and wrap hook DLL `emit_bypass_alert` in `IpcEnvelope::V1`. Verification passed. Ready for `/gsd-execute-phase 53.1`.
+2. **2026-06-17: Phase 18 execution verified complete.** `PolicyMode` enum (ALL/ANY/NONE), `Policy.mode` field, DB `mode` column with idempotent migration, wire format round-trip, mode-aware evaluator, and full test coverage were all found already implemented. Verification: `cargo test --workspace` passes (no failures), `cargo clippy -- -D warnings` clean, `cargo fmt --check` clean. SonarQube scanner could not reach localhost:9000 (server unavailable). Phase 18 marked complete in STATE.md.
+3. Milestone pivot 2026-05-12: v1.0.0 Enterprise Hardening dropped; v0.10.0 Real-Time File Access Prevention is the new active milestone.
 2. Architecture stays user-mode: no kernel minifilter, no kernel driver, no EV cert. Real-blocking achieved via hybrid Option C (IAT hooks + DACL tripwire + ETW bypass detection).
 3. v0.10.0 generalizes the v0.9.0 cloud-sync hook DLL pattern to all user-mode processes via agent-driven `CreateRemoteThread` (primary) and AppInit_DLLs (tertiary fallback on non-Secure-Boot endpoints only).
 4. Direct-syscall bypass closed by in-memory `retour`-based Detours-style 5-byte JMP trampoline on ntdll syscall stubs; gated behind `enable_ntdll_patching` policy flag (default off; per-customer rollout).
@@ -132,11 +135,11 @@ None.
 
 ## Next Action
 
-### Immediate: Plan Phase 53.1 — Close gap ETW-03
+### Immediate: Plan Phase 50.1 — Close gap FAIL-01/02/03
 
-Inserted as urgent decimal phase after Phase 53. Run `/gsd-plan-phase 53.1` to break down the work.
+Inserted as urgent decimal phase after Phase 50. Run `/gsd-plan-phase 50.1` to break down the work.
 
-**Scope:** Add `BypassAlert` to `IpcPayloadV1` and route it in the agent `hook_ipc` handler so bypass alerts from the hook DLL reach the correlator and SIEM path.
+**Scope:** Verify ISOLATED->RESYNC->HEALTHY recovery at runtime so FAIL-01/02/03 gaps are closed end-to-end.
 
 ---
 
@@ -159,7 +162,9 @@ Resume file: .planning/phases/68.1-close-gap-device-05-tamper-03-04-wire-tamper-
 
 ### Roadmap Evolution
 
+- Phase 50.1 inserted after Phase 50: Close gap FAIL-01/02/03 — verify ISOLATED->RESYNC->HEALTHY recovery at runtime (URGENT)
 - Phase 53.1 inserted after Phase 53: Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (URGENT)
+- Phase 56.1 inserted after Phase 56: Close gap DRIVE-03/04 — add volume class fields to HookRequest and ABAC path (URGENT)
 - Phase 66.1 inserted after Phase 66: Close gap: WORKFLOW-04 — wire ApprovalCache into enforcement (URGENT)
 - Phase 68.1 inserted after Phase 68: Close gap: DEVICE-05/TAMPER-03/04 — wire tamper detection to SIEM and health (URGENT)
 - Phase 67.1 inserted after Phase 67: Print Watermarking — XPS Page Geometry + Text Metrics (URGENT)
