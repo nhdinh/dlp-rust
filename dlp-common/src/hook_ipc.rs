@@ -89,6 +89,12 @@ pub enum IpcPayloadV1 {
     /// or classification failed. The hook DLL treats `None` as fail-closed
     /// (does not default to [`VolumeClass::LocalNTFS`]).
     VolumeClassResponse(VolumeClassResponse),
+    /// A hook-derived bypass alert (EDR conflict, patch race) routed to the bypass correlator.
+    ///
+    /// Sent when the hook DLL detects its trampoline was overwritten, a patch raced with a thread,
+    /// or EDR was detected at boot. The alert is forwarded to the bypass correlator and then to
+    /// SIEM / alert router.
+    BypassAlert(BypassAlert),
 }
 
 /// Request sent by the hook DLL to the agent for classification.
@@ -692,7 +698,10 @@ mod tests {
                     assert_eq!(deserialized_alert.file_object, alert.file_object);
                     assert_eq!(deserialized_alert.qpc_timestamp, alert.qpc_timestamp);
                     assert_eq!(deserialized_alert.severity, alert.severity);
-                    assert_eq!(deserialized_alert.correlation_reason, alert.correlation_reason);
+                    assert_eq!(
+                        deserialized_alert.correlation_reason,
+                        alert.correlation_reason
+                    );
                 }
                 _ => panic!("expected BypassAlert payload"),
             },
