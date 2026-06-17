@@ -4,14 +4,14 @@ milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
 status: verifying
 stopped_at: context exhaustion at 78% (2026-06-17)
-last_updated: "2026-06-17T08:43:15.867Z"
+last_updated: "2026-06-17T10:37:37.350Z"
 last_activity: 2026-06-17 -- Phase 18 boolean mode engine + wire format implementation verified; all tests pass, clippy clean, fmt clean.
 progress:
-  total_phases: 38
+  total_phases: 39
   completed_phases: 30
   total_plans: 143
   completed_plans: 133
-  percent: 79
+  percent: 77
 ---
 
 # Project State
@@ -26,10 +26,10 @@ progress:
 
 ## Current Position
 
-Phase: 18
-Plan: Wave 1 + Wave 2 complete
-Status: Verified and executed
-Last activity: 2026-06-17 -- Phase 18 boolean mode engine + wire format implementation verified; all tests pass, clippy clean, fmt clean.
+Phase: 53.1
+Plan: 0/0 plans; urgent insertion after Phase 53
+Status: Not planned
+Last activity: 2026-06-17 -- Inserted Phase 53.1 to close ETW-03 gap: add BypassAlert to IpcPayloadV1 and route in agent hook_ipc.
 
 ## Progress
 
@@ -65,6 +65,7 @@ v0.12.0 [Phases 65–70 planned] (planned — Scanner + Screenshot + Watermark +
 | 51 | ntdll Syscall-Stub Trampolines + EDR Coexistence | BLOCK-08, BLOCK-09 |
 | 52 | DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | DACL-01..05 |
 | 53 | ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | ETW-01..05 |
+| 53.1 | Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED) | TBD |
 | 54 | Admin TUI Protected Paths + Bypass Alerts Screens | UX-01, UX-02 |
 | 55 | Monitor-Only / Audit-Only Per-Policy Enforcement Mode | MODE-01 |
 | 56 | SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | DRIVE-01..04 |
@@ -131,13 +132,11 @@ None.
 
 ## Next Action
 
-### Immediate: Milestone v0.11.0 complete — choose next path
+### Immediate: Plan Phase 53.1 — Close gap ETW-03
 
-Phase 64 verified complete 2026-06-09. Phase 68.1 verified complete 2026-06-13. v0.11.0 milestone (Phases 59-64, 26/26 requirements) is done. Phase 68.1 (TAMPER-04 gap closure) is done.
+Inserted as urgent decimal phase after Phase 53. Run `/gsd-plan-phase 53.1` to break down the work.
 
-**Option A:** Run `/gsd-complete-milestone` for v0.11.0, then plan v0.12.0 (Phases 65-70: Scanner, Screenshot, Watermark, Email, RDP, Bluetooth, Backup).
-
-**Option B:** Resume v0.10.0 Phase 57 (Operational Deployment Guide + UAT ship gate) or Phase 58 (Differentiators Bundle).
+**Scope:** Add `BypassAlert` to `IpcPayloadV1` and route it in the agent `hook_ipc` handler so bypass alerts from the hook DLL reach the correlator and SIEM path.
 
 ---
 
@@ -160,6 +159,7 @@ Resume file: .planning/phases/68.1-close-gap-device-05-tamper-03-04-wire-tamper-
 
 ### Roadmap Evolution
 
+- Phase 53.1 inserted after Phase 53: Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (URGENT)
 - Phase 66.1 inserted after Phase 66: Close gap: WORKFLOW-04 — wire ApprovalCache into enforcement (URGENT)
 - Phase 68.1 inserted after Phase 68: Close gap: DEVICE-05/TAMPER-03/04 — wire tamper detection to SIEM and health (URGENT)
 - Phase 67.1 inserted after Phase 67: Print Watermarking — XPS Page Geometry + Text Metrics (URGENT)

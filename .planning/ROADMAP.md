@@ -245,6 +245,16 @@ Plans:
 - WR-11: `EtwFileEvent.nt_path_converted: bool` field; correlator skips events where conversion failed with `tracing::warn!`
 - WR-12: ALL new `BypassAlert` fields have `#[serde(default)]`; DB schema has `DEFAULT 0` for `file_object`; v1 alerts deserialize without error
 
+### Phase 53.1: Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 53
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 53.1 to break down)
+
 ### Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens
 
 **Goal**: An operator can fully manage Protected Paths and triage Bypass Alerts from the admin TUI without touching SQLite, the registry, or any raw config file.
@@ -532,6 +542,7 @@ Plans:
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 6/6 | Complete    | 2026-05-22 |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 7/7 | Complete    | 2026-05-27 |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Complete    | 2026-05-28 |
+| 53.1 | Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED) | 0/0 | Not started | - |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 6/6 | Complete | 2026-06-06 |
