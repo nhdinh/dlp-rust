@@ -6554,6 +6554,29 @@ mod tests {
         }
     }
 
+    // ---------------------------------------------------------------------------
+    // Phase 19: cycle_mode cycles through ALL -> ANY -> NONE -> ALL.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_cycle_mode_cycles_all_any_none() {
+        use dlp_common::abac::PolicyMode;
+
+        // Starting from ALL, cycle through all variants and back to ALL.
+        let mode_all = PolicyMode::ALL;
+        let mode_any = cycle_mode(mode_all);
+        assert_eq!(mode_any, PolicyMode::ANY, "ALL -> ANY");
+
+        let mode_none = cycle_mode(mode_any);
+        assert_eq!(mode_none, PolicyMode::NONE, "ANY -> NONE");
+
+        let mode_back_to_all = cycle_mode(mode_none);
+        assert_eq!(mode_back_to_all, PolicyMode::ALL, "NONE -> ALL");
+
+        // Three cycles should return to the starting state (ALL -> ANY -> NONE -> ALL).
+        assert_eq!(cycle_mode(cycle_mode(cycle_mode(mode_all))), mode_all);
+    }
+
     #[test]
     fn condition_display_member_of() {
         use dlp_common::abac::PolicyCondition;
