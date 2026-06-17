@@ -941,11 +941,9 @@ mod tests {
             severity: "crit".to_string(),
             correlation_reason: "HookSelfReported".to_string(),
         };
-        let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(
-            dlp_common::hook_ipc::IpcMessageV1 {
-                payload: dlp_common::hook_ipc::IpcPayloadV1::BypassAlert(alert.clone()),
-            },
-        );
+        let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+            payload: dlp_common::hook_ipc::IpcPayloadV1::BypassAlert(alert.clone()),
+        });
         let envelope_bytes = bincode::serialize(&envelope).unwrap();
 
         // In the full implementation, handle_connection will accept bypass_tx

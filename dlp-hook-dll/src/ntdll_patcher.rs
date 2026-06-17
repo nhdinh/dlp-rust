@@ -696,12 +696,8 @@ mod tests {
         let pid = std::process::id();
 
         // Test 1: HookOverwritten reason.
-        let envelope = build_bypass_alert_envelope(
-            BypassReason::HookOverwritten,
-            "NtCreateFile",
-            now,
-            pid,
-        );
+        let envelope =
+            build_bypass_alert_envelope(BypassReason::HookOverwritten, "NtCreateFile", now, pid);
 
         // Verify the envelope is IpcEnvelope::V1 with BypassAlert payload.
         match envelope {
@@ -723,12 +719,8 @@ mod tests {
         assert_eq!(envelope, rt);
 
         // Test 3: PatchRaced reason.
-        let envelope2 = build_bypass_alert_envelope(
-            BypassReason::PatchRaced,
-            "NtCreateFile",
-            now,
-            pid,
-        );
+        let envelope2 =
+            build_bypass_alert_envelope(BypassReason::PatchRaced, "NtCreateFile", now, pid);
         match envelope2 {
             dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
                 dlp_common::hook_ipc::IpcPayloadV1::BypassAlert(ref alert) => {
