@@ -1613,10 +1613,16 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
             let process_rx = process_watcher.receiver().clone();
             let sc = sc.clone();
 
+            // Create unbounded bypass channel for hook DLL IPC alerts (per REVIEW-M-01).
+            // The sender will be passed to HookIpcServer when it is constructed
+            // for production (TODO at line 1267 / WORKFLOW-04-followup).
+            let (_bypass_tx, bypass_rx) =
+                crossbeam_channel::unbounded::<dlp_common::hook_ipc::BypassAlert>();
+
             let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
             let handle = tokio::spawn(async move {
                 tokio::select! {
-                    _ = correlator.run(etw_rx, process_rx, sc) => {},
+                    _ = correlator.run(etw_rx, process_rx, bypass_rx, sc) => {},
                     _ = shutdown_rx.changed() => {
                         info!("bypass correlator shutting down");
                     }

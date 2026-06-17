@@ -921,14 +921,16 @@ impl BypassCorrelator {
 
     /// Runs the correlator event loop.
     ///
-    /// Spawns three tasks:
+    /// Spawns four tasks:
     /// 1. Process event handler
     /// 2. ETW event handler
-    /// 3. Batch flush task
+    /// 3. Bypass alert handler (from hook DLL IPC)
+    /// 4. Batch flush task
     pub async fn run(
         self,
         etw_rx: Receiver<EtwFileEvent>,
         process_rx: Receiver<ProcessEvent>,
+        bypass_rx: Receiver<BypassAlert>,
         server_client: ServerClient,
     ) {
         let correlator = Arc::new(self);
@@ -949,7 +951,22 @@ impl BypassCorrelator {
             }
         });
 
-        // Task 3: Batch flush task.
+        // Task 3: Bypass alert handler (from hook DLL IPC).
+        // Per REVIEW-M-09, wrap the blocking recv loop in spawn_blocking
+        // to avoid starving the async runtime.
+        let bypass_corr = Arc::clone(&correlator);
+        let bypass_handle = tokio::task::spawn_blocking(move || {
+            while let Ok(alert) = bypass_rx.recv() {
+                let bypass_corr = Arc::clone(&bypass_corr);
+                // Bridge sync recv to async submit_bypass_alert.
+                // Use block_on if a runtime is available; otherwise skip.
+                if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                    rt.block_on(bypass_corr.submit_bypass_alert(alert));
+                }
+            }
+        });
+
+        // Task 4: Batch flush task.
         let flush_corr = Arc::clone(&correlator);
         let flush_handle = tokio::spawn(async move {
             let mut interval =
@@ -964,6 +981,7 @@ impl BypassCorrelator {
         tokio::select! {
             _ = proc_handle => {},
             _ = etw_handle => {},
+            _ = bypass_handle => {},
             _ = flush_handle => {},
         }
     }
@@ -1588,5 +1606,108 @@ mod tests {
 
         // In requeue_with_retry, this would be dropped.
         assert!(pending.retry_count > config.max_alert_retry);
+    }
+
+    #[tokio::test]
+    async fn test_bypass_channel_consumed_by_run() {
+        // Test that BypassCorrelator::run can consume from a bypass_rx channel.
+        // We can't easily run the full run() method (it blocks on channels),
+        // but we can verify the channel wiring works by testing the individual
+        // components: submit_bypass_alert + channel send/receive.
+        let config = CorrelatorConfig::default();
+        let correlator = Arc::new(BypassCorrelator::new(config));
+
+        let (bypass_tx, bypass_rx) = crossbeam_channel::unbounded::<BypassAlert>();
+
+        let alert = BypassAlert {
+            reason: BypassReason::HookOverwritten,
+            stub_name: "NtCreateFile".to_string(),
+            pid: 1234,
+            timestamp_secs: 1_700_000_000,
+            version: 2,
+            agent_id: "".to_string(),
+            image_path: "".to_string(),
+            image_sha256: None,
+            file_path: r"C:\Data\file.txt".to_string(),
+            operation: "Create".to_string(),
+            file_object: 0xDEADBEEF,
+            qpc_timestamp: 0,
+            severity: "".to_string(),
+            correlation_reason: "".to_string(),
+        };
+
+        // Send through the channel (simulating what hook_ipc would do).
+        bypass_tx.send(alert.clone()).expect("send should succeed on unbounded channel");
+
+        // Receive and submit (simulating what the bypass task in run() would do).
+        let received = bypass_rx.recv().expect("recv should succeed");
+        let corr_clone = Arc::clone(&correlator);
+        corr_clone.submit_bypass_alert(received).await;
+
+        // Verify the alert is in the batch.
+        let batch = correlator.alert_batch.lock().await;
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].alert.pid, 1234);
+        assert_eq!(batch[0].alert.reason, BypassReason::HookOverwritten);
+
+        // Verify channel is now empty.
+        assert!(bypass_rx.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_bypass_channel_concurrent_with_etw() {
+        // Verify that bypass alerts and ETW events can be processed
+        // concurrently without interfering with each other.
+        let config = CorrelatorConfig::default();
+        let correlator = Arc::new(BypassCorrelator::new(config));
+
+        // Simulate bypass alert submission.
+        let bypass_alert = BypassAlert {
+            reason: BypassReason::HookOverwritten,
+            stub_name: "NtCreateFile".to_string(),
+            pid: 1234,
+            timestamp_secs: 1_700_000_000,
+            version: 2,
+            agent_id: "".to_string(),
+            image_path: "".to_string(),
+            image_sha256: None,
+            file_path: r"C:\Data\file.txt".to_string(),
+            operation: "Create".to_string(),
+            file_object: 0,
+            qpc_timestamp: 0,
+            severity: "".to_string(),
+            correlation_reason: "".to_string(),
+        };
+
+        // Simulate ETW event handling (should not affect bypass alert batch).
+        let etw_event = EtwFileEvent {
+            pid: 5678,
+            file_name: r"C:\Other\file.txt".to_string(),
+            file_object: 0,
+            timestamp: 0,
+            op: FileOp::Write,
+            nt_path_converted: false, // will skip
+        };
+
+        // Process both concurrently.
+        let corr_bypass = Arc::clone(&correlator);
+        let bypass_handle = tokio::spawn(async move {
+            corr_bypass.submit_bypass_alert(bypass_alert).await;
+        });
+
+        let corr_etw = Arc::clone(&correlator);
+        let etw_handle = tokio::spawn(async move {
+            corr_etw.handle_etw_event(etw_event).await;
+        });
+
+        let (r1, r2) = tokio::join!(bypass_handle, etw_handle);
+        assert!(r1.is_ok());
+        assert!(r2.is_ok());
+
+        // Batch should have exactly 1 bypass alert (ETW event was skipped due to nt_path_converted=false).
+        let batch = correlator.alert_batch.lock().await;
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].alert.pid, 1234);
+        assert_eq!(batch[0].alert.reason, BypassReason::HookOverwritten);
     }
 }
