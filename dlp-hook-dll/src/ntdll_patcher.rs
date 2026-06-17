@@ -1,6 +1,3 @@
-#![allow(dead_code)]
-#![allow(clippy::enum_variant_names)]
-
 //! Ntdll syscall-stub patcher with retour integration and EDR coexistence.
 //!
 //! This module implements the core of Phase 51: in-memory Detours-style
@@ -230,7 +227,7 @@ impl NtdllPatcher {
             // Defensive null check after GetProcAddress.
             if stub_addr.is_null() {
                 let msg = format!(
-                    "[dlp-hook] ntdll patch: resolved null address for {} ",
+                    "[dlp-hook] ntdll patch: resolved null address for {}",
                     fn_name
                 );
                 crate::debug_log(&msg);
@@ -624,19 +621,45 @@ fn is_target_in_our_trampoline_range(target: *mut u8) -> bool {
     target_usize >= min.saturating_sub(margin) && target_usize <= max.saturating_add(margin)
 }
 
-/// Emits a bypass alert via the named pipe.
+/// Builds a versioned IpcEnvelope wrapping a BypassAlert.
 ///
-/// This is best-effort; if the pipe fails, log via `debug_log` and continue.
-fn emit_bypass_alert(reason: BypassReason, stub_name: &str) {
+/// This is a pure helper (no I/O) for testability. It constructs a
+/// [`BypassAlert`] with all fields populated and wraps it in
+/// [`IpcEnvelope::V1(IpcPayloadV1::BypassAlert(...))`] for protocol
+/// version safety.
+///
+/// # Arguments
+///
+/// * `reason` — The bypass reason (e.g., [`BypassReason::HookOverwritten`]).
+/// * `stub_name` — The affected ntdll stub name (e.g., "NtCreateFile").
+/// * `timestamp_secs` — Unix epoch seconds for the alert timestamp.
+/// * `pid` — Process ID where the alert occurred.
+///
+/// # Returns
+///
+/// An [`IpcEnvelope::V1`] containing the [`BypassAlert`] payload.
+///
+/// # Examples
+///
+/// ```ignore
+/// let envelope = build_bypass_alert_envelope(
+///     BypassReason::HookOverwritten,
+///     "NtCreateFile",
+///     1_700_000_000,
+///     1234,
+/// );
+/// ```
+pub fn build_bypass_alert_envelope(
+    reason: BypassReason,
+    stub_name: &str,
+    timestamp_secs: u64,
+    pid: u32,
+) -> dlp_common::hook_ipc::IpcEnvelope {
     let alert = dlp_common::hook_ipc::BypassAlert {
         reason,
         stub_name: stub_name.to_string(),
-        pid: std::process::id(),
-        timestamp_secs: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-        // Phase 53: v2 fields with serde(default) for backward compat.
+        pid,
+        timestamp_secs,
         version: 1,
         agent_id: String::new(),
         image_path: String::new(),
@@ -648,12 +671,28 @@ fn emit_bypass_alert(reason: BypassReason, stub_name: &str) {
         severity: String::new(),
         correlation_reason: String::new(),
     };
-    if let Ok(payload) = bincode::serialize(&alert) {
-        let _ = crate::pipe_client::send_raw_request(crate::DEFAULT_PIPE_NAME, &payload, 50);
+    dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+        payload: dlp_common::hook_ipc::IpcPayloadV1::BypassAlert(alert),
+    })
+}
+
+/// Emits a bypass alert via the named pipe.
+///
+/// This is best-effort; if the pipe fails, log via `debug_log` and continue.
+/// Uses envelope-wrapped serialization and fire-and-send pattern (no response wait).
+fn emit_bypass_alert(reason: BypassReason, stub_name: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let envelope = build_bypass_alert_envelope(reason, stub_name, now, std::process::id());
+
+    if let Ok(payload) = bincode::serialize(&envelope) {
+        let _ = crate::pipe_client::send_raw_oneway(crate::DEFAULT_PIPE_NAME, &payload);
     }
     // Also log locally
     let msg = format!(
-        "[dlp-hook] BypassAlert: reason={:?} stub={} ",
+        "[dlp-hook] BypassAlert: reason={:?} stub={}",
         reason, stub_name
     );
     crate::debug_log(&msg);
@@ -700,8 +739,8 @@ mod tests {
             build_bypass_alert_envelope(BypassReason::HookOverwritten, "NtCreateFile", now, pid);
 
         // Verify the envelope is IpcEnvelope::V1 with BypassAlert payload.
-        match envelope {
-            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
+        match &envelope {
+            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match &msg.payload {
                 dlp_common::hook_ipc::IpcPayloadV1::BypassAlert(ref alert) => {
                     assert_eq!(alert.reason, BypassReason::HookOverwritten);
                     assert_eq!(alert.stub_name, "NtCreateFile");
@@ -721,8 +760,8 @@ mod tests {
         // Test 3: PatchRaced reason.
         let envelope2 =
             build_bypass_alert_envelope(BypassReason::PatchRaced, "NtCreateFile", now, pid);
-        match envelope2 {
-            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
+        match &envelope2 {
+            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match &msg.payload {
                 dlp_common::hook_ipc::IpcPayloadV1::BypassAlert(ref alert) => {
                     assert_eq!(alert.reason, BypassReason::PatchRaced);
                 }
