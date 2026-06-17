@@ -4,14 +4,14 @@ milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
 status: executing
 stopped_at: context exhaustion at 79% (2026-06-17)
-last_updated: "2026-06-17T03:33:12.657Z"
-last_activity: 2026-06-17 -- Phase 18 planning complete
+last_updated: "2026-06-17T04:45:00.000Z"
+last_activity: 2026-06-17 -- Phase 18 execution verified complete
 progress:
   total_phases: 38
-  completed_phases: 30
+  completed_phases: 31
   total_plans: 143
-  completed_plans: 133
-  percent: 79
+  completed_plans: 135
+  percent: 81
 ---
 
 # Project State
@@ -27,9 +27,9 @@ progress:
 ## Current Position
 
 Phase: 18
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-06-17 -- Phase 18 planning complete
+Plan: Wave 1 + Wave 2 complete
+Status: Verified and executed
+Last activity: 2026-06-17 -- Phase 18 boolean mode engine + wire format implementation verified; all tests pass, clippy clean, fmt clean.
 
 ## Progress
 
@@ -93,7 +93,7 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 
 ## Recent Decisions
 
-1. Phase 60 completed 2026-05-12: Added SIEM audit events on confirm/reject, Data Owner scoping via JWT SID claims, scanner_confidence column, department filtering, and ABAC cache invalidation. All tests pass (1576 passed, 9 ignored). Clippy clean.
+1. **2026-06-17: Phase 18 execution verified complete.** `PolicyMode` enum (ALL/ANY/NONE), `Policy.mode` field, DB `mode` column with idempotent migration, wire format round-trip, mode-aware evaluator, and full test coverage were all found already implemented. Verification: `cargo test --workspace` passes (no failures), `cargo clippy -- -D warnings` clean, `cargo fmt --check` clean. SonarQube scanner could not reach localhost:9000 (server unavailable). Phase 18 marked complete in STATE.md.
 2. Milestone pivot 2026-05-12: v1.0.0 Enterprise Hardening dropped; v0.10.0 Real-Time File Access Prevention is the new active milestone.
 2. Architecture stays user-mode: no kernel minifilter, no kernel driver, no EV cert. Real-blocking achieved via hybrid Option C (IAT hooks + DACL tripwire + ETW bypass detection).
 3. v0.10.0 generalizes the v0.9.0 cloud-sync hook DLL pattern to all user-mode processes via agent-driven `CreateRemoteThread` (primary) and AppInit_DLLs (tertiary fallback on non-Secure-Boot endpoints only).
