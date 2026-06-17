@@ -1,0 +1,229 @@
+[
+  {
+    "phase_dir": "13-conditions-builder",
+    "file": "13-VALIDATION.md",
+    "nyquist_compliant": "false",
+    "wave_0_complete": "false",
+    "status": "draft"
+  },
+  {
+    "phase_dir": "14-policy-create",
+    "file": "14-VALIDATION.md",
+    "nyquist_compliant": "false",
+    "wave_0_complete": "false",
+    "status": "draft"
+  },
+  {
+    "phase_dir": "15-policy-edit-delete",
+    "validation": "missing"
+  },
+  {
+    "phase_dir": "16-policy-list-simulate",
+    "file": "16-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "wave_0_complete": "true",
+    "status": "audited"
+  },
+  {
+    "phase_dir": "17-import-export",
+    "file": "17-VALIDATION.md",
+    "nyquist_compliant": "false",
+    "wave_0_complete": "false",
+    "status": "draft"
+  },
+  {
+    "phase_dir": "18-boolean-mode-engine-wire-format",
+    "file": "18-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "wave_0_complete": "true",
+    "status": "verified"
+  },
+  {
+    "phase_dir": "19-boolean-mode-tui-import-export",
+    "file": "19-VALIDATION.md",
+    "nyquist_compliant": "false",
+    "wave_0_complete": "true",
+    "status": "audited"
+  },
+  {
+    "phase_dir": "20-operator-expansion",
+    "validation": "missing"
+  },
+  {
+    "phase_dir": "21-in-place-condition-editing",
+    "file": "21-VALIDATION.md",
+    "nyquist_compliant": "false",
+    "wave_0_complete": "false",
+    "status": "draft"
+  },
+  {
+    "phase_dir": "22-dlp-common-foundation",
+    "file": "22-VALIDATION.md",
+    "nyquist_compliant": "false",
+    "wave_0_complete": "false",
+    "status": "draft"
+  },
+  {
+    "phase_dir": "23-usb-enumeration-in-dlp-agent",
+    "validation": "missing"
+  },
+  {
+    "phase_dir": "24-device-registry-db-admin-api",
+    "validation": "missing"
+  },
+  {
+    "phase_dir": "25-app-identity-capture-in-dlp-user-ui",
+    "file": "25-VALIDATION.md",
+    "nyquist_compliant": "false",
+    "wave_0_complete": "false",
+    "status": "draft"
+  },
+  {
+    "phase_dir": "26-abac-enforcement-convergence",
+    "validation": "missing"
+  },
+  {
+    "phase_dir": "27-usb-toast-notification",
+    "validation": "missing"
+  },
+  {
+    "phase_dir": "28-admin-tui-screens",
+    "validation": "missing"
+  },
+  {
+    "phase_dir": "47-secrets-encryption-at-rest",
+    "file": "47-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "wave_0_complete": "true",
+    "status": "complete"
+  },
+  {
+    "phase_dir": "48-hook-dll-surface-expansion-crash-hardening-build-harness",
+    "file": "48-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "wave_0_complete": "true",
+    "status": "verified"
+  },
+  {
+    "phase_dir": "49-universal-injection-etw-process-watcher-allowlist-appinit-fa",
+    "file": "49-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "wave_0_complete": "true",
+    "status": "validated"
+  },
+  {
+    "phase_dir": "50-shared-memory-classification-cache-fail-mode-state-machine",
+    "file": "50-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "wave_0_complete": "true",
+    "status": "verified"
+  },
+  {
+    "phase_dir": "51-ntdll-syscall-stub-trampolines-edr-coexistence",
+    "file": "51-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "wave_0_complete": "true",
+    "status": "final"
+  },
+  {
+    "phase_dir": "52-dacl-tripwire",
+    "validation": "missing"
+  },
+  {
+    "phase_dir": "52-dacl-tripwire-repair-watcher-protected-paths-dpapi-recovery-",
+    "file": "52-VALIDATION.md"
+  },
+  {
+    "phase_dir": "53-etw-kernel-file-consumer-bypass-correlator-hook-journal-ring",
+    "file": "53-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "wave_0_complete": "true",
+    "status": "planned"
+  },
+  {
+    "phase_dir": "54-admin-tui-protected-paths-bypass-alerts-screens",
+    "file": "54-VALIDATION.md",
+    "nyquist_compliant": "false",
+    "wave_0_complete": "false",
+    "status": "draft"
+  },
+  {
+    "phase_dir": "55-monitor-only-audit-only-per-policy-enforcement-mode",
+    "file": "55-VALIDATION.md",
+    "nyquist_compliant": "false",
+    "wave_0_complete": "false",
+    "status": "draft"
+  },
+  {
+    "phase_dir": "56-sd-optical-virtual-drive-enumeration-volume-class-abac-seed-",
+    "file": "56-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "wave_0_complete": "true",
+    "status": "draft"
+  },
+  {
+    "phase_dir": "57-operational-deployment-guide-av-edr-allowlist-uat",
+    "file": "57-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "wave_0_complete": "true",
+    "status": "verified"
+  },
+  {
+    "phase_dir": "58-differentiators-bundle-override-diagnostic-hash-evidence-sel",
+    "validation": "missing"
+  },
+  {
+    "phase_dir": "59-label-service",
+    "file": "59-VALIDATION.md"
+  },
+  {
+    "phase_dir": "60-data-owner-review-queue-admin-tui-screen",
+    "validation": "missing"
+  },
+  {
+    "phase_dir": "61-approval-workflow-engine-t3-data-owner-t4-board-digital-signature",
+    "validation": "missing"
+  },
+  {
+    "phase_dir": "62-syslog-forwarder",
+    "file": "62-VALIDATION.md",
+    "nyquist_compliant": "false",
+    "wave_0_complete": "false",
+    "status": "draft"
+  },
+  {
+    "phase_dir": "63-tamper-evident-audit-sha-256-hash-chain",
+    "file": "63-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "wave_0_complete": "true",
+    "status": "verified"
+  },
+  {
+    "phase_dir": "64-device-identity-expansion-fingerprint-mac-vpn-health",
+    "file": "64-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "status": "verified"
+  },
+  {
+    "phase_dir": "65-service-stop-blocking-threads-fix",
+    "file": "65-VALIDATION.md"
+  },
+  {
+    "phase_dir": "66.1-workflow-04-approvalcache-enforcement",
+    "validation": "missing"
+  },
+  {
+    "phase_dir": "67.1-print-watermarking-xps-page-geometry-text-metrics",
+    "file": "67.1-VALIDATION.md",
+    "nyquist_compliant": "true",
+    "wave_0_complete": "true",
+    "status": "draft"
+  },
+  {
+    "phase_dir": "68.1-close-gap-device-05-tamper-03-04-wire-tamper-detection-to-siem-and-health",
+    "file": "68.1-VALIDATION.md",
+    "nyquist_compliant": "false",
+    "wave_0_complete": "false",
+    "status": "draft"
+  }
+]

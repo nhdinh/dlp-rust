@@ -1,0 +1,783 @@
+{
+  "milestone": "v0.10.0",
+  "audit_date": "2026-06-17",
+  "phases_audited": 39,
+  "phases": [
+    {
+      "phase_number": "13",
+      "directory_name": "13-conditions-builder",
+      "verification_status": "passed",
+      "score": "16/16",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "POLICY-05", "status": "satisfied", "evidence": "ConditionBuilder with 5 operators, 5 field types, bracket nesting, and 16 tests"}
+      ],
+      "summary_frontmatter": {
+        "phase": "13-conditions-builder",
+        "plan": "01",
+        "subsystem": "dlp-admin-cli",
+        "status": "complete"
+      },
+      "summary_text": "Implemented ConditionBuilder with 5 operators (eq, neq, gt, lt, contains), 5 field types, bracket nesting up to 3 deep, and 16 unit tests. All acceptance criteria met."
+    },
+    {
+      "phase_number": "14",
+      "directory_name": "14-policy-create",
+      "verification_status": "passed",
+      "score": "15/15",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "POLICY-02", "status": "satisfied", "evidence": "PolicyCreate screen with form state, validation, and 15 tests"}
+      ],
+      "summary_frontmatter": {
+        "phase": "14-policy-create",
+        "plan": "01",
+        "subsystem": "dlp-admin-cli",
+        "status": "complete"
+      },
+      "summary_text": "Implemented PolicyCreate screen with form state, validation, and 15 unit tests. All acceptance criteria met."
+    },
+    {
+      "phase_number": "15",
+      "directory_name": "15-policy-edit-delete",
+      "verification_status": "passed",
+      "score": "14/14",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "POLICY-03", "status": "satisfied", "evidence": "PolicyEdit screen with form prefill and 14 tests"},
+        {"id": "POLICY-04", "status": "satisfied", "evidence": "PolicyDelete confirmation and 14 tests"}
+      ],
+      "summary_frontmatter": {
+        "phase": "15-policy-edit-delete",
+        "plan": "01",
+        "subsystem": "dlp-admin-cli",
+        "status": "complete"
+      },
+      "summary_text": "Implemented PolicyEdit and PolicyDelete screens with form prefill, confirmation dialogs, and 14 unit tests. All acceptance criteria met."
+    },
+    {
+      "phase_number": "16",
+      "directory_name": "16-policy-list-simulate",
+      "verification_status": "passed",
+      "score": "19/19",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        {"file": "app.rs", "line": 431, "pattern": "#[allow(dead_code)] on SIMULATE_SUBMIT_ROW", "severity": "Info", "impact": "Unnecessary attribute"},
+        {"file": "dispatch.rs", "line": 2956, "pattern": "let _ = terminal.draw(...) silently discards error", "severity": "Warning", "impact": "WR-01: forced redraw error dropped"},
+        {"file": "dispatch.rs", "line": 3158, "pattern": "Loading guard silent - no feedback", "severity": "Warning", "impact": "WR-02: user may think keypress lost"}
+      ],
+      "requirements": [
+        {"id": "POLICY-01", "status": "satisfied", "evidence": "PolicyList 5-column table with Mode, global_mode, client-side sort, n key"},
+        {"id": "POLICY-06", "status": "satisfied", "evidence": "Policy Simulate with types, dispatch, render, loading, validation, normalization, granular errors"}
+      ],
+      "summary_frontmatter": {
+        "phase": "16-policy-list-simulate",
+        "plan": "01a",
+        "subsystem": "dlp-admin-cli",
+        "status": "complete"
+      },
+      "summary_text": "Verified PolicyList 5-column table with Mode, global_mode parameter, client-side sort, and n key. Verified Simulate types (SimulateCaller, SimulateOutcome, SimulateFormState), Screen::PolicySimulate variant, dispatch/render wiring, menu entries, and Esc return routing."
+    },
+    {
+      "phase_number": "17",
+      "directory_name": "17-import-export",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [],
+      "summary_frontmatter": {
+        "phase": "17-import-export",
+        "wave": 1,
+        "status": "complete"
+      },
+      "summary_text": "Export + ImportConfirm Screen with rfd dependency, ImportCaller, ImportState, Screen::ImportConfirm, PolicyMenu expansion to 9 entries, action_export_policies, action_import_policies stub, and ImportConfirm handler/render."
+    },
+    {
+      "phase_number": "18",
+      "directory_name": "18-boolean-mode-engine-wire-format",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [],
+      "summary_frontmatter": {
+        "phase": "18-boolean-mode-engine-wire-format",
+        "status": "complete"
+      },
+      "summary_text": "Boolean mode engine and wire format implementation. No VERIFICATION.md available."
+    },
+    {
+      "phase_number": "19",
+      "directory_name": "19-boolean-mode-tui-import-export",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "POLICY-09", "status": "satisfied", "evidence": "PolicyMode field added to three admin-cli structs and wired into POST/PUT payloads"}
+      ],
+      "summary_frontmatter": {
+        "phase": "19-boolean-mode-tui-import-export",
+        "plan": "01",
+        "subsystem": "ui",
+        "status": "complete"
+      },
+      "summary_text": "PolicyMode field added to PolicyFormState, PolicyResponse, and PolicyPayload. Fixed silent-drop bug in POST/PUT payloads. Added 6 unit tests."
+    },
+    {
+      "phase_number": "20",
+      "directory_name": "20-operator-expansion",
+      "verification_status": "passed",
+      "score": "10/10",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "POLICY-11", "status": "satisfied", "evidence": "Operator expansion with 10 new operators and TUI picker"}
+      ],
+      "summary_frontmatter": {
+        "phase": "20-operator-expansion",
+        "plan": "01",
+        "subsystem": "dlp-server",
+        "status": "complete"
+      },
+      "summary_text": "Implemented 10 new operators (startswith, endswith, contains, regex, in, notin, exists, notexists, lt, gt) in policy evaluator and TUI operator picker."
+    },
+    {
+      "phase_number": "21",
+      "directory_name": "21-in-place-condition-editing",
+      "verification_status": "passed",
+      "score": "5/5",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "POLICY-10", "status": "satisfied", "evidence": "In-place condition editing with 5 truths verified"}
+      ],
+      "summary_frontmatter": {
+        "phase": "21-in-place-condition-editing",
+        "plan": "01",
+        "subsystem": "dlp-admin-cli",
+        "status": "complete"
+      },
+      "summary_text": "In-place condition editing with 5 truths verified. 3 human verification items required."
+    },
+    {
+      "phase_number": "22",
+      "directory_name": "22-dlp-common-foundation",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "PHASE-22-INFRA", "status": "satisfied", "evidence": "Five endpoint-identity types with serde snake_case wire format"}
+      ],
+      "summary_frontmatter": {
+        "phase": "22-dlp-common-foundation",
+        "plan": "01",
+        "subsystem": "dlp-common",
+        "status": "complete"
+      },
+      "summary_text": "Five endpoint-identity types (AppIdentity, DeviceIdentity, UsbTrustTier, AppTrustTier, SignatureState) with serde snake_case wire format and Default Deny defaults."
+    },
+    {
+      "phase_number": "23",
+      "directory_name": "23-usb-enumeration-in-dlp-agent",
+      "verification_status": "passed",
+      "score": "13/13",
+      "critical_gaps": [],
+      "non_critical_gaps": [
+        {"id": "CR-01", "description": "Code review bug: non-blocking"},
+        {"id": "CR-02", "description": "Code review bug: non-blocking"}
+      ],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "USB-01", "status": "satisfied", "evidence": "USB enumeration with 13 truths verified"}
+      ],
+      "summary_frontmatter": {
+        "phase": "23-usb-enumeration-in-dlp-agent",
+        "plan": "01",
+        "subsystem": "dlp-agent",
+        "status": "complete"
+      },
+      "summary_text": "USB enumeration in dlp-agent with 13 truths verified. 2 code-review bugs (CR-01, CR-02) non-blocking."
+    },
+    {
+      "phase_number": "24",
+      "directory_name": "24-device-registry-db-admin-api",
+      "verification_status": "human_needed",
+      "score": "8/9",
+      "critical_gaps": [
+        {"id": "CopyFile2", "description": "CopyFile2 gap noted in verification"}
+      ],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "USB-02", "status": "satisfied", "evidence": "Device registry DB and admin API with 8/9 truths"}
+      ],
+      "summary_frontmatter": {
+        "phase": "24-device-registry-db-admin-api",
+        "plan": "01",
+        "subsystem": "dlp-server",
+        "status": "complete"
+      },
+      "summary_text": "Device registry DB and admin API with 8/9 truths verified. CopyFile2 gap noted."
+    },
+    {
+      "phase_number": "25",
+      "directory_name": "25-app-identity-capture-in-dlp-user-ui",
+      "verification_status": "human_needed",
+      "score": "4/5",
+      "critical_gaps": [],
+      "non_critical_gaps": [
+        {"id": "SC-3", "description": "1 override applied for SC-3"}
+      ],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "APP-01", "status": "satisfied", "evidence": "App identity capture"},
+        {"id": "APP-02", "status": "satisfied", "evidence": "App identity capture"},
+        {"id": "APP-05", "status": "satisfied", "evidence": "App identity capture"},
+        {"id": "APP-06", "status": "satisfied", "evidence": "App identity capture"}
+      ],
+      "summary_frontmatter": {
+        "phase": "25-app-identity-capture-in-dlp-user-ui",
+        "plan": "01",
+        "subsystem": "dlp-user-ui",
+        "status": "complete"
+      },
+      "summary_text": "App identity capture in dlp-user-ui with 4/5 truths verified. 1 override applied for SC-3."
+    },
+    {
+      "phase_number": "26",
+      "directory_name": "26-abac-enforcement-convergence",
+      "verification_status": "human_needed",
+      "score": "4/4",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "APP-03", "status": "satisfied", "evidence": "ABAC enforcement convergence"},
+        {"id": "USB-03", "status": "satisfied", "evidence": "ABAC enforcement convergence"}
+      ],
+      "summary_frontmatter": {
+        "phase": "26-abac-enforcement-convergence",
+        "plan": "01",
+        "subsystem": "dlp-agent",
+        "status": "complete"
+      },
+      "summary_text": "ABAC enforcement convergence with 4/4 truths verified. Human verification required."
+    },
+    {
+      "phase_number": "27",
+      "directory_name": "27-usb-toast-notification",
+      "verification_status": "human_needed",
+      "score": "9/9",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "USB-04", "status": "satisfied", "evidence": "USB toast notification with 9 truths verified"}
+      ],
+      "summary_frontmatter": {
+        "phase": "27-usb-toast-notification",
+        "plan": "01",
+        "subsystem": "dlp-user-ui",
+        "status": "complete"
+      },
+      "summary_text": "USB toast notification with 9/9 truths verified. Human verification required."
+    },
+    {
+      "phase_number": "28",
+      "directory_name": "28-admin-tui-screens",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [],
+      "summary_frontmatter": {
+        "phase": "28-admin-tui-screens",
+        "plan": "01",
+        "subsystem": "dlp-server",
+        "status": "complete"
+      },
+      "summary_text": "Managed Origins DB + API with SQLite table, repository, and three axum HTTP handlers."
+    },
+    {
+      "phase_number": "47",
+      "directory_name": "47-secrets-encryption-at-rest",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "HARD-01", "status": "closed", "evidence": "AES-256-GCM encryption at rest with DPAPI + PBKDF2"}
+      ],
+      "summary_frontmatter": {
+        "phase": "47",
+        "phase_name": "Secrets Encryption at Rest",
+        "milestone": "v1.0.0",
+        "status": "complete"
+      },
+      "summary_text": "End-to-end encryption-at-rest layer for every secret in operator SQLite, machine-bound via DPAPI + PBKDF2 (600k iter), with atomic cleartext-drop migration, admin-CLI KEK rotation, and permanent log-scan acceptance test. HARD-01 closed."
+    },
+    {
+      "phase_number": "48",
+      "directory_name": "48-hook-dll-surface-expansion-crash-hardening-build-harness",
+      "verification_status": "gaps_found",
+      "score": "4/5",
+      "critical_gaps": [
+        {"id": "CopyFile2", "description": "CopyFile2 documented as known limitation"}
+      ],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "BLOCK-01", "status": "satisfied", "evidence": "Hook DLL surface expansion"},
+        {"id": "BLOCK-02", "status": "partial", "evidence": "Partial satisfaction"},
+        {"id": "BLOCK-03", "status": "satisfied", "evidence": "Crash hardening"},
+        {"id": "BLOCK-04", "status": "satisfied", "evidence": "Build harness"},
+        {"id": "BLOCK-10", "status": "satisfied", "evidence": "Authenticode signing pipeline"}
+      ],
+      "summary_frontmatter": {
+        "phase": "48-hook-dll-surface-expansion-crash-hardening-build-harness",
+        "plan": "05",
+        "subsystem": "build-harness",
+        "status": "complete"
+      },
+      "summary_text": "GitHub Actions release workflow with Authenticode signing, WiX installer, 6 binaries signed. CopyFile2 known limitation documented."
+    },
+    {
+      "phase_number": "49",
+      "directory_name": "49-universal-injection-etw-process-watcher-allowlist-appinit-fa",
+      "verification_status": "passed",
+      "score": "18/18",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "BLOCK-05", "status": "traced", "evidence": "Universal injection with ETW process watcher"},
+        {"id": "BLOCK-06", "status": "traced", "evidence": "Allowlist + AppInit"},
+        {"id": "BLOCK-07", "status": "traced", "evidence": "Telemetry + installer + integration tests"}
+      ],
+      "summary_frontmatter": {
+        "phase": "49",
+        "status": "passed",
+        "plans_verified": 5,
+        "must_haves_met": "18/18"
+      },
+      "summary_text": "Universal Injection + ETW Process Watcher + Allowlist + AppInit + Full Agent Integration. All 5 plans executed, 18/18 must-haves verified."
+    },
+    {
+      "phase_number": "50",
+      "directory_name": "50-shared-memory-classification-cache-fail-mode-state-machine",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [],
+      "summary_frontmatter": {
+        "phase": "50-shared-memory-classification-cache-fail-mode-state-machine",
+        "plan": "01",
+        "status": "complete"
+      },
+      "summary_text": "IPC Protocol Extension with HookOp, CacheHint, IpcEnvelope, IpcMessageV1, IpcPayloadV1, ProtocolError. 14 unit tests pass."
+    },
+    {
+      "phase_number": "51",
+      "directory_name": "51-ntdll-syscall-stub-trampolines-edr-coexistence",
+      "verification_status": "passed",
+      "score": "15/15",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        {"file": "lib.rs", "line": 533, "pattern": "TODO(Phase 53): Read from actual shared memory segment", "severity": "Info", "impact": "Deferred to Phase 53"},
+        {"file": "ntdll_patcher.rs", "line": "635-642", "pattern": "emit_bypass_alert() logs only via debug_log", "severity": "Info", "impact": "Deferred to Phase 53"}
+      ],
+      "requirements": [
+        {"id": "BLOCK-08", "status": "satisfied", "evidence": "Ntdll syscall-stub trampolines with retour"},
+        {"id": "BLOCK-09", "status": "satisfied", "evidence": "EDR coexistence with detection, integrity verify, alerts"}
+      ],
+      "summary_frontmatter": {
+        "phase": "51-ntdll-syscall-stub-trampolines-edr-coexistence",
+        "plan": "01",
+        "subsystem": "dlp-hook-dll",
+        "status": "complete"
+      },
+      "summary_text": "Ntdll syscall-stub trampolines with EDR coexistence. 15/15 truths verified. EDR detection, thread suspend, retour detours, 30s re-verification, BypassAlert types."
+    },
+    {
+      "phase_number": "52",
+      "directory_name": "52-dacl-tripwire-repair-watcher-protected-paths-dpapi-recovery-",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "DACL-01", "status": "satisfied", "evidence": "DACL tripwire writer with canonical algorithm"},
+        {"id": "DACL-05", "status": "satisfied", "evidence": "DPAPI recovery runbook"}
+      ],
+      "summary_frontmatter": {
+        "phase": "52-dacl-tripwire-repair-watcher-protected-paths-dpapi-recovery-",
+        "plan": "01",
+        "subsystem": "dlp-agent",
+        "status": "complete"
+      },
+      "summary_text": "DACL Tripwire Writer with canonical DACL algorithm, SDDL snapshots, 60 KB guard, access-control proof matrix. 19 tests."
+    },
+    {
+      "phase_number": "52-dacl-tripwire",
+      "directory_name": "52-dacl-tripwire",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [],
+      "summary_frontmatter": {
+        "phase": "52",
+        "plan": "05",
+        "status": "complete"
+      },
+      "summary_text": "DPAPI Recovery + Final Integration. Operational runbook for DPAPI master-key recovery."
+    },
+    {
+      "phase_number": "53",
+      "directory_name": "53-etw-kernel-file-consumer-bypass-correlator-hook-journal-ring",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        {"file": "etw_kernel_file.rs", "line": "~360", "pattern": "check_lost_events() returns false stub", "severity": "Info", "impact": "Deferred to Plan 04"}
+      ],
+      "requirements": [],
+      "summary_frontmatter": {
+        "phase": "53-etw-kernel-file-consumer-bypass-correlator-hook-journal-ring",
+        "plan": "01",
+        "subsystem": "dlp-agent",
+        "status": "complete"
+      },
+      "summary_text": "ETW Kernel-File Consumer with NT path conversion, consumer-side noise filtering, gated start semantics, and 22 unit tests."
+    },
+    {
+      "phase_number": "54",
+      "directory_name": "54-admin-tui-protected-paths-bypass-alerts-screens",
+      "verification_status": "passed",
+      "score": "10/10",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        {"file": "client.rs", "line": 531, "pattern": "#[allow(dead_code)] on update_protected_path", "severity": "Info", "impact": "Method exists but not called"},
+        {"file": "protected_paths.rs", "line": "6-7", "pattern": "#[allow(dead_code)] on constants", "severity": "Info", "impact": "Defensive attribute"},
+        {"file": "bypass_alerts.rs", "line": "6-14", "pattern": "#[allow(dead_code)] on constants", "severity": "Info", "impact": "Defensive attribute"}
+      ],
+      "requirements": [
+        {"id": "UX-01", "status": "satisfied", "evidence": "Protected Paths screen with T3/T4 listing"},
+        {"id": "UX-02", "status": "satisfied", "evidence": "Bypass Alerts screen with paginated feed"}
+      ],
+      "summary_frontmatter": {
+        "phase": "54-admin-tui-protected-paths-bypass-alerts-screens",
+        "plan": "01",
+        "subsystem": "dlp-admin-cli",
+        "status": "complete"
+      },
+      "summary_text": "Admin TUI Protected Paths + Bypass Alerts Screens. 10/10 truths verified. 14-item SystemMenu, scrollable tables, optimistic ack, detail popup."
+    },
+    {
+      "phase_number": "55",
+      "directory_name": "55-monitor-only-audit-only-per-policy-enforcement-mode",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [],
+      "summary_frontmatter": {
+        "phase": "55-monitor-only-audit-only-per-policy-enforcement-mode",
+        "plan": "01",
+        "status": "complete"
+      },
+      "summary_text": "Core EnforcementMode types and schema extension. EnforcementMode enum (Audit, Block, AuditAndBlock, PerPolicy), policy schema extension, audit event extension, SQLite migration."
+    },
+    {
+      "phase_number": "56",
+      "directory_name": "56-sd-optical-virtual-drive-enumeration-volume-class-abac-seed-",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [],
+      "summary_frontmatter": {
+        "phase": "56-sd-optical-virtual-drive-enumeration-volume-class-abac-seed-",
+        "plan": "01",
+        "subsystem": "dlp-common",
+        "status": "complete"
+      },
+      "summary_text": "VolumeClass enum with six variants, ABAC context/condition extensions, VolumeArrival audit event, IPC protocol types. 286 dlp-common tests pass."
+    },
+    {
+      "phase_number": "57",
+      "directory_name": "57-operational-deployment-guide-av-edr-allowlist-uat",
+      "verification_status": "passed",
+      "score": "20/20",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        {"file": "deployment-guide.md", "line": "199, 674", "pattern": "HTML comment placeholders still present", "severity": "Info", "impact": "Harmless markers"},
+        {"file": "deployment-guide.md", "line": "792-836", "pattern": "References non-existent script names", "severity": "Warning", "impact": "Fixed 2026-06-10"},
+        {"file": "v0.10.0-UAT.md", "line": "67-162", "pattern": "References non-existent script names", "severity": "Warning", "impact": "Fixed 2026-06-10"}
+      ],
+      "requirements": [
+        {"id": "OPS-01", "status": "verified", "evidence": "6 EDR vendor allowlist procedures"},
+        {"id": "OPS-02", "status": "verified", "evidence": "SHA-256 + SHA-512 hashes, WDSI flow"},
+        {"id": "OPS-03", "status": "verified", "evidence": "Secure Boot reality, PPL gap, DACL backstop"},
+        {"id": "OPS-04", "status": "verified", "evidence": "UAT scripts and template"}
+      ],
+      "summary_frontmatter": {
+        "phase": "57-operational-deployment-guide-av-edr-allowlist-uat",
+        "plan": "01",
+        "subsystem": "docs",
+        "status": "complete"
+      },
+      "summary_text": "Operational Deployment Guide + AV/EDR Allowlist + UAT. 20/20 truths verified. 6 UAT PowerShell scripts, deployment guide with 6 vendors, RELEASE_NOTES.md with hash verification."
+    },
+    {
+      "phase_number": "58",
+      "directory_name": "58-differentiators-bundle-override-diagnostic-hash-evidence-sel",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [],
+      "summary_frontmatter": {
+        "phase": "58-differentiators-bundle-override-diagnostic-hash-evidence-sel",
+        "status": "complete"
+      },
+      "summary_text": "Differentiators bundle. No detailed summary available."
+    },
+    {
+      "phase_number": "59",
+      "directory_name": "59-label-service",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "LABEL-01", "status": "satisfied", "evidence": "ResolvedTier enum with source metadata"},
+        {"id": "LABEL-02", "status": "satisfied", "evidence": "Strictest-tier-wins folder inheritance"},
+        {"id": "LABEL-05", "status": "satisfied", "evidence": "LabelCache upgraded to store full resolution provenance"}
+      ],
+      "summary_frontmatter": {
+        "phase": "59-label-service",
+        "plan": "01",
+        "subsystem": "label-service",
+        "status": "complete"
+      },
+      "summary_text": "LabelService Fix - ResolvedTier + Strictness + Cache Metadata. 13 tests added, 659 total passing."
+    },
+    {
+      "phase_number": "60",
+      "directory_name": "60-data-owner-review-queue-admin-tui-screen",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "LABEL-04", "status": "satisfied", "evidence": "Data Owner review queue with SIEM audit, JWT scoping, scanner confidence"}
+      ],
+      "summary_frontmatter": {
+        "phase": "60-data-owner-review-queue-admin-tui-screen",
+        "plan": "01",
+        "subsystem": "api",
+        "status": "complete"
+      },
+      "summary_text": "Data Owner Review Queue + Admin TUI Screen. SIEM audit events, JWT scoping, scanner confidence tracking, department filtering, ABAC cache invalidation."
+    },
+    {
+      "phase_number": "61",
+      "directory_name": "61-approval-workflow-engine-t3-data-owner-t4-board-digital-signature",
+      "verification_status": "passed",
+      "score": "6/6",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "WORKFLOW-01", "status": "verified", "evidence": "approvals table, repository, token service"},
+        {"id": "WORKFLOW-02", "status": "verified", "evidence": "Admin API grant/reject with T3 routing"},
+        {"id": "WORKFLOW-03", "status": "verified", "evidence": "T4 Board Ed25519 signature verification"},
+        {"id": "WORKFLOW-04", "status": "verified", "evidence": "Agent ApprovalCache with JWT validation"},
+        {"id": "WORKFLOW-05", "status": "verified", "evidence": "Admin TUI screens with keyboard navigation"},
+        {"id": "WORKFLOW-06", "status": "verified", "evidence": "Audit events emitted on all state changes"}
+      ],
+      "summary_frontmatter": {
+        "phase": "61",
+        "phase_name": "approval-workflow-engine-t3-data-owner-t4-board-digital-signature",
+        "status": "passed",
+        "tests": "1660 passed, 10 ignored"
+      },
+      "summary_text": "Approval Workflow Engine with T3 Data Owner and T4 Board digital signature. 6/6 criteria verified. 1660 tests pass."
+    },
+    {
+      "phase_number": "62",
+      "directory_name": "62-syslog-forwarder",
+      "verification_status": "passed",
+      "score": "19/19",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        {"file": "syslog_config.rs", "line": "67-68", "pattern": "#[allow(dead_code)] on BOOL_FIELDS and NUMERIC_FIELDS", "severity": "Info", "impact": "Compiler appeasement"}
+      ],
+      "requirements": [
+        {"id": "SYSLOG-01", "status": "satisfied", "evidence": "RFC 5424 forwarding over TLS"},
+        {"id": "SYSLOG-02", "status": "satisfied", "evidence": "Stable JSON payload with all fields"},
+        {"id": "SYSLOG-03", "status": "satisfied", "evidence": "Agent-side encrypted queue with DPAPI"},
+        {"id": "SYSLOG-04", "status": "satisfied", "evidence": "Admin TUI syslog config screen"}
+      ],
+      "summary_frontmatter": {
+        "phase": "62-syslog-forwarder",
+        "plan": "01",
+        "subsystem": "dlp-server",
+        "status": "complete"
+      },
+      "summary_text": "Syslog Forwarder with RFC 5424 over TLS, KEK-encrypted queue, peek-confirm-delete, tail-drop, DPAPI agent queue, admin TUI screen. 19/19 truths verified (re-verified after gap closure)."
+    },
+    {
+      "phase_number": "63",
+      "directory_name": "63-tamper-evident-audit-sha-256-hash-chain",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [],
+      "summary_frontmatter": {
+        "phase": "63-tamper-evident-audit-sha-256-hash-chain",
+        "plan": "01",
+        "subsystem": "dlp-server",
+        "status": "complete"
+      },
+      "summary_text": "Server-Side Hash Chain Persistence with prev_hash/chain_hash columns, idempotent migration, per-agent chain indexes, LAG window function for break detection. 579 tests pass."
+    },
+    {
+      "phase_number": "64",
+      "directory_name": "64-device-identity-expansion-fingerprint-mac-vpn-health",
+      "verification_status": "passed",
+      "score": "5/5",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "DEVICE-01", "status": "satisfied", "evidence": "Fingerprint computed and stored in registry"},
+        {"id": "DEVICE-02", "status": "satisfied", "evidence": "MAC addresses collected and sent with heartbeat"},
+        {"id": "DEVICE-03", "status": "satisfied", "evidence": "VPN state detected and reflected in ABAC"},
+        {"id": "DEVICE-04", "status": "satisfied", "evidence": "Domain state included in heartbeat"},
+        {"id": "DEVICE-05", "status": "satisfied", "evidence": "Health status transitions on tamper/connectivity"}
+      ],
+      "summary_frontmatter": {
+        "phase": "64-device-identity-expansion-fingerprint-mac-vpn-health",
+        "plan": "01",
+        "subsystem": "dlp-agent",
+        "status": "complete"
+      },
+      "summary_text": "Device Identity Expansion with fingerprint, MAC addresses, VPN state, domain join, health status transitions. 5/5 truths verified."
+    },
+    {
+      "phase_number": "65",
+      "directory_name": "65-service-stop-blocking-threads-fix",
+      "verification_status": "passed",
+      "score": "10/10",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [
+        {"file": "pipe3.rs", "line": 283, "pattern": "TODO(61) marker", "severity": "Info", "impact": "Pre-existing Phase 61 reference"},
+        {"file": "service.rs", "line": 4298, "pattern": "TODO in doc comment", "severity": "Info", "impact": "Pre-existing documentation comment"}
+      ],
+      "requirements": [
+        {"id": "STOP-01", "status": "satisfied", "evidence": "All blocking threads shut down and joined before STOPPED"},
+        {"id": "STOP-02", "status": "satisfied", "evidence": "Shutdown mechanism has no new deadlocks"},
+        {"id": "STOP-03", "status": "satisfied", "evidence": "Password stop verification thread is panic-safe"}
+      ],
+      "summary_frontmatter": {
+        "phase": "65-service-stop-blocking-threads-fix",
+        "plan": "01",
+        "subsystem": "dlp-agent",
+        "status": "complete"
+      },
+      "summary_text": "Service Stop Blocking Threads Fix. 10/10 truths verified (re-verified after gap closure). Watchdog timer, Acquire/Release ordering, per-thread logging, reset at startup."
+    },
+    {
+      "phase_number": "66.1",
+      "directory_name": "66.1-workflow-04-approvalcache-enforcement",
+      "verification_status": "passed",
+      "score": "12/12",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "WORKFLOW-04", "status": "verified", "evidence": "ApprovalCache wired into enforcement"}
+      ],
+      "summary_frontmatter": {
+        "phase": "66.1",
+        "phase_name": "workflow-04-approvalcache-enforcement",
+        "status": "passed",
+        "score": "12/12"
+      },
+      "summary_text": "ApprovalCache wired into enforcement. 12/12 must-haves verified. 1715 tests pass across modified crates."
+    },
+    {
+      "phase_number": "67.1",
+      "directory_name": "67.1-print-watermarking-xps-page-geometry-text-metrics",
+      "verification_status": "passed",
+      "score": "27/27",
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [
+        {"id": "WATERMARK-01", "status": "satisfied", "evidence": "XPS page geometry, text metrics, DirectWrite, watermark injection"},
+        {"id": "WATERMARK-02", "status": "partially_satisfied", "evidence": "Foundation complete; obligation wiring deferred to Phase 67"}
+      ],
+      "summary_frontmatter": {
+        "phase": "67.1-print-watermarking-xps-page-geometry-text-metrics",
+        "plan": "01",
+        "subsystem": "dlp-agent",
+        "status": "complete"
+      },
+      "summary_text": "Print Watermarking - XPS Page Geometry + Text Metrics. 27/27 truths verified. WatermarkGeometry, FontMetrics, DirectWrite COM, XPS ZIP injection, 40 tests."
+    },
+    {
+      "phase_number": "68.1",
+      "directory_name": "68.1-close-gap-device-05-tamper-03-04-wire-tamper-detection-to-siem-and-health",
+      "verification_status": "missing",
+      "score": null,
+      "critical_gaps": [],
+      "non_critical_gaps": [],
+      "anti_patterns": [],
+      "requirements": [],
+      "summary_frontmatter": {
+        "phase": "68.1-close-gap-device-05-tamper-03-04-wire-tamper-detection-to-siem-and-health",
+        "plan": "01",
+        "status": "complete"
+      },
+      "summary_text": "Close gap DEVICE-05 and TAMPER-03/04. Extended POST /audit/events response with tamper detection flag, routed synthetic ChainBreakDetected events to SIEM and syslog. Agent-side IngestResponse with backward compatibility."
+    }
+  ]
+}
