@@ -668,6 +668,78 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_build_bypass_alert_envelope() {
+        // This test verifies that build_bypass_alert_envelope returns a
+        // properly constructed IpcEnvelope::V1(IpcPayloadV1::BypassAlert(...)).
+        // It references build_bypass_alert_envelope which will be added in
+        // Wave 2 Plan 03. This is the Nyquist anchor — test exists before
+        // implementation. Per D-04 and D-05. Per REVIEW-H-03: this tests the
+        // pure helper directly, not just manual envelope construction.
+        //
+        // Test 1: Call build_bypass_alert_envelope(reason, stub_name, now, pid)
+        // and verify it returns an IpcEnvelope::V1(IpcPayloadV1::BypassAlert(...))
+        // with all fields correctly populated.
+        // Test 2: Verify the deserialized payload variant is BypassAlert
+        // (not Request or VolumeClassQuery).
+        // Test 3: Verify the alert fields survive round-trip:
+        // reason=HookOverwritten, stub_name="NtCreateFile", pid matches
+        // current process, version=1.
+        // Test 4: Test with a second reason variant (PatchRaced) to ensure
+        // the pattern works for all BypassReason values.
+        // Test 5: Verify the envelope serializes to bytes that deserialize
+        // correctly.
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let pid = std::process::id();
+
+        // Test 1: HookOverwritten reason.
+        let envelope = build_bypass_alert_envelope(
+            BypassReason::HookOverwritten,
+            "NtCreateFile",
+            now,
+            pid,
+        );
+
+        // Verify the envelope is IpcEnvelope::V1 with BypassAlert payload.
+        match envelope {
+            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
+                dlp_common::hook_ipc::IpcPayloadV1::BypassAlert(ref alert) => {
+                    assert_eq!(alert.reason, BypassReason::HookOverwritten);
+                    assert_eq!(alert.stub_name, "NtCreateFile");
+                    assert_eq!(alert.pid, pid);
+                    assert_eq!(alert.version, 1);
+                    assert_eq!(alert.timestamp_secs, now);
+                }
+                _ => panic!("expected BypassAlert payload"),
+            },
+        }
+
+        // Test 2: Round-trip serialization.
+        let bytes = bincode::serialize(&envelope).unwrap();
+        let rt: dlp_common::hook_ipc::IpcEnvelope = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(envelope, rt);
+
+        // Test 3: PatchRaced reason.
+        let envelope2 = build_bypass_alert_envelope(
+            BypassReason::PatchRaced,
+            "NtCreateFile",
+            now,
+            pid,
+        );
+        match envelope2 {
+            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
+                dlp_common::hook_ipc::IpcPayloadV1::BypassAlert(ref alert) => {
+                    assert_eq!(alert.reason, BypassReason::PatchRaced);
+                }
+                _ => panic!("expected BypassAlert payload for PatchRaced"),
+            },
+        }
+    }
+
+    #[test]
     fn ntdll_patcher_new_disabled() {
         let patcher = NtdllPatcher::new(false);
         assert!(!patcher.is_enabled());
