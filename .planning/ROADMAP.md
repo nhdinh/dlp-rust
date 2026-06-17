@@ -143,6 +143,16 @@ Plans:
 - [ ] `50-05-PLAN.md` — Hook DLL Allowlist + Telemetry: trusted paths, build tools, operator extensions, QPC histogram
 - [ ] `50-06-PLAN.md` — IPC Integration + Benchmarks: agent handler cache_version awareness, cache hint warming, p95 benchmark
 
+### Phase 50.1: Close gap FAIL-01/02/03 — verify ISOLATED->RESYNC->HEALTHY recovery at runtime (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 50
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run `/gsd-plan-phase 50.1` to break down)
+
 ### Phase 51: ntdll Syscall-Stub Trampolines + EDR Coexistence
 
 **Goal**: Direct-syscall bypass of the IAT hook layer is closed for `NtCreateFile`/`NtOpenFile`/`NtWriteFile`/`NtSetInformationFile`, behind a feature flag that is safe to enable per-customer because EDR coexistence is detected before patching and never falsely "cleaned."
@@ -247,13 +257,23 @@ Plans:
 
 ### Phase 53.1: Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
+**Goal:** Close integration blocker INT-BLOCK-01: the hook DLL emits BypassAlert frames over the named pipe, but the agent deserializes every frame as HookRequest and IpcPayloadV1 has no BypassAlert variant. Add the variant, route BypassAlert to the bypass correlator, and wrap the hook DLL emission in the versioned envelope.
+**Requirements**: ETW-03
 **Depends on:** Phase 53
-**Plans:** 0 plans
+**Plans:** 3 plans
 
-Plans:
-- [ ] TBD (run /gsd-plan-phase 53.1 to break down)
+**Wave 1** *(no dependencies)*
+
+- [ ] `53.1-01-PLAN.md` — Extend IpcPayloadV1 with BypassAlert(BypassAlert) variant in dlp-common; add round-trip bincode unit test
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] `53.1-02-PLAN.md` — Agent IPC routing: deserialize IpcEnvelope in handle_connection, route BypassAlert to bypass_correlator via crossbeam_channel; add submit_bypass_alert entry point and wiring tests
+- [ ] `53.1-03-PLAN.md` — Hook DLL emission: wrap BypassAlert in IpcEnvelope::V1 before bincode::serialize in emit_bypass_alert; add envelope wrapping unit test
+
+**Cross-cutting constraints:**
+- All new BypassAlert fields have #[serde(default)] for backward compat (WR-12 from Phase 53)
+- Sync->async handoff uses crossbeam_channel::Sender<BypassAlert> without blocking the pipe loop (Pitfall 3 from RESEARCH.md)
 
 ### Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens
 
@@ -335,6 +355,16 @@ Plans:
 **Wave 3** *(blocked on Waves 1-2 completion)*
 
 - [x] `56-06-PLAN.md` — End-to-end integration test: DENY LocalNTFS T4 to Optical policy + full workspace verification *(completed 2026-06-06)*
+
+### Phase 56.1: Close gap DRIVE-03/04 — add volume class fields to HookRequest and ABAC path (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 56
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run `/gsd-plan-phase 56.1` to break down)
 
 ### Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT
 
@@ -539,6 +569,7 @@ Plans:
 | 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-16 |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 5/5 | Complete    | 2026-05-19 |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 6/6 | Complete    | 2026-05-20 |
+| 50.1 | Close gap FAIL-01/02/03 — verify ISOLATED->RESYNC->HEALTHY recovery at runtime (INSERTED) | 0/0 | Not started | - |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 6/6 | Complete    | 2026-05-22 |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 7/7 | Complete    | 2026-05-27 |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Complete    | 2026-05-28 |
@@ -546,6 +577,7 @@ Plans:
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 6/6 | Complete | 2026-06-06 |
+| 56.1 | Close gap DRIVE-03/04 — add volume class fields to HookRequest and ABAC path (INSERTED) | 0/0 | Not started | - |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 6/6 | Complete    | 2026-06-10 |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
