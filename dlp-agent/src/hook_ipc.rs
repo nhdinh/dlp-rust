@@ -1001,7 +1001,7 @@ mod tests {
     #[test]
     fn test_handle_connection_routes_bypass_alert() {
         // Test 1: handle_connection routes a BypassAlert payload to bypass_tx.
-        let (bypass_tx, bypass_rx) = crossbeam_channel::bounded(1);
+        let (bypass_tx, bypass_rx) = crossbeam_channel::bounded::<dlp_common::hook_ipc::BypassAlert>(1);
 
         let handler: HookHandler = Arc::new(|req: HookRequest| HookResponse {
             decision: Decision::ALLOW,
@@ -1188,11 +1188,6 @@ mod tests {
 
         assert_eq!(server.pipe_name, r"\\.\pipe\DlpHookPipeTestBypass");
         assert!(server.bypass_tx.is_some());
-    }
-
-    #[test]
-    fn test_with_approval_cache_constructor() {
-        // parameter into handle_connection and adds the BypassAlert match arm.
     }
 
     #[test]
