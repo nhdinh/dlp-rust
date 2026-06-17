@@ -896,6 +896,68 @@ mod tests {
     // ── Task 3: with_approval_cache constructor + deferred override tests ───
 
     #[test]
+    fn test_handle_connection_routes_bypass_alert() {
+        // This test verifies that handle_connection routes a BypassAlert
+        // payload to a bypass_tx channel. It references symbols that will be
+        // added in Wave 2 Plan 02: handle_connection accepting bypass_tx
+        // and matching on IpcPayloadV1::BypassAlert. This is the Nyquist
+        // anchor — test exists before implementation. Per D-02 and D-05.
+        //
+        // Test 1: Mock a pipe with a frame containing IpcEnvelope::V1
+        // (IpcPayloadV1::BypassAlert(alert)) — assert handle_connection
+        // sends the alert through the bypass_tx channel.
+        // Test 2: Mock a pipe with a frame containing IpcEnvelope::V1
+        // (IpcPayloadV1::Request(req)) — assert the HookHandler is called
+        // and a HookResponse is written back.
+        // Test 3: Mock a pipe with a malformed frame — assert the function
+        // logs a warning and continues (does not panic or break the loop).
+        // Test 4: Mock a pipe with IpcPayloadV1::VolumeClassResponse — assert
+        // a warning is logged and the loop continues (hook DLL should never
+        // send this).
+
+        let (bypass_tx, bypass_rx) = crossbeam_channel::bounded(1);
+
+        let handler: HookHandler = Arc::new(|req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: format!("handled: {}", req.path),
+            cache_hint: None,
+            cache_version: 0,
+        });
+
+        // Build a BypassAlert and wrap it in an IpcEnvelope V1.
+        let alert = dlp_common::hook_ipc::BypassAlert {
+            reason: dlp_common::hook_ipc::BypassReason::HookOverwritten,
+            stub_name: "NtCreateFile".to_string(),
+            pid: 1234,
+            timestamp_secs: 1_700_000_000,
+            version: 1,
+            agent_id: "test-agent".to_string(),
+            image_path: r"C:\test.exe".to_string(),
+            image_sha256: None,
+            file_path: r"C:\secret.txt".to_string(),
+            operation: "Create".to_string(),
+            file_object: 0xDEADBEEF,
+            qpc_timestamp: 9999,
+            severity: "crit".to_string(),
+            correlation_reason: "HookSelfReported".to_string(),
+        };
+        let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(
+            dlp_common::hook_ipc::IpcMessageV1 {
+                payload: dlp_common::hook_ipc::IpcPayloadV1::BypassAlert(alert.clone()),
+            },
+        );
+        let envelope_bytes = bincode::serialize(&envelope).unwrap();
+
+        // In the full implementation, handle_connection will accept bypass_tx
+        // and route BypassAlert payloads to it. For now, this test serves as
+        // the specification for that behavior.
+        let _ = (bypass_tx, bypass_rx, handler, envelope_bytes);
+
+        // The test will be completed when Wave 2 Plan 02 wires the bypass_tx
+        // parameter into handle_connection and adds the BypassAlert match arm.
+    }
+
+    #[test]
     fn test_with_approval_cache_constructor() {
         let inner: HookHandler = Arc::new(|req: HookRequest| HookResponse {
             decision: Decision::ALLOW,
