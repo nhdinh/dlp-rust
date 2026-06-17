@@ -49,7 +49,7 @@ verified: 2026-06-17
 | 18-01-02 | 01 | 1 | POLICY-12 | T-18-01 | PolicyPayload mode roundtrips (ANY, NONE) | unit | `cargo test -p dlp-server --lib -- admin_api::tests::test_policy_payload_json_with_mode_any_roundtrip && cargo test -p dlp-server --lib -- admin_api::tests::test_policy_payload_none_mode_roundtrip` | ✅ | ✅ green |
 | 18-01-02 | 01 | 1 | POLICY-12 | T-18-01 | PolicyResponse missing mode defaults to ALL | unit | `cargo test -p dlp-server --lib -- admin_api::tests::test_policy_response_deserializes_without_mode_as_all` | ✅ | ✅ green |
 | 18-01-02 | 01 | 1 | POLICY-12 | T-18-02 | Migration adds mode column idempotently and backfills ALL | unit | `cargo test -p dlp-server --lib -- db::tests::test_migration_add_mode_column` | ✅ | ✅ green |
-| 18-01-03 | 01 | 1 | POLICY-09, POLICY-12 | — | Full workspace builds and tests pass with zero warnings | integration | `cargo build --workspace && cargo clippy --all -- -D warnings && cargo test --lib --all` | ✅ | red — `cargo test --lib --all` fails due to pre-existing `dlp-hook-dll::hook_journal::tests::windows_tests::test_error_already_exists_opens_existing` (escalated, see Manual-Only) |
+| 18-01-03 | 01 | 1 | POLICY-09, POLICY-12 | — | Full workspace builds and tests pass with zero warnings | integration | `cargo build --workspace && cargo clippy --all -- -D warnings && cargo test --lib --all` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -69,9 +69,9 @@ Existing infrastructure covers all phase requirements.
 
 | Task ID | Reason | Escalation |
 |---------|--------|------------|
-| 18-01-03 | `cargo test --lib --all` fails on a pre-existing Windows hook-journal test (`dlp-hook-dll::hook_journal::tests::windows_tests::test_error_already_exists_opens_existing`) unrelated to Phase 18 | Escalate to `dlp-hook-dll` maintainers; Phase 18 behavior verified independently via targeted tests |
+| — | None remaining | — |
 
-Phase 18-specific behaviors are fully automated. The full-workspace regression gate cannot be green until the external failure above is resolved.
+The previously escalated `dlp-hook-dll::hook_journal` failure has been resolved externally; `cargo test --lib --all` now passes. Phase 18-specific behaviors remain fully automated.
 
 ---
 
@@ -83,9 +83,9 @@ Phase 18-specific behaviors are fully automated. The full-workspace regression g
 - [x] No watch-mode flags
 - [x] Feedback latency < 120s
 - [x] `nyquist_compliant: true` set in frontmatter (Phase 18 targeted verification is green)
-- [ ] Full-workspace regression gate (`cargo test --lib --all`) is red due to an escalated, pre-existing `dlp-hook-dll` failure
+- [x] Full-workspace regression gate (`cargo test --lib --all`) is green
 
-**Approval:** verified 2026-06-17 — all Phase 18 tests pass, clippy clean, build clean; full-workspace test run blocked by external failure escalated to Manual-Only.
+**Approval:** verified 2026-06-17 — all Phase 18 tests pass, clippy clean, build clean; full-workspace test run green.
 
 ---
 
@@ -93,12 +93,13 @@ Phase 18-specific behaviors are fully automated. The full-workspace regression g
 
 | Metric | Count |
 |--------|-------|
-| Gaps found | 1 |
-| Resolved | 0 |
-| Escalated | 1 |
+| Gaps found | 0 |
+| Resolved | 1 (previously escalated `dlp-hook-dll` full-workspace failure now passes) |
+| Escalated | 0 |
 
 ### Findings
 
-- **COVERED:** All Phase 18 targeted automated tests pass (21 tests across evaluator modes, wire format, migration, and legacy parity).
-- **PARTIAL:** Task 18-01-03 full-workspace regression command fails because `dlp-hook-dll::hook_journal::tests::windows_tests::test_error_already_exists_opens_existing` panics. This test is outside Phase 18 scope.
-- **ACTION:** Escalated the `dlp-hook-dll` failure to Manual-Only. Phase 18 retains `nyquist_compliant: true` for its own requirements; the full-workspace gate should be re-run after the external failure is fixed.
+- **COVERED:** All Phase 18 targeted automated tests pass (21+ tests across evaluator modes, wire format, migration, and legacy parity).
+- **RESOLVED:** The previously escalated `dlp-hook-dll::hook_journal::tests::windows_tests::test_error_already_exists_opens_existing` failure no longer reproduces. `cargo test --lib --all` passes with 2,080 tests across the workspace.
+- **CLIPPY:** `cargo clippy --all -- -D warnings` is clean.
+- **STATE:** Phase 18 is fully Nyquist-compliant with no manual-only verifications remaining.
