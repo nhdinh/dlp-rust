@@ -705,6 +705,42 @@ impl BypassCorrelator {
         }
     }
 
+    /// Submits a hook-derived bypass alert directly to the batch (no ETW correlation).
+    ///
+    /// This is the entry point for alerts received from the hook DLL via IPC.
+    /// The alert is enriched with agent-side fields before batching.
+    ///
+    /// # Enrichment
+    ///
+    /// - `agent_id` — set from the correlator's own agent_id
+    /// - `severity` — mapped from the alert's reason using `severity_for_alert`
+    /// - `correlation_reason` — set to a descriptive string explaining the hook self-report
+    /// - `image_path` — best-effort lookup from PID (may be empty if lookup fails)
+    ///
+    /// # Arguments
+    ///
+    /// * `alert` — A pre-constructed `BypassAlert` from the hook DLL. Fields may be
+    ///   partially populated; this method fills in agent-side attribution.
+    ///
+    /// # Behavior
+    ///
+    /// 1. Enriches the alert with agent-side fields.
+    /// 2. Wraps it in `PendingAlert::new` (generates a fresh UUID batch_id).
+    /// 3. Pushes it to the internal alert batch Vec.
+    /// 4. Does NOT perform ETW correlation, journal lookup, or path-hash computation.
+    ///    The existing batch flush task (running every 5s) will pick it up automatically.
+    pub async fn submit_bypass_alert(&self, mut alert: BypassAlert) {
+        // Enrich agent-side fields (per REVIEW-H-03).
+        alert.agent_id = self.agent_id.clone();
+        alert.severity = self.severity_for_alert(alert.reason, &alert.file_path);
+        alert.correlation_reason = format!("Hook self-reported: {:?}", alert.reason);
+        alert.image_path = self.get_image_path_for_pid(alert.pid).await;
+
+        let pending = PendingAlert::new(alert);
+        let mut batch = self.alert_batch.lock().await;
+        batch.push(pending);
+    }
+
     /// Emits a bypass alert for the given event and reason.
     async fn emit_alert(&self, event: EtwFileEvent, reason: BypassReason) {
         let severity = self.severity_for_alert(reason, &event.file_name);
@@ -1361,25 +1397,131 @@ mod tests {
 
     // --- Batch retry exceeded test ---
 
-    #[test]
-    fn test_submit_bypass_alert_batches() {
-        // This test verifies that BypassCorrelator::submit_bypass_alert adds
-        // a BypassAlert to the internal alert_batch Vec<PendingAlert>.
-        // It references submit_bypass_alert which will be added in Wave 2
-        // Plan 02. This is the Nyquist anchor — test exists before
-        // implementation. Per D-03 and D-05.
-        //
-        // Test 1: Create a BypassCorrelator with a mock ServerClient and
-        // empty channels.
-        // Test 2: Call submit_bypass_alert with a fully populated BypassAlert
-        // (reason=HookOverwritten, stub_name="NtCreateFile", pid=1234, ...).
-        // Test 3: Assert the alert appears in the internal alert_batch Vec
-        // within 100ms.
-        // Test 4: Verify the PendingAlert has a valid UUID batch_id and
-        // retry_count=0.
-        // Test 5: Verify that calling submit_bypass_alert does NOT trigger
-        // ETW correlation logic (no journal lookup, no path-hash computation).
+    #[tokio::test]
+    async fn test_submit_bypass_alert_batches() {
+        // Test 1: Create a BypassCorrelator with a mock ServerClient and empty channels.
+        let config = CorrelatorConfig::default();
+        let correlator = BypassCorrelator::new(config);
 
+        // Test 2: Call submit_bypass_alert with a partially populated BypassAlert.
+        let alert = BypassAlert {
+            reason: BypassReason::HookOverwritten,
+            stub_name: "NtCreateFile".to_string(),
+            pid: 1234,
+            timestamp_secs: 1_700_000_000,
+            version: 2,
+            agent_id: "".to_string(), // empty — should be enriched by agent
+            image_path: "".to_string(), // empty — should be enriched by agent
+            image_sha256: None,
+            file_path: r"C:\Data\file.txt".to_string(),
+            operation: "Create".to_string(),
+            file_object: 0xDEADBEEF,
+            qpc_timestamp: 0,
+            severity: "".to_string(), // empty — should be enriched by agent
+            correlation_reason: "".to_string(), // empty — should be enriched by agent
+        };
+
+        // Call submit_bypass_alert.
+        correlator.submit_bypass_alert(alert).await;
+
+        // Test 3: Assert the alert appears in the internal alert_batch Vec within 100ms.
+        let batch = correlator.alert_batch.lock().await;
+        assert_eq!(batch.len(), 1, "alert should be in batch");
+
+        let pending = &batch[0];
+
+        // Test 4: Verify the PendingAlert has a valid UUID batch_id and retry_count=0.
+        assert!(!pending.batch_id.is_empty(), "batch_id should not be empty");
+        assert!(pending.batch_id.contains('-'), "batch_id should be a UUID");
+        assert_eq!(pending.retry_count, 0, "retry_count should be 0");
+
+        // Test 5: Verify agent_id is populated from the correlator's agent_id field.
+        assert!(
+            !pending.alert.agent_id.is_empty(),
+            "agent_id should be enriched by agent"
+        );
+
+        // Test 6: Verify severity is populated based on BypassReason.
+        assert_eq!(
+            pending.alert.severity, "crit",
+            "HookOverwritten should map to crit severity"
+        );
+
+        // Test 7: Verify correlation_reason is set to a descriptive string.
+        assert!(
+            pending.alert.correlation_reason.contains("Hook self-reported"),
+            "correlation_reason should describe hook self-report: got {}",
+            pending.alert.correlation_reason
+        );
+
+        // Test 8: Verify image_path is attempted (empty is OK since get_image_path_for_pid is stub).
+        // The field is populated by calling get_image_path_for_pid, which returns empty in tests.
+        // The important thing is that the field was attempted.
+
+        // Test 9: Verify that calling submit_bypass_alert does NOT trigger ETW correlation logic.
+        // The journals map should be empty (no journal lookup was performed).
+        assert!(
+            correlator.journals.is_empty(),
+            "journals should be empty — no ETW correlation was triggered"
+        );
+        // The pending_journals map should also be empty.
+        assert!(
+            correlator.pending_journals.is_empty(),
+            "pending_journals should be empty — no ETW correlation was triggered"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_submit_bypass_alert_severity_mapping() {
+        let config = CorrelatorConfig::default();
+        let correlator = BypassCorrelator::new(config);
+
+        // Test HookOverwritten -> crit
+        let alert_hook = BypassAlert {
+            reason: BypassReason::HookOverwritten,
+            stub_name: "NtCreateFile".to_string(),
+            pid: 1234,
+            timestamp_secs: 1_700_000_000,
+            version: 2,
+            agent_id: "".to_string(),
+            image_path: "".to_string(),
+            image_sha256: None,
+            file_path: r"C:\Data\file.txt".to_string(),
+            operation: "Create".to_string(),
+            file_object: 0,
+            qpc_timestamp: 0,
+            severity: "".to_string(),
+            correlation_reason: "".to_string(),
+        };
+        correlator.submit_bypass_alert(alert_hook).await;
+
+        // Test PatchRaced -> info
+        let alert_patch = BypassAlert {
+            reason: BypassReason::PatchRaced,
+            stub_name: "NtWriteFile".to_string(),
+            pid: 5678,
+            timestamp_secs: 1_700_000_001,
+            version: 2,
+            agent_id: "".to_string(),
+            image_path: "".to_string(),
+            image_sha256: None,
+            file_path: r"C:\Data\file.txt".to_string(),
+            operation: "Write".to_string(),
+            file_object: 0,
+            qpc_timestamp: 0,
+            severity: "".to_string(),
+            correlation_reason: "".to_string(),
+        };
+        correlator.submit_bypass_alert(alert_patch).await;
+
+        let batch = correlator.alert_batch.lock().await;
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].alert.severity, "crit");
+        assert_eq!(batch[1].alert.severity, "info");
+    }
+
+    #[tokio::test]
+    async fn test_submit_bypass_alert_no_etw_correlation() {
         let config = CorrelatorConfig::default();
         let correlator = BypassCorrelator::new(config);
 
@@ -1389,25 +1531,30 @@ mod tests {
             pid: 1234,
             timestamp_secs: 1_700_000_000,
             version: 2,
-            agent_id: "AGENT-TEST".to_string(),
-            image_path: r"C:\Test\app.exe".to_string(),
+            agent_id: "".to_string(),
+            image_path: "".to_string(),
             image_sha256: None,
             file_path: r"C:\Data\file.txt".to_string(),
             operation: "Create".to_string(),
             file_object: 0xDEADBEEF,
             qpc_timestamp: 0,
-            severity: "crit".to_string(),
-            correlation_reason: "HookOverwritten".to_string(),
+            severity: "".to_string(),
+            correlation_reason: "".to_string(),
         };
 
-        // In the full implementation, submit_bypass_alert will be a method
-        // on BypassCorrelator that adds the alert to the batch without
-        // triggering ETW correlation logic. For now, this test serves as
-        // the specification for that behavior.
-        let _ = (correlator, alert);
+        // Before: no journals, no pending journals.
+        assert!(correlator.journals.is_empty());
+        assert!(correlator.pending_journals.is_empty());
 
-        // The test will be completed when Wave 2 Plan 02 adds the
-        // submit_bypass_alert method to BypassCorrelator.
+        correlator.submit_bypass_alert(alert).await;
+
+        // After: still no journals, no pending journals (no ETW correlation).
+        assert!(correlator.journals.is_empty());
+        assert!(correlator.pending_journals.is_empty());
+
+        // Batch should have exactly one alert.
+        let batch = correlator.alert_batch.lock().await;
+        assert_eq!(batch.len(), 1);
     }
 
     #[test]
