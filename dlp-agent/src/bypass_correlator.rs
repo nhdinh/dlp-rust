@@ -1467,7 +1467,10 @@ mod tests {
 
         // Test 7: Verify correlation_reason is set to a descriptive string.
         assert!(
-            pending.alert.correlation_reason.contains("Hook self-reported"),
+            pending
+                .alert
+                .correlation_reason
+                .contains("Hook self-reported"),
             "correlation_reason should describe hook self-report: got {}",
             pending.alert.correlation_reason
         );
@@ -1637,7 +1640,9 @@ mod tests {
         };
 
         // Send through the channel (simulating what hook_ipc would do).
-        bypass_tx.send(alert.clone()).expect("send should succeed on unbounded channel");
+        bypass_tx
+            .send(alert.clone())
+            .expect("send should succeed on unbounded channel");
 
         // Receive and submit (simulating what the bypass task in run() would do).
         let received = bypass_rx.recv().expect("recv should succeed");

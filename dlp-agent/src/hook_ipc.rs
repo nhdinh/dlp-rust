@@ -346,7 +346,9 @@ fn handle_connection(
                     IpcPayloadV1::VolumeClassQuery(_query) => {
                         // Route to existing volume-class handler if implemented.
                         // If not yet implemented, log at debug level and continue (per REVIEW-M-05).
-                        debug!("Hook IPC: received VolumeClassQuery — not yet implemented, continuing");
+                        debug!(
+                            "Hook IPC: received VolumeClassQuery — not yet implemented, continuing"
+                        );
                         // TODO: When volume-class handler is wired, route here.
                     }
                     IpcPayloadV1::VolumeClassResponse(_resp) => {
@@ -366,7 +368,8 @@ fn handle_connection(
                         debug!(decision = ?response.decision, "Hook IPC: classification complete");
 
                         // Serialize raw HookResponse (NOT envelope-wrapped) for backward compat.
-                        let payload = bincode::serialize(&response).context("serialize response")?;
+                        let payload =
+                            bincode::serialize(&response).context("serialize response")?;
                         if let Err(e) = write_frame(pipe, &payload) {
                             warn!(error = %e, "Hook IPC: write response failed — disconnecting");
                             break;
@@ -1106,11 +1109,17 @@ mod tests {
         // Should NOT deserialize as IpcEnvelope.
         let envelope_result: Result<dlp_common::hook_ipc::IpcEnvelope, _> =
             bincode::deserialize(garbage);
-        assert!(envelope_result.is_err(), "garbage should not deserialize as IpcEnvelope");
+        assert!(
+            envelope_result.is_err(),
+            "garbage should not deserialize as IpcEnvelope"
+        );
 
         // Should NOT deserialize as HookRequest either.
         let hook_result: Result<HookRequest, _> = bincode::deserialize(garbage);
-        assert!(hook_result.is_err(), "garbage should not deserialize as HookRequest");
+        assert!(
+            hook_result.is_err(),
+            "garbage should not deserialize as HookRequest"
+        );
     }
 
     #[test]
@@ -1140,9 +1149,7 @@ mod tests {
     #[test]
     fn test_handle_connection_volume_class_query_debug() {
         // Test 6: VolumeClassQuery logs at debug and continues (not yet implemented).
-        let query = dlp_common::hook_ipc::VolumeClassQuery {
-            drive_letter: 'D',
-        };
+        let query = dlp_common::hook_ipc::VolumeClassQuery { drive_letter: 'D' };
         let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
             payload: dlp_common::hook_ipc::IpcPayloadV1::VolumeClassQuery(query),
         });
@@ -1163,7 +1170,8 @@ mod tests {
 
     #[test]
     fn test_with_bypass_channel_constructor() {
-        let (bypass_tx, _bypass_rx) = crossbeam_channel::unbounded::<dlp_common::hook_ipc::BypassAlert>();
+        let (bypass_tx, _bypass_rx) =
+            crossbeam_channel::unbounded::<dlp_common::hook_ipc::BypassAlert>();
 
         let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
             decision: Decision::ALLOW,
