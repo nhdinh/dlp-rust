@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-status: executing
-stopped_at: Plan 01 complete — awaiting Plan 02 execution (2026-06-17)
-last_updated: "2026-06-17T18:45:00.000Z"
-last_activity: 2026-06-17 -- Phase 53.1 Plan 01 complete (IpcPayloadV1 BypassAlert variant)
+status: verifying
+stopped_at: Plan 02 complete — ready for verification (2026-06-18)
+last_updated: "2026-06-18T18:46:21Z"
+last_activity: 2026-06-18 -- Phase 53.1 Plan 02 complete (Agent IPC routing for BypassAlert)
 progress:
   total_phases: 41
   completed_phases: 30
   total_plans: 147
-  completed_plans: 141
+  completed_plans: 142
   percent: 88
 ---
 
@@ -26,10 +26,10 @@ progress:
 
 ## Current Position
 
-Phase: 53.1 (close-gap-etw-03-add-bypassalert-to-ipcpayloadv1-and-route-i) — EXECUTING
+Phase: 53.1 (close-gap-etw-03-add-bypassalert-to-ipcpayloadv1-and-route-i) — VERIFYING
 Plan: 4 of 4
-Status: Ready to execute
-Last activity: 2026-06-17 -- Phase 53.1 execution started
+Status: Phase complete — ready for verification
+Last activity: 2026-06-18 -- Phase 53.1 Plan 02 complete (Agent IPC routing for BypassAlert)
 
 ## Progress
 
@@ -96,7 +96,8 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 
 ## Recent Decisions
 
-1. **2026-06-17: Phase 53.1 Plan 01 complete.** Added `BypassAlert(BypassAlert)` as 5th variant to `IpcPayloadV1` in `dlp-common/src/hook_ipc.rs`; bincode round-trip test passes; cross-crate references in dlp-agent and dlp-hook-dll compile cleanly. 309 dlp-common tests pass, clippy clean (-D warnings), cargo fmt clean. Commits `46f601b` (feat) and `83566be` (style). ETW-03 requirement satisfied. Plan 01 of 4 complete in Phase 53.1.
+1. **2026-06-18: Phase 53.1 Plan 02 complete.** Added `submit_bypass_alert` to `BypassCorrelator` with agent-side enrichment (agent_id, severity, correlation_reason, image_path). Updated `handle_connection` in `dlp-agent/src/hook_ipc.rs` to deserialize `IpcEnvelope` first, then fall back to legacy `HookRequest`. Routes `BypassAlert` to bypass correlator via `crossbeam_channel::Sender`. Added `HookIpcServer::with_bypass_channel()` and `with_approval_cache_and_bypass()` constructors. Wired `BypassCorrelator::run()` to consume `bypass_rx` with 4th spawned task in `spawn_blocking`. Updated `service.rs` to create unbounded bypass channel pair. 11 new tests (3 submit_bypass_alert + 6 hook_ipc envelope + 2 bypass channel). cargo check clean, cargo clippy -D warnings clean, cargo fmt clean. Commits `3a6ccde`, `ad1fa38`, `b6503bc`, `e5c7ecb`. ETW-03 requirement satisfied. Plan 02 of 4 complete in Phase 53.1.
+2. **2026-06-17: Phase 53.1 Plan 01 complete.** Added `BypassAlert(BypassAlert)` as 5th variant to `IpcPayloadV1` in `dlp-common/src/hook_ipc.rs`; bincode round-trip test passes; cross-crate references in dlp-agent and dlp-hook-dll compile cleanly. 309 dlp-common tests pass, clippy clean (-D warnings), cargo fmt clean. Commits `46f601b` (feat) and `83566be` (style). ETW-03 requirement satisfied. Plan 01 of 4 complete in Phase 53.1.
 2. **2026-06-17: Phase 53.1 planned.** Gap closure for ETW-03 / INT-BLOCK-01: 4 plans created (Wave 0 test stubs + 3 implementation waves). Scope: add `BypassAlert(BypassAlert)` variant to `IpcPayloadV1` in `dlp-common`, route agent `handle_connection` to `BypassCorrelator::submit_bypass_alert`, and wrap hook DLL `emit_bypass_alert` in `IpcEnvelope::V1`. Verification passed. Ready for `/gsd-execute-phase 53.1`.
 2. **2026-06-17: Phase 18 execution verified complete.** `PolicyMode` enum (ALL/ANY/NONE), `Policy.mode` field, DB `mode` column with idempotent migration, wire format round-trip, mode-aware evaluator, and full test coverage were all found already implemented. Verification: `cargo test --workspace` passes (no failures), `cargo clippy -- -D warnings` clean, `cargo fmt --check` clean. SonarQube scanner could not reach localhost:9000 (server unavailable). Phase 18 marked complete in STATE.md.
 3. Milestone pivot 2026-05-12: v1.0.0 Enterprise Hardening dropped; v0.10.0 Real-Time File Access Prevention is the new active milestone.
@@ -136,11 +137,11 @@ None.
 
 ## Next Action
 
-### Immediate: Plan Phase 53.1 Plan 02 — Agent IPC routing for BypassAlert
+### Immediate: Phase 53.1 verification
 
-Phase 53.1 Plan 01 complete. Continue with Plan 02: deserialize IpcEnvelope in agent `handle_connection`, route `BypassAlert` to `BypassCorrelator::submit_bypass_alert` via crossbeam_channel. Run `/gsd-execute-phase 53.1` to continue from Plan 02.
+All 4 plans in Phase 53.1 are complete. Ready for verification (/gsd:verify-phase or /gsd:verify-work).
 
-**Scope:** Agent IPC routing: deserialize IpcEnvelope in handle_connection, route BypassAlert to bypass_correlator via crossbeam_channel; add submit_bypass_alert entry point and wiring tests.
+**Scope:** Verify all 4 plans in Phase 53.1: Plan 00 (Wave 0 test stubs), Plan 01 (IpcPayloadV1 BypassAlert variant), Plan 02 (Agent IPC routing), Plan 03 (Hook DLL emit_bypass_alert).
 
 ---
 
@@ -150,7 +151,7 @@ Phase 53.1 Plan 01 complete. Continue with Plan 02: deserialize IpcEnvelope in a
 
 ## Session Continuity
 
-Last session: 2026-06-17T18:45:00.000Z
+Last session: 2026-06-17T18:55:33.526Z
 Stopped at: Plan 01 complete — ready for Plan 02
 Resume file: .planning/phases/53.1-close-gap-etw-03-add-bypassalert-to-ipcpayloadv1-and-route-i/53.1-01-SUMMARY.md
 
@@ -174,6 +175,7 @@ Resume file: .planning/phases/53.1-close-gap-etw-03-add-bypassalert-to-ipcpayloa
 
 | Phase | Plan | Duration | Notes |
 |-------|------|----------|-------|
+| Phase 53.1 P02 | 22m | 3 tasks | 3 files |
 | Phase 53.1 P01 | 8m | 2 tasks | 3 files |
 | Phase 66.1 P04 | 28m | - tasks | - files |
 
