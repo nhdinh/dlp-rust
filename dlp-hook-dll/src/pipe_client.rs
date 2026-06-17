@@ -132,6 +132,44 @@ pub fn send_raw_request(
     Ok(frame)
 }
 
+/// Fire-and-send helper for bypass alerts that does not wait for a response.
+///
+/// Connects to the named pipe, writes the payload with length-prefix framing,
+/// and immediately closes the handle. No read is performed, avoiding deadlock
+/// with the agent (per REVIEW-H-02).
+///
+/// # Arguments
+///
+/// * `pipe_name` — The named pipe path (e.g., `r"\\.\pipe\DlpHookPipe"`).
+/// * `payload` — The raw bytes to send (already serialized).
+///
+/// # Returns
+///
+/// `Ok(())` if the payload was written successfully, or [`PipeError`] on failure.
+///
+/// # Errors
+///
+/// Returns `PipeError::ConnectionRefused` if the pipe does not exist.
+/// Returns `PipeError::Win32(u32)` for unexpected Win32 errors.
+pub fn send_raw_oneway(pipe_name: &str, payload: &[u8]) -> Result<(), PipeError> {
+    const CONNECT_TIMEOUT_MS: u32 = 50;
+    let pipe = connect_pipe(pipe_name, CONNECT_TIMEOUT_MS)?;
+
+    // Set pipe to message-read mode so frame boundaries are respected.
+    unsafe {
+        let mode = PIPE_READMODE_MESSAGE;
+        let _ = SetNamedPipeHandleState(pipe, Some(&mode), None, None);
+    }
+
+    if let Err(e) = write_frame(pipe, payload) {
+        let _ = unsafe { CloseHandle(pipe) };
+        return Err(e);
+    }
+
+    let _ = unsafe { CloseHandle(pipe) };
+    Ok(())
+}
+
 /// Connects to a named pipe, retrying up to `timeout_ms`.
 fn connect_pipe(pipe_name: &str, timeout_ms: u32) -> Result<HANDLE, PipeError> {
     let name_wide: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
@@ -303,5 +341,21 @@ mod tests {
         });
 
         assert!(*cap1.lock().unwrap() >= 4096);
+    }
+
+    #[test]
+    fn test_send_raw_oneway_returns_err_on_connection_refused() {
+        // A non-existent pipe should return ConnectionRefused.
+        let result = send_raw_oneway(r"\\.\pipe\NonExistentPipeForTesting", b"test");
+        assert_eq!(result, Err(PipeError::ConnectionRefused));
+    }
+
+    #[test]
+    fn test_send_raw_oneway_signature_no_read_timeout() {
+        // Verify the function signature does NOT include a timeout_ms parameter
+        // for reading (since there is no read). The connection timeout is hardcoded.
+        // This is a compile-time check — if the signature changes, this test breaks.
+        let f: fn(&str, &[u8]) -> Result<(), PipeError> = send_raw_oneway;
+        let _ = f;
     }
 }
