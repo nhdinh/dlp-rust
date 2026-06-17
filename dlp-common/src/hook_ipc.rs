@@ -646,6 +646,60 @@ mod tests {
     }
 
     #[test]
+    fn test_ipc_payload_bypass_alert_roundtrip() {
+        // This test references IpcPayloadV1::BypassAlert which will be added
+        // in Wave 1 Plan 01. It serves as the Nyquist anchor — the test exists
+        // before the implementation. Per D-05 and REVIEW-M-06.
+        let alert = BypassAlert {
+            reason: BypassReason::HookOverwritten,
+            stub_name: "NtCreateFile".to_string(),
+            pid: 1234,
+            timestamp_secs: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            version: 1,
+            agent_id: "test-agent".to_string(),
+            image_path: r"C:\test.exe".to_string(),
+            image_sha256: Some("abc123".to_string()),
+            file_path: r"C:\secret.txt".to_string(),
+            operation: "Create".to_string(),
+            file_object: 0xDEADBEEF,
+            qpc_timestamp: 9999,
+            severity: "crit".to_string(),
+            correlation_reason: "HookSelfReported".to_string(),
+        };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::BypassAlert(alert.clone()),
+        });
+        let bytes = bincode::serialize(&envelope).unwrap();
+        let rt: IpcEnvelope = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(envelope, rt);
+
+        // Verify the deserialized payload is BypassAlert with matching fields.
+        match rt {
+            IpcEnvelope::V1(msg) => match msg.payload {
+                IpcPayloadV1::BypassAlert(ref deserialized_alert) => {
+                    assert_eq!(deserialized_alert.reason, alert.reason);
+                    assert_eq!(deserialized_alert.stub_name, alert.stub_name);
+                    assert_eq!(deserialized_alert.pid, alert.pid);
+                    assert_eq!(deserialized_alert.version, alert.version);
+                    assert_eq!(deserialized_alert.agent_id, alert.agent_id);
+                    assert_eq!(deserialized_alert.image_path, alert.image_path);
+                    assert_eq!(deserialized_alert.image_sha256, alert.image_sha256);
+                    assert_eq!(deserialized_alert.file_path, alert.file_path);
+                    assert_eq!(deserialized_alert.operation, alert.operation);
+                    assert_eq!(deserialized_alert.file_object, alert.file_object);
+                    assert_eq!(deserialized_alert.qpc_timestamp, alert.qpc_timestamp);
+                    assert_eq!(deserialized_alert.severity, alert.severity);
+                    assert_eq!(deserialized_alert.correlation_reason, alert.correlation_reason);
+                }
+                _ => panic!("expected BypassAlert payload"),
+            },
+        }
+    }
+
+    #[test]
     fn test_volume_class_response_none_fail_closed_semantic() {
         // Document the fail-closed invariant: None means the hook DLL must NOT
         // default to LocalNTFS. The None response causes volume-class conditions
