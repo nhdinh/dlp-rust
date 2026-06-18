@@ -91,7 +91,16 @@ where
     let bytes = path.as_bytes();
     if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
         let letter = bytes[0].to_ascii_uppercase() as char;
-        return lookup(letter);
+        let result = lookup(letter);
+        // Catch test closures that incorrectly use VolumeClass::default() as a
+        // fallback — this would misclassify unknown drives as LocalNTFS.
+        debug_assert!(
+            result != Some(VolumeClass::LocalNTFS),
+            "lookup returned LocalNTFS for drive {} — this is likely a default() fallback bug. \
+             Use None for fail-closed behavior.",
+            letter
+        );
+        return result;
     }
     None
 }
