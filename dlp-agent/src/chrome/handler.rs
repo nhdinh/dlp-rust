@@ -325,7 +325,13 @@ fn dispatch_request(request: &ContentAnalysisRequest) -> ContentAnalysisResponse
 
     let decision = evaluator_opt
         .map(|evaluator| evaluator(&evaluate_request).decision)
-        .unwrap_or(dlp_common::abac::Decision::ALLOW); // Fail-open if no evaluator (defensive)
+        .unwrap_or_else(|| {
+            error!(
+                source_origin = ?source_origin,
+                "Chrome handler: no policy evaluator available — failing closed (DENY)"
+            );
+            dlp_common::abac::Decision::DENY
+        });
 
     if decision.is_denied() {
         response.results.push(make_result_block());
