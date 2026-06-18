@@ -320,6 +320,20 @@ pub struct EvaluateRequest {
     /// Chrome Content Analysis API v1 does not expose this; always `None` in v0.8.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_origin: Option<String>,
+    /// Volume class of the source path (if any).
+    ///
+    /// Populated by the hook DLL or server after path resolution.
+    /// `None` when the volume class cannot be determined — volume-class
+    /// conditions evaluate to `false` (fail-closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_volume_class: Option<VolumeClass>,
+    /// Volume class of the destination path (if any).
+    ///
+    /// Populated by the hook DLL or server after path resolution.
+    /// `None` when the volume class cannot be determined — volume-class
+    /// conditions evaluate to `false` (fail-closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_volume_class: Option<VolumeClass>,
 }
 
 /// Internal ABAC evaluation context.
@@ -528,7 +542,8 @@ impl From<EvaluateRequest> for AbacContext {
     ///
     /// An [`AbacContext`] with `subject`, `resource`, `environment`, `action`,
     /// `source_application`, `destination_application`, `source_origin`,
-    /// `destination_origin`, and `resource_path` forwarded from `req`.
+    /// `destination_origin`, `resource_path`, `source_volume_class`, and
+    /// `destination_volume_class` forwarded from `req`.
     fn from(req: EvaluateRequest) -> Self {
         let resource_path = Some(req.resource.path.clone());
         Self {
@@ -541,8 +556,8 @@ impl From<EvaluateRequest> for AbacContext {
             source_origin: req.source_origin,
             destination_origin: req.destination_origin,
             resource_path,
-            source_volume_class: None,
-            destination_volume_class: None,
+            source_volume_class: req.source_volume_class,
+            destination_volume_class: req.destination_volume_class,
         }
     }
 }
@@ -1155,6 +1170,63 @@ mod tests {
         let ctx: AbacContext = req.into();
         assert!(ctx.source_volume_class.is_none());
         assert!(ctx.destination_volume_class.is_none());
+    }
+
+    // --- Phase 56.1: Volume class fields on EvaluateRequest ---
+
+    #[test]
+    fn test_evaluate_request_volume_class_roundtrip() {
+        let req = EvaluateRequest {
+            subject: Subject {
+                user_sid: "S-1-5-21-999".to_string(),
+                user_name: "alice".to_string(),
+                ..Default::default()
+            },
+            action: Action::COPY,
+            source_volume_class: Some(VolumeClass::LocalNTFS),
+            destination_volume_class: Some(VolumeClass::NetworkShare),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let rt: EvaluateRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.source_volume_class, Some(VolumeClass::LocalNTFS));
+        assert_eq!(rt.destination_volume_class, Some(VolumeClass::NetworkShare));
+    }
+
+    #[test]
+    fn test_from_evaluate_request_forwards_volume_class() {
+        let req = EvaluateRequest {
+            subject: Subject {
+                user_sid: "S-1-5-21-999".to_string(),
+                user_name: "alice".to_string(),
+                ..Default::default()
+            },
+            action: Action::COPY,
+            source_volume_class: Some(VolumeClass::LocalNTFS),
+            destination_volume_class: Some(VolumeClass::NetworkShare),
+            ..Default::default()
+        };
+        let ctx: AbacContext = req.into();
+        assert_eq!(ctx.source_volume_class, Some(VolumeClass::LocalNTFS));
+        assert_eq!(
+            ctx.destination_volume_class,
+            Some(VolumeClass::NetworkShare)
+        );
+    }
+
+    #[test]
+    fn test_old_evaluate_request_deserializes_with_volume_class_defaults() {
+        // Simulate an old EvaluateRequest serialized as JSON without volume class fields.
+        // serde(default) ensures new fields default to None.
+        let old_json = r#"{
+            "subject": {"user_sid":"S-1-5-21-999","user_name":"alice"},
+            "resource": {"path":"C:\\old.txt","classification":"T3"},
+            "environment": {},
+            "action": "COPY"
+        }"#;
+        let deserialized: EvaluateRequest = serde_json::from_str(old_json).unwrap();
+        assert!(deserialized.source_volume_class.is_none());
+        assert!(deserialized.destination_volume_class.is_none());
     }
 
     #[test]
