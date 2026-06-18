@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{
@@ -511,7 +511,11 @@ fn handle_connection(
                             break;
                         }
                     }
-                    IpcPayloadV1::VolumeClassQuery(_query) => {
+                    IpcPayloadV1::VolumeClassQuery(query) => {
+                        error!(
+                            drive_letter = %query.drive_letter.to_string(),
+                            "VolumeClassQuery not implemented — returning None (fail-closed)"
+                        );
                         // Fail-closed: respond with VolumeClassResponse { class: None } so
                         // clients using request-style sends do not deadlock.
                         let resp = IpcEnvelope::V1(IpcMessageV1 {
