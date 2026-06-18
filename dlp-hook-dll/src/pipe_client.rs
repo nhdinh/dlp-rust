@@ -158,7 +158,10 @@ pub fn send_raw_oneway(pipe_name: &str, payload: &[u8]) -> Result<(), PipeError>
     // Set pipe to message-read mode so frame boundaries are respected.
     unsafe {
         let mode = PIPE_READMODE_MESSAGE;
-        let _ = SetNamedPipeHandleState(pipe, Some(&mode), None, None);
+        if let Err(e) = SetNamedPipeHandleState(pipe, Some(&mode), None, None) {
+            let _ = CloseHandle(pipe);
+            return Err(PipeError::Win32((e.code().0 as u32) & 0xFFFF));
+        }
     }
 
     if let Err(e) = write_frame(pipe, payload) {
