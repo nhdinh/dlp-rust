@@ -35,6 +35,7 @@ parking_lot = "0.12"
 
 [dev-dependencies]
 dlp-agent = { path = "../dlp-agent" }
+dlp-hook-dll = { path = ".", features = ["test-helpers"] }
 
 [features]
 test-helpers = []

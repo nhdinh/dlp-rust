@@ -18,12 +18,24 @@
 //! - Trampoline verification runs every 300 ticks (30 seconds) as an additional
 //!   task in the same timer loop per D-11.
 //!
+//! # Thread State Machine
+//!
+//! All thread lifecycle transitions are atomic under a single `Mutex`:
+//!
+//! ```text
+//! NotStarted --start--> Starting --spawn--> Running --shutdown--> NotStarted
+//! ```
+//!
+//! The `Starting` state prevents the race where `shutdown_background_thread`
+//! runs between the `THREAD_STARTED` swap and the `BACKGROUND_THREAD` mutex lock.
+//!
 //! # Cache Non-Authoritative Invariant
 //!
 //! The cache stores classification **HINT only**. ABAC authority is never
 //! bypassed.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::os::windows::io::AsRawHandle;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::classification_cache::CacheHeader;
@@ -39,14 +51,32 @@ const TRAMPOLINE_VERIFY_INTERVAL_MS: u32 = 30_000;
 /// 30_000ms / 100ms = 300 ticks.
 const TRAMPOLINE_VERIFY_TICKS: u32 = TRAMPOLINE_VERIFY_INTERVAL_MS / 100;
 
-/// Global background thread handle.
-///
-/// Uses a `Mutex` to allow reset between tests. In production, the Mutex
-/// is only accessed once during initialization, so the overhead is negligible.
-static BACKGROUND_THREAD: std::sync::Mutex<Option<BackgroundThread>> = std::sync::Mutex::new(None);
+// ---------------------------------------------------------------------------
+// Unified thread state
+// ---------------------------------------------------------------------------
 
-/// Flag to prevent multiple background thread starts.
-static THREAD_STARTED: AtomicBool = AtomicBool::new(false);
+/// Lifecycle state of the background thread.
+///
+/// All transitions are atomic under `BACKGROUND_THREAD_STATE` mutex.
+/// This prevents the split-brain between a separate `AtomicBool` and
+/// `Mutex<Option<BackgroundThread>>` that existed in the original design.
+enum BackgroundThreadState {
+    /// No thread is running. Safe to start a new one.
+    NotStarted,
+    /// Thread creation is in progress. Prevents concurrent start attempts
+    /// and protects against shutdown racing with spawn.
+    Starting,
+    /// Thread is running and can be signaled for shutdown.
+    Running(BackgroundThread),
+}
+
+/// Global background thread state.
+///
+/// Uses a `Mutex` to make all lifecycle transitions atomic. In production,
+/// the mutex is only accessed during init and shutdown, so the overhead is
+/// negligible.
+static BACKGROUND_THREAD_STATE: std::sync::Mutex<BackgroundThreadState> =
+    std::sync::Mutex::new(BackgroundThreadState::NotStarted);
 
 /// Background thread for ISOLATED-state RESYNC detection.
 pub struct BackgroundThread {
@@ -55,7 +85,7 @@ pub struct BackgroundThread {
     shutdown_event: windows::Win32::Foundation::HANDLE,
     /// Thread handle for joining.
     #[allow(dead_code)]
-    thread_handle: Option<std::thread::JoinHandle<()>>,
+    thread_handle: std::thread::JoinHandle<()>,
 }
 
 // SAFETY: BackgroundThread is Send + Sync because the HANDLE is only used
@@ -66,8 +96,8 @@ unsafe impl Sync for BackgroundThread {}
 
 /// Start the background thread for RESYNC detection and trampoline verification.
 ///
-/// This is a no-op if the thread is already running. Called lazily on the
-/// first hook call (not from `DllMain`).
+/// This is a no-op if the thread is already running or starting. Called lazily
+/// on the first hook call (not from `DllMain`).
 ///
 /// # Arguments
 ///
@@ -81,9 +111,22 @@ pub fn start_background_thread(
     fail_state: Arc<FailModeState>,
     verify_fn: Option<fn()>,
 ) {
-    if THREAD_STARTED.swap(true, Ordering::SeqCst) {
-        return;
+    let mut guard = BACKGROUND_THREAD_STATE.lock().unwrap();
+
+    match &*guard {
+        BackgroundThreadState::NotStarted => {
+            // Transition to Starting so no other thread can race us.
+            *guard = BackgroundThreadState::Starting;
+        }
+        BackgroundThreadState::Starting | BackgroundThreadState::Running(_) => {
+            // Already started or starting — idempotent no-op.
+            return;
+        }
     }
+
+    // Drop the lock while creating the event and spawning the thread
+    // to avoid holding the mutex across slow operations.
+    drop(guard);
 
     // SAFETY: Windows API calls to create event.
     let shutdown_event = unsafe {
@@ -92,7 +135,9 @@ pub fn start_background_thread(
         match CreateEventW(None, false, false, None) {
             Ok(h) => h,
             Err(_) => {
-                THREAD_STARTED.store(false, Ordering::SeqCst);
+                // Revert to NotStarted so a future call can retry.
+                let mut guard = BACKGROUND_THREAD_STATE.lock().unwrap();
+                *guard = BackgroundThreadState::NotStarted;
                 return;
             }
         }
@@ -105,42 +150,73 @@ pub fn start_background_thread(
 
     let thread_handle = std::thread::spawn(move || {
         let header_ptr = header_addr as *const CacheHeader;
-        let event_handle = windows::Win32::Foundation::HANDLE(event_addr as *mut std::ffi::c_void);
+        let event_handle =
+            windows::Win32::Foundation::HANDLE(event_addr as *mut std::ffi::c_void);
         background_thread_loop(header_ptr, fail_state_clone, event_handle, verify_fn);
     });
 
     let bt = BackgroundThread {
         shutdown_event,
-        thread_handle: Some(thread_handle),
+        thread_handle,
     };
 
-    let mut guard = BACKGROUND_THREAD.lock().unwrap();
-    *guard = Some(bt);
+    // Store the running thread under the mutex.
+    let mut guard = BACKGROUND_THREAD_STATE.lock().unwrap();
+    *guard = BackgroundThreadState::Running(bt);
 }
 
 /// Shutdown the background thread.
 ///
-/// Signals the shutdown event and joins with a 5-second timeout.
+/// Signals the shutdown event and waits up to 5 seconds for the thread to exit
+/// using `WaitForSingleObject` on the thread handle. If the timeout expires,
+/// logs a warning and detaches the thread rather than blocking forever.
 #[allow(dead_code)]
 pub fn shutdown_background_thread() {
-    let mut guard = BACKGROUND_THREAD.lock().unwrap();
-    if let Some(bt) = guard.as_ref() {
-        // SAFETY: SetEvent on a valid event handle.
-        unsafe {
-            use windows::Win32::System::Threading::SetEvent;
-            let _ = SetEvent(bt.shutdown_event);
-        }
-        // Take ownership of the handle so we can join.
-        if let Some(handle) = guard.as_mut().unwrap().thread_handle.take() {
-            // Wait up to 5 seconds for the thread to exit.
-            let start = std::time::Instant::now();
-            while start.elapsed().as_secs() < 5 {
-                if handle.is_finished() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
+    let mut guard = BACKGROUND_THREAD_STATE.lock().unwrap();
+
+    let handle = match &mut *guard {
+        BackgroundThreadState::Running(bt) => {
+            // SAFETY: SetEvent on a valid event handle.
+            unsafe {
+                use windows::Win32::System::Threading::SetEvent;
+                let _ = SetEvent(bt.shutdown_event);
             }
+            // Take ownership of the JoinHandle so we can join.
+            Some(std::mem::replace(
+                &mut bt.thread_handle,
+                std::thread::spawn(|| {}), // placeholder — never used
+            ))
+        }
+        BackgroundThreadState::NotStarted | BackgroundThreadState::Starting => {
+            // Nothing to shut down.
+            return;
+        }
+    };
+
+    // Drop the lock before waiting so other operations can proceed.
+    drop(guard);
+
+    if let Some(handle) = handle {
+        // Use WaitForSingleObject on the thread handle for precise timeout.
+        let thread_handle_raw = handle.as_raw_handle() as isize;
+        let wait_result = unsafe {
+            use windows::Win32::System::Threading::WaitForSingleObject;
+            WaitForSingleObject(
+                windows::Win32::Foundation::HANDLE(thread_handle_raw as *mut std::ffi::c_void),
+                5000, // 5 seconds
+            )
+        };
+
+        if wait_result == windows::Win32::Foundation::WAIT_OBJECT_0 {
+            // Thread exited cleanly — join to clean up resources.
             let _ = handle.join();
+        } else {
+            // Timeout — log warning and detach (drop without join).
+            tracing::warn!(
+                "background_thread shutdown timed out after 5s; detaching thread"
+            );
+            // Dropping the JoinHandle without calling join() detaches the thread.
+            drop(handle);
         }
     }
 }
@@ -148,14 +224,11 @@ pub fn shutdown_background_thread() {
 /// Reset the background thread for test use.
 ///
 /// Must only be called after `shutdown_background_thread()` has joined the
-/// thread. This is test-only and gated by `#[cfg(test)]`.
+/// thread. This is test-only and gated by `#[cfg(any(test, feature = "test-helpers"))]`.
+#[cfg(any(test, feature = "test-helpers"))]
 pub fn reset_background_thread_for_test() {
-    // Reset the thread-started flag so a new thread can be spawned.
-    THREAD_STARTED.store(false, Ordering::SeqCst);
-
-    // Clear the Mutex so the next test can start fresh.
-    let mut guard = BACKGROUND_THREAD.lock().unwrap();
-    *guard = None;
+    let mut guard = BACKGROUND_THREAD_STATE.lock().unwrap();
+    *guard = BackgroundThreadState::NotStarted;
 }
 
 /// Background thread main loop.
@@ -301,8 +374,11 @@ mod tests {
     fn thread_start_is_idempotent() {
         let state = Arc::new(FailModeState::new());
 
-        // Reset flag for test.
-        THREAD_STARTED.store(false, Ordering::SeqCst);
+        // Reset state for test.
+        {
+            let mut guard = BACKGROUND_THREAD_STATE.lock().unwrap();
+            *guard = BackgroundThreadState::NotStarted;
+        }
 
         // First start should succeed.
         start_background_thread(std::ptr::null(), Arc::clone(&state), None);

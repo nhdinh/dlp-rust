@@ -69,9 +69,9 @@ pub use pe_utils::{find_iat_entry, patch_iat, restore_iat};
 pub use crash_guard::{guard_trampoline, seh_guard, with_reentrancy_guard};
 
 // Re-exports for integration tests (isolated_resync_recovery.rs).
-pub use background_thread::{
-    reset_background_thread_for_test, shutdown_background_thread, start_background_thread,
-};
+#[cfg(any(test, feature = "test-helpers"))]
+pub use background_thread::reset_background_thread_for_test;
+pub use background_thread::{shutdown_background_thread, start_background_thread};
 pub use classification_cache::lru;
 pub use classification_cache::{CacheHeader, CacheLookup};
 pub use fail_mode::{decide_isolated, is_cache_stale, FailModeState, FailState};
