@@ -363,7 +363,7 @@ Plans:
 **Goal:** Carry volume class from hook DLL through IPC to ABAC evaluation so volume-class policies (e.g., "deny T4 copy to Optical") fire for hook-intercepted operations.
 **Requirements**: DRIVE-03, DRIVE-04
 **Depends on:** Phase 56
-**Plans:** 3/3 plans planned
+**Plans:** 3/3 plans complete
 
 **Wave 1** *(no dependencies)*
 
@@ -585,7 +585,7 @@ Plans:
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 6/6 | Complete | 2026-06-06 |
-| 56.1 | Close gap DRIVE-03/04 — add volume class fields to HookRequest and ABAC path (INSERTED) | 0/0 | Not started | - |
+| 56.1 | Close gap DRIVE-03/04 — add volume class fields to HookRequest and ABAC path (INSERTED) | 3/3 | Complete   | 2026-06-18 |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 6/6 | Complete    | 2026-06-10 |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
@@ -654,6 +654,10 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 **Depends on:** Phase 67
 **Plans:** 1/2 plans complete
 Plans:
+
+- [x] 56.1-01-PLAN.md
+- [x] 56.1-02-PLAN.md
+- [x] 56.1-03-PLAN.md
 
 - [x] TBD (run /gsd-plan-phase 67.1 to break down) (completed 2026-06-12)
 
