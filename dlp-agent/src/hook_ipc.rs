@@ -196,10 +196,9 @@ impl HookIpcServer {
 
     /// Runs the blocking accept loop on the current thread.
     ///
-    /// Callers should spawn this in a dedicated `std::thread`.  If a Tokio
-    /// runtime is present on the calling thread, each accepted connection is
-    /// off-loaded to `tokio::task::spawn_blocking` so the accept loop stays
-    /// responsive.
+    /// Callers should spawn this in a dedicated `std::thread`.  Connections
+    /// are handled synchronously on the accept thread; the loop blocks until
+    /// the handler returns.
     pub fn run(self) -> Result<()> {
         self.run_with_ready(|| {})
     }
@@ -208,10 +207,9 @@ impl HookIpcServer {
     /// instance has been created and is ready for clients.
     pub fn run_with_ready(self, on_ready: impl FnOnce()) -> Result<()> {
         info!(pipe = %self.pipe_name, "Hook IPC server starting");
-        let rt = tokio::runtime::Handle::try_current().ok();
         let pipe = create_pipe(&self.pipe_name)?;
         on_ready();
-        accept_loop(pipe, self.pipe_name, self.handler, self.bypass_tx, rt)
+        accept_loop(pipe, self.pipe_name, self.handler, self.bypass_tx)
     }
 }
 
@@ -249,7 +247,6 @@ fn accept_loop(
     pipe_name: String,
     handler: HookHandler,
     bypass_tx: Option<crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
-    _rt: Option<tokio::runtime::Handle>,
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
