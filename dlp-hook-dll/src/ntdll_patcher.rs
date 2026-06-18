@@ -683,7 +683,7 @@ pub fn build_bypass_alert_envelope(
 fn emit_bypass_alert(reason: BypassReason, stub_name: &str) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+        .expect("system clock before Unix epoch")
         .as_secs();
     let envelope = build_bypass_alert_envelope(reason, stub_name, now, std::process::id());
 
