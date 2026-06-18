@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{
@@ -78,12 +78,24 @@ pub type HookHandler = Arc<dyn Fn(HookRequest) -> HookResponse + Send + Sync + '
 /// | (any other) | READ | Default fallback (least-privilege) |
 #[must_use]
 pub fn map_hook_action_to_abac(action: &str) -> Action {
-    match action.to_ascii_uppercase().as_str() {
-        "CREATE" | "WRITE" | "NT_WRITE" => Action::WRITE,
-        "READ" | "NT_READ" => Action::READ,
-        "COPY" => Action::COPY,
-        "MOVE" | "DELETE" | "REPLACE" | "SET_INFO" | "NT_SET_INFO" => Action::DELETE,
-        _ => Action::READ,
+    if action.eq_ignore_ascii_case("CREATE")
+        || action.eq_ignore_ascii_case("WRITE")
+        || action.eq_ignore_ascii_case("NT_WRITE")
+    {
+        Action::WRITE
+    } else if action.eq_ignore_ascii_case("READ") || action.eq_ignore_ascii_case("NT_READ") {
+        Action::READ
+    } else if action.eq_ignore_ascii_case("COPY") {
+        Action::COPY
+    } else if action.eq_ignore_ascii_case("MOVE")
+        || action.eq_ignore_ascii_case("DELETE")
+        || action.eq_ignore_ascii_case("REPLACE")
+        || action.eq_ignore_ascii_case("SET_INFO")
+        || action.eq_ignore_ascii_case("NT_SET_INFO")
+    {
+        Action::DELETE
+    } else {
+        Action::READ
     }
 }
 
@@ -117,6 +129,10 @@ pub fn hook_request_to_evaluate_request(req: &HookRequest) -> EvaluateRequest {
     // TODO: Replace placeholder SID with real PID-to-SID resolution.
     // The hook DLL currently does not include the process PID in HookRequest.
     // When PID is available, call get_sid_for_pid() to resolve the real user.
+    tracing::warn!(
+        path = %req.path,
+        "hook_request_to_evaluate_request: using synthetic SID — identity-based policies will not match"
+    );
     let subject = Subject {
         user_sid: "S-1-5-21-hook".to_string(),
         user_name: "hook_user".to_string(),
@@ -507,7 +523,11 @@ fn handle_connection(
                             break;
                         }
                     }
-                    IpcPayloadV1::VolumeClassQuery(_query) => {
+                    IpcPayloadV1::VolumeClassQuery(query) => {
+                        error!(
+                            drive_letter = %query.drive_letter.to_string(),
+                            "VolumeClassQuery not implemented — returning None (fail-closed)"
+                        );
                         // Fail-closed: respond with VolumeClassResponse { class: None } so
                         // clients using request-style sends do not deadlock.
                         let resp = IpcEnvelope::V1(IpcMessageV1 {

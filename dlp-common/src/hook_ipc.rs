@@ -770,13 +770,19 @@ mod tests {
 
     #[test]
     fn test_volume_class_response_none_fail_closed_semantic() {
-        // Document the fail-closed invariant: None means the hook DLL must NOT
-        // default to LocalNTFS. The None response causes volume-class conditions
-        // to evaluate to false (condition does not match).
-        let resp = VolumeClassResponse { class: None };
+        // Verify the fail-closed invariant: when source_volume_class is None,
+        // a SourceVolumeClass condition does NOT match (returns false).
+        // This is the actual behavior tested via volume_class_matches.
+        use crate::abac::{VolumeClass, PolicyCondition};
+        let condition = PolicyCondition::SourceVolumeClass {
+            op: "eq".to_string(),
+            value: VolumeClass::LocalNTFS,
+        };
+        // When actual volume class is None, the condition should fail closed
+        let matches = crate::abac::volume_class_matches("eq", &VolumeClass::LocalNTFS, None);
         assert!(
-            resp.class.is_none(),
-            "None class must remain None for fail-closed"
+            !matches,
+            "None volume class must fail closed (condition does not match)"
         );
     }
 }
