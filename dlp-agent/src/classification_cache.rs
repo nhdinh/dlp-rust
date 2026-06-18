@@ -111,8 +111,12 @@ pub struct CacheHeader {
     /// Simple XOR checksum of all header fields (excluding version_word and
     /// checksum itself).
     pub checksum: u64,
+    /// Offset to operator-extended allowlist entries from start of mapping.
+    pub allowlist_offset: u64,
+    /// Number of allowlist entries.
+    pub allowlist_count: u64,
     /// Reserved for forward compatibility — zeroed on init, never read by DLL.
-    pub _reserved: [u8; 40],
+    pub _reserved: [u8; 24],
 }
 
 /// Root-prefix entry for directory-level classification.
@@ -255,6 +259,33 @@ impl ClassificationCache {
     /// converted to a security descriptor.
     #[cfg(windows)]
     pub fn new() -> Result<Self, CacheError> {
+        Self::new_with_name_inner(CACHE_NAME)
+    }
+
+    /// Creates the shared-memory mapping with a custom name.
+    ///
+    /// This is useful for tests that need to avoid colliding with the
+    /// production mapping name.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::new`].
+    #[cfg(windows)]
+    pub fn new_with_name(name: &str) -> Result<Self, CacheError> {
+        Self::new_with_name_inner(name)
+    }
+
+    /// Non-Windows stub for `new_with_name`.
+    #[cfg(not(windows))]
+    pub fn new_with_name(_name: &str) -> Result<Self, CacheError> {
+        Err(CacheError::CreateMappingFailed(
+            "ClassificationCache requires Windows APIs".to_string(),
+        ))
+    }
+
+    /// Shared implementation for `new()` and `new_with_name()`.
+    #[cfg(windows)]
+    fn new_with_name_inner(name: &str) -> Result<Self, CacheError> {
         use windows::Win32::Foundation::GetLastError;
         use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
         use windows::Win32::Security::PSECURITY_DESCRIPTOR;
@@ -292,7 +323,7 @@ impl ClassificationCache {
             bInheritHandle: false.into(),
         };
 
-        let name_wide: Vec<u16> = CACHE_NAME
+        let name_wide: Vec<u16> = name
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
@@ -341,12 +372,20 @@ impl ClassificationCache {
         cache.init_header(0);
 
         info!(
-            cache_name = CACHE_NAME,
+            cache_name = name,
             total_size = CACHE_TOTAL_SIZE,
             "ClassificationCache created"
         );
 
         Ok(cache)
+    }
+
+    /// Non-Windows stub for `new_with_name_inner`.
+    #[cfg(not(windows))]
+    fn new_with_name_inner(_name: &str) -> Result<Self, CacheError> {
+        Err(CacheError::CreateMappingFailed(
+            "ClassificationCache requires Windows APIs".to_string(),
+        ))
     }
 
     /// Non-Windows stub — returns an error because shared memory requires Windows APIs.
@@ -377,9 +416,11 @@ impl ClassificationCache {
         header.hash_table_offset_1 = hash_offset + 900 * 1024;
         header.hash_slots = 900 * 1024 / std::mem::size_of::<HashEntry>() as u64;
         // Allowlist after both hash tables.
+        header.allowlist_offset = 0;
+        header.allowlist_count = 0;
         header.created_at_epoch_secs = 0;
         header.checksum = 0;
-        header._reserved = [0u8; 40];
+        header._reserved = [0u8; 24];
     }
 
     /// Returns a mutable reference to the cache header.
@@ -745,6 +786,8 @@ impl ClassificationCache {
         checksum ^= header.hash_table_offset_1;
         checksum ^= header.hash_slots;
         checksum ^= header.created_at_epoch_secs;
+        checksum ^= header.allowlist_offset;
+        checksum ^= header.allowlist_count;
         // XOR reserved bytes in 8-byte chunks.
         for chunk in header._reserved.chunks_exact(8) {
             let val = u64::from_le_bytes([
@@ -850,6 +893,29 @@ fn tier_priority(tier: Classification) -> u8 {
         Classification::T3 => 3,
         Classification::T2 => 2,
         Classification::T1 => 1,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test-only accessors
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+impl ClassificationCache {
+    /// Returns a raw pointer to the cache header for test use.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the mapping is valid and not being modified
+    /// concurrently. In tests, this is typically true because tests hold the
+    /// cache instance.
+    pub fn header_for_test(&self) -> *const CacheHeader {
+        self.mapping as *const CacheHeader
+    }
+
+    /// Returns the Windows handle to the file mapping for test use.
+    pub fn mapping_handle_for_test(&self) -> windows::Win32::Foundation::HANDLE {
+        self.mapping_handle
     }
 }
 

@@ -41,8 +41,13 @@ const TRAMPOLINE_VERIFY_TICKS: u32 = TRAMPOLINE_VERIFY_INTERVAL_MS / 100;
 
 /// Global background thread handle.
 ///
-/// Initialized lazily on first hook call via `OnceLock`.
+/// Initialized lazily on first hook call via `OnceLock` in production.
+/// In tests, uses a `Mutex` to allow reset between tests.
+#[cfg(not(test))]
 static BACKGROUND_THREAD: OnceLock<BackgroundThread> = OnceLock::new();
+
+#[cfg(test)]
+static BACKGROUND_THREAD: std::sync::Mutex<Option<BackgroundThread>> = std::sync::Mutex::new(None);
 
 /// Flag to prevent multiple background thread starts.
 static THREAD_STARTED: AtomicBool = AtomicBool::new(false);
@@ -108,10 +113,20 @@ pub fn start_background_thread(
         background_thread_loop(header_ptr, fail_state_clone, event_handle, verify_fn);
     });
 
-    let _ = BACKGROUND_THREAD.set(BackgroundThread {
+    let bt = BackgroundThread {
         shutdown_event,
         thread_handle: Some(thread_handle),
-    });
+    };
+
+    #[cfg(not(test))]
+    {
+        let _ = BACKGROUND_THREAD.set(bt);
+    }
+    #[cfg(test)]
+    {
+        let mut guard = BACKGROUND_THREAD.lock().unwrap();
+        *guard = Some(bt);
+    }
 }
 
 /// Shutdown the background thread.
@@ -119,18 +134,53 @@ pub fn start_background_thread(
 /// Signals the shutdown event and joins with a 5-second timeout.
 #[allow(dead_code)]
 pub fn shutdown_background_thread() {
-    if let Some(bt) = BACKGROUND_THREAD.get() {
-        // SAFETY: SetEvent on a valid event handle.
-        unsafe {
-            use windows::Win32::System::Threading::SetEvent;
-            let _ = SetEvent(bt.shutdown_event);
+    #[cfg(not(test))]
+    {
+        if let Some(bt) = BACKGROUND_THREAD.get() {
+            // SAFETY: SetEvent on a valid event handle.
+            unsafe {
+                use windows::Win32::System::Threading::SetEvent;
+                let _ = SetEvent(bt.shutdown_event);
+            }
         }
-
-        // Join with timeout. We can't easily do a timed join in std, so we
-        // just drop the handle and let the thread exit on its own.
-        // The thread will exit on the next WaitForSingleObject timeout
-        // after seeing the event signaled.
     }
+    #[cfg(test)]
+    {
+        let mut guard = BACKGROUND_THREAD.lock().unwrap();
+        if let Some(bt) = guard.as_ref() {
+            // SAFETY: SetEvent on a valid event handle.
+            unsafe {
+                use windows::Win32::System::Threading::SetEvent;
+                let _ = SetEvent(bt.shutdown_event);
+            }
+            // Take ownership of the handle so we can join.
+            if let Some(handle) = guard.as_mut().unwrap().thread_handle.take() {
+                // Wait up to 5 seconds for the thread to exit.
+                let start = std::time::Instant::now();
+                while start.elapsed().as_secs() < 5 {
+                    if handle.is_finished() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                let _ = handle.join();
+            }
+        }
+    }
+}
+
+/// Reset the background thread for test use.
+///
+/// Must only be called after `shutdown_background_thread()` has joined the
+/// thread. This is test-only and gated by `#[cfg(test)]`.
+#[cfg(test)]
+pub fn reset_background_thread_for_test() {
+    // Reset the thread-started flag so a new thread can be spawned.
+    THREAD_STARTED.store(false, Ordering::SeqCst);
+
+    // Clear the Mutex so the next test can start fresh.
+    let mut guard = BACKGROUND_THREAD.lock().unwrap();
+    *guard = None;
 }
 
 /// Background thread main loop.

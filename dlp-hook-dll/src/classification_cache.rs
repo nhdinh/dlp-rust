@@ -126,7 +126,12 @@ const CACHE_TOTAL_SIZE: u64 = 2 * 1024 * 1024;
 const CACHE_HEADER_SIZE: u32 = 128;
 
 /// Name of the global shared-memory mapping.
+#[cfg(not(test))]
 const CACHE_NAME: &str = "Global\\DlpClassificationCache";
+
+/// Test-specific mapping name to avoid collision with live agent.
+#[cfg(test)]
+const CACHE_NAME: &str = "Global\\DlpClassificationCache_TestPhase50_1";
 
 // ---------------------------------------------------------------------------
 // CacheLookup — lazy-init shared-memory reader
@@ -230,6 +235,43 @@ impl CacheLookup {
         lookup
             .last_validated_version
             .store(version, Ordering::Relaxed);
+
+        Some(lookup)
+    }
+
+    /// Create a `CacheLookup` from a raw pointer and handle (test-only).
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure:
+    /// - `header` is a valid, aligned pointer to a `CacheHeader` in mapped memory.
+    /// - `mapping_handle` is a valid Windows file mapping handle.
+    /// - The mapping outlives the returned `CacheLookup`.
+    /// - If `validate` is true, the header must have a valid checksum and magic.
+    #[cfg(test)]
+    pub unsafe fn from_raw_pointer(
+        header: *const CacheHeader,
+        mapping_handle: windows::Win32::Foundation::HANDLE,
+        validate: bool,
+    ) -> Option<CacheLookup> {
+        if header.is_null() {
+            return None;
+        }
+
+        let lookup = CacheLookup {
+            header,
+            mapping_handle,
+            last_validated_version: AtomicU64::new(0),
+        };
+
+        if validate {
+            if lookup.full_validation().is_err() {
+                return None;
+            }
+            let version_word = (*header).version_word.load(Ordering::Acquire);
+            let version = version_word >> 1;
+            lookup.last_validated_version.store(version, Ordering::Relaxed);
+        }
 
         Some(lookup)
     }
