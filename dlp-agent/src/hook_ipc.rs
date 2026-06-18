@@ -249,7 +249,7 @@ fn accept_loop(
     pipe_name: String,
     handler: HookHandler,
     bypass_tx: Option<crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
-    rt: Option<tokio::runtime::Handle>,
+    _rt: Option<tokio::runtime::Handle>,
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
@@ -272,26 +272,11 @@ fn accept_loop(
         info!("Hook IPC: client connected");
 
         let bypass_tx_ref = bypass_tx.as_ref();
-        match rt {
-            Some(ref _h) => {
-                // Synchronous handling (same as no-runtime path).  In a
-                // future integration the handler may internally spawn Tokio
-                // tasks for async classification; the accept loop itself
-                // stays synchronous because Win32 pipe APIs are blocking.
-                if let Err(e) = handle_connection(pipe, &handler, bypass_tx_ref) {
-                    warn!(error = %e, "Hook IPC: connection handler error");
-                }
-                let _ = unsafe { DisconnectNamedPipe(pipe) };
-                let _ = unsafe { CloseHandle(pipe) };
-            }
-            None => {
-                if let Err(e) = handle_connection(pipe, &handler, bypass_tx_ref) {
-                    warn!(error = %e, "Hook IPC: connection handler error");
-                }
-                let _ = unsafe { DisconnectNamedPipe(pipe) };
-                let _ = unsafe { CloseHandle(pipe) };
-            }
+        if let Err(e) = handle_connection(pipe, &handler, bypass_tx_ref) {
+            warn!(error = %e, "Hook IPC: connection handler error");
         }
+        let _ = unsafe { DisconnectNamedPipe(pipe) };
+        let _ = unsafe { CloseHandle(pipe) };
 
         pipe = create_pipe(&pipe_name)?;
     }
