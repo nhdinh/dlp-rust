@@ -376,16 +376,9 @@ fn classify_path_with_volume_class(
 /// Write actions trigger fast-path deny for T3/T4 cache hits.
 fn is_write_action(action: &str) -> bool {
     matches!(
-        action.to_ascii_uppercase().as_str(),
-        "CREATE"
-            | "WRITE"
-            | "MOVE"
-            | "COPY"
-            | "DELETE"
-            | "REPLACE"
-            | "SET_INFO"
-            | "NT_WRITE"
-            | "NT_SET_INFO"
+        action.as_bytes(),
+        b"CREATE" | b"WRITE" | b"MOVE" | b"COPY" | b"DELETE" | b"REPLACE" | b"SET_INFO" | b"NT_WRITE" | b"NT_SET_INFO"
+        | b"create" | b"write" | b"move" | b"copy" | b"delete" | b"replace" | b"set_info" | b"nt_write" | b"nt_set_info"
     )
 }
 
