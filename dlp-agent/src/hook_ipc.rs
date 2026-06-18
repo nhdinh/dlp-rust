@@ -34,7 +34,9 @@ use windows::Win32::System::Pipes::{
 
 use dlp_common::hook_ipc::CacheHint;
 use dlp_common::{Classification, Decision, HookRequest, HookResponse};
+use dlp_common::{Action, EvaluateRequest, Resource, Subject, Environment, AccessContext};
 
+use crate::interception::policy_mapper::PolicyMapper;
 use crate::ipc::frame::{read_frame, write_frame};
 use crate::ipc::pipe_security::PipeSecurity;
 
@@ -52,6 +54,103 @@ const PIPE_TIMEOUT_MS: u32 = 5_000;
 
 /// Handler type for processing hook requests.
 pub type HookHandler = Arc<dyn Fn(HookRequest) -> HookResponse + Send + Sync + 'static>;
+
+/// Maps a hook DLL action string to the corresponding ABAC [`Action`] variant.
+///
+/// Uses case-insensitive matching. Unknown actions default to [`Action::READ`]
+/// (least-privilege fallback).
+///
+/// # Action Mapping
+///
+/// | HookRequest.action | ABAC Action | Notes |
+/// |-------------------|-------------|-------|
+/// | CREATE | WRITE | File creation is a write operation |
+/// | WRITE | WRITE | Direct write |
+/// | NT_WRITE | WRITE | ntdll trampoline write |
+/// | READ | READ | Direct read |
+/// | NT_READ | READ | ntdll trampoline read |
+/// | COPY | COPY | Copy operation |
+/// | MOVE | DELETE | Move is delete + create |
+/// | DELETE | DELETE | Direct delete |
+/// | REPLACE | DELETE | Replace is delete + create |
+/// | SET_INFO | DELETE | SetFileInformation can delete/rename |
+/// | NT_SET_INFO | DELETE | ntdll trampoline set info |
+/// | (any other) | READ | Default fallback (least-privilege) |
+#[must_use]
+pub fn map_hook_action_to_abac(action: &str) -> Action {
+    match action.to_ascii_uppercase().as_str() {
+        "CREATE" | "WRITE" | "NT_WRITE" => Action::WRITE,
+        "READ" | "NT_READ" => Action::READ,
+        "COPY" => Action::COPY,
+        "MOVE" | "DELETE" | "REPLACE" | "SET_INFO" | "NT_SET_INFO" => Action::DELETE,
+        _ => Action::READ,
+    }
+}
+
+/// Converts a [`HookRequest`] from the hook DLL into an [`EvaluateRequest`]
+/// for the ABAC policy engine.
+///
+/// # Volume Class Forwarding
+///
+/// `source_volume_class` and `destination_volume_class` from the hook DLL are
+/// forwarded directly to the corresponding fields in [`EvaluateRequest`].
+///
+/// # Subject Identity (Known Limitation)
+///
+/// Subject identity is **synthetic** (placeholder SID). The hook DLL IPC path
+/// does not yet have PID-to-SID resolution. Real identity resolution is deferred
+/// to a follow-up phase (see RESEARCH.md Open Question #1).
+///
+/// Tests using this function should use only resource/action/environment
+/// conditions, not identity-based conditions.
+///
+/// # Arguments
+///
+/// * `req` - The incoming [`HookRequest`] from the hook DLL.
+///
+/// # Returns
+///
+/// An [`EvaluateRequest`] ready for `OfflineManager::offline_decision` or
+/// `PolicyStore::evaluate`.
+#[must_use]
+pub fn hook_request_to_evaluate_request(req: &HookRequest) -> EvaluateRequest {
+    // TODO: Replace placeholder SID with real PID-to-SID resolution.
+    // The hook DLL currently does not include the process PID in HookRequest.
+    // When PID is available, call get_sid_for_pid() to resolve the real user.
+    let subject = Subject {
+        user_sid: "S-1-5-21-hook".to_string(),
+        user_name: "hook_user".to_string(),
+        groups: Vec::new(),
+        device_trust: dlp_common::abac::DeviceTrust::Unknown,
+        network_location: dlp_common::abac::NetworkLocation::Unknown,
+        device_health: crate::device_identity::current_health(),
+    };
+
+    let resource = Resource {
+        path: req.path.clone(),
+        classification: PolicyMapper::provisional_classification(&req.path),
+    };
+
+    let environment = Environment {
+        timestamp: chrono::Utc::now(),
+        session_id: 0,
+        access_context: AccessContext::Local,
+    };
+
+    EvaluateRequest {
+        subject,
+        resource,
+        environment,
+        action: map_hook_action_to_abac(&req.action),
+        agent: None,
+        source_application: None,
+        destination_application: None,
+        source_origin: None,
+        destination_origin: None,
+        source_volume_class: req.source_volume_class,
+        destination_volume_class: req.destination_volume_class,
+    }
+}
 
 /// Classification cache accessor for the hook IPC handler.
 ///

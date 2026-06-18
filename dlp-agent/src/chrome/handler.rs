@@ -310,6 +310,8 @@ fn dispatch_request(request: &ContentAnalysisRequest) -> ContentAnalysisResponse
         destination_application: None,
         source_origin: source_origin.clone(),
         destination_origin: None, // Chrome API v1 does not expose destination origin
+        source_volume_class: None,
+        destination_volume_class: None,
     };
 
     // Evaluate against ABAC policy if evaluator is available.
