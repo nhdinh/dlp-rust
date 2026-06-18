@@ -687,8 +687,14 @@ fn emit_bypass_alert(reason: BypassReason, stub_name: &str) {
         .as_secs();
     let envelope = build_bypass_alert_envelope(reason, stub_name, now, std::process::id());
 
-    if let Ok(payload) = bincode::serialize(&envelope) {
-        let _ = crate::pipe_client::send_raw_oneway(crate::DEFAULT_PIPE_NAME, &payload);
+    match bincode::serialize(&envelope) {
+        Ok(payload) => {
+            let _ = crate::pipe_client::send_raw_oneway(crate::DEFAULT_PIPE_NAME, &payload);
+        }
+        Err(e) => {
+            let msg = format!("[dlp-hook] BypassAlert serialization failed: {:?}", e);
+            crate::debug_log(&msg);
+        }
     }
     // Also log locally
     let msg = format!(
