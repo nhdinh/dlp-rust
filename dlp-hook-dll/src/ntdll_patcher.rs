@@ -616,6 +616,9 @@ fn is_target_in_our_trampoline_range(target: *mut u8) -> bool {
 
     let min = trampolines.iter().map(|t| *t as usize).min().unwrap_or(0);
     let max = trampolines.iter().map(|t| *t as usize).max().unwrap_or(0);
+    if min == 0 && max == 0 {
+        return false; // All trampolines null — cannot verify
+    }
     // Add generous margin for function size + padding
     let margin = 16 * 1024; // 16KB per function
     target_usize >= min.saturating_sub(margin) && target_usize <= max.saturating_add(margin)
