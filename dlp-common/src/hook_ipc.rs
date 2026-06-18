@@ -205,7 +205,7 @@ pub struct BypassAlert {
     /// Timestamp (Unix epoch seconds).
     pub timestamp_secs: u64,
     /// Protocol version — set to 2 for Phase 53 alerts; set to 1 for Phase 51 alerts.
-    #[serde(default)]
+    #[serde(default = "default_alert_version")]
     pub version: u32,
     /// Unique identifier of the agent that emitted this alert.
     #[serde(default)]
@@ -235,6 +235,11 @@ pub struct BypassAlert {
     /// Human-readable correlation reason for SIEM routing.
     #[serde(default)]
     pub correlation_reason: String,
+}
+
+/// Default alert version for deserialization when the field is missing.
+fn default_alert_version() -> u32 {
+    1
 }
 
 /// Reasons a bypass alert can be emitted.
