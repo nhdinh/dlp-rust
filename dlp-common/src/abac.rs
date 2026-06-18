@@ -21,12 +21,12 @@ use serde::{Deserialize, Serialize};
 /// we do not allow the operation to proceed under a volume-class policy.
 ///
 /// NEVER use `VolumeClass::default()` as a fallback for unclassifiable paths.
-/// `Default` exists only for serde backward compatibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// For serde backward compatibility, `Option<VolumeClass>` fields use
+/// `#[serde(default)]` which defaults to `None` (fail-closed), NOT LocalNTFS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum VolumeClass {
     /// Local fixed disk (NTFS).
-    #[default]
     LocalNTFS,
     /// USB removable storage.
     USBRemovable,
@@ -1048,9 +1048,14 @@ mod tests {
     }
 
     #[test]
-    fn test_volume_class_default_is_local_ntfs() {
-        let default: VolumeClass = Default::default();
-        assert_eq!(default, VolumeClass::LocalNTFS);
+    fn test_volume_class_serde_defaults_to_none_not_local_ntfs() {
+        // Verify that Option<VolumeClass> deserializes to None when missing,
+        // NOT to Some(LocalNTFS). This is the fail-closed invariant.
+        let json = r#"{"path":"C:\\test.txt","action":"READ"}"#;
+        // We test via HookRequest which has Option<VolumeClass> with serde(default)
+        let req: crate::hook_ipc::HookRequest = serde_json::from_str(json).unwrap();
+        assert!(req.source_volume_class.is_none());
+        assert!(req.destination_volume_class.is_none());
     }
 
     #[test]
