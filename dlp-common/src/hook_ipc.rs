@@ -119,6 +119,20 @@ pub struct HookRequest {
     /// The operation type (read vs write) for tier-gated fast-path decisions.
     #[serde(default)]
     pub op: HookOp,
+    /// Volume class of the source path (if any).
+    ///
+    /// Populated by the hook DLL after path resolution. `None` when the volume
+    /// class cannot be determined — volume-class conditions evaluate to `false`
+    /// (fail-closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_volume_class: Option<VolumeClass>,
+    /// Volume class of the destination path (if any).
+    ///
+    /// Populated by the hook DLL after path resolution. `None` when the volume
+    /// class cannot be determined — volume-class conditions evaluate to `false`
+    /// (fail-closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_volume_class: Option<VolumeClass>,
 }
 
 fn default_protocol_version() -> u8 {

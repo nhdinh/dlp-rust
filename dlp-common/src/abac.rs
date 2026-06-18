@@ -320,6 +320,20 @@ pub struct EvaluateRequest {
     /// Chrome Content Analysis API v1 does not expose this; always `None` in v0.8.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_origin: Option<String>,
+    /// Volume class of the source path (if any).
+    ///
+    /// Populated by the hook DLL or server after path resolution.
+    /// `None` when the volume class cannot be determined — volume-class
+    /// conditions evaluate to `false` (fail-closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_volume_class: Option<VolumeClass>,
+    /// Volume class of the destination path (if any).
+    ///
+    /// Populated by the hook DLL or server after path resolution.
+    /// `None` when the volume class cannot be determined — volume-class
+    /// conditions evaluate to `false` (fail-closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_volume_class: Option<VolumeClass>,
 }
 
 /// Internal ABAC evaluation context.
@@ -528,7 +542,8 @@ impl From<EvaluateRequest> for AbacContext {
     ///
     /// An [`AbacContext`] with `subject`, `resource`, `environment`, `action`,
     /// `source_application`, `destination_application`, `source_origin`,
-    /// `destination_origin`, and `resource_path` forwarded from `req`.
+    /// `destination_origin`, `resource_path`, `source_volume_class`, and
+    /// `destination_volume_class` forwarded from `req`.
     fn from(req: EvaluateRequest) -> Self {
         let resource_path = Some(req.resource.path.clone());
         Self {
@@ -541,8 +556,8 @@ impl From<EvaluateRequest> for AbacContext {
             source_origin: req.source_origin,
             destination_origin: req.destination_origin,
             resource_path,
-            source_volume_class: None,
-            destination_volume_class: None,
+            source_volume_class: req.source_volume_class,
+            destination_volume_class: req.destination_volume_class,
         }
     }
 }
