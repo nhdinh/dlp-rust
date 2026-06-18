@@ -117,6 +117,10 @@ pub fn hook_request_to_evaluate_request(req: &HookRequest) -> EvaluateRequest {
     // TODO: Replace placeholder SID with real PID-to-SID resolution.
     // The hook DLL currently does not include the process PID in HookRequest.
     // When PID is available, call get_sid_for_pid() to resolve the real user.
+    tracing::warn!(
+        path = %req.path,
+        "hook_request_to_evaluate_request: using synthetic SID — identity-based policies will not match"
+    );
     let subject = Subject {
         user_sid: "S-1-5-21-hook".to_string(),
         user_name: "hook_user".to_string(),
