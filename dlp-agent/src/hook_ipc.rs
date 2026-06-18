@@ -332,8 +332,8 @@ fn handle_connection(
                                 cache_version: 0,
                             }),
                         });
-                        let ack_bytes = bincode::serialize(&ack)
-                            .context("serialize BypassAlert ack")?;
+                        let ack_bytes =
+                            bincode::serialize(&ack).context("serialize BypassAlert ack")?;
                         if let Err(e) = write_frame(pipe, &ack_bytes) {
                             warn!(error = %e, "Hook IPC: write BypassAlert ack failed — disconnecting");
                             break;
@@ -344,7 +344,7 @@ fn handle_connection(
                         // clients using request-style sends do not deadlock.
                         let resp = IpcEnvelope::V1(IpcMessageV1 {
                             payload: IpcPayloadV1::VolumeClassResponse(
-                                dlp_common::hook_ipc::VolumeClassResponse { class: None }
+                                dlp_common::hook_ipc::VolumeClassResponse { class: None },
                             ),
                         });
                         let resp_bytes = bincode::serialize(&resp)
@@ -1008,7 +1008,8 @@ mod tests {
     #[test]
     fn test_handle_connection_routes_bypass_alert() {
         // Compile-time signature check + runtime data-flow test for BypassAlert routing.
-        let (bypass_tx, bypass_rx) = crossbeam_channel::bounded::<dlp_common::hook_ipc::BypassAlert>(1);
+        let (bypass_tx, bypass_rx) =
+            crossbeam_channel::bounded::<dlp_common::hook_ipc::BypassAlert>(1);
 
         let handler: HookHandler = Arc::new(|req: HookRequest| HookResponse {
             decision: Decision::ALLOW,
@@ -1053,8 +1054,11 @@ mod tests {
         }
 
         // Verify the bypass channel can carry the alert (data-flow check).
-        bypass_tx.send(alert.clone()).expect("send to bypass channel");
-        let received = bypass_rx.recv_timeout(std::time::Duration::from_secs(5))
+        bypass_tx
+            .send(alert.clone())
+            .expect("send to bypass channel");
+        let received = bypass_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
             .expect("receive from bypass channel");
         assert_eq!(received.pid, alert.pid);
         assert_eq!(received.stub_name, alert.stub_name);
