@@ -119,16 +119,18 @@ pub struct HookRequest {
     /// The operation type (read vs write) for tier-gated fast-path decisions.
     #[serde(default)]
     pub op: HookOp,
-    /// Volume class of the source path (if resolved).
+    /// Volume class of the source path (if any).
     ///
-    /// Used by the ABAC engine to apply volume-class-specific policies.
-    /// `None` when the volume class is unknown or not applicable.
+    /// Populated by the hook DLL after path resolution. `None` when the volume
+    /// class cannot be determined — volume-class conditions evaluate to `false`
+    /// (fail-closed).
     #[serde(default)]
     pub source_volume_class: Option<VolumeClass>,
-    /// Volume class of the destination path (if resolved).
+    /// Volume class of the destination path (if any).
     ///
-    /// Used by copy/move trampolines that resolve both source and destination
-    /// volume classes. `None` for single-path operations or when unknown.
+    /// Populated by the hook DLL after path resolution. `None` when the volume
+    /// class cannot be determined — volume-class conditions evaluate to `false`
+    /// (fail-closed).
     #[serde(default)]
     pub destination_volume_class: Option<VolumeClass>,
 }
@@ -389,6 +391,43 @@ mod tests {
         let bytes = bincode::serialize(&req).unwrap();
         let round_trip: HookRequest = bincode::deserialize(&bytes).unwrap();
         assert_eq!(req, round_trip);
+    }
+
+    // --- Phase 56.1: Volume class fields on HookRequest ---
+
+    #[test]
+    fn test_hook_request_volume_class_roundtrip() {
+        let req = HookRequest {
+            path: r"C:\test.txt".to_string(),
+            action: "WRITE".to_string(),
+            cache_version: 0,
+            protocol_version: 1,
+            op: HookOp::Write,
+            source_volume_class: Some(VolumeClass::USBRemovable),
+            destination_volume_class: Some(VolumeClass::Optical),
+        };
+        let bytes = bincode::serialize(&req).unwrap();
+        let round_trip: HookRequest = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(
+            round_trip.source_volume_class,
+            Some(VolumeClass::USBRemovable)
+        );
+        assert_eq!(
+            round_trip.destination_volume_class,
+            Some(VolumeClass::Optical)
+        );
+    }
+
+    #[test]
+    fn test_old_request_deserializes_with_volume_class_defaults() {
+        // Simulate an old HookRequest serialized as JSON without volume class fields.
+        // serde(default) ensures new fields default to None.
+        let old_json = r#"{"path":"C:\\old.txt","action":"READ"}"#;
+        let deserialized: HookRequest = serde_json::from_str(old_json).unwrap();
+        assert_eq!(deserialized.path, r"C:\old.txt");
+        assert_eq!(deserialized.action, "READ");
+        assert!(deserialized.source_volume_class.is_none());
+        assert!(deserialized.destination_volume_class.is_none());
     }
 
     #[test]
