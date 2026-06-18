@@ -397,7 +397,7 @@ impl ClassificationCache {
     ///
     /// The caller must ensure the header is not being modified concurrently.
     /// In practice, DLL readers only access after an Acquire load of version_word.
-    unsafe fn header(&self) -> &CacheHeader {
+    pub(crate) unsafe fn header(&self) -> &CacheHeader {
         &*(self.mapping as *const CacheHeader)
     }
 

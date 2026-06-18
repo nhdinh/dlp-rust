@@ -64,12 +64,11 @@ pub trait CacheAccessor: Send + Sync + 'static {
 
 impl CacheAccessor for crate::classification_cache::ClassificationCache {
     fn current_version(&self) -> u64 {
-        // SAFETY: The ClassificationCache stores a version_word in its header.
-        // We access it through the public rebuild method's internal logic pattern.
-        // The version is stored as an atomic u64; we load it with Acquire ordering.
+        // SAFETY: ClassificationCache has a safe header() method that returns
+        // a reference to the CacheHeader. The version_word is an AtomicU64
+        // stored at a fixed offset in the shared-memory mapping.
         use std::sync::atomic::Ordering;
-        let header =
-            unsafe { &*(self as *const _ as *const crate::classification_cache::CacheHeader) };
+        let header = unsafe { self.header() };
         let word = header.version_word.load(Ordering::Acquire);
         word >> 1
     }
