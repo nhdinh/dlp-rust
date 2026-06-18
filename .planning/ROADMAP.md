@@ -148,9 +148,11 @@ Plans:
 **Goal:** [Urgent work - to be planned]
 **Requirements**: TBD
 **Depends on:** Phase 50
-**Plans:** 0 plans
+**Plans:** 1/1 plans complete
 
 Plans:
+
+- [x] 50.1-01-PLAN.md
 
 - [ ] TBD (run `/gsd-plan-phase 50.1` to break down)
 
@@ -577,7 +579,7 @@ Plans:
 | 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-16 |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 5/5 | Complete    | 2026-05-19 |
 | 50. Shared-Memory Classification Cache + Fail-Mode State Machine | 6/6 | Complete    | 2026-05-20 |
-| 50.1 | Close gap FAIL-01/02/03 — verify ISOLATED->RESYNC->HEALTHY recovery at runtime (INSERTED) | 0/0 | Not started | - |
+| 50.1 | Close gap FAIL-01/02/03 — verify ISOLATED->RESYNC->HEALTHY recovery at runtime (INSERTED) | 1/1 | Complete   | 2026-06-18 |
 | 51. ntdll Syscall-Stub Trampolines + EDR Coexistence | 6/6 | Complete    | 2026-05-22 |
 | 52. DACL Tripwire + Repair Watcher + Protected Paths + DPAPI Recovery Doc | 7/7 | Complete    | 2026-05-27 |
 | 53. ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring | 6/6 | Complete    | 2026-05-28 |
