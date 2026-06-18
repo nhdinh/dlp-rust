@@ -660,7 +660,7 @@ pub fn build_bypass_alert_envelope(
         stub_name: stub_name.to_string(),
         pid,
         timestamp_secs,
-        version: 1,
+        version: 2, // Phase 53 alert with ETW correlation fields
         agent_id: String::new(),
         image_path: String::new(),
         image_sha256: None,
