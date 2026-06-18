@@ -548,14 +548,18 @@ fn test_hook_ipc_volume_class_matches_deny() {
     dlp_agent::hook_ipc::close_pipe(client);
 }
 
-/// Volume class mismatch -> ALLOW (policy doesn't match).
+/// Volume class mismatch -> ALLOW via mock handler fallback (not real policy pipeline).
 ///
-/// Same setup but destination_volume_class=LocalNTFS. The policy requires
-/// Optical, so it doesn't match. T1 classification would ALLOW, but our
-/// test path "C:\test\secret.doc" gets T4 from PolicyMapper. So we expect
-/// default-deny for T4. To prove ALLOW, we need a T1 path.
+/// This test uses a mock handler that directly evaluates against a PolicyStore.
+/// The path `C:\public\readme.txt` gets T1 classification from PolicyMapper
+/// (no sensitive prefix match), so the mock handler returns ALLOW when the
+/// policy doesn't match. This tests the mock handler's fallback behavior, NOT
+/// the real agent's policy evaluation pipeline.
+///
+/// NOTE: The real agent's `handle_hook_request` uses `hook_request_to_evaluate_request`
+/// which creates a synthetic SID and may behave differently for identity-based policies.
 #[test]
-fn test_hook_ipc_volume_class_mismatch_allow() {
+fn test_hook_ipc_volume_class_mismatch_allow_mock_fallback() {
     let store = store_with_optical_deny_policy();
 
     let handler = {
