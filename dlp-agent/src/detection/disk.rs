@@ -1539,7 +1539,7 @@ mod tests {
         // a no-op after the first call. We must use get_disk_enumerator() to obtain
         // the actual installed instance and reset its fields directly (same approach
         // as Plan 02 disk_enforcer.rs tests).
-        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        set_disk_enumerator(Arc::new(DiskEnumerator::new()));
         let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
         // Reset state via direct map access.
         enumerator.drive_letter_map.write().clear();
@@ -1574,7 +1574,7 @@ mod tests {
             machine_name: None,
         };
 
-        on_disk_arrival_inner(r"\\?\USBSTOR#Disk#1", &[new_disk.clone()], &ctx);
+        on_disk_arrival_inner(r"\\?\USBSTOR#Disk#1", std::slice::from_ref(&new_disk), &ctx);
 
         // drive_letter_map updated.
         let dlm = enumerator.drive_letter_map.read();
@@ -1594,7 +1594,7 @@ mod tests {
     #[test]
     fn test_on_disk_arrival_inner_skips_already_tracked() {
         let _guard = DISK_TEST_LOCK.lock();
-        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        set_disk_enumerator(Arc::new(DiskEnumerator::new()));
         let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
         enumerator.drive_letter_map.write().clear();
         enumerator.instance_id_map.write().clear();
@@ -1653,7 +1653,7 @@ mod tests {
     #[test]
     fn test_on_disk_removal_clears_drive_letter_map_only() {
         let _guard = DISK_TEST_LOCK.lock();
-        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        set_disk_enumerator(Arc::new(DiskEnumerator::new()));
         let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
         enumerator.drive_letter_map.write().clear();
         enumerator.instance_id_map.write().clear();
@@ -1733,7 +1733,7 @@ mod tests {
     #[test]
     fn test_on_disk_removal_unknown_id_is_noop() {
         let _guard = DISK_TEST_LOCK.lock();
-        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        set_disk_enumerator(Arc::new(DiskEnumerator::new()));
         let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
         enumerator.drive_letter_map.write().clear();
 
@@ -1792,7 +1792,7 @@ mod tests {
     #[test]
     fn test_on_disk_arrival_skips_unregistered_disk() {
         let _guard = DISK_TEST_LOCK.lock();
-        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        set_disk_enumerator(Arc::new(DiskEnumerator::new()));
         let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
         enumerator.drive_letter_map.write().clear();
         enumerator.instance_id_map.write().clear();
@@ -1932,7 +1932,7 @@ mod tests {
     #[test]
     fn test_grace_period_zero_immediate_block() {
         let _guard = DISK_TEST_LOCK.lock();
-        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        set_disk_enumerator(Arc::new(DiskEnumerator::new()));
         let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
         enumerator.drive_letter_map.write().clear();
         enumerator.instance_id_map.write().clear();
@@ -1976,7 +1976,7 @@ mod tests {
     #[test]
     fn test_grace_period_inserts_to_drive_letter_map() {
         let _guard = DISK_TEST_LOCK.lock();
-        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        set_disk_enumerator(Arc::new(DiskEnumerator::new()));
         let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
         enumerator.drive_letter_map.write().clear();
         enumerator.instance_id_map.write().clear();
@@ -2004,7 +2004,11 @@ mod tests {
             machine_name: None,
         };
 
-        on_disk_arrival_inner(r"\\?\UNREG#Disk#45-GRACE", &[unregistered.clone()], &ctx);
+        on_disk_arrival_inner(
+            r"\\?\UNREG#Disk#45-GRACE",
+            std::slice::from_ref(&unregistered),
+            &ctx,
+        );
 
         // drive_letter_map MUST contain the disk (accessible during grace).
         let dlm = enumerator.drive_letter_map.read();
@@ -2036,7 +2040,7 @@ mod tests {
     #[test]
     fn test_grace_period_removed_on_disk_removal() {
         let _guard = DISK_TEST_LOCK.lock();
-        let _ = set_disk_enumerator(Arc::new(DiskEnumerator::new()));
+        set_disk_enumerator(Arc::new(DiskEnumerator::new()));
         let enumerator = get_disk_enumerator().expect("DiskEnumerator must be installed");
         enumerator.drive_letter_map.write().clear();
         enumerator.instance_id_map.write().clear();

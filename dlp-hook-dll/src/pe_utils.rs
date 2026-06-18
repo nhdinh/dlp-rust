@@ -282,7 +282,7 @@ mod tests {
             ) as *mut u8;
             assert!(!pe_ptr.is_null(), "VirtualAlloc failed");
             assert!(
-                (pe_ptr as usize) % 8 == 0,
+                (pe_ptr as usize).is_multiple_of(8),
                 "VirtualAlloc returned unaligned address: {:p}",
                 pe_ptr
             );
@@ -292,6 +292,7 @@ mod tests {
             std::ptr::copy_nonoverlapping(e_lfanew.to_le_bytes().as_ptr(), pe_ptr.add(0x3C), 4);
 
             // PE signature at 0x40
+            #[allow(clippy::manual_c_str_literals)]
             std::ptr::copy_nonoverlapping(b"PE\0\0".as_ptr(), pe_ptr.add(0x40), 4);
 
             // FileHeader at 0x44 (20 bytes).

@@ -1098,8 +1098,10 @@ mod tests {
 
     #[test]
     fn test_severity_reduced_mode_caps_crit_to_warn() {
-        let mut config = CorrelatorConfig::default();
-        config.reduced_mode = true;
+        let config = CorrelatorConfig {
+            reduced_mode: true,
+            ..Default::default()
+        };
         let correlator =
             BypassCorrelator::new(config).with_protected_paths(vec![r"C:\Data".to_string()]);
         let sev =
@@ -1109,8 +1111,10 @@ mod tests {
 
     #[test]
     fn test_severity_reduced_mode_preserves_warn() {
-        let mut config = CorrelatorConfig::default();
-        config.reduced_mode = true;
+        let config = CorrelatorConfig {
+            reduced_mode: true,
+            ..Default::default()
+        };
         let correlator = BypassCorrelator::new(config);
         let sev = correlator.severity_for_alert(BypassReason::OpMismatch, r"C:\Data\file.txt");
         assert_eq!(sev, "warn");
@@ -1392,11 +1396,7 @@ mod tests {
         let event_qpc = 1_000_000u64;
         let entry_qpc = 1_000_005u64; // 5 ticks difference
         let tolerance = 10u64;
-        let diff = if entry_qpc > event_qpc {
-            entry_qpc - event_qpc
-        } else {
-            event_qpc - entry_qpc
-        };
+        let diff = entry_qpc.abs_diff(event_qpc);
         assert!(diff <= tolerance);
     }
 
@@ -1405,11 +1405,7 @@ mod tests {
         let event_qpc = 1_000_000u64;
         let entry_qpc = 1_000_100u64; // 100 ticks difference
         let tolerance = 10u64;
-        let diff = if entry_qpc > event_qpc {
-            entry_qpc - event_qpc
-        } else {
-            event_qpc - entry_qpc
-        };
+        let diff = entry_qpc.abs_diff(event_qpc);
         assert!(diff > tolerance);
     }
 
@@ -1580,8 +1576,10 @@ mod tests {
 
     #[test]
     fn test_batch_retry_exceeded_drops_alert() {
-        let mut config = CorrelatorConfig::default();
-        config.max_alert_retry = 3;
+        let config = CorrelatorConfig {
+            max_alert_retry: 3,
+            ..Default::default()
+        };
         let _correlator = BypassCorrelator::new(config);
 
         let alert = BypassAlert {

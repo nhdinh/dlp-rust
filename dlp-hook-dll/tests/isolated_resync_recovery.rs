@@ -28,13 +28,15 @@
 use std::sync::{Arc, Mutex};
 
 use dlp_agent::classification_cache::ClassificationCache;
+use dlp_common::hook_ipc::HookOp;
 use dlp_common::Classification;
-use dlp_hook_dll::{start_background_thread, shutdown_background_thread, reset_background_thread_for_test};
-use dlp_hook_dll::CacheLookup;
-use dlp_hook_dll::{FailModeState, FailState, decide_isolated, is_cache_stale};
 use dlp_hook_dll::lru;
 use dlp_hook_dll::CacheHeader;
-use dlp_common::hook_ipc::HookOp;
+use dlp_hook_dll::CacheLookup;
+use dlp_hook_dll::{decide_isolated, is_cache_stale, FailModeState, FailState};
+use dlp_hook_dll::{
+    reset_background_thread_for_test, shutdown_background_thread, start_background_thread,
+};
 
 /// Test-specific shared-memory mapping name.
 /// Uses Local\ prefix (not Global\) to avoid requiring administrator privileges.
@@ -49,10 +51,15 @@ static TEST_SERIALIZER: Mutex<()> = Mutex::new(());
 /// The cache instance must be kept alive for the test lifetime.
 fn create_test_cache(
     entries: Vec<(String, Classification, u32)>,
-) -> (ClassificationCache, *const CacheHeader, windows::Win32::Foundation::HANDLE) {
-    let cache = ClassificationCache::new_with_name(TEST_CACHE_NAME)
-        .expect("failed to create test cache");
-    cache.rebuild(entries)
+) -> (
+    ClassificationCache,
+    *const CacheHeader,
+    windows::Win32::Foundation::HANDLE,
+) {
+    let cache =
+        ClassificationCache::new_with_name(TEST_CACHE_NAME).expect("failed to create test cache");
+    cache
+        .rebuild(entries)
         .expect("failed to rebuild test cache");
 
     let header_ptr = cache.header_for_test() as *const CacheHeader;
@@ -78,9 +85,7 @@ fn isolated_to_resync_via_background_thread() {
     let _guard = TEST_SERIALIZER.lock().unwrap();
 
     // Arrange: Create cache with a T4 path. Drive state to ISOLATED.
-    let entries = vec![
-        (r"C:\Sensitive\".to_string(), Classification::T4, 3600),
-    ];
+    let entries = vec![(r"C:\Sensitive\".to_string(), Classification::T4, 3600)];
     let (cache, header_ptr, handle) = create_test_cache(entries);
     let fail_state = Arc::new(FailModeState::new());
 
@@ -107,8 +112,7 @@ fn isolated_to_resync_via_background_thread() {
         (r"C:\Sensitive\".to_string(), Classification::T4, 3600),
         (r"C:\Other\".to_string(), Classification::T3, 3600),
     ];
-    let new_version = cache.rebuild(entries2)
-        .expect("rebuild failed");
+    let new_version = cache.rebuild(entries2).expect("rebuild failed");
     assert!(new_version > 0, "new version should be > 0");
 
     // Assert: Poll state with 2000ms timeout.
@@ -161,7 +165,11 @@ fn resync_to_healthy_hysteresis() {
     for i in 0..4 {
         let state = fail_state.record_pipe_success(2);
         if i < 3 {
-            assert_eq!(state, FailState::Resync, "should stay RESYNC at success {i}");
+            assert_eq!(
+                state,
+                FailState::Resync,
+                "should stay RESYNC at success {i}"
+            );
         }
     }
     assert_eq!(
@@ -182,9 +190,7 @@ fn full_cycle_end_to_end() {
 
     let _guard = TEST_SERIALIZER.lock().unwrap();
 
-    let entries = vec![
-        (r"C:\Sensitive\".to_string(), Classification::T4, 3600),
-    ];
+    let entries = vec![(r"C:\Sensitive\".to_string(), Classification::T4, 3600)];
     let (cache, header_ptr, handle) = create_test_cache(entries);
     let fail_state = Arc::new(FailModeState::new());
 
@@ -210,9 +216,7 @@ fn full_cycle_end_to_end() {
     start_background_thread(header_ptr, Arc::clone(&fail_state), None);
 
     // Rebuild -> RESYNC.
-    let entries2 = vec![
-        (r"C:\Sensitive\".to_string(), Classification::T4, 3600),
-    ];
+    let entries2 = vec![(r"C:\Sensitive\".to_string(), Classification::T4, 3600)];
     cache.rebuild(entries2).expect("rebuild failed");
 
     let start = std::time::Instant::now();
@@ -254,9 +258,7 @@ fn cross_crate_checksum_validation() {
 
     let _guard = TEST_SERIALIZER.lock().unwrap();
 
-    let entries = vec![
-        (r"C:\Sensitive\".to_string(), Classification::T4, 3600),
-    ];
+    let entries = vec![(r"C:\Sensitive\".to_string(), Classification::T4, 3600)];
     let (cache, header_ptr, handle) = create_test_cache(entries);
 
     // Create CacheLookup with validate=true.
@@ -284,9 +286,11 @@ fn in_flight_decision_uses_old_cache() {
 
     let _guard = TEST_SERIALIZER.lock().unwrap();
 
-    let entries = vec![
-        (r"C:\Sensitive\file.txt".to_string(), Classification::T4, 3600),
-    ];
+    let entries = vec![(
+        r"C:\Sensitive\file.txt".to_string(),
+        Classification::T4,
+        3600,
+    )];
     let (cache, _header_ptr, _handle) = create_test_cache(entries);
 
     // Populate LRU with version 1 entry.
@@ -336,9 +340,7 @@ fn odd_version_during_rebuild_ignored() {
 
     let _guard = TEST_SERIALIZER.lock().unwrap();
 
-    let entries = vec![
-        (r"C:\Sensitive\".to_string(), Classification::T4, 3600),
-    ];
+    let entries = vec![(r"C:\Sensitive\".to_string(), Classification::T4, 3600)];
     let (cache, header_ptr, handle) = create_test_cache(entries);
     let fail_state = Arc::new(FailModeState::new());
 
@@ -360,7 +362,9 @@ fn odd_version_during_rebuild_ignored() {
     // Set version_word to odd (simulating writer in progress).
     use std::sync::atomic::Ordering;
     unsafe {
-        (*header_ptr).version_word.store((3u64 << 1) | 1, Ordering::Release);
+        (*header_ptr)
+            .version_word
+            .store((3u64 << 1) | 1, Ordering::Release);
     }
 
     // Wait 200ms — state should still be ISOLATED (background thread skips odd).
@@ -372,9 +376,7 @@ fn odd_version_during_rebuild_ignored() {
     );
 
     // Now publish a valid even version and verify recovery works.
-    let entries2 = vec![
-        (r"C:\Sensitive\".to_string(), Classification::T4, 3600),
-    ];
+    let entries2 = vec![(r"C:\Sensitive\".to_string(), Classification::T4, 3600)];
     cache.rebuild(entries2).expect("rebuild failed");
 
     let start = std::time::Instant::now();
@@ -386,7 +388,10 @@ fn odd_version_during_rebuild_ignored() {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    assert!(became_resync, "should recover to RESYNC after even version published");
+    assert!(
+        became_resync,
+        "should recover to RESYNC after even version published"
+    );
 
     // Cleanup.
     shutdown_background_thread();

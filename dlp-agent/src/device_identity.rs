@@ -1175,6 +1175,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn test_transition_health_async_does_not_panic() {
         let _guard = HEALTH_TEST_LOCK.lock();
         HEALTH_STATUS.store(0, Ordering::SeqCst);

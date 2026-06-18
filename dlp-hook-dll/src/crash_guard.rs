@@ -330,7 +330,7 @@ mod tests {
     /// Compile-time verification: `seh_guard` works with `HANDLE` return type.
     #[test]
     fn seh_guard_compiles_handle() {
-        let result = unsafe { seh_guard(|| HANDLE(1 as *mut std::ffi::c_void)) };
+        let result = unsafe { seh_guard(|| HANDLE(std::ptr::dangling_mut::<std::ffi::c_void>())) };
         assert!(result.is_ok());
     }
 

@@ -659,7 +659,7 @@ mod tests {
     #[test]
     fn test_ppl_outcome_variants() {
         // Verify all four PplOutcome variants exist and are distinct.
-        let outcomes = vec![
+        let outcomes = [
             PplOutcome::Protected,
             PplOutcome::LikelyProtectedAccessDenied,
             PplOutcome::QueryFailed,

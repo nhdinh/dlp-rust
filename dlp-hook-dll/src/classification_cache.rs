@@ -270,7 +270,9 @@ impl CacheLookup {
             }
             let version_word = (*header).version_word.load(Ordering::Acquire);
             let version = version_word >> 1;
-            lookup.last_validated_version.store(version, Ordering::Relaxed);
+            lookup
+                .last_validated_version
+                .store(version, Ordering::Relaxed);
         }
 
         Some(lookup)

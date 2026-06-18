@@ -1460,11 +1460,9 @@ mod tests {
     fn load_from_str(content: &str) -> AgentConfig {
         let mut unknown_keys: Vec<String> = Vec::new();
         let deserializer = toml::de::Deserializer::new(content);
-        match serde_ignored::deserialize::<_, _, AgentConfig>(deserializer, |path| {
+        serde_ignored::deserialize::<_, _, AgentConfig>(deserializer, |path| {
             unknown_keys.push(path.to_string());
-        }) {
-            Ok(config) => config,
-            Err(_) => AgentConfig::default(),
-        }
+        })
+        .unwrap_or_default()
     }
 }

@@ -323,10 +323,7 @@ impl ClassificationCache {
             bInheritHandle: false.into(),
         };
 
-        let name_wide: Vec<u16> = name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let name_wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
 
         let handle = unsafe {
             CreateFileMappingW(
@@ -986,7 +983,7 @@ mod tests {
     /// Simulate a corrupted header by writing bad magic directly into a buffer.
     #[test]
     fn bad_magic_rejected() {
-        let mut buf = vec![0u8; 128];
+        let mut buf = [0u8; 128];
         // Write a bad magic at the correct offset.
         let magic_offset = std::mem::offset_of!(CacheHeader, magic);
         let bad_magic: u64 = 0xDEAD_BEEF;
@@ -1073,7 +1070,7 @@ mod tests {
     #[test]
     fn truncated_mapping_rejected() {
         // A mapping smaller than the header size is invalid.
-        assert!(128 > 64, "header size 128 should exceed a 64-byte mapping");
+        const { assert!(std::mem::size_of::<CacheHeader>() > 64) };
     }
 
     #[test]
@@ -1103,7 +1100,7 @@ mod tests {
         assert!(odd_version & 1 == 1, "simulated partial write must be odd");
 
         // Recovery: next rebuild starts from version=5, writes version=6.
-        let recovered_version = (6u64 << 1) | 0; // version=6, buffer=0, even
+        let recovered_version = 6u64 << 1; // version=6, buffer=0, even
         assert!(recovered_version & 1 == 0, "recovered version must be even");
         assert!(
             recovered_version >> 1 > odd_version >> 1,
@@ -1203,7 +1200,7 @@ mod tests {
     fn overflow_prioritizes_t4_over_t1() {
         // We can't test the full overflow behavior without a real mapping,
         // but we can test the sorting logic independently.
-        let mut entries = vec![
+        let mut entries = [
             ("a.txt".to_string(), Classification::T1, 60),
             ("b.txt".to_string(), Classification::T4, 60),
             ("c.txt".to_string(), Classification::T2, 60),
@@ -1226,14 +1223,16 @@ mod tests {
     fn validate_bounds_accepts_in_range() {
         // We can't create a real ClassificationCache on non-Windows, but we can
         // test the constant.
-        assert!(128 + 64 <= CACHE_TOTAL_SIZE);
+        const { assert!(128 + 64 <= CACHE_TOTAL_SIZE) };
     }
 
     #[test]
     fn validate_bounds_rejects_out_of_range() {
-        assert!(
-            CACHE_TOTAL_SIZE + 1 > CACHE_TOTAL_SIZE,
-            "offset exceeding total_size should fail"
-        );
+        const {
+            assert!(
+                CACHE_TOTAL_SIZE + 1 > CACHE_TOTAL_SIZE,
+                "offset exceeding total_size should fail"
+            )
+        };
     }
 }

@@ -3882,10 +3882,12 @@ mod tests {
     /// Test 7: No-change path — cfg and payload USB values match.
     #[test]
     fn test_apply_payload_usb_fields_no_change() {
-        let mut cfg = AgentConfig::default();
-        cfg.usb_blocked_failure_mode = Some("Warning only".to_string());
-        cfg.usb_startup_resolution_mode = Some("VID/PID/serial fallback".to_string());
-        cfg.usb_none_serial_policy = Some("Always Blocked".to_string());
+        let mut cfg = AgentConfig {
+            usb_blocked_failure_mode: Some("Warning only".to_string()),
+            usb_startup_resolution_mode: Some("VID/PID/serial fallback".to_string()),
+            usb_none_serial_policy: Some("Always Blocked".to_string()),
+            ..Default::default()
+        };
         let payload = make_payload(vec![]);
 
         let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
@@ -3934,8 +3936,10 @@ mod tests {
     /// preserved.
     #[test]
     fn test_apply_payload_usb_fields_empty_guard() {
-        let mut cfg = AgentConfig::default();
-        cfg.usb_blocked_failure_mode = Some("Hard error".to_string());
+        let mut cfg = AgentConfig {
+            usb_blocked_failure_mode: Some("Hard error".to_string()),
+            ..Default::default()
+        };
         let mut payload = make_payload(vec![]);
         payload.usb_blocked_failure_mode = "".to_string();
 
@@ -3991,11 +3995,13 @@ mod tests {
     /// Test 11: No-change path — cfg and payload print values match.
     #[test]
     fn test_apply_payload_print_fields_no_change() {
-        let mut cfg = AgentConfig::default();
-        cfg.print_enabled = Some(true);
-        cfg.print_xps_timeout_ms = Some(3000);
-        cfg.print_unclassifiable_action = Some("Allow".to_string());
-        cfg.print_max_pages = Some(50);
+        let mut cfg = AgentConfig {
+            print_enabled: Some(true),
+            print_xps_timeout_ms: Some(3000),
+            print_unclassifiable_action: Some("Allow".to_string()),
+            print_max_pages: Some(50),
+            ..Default::default()
+        };
         let mut payload = make_payload(vec![]);
         payload.print_enabled = true;
         payload.print_xps_timeout_ms = 3000;
@@ -4056,8 +4062,10 @@ mod tests {
     /// cfg value preserved.
     #[test]
     fn test_apply_payload_print_unclassifiable_action_empty_guard() {
-        let mut cfg = AgentConfig::default();
-        cfg.print_unclassifiable_action = Some("Allow".to_string());
+        let mut cfg = AgentConfig {
+            print_unclassifiable_action: Some("Allow".to_string()),
+            ..Default::default()
+        };
         let mut payload = make_payload(vec![]);
         payload.print_unclassifiable_action = "".to_string();
 

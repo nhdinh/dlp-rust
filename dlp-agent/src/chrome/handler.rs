@@ -52,14 +52,17 @@ static POLICY_EVALUATOR: std::sync::OnceLock<
     fn(&dlp_common::abac::EvaluateRequest) -> dlp_common::abac::EvaluateResponse,
 > = std::sync::OnceLock::new();
 
+// Test-only evaluator signature alias (kept at module scope so the thread-local can use it).
+#[allow(dead_code)]
+type EvaluatorFn = fn(&dlp_common::abac::EvaluateRequest) -> dlp_common::abac::EvaluateResponse;
+
 #[cfg(test)]
 // Test-only thread-local override for the policy evaluator.
 // When set (non-None), this takes precedence over `POLICY_EVALUATOR`.
 // Thread-local storage eliminates race conditions between parallel tests.
 thread_local! {
-    static TEST_EVALUATOR_OVERRIDE: std::cell::RefCell<
-        Option<fn(&dlp_common::abac::EvaluateRequest) -> dlp_common::abac::EvaluateResponse>,
-    > = std::cell::RefCell::new(None);
+    static TEST_EVALUATOR_OVERRIDE: std::cell::RefCell<Option<EvaluatorFn>> =
+        std::cell::RefCell::new(None);
 }
 
 /// Sets the global origins cache before the pipe server starts.

@@ -866,7 +866,12 @@ mod tests {
         enrich_audit_with_app_identity(&mut event, std::process::id());
         assert!(event.source_application.is_some());
         // Current process should have a valid path
-        assert!(event.source_application.as_ref().unwrap().image_path.len() > 0);
+        assert!(!event
+            .source_application
+            .as_ref()
+            .unwrap()
+            .image_path
+            .is_empty());
     }
 
     #[test]
