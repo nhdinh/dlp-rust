@@ -152,6 +152,9 @@ pub fn send_raw_request(
 /// Returns `PipeError::ConnectionRefused` if the pipe does not exist.
 /// Returns `PipeError::Win32(u32)` for unexpected Win32 errors.
 pub fn send_raw_oneway(pipe_name: &str, payload: &[u8]) -> Result<(), PipeError> {
+    // 50ms is a best-effort budget to avoid blocking the hooked thread.
+    // The hook DLL runs in the hot path of file operations; alerts are
+    // fire-and-send (no response wait), so a short timeout is acceptable.
     const CONNECT_TIMEOUT_MS: u32 = 50;
     let pipe = connect_pipe(pipe_name, CONNECT_TIMEOUT_MS)?;
 
