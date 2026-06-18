@@ -762,7 +762,7 @@ mod tests {
                     assert_eq!(alert.reason, BypassReason::HookOverwritten);
                     assert_eq!(alert.stub_name, "NtCreateFile");
                     assert_eq!(alert.pid, pid);
-                    assert_eq!(alert.version, 1);
+                    assert_eq!(alert.version, 2);
                     assert_eq!(alert.timestamp_secs, now);
                 }
                 _ => panic!("expected BypassAlert payload"),
