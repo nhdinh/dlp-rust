@@ -34,84 +34,15 @@ use dlp_common::hook_ipc::HookOp;
 use dlp_common::path_hash::normalize_path;
 use dlp_common::Classification;
 
+// Re-export the shared ABI types so that other modules in this crate and
+// lib.rs can use them without importing from dlp_common directly.
+pub use dlp_common::classification_cache::{CacheHeader, HashEntry, PrefixEntry};
+
 // ---------------------------------------------------------------------------
 // Shared-memory ABI structs
 // ---------------------------------------------------------------------------
-// These MUST match `dlp-agent/src/classification_cache.rs` byte-for-byte.
-// All fields use fixed-size types (u64, not usize) for 32/64-bit compatibility.
-
-/// Shared-memory cache header — 128 bytes, 8-byte aligned.
-///
-/// All offset and size fields use `u64` (not `usize`) for 32/64-bit
-/// compatibility. The layout is little-endian only (x86/x64 Windows).
-#[repr(C, align(8))]
-pub struct CacheHeader {
-    /// Atomic version word: [63:1] = version, [0] = active buffer.
-    /// Odd while writing; even when stable.
-    pub version_word: AtomicU64,
-    /// Magic number — must equal `CACHE_MAGIC`.
-    pub magic: u64,
-    /// Layout version — must equal `CACHE_LAYOUT_VERSION`.
-    pub layout_version: u32,
-    /// Size of this header in bytes (128).
-    pub header_size: u32,
-    /// Total size of the shared-memory mapping.
-    pub total_size: u64,
-    /// Offset to the root-prefix table from start of mapping.
-    pub prefix_table_offset: u64,
-    /// Number of prefix entries in the prefix table.
-    pub prefix_count: u64,
-    /// Offset to hash table (buffer 0).
-    pub hash_table_offset_0: u64,
-    /// Offset to hash table (buffer 1).
-    pub hash_table_offset_1: u64,
-    /// Number of hash slots per buffer.
-    pub hash_slots: u64,
-    /// Wall-clock seconds (Unix epoch) when this buffer was built.
-    pub created_at_epoch_secs: u64,
-    /// Simple XOR checksum of all header fields (excluding version_word and
-    /// checksum itself).
-    pub checksum: u64,
-    /// Offset to operator-extended allowlist entries from start of mapping.
-    pub allowlist_offset: u64,
-    /// Number of allowlist entries.
-    pub allowlist_count: u64,
-    /// Reserved for forward compatibility — zeroed on init, never read by DLL.
-    pub _reserved: [u8; 24],
-}
-
-/// Root-prefix entry for directory-level classification.
-///
-/// Prefixes are sorted by `prefix_len` descending (longest first) so that
-/// longest-prefix matching works with a simple linear scan.
-#[repr(C)]
-pub struct PrefixEntry {
-    /// Length of the prefix in bytes.
-    pub prefix_len: u16,
-    /// UTF-8 path prefix (MAX_PATH = 260 bytes).
-    pub prefix: [u8; 260],
-    /// Classification tier (1–4, matching `Classification`).
-    pub tier: u8,
-    /// TTL in seconds.
-    pub ttl_secs: u16,
-    /// Padding to align to 272 bytes.
-    pub _pad: [u8; 6],
-}
-
-/// Per-file hash entry using FNV-1a 64-bit.
-#[repr(C)]
-pub struct HashEntry {
-    /// FNV-1a 64-bit hash of the path.
-    pub hash: u64,
-    /// Classification tier (1–4).
-    pub tier: u8,
-    /// Padding to align ttl_secs to 2 bytes.
-    pub _pad1: u8,
-    /// TTL in seconds.
-    pub ttl_secs: u16,
-    /// Padding to align to 16 bytes total.
-    pub _pad2: [u8; 4],
-}
+// These are now defined in dlp_common::classification_cache for single-source-
+// of-truth.  Both crates (dlp-agent and dlp-hook-dll) import the same types.
 
 /// Magic number: "DLP" + version 1 (0x4454_5001).
 const CACHE_MAGIC: u64 = 0x4454_5001;

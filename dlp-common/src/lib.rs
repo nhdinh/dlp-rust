@@ -9,6 +9,7 @@ pub mod ad_client;
 pub mod approval;
 pub mod audit;
 pub mod classification;
+pub mod classification_cache;
 pub mod classifier;
 pub mod crypto;
 pub mod disk;
@@ -27,6 +28,7 @@ pub use ad_client::{
 pub use approval::*;
 pub use audit::*;
 pub use classification::*;
+pub use classification_cache::{CacheHeader, HashEntry, PrefixEntry};
 pub use classifier::classify_text;
 pub use disk::{
     enumerate_fixed_disks, get_boot_drive_letter, is_usb_bridged, BusType, DiskError, DiskIdentity,
