@@ -1,7 +1,7 @@
 ---
 name: DLP-RUST
 version: v0.11.0-shipped
-last_updated: 2026-05-22
+last_updated: 2026-06-18
 status: in_progress
 shipped: v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0, v0.7.1, v0.8.0, v0.8.1, v0.9.0, v0.11.0
 active_milestone: v0.10.0
@@ -151,6 +151,7 @@ If NTFS ALLOW and ABAC DENY → FINAL RESULT = DENY. ABAC always tightens, never
 - ✓ **Deferred items & issue debt** (v0.8.1) — PnP USB enforcement, mount-time disk blocking, configurable grace period, full SanDisk UAT
 - ✓ **Cloud & print exfiltration prevention** (v0.9.0) — user-mode IAT hook + WFP for cloud sync, FindFirstPrinterChangeNotification + XPS extraction for print, share link detection, admin CLI Cloud/Print screens
 - ✓ **Secrets Encryption at Rest** (v0.10.0 Phase 47, shipped 2026-05-11 as HARD-01) — PBKDF2 + DPAPI machine-bound KEK for SMTP, SIEM, JWT, LDAP bind credentials; cleartext columns dropped; KEK rotation via admin CLI; full migration + log-scan + rotation integration tests
+- ✓ **SD / Optical / Virtual Drive Enumeration + Volume-Class ABAC** (v0.10.0 Phases 56–56.1, completed 2026-06-18) — device enumeration with `source_volume_class` and `destination_volume_class` ABAC attributes; hook DLL populates volume class; agent hook IPC evaluates volume-class policies synchronously via `OfflineManager::offline_decision` (DRIVE-01..04)
 
 ### Active (v0.10.0 — Real-Time File Access Prevention)
 
@@ -162,7 +163,6 @@ REQ-IDs defined in `.planning/REQUIREMENTS.md`. High-level coverage:
 - [ ] **CACHE-** — local classification cache on hook DLL for fail-mode decisions
 - [ ] **FAIL-** — asymmetric fail semantics: fail-closed T3/T4, fail-open T1/T2 on agent-unreachable
 - [ ] **UX-** — admin CLI Protected Paths screen + Bypass Alerts screen
-- [ ] **DRIVE-** — SD / optical / virtual drive enumeration and policy UX (SEED-004 fold-in)
 - [ ] **OPS-** — deployment guide covering AV/EDR allowlist procedure for global DLL injection
 
 ### Active (Post-v0.10.0 — Pilot-First Path)
