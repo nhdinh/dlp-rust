@@ -360,14 +360,19 @@ Plans:
 
 ### Phase 56.1: Close gap DRIVE-03/04 — add volume class fields to HookRequest and ABAC path (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
+**Goal:** Carry volume class from hook DLL through IPC to ABAC evaluation so volume-class policies (e.g., "deny T4 copy to Optical") fire for hook-intercepted operations.
+**Requirements**: DRIVE-03, DRIVE-04
 **Depends on:** Phase 56
-**Plans:** 0 plans
+**Plans:** 3/3 plans planned
 
-Plans:
+**Wave 1** *(no dependencies)*
 
-- [ ] TBD (run `/gsd-plan-phase 56.1` to break down)
+- [ ] `56.1-01-PLAN.md` — Add source_volume_class and destination_volume_class to HookRequest (dlp-common) and EvaluateRequest (dlp-common/abac.rs), update From<EvaluateRequest> for AbacContext to forward fields, add backward-compat tests
+- [ ] `56.1-02-PLAN.md` — Hook DLL populate volume class fields in classify_path_with_volume_class instead of discarding, update classify_and_log_path to forward parameters, add tests
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] `56.1-03-PLAN.md` — Agent hook IPC handler: convert HookRequest to EvaluateRequest with real ABAC evaluation via OfflineManager, wire volume class fields through, add integration tests
 
 ### Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT
 
