@@ -353,17 +353,18 @@ fn classify_and_log_path(
 /// This is a wrapper around `crate::classify_path` that adds
 /// `source_volume_class` and `destination_volume_class` to the request.
 /// When both are `None`, the behavior is identical to `classify_path`.
-#[allow(unused_variables)]
 fn classify_path_with_volume_class(
     path: &str,
     action: &str,
     pipe_name: &str,
-    _source_volume_class: Option<dlp_common::VolumeClass>,
-    _destination_volume_class: Option<dlp_common::VolumeClass>,
+    source_volume_class: Option<dlp_common::VolumeClass>,
+    destination_volume_class: Option<dlp_common::VolumeClass>,
 ) -> Result<crate::Decision, crate::pipe_client::PipeError> {
     let req = dlp_common::HookRequest {
         path: path.to_string(),
         action: action.to_string(),
+        source_volume_class,
+        destination_volume_class,
         ..Default::default()
     };
     let resp = crate::pipe_client::send_request(pipe_name, &req, 50)?;
@@ -2408,6 +2409,29 @@ mod tests {
             u32,
             u32,
         ) -> NTSTATUS = NtdllTrampolineNtSetInformationFile;
+    }
+
+    #[test]
+    fn test_classify_path_with_volume_class_populates_fields() {
+        // Minimal unit test: verify HookRequest can be constructed with volume class fields.
+        // This proves the fields exist and are accessible from the hook DLL side.
+        // A more comprehensive integration test with actual pipe communication will be
+        // added in Plan 03.
+        let req = dlp_common::HookRequest {
+            path: "C:\\test.txt".to_string(),
+            action: "WRITE".to_string(),
+            source_volume_class: Some(dlp_common::VolumeClass::USBRemovable),
+            destination_volume_class: Some(dlp_common::VolumeClass::Optical),
+            ..Default::default()
+        };
+        assert_eq!(
+            req.source_volume_class,
+            Some(dlp_common::VolumeClass::USBRemovable)
+        );
+        assert_eq!(
+            req.destination_volume_class,
+            Some(dlp_common::VolumeClass::Optical)
+        );
     }
 
     #[test]

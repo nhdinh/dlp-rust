@@ -119,6 +119,18 @@ pub struct HookRequest {
     /// The operation type (read vs write) for tier-gated fast-path decisions.
     #[serde(default)]
     pub op: HookOp,
+    /// Volume class of the source path (if resolved).
+    ///
+    /// Used by the ABAC engine to apply volume-class-specific policies.
+    /// `None` when the volume class is unknown or not applicable.
+    #[serde(default)]
+    pub source_volume_class: Option<VolumeClass>,
+    /// Volume class of the destination path (if resolved).
+    ///
+    /// Used by copy/move trampolines that resolve both source and destination
+    /// volume classes. `None` for single-path operations or when unknown.
+    #[serde(default)]
+    pub destination_volume_class: Option<VolumeClass>,
 }
 
 fn default_protocol_version() -> u8 {
@@ -337,6 +349,8 @@ mod tests {
             cache_version: 42,
             protocol_version: 1,
             op: HookOp::Write,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
         let envelope = IpcEnvelope::V1(IpcMessageV1 {
             payload: IpcPayloadV1::Request(req),
@@ -369,6 +383,8 @@ mod tests {
             cache_version: 7,
             protocol_version: 1,
             op: HookOp::Write,
+            source_volume_class: Some(VolumeClass::USBRemovable),
+            destination_volume_class: Some(VolumeClass::Optical),
         };
         let bytes = bincode::serialize(&req).unwrap();
         let round_trip: HookRequest = bincode::deserialize(&bytes).unwrap();
@@ -552,7 +568,7 @@ mod tests {
         assert_eq!(alert.pid, 1234);
         assert_eq!(alert.timestamp_secs, 1_700_000_000);
         // New fields must have default values.
-        assert_eq!(alert.version, 0);
+        assert_eq!(alert.version, 1);
         assert_eq!(alert.agent_id, "");
         assert_eq!(alert.image_path, "");
         assert!(alert.image_sha256.is_none());
@@ -566,8 +582,8 @@ mod tests {
 
     #[test]
     fn test_bypass_alert_v1_deserializes_default_version() {
-        // Verify that a v1-serialized alert deserializes with version=0
-        // (the default for u32 via serde(default)).
+        // Verify that a v1-serialized alert deserializes with version=1
+        // (the default per default_alert_version() via serde(default = ...)).
         let v1_json = r#"{
             "reason": "EdrDetected",
             "stub_name": "NtCreateFile",
@@ -575,7 +591,7 @@ mod tests {
             "timestamp_secs": 1700000001
         }"#;
         let alert: BypassAlert = serde_json::from_str(v1_json).unwrap();
-        assert_eq!(alert.version, 0);
+        assert_eq!(alert.version, 1);
     }
 
     #[test]
