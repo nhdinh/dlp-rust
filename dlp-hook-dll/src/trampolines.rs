@@ -392,6 +392,17 @@ fn is_write_action(action: &str) -> bool {
 /// 3=Delete, 4=SetInfo). `path` is the file path for journal correlation
 /// (may be empty for pure handle-based ops where the path is resolved
 /// server-side).
+///
+/// # Known Limitation: Volume Class
+///
+/// Handle-based operations do not include volume class in the request.
+/// The `classify_handle` function sends a `HandleHookRequest` which does not
+/// have `source_volume_class` or `destination_volume_class` fields. Volume-class
+/// ABAC conditions will evaluate against `None` (fail-closed). To fix this,
+/// we would need to resolve the handle to a path (via `NtQueryObject` or
+/// `GetFinalPathNameByHandleW`) and then look up the volume class.
+/// TODO(WR-01): Resolve handle-to-path and include volume class in handle-based
+/// classification requests.
 fn classify_and_log_handle(
     handle_value: u64,
     action: &str,
