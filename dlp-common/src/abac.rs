@@ -1172,6 +1172,63 @@ mod tests {
         assert!(ctx.destination_volume_class.is_none());
     }
 
+    // --- Phase 56.1: Volume class fields on EvaluateRequest ---
+
+    #[test]
+    fn test_evaluate_request_volume_class_roundtrip() {
+        let req = EvaluateRequest {
+            subject: Subject {
+                user_sid: "S-1-5-21-999".to_string(),
+                user_name: "alice".to_string(),
+                ..Default::default()
+            },
+            action: Action::COPY,
+            source_volume_class: Some(VolumeClass::LocalNTFS),
+            destination_volume_class: Some(VolumeClass::NetworkShare),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let rt: EvaluateRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt.source_volume_class, Some(VolumeClass::LocalNTFS));
+        assert_eq!(rt.destination_volume_class, Some(VolumeClass::NetworkShare));
+    }
+
+    #[test]
+    fn test_from_evaluate_request_forwards_volume_class() {
+        let req = EvaluateRequest {
+            subject: Subject {
+                user_sid: "S-1-5-21-999".to_string(),
+                user_name: "alice".to_string(),
+                ..Default::default()
+            },
+            action: Action::COPY,
+            source_volume_class: Some(VolumeClass::LocalNTFS),
+            destination_volume_class: Some(VolumeClass::NetworkShare),
+            ..Default::default()
+        };
+        let ctx: AbacContext = req.into();
+        assert_eq!(ctx.source_volume_class, Some(VolumeClass::LocalNTFS));
+        assert_eq!(
+            ctx.destination_volume_class,
+            Some(VolumeClass::NetworkShare)
+        );
+    }
+
+    #[test]
+    fn test_old_evaluate_request_deserializes_with_volume_class_defaults() {
+        // Simulate an old EvaluateRequest serialized as JSON without volume class fields.
+        // serde(default) ensures new fields default to None.
+        let old_json = r#"{
+            "subject": {"user_sid":"S-1-5-21-999","user_name":"alice"},
+            "resource": {"path":"C:\\old.txt","classification":"T3"},
+            "environment": {},
+            "action": "COPY"
+        }"#;
+        let deserialized: EvaluateRequest = serde_json::from_str(old_json).unwrap();
+        assert!(deserialized.source_volume_class.is_none());
+        assert!(deserialized.destination_volume_class.is_none());
+    }
+
     #[test]
     fn test_app_field_serde_snake_case() {
         assert_eq!(
