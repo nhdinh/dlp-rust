@@ -472,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_clipboard_no_url_allows() {
+    fn test_dispatch_clipboard_no_url_fails_closed() {
         let request = ContentAnalysisRequest {
             request_token: Some("tok-2".to_string()),
             analysis_connector: Some(3),
@@ -490,7 +490,7 @@ mod tests {
         let response = dispatch_request(&request);
         assert_eq!(response.results.len(), 1);
         let rule = &response.results[0].triggered_rules[0];
-        assert_eq!(rule.action, Some(1)); // allow
+        assert_eq!(rule.action, Some(3)); // BLOCK = 3 (fail-closed)
     }
 
     // ------------------------------------------------------------------
@@ -583,9 +583,9 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn test_dispatch_abac_evaluator_not_set_allows() {
+    fn test_dispatch_abac_evaluator_not_set_denies() {
         // Ensure no evaluator override is active (Guard not created).
-        // This test verifies the fail-open behavior when neither
+        // This test verifies the fail-closed behavior when neither
         // POLICY_EVALUATOR nor TEST_EVALUATOR_OVERRIDE is set.
         let request = ContentAnalysisRequest {
             request_token: Some("tok-abac-no-eval".to_string()),
@@ -604,7 +604,7 @@ mod tests {
         let response = dispatch_request(&request);
         assert_eq!(response.results.len(), 1);
         let rule = &response.results[0].triggered_rules[0];
-        assert_eq!(rule.action, Some(1)); // ALLOW (fail-open when no evaluator)
+        assert_eq!(rule.action, Some(3)); // BLOCK = 3 (fail-closed)
     }
 
     #[test]

@@ -773,7 +773,7 @@ mod tests {
         // Verify the fail-closed invariant: when source_volume_class is None,
         // a SourceVolumeClass condition does NOT match (returns false).
         // This is the actual behavior tested via volume_class_matches.
-        use crate::abac::{VolumeClass, PolicyCondition};
+        use crate::abac::{PolicyCondition, VolumeClass};
         // Construct a SourceVolumeClass condition to document intent.
         let _condition = PolicyCondition::SourceVolumeClass {
             op: "eq".to_string(),
